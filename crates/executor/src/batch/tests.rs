@@ -256,4 +256,105 @@ mod byte_bounded_batch_tests {
         assert_eq!(emitted_allocation, Some(allocation));
         assert_eq!(observer.into_reports().pipeline_memory.intermediate_rows, 1);
     }
+
+    /// The single-walk emitter (#1615) charges and reports exactly what the
+    /// separate `binding_memory_bytes` and `record_pipeline_batch` walks did,
+    /// splits at the same rows, and settles its ledger.
+    #[test]
+    fn single_walk_emission_matches_separate_memory_and_payload_walks() {
+        let row = |index: usize| Binding {
+            values: BTreeMap::from([
+                ("name".to_string(), Value::String("n".repeat(index * 40))),
+                (
+                    "nested".to_string(),
+                    Value::List(vec![
+                        Value::Null,
+                        Value::Map(BTreeMap::from([(
+                            "inner".to_string(),
+                            Value::List(vec![Value::Int(index as i64); index]),
+                        )])),
+                    ]),
+                ),
+            ]),
+            nodes: BTreeMap::from([(
+                "n".to_string(),
+                NodeRecord {
+                    id: NodeId(index as u64),
+                    labels: Default::default(),
+                    properties: BTreeMap::from([(
+                        "body".to_string(),
+                        Value::String("b".repeat(index)),
+                    )]),
+                },
+            )])
+            .into(),
+            relationships: BTreeMap::new().into(),
+        };
+        let batch = (0..9).map(row).collect::<Vec<_>>();
+        let total = batch
+            .iter()
+            .map(crate::binding::binding_memory_bytes)
+            .sum::<usize>();
+        let largest = batch
+            .iter()
+            .map(crate::binding::binding_memory_bytes)
+            .max()
+            .unwrap();
+        for max_payload_bytes in [usize::MAX, total, total - 1, largest * 3, largest] {
+            let memory = ExecutionMemoryConfig::default();
+            let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+            let account = ledger.account(
+                QueryMemoryClass::PipelineBatch,
+                "test batch",
+                memory.query_memory_bytes,
+            );
+            let observer = QueryExecutionObserver::default();
+            let expected = QueryExecutionObserver::default();
+            // The previous emitter's greedy split over separately walked rows.
+            let mut expected_lengths = vec![0usize];
+            let mut open_bytes = 0usize;
+            for binding in &batch {
+                let bytes = crate::binding::binding_memory_bytes(binding);
+                if total > max_payload_bytes
+                    && *expected_lengths.last().unwrap() > 0
+                    && open_bytes + bytes > max_payload_bytes
+                {
+                    expected_lengths.push(0);
+                    open_bytes = 0;
+                }
+                open_bytes += bytes;
+                *expected_lengths.last_mut().unwrap() += 1;
+            }
+            let mut lengths = Vec::new();
+            let mut emitted = Vec::new();
+            let control = emit_byte_bounded_batches(
+                batch.clone(),
+                max_payload_bytes,
+                &account,
+                &observer,
+                &mut |output| {
+                    let charged = output
+                        .iter()
+                        .map(crate::binding::binding_memory_bytes)
+                        .sum::<usize>();
+                    assert!(charged <= max_payload_bytes);
+                    assert_eq!(ledger.snapshot().used_bytes, charged);
+                    expected.record_pipeline_batch(&output);
+                    lengths.push(output.len());
+                    emitted.extend(output);
+                    Ok(BatchControl::Continue)
+                },
+            )
+            .unwrap();
+            assert_eq!(control, BatchControl::Continue);
+            assert_eq!(emitted, batch, "budget {max_payload_bytes}");
+            assert_eq!(lengths, expected_lengths, "budget {max_payload_bytes}");
+            assert_eq!(
+                observer.into_reports().pipeline_memory,
+                expected.into_reports().pipeline_memory,
+                "budget {max_payload_bytes}"
+            );
+            assert_eq!(ledger.snapshot().used_bytes, 0);
+        }
+    }
 }

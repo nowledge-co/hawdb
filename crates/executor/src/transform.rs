@@ -27,7 +27,7 @@ use crate::pipeline::{
     TransformBatchBuilder,
 };
 use crate::{ExecutionLimit, QueryMemoryAccount, QueryMemoryLease};
-use hawdb_core::Result;
+use hawdb_core::{Result, Value};
 use hawdb_plan_cypher::{PhysicalPlan, Projection, ProjectionExpression};
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -192,16 +192,17 @@ pub fn stream_projection_batches(
                 return Ok(BatchControl::Stop);
             }
             runtime_checkpoint(context.task_context)?;
-            let values = values
-                .into_iter()
-                .map(|(name, value)| (name, value.into_owned()))
-                .collect();
+            let sources = claim_projection_values(values, &binding.values);
             drop(layout);
-            projected.push(Binding {
-                values,
-                nodes: binding.nodes,
-                relationships: binding.relationships,
-            });
+            let values = owned_projection_values(sources, binding.values);
+            projected.push_admitted(
+                Binding {
+                    values,
+                    nodes: binding.nodes,
+                    relationships: binding.relationships,
+                },
+                bytes,
+            );
             if projected.is_full() && projected.emit(&mut emit_projected)? == BatchControl::Stop {
                 return Ok(BatchControl::Stop);
             }
@@ -215,6 +216,92 @@ pub fn stream_projection_batches(
             BatchControl::Continue
         })
     })
+}
+
+/// Where an admitted projection value comes from once the input row is owned.
+enum ProjectedSource {
+    Owned(Value),
+    /// The position of an input column transferred unchanged.
+    Column(usize),
+}
+
+/// Copies every admitted projection value while the input row is still
+/// borrowed, except a column transferred unchanged, which is claimed to be
+/// moved out of the consumed input row instead of copied and then dropped
+/// with it (#1615). The output values, and so the admitted row bytes, are
+/// identical to copying every value.
+fn claim_projection_values(
+    values: BTreeMap<String, ProjectedValue<'_>>,
+    input: &BTreeMap<String, Value>,
+) -> Vec<(String, ProjectedSource)> {
+    // Inline scalars cost the same to copy as to move.
+    let movable = |value: &Value| {
+        !matches!(
+            value,
+            Value::Null
+                | Value::Bool(_)
+                | Value::Int(_)
+                | Value::Float(_)
+                | Value::Decimal(_)
+                | Value::Uuid(_)
+                | Value::Date(_)
+                | Value::LocalTime(_)
+                | Value::LocalDateTime(_)
+                | Value::DateTime(_)
+        )
+    };
+    let mut claimed = Vec::new();
+    values
+        .into_iter()
+        .map(|(name, value)| {
+            // A value is an input column itself only when it borrows that
+            // column's own slot; a value nested inside a column, or a computed
+            // value, is never at that address. Each column moves at most once.
+            let column = value
+                .lent()
+                .filter(|borrowed| movable(borrowed))
+                .and_then(|borrowed| {
+                    input
+                        .values()
+                        .position(|column| std::ptr::eq(column, borrowed))
+                })
+                .filter(|column| !claimed.contains(column));
+            let source = match column {
+                Some(column) => {
+                    claimed.push(column);
+                    ProjectedSource::Column(column)
+                }
+                None => ProjectedSource::Owned(value.into_owned()),
+            };
+            (name, source)
+        })
+        .collect()
+}
+
+/// Builds the owned projection row, consuming the input row's columns.
+fn owned_projection_values(
+    sources: Vec<(String, ProjectedSource)>,
+    input: BTreeMap<String, Value>,
+) -> BTreeMap<String, Value> {
+    let mut columns = Vec::new();
+    if sources
+        .iter()
+        .any(|(_, source)| matches!(source, ProjectedSource::Column(_)))
+    {
+        columns = input.into_values().map(Some).collect();
+    }
+    sources
+        .into_iter()
+        .map(|(name, source)| {
+            let value = match source {
+                ProjectedSource::Owned(value) => value,
+                ProjectedSource::Column(column) => columns[column]
+                    .take()
+                    .expect("each input column is claimed at most once"),
+            };
+            (name, value)
+        })
+        .collect()
 }
 
 // Column transfers and literals have an exact borrowed sizing path and no

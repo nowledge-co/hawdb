@@ -36,6 +36,7 @@ use hawdb_storage::read_view::{
     GraphReadAllocation,
 };
 use hawdb_storage::{adjacency::AdjacencyDirection, NodeId, NodeRecord, RelId};
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -201,8 +202,14 @@ pub(crate) fn stream_graph_match(
         memberships: membership::MembershipSets::default(),
     };
     let mut emitted = 0;
-    let mut append = |binding: &Binding| {
-        if output.push_cloned(binding, emit)? == BatchControl::Stop {
+    // A visited match is restored after `append`, so it is copied; an owned
+    // row moves into the output.
+    let mut append = |binding: Cow<'_, Binding>| {
+        let control = match binding {
+            Cow::Borrowed(binding) => output.push_cloned(binding, emit)?,
+            Cow::Owned(binding) => output.push(binding, emit)?,
+        };
+        if control == BatchControl::Stop {
             return Ok(ScanControl::Stop);
         }
         emitted += 1;
@@ -215,21 +222,24 @@ pub(crate) fn stream_graph_match(
             ScanControl::Continue
         })
     };
-    let mut visit_input = |input: &Binding| -> Result<BatchControl> {
+    // Each input row is consumed: its working row moves rather than copies.
+    let mut visit_input = |input: Binding| -> Result<BatchControl> {
         runtime_checkpoint(context.task_context)?;
-        let (mut binding, _leases) = runtime.prepare(input)?;
+        let (mut binding, _leases) = runtime.prepare(Cow::Owned(input))?;
         runtime.deferred.set(false);
         runtime.memberships.reset();
         let mut matched = false;
         // Steps extend this one row in place and restore it on return.
         let control = runtime.visit(0, &mut binding, &mut BTreeSet::new(), &mut |row| {
             matched = true;
-            append(row)
+            append(Cow::Borrowed(row))
         })?;
         if control == ScanControl::Stop {
             return Ok(BatchControl::Stop);
         }
         if !matched && program.optional {
+            // The working row is not visited again, so the NULL-extended row
+            // takes it instead of a copy (#1615). The reservation is unchanged.
             let _lease = account.reserve(
                 binding_memory_bytes(&binding).saturating_add(
                     program
@@ -239,7 +249,7 @@ pub(crate) fn stream_graph_match(
                         .sum::<usize>(),
                 ),
             )?;
-            let mut row = binding.clone();
+            let mut row = binding;
             for name in &program.introduced {
                 row.nodes.remove(name);
                 row.relationships.remove(name);
@@ -248,7 +258,7 @@ pub(crate) fn stream_graph_match(
             if context.observer.seed_graph_scoring_input().is_some() {
                 crate::scoring::advance_seed_hop(&mut row, 0, false)?;
             }
-            if append(&row)? == ScanControl::Stop {
+            if append(Cow::Owned(row))? == ScanControl::Stop {
                 return Ok(BatchControl::Stop);
             }
         }
@@ -256,7 +266,7 @@ pub(crate) fn stream_graph_match(
     };
     let control = if let Some(input) = input {
         source.execute(input, ExecutionLimit::unlimited(), &mut |batch| {
-            for row in &batch {
+            for row in batch {
                 if visit_input(row)? == BatchControl::Stop {
                     return Ok(BatchControl::Stop);
                 }
@@ -264,7 +274,7 @@ pub(crate) fn stream_graph_match(
             Ok(BatchControl::Continue)
         })?
     } else {
-        visit_input(&Binding::values(BTreeMap::new()))?
+        visit_input(Binding::values(BTreeMap::new()))?
     };
     runtime.indexed.report(context.observer);
     if output.emit(emit)? == BatchControl::Stop {
@@ -325,7 +335,7 @@ pub(crate) fn visit_correlated_matches(
         candidate: Some(candidate),
         memberships: membership::MembershipSets::default(),
     };
-    let (mut binding, _leases) = runtime.prepare(input)?;
+    let (mut binding, _leases) = runtime.prepare(Cow::Borrowed(input))?;
     runtime.visit(0, &mut binding, &mut BTreeSet::new(), emit)
 }
 
@@ -464,9 +474,13 @@ impl MatchRuntime<'_> {
         }
     }
 
+    /// The working row for one input: moved from an owned input, copied from
+    /// a borrowed one (#1615). Imports resolve from the unmodified input
+    /// before the row is taken; an import's error surfaces at that import,
+    /// after the reads of the imports before it.
     fn prepare(
         &self,
-        input: &Binding,
+        input: Cow<'_, Binding>,
     ) -> Result<(Binding, AdmittedVec<Box<dyn GraphReadAllocation>>)> {
         let mut admit =
             |bytes| admit_graph_read(self.source_account, self.context.task_context, bytes);
@@ -475,38 +489,29 @@ impl MatchRuntime<'_> {
         leases.try_push(admit_graph_read(
             self.source_account,
             self.context.task_context,
-            binding_memory_bytes(input),
+            binding_memory_bytes(&input),
         )?)?;
-        let mut row = input.clone();
+        let mut resolved = Vec::with_capacity(self.program.imports.len());
+        for import in &self.program.imports {
+            let resolution = resolve_import(&input, import);
+            let failed = resolution.is_err();
+            resolved.push(resolution);
+            if failed {
+                break;
+            }
+        }
+        let mut row = input.into_owned();
         for name in &self.program.introduced {
             row.nodes.remove(name);
             row.relationships.remove(name);
             row.values.remove(name);
         }
-        for import in &self.program.imports {
-            // A node bound by an earlier expansion of the same plan, rather
-            // than a projected column, imports by its record (#1485).
-            let bound = (import.kind == GraphEntityKind::Node
-                && !input.values.contains_key(&import.column))
-            .then(|| input.nodes.get(&import.column).map(|node| node.id.0))
-            .flatten();
+        for (import, resolution) in self.program.imports.iter().zip(resolved) {
             row.nodes.remove(&import.variable);
             row.relationships.remove(&import.variable);
-            let id = if let Some(id) = bound {
-                id
-            } else {
-                let value = input.values.get(&import.column).ok_or_else(|| {
-                    HawDBError::Execution(format!(
-                        "missing graph column '{}' during MATCH",
-                        import.column
-                    ))
-                })?;
-                if value == &Value::Null {
-                    row.values.insert(import.variable.clone(), Value::Null);
-                    continue;
-                }
-                let values = imported_entity(value, import)?;
-                entity_id(values, "_id")?
+            let Some(ResolvedImport { id, source }) = resolution? else {
+                row.values.insert(import.variable.clone(), Value::Null);
+                continue;
             };
             match import.kind {
                 GraphEntityKind::Node
@@ -565,9 +570,9 @@ impl MatchRuntime<'_> {
                     row.nodes.insert(import.variable.clone(), node);
                 }
                 GraphEntityKind::Relationship => {
-                    // Relationships always import from their column.
-                    let values = imported_entity(&input.values[&import.column], import)?;
-                    let source = NodeId(entity_id(values, "source_id")?);
+                    let source = NodeId(
+                        source.expect("relationships always import their source from the column"),
+                    );
                     let mut found = None;
                     self.store
                         .visit_ordered_adjacent_relationships_with_allocation(
@@ -1465,6 +1470,42 @@ impl MatchRuntime<'_> {
 /// column may come from an untyped source such as an UNWIND element (#1486),
 /// so a non-entity value fails with the variable named rather than being read
 /// as an identity.
+/// The identity of one graph import, read from the unmodified input row.
+struct ResolvedImport {
+    id: u64,
+    /// The source node of an imported relationship.
+    source: Option<u64>,
+}
+
+/// `None` when the import's column is NULL. A node bound by an earlier
+/// expansion of the same plan, rather than a projected column, imports by
+/// its record (#1485); relationships always import from their column.
+fn resolve_import(input: &Binding, import: &GraphBindingImport) -> Result<Option<ResolvedImport>> {
+    let bound = (import.kind == GraphEntityKind::Node
+        && !input.values.contains_key(&import.column))
+    .then(|| input.nodes.get(&import.column).map(|node| node.id.0))
+    .flatten();
+    if let Some(id) = bound {
+        return Ok(Some(ResolvedImport { id, source: None }));
+    }
+    let value = input.values.get(&import.column).ok_or_else(|| {
+        HawDBError::Execution(format!(
+            "missing graph column '{}' during MATCH",
+            import.column
+        ))
+    })?;
+    if value == &Value::Null {
+        return Ok(None);
+    }
+    let values = imported_entity(value, import)?;
+    let id = entity_id(values, "_id")?;
+    let source = match import.kind {
+        GraphEntityKind::Node => None,
+        GraphEntityKind::Relationship => Some(entity_id(values, "source_id")?),
+    };
+    Ok(Some(ResolvedImport { id, source }))
+}
+
 fn imported_entity<'a>(
     value: &'a Value,
     import: &GraphBindingImport,
