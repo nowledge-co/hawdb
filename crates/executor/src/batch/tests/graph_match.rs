@@ -17,6 +17,7 @@ use hawdb_plan_cypher::{GraphMatchStep, LogicalPlan, ProjectionExpression};
 
 mod indexed_node;
 mod ledger_accounting;
+mod seeded_union;
 
 // The oracle lowers the generic operators directly, independently of optimizer fast paths.
 fn lower(plan: LogicalPlan) -> PhysicalPlan {

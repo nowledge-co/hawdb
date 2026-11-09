@@ -17,16 +17,20 @@ pub enum OptionalOptimizerRule {
     /// Checks `node IN column` against the list's id set before reading the
     /// node (#1485).
     GraphMatchIdSetSemiJoin,
+    /// Runs a first MATCH whose WHERE disjuncts each pin a different node by
+    /// an indexed equality as a union of seeded branches (#1625).
+    DisjunctiveSeedUnion,
 }
 
 impl OptionalOptimizerRule {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::RedundantOrdering,
         Self::RedundantDistinct,
         Self::SingletonGroup,
         Self::CostBasedPatternStart,
         Self::GraphMatchHashJoin,
         Self::GraphMatchIdSetSemiJoin,
+        Self::DisjunctiveSeedUnion,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -37,6 +41,7 @@ impl OptionalOptimizerRule {
             Self::CostBasedPatternStart => "transformation:cost_based_pattern_start",
             Self::GraphMatchHashJoin => "transformation:graph_match_hash_join",
             Self::GraphMatchIdSetSemiJoin => "transformation:graph_match_id_set_semi_join",
+            Self::DisjunctiveSeedUnion => "transformation:disjunctive_seed_union",
         }
     }
 

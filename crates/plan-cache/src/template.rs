@@ -921,6 +921,9 @@ fn marker_use_in_program(program: &hawdb_plan_cypher::GraphMatchProgram, name: &
     if let Some(predicate) = &program.predicate {
         marker_use = marker_use.combine(marker_use_in_predicate(predicate, name));
     }
+    for branch in &program.seeded_union {
+        marker_use = marker_use.combine(marker_use_in_program(branch, name));
+    }
     marker_use
 }
 
@@ -1978,6 +1981,10 @@ fn bind_program(
             GraphMatchStep::ShortestPath(_) => continue,
         };
         bind_value_map(&mut node.properties, parameters)?;
+    }
+    // Each seeded branch carries the parameter in its seek and its guards.
+    for branch in &mut program.seeded_union {
+        bind_program(branch, parameters)?;
     }
     bind_optional_predicate(&mut program.predicate, parameters)
 }

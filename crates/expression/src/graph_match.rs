@@ -50,6 +50,16 @@ pub struct GraphMatchProgram {
     /// is rejected exactly as the conjunct would reject it. Lowering fills it;
     /// the binder leaves it empty.
     pub id_set_conjuncts: Vec<usize>,
+    /// Programs whose rows together are exactly this program's rows, each
+    /// once (#1625). Lowering fills it for a first MATCH whose WHERE has a
+    /// top-level disjunction where every disjunct pins a different node by an
+    /// indexed equality: branch `i` starts at disjunct `i`'s node with that
+    /// equality as a seek, keeps the whole predicate, and drops a row whose
+    /// seek equality of an earlier disjunct holds, so a row that satisfies
+    /// several disjuncts comes only from the first. The binder leaves it
+    /// empty. The steps and predicate stay a valid program, so an executor
+    /// may ignore it.
+    pub seeded_union: Vec<GraphMatchProgram>,
 }
 
 /// Executes a [`GraphMatchProgram`] whose only import is the node `key` as
@@ -308,7 +318,8 @@ hawdb_core::impl_retained_heap_for_struct!(GraphMatchProgram {
     edge_predicates,
     optional,
     hash_join,
-    id_set_conjuncts
+    id_set_conjuncts,
+    seeded_union
 });
 
 // Retained query ownership: GraphMatchHashJoin.

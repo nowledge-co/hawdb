@@ -359,6 +359,12 @@ fn project_program(
         }
     }
     program.projected_relationships = projected_relationships;
+    // Seeded branches bind the same variables; their seeks and guards read
+    // only properties in the program's own demand, merged below.
+    for branch in &mut program.seeded_union {
+        branch.projected_nodes = program.projected_nodes.clone();
+        branch.projected_relationships = program.projected_relationships.clone();
+    }
     // A variable bound by the input keeps the demand of both the program and
     // the operators above it.
     let input = Demand(
@@ -410,6 +416,9 @@ fn program_demand(program: &GraphMatchProgram) -> Demand {
     }
     if let Some(predicate) = &program.predicate {
         self::predicate(predicate, &mut demand);
+    }
+    for branch in &program.seeded_union {
+        demand.merge(&program_demand(branch));
     }
     demand
 }

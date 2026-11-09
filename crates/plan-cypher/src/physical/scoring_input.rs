@@ -747,6 +747,7 @@ mod tests {
                 optional: false,
                 hash_join: None,
                 id_set_conjuncts: Vec::new(),
+                seeded_union: Vec::new(),
             },
             input: Some(Box::new(lookup(vec![known_id()]))),
         });

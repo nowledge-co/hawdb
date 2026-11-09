@@ -386,6 +386,7 @@ fn actual_physical_cache_requested_heap_stays_within_charges_and_limits() {
             optional: true,
             hash_join: None,
             id_set_conjuncts: Vec::new(),
+            seeded_union: Vec::new(),
         };
         let items = [
             PathFunction::Length,

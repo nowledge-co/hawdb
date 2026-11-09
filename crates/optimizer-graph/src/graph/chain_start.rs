@@ -574,6 +574,7 @@ impl<'a> Chain<'a> {
                     probe_conjuncts: 0,
                 }),
                 id_set_conjuncts: Vec::new(),
+                seeded_union: Vec::new(),
             },
             input: Some(Box::new(plan)),
         }

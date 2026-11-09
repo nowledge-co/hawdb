@@ -459,6 +459,7 @@ pub(super) fn bind_shortest_path_match(
                 optional,
                 hash_join: None,
                 id_set_conjuncts: Vec::new(),
+                seeded_union: Vec::new(),
             },
             input: input.map(Box::new),
         });
@@ -484,6 +485,7 @@ pub(super) fn bind_shortest_path_match(
                 optional: false,
                 hash_join: None,
                 id_set_conjuncts: Vec::new(),
+                seeded_union: Vec::new(),
             },
             input: input.map(Box::new),
         };
@@ -502,6 +504,7 @@ pub(super) fn bind_shortest_path_match(
             optional: false,
             hash_join: None,
             id_set_conjuncts: Vec::new(),
+            seeded_union: Vec::new(),
         },
         input: input.map(Box::new),
     })

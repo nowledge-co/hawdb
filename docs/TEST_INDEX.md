@@ -540,6 +540,33 @@ join returns only visible nodes and applies the visibility conjuncts in its buil
 `cargo test --locked -p hawdb --lib --features acl meeting_join::access_control`.
 No lane, fixture, feature matrix or deadline changes.
 
+Disjunctive seeded unions ([#1625](https://github.com/nowledge-co/hawdb/issues/1625)),
+a first `GraphMatchExec` whose WHERE disjuncts each pin a different node by an
+indexed equality (LDBC SNB IC12), are owned by optimizer
+`graph::lowering::seeded_union::tests` (branch starts, the reversed
+variable-length walk, the whole WHERE plus one guard per earlier seed, seed
+choice per disjunct, the cost gate, a fallible WHERE, and no union for one
+node, a missing index or equality, a NULL literal, OPTIONAL or correlated
+MATCH, a seeking start, two paths or a disabled rule), executor
+`batch::tests::graph_match::seeded_union` (branches replace the steps, the
+limit spans branches, and a NULL seed value guards nothing), and root
+`api::tests::disjunctive_seed_union` in the existing general unit lane. The
+root differential runs eight cases on five randomized 96-node tag hierarchies
+with NULL and repeated names, diamonds and parallel relationships, and seven
+names including NULL: IC12 and a collected form, three disjuncts over two
+nodes of one label, extra conjuncts inside and beside the disjunction, and the
+non-applying one-node, OPTIONAL MATCH and fallible (errors in both) forms. Row
+multisets and errors of the chosen plan, the plan with `DisjunctiveSeedUnion`
+disabled and the cached plan must match; duplicate rows and rows satisfying
+both disjuncts must occur. Further cases check EXPLAIN, the trace and distinct
+plan fingerprints, and, with `--features acl`, that every branch binds only
+visible tags and classes. Replay with
+`cargo test --locked -p hawdb-optimizer-graph seeded_union`,
+`cargo test --locked -p hawdb-executor seeded_union`,
+`cargo test --locked -p hawdb --lib api::tests::disjunctive_seed_union` and
+`cargo test --locked -p hawdb --lib --features acl disjunctive_seed_union::access_control`.
+No lane, fixture, feature matrix or deadline changes.
+
 `GraphMatchExec` record projection (#1427) is owned by optimizer
 `graph::match_reads::tests` (which node properties later projections,
 aggregates, filters, sort keys, nested conversion/temporal/component/map expressions

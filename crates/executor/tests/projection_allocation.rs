@@ -2421,6 +2421,7 @@ fn run_point_read_admission(persisted: bool, case: PointReadCase) {
             optional: false,
             hash_join: None,
             id_set_conjuncts: Vec::new(),
+            seeded_union: Vec::new(),
         },
         input: Some(Box::new(PhysicalPlan::ProjectExec {
             items: vec![Projection {
