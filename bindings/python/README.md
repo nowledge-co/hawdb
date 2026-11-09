@@ -597,6 +597,12 @@ runs, not by `params`: a `datetime` or plain `Enum` field raises
 a batch. Run statements that must all apply or none in `db.transaction()`.
 Engine errors stay `hawdb.exceptions`.
 
+## LlamaIndex property graph store
+
+[`integrations/llama-index-graph-stores-hawdb`](../../integrations/llama-index-graph-stores-hawdb/README.md)
+is a separate package with a LlamaIndex `PropertyGraphStore` over a
+`hawdb.Database`. Install it from that directory.
+
 ## Test
 
 ```bash

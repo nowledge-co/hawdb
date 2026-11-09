@@ -203,13 +203,16 @@ fn mixed_nested_sources_share_slot_and_projection_payload_bytes() {
         &[("docs", usize::MAX), ("aux", usize::MAX)],
     );
     let task = RuntimeTaskContext::default();
-    let slot = usize::try_from(fixture.root.manifest().page_bytes).unwrap();
+
     let projection = fixture
         .projection
         .read_page(None, Default::default())
         .unwrap();
     assert_eq!(projection.members.len(), 8);
     let payload = projection.report.payload_bytes;
+    // `docs` is served by its projection and `aux` by its one row page, so
+    // either nesting reads the `aux` page plus the projection payload.
+    let slot = fixture.page_bytes("aux");
     for parent in ["aux", "docs"] {
         for complete in [false, true] {
             let cap = slot + payload - usize::from(!complete);

@@ -81,25 +81,25 @@ pub use publication::{
     relational_row_page_artifact_file, relational_row_page_manifest_generation_file,
     relational_row_page_root_descriptor_file, relational_row_page_root_key_file,
     RelationalRowPageArtifactMetadata, RelationalRowPageGenerationArtifacts,
-    RelationalRowPageGenerationRequest, RelationalRowPagePhysicalGeneration,
-    RelationalRowPagePublicationConfig, RelationalRowPagePublicationError,
-    RelationalRowPagePublicationPhase, RelationalRowPagePublicationReport,
-    RelationalRowPagePublisher, RelationalRowPageRewriteConfig, RelationalRowPageRootDescriptor,
-    RelationalRowPageRootManifest, RelationalRowPageRootReader, RelationalRowPageSlotIntegrity,
+    RelationalRowPageGenerationRequest, RelationalRowPageIntegrity,
+    RelationalRowPagePhysicalGeneration, RelationalRowPagePublicationConfig,
+    RelationalRowPagePublicationError, RelationalRowPagePublicationPhase,
+    RelationalRowPagePublicationReport, RelationalRowPagePublisher, RelationalRowPageRewriteConfig,
+    RelationalRowPageRootDescriptor, RelationalRowPageRootManifest, RelationalRowPageRootReader,
     RelationalRowPageTableDelta, RelationalRowPageTableRoot,
     DEFAULT_RELATIONAL_ROW_PAGE_DIRTY_BYTES, DEFAULT_RELATIONAL_ROW_PAGE_DIRTY_PAGES,
     DEFAULT_RELATIONAL_ROW_PAGE_MANIFEST_BYTES, DEFAULT_RELATIONAL_ROW_PAGE_ROOT_KEY_BYTES,
     DEFAULT_RELATIONAL_ROW_PAGE_ROOT_PAGES, DEFAULT_RELATIONAL_ROW_PAGE_TABLES,
-    RELATIONAL_ROW_PAGE_MANIFEST_FILE,
+    DEFAULT_RELATIONAL_ROW_PAGE_TARGET_BYTES, RELATIONAL_ROW_PAGE_MANIFEST_FILE,
 };
 pub use recovery::RelationalRowPageRecoveryStatus;
 pub(crate) use snapshot::ProjectedPointReadRequest as CheckpointSnapshotPointRequest;
 pub use snapshot::{
-    RelationalRowPageSnapshotPointReport, RelationalRowPageSnapshotPointsReport,
-    RelationalRowPageSnapshotRangeReport, RelationalRowPageSnapshotReadError,
-    RelationalRowPageSnapshotReadLimits, RelationalRowPageSnapshotReader,
-    RelationalRowPageSnapshotRowSource, DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_BYTES,
-    DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_ENTRIES,
+    RelationalRowPagePartitionAbsenceProof, RelationalRowPageSnapshotPointReport,
+    RelationalRowPageSnapshotPointsReport, RelationalRowPageSnapshotRangeReport,
+    RelationalRowPageSnapshotReadError, RelationalRowPageSnapshotReadLimits,
+    RelationalRowPageSnapshotReader, RelationalRowPageSnapshotRowSource,
+    DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_BYTES, DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_ENTRIES,
 };
 pub use state::{
     RelationalRowLiveUnavailable, RelationalRowPageServingResources, RelationalRowPageState,
@@ -150,7 +150,9 @@ const VALUE_SLOT_BYTES: usize = 8;
 const INTEGRITY_PREFIX_BYTES: usize = 104;
 
 pub const DEFAULT_RELATIONAL_ROW_PAGE_BYTES: usize = 1024 * 1024;
-pub const DEFAULT_RELATIONAL_ROW_PAGE_ROWS: usize = 256;
+/// Row cap of one page. Format v2 closes pages at a byte target, so this only
+/// bounds the row directory of very narrow rows.
+pub const DEFAULT_RELATIONAL_ROW_PAGE_ROWS: usize = 8192;
 pub const DEFAULT_RELATIONAL_ROW_PAGE_COLUMNS: usize = 4096;
 pub const DEFAULT_RELATIONAL_ROW_PAGE_KEY_BYTES: usize = 64 * 1024;
 pub const DEFAULT_RELATIONAL_ROW_PAGE_ROW_BYTES: usize = 1024 * 1024;
@@ -410,15 +412,6 @@ impl fmt::Display for RelationalRowPageError {
 impl std::error::Error for RelationalRowPageError {}
 
 impl ImmutableRelationalRowPage {
-    pub fn encode_slot(
-        &self,
-        limits: RelationalRowPageLimits,
-    ) -> Result<Vec<u8>, RelationalRowPageError> {
-        let mut encoded = self.encode(limits)?;
-        encoded.resize(limits.max_page_bytes.get(), 0);
-        Ok(encoded)
-    }
-
     pub fn encode(
         &self,
         limits: RelationalRowPageLimits,
@@ -430,8 +423,8 @@ impl ImmutableRelationalRowPage {
     /// computed without materializing the page: header, both key bounds,
     /// the row directory and the key and row payloads.
     ///
-    /// Dirty-page budgets charge this length rather than the fixed slot the
-    /// v1 page artifact pads each page to (#1593).
+    /// Dirty-page budgets charge this length, which is exactly what the v2
+    /// page artifact writes for the page (#1593).
     pub fn encoded_len(
         &self,
         limits: RelationalRowPageLimits,
@@ -474,14 +467,6 @@ impl ImmutableRelationalRowPage {
             column_count: view.column_count,
             rows,
         })
-    }
-
-    pub fn decode_slot(
-        slot: &[u8],
-        limits: RelationalRowPageLimits,
-    ) -> Result<Self, RelationalRowPageError> {
-        let view = RelationalRowPageView::open_slot(slot, limits)?;
-        Self::decode_view(view)
     }
 }
 
@@ -620,20 +605,34 @@ impl<'a> RelationalRowPageView<'a> {
         encoded: &'a [u8],
         limits: RelationalRowPageLimits,
     ) -> Result<Self, RelationalRowPageError> {
-        Self::open_with_validation(encoded, limits, true)
+        Self::open_with_validation(encoded, limits, true, true)
     }
 
+    /// Opens bytes that were fully validated when a verified cache entry was
+    /// inserted: neither the integrity hash nor the directory is re-checked.
     pub(crate) fn open_verified(
         encoded: &'a [u8],
         limits: RelationalRowPageLimits,
     ) -> Result<Self, RelationalRowPageError> {
-        Self::open_with_validation(encoded, limits, false)
+        Self::open_with_validation(encoded, limits, false, false)
+    }
+
+    /// Opens a page whose integrity digest the caller has just verified
+    /// (cooperatively), skipping only that hash. The row directory, key
+    /// order and offset continuity are still validated, exactly as `open`
+    /// does.
+    pub(crate) fn open_digest_verified(
+        encoded: &'a [u8],
+        limits: RelationalRowPageLimits,
+    ) -> Result<Self, RelationalRowPageError> {
+        Self::open_with_validation(encoded, limits, false, true)
     }
 
     fn open_with_validation(
         encoded: &'a [u8],
         limits: RelationalRowPageLimits,
         validate_integrity: bool,
+        validate_directory: bool,
     ) -> Result<Self, RelationalRowPageError> {
         if encoded.len() > limits.max_page_bytes.get() {
             return Err(RelationalRowPageError::Admission(format!(
@@ -696,30 +695,10 @@ impl<'a> RelationalRowPageView<'a> {
             key_payload,
             row_payload,
         };
-        if validate_integrity {
+        if validate_directory {
             view.validate_directory()?;
         }
         Ok(view)
-    }
-
-    pub fn open_slot(
-        slot: &'a [u8],
-        limits: RelationalRowPageLimits,
-    ) -> Result<Self, RelationalRowPageError> {
-        if slot.len() != limits.max_page_bytes.get() {
-            return Err(RelationalRowPageError::Corrupt(format!(
-                "relational row page slot has {} bytes, expected {}",
-                slot.len(),
-                limits.max_page_bytes
-            )));
-        }
-        let header = decode_header(slot, limits)?;
-        if slot[header.encoded_len..].iter().any(|byte| *byte != 0) {
-            return Err(RelationalRowPageError::Corrupt(
-                "relational row page slot contains non-zero trailing bytes".to_string(),
-            ));
-        }
-        Self::open(&slot[..header.encoded_len], limits)
     }
 
     pub const fn generation(&self) -> u64 {
@@ -1311,6 +1290,50 @@ fn validate_page_for_encode(
         )));
     }
     Ok(())
+}
+
+/// The page's own CRC32C and SHA-256 from its header. The caller has opened
+/// `encoded` as a valid page, so the header is present.
+pub(crate) fn encoded_page_digest(encoded: &[u8]) -> (u32, Sha256Digest) {
+    (
+        read_u32(&encoded[104..108]),
+        Sha256Digest::from_bytes(
+            encoded[108..140]
+                .try_into()
+                .expect("an opened page has a complete header"),
+        ),
+    )
+}
+
+/// Cooperatively recomputes a page's CRC32C/SHA-256 over the same regions as
+/// [`verify_integrity`] and compares them with its header. Returns `false` on a
+/// mismatch; a page shorter than its header is reported as corrupt.
+pub(crate) fn verify_page_integrity_with_work_context(
+    encoded: &[u8],
+    work: &crate::background::CheckpointWorkContext,
+) -> Result<bool, RelationalRowPagePublicationError> {
+    if encoded.len() < ROW_PAGE_HEADER_BYTES {
+        return Err(RelationalRowPagePublicationError::Corrupt(format!(
+            "row page contains {} bytes, shorter than its header",
+            encoded.len()
+        )));
+    }
+    let mut hasher = IntegrityHasher::new();
+    for region in [
+        &encoded[..INTEGRITY_PREFIX_BYTES],
+        &encoded[ROW_PAGE_HEADER_BYTES..],
+    ] {
+        for block in region.chunks(64 * 1024) {
+            let unit = work.start_unit().map_err(|error| {
+                RelationalRowPagePublicationError::from(checkpoint::work_error(error))
+            })?;
+            hasher.update(block);
+            unit.finish();
+        }
+    }
+    let digest = hasher.finish();
+    let (crc32c, sha256) = encoded_page_digest(encoded);
+    Ok(digest.crc32c.get() == crc32c && digest.sha256 == sha256)
 }
 
 fn write_integrity(encoded: &mut [u8]) {

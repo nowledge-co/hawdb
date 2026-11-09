@@ -2,8 +2,8 @@
   "expect_kept_start": false,
   "measurement_rounds": 15,
   "medians_ms": [
-    3.5640419999999997,
-    0.401542
+    2.202125,
+    0.2185
   ],
   "profiles": [
     {
@@ -21,7 +21,7 @@
         "plan cache bypass: optimizer_directive"
       ],
       "estimated_rows": 100,
-      "profile": "ReadExecutionProfile { max_rows: None, detection_row_cap: None, row_limit_enforced_before_output: false, operator_row_cap_enabled: false, operator_cardinality_profiles: [OperatorCardinalityProfile { operator_id: PhysicalOperatorId(0), operator: SortExec, actual_rows: Some(100) }, OperatorCardinalityProfile { operator_id: PhysicalOperatorId(1), operator: ProjectExec, actual_rows: Some(100) }, OperatorCardinalityProfile { operator_id: PhysicalOperatorId(2), operator: GraphMatchExec, actual_rows: Some(100) }], blocking_operator_kinds: [\"SortExec\"], scan_pruning_reports: [], vector_execution_reports: [], graph_expansion_reports: [], text_seed_execution_reports: [], grouped_evidence_reports: [], blocking_operator_memory_reports: [BlockingOperatorMemoryReport { operator: \"SortExec\", budget_bytes: 67108864, peak_tracked_bytes: 105400, input_rows: 100, candidate_rows: 0, replay_rows: 0, repartitions: 0, max_spill_bytes: 4294967296, max_spill_runs: 128, spilled_bytes: 0, spill_run_count: 0, spilled_rows: 0 }], pipeline_memory_report: PipelineMemoryReport { query_memory_budget_bytes: 268435456, query_memory_peak_bytes: 16871328, query_memory_completion_bytes: 4210, query_memory_account_count: 17, intermediate_rows: 300, intermediate_payload_bytes: 20000, peak_batch_rows: 100, peak_batch_payload_bytes: 7000, borrowed_node_projection_rows: 0, simple_case_dispatch_tables: 0, simple_case_dispatch_lookups: 0, native_projection_rows: 0, columnar_batches: 0, columnar_input_rows: 0, columnar_selected_rows: 0, morsel_count: 0, morsel_max_admitted_workers: 0, morsel_peak_active_workers: 0, morsel_peak_buffered_outputs: 0, morsel_peak_buffered_output_bytes: 0, morsel_peak_reorder_entries: 0, output_rows: 100, output_payload_bytes: 1000, start_resident_bytes: Some(42156032), start_peak_resident_bytes: Some(42156032), steady_resident_bytes: Some(42156032), peak_resident_bytes: Some(42156032), steady_resident_growth_bytes: Some(0), lifetime_peak_resident_growth_bytes: Some(0), total_page_faults: Some(0), minor_page_faults: Some(0), major_page_faults: Some(0) } }",
+      "profile": "ReadExecutionProfile { max_rows: None, detection_row_cap: None, row_limit_enforced_before_output: false, operator_row_cap_enabled: false, operator_cardinality_profiles: [OperatorCardinalityProfile { operator_id: PhysicalOperatorId(0), operator: SortExec, actual_rows: Some(100) }, OperatorCardinalityProfile { operator_id: PhysicalOperatorId(1), operator: ProjectExec, actual_rows: Some(100) }, OperatorCardinalityProfile { operator_id: PhysicalOperatorId(2), operator: GraphMatchExec, actual_rows: Some(100) }], blocking_operator_kinds: [\"SortExec\"], scan_pruning_reports: [], vector_execution_reports: [], graph_expansion_reports: [], text_seed_execution_reports: [], grouped_evidence_reports: [], blocking_operator_memory_reports: [BlockingOperatorMemoryReport { operator: \"SortExec\", budget_bytes: 67108864, peak_tracked_bytes: 105400, input_rows: 100, candidate_rows: 0, replay_rows: 0, repartitions: 0, max_spill_bytes: 4294967296, max_spill_runs: 128, spilled_bytes: 0, spill_run_count: 0, spilled_rows: 0 }], pipeline_memory_report: PipelineMemoryReport { query_memory_budget_bytes: 268435456, query_memory_peak_bytes: 16871328, query_memory_completion_bytes: 4210, query_memory_account_count: 17, intermediate_rows: 300, intermediate_payload_bytes: 20000, peak_batch_rows: 100, peak_batch_payload_bytes: 7000, borrowed_node_projection_rows: 0, simple_case_dispatch_tables: 0, simple_case_dispatch_lookups: 0, native_projection_rows: 0, columnar_batches: 0, columnar_input_rows: 0, columnar_selected_rows: 0, morsel_count: 0, morsel_max_admitted_workers: 0, morsel_peak_active_workers: 0, morsel_peak_buffered_outputs: 0, morsel_peak_buffered_output_bytes: 0, morsel_peak_reorder_entries: 0, output_rows: 100, output_payload_bytes: 1000, start_resident_bytes: Some(39043072), start_peak_resident_bytes: Some(39043072), steady_resident_bytes: Some(39043072), peak_resident_bytes: Some(39043072), steady_resident_growth_bytes: Some(0), lifetime_peak_resident_growth_bytes: Some(0), total_page_faults: Some(0), minor_page_faults: Some(0), major_page_faults: Some(0) } }",
       "query_memory_peak_bytes": 16871328,
       "snapshot_epoch": 12,
       "strategy": 0
@@ -40,7 +40,7 @@
         "plan cache bypass: optimizer_directive"
       ],
       "estimated_rows": 100,
-      "profile": "ReadExecutionProfile { max_rows: None, detection_row_cap: None, row_limit_enforced_before_output: false, operator_row_cap_enabled: false, operator_cardinality_profiles: [OperatorCardinalityProfile { operator_id: PhysicalOperatorId(0), operator: SortExec, actual_rows: Some(100) }, OperatorCardinalityProfile { operator_id: PhysicalOperatorId(1), operator: ProjectExec, actual_rows: Some(100) }, OperatorCardinalityProfile { operator_id: PhysicalOperatorId(2), operator: GraphMatchExec, actual_rows: Some(100) }], blocking_operator_kinds: [\"SortExec\"], scan_pruning_reports: [], vector_execution_reports: [], graph_expansion_reports: [], text_seed_execution_reports: [], grouped_evidence_reports: [], blocking_operator_memory_reports: [BlockingOperatorMemoryReport { operator: \"SortExec\", budget_bytes: 67108864, peak_tracked_bytes: 105400, input_rows: 100, candidate_rows: 0, replay_rows: 0, repartitions: 0, max_spill_bytes: 4294967296, max_spill_runs: 128, spilled_bytes: 0, spill_run_count: 0, spilled_rows: 0 }], pipeline_memory_report: PipelineMemoryReport { query_memory_budget_bytes: 268435456, query_memory_peak_bytes: 16871328, query_memory_completion_bytes: 4210, query_memory_account_count: 17, intermediate_rows: 300, intermediate_payload_bytes: 20000, peak_batch_rows: 100, peak_batch_payload_bytes: 7000, borrowed_node_projection_rows: 0, simple_case_dispatch_tables: 0, simple_case_dispatch_lookups: 0, native_projection_rows: 0, columnar_batches: 0, columnar_input_rows: 0, columnar_selected_rows: 0, morsel_count: 0, morsel_max_admitted_workers: 0, morsel_peak_active_workers: 0, morsel_peak_buffered_outputs: 0, morsel_peak_buffered_output_bytes: 0, morsel_peak_reorder_entries: 0, output_rows: 100, output_payload_bytes: 1000, start_resident_bytes: Some(42188800), start_peak_resident_bytes: Some(42188800), steady_resident_bytes: Some(42205184), peak_resident_bytes: Some(42205184), steady_resident_growth_bytes: Some(16384), lifetime_peak_resident_growth_bytes: Some(16384), total_page_faults: Some(1), minor_page_faults: Some(1), major_page_faults: Some(0) } }",
+      "profile": "ReadExecutionProfile { max_rows: None, detection_row_cap: None, row_limit_enforced_before_output: false, operator_row_cap_enabled: false, operator_cardinality_profiles: [OperatorCardinalityProfile { operator_id: PhysicalOperatorId(0), operator: SortExec, actual_rows: Some(100) }, OperatorCardinalityProfile { operator_id: PhysicalOperatorId(1), operator: ProjectExec, actual_rows: Some(100) }, OperatorCardinalityProfile { operator_id: PhysicalOperatorId(2), operator: GraphMatchExec, actual_rows: Some(100) }], blocking_operator_kinds: [\"SortExec\"], scan_pruning_reports: [], vector_execution_reports: [], graph_expansion_reports: [], text_seed_execution_reports: [], grouped_evidence_reports: [], blocking_operator_memory_reports: [BlockingOperatorMemoryReport { operator: \"SortExec\", budget_bytes: 67108864, peak_tracked_bytes: 105400, input_rows: 100, candidate_rows: 0, replay_rows: 0, repartitions: 0, max_spill_bytes: 4294967296, max_spill_runs: 128, spilled_bytes: 0, spill_run_count: 0, spilled_rows: 0 }], pipeline_memory_report: PipelineMemoryReport { query_memory_budget_bytes: 268435456, query_memory_peak_bytes: 16871328, query_memory_completion_bytes: 4210, query_memory_account_count: 17, intermediate_rows: 300, intermediate_payload_bytes: 20000, peak_batch_rows: 100, peak_batch_payload_bytes: 7000, borrowed_node_projection_rows: 0, simple_case_dispatch_tables: 0, simple_case_dispatch_lookups: 0, native_projection_rows: 0, columnar_batches: 0, columnar_input_rows: 0, columnar_selected_rows: 0, morsel_count: 0, morsel_max_admitted_workers: 0, morsel_peak_active_workers: 0, morsel_peak_buffered_outputs: 0, morsel_peak_buffered_output_bytes: 0, morsel_peak_reorder_entries: 0, output_rows: 100, output_payload_bytes: 1000, start_resident_bytes: Some(39059456), start_peak_resident_bytes: Some(39059456), steady_resident_bytes: Some(39059456), peak_resident_bytes: Some(39059456), steady_resident_growth_bytes: Some(0), lifetime_peak_resident_growth_bytes: Some(0), total_page_faults: Some(0), minor_page_faults: Some(0), major_page_faults: Some(0) } }",
       "query_memory_peak_bytes": 16871328,
       "snapshot_epoch": 12,
       "strategy": 1
@@ -51,41 +51,41 @@
   "rows": 100,
   "samples_ms": [
     [
-      3.788542,
-      3.9575419999999997,
-      3.6826250000000003,
-      3.5640419999999997,
-      3.959375,
-      4.141541999999999,
-      3.513083,
-      3.314417,
-      3.396916,
-      3.5049170000000003,
-      3.370583,
-      3.574625,
-      3.635834,
-      3.562792,
-      3.509542
+      2.461292,
+      2.3479159999999997,
+      2.337791,
+      2.3443330000000002,
+      2.251041,
+      2.202125,
+      2.235375,
+      2.1640840000000003,
+      2.174041,
+      2.043792,
+      2.047,
+      2.0946670000000003,
+      2.088333,
+      2.116666,
+      2.459125
     ],
     [
-      0.452291,
-      0.353042,
-      0.33795899999999995,
-      0.205625,
-      0.521667,
-      0.429542,
-      0.419416,
-      0.38120899999999996,
-      0.411708,
-      0.412958,
-      0.43104200000000004,
-      0.27537500000000004,
-      0.401542,
-      0.25470899999999996,
-      0.382792
+      0.313834,
+      0.204125,
+      0.306208,
+      0.26645800000000003,
+      0.242584,
+      0.151667,
+      0.233042,
+      0.146458,
+      0.207667,
+      0.1435,
+      0.26554099999999997,
+      0.16629200000000002,
+      0.2185,
+      0.152625,
+      0.263541
     ]
   ],
-  "speedup": 8.875888450025153,
+  "speedup": 10.07837528604119,
   "strategy_0": "text-order start; cost-based start disabled",
   "strategy_1": "ordinary optimizer",
   "targets": 20,

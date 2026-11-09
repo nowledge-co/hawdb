@@ -1,7 +1,7 @@
 # Graph MATCH statistics and cost qualification
 
 This is a bounded optimizer experiment, not full LDBC or Mem acceptance.
-The baseline is `ab1330dcdb65ad5858897cdcf69b36def69ef350` plus the identical
+The baseline is `eb596e50900d894eb8c9253d5f6b5c96d913f9d9` plus the identical
 manual example from this change. Candidate production sources and both native
 binaries are identified by SHA-256 in [receipt.json](receipt.json).
 
@@ -60,15 +60,15 @@ sample, selected cost, decisions, execution profile and snapshot epoch.
 
 | Ordinary optimizer | Baseline | Candidate |
 | --- | ---: | ---: |
-| Median of 30 warm measurements | 3.494958 ms | 0.3706045 ms |
+| Median of 30 warm measurements | 2.1272295 ms | 0.20425 ms |
 | Output rows / estimated rows | 100 / 800,000 | 100 / 100 |
 | Positive cardinality Q-error | 8,000 | 1 |
 | Selected scalar logical cost | 826,936,852 | 1,854 |
 | Profiled query-ledger peak | 16,871,328 B | 16,871,328 B |
 | Start | A label scan | B equality seek |
 
-The source comparison is **9.43x** faster on this fixture. Candidate process
-medians are 3.564042 -> 0.401542 ms and 3.505875 -> 0.343834 ms when switching
+The source comparison is **10.41x** faster on this fixture. Candidate process
+medians are 2.202125 -> 0.2185 ms and 2.126292 -> 0.162125 ms when switching
 from its own rule-disabled plan to the ordinary plan. These within-process
 controls support the plan-change explanation despite host timing variation.
 The baseline keeps A because it estimates reverse work at 10,003 versus 4,100;
@@ -82,24 +82,27 @@ Unbounded/disjunctive/ambiguous shapes and hash/shortest-path programs retain
 explicit fallbacks. Property correlations, degree skew within a label pair,
 mixed-direction undirected walks and uniqueness are still approximate.
 
-Initial release compilation into an empty target took 4m33s. With ordinary
-dependency cache reuse, the baseline source build took 2m11s and the final
-candidate source build 2m33s; example-only relinks took about one minute.
-These are local build observations, not CI or query execution speedups.
+After merging main, the refreshed baseline source build took 3m32s with
+ordinary dependency cache reuse. The candidate build in an empty, independent
+target directory took 4m45s. These are local build observations, not CI or
+query execution speedups. An attempted cross-source target-directory reuse
+returned the baseline plan and was rejected by the start assertion; that failed
+run is excluded from all measurements. Keep source variants in distinct Cargo
+target directories when replaying.
 
 ## Replay and limits
 
 From the candidate checkout:
 
 ```console
-cargo run --locked -j 2 --release --example optimizer_path_statistics
+CARGO_TARGET_DIR=/tmp/hawdb-cost-candidate-target cargo run --locked -j 2 --release --example optimizer_path_statistics
 ```
 
 For the source baseline, export the named revision to a separate directory,
 copy only the identical example there, and run from that baseline directory:
 
 ```console
-cargo run --locked -j 2 --release --example optimizer_path_statistics -- --expect-kept-start
+CARGO_TARGET_DIR=/tmp/hawdb-cost-baseline-target cargo run --locked -j 2 --release --example optimizer_path_statistics -- --expect-kept-start
 ```
 
 Preserve each binary before building the other source, then repeat the recorded

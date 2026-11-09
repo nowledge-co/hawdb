@@ -78,12 +78,8 @@ fn row_page_round_trip_is_exact() {
         page
     );
 
-    let slot = page.encode_slot(limits).unwrap();
-    assert_eq!(slot.len(), limits.max_page_bytes.get());
-    assert_eq!(
-        ImmutableRelationalRowPage::decode_slot(&slot, limits).unwrap(),
-        page
-    );
+    // Format v2 stores the exact encoded page; there is no padded slot.
+    assert_eq!(encoded.len() as u64, page.encoded_len(limits).unwrap());
 }
 
 #[test]
@@ -353,7 +349,7 @@ fn decoder_rejects_truncation_checksum_and_slot_corruption() {
 }
 
 #[test]
-fn decoder_rejects_false_key_bounds_and_non_zero_slot_tail() {
+fn decoder_rejects_false_key_bounds_and_bytes_past_the_exact_page() {
     let limits = RelationalRowPageLimits::default();
     let mut encoded = page().encode(limits).unwrap();
     encoded[ROW_PAGE_HEADER_BYTES] ^= 1;
@@ -364,12 +360,14 @@ fn decoder_rejects_false_key_bounds_and_non_zero_slot_tail() {
             if message.contains("bounds")
     ));
 
-    let mut slot = page().encode_slot(limits).unwrap();
-    *slot.last_mut().unwrap() = 1;
+    // A page is read by its exact descriptor length, so even a zero byte
+    // past it is a length mismatch rather than padding.
+    let mut extended = page().encode(limits).unwrap();
+    extended.push(0);
     assert!(matches!(
-        RelationalRowPageView::open_slot(&slot, limits),
+        RelationalRowPageView::open(&extended, limits),
         Err(RelationalRowPageError::Corrupt(message))
-            if message.contains("non-zero trailing bytes")
+            if message.contains("page length mismatch")
     ));
 }
 

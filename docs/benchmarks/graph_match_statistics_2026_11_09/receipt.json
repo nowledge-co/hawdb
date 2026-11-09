@@ -1,5 +1,6 @@
 {
-  "base_revision": "ab1330dcdb65ad5858897cdcf69b36def69ef350",
+  "base_revision": "eb596e50900d894eb8c9253d5f6b5c96d913f9d9",
+  "measurement_utc": "2026-11-09T15:41:03.318585+00:00",
   "build": "Rust 1.97.1; repository release profile; default Cargo features; -j 2",
   "platform": "macOS 27.0.1 (26A434), arm64",
   "process_order": [
@@ -9,8 +10,8 @@
     "baseline"
   ],
   "binary_sha256": {
-    "baseline": "cbd97afa326137c4861e7e3b8b24b9dd2a50b5c4cd8c402573d86992faca4862",
-    "candidate": "72ea44b613e5c915142be56bbd3b3266d5ebe363cfd70020aa2af6656dd28b07"
+    "baseline": "2584e7222cc49027401f9547e28f770fa6811448a895be370c2355dc1bf989a3",
+    "candidate": "b1677476af7fd913e3d938962ad8e3aee162074597e5b9449f64e9c655d443ac"
   },
   "candidate_source_sha256": {
     "crates/optimizer-graph/src/graph/costing.rs": "42e3eaacd5058bb76b41a1ce70e1c71d9ab34c6c4091db8c61e20d6bd38217d9",
@@ -19,8 +20,8 @@
     "examples/optimizer_path_statistics.rs": "91ec60a95e9f3abdb9c50922a929caa961ff8057ed4f3e75fc4e46c7d6e207dd"
   },
   "ordinary_plan_medians_ms": {
-    "baseline": 3.494958,
-    "candidate": 0.3706045
+    "baseline": 2.1272295000000003,
+    "candidate": 0.20425
   },
-  "ordinary_plan_speedup": 9.430425156737169
+  "ordinary_plan_speedup": 10.414832313341496
 }

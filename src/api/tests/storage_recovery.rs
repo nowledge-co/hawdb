@@ -409,6 +409,68 @@ fn forced_out_of_core_checkpoint_reopen_and_mutation_are_equivalent() {
 }
 
 #[test]
+fn out_of_core_sql_scan_admits_consecutive_pages_wider_than_the_writer_target() {
+    let path = unique_test_dir("wide_row_page_scan_budget");
+    let row_count = 20usize;
+    let property_count = 64usize;
+    let config = DatabaseConfig {
+        storage_residency_mode: StorageResidencyMode::OutOfCore,
+        segment_cache_capacity_bytes: 1024 * 1024,
+        max_read_result_rows: Some(row_count),
+        ..DatabaseConfig::default()
+    };
+    let property_definitions = (0..property_count)
+        .map(|index| format!("p{index} TEXT NOT NULL"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let property_names = (0..property_count)
+        .map(|index| format!("p{index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let property_parameters = (0..property_count)
+        .map(|index| format!("${}", index + 3))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let payload = "x".repeat(3_500);
+    {
+        let mut db = Database::open_with_config(&path, config.clone()).unwrap();
+        db.query_sql(&format!(
+            "CREATE TABLE wide_rows (id BIGINT PRIMARY KEY, marker TEXT NOT NULL, \
+             {property_definitions})"
+        ))
+        .unwrap();
+        let insert = format!(
+            "INSERT INTO wide_rows (id, marker, {property_names}) \
+             VALUES ($1, $2, {property_parameters})"
+        );
+        for id in 0..row_count {
+            let mut parameters = vec![
+                Value::Int(id as i64),
+                Value::String(if id + 1 == row_count { "hit" } else { "miss" }.into()),
+            ];
+            parameters.extend(
+                std::iter::repeat_with(|| Value::String(payload.clone())).take(property_count),
+            );
+            db.query_sql_with_params(&insert, &parameters).unwrap();
+        }
+        db.checkpoint().unwrap();
+        assert!(db.storage_residency_report().unwrap().out_of_core);
+    }
+
+    let db = Database::open_with_config(&path, config).unwrap();
+    let read = db.begin_read_transaction().unwrap();
+    let output = read
+        .query_sql_bounded("SELECT id FROM wide_rows WHERE marker = 'hit'", Some(1))
+        .unwrap();
+    assert_eq!(output.rows.len(), 1);
+    assert_eq!(output.rows[0]["id"], Value::Int((row_count - 1) as i64));
+
+    drop(read);
+    drop(db);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn query_reads_and_mutations_include_checkpointed_canonical_rows() {
     let path = unique_test_dir("out_of_core_typed_canonical_rows");
     let config = DatabaseConfig {
