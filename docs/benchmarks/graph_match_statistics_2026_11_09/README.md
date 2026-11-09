@@ -3,7 +3,9 @@
 This is a bounded optimizer experiment, not full LDBC or Mem acceptance.
 The baseline is `eb596e50900d894eb8c9253d5f6b5c96d913f9d9` plus the identical
 manual example from this change. Candidate production sources and both native
-binaries are identified by SHA-256 in [receipt.json](receipt.json).
+binaries are identified by SHA-256 in [receipt.json](receipt.json). The recorded
+candidate is `2856f90a2553bbf9afa310e665ac0299c1ab9e81`; later review fixes are
+qualified separately and are not covered by these historical source hashes.
 
 ## Motivation and existing benchmark evidence
 
@@ -76,8 +78,9 @@ the candidate's maintained two-hop count lowers the B estimate to 103.
 
 Query-ledger peaks are from the captured third round, not a total-process or
 planner-heap bound. Raw RSS/page-fault fields are retained but are not isolated
-memory comparisons. The patch introduces no retained statistics map, collector,
-sample budget or disk format; temporary costing state scales with the statement.
+memory comparisons. The cost fold introduces no retained statistics map,
+collector or sample budget; temporary costing state scales with the statement.
+The separate optional coverage/checkpoint metadata impact is described below.
 Unbounded/disjunctive/ambiguous shapes and hash/shortest-path programs retain
 explicit fallbacks. Property correlations, degree skew within a label pair,
 mixed-direction undirected walks and uniqueness are still approximate.
@@ -118,3 +121,9 @@ Full current-head LDBC timings, deployed Mem behavior, total RSS, cold persisten
 reads and cross-hardware calibration remain unverified. The candidate-proof
 work in PR #1604 is separate; this change uses the existing typed selected-plan
 qualification API and does not duplicate or depend on that PR.
+
+The recorded candidate precedes the failed-prefix costing correction. Its
+source fingerprints and timings qualify that historical revision, not later
+heads. The correction preserves positive planning rows and traversal work for
+zero-match paths; the positive-count fixture here does not measure that failure
+shape. Current review-fix qualification is recorded separately in the PR.

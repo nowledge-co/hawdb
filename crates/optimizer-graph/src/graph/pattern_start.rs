@@ -174,7 +174,7 @@ pub(super) fn walk_work(
     walk(catalog, nodes, edges, start).map(|estimate| estimate.work)
 }
 
-/// The estimated work of a walk and the complete matches it produces.
+/// The estimated work of a walk and its positive planning cardinality.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct WalkEstimate {
     pub(super) work: f64,
@@ -351,28 +351,6 @@ pub(super) fn expand_work(
     edge: &PathEdge<'_>,
     direction: RelationshipDirection,
 ) -> Option<WalkEstimate> {
-    let rows = fanout(catalog, from, to, edge, direction)?;
-    let work = if edge.equalities.is_empty() {
-        rows
-    } else {
-        let unfiltered = PathEdge {
-            equalities: Vec::new(),
-            values: Default::default(),
-            ..edge.clone()
-        };
-        fanout(catalog, from, to, &unfiltered, direction)?
-    };
-    Some(WalkEstimate { work, rows })
-}
-
-/// Matching paths per source row by one step walking `direction`.
-fn fanout(
-    catalog: &OptimizerCatalog,
-    from: &PathNode<'_>,
-    to: &PathNode<'_>,
-    edge: &PathEdge<'_>,
-    direction: RelationshipDirection,
-) -> Option<f64> {
     let rel_type = edge.rel_type?;
     let complete = catalog
         .bounded_path_complete_through_hop
@@ -382,6 +360,9 @@ fn fanout(
         || (catalog.path_counts.is_empty()
             && (!complete || direction == RelationshipDirection::Undirected))
     {
+        return None;
+    }
+    if edge.max_hops > MAX_ESTIMATED_HOPS {
         return None;
     }
     let paths = |source: &str, target: &str| {
@@ -413,42 +394,69 @@ fn fanout(
                 |estimate| estimate.rows.max(1) as f64 / rows as f64,
             )
     });
-    let one_hop = relationships / catalog.label_count(from.label) as f64 * selectivity;
-    if edge.min_hops == 1 && edge.max_hops == 1 {
-        return Some(one_hop);
+    let population = catalog.label_count(from.label) as f64;
+    let one_hop = relationships / population;
+    let fallback = if one_hop > 0.0 {
+        one_hop
+    } else {
+        // A missing endpoint pair says nothing about prefixes through other
+        // labels. Use the type population instead of inventing a free probe.
+        catalog.relationship_count(rel_type) as f64 / population
+    };
+    let hop_fanout = |hop: usize| {
+        if hop == 0 {
+            return (1.0, false);
+        }
+        let count = if hop == 1 {
+            Some(relationships)
+        } else {
+            match direction {
+                RelationshipDirection::Outgoing => catalog
+                    .bounded_path_count(from.label, rel_type, to.label, hop)
+                    .map(|count| count as f64),
+                RelationshipDirection::Incoming => catalog
+                    .bounded_path_count(to.label, rel_type, from.label, hop)
+                    .map(|count| count as f64),
+                RelationshipDirection::Undirected => None,
+            }
+        };
+        match count {
+            Some(count) if count > 0.0 => (count / population, false),
+            // Raw zero is snapshot evidence, not a generic planning multiplier.
+            // Keep a positive fallback until failed-prefix work is conditioned
+            // independently of the complete-match statistics.
+            Some(_) => (fallback.powi(hop as i32).max(1.0 / population), true),
+            None if one_hop > 0.0 => (one_hop.powi(hop as i32), false),
+            None => (fallback.powi(hop as i32).max(1.0 / population), false),
+        }
+    };
+    let mut rows = 0.0;
+    let mut work = 0.0;
+    let mut conservative = one_hop == 0.0;
+    for hop in edge.min_hops..=edge.max_hops {
+        let (candidates, fallback) = hop_fanout(hop);
+        let matches = candidates * selectivity.powi(hop as i32);
+        rows += if fallback { 1.0 / population } else { matches };
+        work += candidates;
+        conservative |= fallback;
     }
-    if edge.max_hops > MAX_ESTIMATED_HOPS {
-        return None;
+    if conservative && edge.max_hops > 0 {
+        // A failed walk still probes its source and visits shorter prefixes.
+        // Its first adjacency includes targets with other labels, which the
+        // final endpoint's label-pair count does not describe.
+        work += 1.0;
+        let first_hop =
+            (catalog.relationship_count(rel_type) as f64 / population).max(hop_fanout(1).0);
+        if edge.min_hops > 1 {
+            work += first_hop;
+            for hop in 2..edge.min_hops {
+                work += hop_fanout(hop).0;
+            }
+        } else {
+            work += (first_hop - hop_fanout(1).0).max(0.0);
+        }
     }
-    // Checkpoint counts describe homogeneous directed walks. An undirected
-    // walk can mix directions, so summing the two directed counts would miss
-    // those paths. Missing directed counts are zero only within a publisher's
-    // complete horizon; absent coverage and out-of-horizon hops keep the fallback.
-    Some(
-        (edge.min_hops..=edge.max_hops)
-            .map(|hop| {
-                let (source, target) = match direction {
-                    RelationshipDirection::Outgoing => (from.label, to.label),
-                    RelationshipDirection::Incoming => (to.label, from.label),
-                    RelationshipDirection::Undirected => {
-                        return one_hop.powi(hop as i32);
-                    }
-                };
-                if hop == 0 {
-                    return 1.0;
-                }
-                catalog
-                    .bounded_path_count(source, rel_type, target, hop)
-                    .map_or_else(
-                        || one_hop.powi(hop as i32),
-                        |count| {
-                            count as f64 / catalog.label_count(from.label) as f64
-                                * selectivity.powi(hop as i32)
-                        },
-                    )
-            })
-            .sum(),
-    )
+    Some(WalkEstimate { work, rows })
 }
 
 pub(super) fn node_selectivity(catalog: &OptimizerCatalog, node: &PathNode<'_>) -> f64 {

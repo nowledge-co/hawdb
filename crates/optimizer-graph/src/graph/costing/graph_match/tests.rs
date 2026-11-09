@@ -234,7 +234,67 @@ fn large_intermediates_saturate_without_turning_into_empty_estimates() {
 }
 
 #[test]
-fn complete_absent_hop_keeps_the_planning_floor_without_invented_expansion_work() {
+fn complete_absent_hop_charges_dense_and_sparse_dead_end_prefixes() {
+    for (a_count, b_count, first_hops) in [(100, 1_000, 5_000), (1_000, 1_000, 10)] {
+        for direction in [
+            RelationshipDirection::Outgoing,
+            RelationshipDirection::Incoming,
+        ] {
+            let mut program = program();
+            let mut catalog = catalog();
+            catalog.label_counts.insert("A".into(), a_count);
+            catalog.label_counts.insert("B".into(), b_count);
+            catalog.rel_type_counts.insert("R".into(), first_hops);
+            catalog
+                .rel_type_source_counts
+                .insert("R".into(), a_count.min(first_hops));
+            catalog
+                .path_counts
+                .insert(("A".into(), "R".into(), "B".into()), first_hops);
+            catalog
+                .bounded_path_counts
+                .insert(("A".into(), "R".into(), "B".into(), 1), first_hops);
+            catalog.bounded_path_complete_through_hop = Some(3);
+            let incoming = direction == RelationshipDirection::Incoming;
+            let (source_label, target_label, population) = if incoming {
+                ("B", "A", b_count)
+            } else {
+                ("A", "B", a_count)
+            };
+            program.steps[0] = GraphMatchStep::Node(node("a", source_label));
+            let GraphMatchStep::Expand {
+                target,
+                direction: current_direction,
+                min_hops,
+                max_hops,
+                ..
+            } = &mut program.steps[1]
+            else {
+                unreachable!()
+            };
+            *target = node("b", target_label);
+            *current_direction = direction;
+            *min_hops = 2;
+            *max_hops = 2;
+            // All R edges run A -> B, so both traversal orientations have
+            // first-hop prefixes but no two-hop completion.
+            assert_eq!(catalog.bounded_path_count("A", "R", "B", 2), Some(0));
+            let complete = cost(&program, &catalog);
+            assert_eq!(complete.estimated_rows, 1);
+            assert!(
+                complete.random_io > 2 * population + first_hops,
+                "{complete:?}"
+            );
+            let expand = catalog.estimate_expand_rows("A", "R", &BTreeMap::new(), "B", 2, 2);
+            assert!(expand.estimated_rows > 0);
+            assert!(expand.hop_estimates[1].rows >= first_hops);
+            assert!(!expand.hop_estimates[1].exact);
+        }
+    }
+}
+
+#[test]
+fn failed_prefixes_include_intermediate_labels_outside_the_endpoint_pair() {
     let mut program = program();
     let GraphMatchStep::Expand {
         min_hops, max_hops, ..
@@ -245,17 +305,24 @@ fn complete_absent_hop_keeps_the_planning_floor_without_invented_expansion_work(
     *min_hops = 2;
     *max_hops = 2;
     let mut catalog = catalog();
+    catalog.rel_type_counts.insert("R".into(), 10_000);
+    catalog.label_counts.insert("X".into(), 9_999);
+    catalog
+        .path_counts
+        .insert(("A".into(), "R".into(), "B".into()), 1);
+    catalog
+        .path_counts
+        .insert(("A".into(), "R".into(), "X".into()), 9_999);
     catalog
         .bounded_path_counts
-        .insert(("A".into(), "R".into(), "B".into(), 1), 500);
-    assert_eq!(cost(&program, &catalog).estimated_rows, 2_500);
+        .insert(("A".into(), "R".into(), "B".into(), 1), 1);
+    catalog
+        .bounded_path_counts
+        .insert(("A".into(), "R".into(), "X".into(), 1), 9_999);
     catalog.bounded_path_complete_through_hop = Some(3);
-    let complete = cost(&program, &catalog);
-    assert_eq!((complete.estimated_rows, complete.random_io), (1, 101));
-    let expand = catalog.estimate_expand_rows("A", "R", &BTreeMap::new(), "B", 2, 2);
-    assert_eq!(expand.estimated_rows, 1);
-    assert_eq!(expand.hop_estimates[1].rows, 0);
-    assert!(expand.hop_estimates[1].exact);
-    catalog.bounded_path_complete_through_hop = None;
-    assert!(cost(&program, &catalog).estimated_rows > 1);
+    // Every first hop dead-ends. The single A -> B edge does not describe
+    // the 9,999 additional A -> X prefixes inspected by the same traversal.
+    let estimate = cost(&program, &catalog);
+    assert_eq!(estimate.estimated_rows, 1);
+    assert!(estimate.random_io > 10_000 + 2 * 100, "{estimate:?}");
 }

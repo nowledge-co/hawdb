@@ -1343,10 +1343,15 @@ impl OptimizerCatalog {
         let mut hop_rows = one_hop.max(1);
         let mut hop_estimates = Vec::new();
         for hop in 1..=max_hops.clamp(1, MAX_ESTIMATED_HOPS) {
-            let exact_hop_rows = self.bounded_path_count(source_label, rel_type, target_label, hop);
+            // A zero match count does not erase the failed traversal work represented
+            // by this shared planning estimate. Preserve its conservative fallback.
+            let exact_hop_rows = self
+                .bounded_path_count(source_label, rel_type, target_label, hop)
+                .filter(|count| *count > 0);
             let current_hop_rows = exact_hop_rows
                 .unwrap_or(hop_rows)
-                .div_ceil(property_distinct_product);
+                .div_ceil(property_distinct_product)
+                .max(1);
             hop_estimates.push(HopEstimate {
                 hop,
                 rows: current_hop_rows,

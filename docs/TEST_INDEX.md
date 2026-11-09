@@ -504,7 +504,10 @@ Directed bounded-path estimates additionally cover heterogeneous intermediate
 labels, incoming reversal and the undirected mixed-direction fallback in
 `graph::pattern_start::tests`, including missing tuples in a complete horizon,
 empty complete maps, legacy/truncated coverage and out-of-horizon fallbacks.
-`graph::costing::graph_match::tests` owns
+Known-zero completions retain positive planning rows and charge dense/sparse
+failed prefixes and probes in both directions; relationship predicates cannot
+discount the unfiltered prefix work. These regressions replace the former
+zero-work expectation. `graph::costing::graph_match::tests` owns
 frequency-aware seed/expansion costs, actual seeded-union branches with shared
 input cost, imported input labels, bound endpoints, OPTIONAL cardinality floors
 and bounded fallback for unbounded/type-disjunctive paths. These use the existing
@@ -520,8 +523,8 @@ Bounded-path provenance follows the existing statistics lanes: storage
 budget-exhausted collection and retained copies; checkpoint metadata tests
 cover ordinary/cooperative byte parity, round-trip, duplicate rejection and
 legacy unknown coverage. Root `api::tests::statistics` covers external-refresh
-truncation, checkpoint/reopen and retaining runtime MATCH execution with the
-minimum-one planning floor. No lane, profile, timeout or fixture scope is removed.
+truncation, checkpoint/reopen and retaining runtime MATCH execution with a
+positive planning floor and charged visits to 64 dead-end first-hop edges. No lane, profile, timeout or fixture scope is removed.
 
 Early `GraphMatchExec` WHERE placement (#1424) is owned by optimizer
 `graph::lowering::match_predicates::tests` and root `api::tests::early_match_predicates`.

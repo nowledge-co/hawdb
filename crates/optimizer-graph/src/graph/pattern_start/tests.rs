@@ -176,7 +176,9 @@ fn complete_horizon_distinguishes_absent_paths_from_unknown_and_deeper_hops() {
     assert_eq!(walk(&catalog, &nodes, &edges, 0).unwrap(), unknown);
     catalog.bounded_path_complete_through_hop = Some(3);
     let complete = walk(&catalog, &nodes, &edges, 0).unwrap();
-    assert_eq!((complete.rows, complete.work), (0.0, 3_000.0));
+    assert_eq!(complete.rows, 1.0);
+    assert!(complete.work > unknown.work);
+    assert!(complete.work >= 2.0 * 3_000.0 + 24_000.0);
     edges[0].direction = Incoming;
     assert_eq!(walk(&catalog, &nodes, &edges, 0).unwrap(), complete);
     edges[0].direction = Undirected;
@@ -195,7 +197,7 @@ fn complete_horizon_distinguishes_absent_paths_from_unknown_and_deeper_hops() {
 }
 
 #[test]
-fn completed_empty_statistics_still_estimate_zero_paths() {
+fn completed_empty_statistics_keep_positive_planning_and_probe_estimates() {
     let mut catalog = catalog();
     catalog.path_counts.clear();
     catalog.bounded_path_counts.clear();
@@ -203,7 +205,9 @@ fn completed_empty_statistics_still_estimate_zero_paths() {
     let edges = [edge("KNOWS", Outgoing)];
     assert!(walk(&catalog, &nodes, &edges, 0).is_none());
     catalog.bounded_path_complete_through_hop = Some(3);
-    assert_eq!(walk(&catalog, &nodes, &edges, 0).unwrap().rows, 0.0);
+    let estimate = walk(&catalog, &nodes, &edges, 0).unwrap();
+    assert!(estimate.rows > 0.0);
+    assert!(estimate.work >= 2.0 * 3_000.0);
 }
 
 #[test]
@@ -287,4 +291,24 @@ fn reaching_a_bound_node_filters_and_incoming_steps_use_the_stored_orientation()
         walk_work(&catalog, &reversed, &incoming, 1),
         Some(7_500.0 + 7_500.0)
     );
+}
+
+#[test]
+fn dead_end_prefix_work_is_not_discounted_by_relationship_filters() {
+    let mut catalog = catalog();
+    catalog.bounded_path_complete_through_hop = Some(3);
+    catalog
+        .rel_property_distinct_counts
+        .insert(("KNOWS".into(), "flag".into()), 1_000);
+    let nodes = [node("a", "Person", &[]), node("b", "Person", &[])];
+    let mut edges = [PathEdge {
+        min_hops: 2,
+        max_hops: 2,
+        ..edge("KNOWS", Outgoing)
+    }];
+    let unfiltered = walk(&catalog, &nodes, &edges, 0).unwrap();
+    edges[0].equalities.push("flag");
+    let filtered = walk(&catalog, &nodes, &edges, 0).unwrap();
+    assert_eq!(filtered.rows, unfiltered.rows);
+    assert_eq!(filtered.work, unfiltered.work);
 }

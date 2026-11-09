@@ -32,13 +32,21 @@ does not describe them.
 
 `bounded_path_complete_through_hop` records a publisher's completed directed
 enumeration horizon. A missing tuple within that horizon is a zero in the
-statistics snapshot; it is not an invitation to square a positive one-hop
-fanout. Missing coverage (including truncated or legacy statistics) and hops
-outside the declared horizon keep the heuristic fallback. Explicit legacy
-counts remain usable estimates without establishing completeness for absent
-tuples. Intermediate counts/work may be zero; only the final planning
-cardinality keeps the minimum-one floor. This never substitutes an empty plan
-for runtime MATCH execution.
+statistics snapshot. Raw zero evidence is kept separate from positive planning
+cardinality and traversal work: a failed walk still probes its source and visits
+shorter prefixes. MATCH uses a minimum-one whole-label planning estimate for
+known-zero completions, while charging conservative unfiltered fanout plus the
+shorter prefixes and source probes. Failed first-hop work uses at least the
+relationship-type population per source-label row because intermediate nodes
+may have other labels, even when the final endpoint pair has a positive count. Relationship predicates do not discount those inspected
+prefixes. Generic adjacency costing retains its positive fanout fallback rather
+than multiplying its shared row/work estimate by zero.
+
+Missing coverage (including truncated or legacy statistics) and hops outside
+the declared horizon keep the heuristic fallback. Explicit legacy counts remain
+usable without establishing completeness for absent tuples. Prefix work and
+conditioning remain estimates, not exact physical read counts or empty-execution
+properties. No statistics snapshot substitutes an empty plan for runtime MATCH.
 
 Materialized collection, cooperative checkpoint collection and external
 refresh publish the horizon only after completing their bounded pass. Copies
