@@ -471,4 +471,93 @@ mod tests {
             assert_eq!(estimate, binding_memory_bytes(&output));
         }
     }
+
+    /// #1615: rows are charged from previews of their final shape before the
+    /// values are materialized. Across a sequence of row mutations every
+    /// preview must equal a full walk of the resulting row, and charging the
+    /// walked size through the ledger must settle to exactly zero.
+    #[test]
+    fn row_mutation_previews_equal_full_walks_and_settle_the_ledger() {
+        use crate::memory_ledger::{QueryMemoryClass, QueryMemoryLedger};
+        use std::num::NonZeroUsize;
+
+        let budget = NonZeroUsize::new(1 << 20).unwrap();
+        let ledger = QueryMemoryLedger::new(budget);
+        let account = ledger.account(QueryMemoryClass::PipelineBatch, "rows", budget);
+        let mut row = Binding {
+            values: BTreeMap::from([("id".to_string(), Value::Int(1))]),
+            nodes: BTreeMap::from([(
+                "n".to_string(),
+                NodeRecord {
+                    id: NodeId(1),
+                    labels: BTreeSet::from([LabelId(2)]),
+                    properties: BTreeMap::from([("name".into(), Value::String("ann".into()))]),
+                },
+            )])
+            .into(),
+            relationships: GraphSlots::new(),
+        };
+        let mut lease = account.reserve(binding_memory_bytes(&row)).unwrap();
+        let mut list = Vec::new();
+        let mut map = BTreeMap::new();
+        for step in 0..24usize {
+            // SET-like updates: overwrite, grow a list, grow a map, null out.
+            let (name, value) = match step % 4 {
+                0 => ("id", Value::String("x".repeat(step))),
+                1 => {
+                    list.push(Value::List(vec![Value::Int(step as i64); step % 3]));
+                    ("list", Value::List(list.clone()))
+                }
+                2 => {
+                    map.insert(format!("k{step}"), Value::String("v".repeat(step)));
+                    ("map", Value::Map(map.clone()))
+                }
+                _ => ("id", Value::Null),
+            };
+            let preview = binding_memory_bytes_replacing_value(&row, name, &value);
+            row.values.insert(name.to_string(), value);
+            let walked = binding_memory_bytes(&row);
+            assert_eq!(preview, walked, "step {step}: replacement");
+            // Re-charge the row to its walked size; the ledger tracks it exactly.
+            match walked.checked_sub(lease.bytes()) {
+                Some(growth) => lease.grow(growth).unwrap(),
+                None => lease.shrink(lease.bytes() - walked),
+            }
+            assert_eq!(ledger.snapshot().used_bytes, walked, "step {step}");
+
+            // Projection: keep a subset of columns plus a computed column.
+            let computed = Value::Map(BTreeMap::from([(
+                "wrapped".into(),
+                Value::List(list.clone()),
+            )]));
+            let projected: Vec<(&str, &Value)> = row
+                .values
+                .iter()
+                .filter(|(key, _)| key.as_str() != "id")
+                .map(|(key, value)| (key.as_str(), value))
+                .chain(std::iter::once(("computed", &computed)))
+                .collect();
+            let preview = binding_memory_bytes_with_values(&row, projected.iter().copied());
+            let mut materialized = row.clone();
+            materialized.values = projected
+                .iter()
+                .map(|(key, value)| (key.to_string(), (*value).clone()))
+                .collect();
+            assert_eq!(
+                preview,
+                binding_memory_bytes(&materialized),
+                "step {step}: projection"
+            );
+        }
+        // Drops: remove columns and the graph slot, then release the remainder.
+        for name in ["map", "list", "id"] {
+            row.values.remove(name);
+            lease.shrink(lease.bytes() - binding_memory_bytes(&row));
+            assert_eq!(ledger.snapshot().used_bytes, binding_memory_bytes(&row));
+        }
+        row.nodes.remove("n");
+        assert_eq!(binding_memory_bytes(&row), std::mem::size_of::<Binding>());
+        drop(lease);
+        assert_eq!(ledger.snapshot().used_bytes, 0);
+    }
 }

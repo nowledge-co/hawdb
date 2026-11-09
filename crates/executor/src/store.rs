@@ -51,7 +51,7 @@ pub struct PrunedNodeScan<'a> {
 struct QueryGraphReadAllocation {
     allocation: crate::QueryMemoryLease,
     task_context: Option<hawdb_core::RuntimeTaskContext>,
-    retained_state: Option<QueryMemoryAccount>,
+    retained_state: Option<std::sync::Arc<QueryMemoryAccount>>,
 }
 
 impl hawdb_storage::read_view::GraphReadAllocation for QueryGraphReadAllocation {
@@ -93,7 +93,7 @@ pub fn admit_graph_read(
     Ok(Box::new(QueryGraphReadAllocation {
         allocation: account.reserve(bytes)?,
         task_context: task_context.cloned(),
-        retained_state: account.retained_state().cloned(),
+        retained_state: account.retained_state_shared(),
     }))
 }
 

@@ -39,18 +39,18 @@ fn assert_hierarchy(ledger: &QueryMemoryLedger, expected: usize) {
     assert_eq!(
         state
             .accounts
-            .values()
+            .iter()
             .map(|entry| entry.used_bytes)
             .sum::<usize>(),
         expected
     );
-    for (class, entry) in &state.classes {
+    for (class, entry) in state.charged_classes() {
         assert_eq!(
             entry.used_bytes,
             state
                 .accounts
-                .values()
-                .filter(|account| account.class == *class)
+                .iter()
+                .filter(|account| account.class == class)
                 .map(|account| account.used_bytes)
                 .sum::<usize>()
         );
