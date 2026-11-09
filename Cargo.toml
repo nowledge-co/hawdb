@@ -17,6 +17,9 @@ exclude = [
   "/tests/pg-regress/**",
   "/crates/fuzz/**",
   "/crates/test-contracts/**",
+  # Python integration packages build from their own directories, outside the
+  # crates.io archive.
+  "/integrations/**",
   # Benchmark evidence stays in the repository, outside the crates.io archive.
   "/docs/benchmarks/**",
 ]
