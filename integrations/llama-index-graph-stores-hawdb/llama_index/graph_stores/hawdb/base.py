@@ -31,14 +31,17 @@ properties, so an upsert finds the nodes that changed without reading them
 back.
 
 The store reads over read snapshots, where HawDB refuses a statement whose
-result exceeds 64 MiB, so it reads nodes in pages. HawDB also refuses a
-transaction whose WAL record would exceed 16 MiB, or that would take more than
-100,000 mutation operations or version entries, so a large write or delete
-commits in several transactions. Each write statement the store runs takes
-time that grows with the stored graph, so each write transaction reads first
-and then writes its rows with as few statements as it can. The store builds
-its statements only from its own label, type and property names; LlamaIndex
-labels, ids, names, filter keys and values bind as parameters.
+result exceeds 64 MiB, so it reads nodes in pages. A statement that matches a
+relationship holds both its endpoints in one intermediate row, which HawDB
+refuses above 16 MiB, so the store refuses nodes and relations that would not
+fit. HawDB also refuses a transaction whose WAL record would exceed 16 MiB, or
+that would take more than 100,000 mutation operations or version entries, so a
+large write or delete commits in several transactions. Each write statement
+the store runs takes time that grows with the stored graph, so each write
+transaction reads first and then writes its rows with as few statements as it
+can. The store builds its statements only from its own label, type and
+property names; LlamaIndex labels, ids, names, filter keys and values bind as
+parameters.
 """
 
 from __future__ import annotations
@@ -69,26 +72,38 @@ RELATION_TYPE = "__REL__"
 ENTITY_KIND = "entity"
 CHUNK_KIND = "chunk"
 
-# ``json_value`` reads at most 1 MiB of JSON per document.
-MAX_PROPERTIES_BYTES = 1 << 20
-
-# ``get`` sizes each node with one expression over its id, kind, label, name,
-# text and properties, and HawDB refuses an expression whose string functions
-# read more than 10,000,000 bytes. So a chunk's text holds at most 8 MiB of
-# UTF-8, and a node's id and label, or a relation's endpoint ids, at most
-# 64 KiB each; an entity's name is its id, and an endpoint becomes an entity
-# named by its id. With 1 MiB of properties, a chunk then sizes at most
-# 9,568,261 bytes.
-MAX_TEXT_BYTES = 8 << 20
+# HawDB refuses an intermediate row of more than 16 MiB. A statement that
+# matches a relationship holds both endpoints, with every value they store,
+# and the relationship in one row, and ``get_triplets`` also returns the id,
+# kind, label, name and properties of both endpoints and the label and
+# properties of the relation in that row. So the store refuses:
+#
+# - a node whose id, label, name, text and properties take more than
+#   MAX_NODE_BYTES of UTF-8, counting four bytes per embedding coordinate;
+# - a node id or label, or a relation label or endpoint id, of more than
+#   MAX_FIELD_BYTES of UTF-8. An entity's name is its id, and an endpoint
+#   becomes an entity named by its id;
+# - node or relation properties of more than MAX_PROPERTIES_BYTES of JSON,
+#   the most ``json_value`` reads.
+#
+# A node also stores its kind, a digest and indexed copies of at most 1 MiB of
+# its properties, so such a row holds at most 2 * (4 MiB + 1 MiB) for the
+# endpoints, 2 * (3 * 64 KiB + 1 MiB) for their columns and
+# 2 * (64 KiB + 1 MiB) for the relation, 14.5 MiB, and a few kilobytes more
+# for kinds, digests and property names. The expression by which ``get`` sizes
+# a node then also reads less than the 10,000,000 bytes HawDB lets the string
+# functions of one expression read.
+MAX_NODE_BYTES = 4 << 20
 MAX_FIELD_BYTES = 64 << 10
+MAX_PROPERTIES_BYTES = 1 << 20
 
 # A read by id takes at most this many ids per statement.
 _PAGE_SIZE = 500
 
 # A page of nodes read back holds at most this many characters of ids, kinds,
 # labels, names, text and properties, at most 8 MiB of UTF-8, inside the 64 MiB
-# a statement in a read snapshot may return. A larger node takes a page of its
-# own.
+# a statement in a read snapshot may return. A larger node, of at most
+# MAX_NODE_BYTES, takes a page of its own.
 _PAGE_CHARACTERS = 1 << 21
 
 # HawDB logs a transaction as one WAL record of at most 16 MiB. A write that
@@ -157,6 +172,9 @@ _NODE_SIZE = (
     "coalesce(size(n.text), 0) + coalesce(size(n.properties), 0)"
 )
 _NODES_BY_ID = f"MATCH (n:__Node__) WHERE n.id IN $ids RETURN {_NODE_COLUMNS}"
+_NODE_SIZES_BY_ID = (
+    f"MATCH (n:__Node__) WHERE n.id IN $ids RETURN n.id AS id, {_NODE_SIZE} AS size"
+)
 _STORED_DIGESTS = (
     "MATCH (n:__Node__) WHERE n.id IN $ids RETURN n.id AS id, n.digest AS digest"
 )
@@ -197,18 +215,17 @@ _TRIPLET_COLUMNS = (
     "t.text AS t_text, t.properties AS t_properties"
 )
 # One breadth-first hop. Relationships to nodes expanded by an earlier hop were
-# returned by that hop, so only the ones leading elsewhere come back.
+# returned by that hop, so only the ones leading elsewhere come back. The match
+# already holds both endpoints in its intermediate row, where their returned
+# text and properties would take their size again, so a hop returns only the
+# relation and the ids of its ends, and ``get_rel_map`` reads the endpoints
+# afterwards in pages.
 _REL_MAP_HOP = (
     "MATCH (a:__Node__)-[r:__REL__]-(o:__Node__) "
     "WHERE a.id IN $frontier AND NOT o.id IN $expanded AND NOT r.label IN $ignore "
-    "RETURN startNode(r).id AS s_id, startNode(r).kind AS s_kind, "
-    "startNode(r).label AS s_label, startNode(r).name AS s_name, "
-    "startNode(r).text AS s_text, startNode(r).properties AS s_properties, "
-    "r.label AS r_label, r.properties AS r_properties, "
-    "endNode(r).id AS t_id, endNode(r).kind AS t_kind, "
-    "endNode(r).label AS t_label, endNode(r).name AS t_name, "
-    "endNode(r).text AS t_text, endNode(r).properties AS t_properties, "
-    "o.id AS next_id LIMIT $limit"
+    "RETURN startNode(r).id AS s_id, r.label AS r_label, "
+    "r.properties AS r_properties, endNode(r).id AS t_id, o.id AS next_id "
+    "LIMIT $limit"
 )
 
 # The nodes a delete filter selects, each with the number of its relationships
@@ -272,18 +289,19 @@ class HawDBPropertyGraphStore(PropertyGraphStore):
     database is used on another thread, which is what creating the store, or
     using ``client``, on another thread raises.
 
-    ``upsert_nodes`` replaces a stored node with the same id. It refuses a node
-    whose id or label exceeds ``MAX_FIELD_BYTES`` of UTF-8, a chunk whose text
-    exceeds ``MAX_TEXT_BYTES`` or a node whose properties exceed
-    ``MAX_PROPERTIES_BYTES`` of JSON, so that ``get`` can read every node back.
-    ``upsert_relations`` creates missing endpoints as entities named by their id,
-    and refuses an endpoint id over ``MAX_FIELD_BYTES``. It keeps a relation
-    that already exists with the same source, label and target, as
-    ``SimplePropertyGraphStore`` does. A write call is one
-    transaction unless it would exceed about 8 MiB of HawDB's 16 MiB WAL record
-    or 10,000 nodes or relations; then it commits in several transactions, each
-    holding whole nodes or relations, and a failure can leave the earlier ones
-    written.
+    ``upsert_nodes`` replaces a stored node with the same id. So that every read
+    can hold a node next to a related one, it refuses a node whose id, label,
+    name, text, properties and embedding take more than ``MAX_NODE_BYTES``,
+    whose id or label exceeds ``MAX_FIELD_BYTES`` of UTF-8, or whose properties
+    exceed ``MAX_PROPERTIES_BYTES`` of JSON. ``upsert_relations`` creates
+    missing endpoints as entities named by their id, and refuses a label or
+    endpoint id over ``MAX_FIELD_BYTES`` or properties over
+    ``MAX_PROPERTIES_BYTES``. It keeps a relation that already exists with the
+    same source, label and target, as ``SimplePropertyGraphStore`` does. A
+    write call is one transaction unless it would exceed about 8 MiB of HawDB's
+    16 MiB WAL record or 10,000 nodes or relations; then it commits in several
+    transactions, each holding whole nodes or relations, and a failure can
+    leave the earlier ones written.
 
     Property filters compare the member with ``=``, so a key must name a JSON
     field (ASCII letters, digits, ``_`` or ``-``) and a value must be a string,
@@ -339,7 +357,6 @@ class HawDBPropertyGraphStore(PropertyGraphStore):
             predicates.extend(_property_predicates(properties, "n", params))
         where = f" WHERE {' AND '.join(predicates)}" if predicates else ""
         select = f"MATCH (n:__Node__){where} RETURN n.id AS id, {_NODE_SIZE} AS size"
-        nodes: list[LabelledNode] = []
         with self._database().read_transaction() as snapshot:
             if ids is None:
                 matches = snapshot.execute(select, params).fetchall()
@@ -349,10 +366,7 @@ class HawDBPropertyGraphStore(PropertyGraphStore):
                     for page in _pages(list(dict.fromkeys(ids)))
                     for match in snapshot.execute(select, {**params, "ids": page})
                 ]
-            for page in _node_pages(matches):
-                rows = snapshot.execute(_NODES_BY_ID, {"ids": page}).fetchall()
-                nodes.extend(_node(row, "") for row in rows)
-        return nodes
+            return [node for _, node in _read_nodes(snapshot, matches)]
 
     def get_triplets(
         self,
@@ -404,18 +418,20 @@ class HawDBPropertyGraphStore(PropertyGraphStore):
     ) -> list[Triplet]:
         """Get up to ``limit`` relations within ``depth`` hops of the nodes.
 
-        The search runs one statement per hop over one read snapshot, follows
+        Over one read snapshot, the search runs one statement per hop, follows
         relations in both directions and skips the labels in ``ignore_rels``.
+        A hop returns the relations and the ids of their endpoints, and the
+        store then reads the endpoints in pages, as ``get`` reads nodes.
         """
         frontier = list(dict.fromkeys(node.id for node in graph_nodes))
         ignore = list(ignore_rels or [])
-        triplets: list[Triplet] = []
+        relations: list[Relation] = []
         seen: set[tuple[str, str, str]] = set()
         expanded: set[str] = set()
         database = self._database()
         with database.read_transaction() as snapshot:
             for _ in range(depth):
-                remaining = limit - len(triplets)
+                remaining = limit - len(relations)
                 if not frontier or remaining <= 0:
                     break
                 # Each relationship comes back at most twice, once from each
@@ -433,13 +449,27 @@ class HawDBPropertyGraphStore(PropertyGraphStore):
                 next_frontier: dict[str, None] = {}
                 for row in rows:
                     key = (row["s_id"], row["r_label"], row["t_id"])
-                    if key not in seen and len(triplets) < limit:
+                    if key not in seen and len(relations) < limit:
                         seen.add(key)
-                        triplets.append(_triplet(row))
+                        relations.append(_relation(row))
                     if row["next_id"] not in expanded:
                         next_frontier[row["next_id"]] = None
                 frontier = list(next_frontier)
-        return triplets
+            endpoints = dict.fromkeys(
+                end
+                for relation in relations
+                for end in (relation.source_id, relation.target_id)
+            )
+            matches = [
+                match
+                for page in _pages(list(endpoints))
+                for match in snapshot.execute(_NODE_SIZES_BY_ID, {"ids": page})
+            ]
+            nodes = dict(_read_nodes(snapshot, matches))
+        return [
+            (nodes[relation.source_id], relation, nodes[relation.target_id])
+            for relation in relations
+        ]
 
     def upsert_nodes(self, nodes: Sequence[LabelledNode]) -> None:
         """Store the nodes, replacing a stored node with the same id.
@@ -483,11 +513,12 @@ class HawDBPropertyGraphStore(PropertyGraphStore):
         for relation in relations:
             key = (relation.source_id, relation.label, relation.target_id)
             if key not in rows:
-                for end, endpoint in (
-                    ("source", relation.source_id),
-                    ("target", relation.target_id),
+                for what, value in (
+                    ("source id", relation.source_id),
+                    ("label", relation.label),
+                    ("target id", relation.target_id),
                 ):
-                    _check_field(endpoint, f"{end} id of relation {_brief(key)}")
+                    _check_field(value, f"{what} of relation {_brief(key)}")
                 rows[key] = {
                     "source": relation.source_id,
                     "label": relation.label,
@@ -773,6 +804,15 @@ def _node_pages(matches: list[dict[str, Any]]) -> Iterator[list[str]]:
         yield page
 
 
+def _read_nodes(
+    snapshot: hawdb.ReadTransaction, matches: list[dict[str, Any]]
+) -> Iterator[tuple[str, LabelledNode]]:
+    """Read the matched nodes in pages, each with the id it is stored under."""
+    for page in _node_pages(matches):
+        for row in snapshot.execute(_NODES_BY_ID, {"ids": page}).fetchall():
+            yield row["id"], _node(row, "")
+
+
 def _property_predicates(
     properties: dict, variable: str, params: dict[str, Any]
 ) -> list[str]:
@@ -808,14 +848,20 @@ def _property_predicates(
 
 def _dump(properties: dict, what: str, key: object) -> str:
     try:
-        return json.dumps(
+        document = json.dumps(
             properties, ensure_ascii=False, allow_nan=False, separators=(",", ":")
         )
     except (TypeError, ValueError) as error:
         raise ValueError(
-            f"properties of {what} {key!r} must be JSON without NaN or infinity: "
-            f"{error}"
+            f"properties of {what} {_brief(key)} must be JSON without NaN or "
+            f"infinity: {error}"
         ) from error
+    if len(document.encode()) > MAX_PROPERTIES_BYTES:
+        raise ValueError(
+            f"properties of {what} {_brief(key)} exceed the "
+            f"{MAX_PROPERTIES_BYTES} bytes json_value reads"
+        )
+    return document
 
 
 def _check_field(value: str | None, what: str) -> None:
@@ -853,11 +899,6 @@ def _node_row(node: LabelledNode) -> dict[str, Any]:
         kind, name, text = ENTITY_KIND, node.name, None
     elif isinstance(node, ChunkNode):
         kind, name, text = CHUNK_KIND, None, node.text
-        if len(text.encode()) > MAX_TEXT_BYTES:
-            raise ValueError(
-                f"text of chunk {node.id!r} exceeds the {MAX_TEXT_BYTES} bytes "
-                "the store reads back"
-            )
     else:
         raise TypeError(
             "HawDBPropertyGraphStore stores EntityNode and ChunkNode, "
@@ -867,12 +908,18 @@ def _node_row(node: LabelledNode) -> dict[str, Any]:
     _check_field(node.id, f"id of node {_brief(node.id)}")
     _check_field(node.label, f"label of node {_brief(node.id)}")
     properties = _dump(node.properties, "node", node.id)
-    if len(properties.encode()) > MAX_PROPERTIES_BYTES:
-        raise ValueError(
-            f"properties of node {node.id!r} exceed the {MAX_PROPERTIES_BYTES} "
-            "bytes json_value reads"
-        )
     embedding, stored_embedding = _embedding(node)
+    size = len(stored_embedding) + sum(
+        len(value.encode())
+        for value in (node.id, node.label, name, text, properties)
+        if value is not None
+    )
+    if size > MAX_NODE_BYTES:
+        raise ValueError(
+            f"node {_brief(node.id)} takes {size} bytes, more than the "
+            f"{MAX_NODE_BYTES} bytes of id, label, name, text, properties and "
+            "embedding the store reads back"
+        )
     row = {
         "id": node.id,
         "kind": kind,
@@ -924,14 +971,17 @@ def _node(row: dict[str, Any], prefix: str) -> LabelledNode:
     )
 
 
-def _triplet(row: dict[str, Any]) -> Triplet:
-    relation = Relation(
+def _relation(row: dict[str, Any]) -> Relation:
+    return Relation(
         label=row["r_label"],
         source_id=row["s_id"],
         target_id=row["t_id"],
         properties=_load(row["r_properties"]),
     )
-    return (_node(row, "s_"), relation, _node(row, "t_"))
+
+
+def _triplet(row: dict[str, Any]) -> Triplet:
+    return (_node(row, "s_"), _relation(row), _node(row, "t_"))
 
 
 def _sorted_labels(rows: list[dict[str, Any]], kind: str) -> list[str]:

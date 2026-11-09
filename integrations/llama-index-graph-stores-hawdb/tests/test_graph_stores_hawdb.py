@@ -49,8 +49,8 @@ from llama_index.graph_stores.hawdb import (
 )
 from llama_index.graph_stores.hawdb.base import (
     MAX_FIELD_BYTES,
+    MAX_NODE_BYTES,
     MAX_PROPERTIES_BYTES,
-    MAX_TEXT_BYTES,
 )
 
 
@@ -313,6 +313,19 @@ def test_entity_names_match_names_rather_than_ids(store):
     ]
     store.delete(entity_names=['say "hi"'])
     assert ids(store.get()) == ["Bob"]
+
+    # An endpoint created from a relation keeps the '"' in its id, which the
+    # EntityNode read back replaces, so get_rel_map finds the endpoints it reads
+    # by the ids they are stored under.
+    store.upsert_relations(
+        [Relation(label="Q", source_id='new "one"', target_id="Bob")]
+    )
+    [(source, relation, target)] = store.get_rel_map([EntityNode(name="Bob")])
+    assert (source.name, relation.source_id, target.id) == (
+        'new "one"',
+        'new "one"',
+        "Bob",
+    )
 
 
 def test_upsert_relations_creates_endpoints_and_keeps_existing_relations(store):
@@ -732,6 +745,21 @@ def test_reads_split_into_pages_and_writes_into_transactions(store, monkeypatch)
     assert len(store.get_triplets()) == 5
     assert (len(recording.reads), recording.autocommit) == (1, [])
 
+    # get_rel_map runs one statement per hop, then sizes the six endpoints and
+    # reads them in pages of two.
+    recording.clear()
+    assert keys(store.get_rel_map([EntityNode(name="e0")], depth=5)) == [
+        *(("e" + str(i), "R", "e" + str(i + 1)) for i in range(4)),
+        ("e4", "R", "new"),
+    ]
+    assert (
+        recording.reads
+        == [base._REL_MAP_HOP] * 5
+        + [base._NODE_SIZES_BY_ID] * 3
+        + [base._NODES_BY_ID] * 3
+    )
+    assert (recording.transactions, recording.autocommit) == ([], [])
+
     store.upsert_nodes(
         [
             ChunkNode(text="v2" * 15, id_=f"c{i}", properties={"ref_doc_id": "doc"})
@@ -859,41 +887,121 @@ def test_get_pages_count_ids_labels_and_names(tmp_path, monkeypatch, backend):
         assert content(store.get()) == content(chunks + entities)
 
 
-def test_nodes_hold_at_most_what_get_can_size(store):
-    # get sizes each node with one expression over its id, kind, label, name,
-    # text and properties, and HawDB refuses an expression whose string
-    # functions read more than 10,000,000 bytes.
-    blob = "x" * (MAX_PROPERTIES_BYTES - len('{"blob":""}'))
-    widest = "i" * MAX_FIELD_BYTES
-    store.upsert_nodes(
-        [
-            ChunkNode(
-                text="a" * MAX_TEXT_BYTES,
-                id_=widest,
-                label="L" * MAX_FIELD_BYTES,
-                properties={"blob": blob},
-            ),
-            ChunkNode(text="漢" * (MAX_TEXT_BYTES // 3), id_="cjk"),
-            EntityNode(
-                name="n" * MAX_FIELD_BYTES,
-                label="E" * MAX_FIELD_BYTES,
-                properties={"blob": blob},
-            ),
-        ]
+def _filled(prefix: str, char: str, size: int) -> str:
+    return prefix + char * (size - len(prefix))
+
+
+def _content(node: LabelledNode) -> tuple:
+    return (
+        type(node).__name__,
+        node.id,
+        node.label,
+        getattr(node, "text", None),
+        node.properties,
     )
-    assert sorted(
-        (len(node.id), len(node.label), len(getattr(node, "text", "")))
-        for node in store.get()
-    ) == [
-        (3, len("text_chunk"), MAX_TEXT_BYTES // 3),
-        (MAX_FIELD_BYTES, MAX_FIELD_BYTES, 0),
-        (MAX_FIELD_BYTES, MAX_FIELD_BYTES, MAX_TEXT_BYTES),
-    ]
-    # The limit counts UTF-8 bytes, and a refused chunk fails the whole call.
-    for text in ("a" * (MAX_TEXT_BYTES + 1), "漢" * (MAX_TEXT_BYTES // 3 + 1)):
-        with pytest.raises(ValueError, match="text of chunk 'big'"):
-            store.upsert_nodes([EntityNode(name="ok"), ChunkNode(text=text, id_="big")])
-    assert ids(store.get()) == sorted(["cjk", widest, "n" * MAX_FIELD_BYTES])
+
+
+def _triplet_content(triplets) -> list[tuple]:
+    return sorted(
+        (
+            _content(source),
+            (relation.label, relation.source_id, relation.target_id),
+            relation.properties,
+            _content(target),
+        )
+        for source, relation, target in triplets
+    )
+
+
+def test_every_read_holds_the_widest_nodes_and_relations(store):
+    # A statement that matches a relationship holds both endpoints, with every
+    # value they store, in one intermediate row of at most 16 MiB, and
+    # get_triplets also returns their columns in that row. These nodes take
+    # all of MAX_NODE_BYTES, with the longest ids, labels and properties, a
+    # property the store also keeps as an indexed copy, and in the entities an
+    # embedding of four bytes per coordinate. The relations have the longest
+    # labels and properties.
+    copied = {
+        TRIPLET_SOURCE_KEY: "s"
+        * (MAX_PROPERTIES_BYTES - len(f'{{"{TRIPLET_SOURCE_KEY}":""}}'))
+    }
+    text = "t" * (MAX_NODE_BYTES - 2 * MAX_FIELD_BYTES - MAX_PROPERTIES_BYTES)
+    c0, c1 = (
+        ChunkNode(
+            id_=_filled(f"c{i}", "i", MAX_FIELD_BYTES),
+            label="L" * MAX_FIELD_BYTES,
+            text=text,
+            properties=copied,
+        )
+        for i in range(2)
+    )
+    dimensions = (MAX_NODE_BYTES - 3 * MAX_FIELD_BYTES - MAX_PROPERTIES_BYTES) // 4
+    e0, e1 = (
+        EntityNode(
+            name=_filled(f"e{i}", "n", MAX_FIELD_BYTES),
+            label="E" * MAX_FIELD_BYTES,
+            properties=copied,
+            embedding=[0.5] * dimensions,
+        )
+        for i in range(2)
+    )
+    next_, mentions, knows = (
+        Relation(
+            label=_filled(label, "R", MAX_FIELD_BYTES),
+            source_id=source.id,
+            target_id=target.id,
+            properties={"blob": "b" * (MAX_PROPERTIES_BYTES - len('{"blob":""}'))},
+        )
+        for label, source, target in (
+            ("NEXT", c0, c1),
+            ("MENTIONS", e0, c0),
+            ("KNOWS", e0, e1),
+        )
+    )
+    store.upsert_nodes([c0, c1, e0, e1])
+    store.upsert_relations([next_, mentions, knows])
+
+    assert sorted(map(_content, store.get())) == sorted(map(_content, [c0, c1, e0, e1]))
+    everything = [(c0, next_, c1), (e0, mentions, c0), (e0, knows, e1)]
+    assert _triplet_content(store.get_rel_map([e0], depth=2)) == _triplet_content(
+        everything
+    )
+    assert _triplet_content(store.get_rel_map([c1], depth=1)) == _triplet_content(
+        [(c0, next_, c1)]
+    )
+    assert _triplet_content(store.get_triplets()) == _triplet_content([(e0, knows, e1)])
+    assert store.get_schema(refresh=True)["relations"] == sorted(
+        (
+            {"source": source.label, "label": relation.label, "target": target.label}
+            for source, relation, target in everything
+        ),
+        key=lambda item: (item["source"], item["label"], item["target"]),
+    )
+    store.delete(relation_names=[next_.label])
+    assert _triplet_content(store.get_rel_map([c0], depth=1)) == _triplet_content(
+        [(e0, mentions, c0)]
+    )
+
+    # One byte more is refused before anything is written. The limit counts
+    # UTF-8 bytes: the CJK text has fewer characters than the ASCII one.
+    for node in (
+        ChunkNode(text=text + "t", id_=c0.id, label=c0.label, properties=copied),
+        ChunkNode(
+            text="漢" * (len(text) // 3 + 1),
+            id_=c0.id,
+            label=c0.label,
+            properties=copied,
+        ),
+        EntityNode(
+            name=e0.name,
+            label=e0.label,
+            properties=copied,
+            embedding=[0.5] * (dimensions + 1),
+        ),
+    ):
+        with pytest.raises(ValueError, match=f"more than the {MAX_NODE_BYTES} bytes"):
+            store.upsert_nodes([EntityNode(name="ok"), node])
+    assert sorted(map(_content, store.get())) == sorted(map(_content, [c0, c1, e0, e1]))
 
 
 def test_rejected_nodes_write_nothing(store, monkeypatch):
@@ -931,12 +1039,12 @@ def test_rejected_nodes_write_nothing(store, monkeypatch):
     ):
         with pytest.raises(ValueError, match=f"exceeds the {MAX_FIELD_BYTES} bytes"):
             store.upsert_nodes([EntityNode(name="ok"), node])
-    for source, target in ((over, "b"), ("a", cjk)):
+    for source, label, target in ((over, "R", "b"), ("a", cjk, "b"), ("a", "R", cjk)):
         with pytest.raises(ValueError, match=f"exceeds the {MAX_FIELD_BYTES} bytes"):
             store.upsert_relations(
                 [
                     Relation(label="R", source_id="a", target_id="b"),
-                    Relation(label="R", source_id=source, target_id=target),
+                    Relation(label=label, source_id=source, target_id=target),
                 ]
             )
     with pytest.raises(ValueError, match="NaN"):
@@ -946,12 +1054,16 @@ def test_rejected_nodes_write_nothing(store, monkeypatch):
                 EntityNode(name="bad", properties={"score": float("nan")}),
             ]
         )
-    with pytest.raises(ValueError, match="exceed"):
+    blob = {"blob": "x" * MAX_PROPERTIES_BYTES}
+    with pytest.raises(ValueError, match=f"exceed the {MAX_PROPERTIES_BYTES} bytes"):
         store.upsert_nodes(
+            [EntityNode(name="ok"), ChunkNode(text="t", id_="big", properties=blob)]
+        )
+    with pytest.raises(ValueError, match=f"exceed the {MAX_PROPERTIES_BYTES} bytes"):
+        store.upsert_relations(
             [
-                ChunkNode(
-                    text="t", id_="big", properties={"blob": "x" * MAX_PROPERTIES_BYTES}
-                )
+                Relation(label="R", source_id="a", target_id="b"),
+                Relation(label="R", source_id="c", target_id="d", properties=blob),
             ]
         )
     with pytest.raises(ValueError, match="JSON"):

@@ -111,9 +111,10 @@ rows = graph_store.structured_query(
 
 The store reads every `__Node__` and `__REL__` as its own. If your Cypher
 creates any, give each node a string `id`, each relationship a string `label`,
-and any `properties` a JSON object, and keep at most one relationship of a
-label from one node to another, as `upsert_relations` does. Otherwise reads
-can fail, or `get_rel_map` can return fewer than `limit` relations.
+and any `properties` a JSON object, keep them within the sizes under
+[Limits](#limits), and keep at most one relationship of a label from one node
+to another, as `upsert_relations` does. Otherwise reads can fail, or
+`get_rel_map` can return fewer than `limit` relations.
 
 `get_schema_str()` and `aget_schema_str()` describe this layout and the stored
 labels for a text-to-Cypher prompt.
@@ -210,21 +211,27 @@ leaks this way keeps no files open.
   fails once it matches about 1.3 million nodes. Given ids or names, they
   select 500 at a time. `get` reads the nodes in pages of at most 500 nodes
   and 2 million characters of their ids, labels, names, text and properties.
-  A page holds at most 8 MiB of UTF-8, or one node of at most about 9.6 MB,
-  so a limit of 10 MiB or more holds every page. `get_triplets` returns its
-  result from one statement: within 64 MiB, an unfiltered `get_triplets()`
-  returns about 440,000 relations with short names and empty properties.
-  `get_rel_map` runs one statement per hop, each returning at most twice
-  `limit` rows.
+  A page holds at most 8 MiB of UTF-8, so a limit of 9 MiB or more holds
+  every page. `get_triplets` returns its result from one statement: within
+  64 MiB, an unfiltered `get_triplets()` returns about 440,000 relations with
+  short names and empty properties. `get_rel_map` runs one statement per hop,
+  each returning at most twice `limit` rows of ids, labels and relation
+  properties, and then reads the endpoints in pages, as `get` does. At the
+  size limits below, a hop row takes up to about 1.25 MiB, so a hop can
+  exceed 64 MiB from a `limit` of 26.
 - `structured_query` runs in autocommit, where HawDB refuses a result that
   needs more than its query memory, 16 MiB by default, with
   `ResourceBudgetError`; the Python binding does not expose that setting. For
   a large read, run the query in `graph_store.client.read_transaction()`.
-- `get` sizes each node with one `size()` expression over its id, label,
-  name, text and properties, and HawDB refuses an expression whose string
-  functions read more than 10,000,000 bytes. So the store refuses a chunk
-  whose text exceeds 8 MiB of UTF-8, and a node whose id or label, or a
-  relation whose endpoint id, exceeds 64 KiB; an entity's id is its name.
+- A statement that matches a relationship holds both its endpoints, with
+  every value they store, and the relationship in one intermediate row, and
+  `get_triplets` also returns the columns of both endpoints in that row.
+  HawDB refuses a row above 16 MiB, and the Python binding does not expose
+  that setting. So the store refuses a node whose id, label, name, text and
+  properties take more than 4 MiB of UTF-8, counting 4 bytes per embedding
+  coordinate; a node id or label, or a relation label or endpoint id, above
+  64 KiB, where an entity's id is its name; and relation properties above
+  1 MiB of JSON. Such a row then holds at most about 14.5 MiB.
 - Filters on `triplet_source_id` and `ref_doc_id` use their indexes. Filters on
   other keys read the JSON with `json_value`, so the store refuses node
   properties above 1 MiB of JSON, the most `json_value` reads. Such a filter
