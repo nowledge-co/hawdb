@@ -241,6 +241,19 @@ fn rewrite_bottom_up(plan: LogicalPlan, events: &mut Vec<RuleEvent>) -> LogicalP
             limit,
             input: Box::new(rewrite_bottom_up(*input, events)),
         },
+        // UNWIND of a row expression consumes its input unchanged; rewrites
+        // below it (filter pushdown into the source scan, for example) must
+        // still run, or `WITH collect(..) AS xs UNWIND xs AS x` hides an
+        // indexable start from the rest of the optimizer.
+        LogicalPlan::UnwindRows {
+            expression,
+            variable,
+            input,
+        } => LogicalPlan::UnwindRows {
+            expression,
+            variable,
+            input: Box::new(rewrite_bottom_up(*input, events)),
+        },
         leaf => leaf,
     };
 
@@ -1307,6 +1320,43 @@ mod tests {
                 }),
             }
         );
+    }
+
+    /// `WITH collect(..) AS xs UNWIND xs AS x` must not hide the plan below
+    /// the UNWIND from the rewrites: the source filter still moves below the
+    /// expansion, where lowering can turn it into an index seek (#1606).
+    #[test]
+    fn rewrites_run_below_unwind_rows() {
+        let source = property_eq(1);
+        let plan = LogicalPlan::UnwindRows {
+            expression: ProjectionExpression::Column("xs".to_string()),
+            variable: "x".to_string(),
+            input: Box::new(LogicalPlan::Filter {
+                predicate: source.clone(),
+                input: Box::new(expand(false)),
+            }),
+        };
+
+        let output = rewrite_logical_plan(&plan);
+        assert!(matches!(
+            output.plan(),
+            LogicalPlan::UnwindRows { input, variable, .. }
+                if variable == "x"
+                    && matches!(
+                        input.as_ref(),
+                        LogicalPlan::Expand { input, .. }
+                            if matches!(
+                                input.as_ref(),
+                                LogicalPlan::Filter { predicate, input }
+                                    if predicate == &source
+                                        && matches!(input.as_ref(), LogicalPlan::NodeScan { .. })
+                            )
+                    )
+        ));
+        assert!(output
+            .events()
+            .iter()
+            .any(|event| { event.rule() == "transformation:push_source_filter_below_expand" }));
     }
 
     #[test]

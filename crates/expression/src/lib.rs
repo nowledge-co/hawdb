@@ -385,14 +385,36 @@ pub struct PatternProjection {
     pub predicate: Option<ProjectionExpression>,
     /// Evaluated over each kept match of a comprehension.
     pub projection: Option<ProjectionExpression>,
+    /// Start values for a node the pattern introduces, when every disjunct
+    /// of `predicate` equates it with an enclosing-row expression (#1607).
+    pub seeds: Option<PatternSeeds>,
+}
+
+/// Seeds for one node variable that `PatternProjection::program`
+/// introduces. `predicate` implies the variable equals one of `expressions`,
+/// so matching from each distinct node among their values with `program`
+/// finds exactly the matches the unseeded program accepts, without scanning.
+/// `predicate` still decides every match.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PatternSeeds {
+    /// The seeded node variable.
+    pub variable: String,
+    /// The import column of `program` that carries one seed.
+    pub column: String,
+    /// Enclosing-scope expressions, evaluated like `arguments`.
+    pub expressions: Vec<ProjectionExpression>,
+    /// The pattern with `variable` imported from `column`, starting there.
+    pub program: GraphMatchProgram,
 }
 
 impl PatternProjection {
-    /// Expressions in evaluation order: arguments, predicate, projection.
+    /// Expressions in evaluation order: arguments, seeds, predicate,
+    /// projection.
     pub fn expressions(&self) -> impl Iterator<Item = &ProjectionExpression> {
         self.arguments
             .iter()
             .map(|(_, expression)| expression)
+            .chain(self.seeds.iter().flat_map(|seeds| &seeds.expressions))
             .chain(self.predicate.iter())
             .chain(self.projection.iter())
     }
@@ -401,8 +423,23 @@ impl PatternProjection {
         self.arguments
             .iter_mut()
             .map(|(_, expression)| expression)
+            .chain(
+                self.seeds
+                    .iter_mut()
+                    .flat_map(|seeds| seeds.expressions.iter_mut()),
+            )
             .chain(self.predicate.iter_mut())
             .chain(self.projection.iter_mut())
+    }
+
+    /// The pattern's programs: the unseeded one, then the seeded one.
+    pub fn programs(&self) -> impl Iterator<Item = &GraphMatchProgram> {
+        std::iter::once(&self.program).chain(self.seeds.iter().map(|seeds| &seeds.program))
+    }
+
+    pub fn programs_mut(&mut self) -> impl Iterator<Item = &mut GraphMatchProgram> {
+        std::iter::once(&mut self.program)
+            .chain(self.seeds.iter_mut().map(|seeds| &mut seeds.program))
     }
 }
 
@@ -1251,6 +1288,15 @@ hawdb_core::impl_retained_heap_for_struct!(PatternProjection {
     columns,
     predicate,
     projection,
+    seeds,
+});
+
+// Retained query ownership: PatternSeeds.
+hawdb_core::impl_retained_heap_for_struct!(PatternSeeds {
+    variable,
+    column,
+    expressions,
+    program,
 });
 
 // Retained query ownership: PathFunction.

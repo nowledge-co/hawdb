@@ -180,8 +180,18 @@ impl PhysicalPlan {
             PhysicalPlan::UnwindExec { rows, variable } => {
                 format!("{pad}UnwindExec rows={} variable={variable}", rows.len())
             }
-            PhysicalPlan::UnwindRowsExec { expression, variable, .. } => {
-                format!("{pad}UnwindRowsExec expression={expression:?} variable={variable}")
+            PhysicalPlan::UnwindRowsExec {
+                expression,
+                variable,
+                consumes_source,
+                ..
+            } => {
+                let consumes = if *consumes_source {
+                    " consumes_source=true"
+                } else {
+                    ""
+                };
+                format!("{pad}UnwindRowsExec expression={expression:?} variable={variable}{consumes}")
             }
             PhysicalPlan::UnwindMutation {
                 rows,

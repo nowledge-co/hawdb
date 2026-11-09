@@ -26,6 +26,7 @@ impl SearchOutOfCoreReader {
         segment: &SearchSegmentDescriptorEntry,
         metrics: &mut SearchOutOfCoreMetrics,
         context: QueryContext<'_>,
+        keys: Option<&crate::MetadataKeys>,
         visit: impl FnMut(&SearchMetadataDocument) -> Result<()>,
     ) -> Result<()> {
         let layout = Self::artifact_layout_range(artifact, segment.segment_id)?;
@@ -56,6 +57,7 @@ impl SearchOutOfCoreReader {
                     layout,
                     self.config.max_uncompressed_segment_bytes,
                     context,
+                    keys,
                     visit,
                 )?;
                 Ok(())
@@ -81,6 +83,7 @@ fn visit_records(
     layout: &SearchOutOfCoreSegmentLayout,
     max_record_bytes: NonZeroU64,
     context: QueryContext<'_>,
+    keys: Option<&crate::MetadataKeys>,
     mut visit: impl FnMut(&SearchMetadataDocument) -> Result<()>,
 ) -> Result<u64> {
     let limit = usize::try_from(max_record_bytes.get()).unwrap_or(usize::MAX);
@@ -129,6 +132,10 @@ fn visit_records(
                 let (key, value) = pair
                     .split_once('=')
                     .ok_or_else(|| invalid("invalid metadata pair"))?;
+                // Only the pairs that will be decoded are admitted (#1613).
+                if keys.is_some_and(|keys| !keys.contains(key)) {
+                    continue;
+                }
                 decode_bytes = add(
                     decode_bytes,
                     add(add(hex_size(key)?, hex_size(value)?)?, MAP_ENTRY_BYTES)?,
@@ -139,7 +146,7 @@ fn visit_records(
         let document = SearchMetadataDocument {
             id: decode_string(raw_id)?,
             vector_ordinal: decode_optional_vector_ordinal(raw_vector)?,
-            metadata: decode_metadata(raw_metadata)?,
+            metadata: crate::decode_metadata_keys(raw_metadata, keys)?,
         };
         if (count == 1 && document.id != segment.first_document_id)
             || (count > 1 && previous.as_slice() >= document.id.as_bytes())
@@ -206,6 +213,7 @@ mod tests {
                 entry_count: 0,
                 ..range
             },
+            postings: None,
         };
         let budget = NonZeroUsize::new(1 << 20).unwrap();
         let ledger = QueryMemoryLedger::new(budget);
@@ -216,7 +224,7 @@ mod tests {
                 "HAWDB_SEARCH_METADATA_SEGMENT_V1\nmeta\t{}\t-\t{ending}",
                 crate::encode_string(&document.id),
             );
-            let expected = decode_metadata_segment(&text, &descriptor, 1);
+            let expected = decode_metadata_segment(&text, &descriptor, 1, None);
             let result = visit_records(
                 &mut Cursor::new(text.as_bytes()),
                 &descriptor,
@@ -228,6 +236,7 @@ mod tests {
                     execution: None,
                     io_scope: None,
                 },
+                None,
                 |actual| {
                     assert_eq!(actual.id, document.id);
                     assert_eq!(actual.metadata, document.metadata);
@@ -279,6 +288,7 @@ mod tests {
                 entry_count: 0,
                 ..range
             },
+            postings: None,
         };
         // The zstd frame advertises its own window: admit it even when the
         // selected records are tiny. The successful budget is below plaintext.
@@ -311,6 +321,7 @@ mod tests {
                         &layout,
                         NonZeroU64::new(16 << 10).unwrap(),
                         context,
+                        None,
                         |document| {
                             assert_eq!(document.id, documents[count].id);
                             assert_eq!(document.metadata, documents[count].metadata);

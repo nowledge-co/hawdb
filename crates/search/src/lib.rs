@@ -671,6 +671,9 @@ pub struct SearchPredicatePushdownReport {
     pub persisted_segment_descriptor_used: bool,
     pub physical_range_read_count: usize,
     pub physical_bytes_read: u64,
+    /// Scanned segments whose candidates came from metadata value postings
+    /// instead of decoding their metadata records.
+    pub postings_segment_count: usize,
     pub field_summaries: Vec<SearchPredicateFieldPruningReport>,
 }
 
@@ -929,6 +932,10 @@ impl VectorSearchKernelPreference {
         }
     }
 }
+
+/// Default DiskANN navigation beam: the beam of a query that sets none, and
+/// the default of `SearchOutOfCoreConfig::default_navigation_beam`.
+pub const DEFAULT_NAVIGATION_BEAM: usize = 1024;
 
 #[derive(Debug, Clone, Copy)]
 pub struct VectorSearchExecutionOptions<'a> {
@@ -6213,6 +6220,7 @@ fn metadata_predicate_pushdown(
         persisted_segment_descriptor_used: false,
         physical_range_read_count: 0,
         physical_bytes_read: 0,
+        postings_segment_count: 0,
         field_summaries: Vec::new(),
     };
     SearchMetadataPredicatePushdown { predicates, report }
@@ -6708,7 +6716,9 @@ impl SearchFilterSegmentSummary {
         if predicates.is_unsatisfiable() {
             return false;
         }
-        let summary = self.storage_summary();
+        // Each predicate is pruned on its own field, so only those fields
+        // are summarized (#1613).
+        let summary = self.storage_summary_for(predicates);
         predicates.predicates().iter().all(|predicate| {
             if !self.may_match_predicate(predicate) {
                 return false;
@@ -6724,7 +6734,16 @@ impl SearchFilterSegmentSummary {
         })
     }
 
-    fn storage_summary(&self) -> SegmentSummary {
+    fn storage_summary_for(&self, predicates: &SearchPredicateSet) -> SegmentSummary {
+        let fields = predicates
+            .predicates()
+            .iter()
+            .map(|predicate| predicate.field().name())
+            .collect::<BTreeSet<_>>();
+        self.storage_summary_fields(|field| fields.contains(field))
+    }
+
+    fn storage_summary_fields(&self, include: impl Fn(&str) -> bool) -> SegmentSummary {
         let mut segment = SegmentSummary::new(0, self.document_count as u64);
         for field in self
             .present_counts
@@ -6732,6 +6751,7 @@ impl SearchFilterSegmentSummary {
             .chain(self.values.keys())
             .chain(self.numeric_ranges.keys())
             .chain(self.timestamp_ranges.keys())
+            .filter(|field| include(field))
         {
             if segment.field(field).is_some() {
                 continue;
@@ -7019,7 +7039,9 @@ impl SearchSegmentDescriptorEntry {
         if predicates.is_unsatisfiable() {
             return false;
         }
-        let summary = self.storage_summary();
+        // Each predicate is pruned on its own field, so only those fields
+        // are summarized (#1613).
+        let summary = self.storage_summary_for(predicates);
         predicates.predicates().iter().all(|predicate| {
             if !self.may_match_predicate(predicate) {
                 return false;
@@ -7035,9 +7057,18 @@ impl SearchSegmentDescriptorEntry {
         })
     }
 
-    fn storage_summary(&self) -> SegmentSummary {
+    fn storage_summary_for(&self, predicates: &SearchPredicateSet) -> SegmentSummary {
+        let fields = predicates
+            .predicates()
+            .iter()
+            .map(|predicate| predicate.field().name())
+            .collect::<BTreeSet<_>>();
         let mut segment = SegmentSummary::new(0, self.document_count as u64);
-        for (field, persisted) in &self.metadata {
+        for (field, persisted) in self
+            .metadata
+            .iter()
+            .filter(|(field, _)| fields.contains(field.as_str()))
+        {
             let mut summary = FieldSummary::new(self.document_count as u64)
                 .with_presence_counts(
                     persisted.present_count as u64,
@@ -8179,6 +8210,55 @@ fn encode_metadata(metadata: &BTreeMap<String, String>) -> String {
         .map(|(key, value)| format!("{}={}", encode_string(key), encode_string(value)))
         .collect::<Vec<_>>()
         .join(";")
+}
+
+/// The metadata keys a candidate filter reads, hex-encoded as stored, so a
+/// record's other pairs are skipped without being decoded (#1613).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct MetadataKeys(BTreeSet<String>);
+
+impl MetadataKeys {
+    pub(crate) fn contains(&self, encoded_key: &str) -> bool {
+        self.0.contains(encoded_key)
+    }
+
+    /// Every key `predicates` read: a predicate reads the metadata entry of
+    /// its field's name (see [`search_header_field_values`]).
+    pub(crate) fn for_predicates(predicates: &SearchPredicateSet) -> Self {
+        Self(
+            predicates
+                .predicates()
+                .iter()
+                .map(|predicate| encode_string(predicate.field().name()))
+                .collect(),
+        )
+    }
+}
+
+/// [`decode_metadata`] restricted to `keys`. Every pair must still be a
+/// `key=value` pair; pairs with other keys are not hex-decoded.
+pub(crate) fn decode_metadata_keys(
+    input: &str,
+    keys: Option<&MetadataKeys>,
+) -> Result<BTreeMap<String, String>> {
+    let Some(keys) = keys else {
+        return decode_metadata(input);
+    };
+    let mut metadata = BTreeMap::new();
+    if input.is_empty() {
+        return Ok(metadata);
+    }
+    for pair in input.split(';') {
+        let Some((key, value)) = pair.split_once('=') else {
+            return Err(HawDBError::Storage(format!(
+                "invalid metadata pair: {pair}"
+            )));
+        };
+        if keys.0.contains(key) {
+            metadata.insert(decode_string(key)?, decode_string(value)?);
+        }
+    }
+    Ok(metadata)
 }
 
 fn decode_metadata(input: &str) -> Result<BTreeMap<String, String>> {

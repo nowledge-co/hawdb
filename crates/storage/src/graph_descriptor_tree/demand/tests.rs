@@ -28,6 +28,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 
 mod checkpoint;
+mod leaf_scope;
 
 struct TestDirectory(PathBuf);
 

@@ -149,13 +149,13 @@ fn hits(output: &SearchOutOfCoreOutput) -> Vec<(String, u64)> {
 }
 
 #[test]
-fn stored_vectors_keep_input_bits_and_layout_v2() {
+fn stored_vectors_keep_input_bits_and_current_layout() {
     let documents = corpus(300);
     let path = build("binary-vector-bits", &documents, None);
     let reader = SearchOutOfCoreReader::open(&path).unwrap();
     let mut stored = Vec::new();
     for artifact in &reader.segments {
-        assert_eq!(artifact.layout.format, "HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V2");
+        assert_eq!(artifact.layout.format, "HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V3");
         for segment in &artifact.descriptor.segments {
             let mut metrics = SearchOutOfCoreMetrics::default();
             for document in reader
@@ -664,5 +664,69 @@ fn graph_navigation_beam_and_candidate_window_are_per_query() {
     .to_string();
     assert!(error.contains("max_vector_candidates"), "{error}");
     drop((reader, wide_reader));
+    fs::remove_dir_all(graph).unwrap();
+}
+
+/// The reader's `default_navigation_beam` (#1614) applies to queries that set
+/// no beam, exactly as if each query set it, and a per-query beam still wins.
+#[cfg(feature = "vector-search")]
+#[test]
+fn configured_default_navigation_beam_applies_unless_a_query_sets_one() {
+    let documents = corpus(300);
+    let graph = build("vector-default-beam", &documents, Some(true));
+    let query = embedding(2064);
+    let search = |reader: &SearchOutOfCoreReader, execution: VectorSearchExecutionOptions<'_>| {
+        reader
+            .search_with_options_compressed_vector_projection_execution_options(
+                "",
+                Some(&query),
+                SearchMode::Vector,
+                options(10, None),
+                crate::CompressedVectorSearchMode::Disabled,
+                execution,
+            )
+            .unwrap()
+    };
+    let default_reader = SearchOutOfCoreReader::open(&graph).unwrap();
+    assert_eq!(
+        default_reader.config.default_navigation_beam.get(),
+        crate::DEFAULT_NAVIGATION_BEAM
+    );
+    let narrow_reader = SearchOutOfCoreReader::open_with_config(
+        &graph,
+        SearchOutOfCoreConfig {
+            default_navigation_beam: NonZeroUsize::new(16).unwrap(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let configured = search(&narrow_reader, VectorSearchExecutionOptions::default());
+    let explicit = search(
+        &default_reader,
+        VectorSearchExecutionOptions::default()
+            .with_navigation_beam(NonZeroUsize::new(16).unwrap()),
+    );
+    assert_eq!(hits(&configured), hits(&explicit));
+    assert_eq!(
+        vector_report(&configured).candidate_scan_payload_bytes_read,
+        vector_report(&explicit).candidate_scan_payload_bytes_read
+    );
+    let wide = search(&default_reader, VectorSearchExecutionOptions::default());
+    assert!(
+        vector_report(&configured).candidate_scan_payload_bytes_read
+            < vector_report(&wide).candidate_scan_payload_bytes_read
+    );
+    // A per-query beam overrides the configured default.
+    let overridden = search(
+        &narrow_reader,
+        VectorSearchExecutionOptions::default()
+            .with_navigation_beam(NonZeroUsize::new(crate::DEFAULT_NAVIGATION_BEAM).unwrap()),
+    );
+    assert_eq!(hits(&overridden), hits(&wide));
+    assert_eq!(
+        vector_report(&overridden).candidate_scan_payload_bytes_read,
+        vector_report(&wide).candidate_scan_payload_bytes_read
+    );
+    drop((default_reader, narrow_reader));
     fs::remove_dir_all(graph).unwrap();
 }

@@ -1221,7 +1221,11 @@ fn marker_use_in_projection_expression(
                 safe,
             )),
         ProjectionExpression::Pattern(pattern) => {
-            let mut result = marker_use_in_program(&pattern.program, name);
+            let mut result = pattern
+                .programs()
+                .map(|program| marker_use_in_program(program, name))
+                .reduce(|left, right| left.combine(right))
+                .expect("a pattern has a program");
             expression.all_children(|child| {
                 result = result.combine(marker_use_in_projection_expression(child, name, safe));
                 true
@@ -1872,7 +1876,9 @@ fn bind_projection_expression(
             bind_projection_expression(relationship, parameters)?;
         }
         ProjectionExpression::Pattern(pattern) => {
-            bind_program(&mut pattern.program, parameters)?;
+            for program in pattern.programs_mut() {
+                bind_program(program, parameters)?;
+            }
             expression
                 .try_for_each_child_mut(|child| bind_projection_expression(child, parameters))?
         }

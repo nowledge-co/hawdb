@@ -491,8 +491,11 @@ fn row_unwind_refuses_large_output_before_copying() {
     let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
     let window = Window::new();
     let error = hawdb_executor::transform::stream_unwind_rows_batches(
-        &expression,
-        "item",
+        hawdb_executor::transform::UnwindRows {
+            expression: &expression,
+            variable: "item",
+            consumes_source: false,
+        },
         &PhysicalPlan::EmptyExec,
         &mut OneRow,
         BatchExecutionContext {

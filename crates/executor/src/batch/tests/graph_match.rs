@@ -16,6 +16,7 @@ use super::*;
 use hawdb_plan_cypher::{GraphMatchStep, LogicalPlan, ProjectionExpression};
 
 mod indexed_node;
+mod ledger_accounting;
 
 // The oracle lowers the generic operators directly, independently of optimizer fast paths.
 fn lower(plan: LogicalPlan) -> PhysicalPlan {
@@ -1136,4 +1137,68 @@ fn malformed_edge_placement_is_refused() {
             "{error}"
         );
     }
+}
+
+/// Projections move unchanged columns and MATCH moves each consumed input
+/// row, including NULL-extended OPTIONAL rows, instead of copying (#1615).
+/// Results are those of the copying paths and the ledger settles to zero.
+#[test]
+fn moved_projection_and_match_rows_preserve_results_and_settle_the_ledger() {
+    let query = "MATCH (n:Memory) \
+        WITH n AS a, n AS b, [n.id, 'x'] AS l, {k: n.id, s: 'text'} AS m, 'text' AS s \
+        WITH a, b, l, l AS l2, m, m.k AS k, s \
+        OPTIONAL MATCH (a)-[:MENTIONS]->(t:Memory) \
+        WITH a, b, l, l2, m, k, s, t \
+        RETURN a.id AS aid, b.id AS bid, l, l2, m, k, s, t.id AS tid ORDER BY k";
+    let plan = lower(hawdb_plan_cypher::plan_pipeline_query(query, &BTreeMap::new()).unwrap());
+    with_context(None, |context| {
+        for batch_rows in [1, 1024] {
+            let memory = ExecutionMemoryConfig {
+                batch_rows: std::num::NonZeroUsize::new(batch_rows).unwrap(),
+                ..context.memory.clone()
+            };
+            let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+            let context = BatchReadContext {
+                memory: &memory,
+                memory_ledger: &ledger,
+                ..context
+            };
+            let mut rows = Vec::new();
+            execute_binding_batches(&plan, context, ExecutionLimit::unlimited(), &mut |batch| {
+                rows.extend(batch);
+                Ok(BatchControl::Continue)
+            })
+            .unwrap();
+            assert_eq!(ledger.snapshot().used_bytes, 0);
+            let expected = |id: i64, target: Value| {
+                BTreeMap::from([
+                    ("aid".to_string(), Value::Int(id)),
+                    ("bid".to_string(), Value::Int(id)),
+                    (
+                        "l".to_string(),
+                        Value::List(vec![Value::Int(id), Value::String("x".into())]),
+                    ),
+                    (
+                        "l2".to_string(),
+                        Value::List(vec![Value::Int(id), Value::String("x".into())]),
+                    ),
+                    (
+                        "m".to_string(),
+                        Value::Map(BTreeMap::from([
+                            ("k".to_string(), Value::Int(id)),
+                            ("s".to_string(), Value::String("text".into())),
+                        ])),
+                    ),
+                    ("k".to_string(), Value::Int(id)),
+                    ("s".to_string(), Value::String("text".into())),
+                    ("tid".to_string(), target),
+                ])
+            };
+            assert_eq!(
+                rows.into_iter().map(|row| row.values).collect::<Vec<_>>(),
+                vec![expected(1, Value::Int(2)), expected(2, Value::Null)],
+                "batch_rows {batch_rows}"
+            );
+        }
+    });
 }

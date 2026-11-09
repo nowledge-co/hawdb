@@ -856,6 +856,42 @@ mod access_control {
         );
     }
 
+    /// A seeded comprehension (#1607) is restricted like the unseeded one:
+    /// it neither starts at nor reaches a hidden node, even when a seed
+    /// expression names one.
+    #[test]
+    fn seeded_pattern_expressions_see_only_visible_nodes() {
+        let mut db = graph();
+        let none = BTreeMap::new();
+        for (query, expected) in [
+            (
+                "MATCH (x:Person {id: 1}) RETURN [(a:Person)-[:KNOWS]->(b) WHERE a = x | b.ssn] AS v",
+                Value::List(vec![Value::String("ssn4".into())]),
+            ),
+            (
+                "MATCH (y:Person {id: 3}) RETURN [(a:Person)-[:KNOWS]->(b) WHERE b = y | a.ssn] AS v",
+                Value::List(Vec::new()),
+            ),
+            (
+                "MATCH (x:Person {id: 1})-[r:KNOWS]->() RETURN \
+                 [(a:Person)-[:KNOWS]->(b) WHERE a = endNode(r) | b.ssn] AS v",
+                Value::List(Vec::new()),
+            ),
+        ] {
+            let plan = format!("{:?}", db.explain_query(query).unwrap().physical_plan);
+            assert!(plan.contains("seeds: Some("), "{query}");
+            assert_eq!(
+                scoped(&mut db, query, &none)
+                    .unwrap()
+                    .into_iter()
+                    .map(|row| sorted(&row[0]))
+                    .collect::<Vec<_>>(),
+                [expected],
+                "{query}"
+            );
+        }
+    }
+
     #[test]
     fn relationship_endpoints_hide_invisible_nodes() {
         let mut db = graph();
@@ -939,4 +975,68 @@ mod access_control {
             [vec![Value::List(vec![Value::String("ssn4".into())])]]
         );
     }
+}
+
+/// A comprehension whose WHERE pins an introduced node to enclosing values
+/// (`a = startNode(r)`, in one or both orientations) is matched from those
+/// seeds instead of every node (#1607). Each form equals the same pattern
+/// with an extra `OR false` disjunct, which pins nothing and is unseeded,
+/// including a self-loop hop where both orientations name one node, and
+/// seeds that are NULL or not nodes.
+#[test]
+fn seeded_pattern_comprehensions_equal_the_unseeded_pattern() {
+    let mut db = graph();
+    // Person 4 replies to their own post and knows themselves.
+    db.query("CREATE (:Post {id: 14, creationDate: 6000})")
+        .unwrap();
+    db.query("MATCH (m:Post {id: 14}), (p:Person {id: 4}) CREATE (m)-[:HAS_CREATOR]->(p)")
+        .unwrap();
+    db.query("CREATE (:Comment {id: 23, creationDate: 6023})")
+        .unwrap();
+    db.query("MATCH (c:Comment {id: 23}), (p:Person {id: 4}) CREATE (c)-[:HAS_CREATOR]->(p)")
+        .unwrap();
+    db.query("MATCH (c:Comment {id: 23}), (m:Post {id: 14}) CREATE (c)-[:REPLY_OF]->(m)")
+        .unwrap();
+    db.query("MATCH (p:Person {id: 4}), (q:Person {id: 4}) CREATE (p)-[:KNOWS]->(q)")
+        .unwrap();
+    // A node property named `type` must not hide the node from its seeds.
+    db.query("MATCH (p:Person) WHERE p.id IN [1, 2] SET p.type = 'member'")
+        .unwrap();
+    let chain =
+        "(a:Person)<-[:HAS_CREATOR]-(m:Post)<-[:REPLY_OF]-(c:Comment)-[:HAS_CREATOR]->(b:Person)";
+    for condition in [
+        "a = startNode(r)",
+        "endNode(r) = a AND b = startNode(r)",
+        "(a = startNode(r) AND b = endNode(r)) OR (a = endNode(r) AND b = startNode(r))",
+        "a = null",
+        "a = 5",
+        // Maps that are not nodes, or name no node, equal no node.
+        "a = {_id: 0}",
+        "a = {_id: 999999, labels: ['Person']}",
+        "a = [startNode(r)]",
+    ] {
+        let query = |condition: &str| {
+            format!(
+                "MATCH (x:Person)-[r:KNOWS]->(y:Person) \
+                 RETURN x.id AS x, y.id AS y, \
+                 [{chain} WHERE {condition} | [a.id, m.id, c.id, b.id]] AS matches, \
+                 reduce(w = 0.0, v IN [{chain} WHERE {condition} | 1.0] | w + v) AS weight \
+                 ORDER BY x, y"
+            )
+        };
+        let seeded = query(condition);
+        let plan = format!("{:?}", db.explain_query(&seeded).unwrap().physical_plan);
+        assert!(plan.contains("seeds: Some("), "{condition}: {plan}");
+        assert_same_rows(&mut db, &seeded, &query(&format!("({condition}) OR false")));
+    }
+    // The self-loop hop matches its reply chain once, not once per orientation.
+    let loop_weight = rows(
+        &mut db,
+        &format!(
+            "MATCH (x:Person {{id: 4}})-[r:KNOWS]->(x) RETURN reduce(w = 0.0, v IN \
+             [{chain} WHERE (a = startNode(r) AND b = endNode(r)) OR (a = endNode(r) AND b = startNode(r)) | 1.0] \
+             | w + v) AS weight"
+        ),
+    );
+    assert_eq!(loop_weight, [vec![Value::Float(1.0)]]);
 }

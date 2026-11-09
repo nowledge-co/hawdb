@@ -118,7 +118,12 @@ fn expression_names(expression: &ProjectionExpression, names: &mut BTreeSet<Stri
         ProjectionExpression::Pattern(pattern) => {
             names.extend(pattern.graph_variables.iter().cloned());
             names.extend(pattern.columns.iter().cloned());
-            for (_, argument) in &pattern.arguments {
+            for argument in pattern
+                .arguments
+                .iter()
+                .map(|(_, argument)| argument)
+                .chain(pattern.seeds.iter().flat_map(|seeds| &seeds.expressions))
+            {
                 expression_names(argument, names);
             }
         }

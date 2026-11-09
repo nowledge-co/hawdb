@@ -205,6 +205,16 @@ impl TransformBatchBuilder {
         self.used_payload_bytes.saturating_add(bytes) > self.payload_bytes
     }
 
+    /// Pushes a row whose `binding_memory_bytes` the caller already computed
+    /// for its admission, without walking the row again (#1615).
+    pub(crate) fn push_admitted(&mut self, binding: Binding, bytes: usize) {
+        debug_assert_eq!(binding_memory_bytes(&binding), bytes);
+        debug_assert!(self.reservation.bytes() >= self.payload_bytes);
+        self.used_payload_bytes = self.used_payload_bytes.saturating_add(bytes);
+        debug_assert!(self.used_payload_bytes <= self.payload_bytes);
+        self.bindings.push(binding);
+    }
+
     pub fn push(&mut self, binding: Binding) {
         debug_assert!(self.reservation.bytes() >= self.payload_bytes);
         self.used_payload_bytes = self

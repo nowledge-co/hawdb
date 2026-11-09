@@ -1,6 +1,12 @@
 startup --host_jvm_args=-Xmx2g
 startup --unlimit_coredumps
 
+# Repository archives can outlast short GitHub gateway failures. These options
+# cover build/test/query/fetch downloads, independently of remote-cache retries.
+common --http_connector_attempts=12
+# Bazel applies jitter after capping this exponential retry-delay base.
+common --http_connector_retry_max_timeout=30s
+
 build --announce_rc
 
 # One checked test profile for every Rust target and dependency. Bazel is used

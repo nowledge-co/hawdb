@@ -17,18 +17,18 @@ use super::lexical_projection::{
     LexicalProjectionConfig, LexicalProjectionReader, DEFAULT_MAX_MANIFEST_BYTES, MANIFEST_FILE,
 };
 use super::{
-    checksum_bytes, decode_metadata, decode_search_snapshot_text_bounded, decode_string,
-    encode_metadata, encode_search_snapshot_text, encode_string, lexical_analyzer_digest,
-    lexical_documents_digest, matched_query_spans_bounded, matched_query_terms, rrf_child_score,
-    search_empty_reasons, top_ranked_candidates, top_ranked_ids, weighted_rrf_score,
-    CompressedVectorSearchMode, SearchAccessControlContext, SearchAnalyzerLexicon,
-    SearchCandidateSetReport, SearchDocument, SearchEmbeddingManifest, SearchFallbackReasonCode,
-    SearchFieldPruningAccumulator, SearchHit, SearchHitHydration, SearchIndex, SearchMode,
-    SearchPageWindow, SearchPredicatePushdownReport, SearchProjectionFreshness, SearchQueryOptions,
-    SearchResultSet, SearchRetrieverReport, SearchScoredCandidate, SearchSegmentDescriptor,
-    SearchSegmentDescriptorEntry, SearchTruncationReasonCode, VectorRelevanceQuery,
-    VectorSearchExecutionOptions, FULL_REINDEX_MARKER, METADATA_REPAIR_MARKER,
-    SEARCH_SEGMENT_DESCRIPTOR_FILE, SEARCH_SEGMENT_PAYLOAD_FILE,
+    checksum_bytes, decode_search_snapshot_text_bounded, decode_string, encode_metadata,
+    encode_search_snapshot_text, encode_string, lexical_analyzer_digest, lexical_documents_digest,
+    matched_query_spans_bounded, matched_query_terms, rrf_child_score, search_empty_reasons,
+    top_ranked_candidates, top_ranked_ids, weighted_rrf_score, CompressedVectorSearchMode,
+    SearchAccessControlContext, SearchAnalyzerLexicon, SearchCandidateSetReport, SearchDocument,
+    SearchEmbeddingManifest, SearchFallbackReasonCode, SearchFieldPruningAccumulator, SearchHit,
+    SearchHitHydration, SearchIndex, SearchMode, SearchPageWindow, SearchPredicatePushdownReport,
+    SearchProjectionFreshness, SearchQueryOptions, SearchResultSet, SearchRetrieverReport,
+    SearchScoredCandidate, SearchSegmentDescriptor, SearchSegmentDescriptorEntry,
+    SearchTruncationReasonCode, VectorRelevanceQuery, VectorSearchExecutionOptions,
+    FULL_REINDEX_MARKER, METADATA_REPAIR_MARKER, SEARCH_SEGMENT_DESCRIPTOR_FILE,
+    SEARCH_SEGMENT_PAYLOAD_FILE,
 };
 use crate::bounded_file::{read_bound_file, read_bounded_file};
 use crate::error::{HawDBError, Result};
@@ -252,6 +252,7 @@ pub(crate) mod artifact_key;
 mod generation_writer;
 mod hydration;
 mod metadata_query;
+mod postings;
 mod projection_scan;
 mod verified_body;
 pub use verified_body::{SearchBodyReadOptions, SearchVerifiedBody};
@@ -290,8 +291,12 @@ use vector_serving::VectorScoreScan;
 
 pub(crate) const OUT_OF_CORE_MANIFEST_FILE: &str = "search_projection.out_of_core.manifest.hawdb";
 const OUT_OF_CORE_FORMAT: &str = "HAWDB_SEARCH_OUT_OF_CORE_V4";
-/// V2 stores raw vectors as binary rows (`out_of_core::vector_segment`).
-const OUT_OF_CORE_LAYOUT_FORMAT: &str = "HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V2";
+/// V3 adds per-segment metadata value postings (`out_of_core::postings`).
+/// Readers of V2 refuse it rather than ignore the postings ranges.
+const OUT_OF_CORE_LAYOUT_FORMAT: &str = "HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V3";
+/// V2 stores raw vectors as binary rows (`out_of_core::vector_segment`) and
+/// has no postings. It remains readable; its filters scan the metadata.
+const POSTINGLESS_OUT_OF_CORE_LAYOUT_FORMAT: &str = "HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V2";
 /// V1 stored zstd-compressed decimal-text vector sidecars. Readers refuse it.
 const SUPERSEDED_OUT_OF_CORE_LAYOUT_FORMATS: &[&str] = &["HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V1"];
 pub(crate) const MAX_OUT_OF_CORE_MANIFEST_BYTES: u64 = 1024 * 1024;
@@ -333,6 +338,10 @@ pub struct SearchOutOfCoreConfig {
     /// Values below `max_lexical_query_terms` are raised to it.
     pub max_lexical_query_analyzed_terms: NonZeroUsize,
     pub max_vector_candidates: NonZeroUsize,
+    /// DiskANN navigation beam for queries that do not set one with
+    /// [`VectorSearchExecutionOptions::with_navigation_beam`]. A narrower beam
+    /// scores fewer vectors per segment graph at some recall cost (#1614).
+    pub default_navigation_beam: NonZeroUsize,
     pub max_vector_search_working_bytes: NonZeroUsize,
     pub max_vector_search_parallelism: NonZeroUsize,
     pub max_hydrated_documents: NonZeroUsize,
@@ -367,6 +376,7 @@ impl Default for SearchOutOfCoreConfig {
             )
             .unwrap(),
             max_vector_candidates: NonZeroUsize::new(1_024).unwrap(),
+            default_navigation_beam: NonZeroUsize::new(crate::DEFAULT_NAVIGATION_BEAM).unwrap(),
             max_vector_search_working_bytes: NonZeroUsize::new(64 * 1024 * 1024).unwrap(),
             max_vector_search_parallelism: NonZeroUsize::MIN,
             max_hydrated_documents: NonZeroUsize::new(1024).unwrap(),
@@ -649,6 +659,10 @@ struct SearchOutOfCoreSegmentLayout {
     vector_ordinal_base: u64,
     metadata: SearchOutOfCoreRange,
     vectors: SearchOutOfCoreRange,
+    /// Follows `metadata` in the metadata artifact. Absent in V2 layouts and
+    /// for segments whose postings exceed the segment byte limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    postings: Option<SearchOutOfCoreRange>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -1177,7 +1191,9 @@ impl SearchOutOfCoreLayoutBody {
                 self.format
             )));
         }
-        if self.format != OUT_OF_CORE_LAYOUT_FORMAT
+        let postingless = self.format == POSTINGLESS_OUT_OF_CORE_LAYOUT_FORMAT;
+        if (self.format != OUT_OF_CORE_LAYOUT_FORMAT && !postingless)
+            || (postingless && self.segments.iter().any(|layout| layout.postings.is_some()))
             || self.generation != manifest.generation
             || self.document_count != manifest.document_count
             || self.segments.len() != descriptor.segments.len()
@@ -1218,6 +1234,26 @@ impl SearchOutOfCoreLayoutBody {
                 "vector",
             )?;
             metadata_end = layout.metadata.offset + layout.metadata.length;
+            if let Some(postings) = layout.postings {
+                if postings.entry_count != segment.document_count {
+                    return Err(HawDBError::Storage(format!(
+                        "search out-of-core layout postings do not match segment {}",
+                        segment.segment_id
+                    )));
+                }
+                // Postings are optional: a range over this reader's segment
+                // budget is not an error; the reader scans that segment's
+                // metadata instead (`visit_postings_segment`).
+                validate_out_of_core_range(
+                    postings,
+                    metadata_end,
+                    manifest.metadata_payload_len,
+                    u64::MAX,
+                    segment.segment_id,
+                    "postings",
+                )?;
+                metadata_end = postings.offset + postings.length;
+            }
             vector_end = layout.vectors.offset + layout.vectors.length;
             vector_ordinal_base = vector_ordinal_base
                 .checked_add(layout.vectors.entry_count as u64)
@@ -2750,8 +2786,12 @@ impl SearchOutOfCoreReader {
         let SearchOutOfCoreExecutionContext {
             access_control,
             compressed_vector_search_mode,
-            vector_execution_options,
+            mut vector_execution_options,
         } = execution;
+        // A per-query beam wins; otherwise the reader's configured default.
+        vector_execution_options
+            .navigation_beam
+            .get_or_insert(self.config.default_navigation_beam);
         let task_context = vector_execution_options.task_context;
         if let Some(task_context) = task_context {
             task_context.checkpoint().map_err(|reason| {
@@ -3647,11 +3687,24 @@ impl SearchOutOfCoreReader {
         segment: &SearchSegmentDescriptorEntry,
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<Vec<SearchMetadataDocument>> {
+        self.read_metadata_segment_keys(artifact, segment, metrics, None)
+    }
+
+    /// [`Self::read_metadata_segment`] decoding only the metadata `keys`, or
+    /// every key when `None`.
+    fn read_metadata_segment_keys(
+        &self,
+        artifact: &SearchOutOfCoreSegmentReader,
+        segment: &SearchSegmentDescriptorEntry,
+        metrics: &mut SearchOutOfCoreMetrics,
+        keys: Option<&crate::MetadataKeys>,
+    ) -> Result<Vec<SearchMetadataDocument>> {
         self.read_metadata_segment_with(
             artifact,
             segment,
             metrics,
             decode_search_snapshot_text_bounded,
+            keys,
         )
     }
 
@@ -3663,9 +3716,15 @@ impl SearchOutOfCoreReader {
         memory: &hawdb_executor::QueryMemoryAccount,
         task: &crate::RuntimeTaskContext,
     ) -> Result<Vec<SearchMetadataDocument>> {
-        self.read_metadata_segment_with(artifact, segment, metrics, |payload, limit| {
-            crate::decode_search_snapshot_text_admitted(payload, limit, memory, task)
-        })
+        self.read_metadata_segment_with(
+            artifact,
+            segment,
+            metrics,
+            |payload, limit| {
+                crate::decode_search_snapshot_text_admitted(payload, limit, memory, task)
+            },
+            None,
+        )
     }
 
     fn read_metadata_segment_with(
@@ -3674,6 +3733,7 @@ impl SearchOutOfCoreReader {
         segment: &SearchSegmentDescriptorEntry,
         metrics: &mut SearchOutOfCoreMetrics,
         decode: impl FnOnce(&[u8], u64) -> Result<String>,
+        keys: Option<&crate::MetadataKeys>,
     ) -> Result<Vec<SearchMetadataDocument>> {
         let range = Self::artifact_layout_range(artifact, segment.segment_id)?.metadata;
         let payload = read_out_of_core_payload_range(
@@ -3689,7 +3749,7 @@ impl SearchOutOfCoreReader {
         let text = decode(&payload, self.config.max_uncompressed_segment_bytes.get())?;
         metrics.peak_metadata_segment_bytes =
             metrics.peak_metadata_segment_bytes.max(text.len() as u64);
-        let documents = decode_metadata_segment(&text, segment, range.entry_count)?;
+        let documents = decode_metadata_segment(&text, segment, range.entry_count, keys)?;
         let layout = Self::artifact_layout_range(artifact, segment.segment_id)?;
         let ordinals = documents
             .iter()
@@ -4915,7 +4975,7 @@ fn write_out_of_core_sidecars(
 
             let mut metadata_body = String::from("HAWDB_SEARCH_METADATA_SEGMENT_V1\n");
             let mut vectors = Vec::new();
-            for document in documents {
+            for &document in &documents {
                 let document_vector_ordinal = document.embedding.as_ref().map(|_| vector_ordinal);
                 metadata_body.push_str(&format!(
                     "meta\t{}\t{}\t{}\n",
@@ -4949,6 +5009,25 @@ fn write_out_of_core_sidecars(
                 &metadata_payload,
                 segment.document_count,
             )?;
+            let postings = if postings::write_enabled() {
+                let defaults = SearchOutOfCoreConfig::default();
+                let limit = defaults
+                    .max_uncompressed_segment_bytes
+                    .get()
+                    .min(defaults.max_compressed_segment_bytes.get());
+                postings::encode(&documents, None, limit, || Ok(()))?
+                    .map(|encoded| {
+                        append_sidecar_payload(
+                            &mut metadata_file,
+                            &mut metadata_offset,
+                            &encoded.payload,
+                            segment.document_count,
+                        )
+                    })
+                    .transpose()?
+            } else {
+                None
+            };
             let vectors = append_sidecar_payload(
                 &mut vector_file,
                 &mut vector_offset,
@@ -4960,6 +5039,7 @@ fn write_out_of_core_sidecars(
                 vector_ordinal_base: vector_ordinal.saturating_sub(vector_count as u64),
                 metadata,
                 vectors,
+                postings,
             });
         }
 
@@ -4975,7 +5055,7 @@ fn write_out_of_core_sidecars(
     vector_guard.disarm();
     Ok((
         SearchOutOfCoreLayoutBody {
-            format: OUT_OF_CORE_LAYOUT_FORMAT.to_string(),
+            format: postings::layout_format().to_string(),
             generation,
             document_count: descriptor.document_count,
             segments: layouts,
@@ -5164,6 +5244,7 @@ fn decode_metadata_segment(
     text: &str,
     segment: &SearchSegmentDescriptorEntry,
     expected_count: usize,
+    keys: Option<&crate::MetadataKeys>,
 ) -> Result<Vec<SearchMetadataDocument>> {
     let mut lines = text.lines();
     if lines.next() != Some("HAWDB_SEARCH_METADATA_SEGMENT_V1") {
@@ -5180,7 +5261,7 @@ fn decode_metadata_segment(
                 documents.push(SearchMetadataDocument {
                     id: decode_string(raw_id)?,
                     vector_ordinal: decode_optional_vector_ordinal(raw_vector_ordinal)?,
-                    metadata: decode_metadata(raw_metadata)?,
+                    metadata: crate::decode_metadata_keys(raw_metadata, keys)?,
                 })
             }
             _ => {

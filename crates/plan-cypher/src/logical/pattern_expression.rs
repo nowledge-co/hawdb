@@ -152,6 +152,55 @@ pub(super) fn plan_pattern_expression(
             }));
         }
     }
+    // Seeds: a node the pattern introduces that every disjunct of the WHERE
+    // equates with an enclosing-row expression starts the seeded program
+    // (#1607). The unseeded program is kept for evaluations without seeds.
+    let seeds = match parts.predicate {
+        Some(predicate) if bound.iter().all(|bound| !bound) => seed_plan(
+            predicate,
+            &nodes,
+            &introduced,
+            scope,
+            column_scope,
+            parameters,
+        )
+        .map(|(index, expressions)| -> Result<PatternSeeds> {
+            let variable = nodes[index].variable.clone();
+            let column = fresh_name(&mut taken);
+            let mut seeded_bound = bound.clone();
+            seeded_bound[index] = true;
+            let mut seeded_imports = imports.clone();
+            seeded_imports.push(GraphBindingImport {
+                variable: variable.clone(),
+                column: column.clone(),
+                kind: GraphEntityKind::Node,
+            });
+            Ok(PatternSeeds {
+                program: GraphMatchProgram {
+                    imports: seeded_imports,
+                    introduced: introduced
+                        .iter()
+                        .filter(|name| **name != variable)
+                        .cloned()
+                        .collect(),
+                    projected_nodes: BTreeMap::new(),
+                    projected_relationships: BTreeMap::new(),
+                    steps: steps(pattern, &nodes, &seeded_bound, parameters)?,
+                    predicate: None,
+                    predicate_steps: Vec::new(),
+                    edge_predicates: Vec::new(),
+                    optional: false,
+                    hash_join: None,
+                    id_set_conjuncts: Vec::new(),
+                },
+                variable,
+                column,
+                expressions,
+            })
+        })
+        .transpose()?,
+        _ => None,
+    };
     let program = GraphMatchProgram {
         imports,
         introduced: introduced.clone(),
@@ -231,7 +280,88 @@ pub(super) fn plan_pattern_expression(
         columns,
         predicate,
         projection,
+        seeds,
     })))
+}
+
+/// The most disjuncts of a pattern WHERE that seed planning considers.
+const MAX_SEED_DISJUNCTS: usize = 8;
+
+/// The first node the pattern introduces that every disjunct of `predicate`
+/// equates with an expression over the enclosing row, with those
+/// expressions planned in the enclosing scope. `None` when no node
+/// qualifies or an expression reads a variable the pattern introduces.
+fn seed_plan(
+    predicate: &ScalarExpression,
+    nodes: &[hawdb_cypher::NodePatternKind],
+    introduced: &[String],
+    scope: &BTreeSet<String>,
+    column_scope: &BTreeSet<String>,
+    parameters: &BTreeMap<String, Value>,
+) -> Option<(usize, Vec<ProjectionExpression>)> {
+    let mut disjuncts = Vec::new();
+    flatten(predicate, hawdb_cypher::ScalarBinaryOp::Or, &mut disjuncts);
+    if disjuncts.len() > MAX_SEED_DISJUNCTS {
+        return None;
+    }
+    nodes.iter().enumerate().find_map(|(index, node)| {
+        let variable = &node.variable;
+        if !introduced.contains(variable) {
+            return None;
+        }
+        let mut expressions = Vec::with_capacity(disjuncts.len());
+        for disjunct in &disjuncts {
+            let mut conjuncts = Vec::new();
+            flatten(disjunct, hawdb_cypher::ScalarBinaryOp::And, &mut conjuncts);
+            let value = conjuncts
+                .iter()
+                .find_map(|conjunct| equated(conjunct, variable))?;
+            // Planned without the pattern's variables in scope, so an
+            // expression that reads one of them fails here and seeds nothing.
+            let planned =
+                plan_scalar_expression_with_columns(scope, column_scope, value, parameters).ok()?;
+            if !expressions.contains(&planned) {
+                expressions.push(planned);
+            }
+        }
+        Some((index, expressions))
+    })
+}
+
+/// The operands of a left-nested chain of `op`.
+fn flatten<'a>(
+    expression: &'a ScalarExpression,
+    op: hawdb_cypher::ScalarBinaryOp,
+    out: &mut Vec<&'a ScalarExpression>,
+) {
+    match &expression.kind {
+        ScalarExpressionKind::Binary {
+            left,
+            op: binary,
+            right,
+        } if *binary == op => {
+            flatten(left, op, out);
+            flatten(right, op, out);
+        }
+        _ => out.push(expression),
+    }
+}
+
+/// The other side of `variable = value` or `value = variable`.
+fn equated<'a>(expression: &'a ScalarExpression, variable: &str) -> Option<&'a ScalarExpression> {
+    let ScalarExpressionKind::Binary {
+        left,
+        op: hawdb_cypher::ScalarBinaryOp::Eq,
+        right,
+    } = &expression.kind
+    else {
+        return None;
+    };
+    match (&left.kind, &right.kind) {
+        (ScalarExpressionKind::Variable(name), _) if name == variable => Some(right),
+        (_, ScalarExpressionKind::Variable(name)) if name == variable => Some(left),
+        _ => None,
+    }
 }
 
 /// The most nodes one pattern expression may match, as for a MATCH clause.

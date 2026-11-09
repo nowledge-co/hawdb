@@ -279,3 +279,90 @@ fn hand_written_node_maps_use_the_stored_node() {
     );
     assert!(message.contains("disappeared"), "{message}");
 }
+
+/// The plan below `WITH collect(..) AS xs UNWIND xs AS x` is still rewritten:
+/// the start person is sought through its id index rather than found by
+/// expanding every person and filtering afterwards (#1606, LDBC IC9). The
+/// rows are those of the same query with the list materialized first.
+#[test]
+fn unwound_collect_keeps_the_start_index_seek() {
+    let mut db = social();
+    // Enough unrelated persons that the index seek is the cheaper start.
+    let people = (100..400)
+        .map(|id| Value::Map(BTreeMap::from([("id".to_string(), Value::Int(id))])))
+        .collect::<Vec<_>>();
+    db.query_with_params(
+        "UNWIND $rows AS r CREATE (:Person {id: r.id})",
+        &BTreeMap::from([("rows".to_string(), Value::List(people))]),
+    )
+    .unwrap();
+    db.query("CREATE INDEX ON :Person(id)").unwrap();
+    let unwound = "MATCH (root:Person {id: $id})-[:KNOWS*1..2]-(friend:Person) \
+                   WHERE NOT friend = root \
+                   WITH collect(DISTINCT friend) AS friends UNWIND friends AS friend \
+                   MATCH (friend)<-[:HAS_CREATOR]-(message:Message) \
+                   RETURN friend.id AS person, message.id AS message";
+    let parameters = BTreeMap::from([("id".to_string(), Value::Int(1))]);
+    let physical_plan = db
+        .explain_query_with_params(unwound, &parameters)
+        .unwrap()
+        .physical_plan
+        .explain(0);
+    assert!(physical_plan.contains("IndexNodeSeek"), "{physical_plan}");
+    assert!(!physical_plan.contains("SeqNodeScan"), "{physical_plan}");
+    let direct = "MATCH (root:Person {id: $id})-[:KNOWS*1..2]-(friend:Person) \
+                  WHERE NOT friend = root WITH DISTINCT friend \
+                  MATCH (friend)<-[:HAS_CREATOR]-(message:Message) \
+                  RETURN friend.id AS person, message.id AS message";
+    let expected = rows(&mut db, direct);
+    assert_eq!(expected.len(), 4, "{expected:?}");
+    assert_eq!(rows(&mut db, unwound), expected);
+}
+
+/// After `UNWIND friends AS friend`, a list column that no later clause reads
+/// moves into the unwind instead of being copied into every row (#1606, LDBC
+/// IC9); a column that a later clause reads is kept. Both return the rows of
+/// the same query written without the list.
+#[test]
+fn unwind_consumes_a_list_column_only_when_nothing_reads_it() {
+    let mut db = social();
+    let parameters = BTreeMap::from([("id".to_string(), Value::Int(1))]);
+    let prefix = "MATCH (root:Person {id: $id})-[:KNOWS*1..2]-(friend:Person) \
+                  WHERE NOT friend = root \
+                  WITH collect(DISTINCT friend) AS friends UNWIND friends AS friend \
+                  MATCH (friend)<-[:HAS_CREATOR]-(message:Message) ";
+    let unread = format!("{prefix}RETURN friend.id AS person, message.id AS message");
+    let read = format!(
+        "{prefix}RETURN friend.id AS person, message.id AS message, size(friends) AS friends"
+    );
+    let plan = |db: &Database, query: &str| {
+        db.explain_query_with_params(query, &parameters)
+            .unwrap()
+            .physical_plan
+            .explain(0)
+    };
+    assert!(
+        plan(&db, &unread).contains("consumes_source=true"),
+        "{}",
+        plan(&db, &unread)
+    );
+    assert!(
+        !plan(&db, &read).contains("consumes_source"),
+        "{}",
+        plan(&db, &read)
+    );
+    let direct = "MATCH (root:Person {id: $id})-[:KNOWS*1..2]-(friend:Person) \
+                  WHERE NOT friend = root WITH DISTINCT friend \
+                  MATCH (friend)<-[:HAS_CREATOR]-(message:Message) \
+                  RETURN friend.id AS person, message.id AS message";
+    let expected = rows(&mut db, direct);
+    assert_eq!(expected.len(), 4, "{expected:?}");
+    assert_eq!(rows(&mut db, &unread), expected);
+    // Friends of person 1 within two hops: 2, 3 and 4.
+    let with_size = rows(&mut db, &read);
+    assert_eq!(with_size.len(), expected.len(), "{with_size:?}");
+    assert!(
+        with_size.iter().all(|row| row.contains("Int(3)")),
+        "{with_size:?}"
+    );
+}

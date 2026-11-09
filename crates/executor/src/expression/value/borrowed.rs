@@ -65,6 +65,14 @@ impl<'a> ProjectedValue<'a> {
         }
     }
 
+    /// The value this projection lends without owning, if any.
+    pub(crate) fn lent(&self) -> Option<&'a Value> {
+        match self.value {
+            Cow::Borrowed(value) => Some(value),
+            Cow::Owned(_) => None,
+        }
+    }
+
     /// The caller must admit the complete owned output row before this copy.
     pub(crate) fn into_owned(self) -> Value {
         self.value.into_owned()

@@ -16,7 +16,7 @@ mod eligibility;
 use eligibility::EligibleMapping;
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
 
 pub(super) struct CandidateFilter<'a> {
     pub(super) predicates: &'a hawdb_optimizer_predicate::SearchPredicateSet,
@@ -85,6 +85,9 @@ impl SearchOutOfCoreReader {
         }
         let mut file = SpillFile::create(&self.config, context, scratch)?;
         file.write_all(CANDIDATE_FILE_HEADER)?;
+        let keys = crate::MetadataKeys::for_predicates(predicates);
+        let postings_query =
+            super::postings::Query::new(predicates, context.map(|context| context.memory))?;
         let mut offset = CANDIDATE_FILE_HEADER.len() as u64;
         let mut cardinality = 0usize;
 
@@ -114,7 +117,9 @@ impl SearchOutOfCoreReader {
                     .transpose()?;
                 let mut encoded = Vec::new();
                 let mut block_cardinality = 0usize;
-                let mut append = |document: &SearchMetadataDocument| {
+                // Shared by the postings and scan paths: postings documents
+                // already satisfy every predicate.
+                let mut append = |document: &SearchMetadataDocument, satisfied: bool| {
                     if let Some(eligibility) = &eligibility {
                         eligibility.charge_visit()?;
                     }
@@ -124,11 +129,13 @@ impl SearchOutOfCoreReader {
                     {
                         return Ok(());
                     }
-                    if !crate::search_metadata_matches_predicates(
-                        &document.id,
-                        &document.metadata,
-                        predicates,
-                    ) {
+                    if !satisfied
+                        && !crate::search_metadata_matches_predicates(
+                            &document.id,
+                            &document.metadata,
+                            predicates,
+                        )
+                    {
                         return Ok(());
                     }
                     if let Some(eligibility) = &mut eligibility
@@ -161,11 +168,35 @@ impl SearchOutOfCoreReader {
                     block_cardinality = block_cardinality.saturating_add(1);
                     Ok(())
                 };
-                if let Some(context) = context {
-                    self.visit_query_metadata_segment(artifact, segment, metrics, context, append)?;
+                // Equality filters read only the matching documents' postings;
+                // other filters decode only the predicates' fields (#1613).
+                let indexed = match &postings_query {
+                    Some(query) => self.visit_postings_segment(
+                        artifact,
+                        segment,
+                        query,
+                        metrics,
+                        context,
+                        |document| append(document, true),
+                    )?,
+                    None => false,
+                };
+                if indexed {
+                    report.postings_segment_count = report.postings_segment_count.saturating_add(1);
+                } else if let Some(context) = context {
+                    self.visit_query_metadata_segment(
+                        artifact,
+                        segment,
+                        metrics,
+                        context,
+                        Some(&keys),
+                        |document| append(document, false),
+                    )?;
                 } else {
-                    for document in self.read_metadata_segment(artifact, segment, metrics)? {
-                        append(&document)?;
+                    for document in
+                        self.read_metadata_segment_keys(artifact, segment, metrics, Some(&keys))?
+                    {
+                        append(&document, false)?;
                     }
                 }
                 if encoded.len() as u64 > self.config.max_candidate_block_bytes.get() {
@@ -317,6 +348,44 @@ impl CandidateSet<'_> {
                 .vector_ordinals_for_layer(layer, max_bytes, task_context, metrics)
                 .map(Some),
         }
+    }
+}
+
+#[cfg(test)]
+impl CandidateSet<'_> {
+    /// Every candidate as `(layer, segment, document ID, vector ordinal)`.
+    pub(super) fn entries_for_test(&self) -> Vec<(usize, u64, String, Option<u64>)> {
+        let Self::Spilled(set) = self else {
+            return Vec::new();
+        };
+        let mut metrics = SearchOutOfCoreMetrics::default();
+        let mut entries = Vec::new();
+        for block in &set.blocks {
+            let bytes = set.read_block_bytes(block, &mut metrics).unwrap();
+            let mut offset = 0;
+            while offset < bytes.len() {
+                let length =
+                    u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+                let id = std::str::from_utf8(&bytes[offset + 4..offset + 4 + length]).unwrap();
+                offset += 4 + length;
+                let ordinal = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
+                offset += 8;
+                entries.push((
+                    block.layer,
+                    block.segment_id,
+                    id.to_string(),
+                    (ordinal != u64::MAX).then_some(ordinal),
+                ));
+            }
+            assert_eq!(
+                entries
+                    .iter()
+                    .filter(|entry| entry.0 == block.layer && entry.1 == block.segment_id)
+                    .count(),
+                block.cardinality
+            );
+        }
+        entries
     }
 }
 

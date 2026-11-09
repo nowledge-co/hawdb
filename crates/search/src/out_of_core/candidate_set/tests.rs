@@ -16,7 +16,14 @@ impl Drop for Directory {
     }
 }
 
-pub(super) fn with_query(
+pub(in crate::out_of_core) fn with_query(
+    work: impl FnOnce(&Path, &ProjectFileDescriptors, &BuildMemory, QueryContext<'_>, &ScratchDirectory),
+) {
+    with_query_memory(4 << 20, work)
+}
+
+pub(in crate::out_of_core) fn with_query_memory(
+    memory_bytes: u64,
     work: impl FnOnce(&Path, &ProjectFileDescriptors, &BuildMemory, QueryContext<'_>, &ScratchDirectory),
 ) {
     let directory = Directory(crate::test_temp_dir().join(format!(
@@ -29,7 +36,7 @@ pub(super) fn with_query(
     let parent = SourceDirectory::capture(&directory.0, &project.io_context()).unwrap();
     let governor = governor();
     let permit = governor
-        .try_admit(RuntimeWorkRequest::background_maintenance(4 << 20).with_io_wave_slots(1))
+        .try_admit(RuntimeWorkRequest::background_maintenance(memory_bytes).with_io_wave_slots(1))
         .unwrap();
     let task = permit.bind_task_context(hawdb_core::RuntimeTaskContext::with_timeout(
         std::time::Duration::from_secs(10),

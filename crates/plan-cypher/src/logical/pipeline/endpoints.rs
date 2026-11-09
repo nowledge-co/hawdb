@@ -119,7 +119,17 @@ fn bind_with(
         let program = pattern.program.clone();
         let graph_variables = pattern.graph_variables.clone();
         let inner = |relationship: &str| program_endpoints(&program, relationship);
-        for (_, argument) in &mut pattern.arguments {
+        for argument in pattern
+            .arguments
+            .iter_mut()
+            .map(|(_, argument)| argument)
+            .chain(
+                pattern
+                    .seeds
+                    .iter_mut()
+                    .flat_map(|seeds| seeds.expressions.iter_mut()),
+            )
+        {
             bind_with(argument, lookup)?;
         }
         for body in pattern

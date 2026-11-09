@@ -311,8 +311,11 @@ fn restrict_expression(
     predicate_for: &impl Fn(&str) -> Predicate,
 ) {
     match expression {
+        // The seeded program reads the same entities and is restricted alike.
         ProjectionExpression::Pattern(pattern) => {
-            restrict_program(&mut pattern.program, predicate_for);
+            for program in pattern.programs_mut() {
+                restrict_program(program, predicate_for);
+            }
         }
         // An endpoint without its pattern step is read from the graph by id.
         ProjectionExpression::RelationshipEndpoint {
@@ -584,20 +587,22 @@ fn validate_expression(
     predicate_for: &impl Fn(&str) -> Predicate,
 ) -> Result<()> {
     match expression {
+        // Both the unseeded and the seeded program must be restricted.
         ProjectionExpression::Pattern(pattern) => {
-            let program = &pattern.program;
-            for step in &program.steps {
-                let variable = match step {
-                    GraphMatchStep::Node(node) => &node.variable,
-                    GraphMatchStep::Expand { target, .. } => &target.variable,
-                    GraphMatchStep::ShortestPath(_) => continue,
-                };
-                if !admits(program.predicate.as_ref(), &predicate_for(variable)) {
-                    return Err(unrestricted("pattern expression"));
+            for program in pattern.programs() {
+                for step in &program.steps {
+                    let variable = match step {
+                        GraphMatchStep::Node(node) => &node.variable,
+                        GraphMatchStep::Expand { target, .. } => &target.variable,
+                        GraphMatchStep::ShortestPath(_) => continue,
+                    };
+                    if !admits(program.predicate.as_ref(), &predicate_for(variable)) {
+                        return Err(unrestricted("pattern expression"));
+                    }
                 }
-            }
-            if let Some(predicate) = &program.predicate {
-                validate_predicate_expressions(predicate, predicate_for)?;
+                if let Some(predicate) = &program.predicate {
+                    validate_predicate_expressions(predicate, predicate_for)?;
+                }
             }
         }
         ProjectionExpression::RelationshipValueEndpoint { visibility, .. } => {

@@ -219,6 +219,10 @@ mod relationship_scan_tests;
 mod labeled_expand_point_read_tests;
 
 #[cfg(test)]
+#[path = "graph_read/adjacency_descriptor_read_tests.rs"]
+mod adjacency_descriptor_read_tests;
+
+#[cfg(test)]
 #[path = "graph_read/relationship_stream_tests.rs"]
 mod relationship_stream_tests;
 
