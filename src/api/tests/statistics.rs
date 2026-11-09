@@ -339,10 +339,9 @@ fn bounded_multi_hop_statistics_drive_expand_estimates() {
 fn absent_complete_bounded_path_keeps_runtime_match_and_charges_dead_end_prefixes() {
     let mut db = Database::new();
     db.query("CREATE (:A {id: 0})").unwrap();
+    db.query("CREATE (:C {id: 0})").unwrap();
     for id in 0..64 {
         db.query(&format!("MERGE (:A {{id: 0}})-[:R]->(:B {{id: {id}}})"))
-            .unwrap();
-        db.query(&format!("MERGE (:B {{id: {id}}})-[:S]->(:C {{id: 0}})"))
             .unwrap();
     }
     let statistics = db.statistics().unwrap();
@@ -350,11 +349,12 @@ fn absent_complete_bounded_path_keeps_runtime_match_and_charges_dead_end_prefixe
     assert!(!statistics.bounded_path_counts.is_empty());
     // Every R prefix reaches a B with no outgoing R: the runtime must inspect
     // all 64 first-hop edges before finding no length-two completion.
-    let query = "MATCH (a:A)-[:R*2..2]->(b:B)-[:S]->(c:C) RETURN c.id AS id";
+    let query = "MATCH (a:A)-[:R*2..2]->(b:B)-[:R]->(c:C) RETURN c.id AS id";
     let explain = db.explain_query(query).unwrap();
     assert!(explain.trace.selected_plan_cost.estimated_rows > 0);
     assert!(explain.trace.selected_plan_cost.cost >= 64);
-    assert!(explain.physical_plan.explain(0).contains("GraphMatchExec"));
+    let physical = explain.physical_plan.explain(0);
+    assert!(physical.contains("GraphMatchExec"), "{physical}");
     assert!(db.query(query).unwrap().rows.is_empty());
 }
 
