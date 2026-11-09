@@ -147,9 +147,16 @@ impl Transformer<'_> {
                     Box::new(self.scalar(self.tree.required(node, rule_id!("x_scalar")), depth)?);
                 let value = self.value(self.tree.required(node, rule_id!("v_value")), depth)?;
                 if self.tree.rule_id(node) == rule_id!("x_json") {
+                    let null_on_non_scalar = self.tokens
+                        [self.tree.node(node).start..self.tree.node(node).end]
+                        .iter()
+                        .rev()
+                        .nth(1)
+                        .is_some_and(|token| token.is_keyword(self.input, "NONSCALAR"));
                     ScalarExpressionKind::JsonValue {
                         expression,
                         path: value,
+                        null_on_non_scalar,
                     }
                 } else {
                     ScalarExpressionKind::Left {

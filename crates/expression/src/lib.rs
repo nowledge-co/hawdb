@@ -177,6 +177,7 @@ pub enum ProjectionExpression {
     JsonValue {
         expression: Box<ProjectionExpression>,
         path: String,
+        null_on_non_scalar: bool,
     },
     Left {
         expression: Box<ProjectionExpression>,
@@ -1066,7 +1067,9 @@ impl hawdb_core::RetainedHeapBytes for ProjectionExpression {
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(left),
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(right),
             ]),
-            Self::JsonValue { expression, path } => hawdb_core::checked_retained_heap_sum([
+            Self::JsonValue {
+                expression, path, ..
+            } => hawdb_core::checked_retained_heap_sum([
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(expression),
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(path),
             ]),

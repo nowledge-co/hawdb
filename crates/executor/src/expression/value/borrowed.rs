@@ -574,7 +574,11 @@ fn evaluate_scoped<'a>(
             }
             Ok(ProjectedValue::scalar(Value::Null))
         }
-        ProjectionExpression::JsonValue { expression, path } => {
+        ProjectionExpression::JsonValue {
+            expression,
+            path,
+            null_on_non_scalar,
+        } => {
             let input = evaluate(expression)?;
             let json = match input.as_ref() {
                 Value::Null => return Ok(ProjectedValue::scalar(Value::Null)),
@@ -628,6 +632,7 @@ fn evaluate_scoped<'a>(
                     account,
                     || Value::String(value.clone()),
                 ),
+                Some(_) if *null_on_non_scalar => Ok(ProjectedValue::scalar(Value::Null)),
                 Some(_) => Err(HawDBError::Execution(
                     "JSON_VALUE selected value is not scalar".into(),
                 )),
