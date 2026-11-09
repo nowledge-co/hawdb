@@ -65,6 +65,9 @@ impl PhysicalPlan {
             if !program.id_set_conjuncts.is_empty() {
                 output.push_str("[id_set]");
             }
+            if !program.seeded_union.is_empty() {
+                output.push_str("[seeded_union]");
+            }
         }
         match self.children() {
             PlanChildren::None => {}

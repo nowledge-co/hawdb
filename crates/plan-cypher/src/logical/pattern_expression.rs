@@ -192,6 +192,7 @@ pub(super) fn plan_pattern_expression(
                     optional: false,
                     hash_join: None,
                     id_set_conjuncts: Vec::new(),
+                    seeded_union: Vec::new(),
                 },
                 variable,
                 column,
@@ -213,6 +214,7 @@ pub(super) fn plan_pattern_expression(
         optional: false,
         hash_join: None,
         id_set_conjuncts: Vec::new(),
+        seeded_union: Vec::new(),
     };
 
     // The body sees the introduced variables as graph variables. Enclosing

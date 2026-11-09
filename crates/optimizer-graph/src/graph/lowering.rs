@@ -51,6 +51,7 @@ mod meeting_join;
 mod mutation;
 mod ordered;
 mod procedure;
+mod seeded_union;
 mod simple;
 mod traversal;
 

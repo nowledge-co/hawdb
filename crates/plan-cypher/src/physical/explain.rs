@@ -486,6 +486,21 @@ impl PhysicalPlan {
                 if !program.id_set_conjuncts.is_empty() {
                     hash_join.push_str(&format!(" id_set_conjuncts={:?}", program.id_set_conjuncts));
                 }
+                if !program.seeded_union.is_empty() {
+                    let branches = program
+                        .seeded_union
+                        .iter()
+                        .enumerate()
+                        .map(|(index, branch)| {
+                            format!(
+                                "branch {index}: steps={:?} predicate={:?} predicate_after_steps={:?}",
+                                branch.steps, branch.predicate, branch.predicate_steps
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    hash_join.push_str(&format!(" seeded_union=[{branches}]"));
+                }
                 format!("{pad}GraphMatchExec optional={} steps={:?} imports={:?} introduced={:?}{projected}{projected_relationships} predicate={:?}{placement}{edge}{hash_join}", program.optional, program.steps, program.imports, program.introduced, program.predicate)
             }
             PhysicalPlan::NodeColumnLookupExec {

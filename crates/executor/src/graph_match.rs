@@ -164,6 +164,14 @@ pub(crate) fn stream_graph_match(
     if limit.is_reached(0) {
         return Ok(BatchControl::Stop);
     }
+    // A union of seeded branches produces exactly the program's rows (#1625).
+    // Seed scoring keeps the program it annotates.
+    if !program.seeded_union.is_empty()
+        && input.is_none()
+        && context.observer.seed_graph_scoring_input().is_none()
+    {
+        return stream_seeded_union(program, source, store, context, limit, emit);
+    }
     // Seed scoring annotates every hop of a per-row match; it keeps the
     // per-row program, which the hash join's steps remain.
     if let (Some(join), Some(input)) = (&program.hash_join, input)
@@ -281,6 +289,44 @@ pub(crate) fn stream_graph_match(
         return Ok(BatchControl::Stop);
     }
     Ok(control)
+}
+
+/// Runs each branch of `program.seeded_union` in turn. The branches
+/// partition the program's rows, so their concatenation is its output; only
+/// the row order differs.
+fn stream_seeded_union(
+    program: &GraphMatchProgram,
+    source: &mut dyn BindingBatchSource,
+    store: &dyn GraphExecutionRead,
+    context: BatchExecutionContext<'_>,
+    limit: ExecutionLimit,
+    emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+) -> Result<BatchControl> {
+    let mut emitted = 0usize;
+    for branch in &program.seeded_union {
+        let remaining = ExecutionLimit {
+            output_rows: limit.output_rows.map(|cap| cap.saturating_sub(emitted)),
+        };
+        if remaining.is_reached(0) {
+            return Ok(BatchControl::Stop);
+        }
+        let control = stream_graph_match(
+            branch,
+            None,
+            source,
+            store,
+            context,
+            remaining,
+            &mut |batch| {
+                emitted = emitted.saturating_add(batch.len());
+                emit(batch)
+            },
+        )?;
+        if control == BatchControl::Stop {
+            return Ok(BatchControl::Stop);
+        }
+    }
+    Ok(BatchControl::Continue)
 }
 
 /// What a correlated match reads besides its store and memory accounts.

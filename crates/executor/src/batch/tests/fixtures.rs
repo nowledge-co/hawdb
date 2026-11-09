@@ -49,6 +49,7 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
                     optional: false,
                     hash_join: None,
                     id_set_conjuncts: Vec::new(),
+                    seeded_union: Vec::new(),
                 },
                 input: None,
             },

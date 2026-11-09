@@ -143,6 +143,15 @@ pub(super) fn write_program(output: &mut String, program: &GraphMatchProgram) {
         }
         output.push(']');
     }
+    // The branches are what runs, so a cached plan keeps each of them.
+    if !program.seeded_union.is_empty() {
+        output.push_str(",seeded_union=[");
+        for branch in &program.seeded_union {
+            write_program(output, branch);
+            output.push(';');
+        }
+        output.push(']');
+    }
 }
 
 fn write_projection(

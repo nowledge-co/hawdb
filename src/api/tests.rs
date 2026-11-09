@@ -69,6 +69,7 @@ mod decimal;
 mod default_pipeline;
 mod delete_mutations;
 mod descriptor_capacity;
+mod disjunctive_seed_union;
 mod early_match_predicates;
 mod edge_predicates;
 mod entity_labels;

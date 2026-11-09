@@ -305,6 +305,51 @@ pub(super) fn meeting_join_estimate(
     })
 }
 
+/// The steps of a single-path program restarted at the first occurrence of
+/// `variable`, whose node pattern also requires `property = value` so that an
+/// index can seek it (#1625). `None` when the steps are not one plain path,
+/// `variable` is not one of its nodes, the node pattern already requires
+/// another value for `property`, or the walk would reverse a named
+/// variable-length relationship, which binds its list in text order.
+pub(super) fn seeded_path_steps(
+    steps: &[GraphMatchStep],
+    variable: &str,
+    property: &str,
+    value: &Value,
+) -> Option<Vec<GraphMatchStep>> {
+    let mut paths = split_paths(steps)?;
+    let [path] = paths.as_mut_slice() else {
+        return None;
+    };
+    let start = path
+        .nodes
+        .iter()
+        .position(|node| node.variable == variable)?;
+    if path.relationships[..start]
+        .iter()
+        .any(|relationship| relationship.relationship.is_some() && !relationship.single_hop())
+    {
+        return None;
+    }
+    let properties = &mut path.nodes[start].properties;
+    if properties
+        .get(property)
+        .is_some_and(|existing| existing != value)
+    {
+        return None;
+    }
+    properties.insert(property.to_string(), value.clone());
+    let mut seeded = Vec::with_capacity(steps.len());
+    emit_path(path, start, &mut seeded);
+    Some(seeded)
+}
+
+impl PathRelationship {
+    fn single_hop(&self) -> bool {
+        self.min_hops == 1 && self.max_hops == 1
+    }
+}
+
 /// Splits steps into paths; `None` for shapes this pass does not reorder.
 fn split_paths(steps: &[GraphMatchStep]) -> Option<Vec<PatternPath>> {
     let mut paths: Vec<PatternPath> = Vec::new();
@@ -489,6 +534,7 @@ mod tests {
             optional: true,
             hash_join: None,
             id_set_conjuncts: Vec::new(),
+            seeded_union: Vec::new(),
         }
     }
 

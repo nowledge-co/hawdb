@@ -1436,6 +1436,7 @@ fn bind_read_clauses(
                         optional: *optional,
                         hash_join: None,
                         id_set_conjuncts: Vec::new(),
+                        seeded_union: Vec::new(),
                     },
                     input: input.map(Box::new),
                 });
@@ -1490,6 +1491,7 @@ fn restore_bindings(input: Option<LogicalPlan>, scope: &mut Scope) -> LogicalPla
             optional: false,
             hash_join: None,
             id_set_conjuncts: Vec::new(),
+            seeded_union: Vec::new(),
         },
         input: input.map(Box::new),
     }

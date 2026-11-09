@@ -296,6 +296,11 @@ fn restrict_program(program: &mut GraphMatchProgram, predicate_for: &impl Fn(&st
     // Conjunct placement is computed at lowering from the final predicate.
     program.predicate_steps.clear();
     program.edge_predicates.clear();
+    // Lowering derives the seeded branches from the restricted program;
+    // a program that already has them restricts each one alike.
+    for branch in &mut program.seeded_union {
+        restrict_program(branch, predicate_for);
+    }
 }
 
 fn restrict_projections(items: &mut [Projection], predicate_for: &impl Fn(&str) -> Predicate) {

@@ -27,6 +27,7 @@ pub(super) fn restore(input: LogicalPlan, scope: &Scope, needed: &BTreeSet<Strin
             optional: false,
             hash_join: None,
             id_set_conjuncts: Vec::new(),
+            seeded_union: Vec::new(),
         },
         input: Some(Box::new(input)),
     }

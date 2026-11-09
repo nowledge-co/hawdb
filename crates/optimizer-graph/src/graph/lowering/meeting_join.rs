@@ -48,6 +48,7 @@ pub(super) fn lower_graph_match_program(
         labels: Some(&labels),
     };
     let joined = input.and_then(|input| hash_join_program(program, input, costing, decisions));
+    let binder = program;
     let program = joined.unwrap_or_else(|| {
         let mut program = placed_graph_match_program(
             anchored_graph_match_program(program, costing, decisions),
@@ -56,7 +57,12 @@ pub(super) fn lower_graph_match_program(
         program.hash_join = None;
         program
     });
-    plan_id_sets(program, options, decisions)
+    let mut program = plan_id_sets(program, options, decisions);
+    if input.is_none() {
+        program.seeded_union =
+            super::seeded_union::seeded_union_branches(binder, &program, costing, decisions);
+    }
+    program
 }
 
 fn hash_join_program(
