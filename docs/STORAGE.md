@@ -520,6 +520,20 @@ Explicit deep scrub bypasses the cache and verifies the complete descriptor and
 adjacency closure. Backup, restore, repair, and reclamation retain the data,
 descriptor pages, and root together.
 
+Query batch execution opens a `DescriptorLeafScope` on its thread, next to
+the canonical point-read scope (#1615). Inside it, adjacency endpoint seeks
+keep the last few verified descriptor leaves they reached, each with the page
+reference that selected it, its tree root and the codec limits it was
+validated under (only cache-resident pages, at most eight and an eighth of the
+cache capacity, pinned until the outermost scope closes). A later endpoint
+prefix whose complete key range lies strictly inside a retained leaf of the
+same tree root and codec limits is answered from that leaf without the root
+traversal or any cache lookup; prefixes touching a leaf edge or spanning
+leaves use the ordinary traversal. Results, order, poison and limits are
+unchanged: the retained leaf counts as one visited page against the page and
+page-byte limits. Read reports then show one visited page, no cache hit or
+miss, and `descriptor_retained_leaf_hits = 1`.
+
 Persistent property projections use the same descriptor demand boundary for
 equality, range, full-text, composite-equality, relationship-equality, and
 relationship-range indexes. Normal open reads the bounded definition directory
