@@ -13,7 +13,7 @@ chrono = { version = "0.4", default-features = false, features = ["std"] }
 getrandom = "0.4"
 uuid = "1"
 regex = "1"
-num-bigint = "0.4.8"
+num-bigint = "0.5.1"
 num-traits = "0.2.19"
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
