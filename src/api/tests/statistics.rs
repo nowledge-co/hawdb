@@ -338,8 +338,8 @@ fn bounded_multi_hop_statistics_drive_expand_estimates() {
 #[test]
 fn absent_complete_bounded_path_keeps_runtime_match_and_cardinality_floor() {
     let mut db = Database::new();
-    db.query("CREATE (:A {id: 1})-[:R]->(:B {id: 2})-[:R]->(:C {id: 3})")
-        .unwrap();
+    db.query("CREATE (:A {id: 1})-[:R]->(:B {id: 2})").unwrap();
+    db.query("MERGE (:B {id: 2})-[:R]->(:C {id: 3})").unwrap();
     let statistics = db.statistics().unwrap();
     assert_eq!(statistics.bounded_path_complete_through_hop, Some(3));
     assert!(!statistics.bounded_path_counts.is_empty());
