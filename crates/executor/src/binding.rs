@@ -342,7 +342,149 @@ pub fn relationship_memory_bytes(relationship: &RelRecord) -> usize {
 }
 
 pub fn value_payload_bytes(value: &Value) -> usize {
-    value_ref_payload_bytes(value.as_ref())
+    // Match the owned value directly: the same table as
+    // `value_ref_payload_bytes`, without building a `ValueRef` per value (#1615).
+    match value {
+        Value::Null => 0,
+        Value::Bool(_) => std::mem::size_of::<bool>(),
+        Value::Int(_) => std::mem::size_of::<i64>(),
+        Value::Float(_) => std::mem::size_of::<f64>(),
+        Value::Decimal(_) => 17,
+        Value::String(value) => value.len(),
+        Value::Binary(value) => value.len(),
+        Value::Vector(value) => value.encoded().len(),
+        Value::Uuid(_) => 16,
+        Value::Date(_) => 4,
+        Value::LocalTime(_) => 8,
+        Value::LocalDateTime(_) => 12,
+        Value::DateTime(_) => 16,
+        Value::Duration(_) => 28,
+        Value::List(values) => values.iter().fold(0usize, |total, value| {
+            total.saturating_add(value_payload_bytes(value))
+        }),
+        Value::Map(values) => map_payload_bytes(values),
+    }
+}
+
+/// A row's resident bytes (`binding_memory_bytes`, the ledger charge) and
+/// transport bytes (`binding_payload_bytes`, the observer statistic).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct BindingSizes {
+    pub(crate) memory: usize,
+    pub(crate) payload: usize,
+}
+
+/// Both sizes of one row from a single walk of its values and graph records
+/// (#1615). Every term and saturating sum matches the separate walks, so the
+/// results are identical to `binding_memory_bytes` and `binding_payload_bytes`.
+pub(crate) fn binding_sizes(binding: &Binding) -> BindingSizes {
+    let mut graph_memory = 0usize;
+    let mut graph_payload = 0usize;
+    let mut nodes = 0usize;
+    for (name, node) in binding.nodes.iter() {
+        nodes = nodes.saturating_add(1);
+        let fixed = |total: usize| {
+            total
+                .saturating_add(name.len())
+                .saturating_add(std::mem::size_of_val(&node.id))
+                .saturating_add(
+                    node.labels
+                        .len()
+                        .saturating_mul(std::mem::size_of::<LabelId>()),
+                )
+        };
+        let (memory, payload) = map_sizes(&node.properties);
+        graph_memory = fixed(graph_memory).saturating_add(memory);
+        graph_payload = fixed(graph_payload).saturating_add(payload);
+    }
+    let mut relationships = 0usize;
+    for (name, row) in binding.relationships.iter() {
+        relationships = relationships.saturating_add(1);
+        let fixed = |total: usize| {
+            total
+                .saturating_add(name.len())
+                .saturating_add(std::mem::size_of_val(&row.id))
+                .saturating_add(std::mem::size_of_val(&row.source))
+                .saturating_add(std::mem::size_of_val(&row.target))
+                .saturating_add(std::mem::size_of_val(&row.rel_type))
+        };
+        let (memory, payload) = map_sizes(&row.properties);
+        graph_memory = fixed(graph_memory).saturating_add(memory);
+        graph_payload = fixed(graph_payload).saturating_add(payload);
+    }
+    let mut values_memory = 0usize;
+    let mut values_payload = 0usize;
+    for (name, value) in &binding.values {
+        let (resident, payload) = match value {
+            Value::List(_) | Value::Map(_) => {
+                let (memory, payload) = value_sizes(value);
+                (memory.saturating_sub(std::mem::size_of::<Value>()), payload)
+            }
+            _ => {
+                let payload = value_payload_bytes(value);
+                (payload, payload)
+            }
+        };
+        values_memory = values_memory
+            .saturating_add(name.len())
+            .saturating_add(resident)
+            .saturating_add(std::mem::size_of::<usize>() * 6);
+        values_payload = values_payload
+            .saturating_add(name.len())
+            .saturating_add(payload);
+    }
+    BindingSizes {
+        memory: std::mem::size_of::<Binding>()
+            .saturating_add(graph_memory)
+            .saturating_add(graph_slot_memory_bytes(nodes))
+            .saturating_add(graph_slot_memory_bytes(relationships))
+            .saturating_add(values_memory),
+        payload: values_payload.saturating_add(graph_payload),
+    }
+}
+
+/// `(value_memory_bytes, value_payload_bytes)` from one walk.
+fn value_sizes(value: &Value) -> (usize, usize) {
+    match value {
+        Value::List(values) => {
+            let (memory, payload) = values.iter().fold(
+                (std::mem::size_of::<Vec<Value>>(), 0usize),
+                |(memory, payload), value| {
+                    let (value_memory, value_payload) = value_sizes(value);
+                    (
+                        memory.saturating_add(value_memory),
+                        payload.saturating_add(value_payload),
+                    )
+                },
+            );
+            (std::mem::size_of::<Value>().saturating_add(memory), payload)
+        }
+        Value::Map(values) => {
+            let (memory, payload) = map_sizes(values);
+            (std::mem::size_of::<Value>().saturating_add(memory), payload)
+        }
+        // Scalars do not recurse; each walk is a constant-time match.
+        scalar => (value_memory_bytes(scalar), value_payload_bytes(scalar)),
+    }
+}
+
+/// `(map_memory_bytes, map_payload_bytes)` from one walk.
+fn map_sizes(values: &BTreeMap<String, Value>) -> (usize, usize) {
+    values.iter().fold(
+        (std::mem::size_of::<BTreeMap<String, Value>>(), 0usize),
+        |(memory, payload), (name, value)| {
+            let (value_memory, value_payload) = value_sizes(value);
+            (
+                memory
+                    .saturating_add(std::mem::size_of::<(String, Value)>() * 3)
+                    .saturating_add(name.len())
+                    .saturating_add(value_memory),
+                payload
+                    .saturating_add(name.len())
+                    .saturating_add(value_payload),
+            )
+        },
+    )
 }
 
 pub fn value_ref_payload_bytes(value: hawdb_core::ValueRef<'_>) -> usize {
@@ -559,5 +701,145 @@ mod tests {
         assert_eq!(binding_memory_bytes(&row), std::mem::size_of::<Binding>());
         drop(lease);
         assert_eq!(ledger.snapshot().used_bytes, 0);
+    }
+
+    /// Every kind of value, nested in lists and maps, and the node,
+    /// relationship and path values the executor builds for graph entities.
+    fn sized_values() -> Vec<Value> {
+        use hawdb_core::temporal;
+        let scalars = vec![
+            Value::Null,
+            Value::Bool(true),
+            Value::Int(-7),
+            Value::Float(2.5),
+            Value::Decimal(hawdb_core::Decimal::new(12_345, 2).unwrap()),
+            Value::String(String::new()),
+            Value::String("text".repeat(33)),
+            Value::Binary(vec![0xa5; 19]),
+            Value::Vector(hawdb_core::Vector::new(&[1.0, -2.0, 3.5]).unwrap()),
+            Value::Uuid(hawdb_core::Uuid::from_bytes([0x5a; 16])),
+            Value::Date(temporal::parse_date("2026-11-09").unwrap()),
+            Value::LocalTime(temporal::parse_local_time("23:59:59.999999999").unwrap()),
+            Value::LocalDateTime(temporal::parse_local_datetime("2026-10-30T12:00").unwrap()),
+            Value::DateTime(temporal::parse_datetime("2026-10-30T12:00:00-05:30").unwrap()),
+            Value::duration(temporal::parse_duration("-P1Y2M3DT4.5S").unwrap()),
+        ];
+        let mut catalog = hawdb_core::Catalog::default();
+        let label = catalog.get_or_create_label("Post");
+        let rel_type = catalog.get_or_create_rel_type("HAS_CREATOR");
+        let node = NodeRecord {
+            id: NodeId(41),
+            labels: BTreeSet::from([label]),
+            properties: BTreeMap::from([
+                ("content".into(), Value::String("x".repeat(300))),
+                ("tags".into(), Value::List(scalars.clone())),
+                ("empty".into(), Value::Null),
+            ]),
+        };
+        let relationship = RelRecord {
+            id: RelId(9),
+            source: NodeId(41),
+            target: NodeId(42),
+            rel_type,
+            properties: BTreeMap::from([("since".into(), Value::Int(2010))]),
+        };
+        let node_value = crate::expression::node_value(&node, &catalog);
+        let relationship_value = crate::expression::relationship_value(&relationship, &catalog);
+        let path = crate::expression::path_value(
+            vec![node_value.clone(), node_value.clone()],
+            vec![relationship_value.clone()],
+        );
+        let nested_map = Value::Map(
+            scalars
+                .iter()
+                .enumerate()
+                .map(|(index, value)| (format!("k{index}"), value.clone()))
+                .collect(),
+        );
+        let deep = Value::List(vec![
+            Value::List(vec![]),
+            Value::Map(BTreeMap::new()),
+            Value::List(vec![nested_map.clone(), Value::List(scalars.clone())]),
+            Value::Map(BTreeMap::from([("inner".into(), path.clone())])),
+        ]);
+        scalars
+            .into_iter()
+            .chain([
+                Value::List(Vec::with_capacity(8)),
+                nested_map,
+                node_value,
+                relationship_value,
+                path,
+                deep,
+            ])
+            .collect()
+    }
+
+    #[test]
+    fn single_walk_sizes_equal_separate_walks_across_value_kinds() {
+        let values = sized_values();
+        for value in &values {
+            assert_eq!(
+                value_payload_bytes(value),
+                value_ref_payload_bytes(value.as_ref()),
+                "{value:?}"
+            );
+            assert_eq!(
+                value_sizes(value),
+                (value_memory_bytes(value), value_payload_bytes(value)),
+                "{value:?}"
+            );
+            if let Value::Map(map) = value {
+                assert_eq!(
+                    map_sizes(map),
+                    (map_memory_bytes(map), map_payload_bytes(map))
+                );
+            }
+        }
+        let record = |id: u64, properties: BTreeMap<String, Value>| NodeRecord {
+            id: NodeId(id),
+            labels: BTreeSet::from([LabelId(1), LabelId(2)]),
+            properties,
+        };
+        let mut rows = vec![
+            Binding::values(BTreeMap::new()),
+            Binding::scalar("only", Value::Null),
+        ];
+        for (index, value) in values.iter().enumerate() {
+            let mut properties = BTreeMap::from([("p".to_string(), value.clone())]);
+            properties.insert("name".into(), Value::String(format!("row-{index}")));
+            rows.push(Binding {
+                values: BTreeMap::from([
+                    (format!("v{index}"), value.clone()),
+                    ("all".to_string(), Value::List(values.clone())),
+                ]),
+                nodes: BTreeMap::from([
+                    ("a".to_string(), record(index as u64, properties.clone())),
+                    ("b".to_string(), record(7, BTreeMap::new())),
+                ])
+                .into(),
+                relationships: BTreeMap::from([(
+                    "r".to_string(),
+                    RelRecord {
+                        id: RelId(index as u64),
+                        source: NodeId(1),
+                        target: NodeId(2),
+                        rel_type: RelTypeId(3),
+                        properties,
+                    },
+                )])
+                .into(),
+            });
+        }
+        for row in &rows {
+            assert_eq!(
+                binding_sizes(row),
+                BindingSizes {
+                    memory: binding_memory_bytes(row),
+                    payload: binding_payload_bytes(row),
+                },
+                "{row:?}"
+            );
+        }
     }
 }

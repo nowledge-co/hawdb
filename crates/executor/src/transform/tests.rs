@@ -882,3 +882,80 @@ fn consuming_row_unwind_moves_the_source_column_out_of_the_rows() {
         assert_eq!(rows, expected, "consumes_source={consumes_source}");
     }
 }
+
+/// Unchanged column transfers move out of the consumed input row (#1615):
+/// the output equals copying every value, nested and computed values are
+/// copied, and a column projected twice moves once and is copied once.
+#[test]
+fn projection_moves_unchanged_columns_and_copies_everything_else() {
+    let input = BTreeMap::from([
+        ("int".to_string(), Value::Int(7)),
+        (
+            "list".to_string(),
+            Value::List(vec![Value::String("x".repeat(64))]),
+        ),
+        (
+            "map".to_string(),
+            Value::Map(BTreeMap::from([(
+                "inner".to_string(),
+                Value::String("inner".repeat(8)),
+            )])),
+        ),
+        ("text".to_string(), Value::String("t".repeat(32))),
+        ("unused".to_string(), Value::String("dropped".into())),
+    ]);
+    let Value::Map(map) = &input["map"] else {
+        unreachable!()
+    };
+    let Value::String(text) = &input["text"] else {
+        unreachable!()
+    };
+    let text_buffer = text.as_ptr();
+    let values = BTreeMap::from([
+        (
+            "a_text".to_string(),
+            ProjectedValue::borrowed(&input["text"]),
+        ),
+        (
+            "b_text_again".to_string(),
+            ProjectedValue::borrowed(&input["text"]),
+        ),
+        ("c_int".to_string(), ProjectedValue::borrowed(&input["int"])),
+        (
+            "d_list".to_string(),
+            ProjectedValue::borrowed(&input["list"]),
+        ),
+        ("e_map".to_string(), ProjectedValue::borrowed(&input["map"])),
+        (
+            "f_nested".to_string(),
+            ProjectedValue::borrowed(&map["inner"]),
+        ),
+        (
+            "g_computed".to_string(),
+            ProjectedValue::scalar(Value::String("computed".into())),
+        ),
+    ]);
+    let expected = values
+        .iter()
+        .map(|(name, value)| (name.clone(), value.as_ref().clone()))
+        .collect::<BTreeMap<_, _>>();
+    let sources = claim_projection_values(values, &input);
+    let claimed = sources
+        .iter()
+        .filter_map(|(name, source)| {
+            matches!(source, ProjectedSource::Column(_)).then_some(name.as_str())
+        })
+        .collect::<Vec<_>>();
+    // Inline scalars, nested values and computed values are never moved.
+    assert_eq!(claimed, ["a_text", "d_list", "e_map"]);
+    let output = owned_projection_values(sources, input);
+    assert_eq!(output, expected);
+    let Value::String(moved) = &output["a_text"] else {
+        unreachable!()
+    };
+    assert_eq!(moved.as_ptr(), text_buffer, "the column moved, not copied");
+    let Value::String(copied) = &output["b_text_again"] else {
+        unreachable!()
+    };
+    assert_ne!(copied.as_ptr(), text_buffer);
+}
