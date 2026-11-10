@@ -3273,6 +3273,41 @@ fn parses_coalesce_and_left_return_items() {
 }
 
 #[test]
+fn parses_json_value_null_on_nonscalar_as_an_explicit_mode() {
+    for (expression, expected) in [
+        ("json_value(m.metadata, '$.state')", false),
+        ("json_value(m.metadata, $path NULL ON NONSCALAR)", true),
+    ] {
+        let statement = parse(&format!("MATCH (m:Memory) RETURN {expression} AS state")).unwrap();
+        let Statement::Pipeline(query) = statement else {
+            panic!("expected match return");
+        };
+        let ReturnExpressionKind::Value(value) = &pipeline_return(&query).items[0].expression.kind
+        else {
+            panic!("expected scalar return");
+        };
+        let ScalarExpressionKind::JsonValue {
+            null_on_non_scalar, ..
+        } = &value.kind
+        else {
+            panic!("expected JSON_VALUE");
+        };
+        assert_eq!(*null_on_non_scalar, expected, "{expression}");
+    }
+
+    for expression in [
+        "json_value(m.metadata, '$.state' NULL ON ERROR)",
+        "json_value(m.metadata, '$.state' ERROR ON NONSCALAR)",
+        "json_value(m.metadata, '$.state' NULL NONSCALAR)",
+    ] {
+        assert!(
+            parse(&format!("MATCH (m:Memory) RETURN {expression}")).is_err(),
+            "{expression}"
+        );
+    }
+}
+
+#[test]
 fn parses_coalesce_and_left_predicates() {
     let statement = parse(
         "MATCH (m:Memory) WHERE COALESCE(m.created_at, m.last_accessed_at) >= $cutoff AND LEFT(COALESCE(m.title, ''), 4) = 'Graph' RETURN m.id",

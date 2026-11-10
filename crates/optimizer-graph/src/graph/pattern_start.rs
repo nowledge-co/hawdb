@@ -10,13 +10,14 @@
 //! walking a path from each candidate start, using only maintained catalog
 //! statistics, and names a start only when it is clearly cheaper.
 //!
-//! The estimate is the sum of the candidate rows every step reads. A step
-//! from `u` to `v` reads `rows * fanout`, where the fanout is the number of
-//! relationships of that type between the two labels, in the direction the
+//! The estimate sums adjacency probes and candidate visits at every depth,
+//! independently of the number of complete matches. Output fanout uses the
+//! number of relationships of that type between the two labels, in the direction the
 //! step walks, divided by the size of `u`'s label. Equality filters on `v`
 //! then keep `1 / distinct_count` of those rows, and reaching a bound or
-//! already visited node keeps `1 / label_count`. Variable-length steps repeat
-//! the one-hop fanout once per hop. Every input is an average, so the result
+//! already visited node keeps `1 / label_count`. Directed variable-length
+//! steps prefer published bounded-path counts and otherwise repeat the
+//! one-hop fanout per hop. Every input is an average, so the result
 //! is unknown (and the current start is kept) when a label or relationship
 //! type it needs is missing, unlabelled, a union (`:A:B`, #1400) or a type
 //! disjunction, or when advanced path statistics are not published.
@@ -173,7 +174,7 @@ pub(super) fn walk_work(
     walk(catalog, nodes, edges, start).map(|estimate| estimate.work)
 }
 
-/// The estimated work of a walk and the complete matches it produces.
+/// The estimated work of a walk and its positive planning cardinality.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct WalkEstimate {
     pub(super) work: f64,
@@ -188,7 +189,7 @@ pub(super) fn walk(
     start: usize,
 ) -> Option<WalkEstimate> {
     // Without published path statistics every fanout would be a guess.
-    if catalog.path_counts.is_empty() {
+    if catalog.path_counts.is_empty() && catalog.bounded_path_complete_through_hop.is_none() {
         return None;
     }
     // A repeated variable carries its label on one occurrence only.
@@ -209,8 +210,41 @@ pub(super) fn walk(
     if edges[..start].iter().any(|edge| !edge.reversible) {
         return None;
     }
-    let node = &nodes[start];
-    let (mut rows, mut work) = if node.bound {
+    let initial = node_work(catalog, &nodes[start])?;
+    let (mut rows, mut work) = (initial.rows, initial.work);
+    let mut visited = vec![false; nodes.len()];
+    visited[start] = true;
+    let steps = (start..edges.len())
+        .map(|index| (index, index + 1, edges[index].direction))
+        .chain(
+            (0..start)
+                .rev()
+                .map(|index| (index + 1, index, reverse(edges[index].direction))),
+        );
+    for (from, to, direction) in steps {
+        let edge = &edges[from.min(to)];
+        let expansion = expand_work(catalog, &nodes[from], &nodes[to], edge, direction)?;
+        work += rows * expansion.work;
+        let candidates = rows * expansion.rows;
+        let target = &nodes[to];
+        // A repeated variable closes a cycle: the step only checks identity.
+        let repeated = nodes
+            .iter()
+            .enumerate()
+            .any(|(position, node)| visited[position] && node.variable == target.variable);
+        rows = if target.bound || repeated {
+            candidates / catalog.label_count(target.label) as f64
+        } else {
+            candidates * node_selectivity(catalog, target)
+        };
+        visited[to] = true;
+    }
+    Some(WalkEstimate { work, rows })
+}
+
+/// Candidate reads and surviving rows of a path's initial node.
+pub(super) fn node_work(catalog: &OptimizerCatalog, node: &PathNode<'_>) -> Option<WalkEstimate> {
+    let (rows, work) = if node.bound {
         (1.0, 1.0)
     } else if !single_label(node.label) {
         return None;
@@ -236,33 +270,6 @@ pub(super) fn walk(
         let scanned = catalog.label_count(node.label) as f64;
         (scanned * node_selectivity(catalog, node), scanned)
     };
-    let mut visited = vec![false; nodes.len()];
-    visited[start] = true;
-    let steps = (start..edges.len())
-        .map(|index| (index, index + 1, edges[index].direction))
-        .chain(
-            (0..start)
-                .rev()
-                .map(|index| (index + 1, index, reverse(edges[index].direction))),
-        );
-    for (from, to, direction) in steps {
-        let edge = &edges[from.min(to)];
-        let fanout = fanout(catalog, &nodes[from], &nodes[to], edge, direction)?;
-        let candidates = rows * fanout;
-        work += candidates;
-        let target = &nodes[to];
-        // A repeated variable closes a cycle: the step only checks identity.
-        let repeated = nodes
-            .iter()
-            .enumerate()
-            .any(|(position, node)| visited[position] && node.variable == target.variable);
-        rows = if target.bound || repeated {
-            candidates / catalog.label_count(target.label) as f64
-        } else {
-            candidates * node_selectivity(catalog, target)
-        };
-        visited[to] = true;
-    }
     Some(WalkEstimate { work, rows })
 }
 
@@ -335,16 +342,27 @@ pub(super) fn meeting(
     })
 }
 
-/// Relationships read per source row by one step walking `direction`.
-fn fanout(
+/// Candidate visits and matching paths per source row. Relationship property
+/// tests reduce matches, but do not remove the reads needed to test them.
+pub(super) fn expand_work(
     catalog: &OptimizerCatalog,
     from: &PathNode<'_>,
     to: &PathNode<'_>,
     edge: &PathEdge<'_>,
     direction: RelationshipDirection,
-) -> Option<f64> {
+) -> Option<WalkEstimate> {
     let rel_type = edge.rel_type?;
-    if !single_label(from.label) || !single_label(to.label) {
+    let complete = catalog
+        .bounded_path_complete_through_hop
+        .is_some_and(|hop| edge.max_hops <= hop);
+    if !single_label(from.label)
+        || !single_label(to.label)
+        || (catalog.path_counts.is_empty()
+            && (!complete || direction == RelationshipDirection::Undirected))
+    {
+        return None;
+    }
+    if edge.max_hops > MAX_ESTIMATED_HOPS {
         return None;
     }
     let paths = |source: &str, target: &str| {
@@ -376,22 +394,102 @@ fn fanout(
                 |estimate| estimate.rows.max(1) as f64 / rows as f64,
             )
     });
-    let one_hop = relationships / catalog.label_count(from.label) as f64 * selectivity;
-    if edge.min_hops == 1 && edge.max_hops == 1 {
-        return Some(one_hop);
+    let population = catalog.label_count(from.label) as f64;
+    let one_hop = relationships / population;
+    let fallback = if one_hop > 0.0 {
+        one_hop
+    } else {
+        // A missing endpoint pair says nothing about prefixes through other
+        // labels. Use the type population instead of inventing a free probe.
+        catalog.relationship_count(rel_type) as f64 / population
+    };
+    let hop_fanout = |hop: usize| {
+        if hop == 0 {
+            return (1.0, false);
+        }
+        let count = if hop == 1 {
+            Some(relationships)
+        } else {
+            match direction {
+                RelationshipDirection::Outgoing => catalog
+                    .bounded_path_count(from.label, rel_type, to.label, hop)
+                    .map(|count| count as f64),
+                RelationshipDirection::Incoming => catalog
+                    .bounded_path_count(to.label, rel_type, from.label, hop)
+                    .map(|count| count as f64),
+                RelationshipDirection::Undirected => None,
+            }
+        };
+        match count {
+            Some(count) if count > 0.0 => (count / population, false),
+            // Raw zero is snapshot evidence, not a generic planning multiplier.
+            // Keep a positive planning floor; traversal work is estimated
+            // independently from the unfiltered prefixes below.
+            Some(_) => (1.0 / population, true),
+            None if one_hop > 0.0 => (one_hop.powi(hop as i32), false),
+            None => (fallback.powi(hop as i32).max(1.0 / population), false),
+        }
+    };
+    let mut rows = 0.0;
+    for hop in edge.min_hops..=edge.max_hops {
+        let (candidates, fallback) = hop_fanout(hop);
+        let matches = candidates * selectivity.powi(hop as i32);
+        rows += if fallback { 1.0 / population } else { matches };
     }
-    if edge.max_hops > MAX_ESTIMATED_HOPS {
-        return None;
+
+    // Completion counts describe output, not the prefixes inspected on the
+    // way there. Aggregate every endpoint label in the traversal direction,
+    // including depths below min_hops and failed prefixes of successful walks.
+    let mut prefixes = [0.0; MAX_ESTIMATED_HOPS + 1];
+    let orientations = |source: &str, target: &str| match direction {
+        RelationshipDirection::Outgoing => u8::from(source == from.label),
+        RelationshipDirection::Incoming => u8::from(target == from.label),
+        RelationshipDirection::Undirected => {
+            u8::from(source == from.label) + u8::from(target == from.label)
+        }
+    };
+    for ((source, kind, target), count) in &catalog.path_counts {
+        if kind == rel_type {
+            prefixes[1] += *count as f64 * orientations(source, target) as f64 / population;
+        }
     }
-    // A zero-hop trail binds the source itself; deeper hops repeat the fanout.
-    Some(
-        (edge.min_hops..=edge.max_hops)
-            .map(|hop| one_hop.powi(hop as i32))
-            .sum(),
-    )
+    // Preserve the conservative type-population fallback for first-hop
+    // candidates, including intermediate labels absent from path statistics.
+    prefixes[1] = prefixes[1].max(catalog.relationship_count(rel_type) as f64 / population);
+    if direction != RelationshipDirection::Undirected {
+        for ((source, kind, target, hop), count) in &catalog.bounded_path_counts {
+            if kind == rel_type
+                && (2..=edge.max_hops).contains(hop)
+                && catalog
+                    .bounded_path_complete_through_hop
+                    .is_none_or(|horizon| *hop <= horizon)
+            {
+                prefixes[*hop] += *count as f64 * orientations(source, target) as f64 / population;
+            }
+        }
+    }
+    // Probe the source even when no candidate survives. Every shorter prefix
+    // also probes its adjacency; only the final depth stops without probing.
+    let mut work = 1.0;
+    for (hop, prefix) in prefixes.iter().enumerate().take(edge.max_hops + 1).skip(1) {
+        let known = direction != RelationshipDirection::Undirected
+            && catalog
+                .bounded_path_complete_through_hop
+                .is_some_and(|horizon| hop <= horizon);
+        let candidates = if hop == 1 || *prefix > 0.0 || known {
+            *prefix
+        } else {
+            prefixes[1].powi(hop as i32)
+        };
+        work += candidates;
+        if hop < edge.max_hops {
+            work += candidates;
+        }
+    }
+    Some(WalkEstimate { work, rows })
 }
 
-fn node_selectivity(catalog: &OptimizerCatalog, node: &PathNode<'_>) -> f64 {
+pub(super) fn node_selectivity(catalog: &OptimizerCatalog, node: &PathNode<'_>) -> f64 {
     if !single_label(node.label) {
         return 1.0;
     }

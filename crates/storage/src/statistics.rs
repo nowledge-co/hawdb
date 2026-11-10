@@ -344,6 +344,8 @@ pub fn compute_statistics_with_basic(
         MAX_BOUNDED_PATH_STAT_HOPS,
     );
     statistics.bounded_path_counts = bounded_path_statistics.counts;
+    statistics.bounded_path_complete_through_hop =
+        (!bounded_path_statistics.truncated).then_some(MAX_BOUNDED_PATH_STAT_HOPS);
     statistics.bounded_path_source_distinct_counts = bounded_path_statistics.source_distinct_counts;
     statistics.bounded_path_target_distinct_counts = bounded_path_statistics.target_distinct_counts;
     statistics.property_distributions = node_distributions
@@ -687,6 +689,26 @@ mod tests {
         assert!(stats.counts.is_empty());
         assert!(stats.source_distinct_counts.is_empty());
         assert!(stats.target_distinct_counts.is_empty());
+        let mut relationships = crate::cow::CowRelMap::default();
+        for from in 0..SIZE {
+            for to in 0..SIZE {
+                let id = RelId(from * SIZE + to);
+                relationships.insert(
+                    id,
+                    RelRecord {
+                        id,
+                        source: NodeId(from),
+                        target: NodeId(to),
+                        rel_type,
+                        properties: BTreeMap::new(),
+                    },
+                );
+            }
+        }
+        let published = compute_statistics(&nodes, &relationships, 1);
+        assert!(published.advanced_statistics_complete);
+        assert!(published.bounded_path_counts.is_empty());
+        assert_eq!(published.bounded_path_complete_through_hop, None);
     }
 
     /// Below the budget the pass must still publish exact counts and distinct

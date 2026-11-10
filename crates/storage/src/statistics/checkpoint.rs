@@ -146,6 +146,8 @@ pub fn compute_with_work_context(
         work,
     )?;
     statistics.bounded_path_counts = bounded_path_statistics.counts;
+    statistics.bounded_path_complete_through_hop =
+        (!bounded_path_statistics.truncated).then_some(MAX_BOUNDED_PATH_STAT_HOPS);
     statistics.bounded_path_source_distinct_counts = bounded_path_statistics.source_distinct_counts;
     statistics.bounded_path_target_distinct_counts = bounded_path_statistics.target_distinct_counts;
     statistics.property_distributions = node_distributions.finish_with_work_context(
@@ -506,6 +508,7 @@ pub(crate) fn clone_retained_with_index_samples_and_work_context<'a>(
     let mut copy = graph_statistics_from_basic(basic, source.advanced_statistics_complete);
     copy.computed_at_commit_epoch = source.computed_at_commit_epoch;
     copy.histogram_sample_limit = source.histogram_sample_limit;
+    copy.bounded_path_complete_through_hop = source.bounded_path_complete_through_hop;
     copy.rel_type_source_counts =
         clone_map_with_work_context(&source.rel_type_source_counts, work)?;
     copy.rel_type_target_counts =

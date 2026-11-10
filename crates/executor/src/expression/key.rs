@@ -191,6 +191,7 @@ mod tests {
                             document,
                         ))),
                         path: "$.source".into(),
+                        null_on_non_scalar: false,
                     },
                     name: "second".into(),
                 },

@@ -92,6 +92,7 @@ pub struct OptimizerCatalogStatistics {
     pub(super) path_source_distinct_counts: BTreeMap<(String, String, String), u64>,
     pub(super) path_target_distinct_counts: BTreeMap<(String, String, String), u64>,
     pub(super) bounded_path_counts: BTreeMap<(String, String, String, usize), u64>,
+    pub(super) bounded_path_complete_through_hop: Option<usize>,
     pub(super) bounded_path_source_distinct_counts: BTreeMap<(String, String, String, usize), u64>,
     pub(super) bounded_path_target_distinct_counts: BTreeMap<(String, String, String, usize), u64>,
     pub(super) property_index_statistics: BTreeMap<(String, String), OptimizerIndexStatistics>,
@@ -372,6 +373,9 @@ pub fn optimizer_catalog_from_graph_statistics(
         .with_path_target_distinct_counts(path_target_distinct_counts)
         .with_bounded_path_source_distinct_counts(bounded_path_source_distinct_counts)
         .with_bounded_path_target_distinct_counts(bounded_path_target_distinct_counts)
+        .with_bounded_path_complete_through_hop(
+            advanced_statistics.and_then(|statistics| statistics.bounded_path_complete_through_hop),
+        )
         .with_relationship_property_distinct_counts(rel_property_distinct_counts)
         .with_relationship_property_histograms(rel_property_histograms)
         .with_sampled_property_histograms(sampled_property_histograms)
@@ -1271,6 +1275,36 @@ impl OptimizerCatalog {
         )
     }
 
+    /// Positive facts remain usable without coverage. Absence is a zero only
+    /// when the publisher completed every label/type pair through this hop.
+    pub(super) fn bounded_path_count(
+        &self,
+        source_label: &str,
+        rel_type: &str,
+        target_label: &str,
+        hop: usize,
+    ) -> Option<u64> {
+        if self
+            .bounded_path_complete_through_hop
+            .is_some_and(|horizon| hop > horizon)
+        {
+            return None;
+        }
+        self.bounded_path_counts
+            .get(&(
+                source_label.to_owned(),
+                rel_type.to_owned(),
+                target_label.to_owned(),
+                hop,
+            ))
+            .copied()
+            .or_else(|| {
+                self.bounded_path_complete_through_hop
+                    .filter(|horizon| hop > 0 && hop <= *horizon)
+                    .map(|_| 0)
+            })
+    }
+
     pub(super) fn estimate_expand_rows(
         &self,
         source_label: &str,
@@ -1309,15 +1343,11 @@ impl OptimizerCatalog {
         let mut hop_rows = one_hop.max(1);
         let mut hop_estimates = Vec::new();
         for hop in 1..=max_hops.clamp(1, MAX_ESTIMATED_HOPS) {
+            // A zero match count does not erase the failed traversal work represented
+            // by this shared planning estimate. Preserve its conservative fallback.
             let exact_hop_rows = self
-                .bounded_path_counts
-                .get(&(
-                    source_label.to_string(),
-                    rel_type.to_string(),
-                    target_label.to_string(),
-                    hop,
-                ))
-                .copied();
+                .bounded_path_count(source_label, rel_type, target_label, hop)
+                .filter(|count| *count > 0);
             let current_hop_rows = exact_hop_rows
                 .unwrap_or(hop_rows)
                 .div_ceil(property_distinct_product)
@@ -1402,6 +1432,7 @@ impl OptimizerCatalogStatistics {
             path_source_distinct_counts: BTreeMap::new(),
             path_target_distinct_counts: BTreeMap::new(),
             bounded_path_counts: bounded_path_counts.into_iter().collect(),
+            bounded_path_complete_through_hop: None,
             bounded_path_source_distinct_counts: BTreeMap::new(),
             bounded_path_target_distinct_counts: BTreeMap::new(),
             property_index_statistics: BTreeMap::new(),
@@ -1420,6 +1451,13 @@ impl OptimizerCatalogStatistics {
 
     pub fn with_node_count(mut self, node_count: u64) -> Self {
         self.node_count = Some(node_count);
+        self
+    }
+
+    /// Declares complete directed bounded-path enumeration. None preserves
+    /// the unknown-coverage fallback for legacy, truncated or synthetic maps.
+    pub fn with_bounded_path_complete_through_hop(mut self, horizon: Option<usize>) -> Self {
+        self.bounded_path_complete_through_hop = horizon;
         self
     }
 
@@ -1549,6 +1587,7 @@ mod tests {
         let memory = source_catalog.get_or_create_label("Memory");
         let mut statistics = GraphStatistics {
             advanced_statistics_complete: false,
+            bounded_path_complete_through_hop: Some(3),
             label_counts: BTreeMap::from([(memory, 64)]),
             property_distinct_counts: BTreeMap::from([((memory, "kind".to_string()), 4)]),
             property_histograms: BTreeMap::from([(
@@ -1562,10 +1601,12 @@ mod tests {
         assert_eq!(incomplete.label_count("Memory"), 64);
         assert_eq!(incomplete.known_distinct_count("Memory", "kind"), None);
         assert!(incomplete.property_histograms.is_empty());
+        assert_eq!(incomplete.bounded_path_complete_through_hop, None);
 
         statistics.advanced_statistics_complete = true;
         let complete = optimizer_catalog_from_graph_statistics(&source_catalog, &statistics);
         assert_eq!(complete.label_count("Memory"), 64);
+        assert_eq!(complete.bounded_path_complete_through_hop, Some(3));
         assert_eq!(complete.known_distinct_count("Memory", "kind"), Some(4));
         assert_eq!(
             complete.property_histograms,

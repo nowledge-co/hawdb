@@ -525,6 +525,7 @@ pub enum ScalarExpressionKind {
     JsonValue {
         expression: Box<ScalarExpression>,
         path: ValueExpression,
+        null_on_non_scalar: bool,
     },
     Left {
         expression: Box<ScalarExpression>,

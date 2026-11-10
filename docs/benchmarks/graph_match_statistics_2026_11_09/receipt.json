@@ -1,0 +1,34 @@
+{
+  "base_revision": "eb596e50900d894eb8c9253d5f6b5c96d913f9d9",
+  "measurement_utc": "2026-11-09T17:46:49.161571+00:00",
+  "build": "Rust 1.97.1; repository release profile; default Cargo features; -j 2",
+  "platform": "macOS 27.0.1 (26A434), arm64",
+  "process_order": [
+    "baseline",
+    "candidate",
+    "candidate",
+    "baseline"
+  ],
+  "binary_sha256": {
+    "baseline": "2584e7222cc49027401f9547e28f770fa6811448a895be370c2355dc1bf989a3",
+    "candidate": "d0956883038dc71fb0012a24798c358d2367f3eeb7dfd78eea0e3cab4b080d0f"
+  },
+  "candidate_source_sha256": {
+    "crates/optimizer-graph/src/graph/costing.rs": "42e3eaacd5058bb76b41a1ce70e1c71d9ab34c6c4091db8c61e20d6bd38217d9",
+    "crates/optimizer-graph/src/graph/costing/graph_match.rs": "e912d0156a72e1fdfddc4fd65733756fa3768118028c43b9819c8f07863348d0",
+    "crates/optimizer-graph/src/graph/pattern_start.rs": "94803364dfe035fb845e4fb2fcea008a6206b89d12e6340c84418fb8ade788ef",
+    "examples/optimizer_path_statistics.rs": "91ec60a95e9f3abdb9c50922a929caa961ff8057ed4f3e75fc4e46c7d6e207dd",
+    "crates/core/src/schema.rs": "3f9703d81cfbce6b6f47aa0c2b2565cdd4edac9d8851dc4373536a7f60acb695",
+    "crates/optimizer-graph/src/graph/catalog.rs": "c2d98cb5e2b5759be4d854949a349417a692aff0b57b8f2c4f193534b52f43ce",
+    "crates/storage/src/statistics.rs": "eb0d64adaf03d7a236bb8e7730f37b6b206163b23903adc4985df4e92c8e7aea",
+    "crates/storage/src/statistics/checkpoint.rs": "7275ae1465b6baa1f95ac8d47078f1d977ae973016022175b0788a69ee82f6c7",
+    "crates/storage/src/store/statistics_refresh.rs": "ac05a4535e07b7d690dd6673c293ba082d428ad2725bbb20738365356ca93b1b",
+    "crates/storage/src/checkpoint.rs": "512d7deccba9878fb6cab7ceab2ce758bb990de28515280a980fb70048c8a57d",
+    "crates/storage/src/checkpoint/controlled.rs": "46ba72cecf4dc1c9eae3dfa7f7f147932c6e949b7b2fb60af68d381286c7a839"
+  },
+  "ordinary_plan_medians_ms": {
+    "baseline": 1.9479165,
+    "candidate": 0.14587500000000003
+  },
+  "ordinary_plan_speedup": 13.353326478149098
+}

@@ -90,6 +90,7 @@ fn checkpoint_units_statistics_preserve_complete_counts_paths_and_late_exclusion
     assert_eq!(actual.node_count, 4);
     assert_eq!(actual.relationship_count, 3);
     assert_eq!(actual.computed_at_commit_epoch, 73);
+    assert_eq!(actual.bounded_path_complete_through_hop, Some(3));
     assert!(actual.property_distributions[&(LabelId(0), "rank".into())].is_valid());
     assert!(!actual
         .property_distributions

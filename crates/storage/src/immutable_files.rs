@@ -167,7 +167,8 @@ impl ImmutableFileHandles {
         // Mount validation uses a transient handle and a fixed-size buffer;
         // mounting an unopened artifact must not warm the descriptor cache.
         // Keep the verified handle alive until the alias has been installed.
-        let _verified = Self::open_verified_object(&binding, context, DescriptorKind::Transient)?;
+        let (_verified, _) =
+            Self::open_verified_object(&binding, context, DescriptorKind::Transient)?;
         // Reopening a branch usually finds the checkpoint alias already mounted.
         // Only reuse a regular, no-follow alias to this exact verified inode.
         // Equal bytes, link counts and the binding map cannot establish that.
@@ -316,13 +317,14 @@ impl ImmutableFileHandles {
             return Ok((file, 0));
         }
         self.state.record_cache_miss();
-        let file = Arc::new(Self::open_verified_object_controlled_from(
+        let (file, validated) = Self::open_verified_object_controlled_from(
             binding,
             source,
             context,
             DescriptorKind::ImmutableCache,
             control,
-        )?);
+        )?;
+        let file = Arc::new(file);
         self.handles
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -333,7 +335,6 @@ impl ImmutableFileHandles {
                     last_used: self.next_tick(),
                 },
             );
-        let validated = binding.map_or(0, |binding| binding.reference.byte_length);
         Ok((file, validated))
     }
 
@@ -364,11 +365,12 @@ impl ImmutableFileHandles {
         Some(handle.file.clone())
     }
 
+    /// Returns the verified handle and the number of payload bytes hashed.
     fn open_verified_object(
         binding: &ImmutableFileBinding,
         context: &FileOpenContext,
         kind: DescriptorKind,
-    ) -> io::Result<File> {
+    ) -> io::Result<(File, u64)> {
         Self::open_verified_object_admitted(binding, context, kind, |_| Ok(()))
     }
 
@@ -377,7 +379,7 @@ impl ImmutableFileHandles {
         context: &FileOpenContext,
         kind: DescriptorKind,
         admit_validation: impl FnMut(u64) -> io::Result<()>,
-    ) -> io::Result<File> {
+    ) -> io::Result<(File, u64)> {
         Self::open_verified_object_controlled(
             binding,
             context,
@@ -391,7 +393,7 @@ impl ImmutableFileHandles {
         context: &FileOpenContext,
         kind: DescriptorKind,
         control: &mut impl crate::file_io::ReadAdmissionControl,
-    ) -> io::Result<File> {
+    ) -> io::Result<(File, u64)> {
         Self::open_verified_object_controlled_from(Some(binding), None, context, kind, control)
     }
 
@@ -401,7 +403,7 @@ impl ImmutableFileHandles {
         context: &FileOpenContext,
         kind: DescriptorKind,
         control: &mut impl crate::file_io::ReadAdmissionControl,
-    ) -> io::Result<File> {
+    ) -> io::Result<(File, u64)> {
         control.checkpoint()?;
         let mut file = match source {
             Some(source) => source
@@ -431,7 +433,11 @@ impl ImmutableFileHandles {
                     "captured native identity mismatch",
                 ));
             }
-            return Ok(file);
+            // Preserve the cache's existing validation accounting.
+            return Ok((
+                file,
+                binding.map_or(0, |binding| binding.reference.byte_length),
+            ));
         }
         let binding = binding.ok_or_else(|| io::Error::other("missing managed binding"))?;
         if !metadata.is_file() || metadata.len() != binding.reference.byte_length {
@@ -439,6 +445,16 @@ impl ImmutableFileHandles {
                 io::ErrorKind::InvalidData,
                 "immutable handle identity length mismatch",
             ));
+        }
+        // The exact inode this process hashed while publishing it, unmodified
+        // since, is not re-hashed. Demand reads keep their block checks.
+        if file.with_native(|native| {
+            Ok(crate::immutable_object::skip_published_rehash(
+                binding.reference,
+                native,
+            ))
+        })? {
+            return Ok((file, 0));
         }
         // Descriptor rejection occurs before this charge. No payload may be
         // read until the caller has reserved the complete identity validation.
@@ -476,7 +492,7 @@ impl ImmutableFileHandles {
                 "immutable handle identity digest mismatch",
             ));
         }
-        Ok(file)
+        Ok((file, binding.reference.byte_length))
     }
 }
 
