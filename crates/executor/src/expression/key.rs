@@ -8,9 +8,191 @@ use super::{
     ProjectedValue, Projection, Result, RuntimeTaskContext, SortDirection, SortItem, SortKey,
     Value,
 };
+use crate::binding::{node_memory_bytes, relationship_memory_bytes, value_memory_bytes};
 use crate::pipeline::runtime_checkpoint;
 use crate::{QueryMemoryAccount, QueryMemoryClass, QueryMemoryLease};
+use hawdb_plan_cypher::{GraphGroupKeys, ProjectionExpression};
+use hawdb_storage::{NodeRecord, RelRecord};
+use std::cmp::Ordering;
+use std::collections::BTreeMap;
+use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
+use std::sync::Arc;
+
+/// One element of a grouping key (#1615). A group key that is a bound node or
+/// relationship variable groups by entity identity: it hashes and compares
+/// as `(kind, id)`, the same identity `count(DISTINCT n)` uses
+/// (`binding_identity_key`), and keeps the first row's shared record, which
+/// the grouping emits. Every other key is its value. NULL stays a value.
+#[derive(Debug, Clone)]
+pub(crate) enum GroupKeyValue {
+    Value(Value),
+    Node(Arc<NodeRecord>),
+    Relationship(Arc<RelRecord>),
+}
+
+// Grouping charges and spill sizes count a key element as one `Value` slot.
+const _: () = assert!(std::mem::size_of::<GroupKeyValue>() == std::mem::size_of::<Value>());
+
+/// Reference-count header of a retained shared record.
+const SHARED_RECORD_HEADER_BYTES: usize = 2 * std::mem::size_of::<usize>();
+
+impl GroupKeyValue {
+    /// `(kind, id)` as `binding_identity_key` reports it: 0 for a node and 1
+    /// for a relationship.
+    pub(crate) fn identity(&self) -> Option<(u8, u64)> {
+        match self {
+            Self::Value(_) => None,
+            Self::Node(node) => Some((0, node.id.0)),
+            Self::Relationship(relationship) => Some((1, relationship.id.0)),
+        }
+    }
+
+    /// The map a projected entity has always produced.
+    pub(crate) fn into_value(self, catalog: &Catalog) -> Value {
+        match self {
+            Self::Value(value) => value,
+            Self::Node(node) => super::node_value(&node, catalog),
+            Self::Relationship(relationship) => super::relationship_value(&relationship, catalog),
+        }
+    }
+}
+
+impl PartialEq for GroupKeyValue {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Value(left), Self::Value(right)) => left == right,
+            _ => self.identity().is_some() && self.identity() == other.identity(),
+        }
+    }
+}
+
+impl Eq for GroupKeyValue {}
+
+impl Hash for GroupKeyValue {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match (self, self.identity()) {
+            (Self::Value(value), _) => {
+                state.write_u8(u8::MAX);
+                value.hash(state);
+            }
+            (_, Some((kind, id))) => {
+                state.write_u8(kind);
+                state.write_u64(id);
+            }
+            (_, None) => unreachable!("entities have an identity"),
+        }
+    }
+}
+
+impl Ord for GroupKeyValue {
+    /// Values, then nodes, then relationships, entities by id. A key position
+    /// holds either NULL or one entity kind, so groups keep NULL first.
+    fn cmp(&self, other: &Self) -> Ordering {
+        match (self, other) {
+            (Self::Value(left), Self::Value(right)) => left.cmp(right),
+            (Self::Value(_), _) => Ordering::Less,
+            (_, Self::Value(_)) => Ordering::Greater,
+            _ => self.identity().cmp(&other.identity()),
+        }
+    }
+}
+
+impl PartialOrd for GroupKeyValue {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Retained bytes of one key element. A record shared with input rows is
+/// charged to each group that keeps it, once.
+fn group_key_value_memory_bytes(value: &GroupKeyValue) -> usize {
+    match value {
+        GroupKeyValue::Value(value) => value_memory_bytes(value),
+        GroupKeyValue::Node(node) => std::mem::size_of::<GroupKeyValue>()
+            .saturating_add(SHARED_RECORD_HEADER_BYTES)
+            .saturating_add(node_memory_bytes(node)),
+        GroupKeyValue::Relationship(relationship) => std::mem::size_of::<GroupKeyValue>()
+            .saturating_add(SHARED_RECORD_HEADER_BYTES)
+            .saturating_add(relationship_memory_bytes(relationship)),
+    }
+}
+
+pub(crate) fn group_key_memory_bytes(key: &[GroupKeyValue]) -> usize {
+    key.iter().fold(0usize, |total, value| {
+        total.saturating_add(group_key_value_memory_bytes(value))
+    })
+}
+
+/// Builds the output row of one group: each key under its projection name,
+/// then `values` (the aggregates). With slot output, an entity key leaves in
+/// the graph slot of its name; otherwise it leaves as its map.
+pub(crate) fn group_output_binding(
+    group_keys: &[Projection],
+    key: Vec<GroupKeyValue>,
+    graph_keys: GraphGroupKeys,
+    catalog: &Catalog,
+) -> Binding {
+    let mut binding = Binding::values(BTreeMap::new());
+    for (item, value) in group_keys.iter().zip(key) {
+        match value {
+            GroupKeyValue::Node(node) if graph_keys.retains_slots() => {
+                binding.nodes.insert_arc(item.name.clone(), node);
+            }
+            GroupKeyValue::Relationship(relationship) if graph_keys.retains_slots() => {
+                binding
+                    .relationships
+                    .insert_arc(item.name.clone(), relationship);
+            }
+            value => super::insert_projected_value(
+                &mut binding.values,
+                &item.name,
+                value.into_value(catalog),
+            ),
+        }
+    }
+    binding
+}
+
+#[cfg(test)]
+thread_local! {
+    static LEGACY_MAP_KEYS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Groups by materialized entity maps, as before #1615, on this thread while
+/// `f` runs. The differential tests compare it with identity grouping.
+#[cfg(test)]
+pub(crate) fn with_legacy_map_keys<T>(f: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            LEGACY_MAP_KEYS.with(|legacy| legacy.set(self.0));
+        }
+    }
+    let _restore = Restore(LEGACY_MAP_KEYS.with(|legacy| legacy.replace(true)));
+    f()
+}
+
+/// The identity key of a bound node or relationship variable.
+fn entity_group_key(expression: &ProjectionExpression, binding: &Binding) -> Option<GroupKeyValue> {
+    let ProjectionExpression::Variable { variable } = expression else {
+        return None;
+    };
+    #[cfg(test)]
+    if LEGACY_MAP_KEYS.with(std::cell::Cell::get) {
+        return None;
+    }
+    binding
+        .nodes
+        .get_shared(variable)
+        .map(|node| GroupKeyValue::Node(Arc::clone(node)))
+        .or_else(|| {
+            binding
+                .relationships
+                .get_shared(variable)
+                .map(|relationship| GroupKeyValue::Relationship(Arc::clone(relationship)))
+        })
+}
 
 pub(crate) struct PreparedKey<T> {
     pub(crate) values: T,
@@ -69,6 +251,44 @@ impl KeyMemory {
                 graph,
             )?;
             values.push(value.into_owned_accounted(&mut allocation)?);
+        }
+        runtime_checkpoint(task_context)?;
+        Ok(PreparedKey { values, allocation })
+    }
+
+    /// Grouping keys with entity identity. Shares a bound record instead of
+    /// building its map; the record is charged when a group retains it.
+    pub(crate) fn group_by_identity(
+        &self,
+        items: &[Projection],
+        catalog: &Catalog,
+        binding: &Binding,
+        task_context: Option<&RuntimeTaskContext>,
+        graph: Option<&ExpressionGraph<'_>>,
+    ) -> Result<PreparedKey<Vec<GroupKeyValue>>> {
+        runtime_checkpoint(task_context)?;
+        let mut allocation = self.preparation.reserve(
+            items
+                .len()
+                .saturating_mul(std::mem::size_of::<GroupKeyValue>()),
+        )?;
+        let mut values = Vec::with_capacity(items.len());
+        for item in items {
+            runtime_checkpoint(task_context)?;
+            if let Some(entity) = entity_group_key(&item.expression, binding) {
+                values.push(entity);
+                continue;
+            }
+            let value = evaluate_projection_in_graph(
+                &item.expression,
+                catalog,
+                binding,
+                Some(&self.evaluation),
+                graph,
+            )?;
+            values.push(GroupKeyValue::Value(
+                value.into_owned_accounted(&mut allocation)?,
+            ));
         }
         runtime_checkpoint(task_context)?;
         Ok(PreparedKey { values, allocation })

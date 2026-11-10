@@ -1283,6 +1283,7 @@ fn lower_logical(
         LogicalPlan::Aggregate {
             group_keys,
             items,
+            graph_keys,
             input,
         } => {
             let input = children.lower(
@@ -1304,6 +1305,7 @@ fn lower_logical(
             PhysicalPlan::AggregateExec {
                 group_keys: group_keys.clone(),
                 items: items.clone(),
+                graph_keys: *graph_keys,
                 input: Box::new(input),
             }
         }
@@ -1441,6 +1443,7 @@ fn select_node_count_fast_path(
         group_keys,
         items,
         input,
+        ..
     } = logical
     else {
         return None;
@@ -1491,6 +1494,7 @@ fn select_relationship_count_fast_path(
         group_keys,
         items,
         input,
+        ..
     } = logical
     else {
         return None;
@@ -1587,6 +1591,7 @@ fn finalize_required_node_properties(
         PhysicalPlan::AggregateExec {
             group_keys,
             items,
+            graph_keys,
             input,
         } => {
             let input = select_node_aggregate_required_scan(
@@ -1601,6 +1606,7 @@ fn finalize_required_node_properties(
             PhysicalPlan::AggregateExec {
                 group_keys,
                 items,
+                graph_keys,
                 input,
             }
         }

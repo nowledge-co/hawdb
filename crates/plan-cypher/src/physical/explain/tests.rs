@@ -180,6 +180,7 @@ fn unary(kind: usize, fixture: Fixture, seed: usize) -> Fixture {
         ),
         6 => (
             PhysicalPlan::AggregateExec {
+                graph_keys: Default::default(),
                 group_keys: vec![projection()],
                 items: vec![Aggregation {
                     function: AggregateFunction::Count,

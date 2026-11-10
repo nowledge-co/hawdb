@@ -19,6 +19,7 @@ use hawdb_cypher::{
 };
 
 mod endpoints;
+mod graph_slots;
 mod imports;
 mod mutation;
 mod normalize;
@@ -27,6 +28,8 @@ mod pattern_properties;
 mod procedure;
 #[cfg(test)]
 mod tests;
+
+pub use graph_slots::with_legacy_graph_group_keys;
 
 /// Migration entrypoint for the ordered-clause binder.
 #[doc(hidden)]
@@ -1000,7 +1003,7 @@ fn bind_optional_degree_pipeline(
             input: Box::new(degree),
         };
     }
-    Some(bind_projection(degree, &scope, final_projection, parameters).map(|(plan, _)| plan))
+    Some(bind_projection(degree, &scope, final_projection, parameters, false).map(|(plan, _)| plan))
 }
 
 fn bind_direct_optional_degree_pipeline(
@@ -1084,7 +1087,7 @@ fn bind_direct_optional_degree_pipeline(
         },
     );
     scope.0.insert(alias.to_string(), BindingType::Scalar);
-    Some(bind_projection(degree, &scope, &projection, parameters).map(|(plan, _)| plan))
+    Some(bind_projection(degree, &scope, &projection, parameters, false).map(|(plan, _)| plan))
 }
 
 struct OptionalDegreeMatch<'a> {
@@ -1445,7 +1448,9 @@ fn bind_read_clauses(
                 let current = input
                     .take()
                     .unwrap_or_else(|| restore_bindings(None, &mut Scope::default()));
-                let (next, next_scope) = bind_projection(current, &scope, projection, parameters)?;
+                let with_clause = matches!(clause.kind, ClauseKind::With(_));
+                let (next, next_scope) =
+                    bind_projection(current, &scope, projection, parameters, with_clause)?;
                 input = Some(next);
                 scope = next_scope;
             }
@@ -1502,6 +1507,7 @@ fn bind_projection(
     scope: &Scope,
     projection: &ProjectionClause,
     parameters: &BTreeMap<String, Value>,
+    with_clause: bool,
 ) -> Result<(LogicalPlan, Scope)> {
     let graph = scope.graph_names();
     let columns = scope.columns();
@@ -1515,8 +1521,19 @@ fn bind_projection(
         plan_return_items_with_columns(&graph, &columns, &projection.items, parameters)?
     };
     let names = unique_projection_names(planned.names());
+    let slots = graph_slots::slot_names(&planned, scope, projection, &names, with_clause);
     let mut output_scope = Scope::default();
     for (item, name) in projection.items.iter().zip(&names) {
+        if let Some(kind) = slots.get(name) {
+            output_scope.0.insert(
+                name.clone(),
+                BindingType::Graph {
+                    kind: *kind,
+                    column: None,
+                },
+            );
+            continue;
+        }
         let kind = match &item.expression.kind {
             ReturnExpressionKind::Value(AstNode {
                 kind: ScalarExpressionKind::Variable(variable),
@@ -1534,7 +1551,12 @@ fn bind_projection(
         };
         output_scope.0.insert(name.clone(), kind);
     }
-    let projected_names: BTreeSet<String> = names.iter().cloned().collect();
+    // A slotted name reads as a bound graph variable, not as a column.
+    let projected_names: BTreeSet<String> = names
+        .iter()
+        .filter(|name| !slots.contains_key(*name))
+        .cloned()
+        .collect();
     let projected_graph = output_scope.graph_names();
     let mut sort_items = Vec::new();
     let mut hidden_order_keys = false;
@@ -1610,8 +1632,13 @@ fn bind_projection(
     }
     let needed = imports::for_returns(&mut planned, scope)?;
     input = imports::restore(input, scope, &needed);
-    let mut output = planned.into_logical(input);
-    if projection.distinct {
+    let mut output = if slots.is_empty() {
+        planned.into_logical(input)
+    } else {
+        graph_slots::into_logical(planned, &slots, input)
+    };
+    // A slotted `WITH DISTINCT` is already the grouping that selects it.
+    if projection.distinct && slots.is_empty() {
         output = LogicalPlan::Distinct {
             input: Box::new(output),
         };
@@ -1650,6 +1677,7 @@ fn bind_projection(
         output = LogicalPlan::Project {
             items: names
                 .iter()
+                .filter(|name| !slots.contains_key(*name))
                 .chain(&hidden_names)
                 .map(|name| Projection {
                     expression: ProjectionExpression::Column(name.clone()),
@@ -1691,6 +1719,7 @@ fn bind_projection(
         output = LogicalPlan::Project {
             items: names
                 .into_iter()
+                .filter(|name| !slots.contains_key(name))
                 .map(|name| Projection {
                     expression: ProjectionExpression::Column(name.clone()),
                     name,

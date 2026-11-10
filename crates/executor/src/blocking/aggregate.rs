@@ -540,28 +540,33 @@ fn aggregate_input_memory_bytes(input: &AggregateInput) -> usize {
     })
 }
 
-struct GroupAccumulator<'a> {
-    key: Vec<Value>,
+/// How a finished group leaves the operator.
+#[derive(Clone, Copy)]
+struct GroupOutput<'a> {
     group_keys: &'a [Projection],
     items: &'a [Aggregation],
+    graph_keys: GraphGroupKeys,
+    catalog: &'a Catalog,
+}
+
+struct GroupAccumulator<'a> {
+    key: Vec<GroupKeyValue>,
+    output: GroupOutput<'a>,
     states: Vec<AggregateState>,
 }
 
 impl<'a> GroupAccumulator<'a> {
-    fn new(key: Vec<Value>, group_keys: &'a [Projection], items: &'a [Aggregation]) -> Self {
+    fn new(key: Vec<GroupKeyValue>, output: GroupOutput<'a>) -> Self {
         Self {
             key,
-            group_keys,
-            items,
-            states: items.iter().map(AggregateState::new).collect(),
+            output,
+            states: output.items.iter().map(AggregateState::new).collect(),
         }
     }
 
     fn base_memory_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
-            .saturating_add(self.key.iter().fold(0usize, |total, value| {
-                total.saturating_add(value_memory_bytes(value))
-            }))
+            .saturating_add(group_key_memory_bytes(&self.key))
             .saturating_add(
                 self.states
                     .len()
@@ -576,7 +581,7 @@ impl<'a> GroupAccumulator<'a> {
         graph: Option<&ExpressionGraph<'_>>,
     ) -> Result<MemoryDelta> {
         let mut delta = MemoryDelta::default();
-        for (state, item) in self.states.iter_mut().zip(self.items) {
+        for (state, item) in self.states.iter_mut().zip(self.output.items) {
             delta.combine(state.update(item, catalog, binding, graph)?);
         }
         Ok(delta)
@@ -596,23 +601,28 @@ impl<'a> GroupAccumulator<'a> {
     }
 
     fn finish(self) -> Binding {
-        let mut values = BTreeMap::new();
-        for (item, value) in self.group_keys.iter().zip(self.key) {
-            insert_projected_value(&mut values, &item.name, value);
-        }
-        for (item, state) in self.items.iter().zip(self.states) {
-            insert_projected_value(&mut values, &item.name, state.finish());
-        }
-        Binding {
-            values,
-            nodes: BTreeMap::new().into(),
-            relationships: BTreeMap::new().into(),
-        }
+        finish_group(self.output, self.key, self.states)
     }
 }
 
+/// The output row of one group. A grouped graph variable leaves as the first
+/// row's record: in its graph slot when later clauses read it as a variable,
+/// otherwise as its map.
+fn finish_group(
+    output: GroupOutput<'_>,
+    key: Vec<GroupKeyValue>,
+    states: Vec<AggregateState>,
+) -> Binding {
+    let mut binding =
+        group_output_binding(output.group_keys, key, output.graph_keys, output.catalog);
+    for (item, state) in output.items.iter().zip(states) {
+        insert_projected_value(&mut binding.values, &item.name, state.finish());
+    }
+    binding
+}
+
 struct GroupRunRow {
-    key: Vec<Value>,
+    key: Vec<GroupKeyValue>,
     ordinal: u64,
     inputs: Vec<AggregateInput>,
 }
@@ -630,12 +640,10 @@ impl BufferedGroupRow {
     }
 }
 
-type BufferedGroups = HashGroups<Vec<Value>, Vec<BufferedGroupRow>>;
+type BufferedGroups = HashGroups<Vec<GroupKeyValue>, Vec<BufferedGroupRow>>;
 
-fn buffered_key_bytes(key: &[Value]) -> usize {
-    key.iter().fold(0usize, |total, value| {
-        total.saturating_add(value_memory_bytes(value))
-    })
+fn buffered_key_bytes(key: &[GroupKeyValue]) -> usize {
+    group_key_memory_bytes(key)
 }
 
 fn buffered_row_insertion_bytes(rows: &Vec<BufferedGroupRow>, payload_bytes: usize) -> usize {
@@ -679,9 +687,7 @@ impl GroupRunRow {
 
     fn memory_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
-            .saturating_add(self.key.iter().fold(0usize, |total, value| {
-                total.saturating_add(value_memory_bytes(value))
-            }))
+            .saturating_add(group_key_memory_bytes(&self.key))
             .saturating_add(self.inputs.iter().fold(0usize, |total, input| {
                 total.saturating_add(aggregate_input_memory_bytes(input))
             }))
@@ -694,6 +700,8 @@ struct GroupMergeEntry {
 }
 
 mod compact;
+#[cfg(test)]
+mod identity_tests;
 mod partial;
 mod ranked;
 
@@ -704,6 +712,7 @@ use partial::{partial_aggregation_is_mergeable, stream_partial_aggregate_batches
 struct AggregateExecutionContext<'a> {
     group_keys: &'a [Projection],
     items: &'a [Aggregation],
+    graph_keys: GraphGroupKeys,
     catalog: &'a Catalog,
     batch_rows: usize,
     memory_budget: NonZeroUsize,
@@ -746,6 +755,30 @@ pub fn stream_aggregate_batches(
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
+    stream_grouped_aggregate_batches(
+        input,
+        group_keys,
+        items,
+        GraphGroupKeys::Values,
+        source,
+        context,
+        execution_limit,
+        emit,
+    )
+}
+
+/// Aggregates with `graph_keys` selecting how grouped graph variables leave.
+#[allow(clippy::too_many_arguments)]
+pub fn stream_grouped_aggregate_batches(
+    input: &PhysicalPlan,
+    group_keys: &[Projection],
+    items: &[Aggregation],
+    graph_keys: GraphGroupKeys,
+    source: &mut dyn BindingBatchSource,
+    context: BlockingExecutionContext<'_>,
+    execution_limit: ExecutionLimit,
+    emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+) -> Result<BatchControl> {
     if items
         .iter()
         .any(|item| matches!(item.target, AggregateTarget::Ranked { .. }))
@@ -779,8 +812,14 @@ pub fn stream_aggregate_batches(
         graph: _,
     } = context;
     runtime_checkpoint(task_context)?;
+    let group_output = GroupOutput {
+        group_keys,
+        items,
+        graph_keys,
+        catalog,
+    };
     if group_keys.is_empty() {
-        let mut accumulator = GroupAccumulator::new(Vec::new(), group_keys, items);
+        let mut accumulator = GroupAccumulator::new(Vec::new(), group_output);
         let mut tracker = OperatorMemoryTracker::with_blocking_account(
             memory.blocking_operator_bytes,
             primary_account,
@@ -833,6 +872,7 @@ pub fn stream_aggregate_batches(
             AggregateExecutionContext {
                 group_keys,
                 items,
+                graph_keys,
                 catalog,
                 batch_rows: memory.batch_rows.get(),
                 memory_budget: memory.blocking_operator_bytes,
@@ -870,7 +910,13 @@ pub fn stream_aggregate_batches(
             let PreparedKey {
                 mut allocation,
                 values: key,
-            } = key_memory.group(group_keys, catalog, &binding, task_context, graph.as_ref())?;
+            } = key_memory.group_by_identity(
+                group_keys,
+                catalog,
+                &binding,
+                task_context,
+                graph.as_ref(),
+            )?;
             let inputs = items
                 .iter()
                 .map(|item| aggregate_input(item, catalog, &binding, graph.as_ref()))
@@ -925,6 +971,7 @@ pub fn stream_aggregate_batches(
         let aggregate_context = AggregateExecutionContext {
             group_keys,
             items,
+            graph_keys,
             catalog,
             batch_rows: memory.batch_rows.get(),
             memory_budget: memory.blocking_operator_bytes,
@@ -963,6 +1010,7 @@ pub fn stream_aggregate_batches(
     let aggregate_context = AggregateExecutionContext {
         group_keys,
         items,
+        graph_keys,
         catalog,
         batch_rows: memory.batch_rows.get(),
         memory_budget: memory.blocking_operator_bytes,
@@ -1103,7 +1151,8 @@ fn aggregate_buffered_groups(
     let AggregateExecutionContext {
         group_keys,
         items,
-        catalog: _,
+        graph_keys,
+        catalog,
         batch_rows,
         memory_budget,
         output_memory_budget,
@@ -1112,6 +1161,12 @@ fn aggregate_buffered_groups(
         task_context,
         graph: _,
     } = context;
+    let group_output = GroupOutput {
+        group_keys,
+        items,
+        graph_keys,
+        catalog,
+    };
     runtime_checkpoint(task_context)?;
     let mut tracker = OperatorMemoryTracker::with_blocking_account(
         memory_budget,
@@ -1127,7 +1182,7 @@ fn aggregate_buffered_groups(
         output_memory_budget,
         memory_ledger,
     );
-    let (groups, released_bytes) = groups.into_sorted();
+    let (groups, released_bytes) = groups.into_output_order(graph_keys);
     input_tracker.release(released_bytes);
     let mut emitted = 0usize;
     for (key, rows) in groups {
@@ -1136,7 +1191,7 @@ fn aggregate_buffered_groups(
         let row_array_bytes = rows
             .capacity()
             .saturating_mul(std::mem::size_of::<BufferedGroupRow>());
-        let mut accumulator = GroupAccumulator::new(key, group_keys, items);
+        let mut accumulator = GroupAccumulator::new(key, group_output);
         let base_bytes = accumulator.base_memory_bytes();
         ensure_operator_item_fits("AggregateExec group state", base_bytes, &tracker)?;
         input_tracker.transfer_to(key_bytes, &mut tracker, base_bytes)?;
@@ -1175,7 +1230,8 @@ fn merge_group_runs(
     let AggregateExecutionContext {
         group_keys,
         items,
-        catalog: _,
+        graph_keys,
+        catalog,
         batch_rows,
         memory_budget,
         output_memory_budget,
@@ -1184,6 +1240,12 @@ fn merge_group_runs(
         task_context,
         graph: _,
     } = context;
+    let group_output = GroupOutput {
+        group_keys,
+        items,
+        graph_keys,
+        catalog,
+    };
     runtime_checkpoint(task_context)?;
     let mut accumulator_tracker = OperatorMemoryTracker::with_blocking_account(
         memory_budget,
@@ -1252,7 +1314,9 @@ fn merge_group_runs(
             }
         }
         if accumulator.is_none() {
-            let next = GroupAccumulator::new(row.key.clone(), group_keys, items);
+            // The first row of a key in (key, ordinal) order supplies the
+            // group's record, as in memory.
+            let next = GroupAccumulator::new(row.key.clone(), group_output);
             let base_bytes = next.base_memory_bytes();
             ensure_operator_item_fits(
                 "AggregateExec group state",

@@ -15,9 +15,9 @@
 use super::{NodeProjectionAccess, PhysicalPlan, PlanChildren};
 use crate::{
     AggregateFunction, AggregateTarget, Aggregation, BatchMutationOperation, BatchMutationValue,
-    ComparisonOp, GraphAlgorithmKind, PathFunction, Predicate, Projection, ProjectionExpression,
-    RelationshipCountFilter, RelationshipCountLeg, RelationshipOnCreateValue, SetAssignment,
-    SetNodePropertiesReturnMode, SetValue, SortDirection, SortItem, SortKey,
+    ComparisonOp, GraphAlgorithmKind, GraphGroupKeys, PathFunction, Predicate, Projection,
+    ProjectionExpression, RelationshipCountFilter, RelationshipCountLeg, RelationshipOnCreateValue,
+    SetAssignment, SetNodePropertiesReturnMode, SetValue, SortDirection, SortItem, SortKey,
 };
 use hawdb_core::Value;
 use hawdb_cypher::RelationshipDirection;
@@ -1388,12 +1388,20 @@ impl PhysicalPlan {
             PhysicalPlan::AggregateExec {
                 group_keys,
                 items,
+                graph_keys,
                 input,
             } => {
                 output.push_str("AggregateExec(groups=");
                 write_projection_list(output, group_keys);
                 output.push_str(",aggs=");
                 write_aggregation_list(output, items);
+                // The output form of graph keys changes the rows, so it is
+                // part of the plan identity.
+                match graph_keys {
+                    GraphGroupKeys::Values => {}
+                    GraphGroupKeys::Slots => output.push_str(",graph_keys=slots"),
+                    GraphGroupKeys::DistinctSlots => output.push_str(",graph_keys=distinct_slots"),
+                }
                 output.push_str(",input=");
                 input.write_instance_fingerprint(output);
                 output.push(')');

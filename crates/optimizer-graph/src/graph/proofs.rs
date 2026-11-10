@@ -223,6 +223,7 @@ fn visit(
         LogicalPlan::Aggregate {
             group_keys,
             items,
+            graph_keys,
             input,
         } => {
             let (input, facts) = visit(*input, catalog, options, events, budget, depth + 1);
@@ -292,6 +293,7 @@ fn visit(
                 LogicalPlan::Aggregate {
                     group_keys,
                     items,
+                    graph_keys,
                     input: Box::new(input),
                 },
                 output,

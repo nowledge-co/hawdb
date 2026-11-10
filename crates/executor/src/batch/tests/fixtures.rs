@@ -738,6 +738,7 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
         ),
         (
             PhysicalPlan::AggregateExec {
+                graph_keys: Default::default(),
                 group_keys: Vec::new(),
                 items: Vec::new(),
                 input: Box::new(PhysicalPlan::EmptyExec),

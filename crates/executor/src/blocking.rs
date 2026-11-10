@@ -17,7 +17,8 @@
 use crate::binding::{binding_memory_bytes, value_memory_bytes, Binding, TopNBinding};
 use crate::expression::{
     binding_has_variable, binding_identity_key, binding_property, binding_value,
-    evaluate_projection_in_graph, insert_projected_value, ExpressionGraph, KeyMemory, PreparedKey,
+    evaluate_projection_in_graph, group_key_memory_bytes, group_output_binding,
+    insert_projected_value, ExpressionGraph, GroupKeyValue, KeyMemory, PreparedKey,
 };
 use crate::kernel::{ensure_operator_item_fits, OperatorMemoryTracker, SpillBudgetTracker};
 use crate::observer::ExecutionObserver;
@@ -29,8 +30,8 @@ use crate::{
 };
 use hawdb_core::{Catalog, HawDBError, Result, RuntimeTaskContext, Value};
 use hawdb_plan_cypher::{
-    AggregateFunction, AggregateTarget, Aggregation, PhysicalPlan, Projection, SortDirection,
-    SortItem,
+    AggregateFunction, AggregateTarget, Aggregation, GraphGroupKeys, PhysicalPlan, Projection,
+    SortDirection, SortItem,
 };
 use std::cmp::Ordering;
 use std::collections::{hash_map::RandomState, BTreeMap, BinaryHeap, HashMap, HashSet};

@@ -75,6 +75,7 @@ fn wrap(kind: usize, input: PhysicalPlan) -> PhysicalPlan {
             input,
         },
         6 => PhysicalPlan::AggregateExec {
+            graph_keys: Default::default(),
             group_keys: Vec::new(),
             items: Vec::new(),
             input,

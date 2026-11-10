@@ -339,6 +339,7 @@ impl PlannedReturns {
             PlannedReturns::Aggregations { group_keys, items } => LogicalPlan::Aggregate {
                 group_keys,
                 items,
+                graph_keys: GraphGroupKeys::Values,
                 input: Box::new(input),
             },
             PlannedReturns::AggregateProjection {
@@ -350,6 +351,7 @@ impl PlannedReturns {
                 input: Box::new(LogicalPlan::Aggregate {
                     group_keys,
                     items,
+                    graph_keys: GraphGroupKeys::Values,
                     input: Box::new(input),
                 }),
             },
