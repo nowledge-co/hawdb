@@ -54,4 +54,13 @@ describe("lossless boundary JSON", () => {
     expect(() => stringifyParameters(Number.NaN)).toThrow("finite numbers");
     expect(() => stringifyParameters(9007199254740992)).toThrow("must use bigint");
   });
+
+  test("rejects sparse arrays at the SQL and nested-list boundaries", () => {
+    for (const array of [new Array(1), new Array(3), [, 1], [1, , 2]]) {
+      expect(() => stringifyParameters(array)).toThrow("must not contain holes");
+      expect(() => stringifyParameters({ values: array })).toThrow("must not contain holes");
+    }
+    expect(() => stringifyParameters([undefined])).toThrow("unsupported HawDB parameter type");
+    expect(stringifyParameters([null, [], [1, null]])).toBe("[null,[],[1,null]]");
+  });
 });

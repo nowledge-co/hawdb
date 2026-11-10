@@ -244,7 +244,15 @@ export function stringifyParameters(value: unknown): string {
     active.add(item);
     try {
       if (Array.isArray(item)) {
-        return `[${item.map(encode).join(",")}]`;
+        const length = item.length;
+        const values: string[] = [];
+        for (let index = 0; index < length; index += 1) {
+          if (!Object.hasOwn(item, index)) {
+            throw new TypeError("HawDB array parameters must not contain holes");
+          }
+          values.push(encode(item[index]));
+        }
+        return `[${values.join(",")}]`;
       }
       const prototype = Object.getPrototypeOf(item);
       if (prototype !== Object.prototype && prototype !== null) {

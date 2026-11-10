@@ -48,6 +48,8 @@ HAWDB_LIBRARY="$PWD/bazel-bin/bindings/ffi/libhawdb_ffi.dylib" \
   are idempotent. The library refuses to unload while a database is live.
 - Every native result/error buffer is copied and released before a call returns.
   The adapter never exposes native buffer pointers to application code.
+- Calls fail before native dispatch if parameter or option getters close their
+  database or library while the arguments are being normalized.
 
 All calls are synchronous and therefore block the Bun event-loop thread. Run
 long queries in a Bun Worker and open the database handle inside that Worker.
@@ -60,6 +62,9 @@ Safe integers return as JavaScript `number`; larger signed 64-bit integers
 return as `bigint`. Integer parameters outside JavaScript's safe range must be
 passed as `bigint`, and values outside the signed 64-bit range are rejected
 before FFI. Floats remain `number`.
+
+Array parameters must be dense. Holes and `undefined` values are rejected,
+including in nested lists; use explicit `null` values when needed.
 
 `Uint8Array` parameters use HawDB's `{"$binary": "<base64>"}` boundary form and
 binary results become `Uint8Array`. Decimal, UUID, temporal and vector values

@@ -14,43 +14,8 @@
  * limitations under the License.
  */
 
-import { CString, dlopen, type Pointer } from "bun:ffi";
+import { CString, openNativeLibrary, type NativeLibrary, type NativePointer } from "./native.ts";
 import { parseLosslessJson, stringifyParameters } from "./json.ts";
-
-const symbols = {
-  hawdb_open: {
-    args: ["buffer", "buffer_length", "buffer", "buffer_length", "buffer"],
-    returns: "ptr",
-  },
-  hawdb_open_in_memory: { args: ["buffer"], returns: "ptr" },
-  hawdb_close: { args: ["ptr"], returns: "void" },
-  hawdb_query: {
-    args: [
-      "ptr",
-      "buffer",
-      "buffer_length",
-      "buffer",
-      "buffer_length",
-      "buffer",
-      "buffer",
-    ],
-    returns: "bool",
-  },
-  hawdb_query_sql: {
-    args: [
-      "ptr",
-      "buffer",
-      "buffer_length",
-      "buffer",
-      "buffer_length",
-      "buffer",
-      "buffer",
-    ],
-    returns: "bool",
-  },
-  hawdb_buffer_free: { args: ["buffer"], returns: "void" },
-  hawdb_version: { args: ["buffer"], returns: "void" },
-} as const;
 
 const encoder = new TextEncoder();
 const databaseConstructorToken = Symbol("HawDB Database constructor");
@@ -107,13 +72,6 @@ export class HawDBError extends Error {
     this.name = "HawDBError";
     this.details = details;
   }
-}
-
-type NativeLibrary = ReturnType<typeof openNativeLibrary>;
-type NativePointer = bigint | Pointer;
-
-function openNativeLibrary(path: string) {
-  return dlopen(path, symbols);
 }
 
 function outputBuffer(): BigUint64Array {
@@ -178,7 +136,7 @@ function parseResult(text: string): QueryResult {
 export class HawDBLibrary {
   private readonly native: NativeLibrary;
   private readonly finalizer: FinalizationRegistry<NativePointer>;
-  private readonly handles = new Set<NativePointer>();
+  private readonly handles = new Map<NativePointer, symbol>();
   private closed = false;
 
   private constructor(path: string) {
@@ -246,7 +204,7 @@ export class HawDBLibrary {
       throw new HawDBError("ffi", "HawDB returned a NULL database without an error");
     }
     const database = new Database(this, handle, databaseConstructorToken);
-    this.handles.add(handle);
+    this.handles.set(handle, Symbol("HawDB database lifetime"));
     this.finalizer.register(database, handle, database);
     return database;
   }
@@ -259,6 +217,7 @@ export class HawDBLibrary {
     const pathBytes = encoder.encode(path);
     const optionsBytes = encoder.encode(stringifyParameters({ read_only: options.readOnly ?? false }));
     const error = outputBuffer();
+    this.assertOpen();
     const handle = this.native.symbols.hawdb_open(
       pathBytes,
       pathBytes,
@@ -310,7 +269,8 @@ export class HawDBLibrary {
     parameters: Record<string, HawDBParameter> | HawDBParameter[],
   ): QueryResult {
     this.assertOpen();
-    if (!this.handles.has(handle)) {
+    const lifetime = this.handles.get(handle);
+    if (lifetime === undefined) {
       throw new HawDBError("invalid_handle", "HawDB database handle is not live");
     }
     if (statement.length === 0) {
@@ -321,6 +281,11 @@ export class HawDBLibrary {
     const result = outputBuffer();
     const error = outputBuffer();
     const call = sql ? this.native.symbols.hawdb_query_sql : this.native.symbols.hawdb_query;
+    // Getters may close this database and open another at the same address.
+    this.assertOpen();
+    if (this.handles.get(handle) !== lifetime) {
+      throw new HawDBError("invalid_handle", "HawDB database handle is not live");
+    }
     const ok = call(
       handle,
       statementBytes,
