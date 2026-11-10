@@ -106,6 +106,9 @@ impl Memory<'_> {
             physical_range_read_count: value.physical_range_read_count,
             physical_bytes_read: value.physical_bytes_read,
             postings_segment_count: value.postings_segment_count,
+            postings_predicate_count: value.postings_predicate_count,
+            postings_residual_predicate_count: value.postings_residual_predicate_count,
+            postings_prefiltered_segment_count: value.postings_prefiltered_segment_count,
         })
     }
     pub(in crate::out_of_core) fn retriever_set(

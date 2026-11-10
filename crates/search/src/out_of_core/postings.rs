@@ -1,20 +1,20 @@
 // Copyright 2026 Nowledge
 // SPDX-License-Identifier: Apache-2.0
 
-//! Per-segment metadata value postings (`HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V3`).
+//! Per-segment metadata value postings (`HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V4`).
 //!
 //! Each segment's metadata artifact holds, after its metadata sidecar, a
 //! postings range that maps every value of every plain metadata field (see
-//! [`indexed_field`]) to the segment documents holding it. An `Eq` or `In`
+//! [`field_policy`]) to the segment documents holding it. An `Eq` or `In`
 //! candidate filter then reads the matching documents instead of decoding
 //! every record of the segment (#1613). Values are stored normalized exactly
-//! as the filter compares them ([`crate::normalize_metadata_filter_value`]).
+//! as the filter compares them ([`crate::normalize_metadata_posting_value`]).
 //!
 //! The payload is uncompressed; the layout range checksum covers every byte.
 //! All integers are little-endian `u32`:
 //!
 //! ```text
-//! [0, 8)      magic `HDPOST01`
+//! [0, 8)      magic `HDPOST02`
 //! [8, 12)     document count `n` (the segment's document count)
 //! [12, 16)    field count `f`
 //! [16, ..)    n cumulative document ID end offsets
@@ -41,7 +41,8 @@ use hawdb_executor::{QueryMemoryAccount, QueryMemoryLease};
 #[cfg(test)]
 mod tests;
 
-pub(super) const MAGIC: &[u8; 8] = b"HDPOST01";
+pub(super) const MAGIC: &[u8; 8] = b"HDPOST02";
+const LEGACY_MAGIC: &[u8; 8] = b"HDPOST01";
 const FIXED_BYTES: usize = 16;
 /// A field with more distinct normalized values in one segment is not indexed;
 /// its filters keep the metadata scan for that segment.
@@ -53,14 +54,51 @@ pub(super) const MAX_VALUE_BYTES: usize = 256;
 /// One bit per predicate in the per-document match mask.
 const MAX_PREDICATES: usize = u64::BITS as usize;
 
-/// Single-valued metadata fields compared with [`crate::metadata_value_matches`]
-/// normalization. `kind` has its own matching, `labels` and `metadata.*` are
-/// list-valued, `space_id` has a default and the document ID is not metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FieldPolicy {
+    NormalizedScalar,
+    CanonicalKind,
+    DefaultedScalar(&'static str),
+    Residual,
+}
+
+impl FieldPolicy {
+    fn indexed(self) -> bool {
+        !matches!(self, Self::Residual)
+    }
+
+    fn requires_semantic_postings(self) -> bool {
+        matches!(self, Self::CanonicalKind | Self::DefaultedScalar(_))
+    }
+
+    fn effective_value(self, value: Option<&str>) -> Option<&str> {
+        match self {
+            Self::DefaultedScalar(default) => {
+                Some(value.filter(|value| !value.is_empty()).unwrap_or(default))
+            }
+            Self::NormalizedScalar | Self::CanonicalKind => value,
+            Self::Residual => None,
+        }
+    }
+}
+
+/// One closed field-semantics registry is shared by postings planning and
+/// encoding. Multi-valued and identity fields remain residual predicates.
+fn field_policy(name: &str) -> FieldPolicy {
+    match name {
+        "kind" => FieldPolicy::CanonicalKind,
+        "space_id" => FieldPolicy::DefaultedScalar(crate::DEFAULT_SPACE_ID),
+        "labels" | crate::SEARCH_DOCUMENT_ID_FIELD => FieldPolicy::Residual,
+        name if name.starts_with("metadata.") => FieldPolicy::Residual,
+        _ => FieldPolicy::NormalizedScalar,
+    }
+}
+
+/// Fields whose effective value exists even when no metadata pair is stored.
+const IMPLICIT_FIELDS: &[&str] = &["space_id"];
+
 pub(super) fn indexed_field(name: &str) -> bool {
-    !matches!(
-        name,
-        "kind" | "labels" | "space_id" | crate::SEARCH_DOCUMENT_ID_FIELD
-    ) && !name.starts_with("metadata.")
+    field_policy(name).indexed()
 }
 
 fn invalid(segment_id: u64, reason: &str) -> HawDBError {
@@ -148,6 +186,36 @@ struct Entry<'a> {
     document: u32,
 }
 
+fn push_entry<'a>(
+    entries: &mut Vec<Entry<'a>>,
+    scratch: &mut Option<QueryMemoryLease>,
+    field: &'a str,
+    value: &str,
+    document: u32,
+) -> Result<()> {
+    // Lowercasing expands UTF-8 by at most 3/2 and `to_lowercase` at most
+    // doubles its capacity: admit three times the input.
+    let admitted = mul(value.len(), 3)?;
+    if let Some(lease) = scratch {
+        lease.grow(admitted)?;
+    }
+    let value = crate::normalize_metadata_posting_value(field, value);
+    if let Some(lease) = scratch {
+        if value.capacity() > admitted {
+            return Err(HawDBError::Execution(
+                "search metadata postings value exceeded admission".into(),
+            ));
+        }
+        lease.shrink(admitted - value.capacity());
+    }
+    entries.push(Entry {
+        field,
+        value,
+        document,
+    });
+    Ok(())
+}
+
 /// The distinct values of one field's sorted entries, or `None` when the
 /// field is not indexed in this segment.
 fn indexed_values(group: &[Entry<'_>], cap: usize) -> Option<usize> {
@@ -191,6 +259,13 @@ pub(super) fn encode<D: HeaderSource>(
                 .filter(|key| indexed_field(key))
                 .count(),
         )?;
+        entry_count = add(
+            entry_count,
+            IMPLICIT_FIELDS
+                .iter()
+                .filter(|field| !header.metadata.contains_key(**field))
+                .count(),
+        )?;
     }
     checked_u32(id_bytes)?;
     let mut scratch = admission
@@ -210,27 +285,19 @@ pub(super) fn encode<D: HeaderSource>(
             if !indexed_field(field) {
                 continue;
             }
-            // Lowercasing expands UTF-8 by at most 3/2 and `to_lowercase`
-            // at most doubles its capacity: admit three times the input.
-            let trimmed = value.trim();
-            let admitted = mul(trimmed.len(), 3)?;
-            if let Some(lease) = &mut scratch {
-                lease.grow(admitted)?;
+            let value = field_policy(field)
+                .effective_value(Some(value))
+                .expect("indexed stored field has an effective value");
+            push_entry(&mut entries, &mut scratch, field, value, index as u32)?;
+        }
+        for field in IMPLICIT_FIELDS {
+            if header.metadata.contains_key(*field) {
+                continue;
             }
-            let value = crate::normalize_metadata_filter_value(trimmed);
-            if let Some(lease) = &mut scratch {
-                if value.capacity() > admitted {
-                    return Err(HawDBError::Execution(
-                        "search metadata postings value exceeded admission".into(),
-                    ));
-                }
-                lease.shrink(admitted - value.capacity());
-            }
-            entries.push(Entry {
-                field,
-                value,
-                document: index as u32,
-            });
+            let Some(value) = field_policy(field).effective_value(None) else {
+                continue;
+            };
+            push_entry(&mut entries, &mut scratch, field, value, index as u32)?;
         }
     }
     checkpoint()?;
@@ -337,16 +404,20 @@ pub(super) fn encode<D: HeaderSource>(
     }))
 }
 
-/// The `Eq`/`In` predicates of a candidate filter, values normalized.
-pub(super) struct Query {
+/// The posting-supported `Eq`/`In` predicates and metadata residuals of one
+/// candidate filter. Residual predicates borrow the immutable query plan.
+pub(super) struct Query<'a> {
     predicates: Vec<(String, BTreeSet<String>)>,
+    residual: Vec<&'a hawdb_optimizer_predicate::SearchPredicate>,
+    requires_semantic_postings: bool,
     _memory: Option<QueryMemoryLease>,
 }
 
-impl Query {
-    /// `None` unless every predicate is an `Eq` or `In` on an indexed field.
+impl<'a> Query<'a> {
+    /// `None` when no predicate can use postings. Unsupported predicates stay
+    /// residual and are evaluated only for posting-selected documents.
     pub(super) fn new(
-        predicates: &hawdb_optimizer_predicate::SearchPredicateSet,
+        predicates: &'a hawdb_optimizer_predicate::SearchPredicateSet,
         memory: Option<&QueryMemoryAccount>,
     ) -> Result<Option<Self>> {
         use hawdb_optimizer_predicate::SearchPredicateOp;
@@ -354,19 +425,41 @@ impl Query {
             || predicates.is_empty()
             || predicates.is_unsatisfiable()
             || predicates.predicates().len() > MAX_PREDICATES
-            || predicates.predicates().iter().any(|predicate| {
-                !indexed_field(predicate.field().name())
-                    || !matches!(
-                        predicate.op(),
-                        SearchPredicateOp::Eq(_) | SearchPredicateOp::In(_)
-                    )
-            })
         {
             return Ok(None);
         }
-        let predicates = predicates.predicates();
-        let mut bytes = mul(predicates.len(), size_of::<(String, BTreeSet<String>)>())?;
-        for predicate in predicates {
+        let (indexed_count, residual_count) = predicates.predicates().iter().fold(
+            (0usize, 0usize),
+            |(indexed, residual), predicate| {
+                if indexed_field(predicate.field().name())
+                    && matches!(
+                        predicate.op(),
+                        SearchPredicateOp::Eq(_) | SearchPredicateOp::In(_)
+                    )
+                {
+                    (indexed + 1, residual)
+                } else {
+                    (indexed, residual + 1)
+                }
+            },
+        );
+        if indexed_count == 0 {
+            return Ok(None);
+        }
+        let mut bytes = add(
+            mul(indexed_count, size_of::<(String, BTreeSet<String>)>())?,
+            mul(
+                residual_count,
+                size_of::<&hawdb_optimizer_predicate::SearchPredicate>(),
+            )?,
+        )?;
+        for predicate in predicates.predicates().iter().filter(|predicate| {
+            indexed_field(predicate.field().name())
+                && matches!(
+                    predicate.op(),
+                    SearchPredicateOp::Eq(_) | SearchPredicateOp::In(_)
+                )
+        }) {
             bytes = add(bytes, predicate.field().name().len())?;
             for_each_expected(predicate.op(), |value| {
                 bytes = add(
@@ -380,20 +473,52 @@ impl Query {
             })?;
         }
         let memory = memory.map(|memory| memory.reserve(bytes)).transpose()?;
-        let mut normalized = Vec::with_capacity(predicates.len());
-        for predicate in predicates {
-            let mut values = BTreeSet::new();
-            for_each_expected(predicate.op(), |value| {
-                values.insert(crate::normalize_metadata_filter_value(value));
-                Ok(())
-            })?;
-            normalized.push((predicate.field().name().to_string(), values));
+        let mut normalized = Vec::with_capacity(indexed_count);
+        let mut residual = Vec::with_capacity(residual_count);
+        let mut requires_semantic_postings = false;
+        for predicate in predicates.predicates() {
+            let field = predicate.field().name();
+            if indexed_field(field)
+                && matches!(
+                    predicate.op(),
+                    SearchPredicateOp::Eq(_) | SearchPredicateOp::In(_)
+                )
+            {
+                let mut values = BTreeSet::new();
+                for_each_expected(predicate.op(), |value| {
+                    values.insert(crate::normalize_metadata_posting_value(field, value));
+                    Ok(())
+                })?;
+                normalized.push((field.to_string(), values));
+                requires_semantic_postings |= field_policy(field).requires_semantic_postings();
+            } else {
+                residual.push(predicate);
+            }
         }
-        let predicates = normalized;
         Ok(Some(Self {
-            predicates,
+            predicates: normalized,
+            residual,
+            requires_semantic_postings,
             _memory: memory,
         }))
+    }
+
+    pub(super) fn indexed_count(&self) -> usize {
+        self.predicates.len()
+    }
+
+    pub(super) fn residual(&self) -> &[&'a hawdb_optimizer_predicate::SearchPredicate] {
+        &self.residual
+    }
+
+    pub(super) fn is_complete(&self) -> bool {
+        self.residual.is_empty()
+    }
+
+    pub(super) fn matches_residual(&self, document: &SearchMetadataDocument) -> bool {
+        self.residual.iter().all(|predicate| {
+            crate::search_metadata_matches_predicate(&document.id, &document.metadata, predicate)
+        })
     }
 }
 
@@ -411,6 +536,21 @@ fn for_each_expected(
     }
 }
 
+pub(super) struct Selection {
+    indexes: Vec<usize>,
+    _memory: Option<QueryMemoryLease>,
+}
+
+impl Selection {
+    pub(super) fn indexes(&self) -> &[usize] {
+        &self.indexes
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.indexes.is_empty()
+    }
+}
+
 /// A validated postings payload of one segment.
 pub(super) struct Segment<'a> {
     bytes: &'a [u8],
@@ -420,6 +560,7 @@ pub(super) struct Segment<'a> {
     flags_at: usize,
     fields_at: usize,
     field_count: usize,
+    semantic_fields: bool,
 }
 
 fn u32_at(bytes: &[u8], offset: usize) -> Option<usize> {
@@ -436,9 +577,11 @@ impl<'a> Segment<'a> {
     ) -> Result<Self> {
         let segment_id = segment.segment_id;
         let truncated = || invalid(segment_id, "are truncated");
-        if bytes.get(..8) != Some(MAGIC.as_slice()) {
-            return Err(invalid(segment_id, "have an invalid header"));
-        }
+        let semantic_fields = match bytes.get(..8) {
+            Some(header) if header == MAGIC.as_slice() => true,
+            Some(header) if header == LEGACY_MAGIC.as_slice() => false,
+            _ => return Err(invalid(segment_id, "have an invalid header")),
+        };
         let count = u32_at(bytes, 8).ok_or_else(truncated)?;
         let field_count = u32_at(bytes, 12).ok_or_else(truncated)?;
         if count != segment.document_count
@@ -470,6 +613,7 @@ impl<'a> Segment<'a> {
             flags_at,
             fields_at,
             field_count,
+            semantic_fields,
         };
         let mut previous: Option<&str> = None;
         let mut start = 0usize;
@@ -521,10 +665,13 @@ impl<'a> Segment<'a> {
     /// Every field record is validated, whether or not a predicate reads it.
     fn select(
         &self,
-        query: &Query,
+        query: &Query<'_>,
         memory: Option<&QueryMemoryAccount>,
         checkpoint: &mut dyn FnMut() -> Result<()>,
-    ) -> Result<Option<(Vec<usize>, Option<QueryMemoryLease>)>> {
+    ) -> Result<Option<Selection>> {
+        if query.requires_semantic_postings && !self.semantic_fields {
+            return Ok(None);
+        }
         let segment_id = self.segment_id;
         let truncated = || invalid(segment_id, "are truncated");
         let bytes = self.bytes;
@@ -629,7 +776,10 @@ impl<'a> Segment<'a> {
         if let Some(lease) = &mut mask_memory {
             lease.shrink(mask_bytes);
         }
-        Ok(Some((selected, mask_memory)))
+        Ok(Some(Selection {
+            indexes: selected,
+            _memory: mask_memory,
+        }))
     }
 }
 
@@ -642,66 +792,106 @@ impl SearchOutOfCoreReader {
         &self,
         artifact: &SearchOutOfCoreSegmentReader,
         segment: &SearchSegmentDescriptorEntry,
-        query: &Query,
+        query: &Query<'_>,
         metrics: &mut SearchOutOfCoreMetrics,
         context: Option<QueryContext<'_>>,
         mut visit: impl FnMut(&SearchMetadataDocument) -> Result<()>,
     ) -> Result<bool> {
+        let selected = self.with_postings_selection(
+            artifact,
+            segment,
+            query,
+            metrics,
+            context,
+            |postings, layout, selection| {
+                let checkpoint = || context.map_or(Ok(()), |context| context.checkpoint());
+                let mut vectors = 0u64;
+                let mut flag = 0usize;
+                for (visited, index) in selection.indexes.into_iter().enumerate() {
+                    if visited.is_multiple_of(64) {
+                        checkpoint()?;
+                    }
+                    vectors += postings.bytes[postings.flags_at + flag..postings.flags_at + index]
+                        .iter()
+                        .map(|flag| u64::from(*flag))
+                        .sum::<u64>();
+                    flag = index;
+                    let vector_ordinal = match postings.bytes[postings.flags_at + index] {
+                        1 => Some(layout.vector_ordinal_base.checked_add(vectors).ok_or_else(
+                            || invalid(segment.segment_id, "vector ordinal overflows"),
+                        )?),
+                        _ => None,
+                    };
+                    let id = postings.id(index);
+                    let _memory = context
+                        .map(|context| {
+                            context
+                                .memory
+                                .reserve(add(size_of::<SearchMetadataDocument>(), id.len())?)
+                        })
+                        .transpose()?;
+                    visit(&SearchMetadataDocument {
+                        id: id.to_string(),
+                        vector_ordinal,
+                        metadata: BTreeMap::new(),
+                    })?;
+                }
+                Ok(())
+            },
+        )?;
+        Ok(selected.is_some())
+    }
+
+    /// Selects document indexes for a postings prefilter. The retained mask
+    /// admission lives through the caller's residual metadata scan.
+    pub(super) fn select_postings_segment(
+        &self,
+        artifact: &SearchOutOfCoreSegmentReader,
+        segment: &SearchSegmentDescriptorEntry,
+        query: &Query<'_>,
+        metrics: &mut SearchOutOfCoreMetrics,
+        context: Option<QueryContext<'_>>,
+    ) -> Result<Option<Selection>> {
+        self.with_postings_selection(
+            artifact,
+            segment,
+            query,
+            metrics,
+            context,
+            |_, _, selection| Ok(selection),
+        )
+    }
+
+    fn with_postings_selection<T>(
+        &self,
+        artifact: &SearchOutOfCoreSegmentReader,
+        segment: &SearchSegmentDescriptorEntry,
+        query: &Query<'_>,
+        metrics: &mut SearchOutOfCoreMetrics,
+        context: Option<QueryContext<'_>>,
+        use_selection: impl FnOnce(&Segment<'_>, &SearchOutOfCoreSegmentLayout, Selection) -> Result<T>,
+    ) -> Result<Option<T>> {
         let layout = Self::artifact_layout_range(artifact, segment.segment_id)?;
         let Some(range) = layout.postings else {
-            return Ok(false);
+            return Ok(None);
         };
         // A writer with a larger segment budget may have written postings
         // this reader will not load; its metadata scan still applies.
         if range.length > self.postings_byte_limit() {
-            return Ok(false);
+            return Ok(None);
         }
         let bytes = self.read_postings_range(artifact, segment, range, metrics, context)?;
         let postings = Segment::parse(&bytes, segment, layout)?;
         let mut checkpoint = || context.map_or(Ok(()), |context| context.checkpoint());
-        let Some((selected, _memory)) = postings.select(
+        let Some(selection) = postings.select(
             query,
             context.map(|context| context.memory),
             &mut checkpoint,
         )?
         else {
-            return Ok(false);
+            return Ok(None);
         };
-        let mut vectors = 0u64;
-        let mut flag = 0usize;
-        for (visited, index) in selected.into_iter().enumerate() {
-            if visited.is_multiple_of(64) {
-                checkpoint()?;
-            }
-            vectors += postings.bytes[postings.flags_at + flag..postings.flags_at + index]
-                .iter()
-                .map(|flag| u64::from(*flag))
-                .sum::<u64>();
-            flag = index;
-            let vector_ordinal = match postings.bytes[postings.flags_at + index] {
-                1 => Some(
-                    layout
-                        .vector_ordinal_base
-                        .checked_add(vectors)
-                        .ok_or_else(|| invalid(segment.segment_id, "vector ordinal overflows"))?,
-                ),
-                _ => None,
-            };
-            let id = postings.id(index);
-            let _memory = context
-                .map(|context| {
-                    context
-                        .memory
-                        .reserve(add(size_of::<SearchMetadataDocument>(), id.len())?)
-                })
-                .transpose()?;
-            visit(&SearchMetadataDocument {
-                id: id.to_string(),
-                vector_ordinal,
-                metadata: BTreeMap::new(),
-            })?;
-        }
-        Ok(true)
+        use_selection(&postings, layout, selection).map(Some)
     }
 
     /// Largest postings range this reader loads. Postings are stored

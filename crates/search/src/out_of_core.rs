@@ -291,9 +291,12 @@ use vector_serving::VectorScoreScan;
 
 pub(crate) const OUT_OF_CORE_MANIFEST_FILE: &str = "search_projection.out_of_core.manifest.hawdb";
 const OUT_OF_CORE_FORMAT: &str = "HAWDB_SEARCH_OUT_OF_CORE_V4";
-/// V3 adds per-segment metadata value postings (`out_of_core::postings`).
-/// Readers of V2 refuse it rather than ignore the postings ranges.
-const OUT_OF_CORE_LAYOUT_FORMAT: &str = "HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V3";
+/// V4 gives per-segment metadata value postings explicit field semantics for
+/// reserved scalar fields (`out_of_core::postings`).
+const OUT_OF_CORE_LAYOUT_FORMAT: &str = "HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V4";
+/// V3 introduced plain metadata value postings. It remains readable; filters
+/// using V4's reserved-field semantics fall back to the metadata sidecar.
+const LEGACY_POSTINGS_OUT_OF_CORE_LAYOUT_FORMAT: &str = "HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V3";
 /// V2 stores raw vectors as binary rows (`out_of_core::vector_segment`) and
 /// has no postings. It remains readable; its filters scan the metadata.
 const POSTINGLESS_OUT_OF_CORE_LAYOUT_FORMAT: &str = "HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V2";
@@ -1192,7 +1195,8 @@ impl SearchOutOfCoreLayoutBody {
             )));
         }
         let postingless = self.format == POSTINGLESS_OUT_OF_CORE_LAYOUT_FORMAT;
-        if (self.format != OUT_OF_CORE_LAYOUT_FORMAT && !postingless)
+        let legacy_postings = self.format == LEGACY_POSTINGS_OUT_OF_CORE_LAYOUT_FORMAT;
+        if (self.format != OUT_OF_CORE_LAYOUT_FORMAT && !legacy_postings && !postingless)
             || (postingless && self.segments.iter().any(|layout| layout.postings.is_some()))
             || self.generation != manifest.generation
             || self.document_count != manifest.document_count
@@ -8280,7 +8284,7 @@ mod tests {
         let mut filtered = options(0, None);
         filtered
             .metadata_filters
-            .insert("space_id".to_string(), "team".to_string());
+            .insert("document_id".to_string(), "memory:000".to_string());
         let error = metadata_reader
             .search_with_options("graph", None, SearchMode::Text, filtered)
             .unwrap_err();

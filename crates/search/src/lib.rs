@@ -674,6 +674,13 @@ pub struct SearchPredicatePushdownReport {
     /// Scanned segments whose candidates came from metadata value postings
     /// instead of decoding their metadata records.
     pub postings_segment_count: usize,
+    /// Equality/IN predicates compiled into the segment postings plan.
+    pub postings_predicate_count: usize,
+    /// Predicates left for metadata evaluation after a postings prefilter.
+    pub postings_residual_predicate_count: usize,
+    /// Scanned segments where postings narrowed the metadata records evaluated
+    /// by residual predicates.
+    pub postings_prefiltered_segment_count: usize,
     pub field_summaries: Vec<SearchPredicateFieldPruningReport>,
 }
 
@@ -6221,6 +6228,9 @@ fn metadata_predicate_pushdown(
         physical_range_read_count: 0,
         physical_bytes_read: 0,
         postings_segment_count: 0,
+        postings_predicate_count: 0,
+        postings_residual_predicate_count: 0,
+        postings_prefiltered_segment_count: 0,
         field_summaries: Vec::new(),
     };
     SearchMetadataPredicatePushdown { predicates, report }
@@ -6233,6 +6243,20 @@ fn search_document_matches_predicates(
     search_metadata_matches_predicates(&document.id, &document.metadata, predicates)
 }
 
+fn search_metadata_matches_predicate(
+    id: &str,
+    metadata: &BTreeMap<String, String>,
+    predicate: &SearchPredicate,
+) -> bool {
+    let header = crate::document_encoding::Header {
+        id,
+        title: "",
+        embedding: None,
+        metadata,
+    };
+    search_header_matches_predicate(header, predicate)
+}
+
 fn search_metadata_matches_predicates(
     id: &str,
     metadata: &BTreeMap<String, String>,
@@ -6241,16 +6265,10 @@ fn search_metadata_matches_predicates(
     if predicates.is_unsatisfiable() {
         return false;
     }
-    let header = crate::document_encoding::Header {
-        id,
-        title: "",
-        embedding: None,
-        metadata,
-    };
     predicates
         .predicates()
         .iter()
-        .all(|predicate| search_header_matches_predicate(header, predicate))
+        .all(|predicate| search_metadata_matches_predicate(id, metadata, predicate))
 }
 
 struct FilteredSearchDocuments<'a> {
@@ -7338,9 +7356,16 @@ fn parse_label_metadata_values(value: &str) -> Vec<Cow<'_, str>> {
 }
 
 fn metadata_value_matches(key: &str, actual: &str, expected: &str) -> bool {
+    normalize_metadata_posting_value(key, actual) == normalize_metadata_posting_value(key, expected)
+}
+
+/// Canonical value shared by metadata matching and persistent postings.
+fn normalize_metadata_posting_value(key: &str, value: &str) -> String {
     match key {
-        "kind" => metadata_kind_matches(actual, expected),
-        _ => normalize_metadata_filter_value(actual) == normalize_metadata_filter_value(expected),
+        "kind" => normalized_projection_kind(value)
+            .map(str::to_string)
+            .unwrap_or_else(|| value.to_string()),
+        _ => normalize_metadata_filter_value(value),
     }
 }
 
@@ -7477,16 +7502,6 @@ fn metadata_timestamp_range_may_match(
         | SearchPredicateOp::NotIn(_)
         | SearchPredicateOp::Exists
         | SearchPredicateOp::IsMissing => true,
-    }
-}
-
-fn metadata_kind_matches(actual: &str, expected: &str) -> bool {
-    match (
-        normalized_projection_kind(actual),
-        normalized_projection_kind(expected),
-    ) {
-        (Some(actual), Some(expected)) => actual == expected,
-        _ => actual == expected,
     }
 }
 
@@ -8225,10 +8240,15 @@ impl MetadataKeys {
     /// Every key `predicates` read: a predicate reads the metadata entry of
     /// its field's name (see [`search_header_field_values`]).
     pub(crate) fn for_predicates(predicates: &SearchPredicateSet) -> Self {
+        Self::for_predicate_iter(predicates.predicates())
+    }
+
+    pub(crate) fn for_predicate_iter<'a>(
+        predicates: impl IntoIterator<Item = &'a SearchPredicate>,
+    ) -> Self {
         Self(
             predicates
-                .predicates()
-                .iter()
+                .into_iter()
                 .map(|predicate| encode_string(predicate.field().name()))
                 .collect(),
         )

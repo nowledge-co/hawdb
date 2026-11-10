@@ -88,6 +88,14 @@ impl SearchOutOfCoreReader {
         let keys = crate::MetadataKeys::for_predicates(predicates);
         let postings_query =
             super::postings::Query::new(predicates, context.map(|context| context.memory))?;
+        let residual_keys = postings_query
+            .as_ref()
+            .filter(|query| !query.is_complete())
+            .map(|query| crate::MetadataKeys::for_predicate_iter(query.residual().iter().copied()));
+        if let Some(query) = &postings_query {
+            report.postings_predicate_count = query.indexed_count();
+            report.postings_residual_predicate_count = query.residual().len();
+        }
         let mut offset = CANDIDATE_FILE_HEADER.len() as u64;
         let mut cardinality = 0usize;
 
@@ -170,26 +178,80 @@ impl SearchOutOfCoreReader {
                 };
                 // Equality filters read only the matching documents' postings;
                 // other filters decode only the predicates' fields (#1613).
-                let indexed = match &postings_query {
-                    Some(query) => self.visit_postings_segment(
-                        artifact,
-                        segment,
-                        query,
-                        metrics,
-                        context,
-                        |document| append(document, true),
-                    )?,
-                    None => false,
-                };
+                let mut indexed = false;
+                let mut prefiltered = false;
+                if let Some(query) = &postings_query {
+                    if query.is_complete() {
+                        indexed = self.visit_postings_segment(
+                            artifact,
+                            segment,
+                            query,
+                            metrics,
+                            context,
+                            |document| append(document, true),
+                        )?;
+                    } else if let Some(selection) =
+                        self.select_postings_segment(artifact, segment, query, metrics, context)?
+                    {
+                        prefiltered = true;
+                        if !selection.is_empty() {
+                            let residual_keys = residual_keys
+                                .as_ref()
+                                .expect("residual postings plan has metadata keys");
+                            if let Some(context) = context {
+                                self.visit_query_metadata_segment(
+                                    artifact,
+                                    segment,
+                                    metrics,
+                                    context,
+                                    super::metadata_query::MetadataVisit::selected(
+                                        residual_keys,
+                                        selection.indexes(),
+                                    ),
+                                    |document| {
+                                        if query.matches_residual(document) {
+                                            append(document, true)?;
+                                        }
+                                        Ok(())
+                                    },
+                                )?;
+                            } else {
+                                let mut selected = selection.indexes().iter().copied().peekable();
+                                for (index, document) in self
+                                    .read_metadata_segment_keys(
+                                        artifact,
+                                        segment,
+                                        metrics,
+                                        Some(residual_keys),
+                                    )?
+                                    .into_iter()
+                                    .enumerate()
+                                {
+                                    if selected.peek() != Some(&index) {
+                                        continue;
+                                    }
+                                    selected.next();
+                                    if query.matches_residual(&document) {
+                                        append(&document, true)?;
+                                    }
+                                }
+                                debug_assert!(selected.next().is_none());
+                            }
+                        }
+                    }
+                }
                 if indexed {
                     report.postings_segment_count = report.postings_segment_count.saturating_add(1);
+                } else if prefiltered {
+                    report.postings_prefiltered_segment_count =
+                        report.postings_prefiltered_segment_count.saturating_add(1);
                 } else if let Some(context) = context {
                     self.visit_query_metadata_segment(
                         artifact,
                         segment,
                         metrics,
                         context,
-                        Some(&keys),
+                        super::metadata_query::MetadataVisit::all(Some(&keys)),
                         |document| append(document, false),
                     )?;
                 } else {
