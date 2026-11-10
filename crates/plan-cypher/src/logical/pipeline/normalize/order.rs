@@ -133,9 +133,14 @@ fn promote_native_column_properties(
                 .map(|expression| promote_native_column_properties(expression, input))
                 .collect(),
         ),
-        ProjectionExpression::JsonValue { expression, path } => ProjectionExpression::JsonValue {
+        ProjectionExpression::JsonValue {
+            expression,
+            path,
+            null_on_non_scalar,
+        } => ProjectionExpression::JsonValue {
             expression: Box::new(promote_native_column_properties(expression, input)),
             path: path.clone(),
+            null_on_non_scalar: *null_on_non_scalar,
         },
         ProjectionExpression::Left { expression, length } => ProjectionExpression::Left {
             expression: Box::new(promote_native_column_properties(expression, input)),

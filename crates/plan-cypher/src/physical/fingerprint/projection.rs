@@ -150,11 +150,18 @@ pub fn write_projection_expression(output: &mut String, expression: &ProjectionE
             }
             output.push(')');
         }
-        ProjectionExpression::JsonValue { expression, path } => {
+        ProjectionExpression::JsonValue {
+            expression,
+            path,
+            null_on_non_scalar,
+        } => {
             output.push_str("json_value(");
             write_projection_expression(output, expression);
             output.push(',');
             write_identifier(output, path);
+            if *null_on_non_scalar {
+                output.push_str(" null on nonscalar");
+            }
             output.push(')');
         }
         ProjectionExpression::Left { expression, length } => {
@@ -686,4 +693,32 @@ pub(super) fn write_sort_list(output: &mut String, items: &[SortItem]) {
         output.push(')');
     }
     output.push(']');
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn json_value_fingerprint(null_on_non_scalar: bool) -> String {
+        let expression = ProjectionExpression::JsonValue {
+            expression: Box::new(ProjectionExpression::Column("metadata".into())),
+            path: "$.state".into(),
+            null_on_non_scalar,
+        };
+        let mut output = String::new();
+        write_projection_expression(&mut output, &expression);
+        output
+    }
+
+    #[test]
+    fn json_value_nonscalar_mode_has_a_distinct_fingerprint() {
+        let strict = json_value_fingerprint(false);
+        let null_on_non_scalar = json_value_fingerprint(true);
+        assert_ne!(strict, null_on_non_scalar);
+        assert!(!strict.contains("null on nonscalar"), "{strict}");
+        assert!(
+            null_on_non_scalar.contains("null on nonscalar"),
+            "{null_on_non_scalar}"
+        );
+    }
 }
