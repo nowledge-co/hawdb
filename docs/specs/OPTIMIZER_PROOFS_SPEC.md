@@ -97,10 +97,20 @@ compute the extra ranking fingerprints.
 
 The outer result covers preparation/planning failures. Successful preparation
 returns `OptimizerQualificationOutput` with the actual selected trace, snapshot
-epoch and an inner execution result, retaining plan evidence on runtime error.
+epoch, scoped work usage and an inner execution result, retaining plan evidence
+on runtime error.
 Owned successful rows remain charged while held by the caller. `verify_rules`
 accepts up to six required/forbidden assertions over structured Applied events;
 mere diagnostic mentions, estimates and skipped rules do not satisfy them.
+
+`qualify_optimizer_bounded_order_candidates` and its explicit-inventory variant
+require `OptimizerQualificationAttemptLimits`. The request task context is the
+cumulative campaign deadline/work admission; every candidate gets a fresh,
+equal attempt deadline/work scope constrained by that campaign. Tests execute
+the same three candidates in different orders at their exact individual work
+limit, assert equal attempt usage and assert the enclosing campaign is charged
+for all three. Candidate requests above eight fail instead of returning a
+truncated inventory.
 
 ## Local Shiro workflow
 
