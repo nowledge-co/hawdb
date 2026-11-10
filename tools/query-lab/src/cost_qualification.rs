@@ -92,6 +92,7 @@ pub struct CampaignEvidence {
     pub attempt_work_units: usize,
     pub memory_bytes: u64,
     pub result_bytes: u64,
+    pub result_bytes_used: usize,
     pub max_output_rows: usize,
     pub max_output_payload_bytes: usize,
     pub claim: String,
@@ -169,6 +170,7 @@ pub struct AttemptEvidence {
     pub error: Option<String>,
     pub complete_result: Option<Json>,
     pub work_units: usize,
+    pub retained_result_bytes: usize,
     pub timing_ns: Option<u64>,
 }
 
@@ -296,6 +298,21 @@ fn validate_replay_source(report: &Report) -> Result<(), String> {
             "qualification report candidate inventory is duplicate or lacks ordinary".into(),
         );
     }
+    if report
+        .candidates
+        .iter()
+        .any(|candidate| candidate.attempt.work_units > ATTEMPT_WORK_UNITS)
+    {
+        return Err("qualification report candidate work exceeds the attempt limit".into());
+    }
+    let reported_work_units = report.candidates.iter().try_fold(0usize, |total, candidate| {
+        total.checked_add(candidate.attempt.work_units)
+    }).ok_or_else(|| "qualification report candidate work total overflows usize".to_string())?;
+    let reported_result_bytes = report.candidates.iter().try_fold(0usize, |total, candidate| {
+        total.checked_add(candidate.attempt.retained_result_bytes)
+    }).ok_or_else(|| "qualification report retained result total overflows usize".to_string())?;
+    let result_bytes = usize::try_from(RESULT_BYTES)
+        .map_err(|_| "qualification result-memory limit does not fit usize".to_string())?;
     if report.campaign.candidate_order
         != report
             .candidates
@@ -308,18 +325,15 @@ fn validate_replay_source(report: &Report) -> Result<(), String> {
             .enumerate()
             .any(|(position, candidate)| candidate.attempt.schedule_position != position)
         || report.campaign.campaign_work_units_used
-            != report
-                .candidates
-                .iter()
-                .map(|candidate| candidate.attempt.work_units)
-                .sum::<usize>()
+            != reported_work_units
         || report.campaign.campaign_work_units_used > CAMPAIGN_WORK_UNITS
-        || report
-            .candidates
-            .iter()
-            .any(|candidate| candidate.attempt.work_units > ATTEMPT_WORK_UNITS)
+        || report.campaign.result_bytes_used != reported_result_bytes
+        || report.campaign.result_bytes_used > result_bytes
     {
-        return Err("qualification report candidate schedule or work evidence is inconsistent".into());
+        return Err(
+            "qualification report candidate schedule, work, or result-memory evidence is inconsistent"
+                .into(),
+        );
     }
     Ok(())
 }
@@ -391,6 +405,9 @@ fn execute(expected: Option<&Report>) -> Result<Report, String> {
             let trace = output.optimizer_trace;
             let cost = trace.selected_plan_cost_breakdown;
             let properties = trace.selected_plan_properties;
+            let retained_result_bytes = output.result.as_ref().map_or(0, |result| {
+                result.output.rows.retained_memory_bytes()
+            });
             let (status, error, result) = match output.result {
                 Ok(output) => (AttemptStatus::Completed, None, Some(full_result(&output))),
                 Err(error) => (AttemptStatus::EngineError, Some(error.to_string()), None),
@@ -435,6 +452,7 @@ fn execute(expected: Option<&Report>) -> Result<Report, String> {
                     error,
                     complete_result: result,
                     work_units: output.work_units,
+                    retained_result_bytes,
                     timing_ns: None,
                 },
             }
@@ -461,6 +479,7 @@ fn execute(expected: Option<&Report>) -> Result<Report, String> {
             attempt_work_units: ATTEMPT_WORK_UNITS,
             memory_bytes: MEMORY_BYTES,
             result_bytes: RESULT_BYTES,
+            result_bytes_used: set.retained_result_bytes,
             max_output_rows: MAX_OUTPUT_ROWS,
             max_output_payload_bytes: MAX_OUTPUT_PAYLOAD_BYTES,
             claim: "correctness_only_no_timing_or_regret".into(),
@@ -530,6 +549,16 @@ mod tests {
                 .map(|candidate| candidate.attempt.work_units)
                 .sum::<usize>()
         );
+        assert_eq!(
+            report.campaign.result_bytes_used,
+            report
+                .candidates
+                .iter()
+                .map(|candidate| candidate.attempt.retained_result_bytes)
+                .sum::<usize>()
+        );
+        assert!(report.campaign.result_bytes_used > 0);
+        assert!(report.campaign.result_bytes_used <= report.campaign.result_bytes as usize);
         assert!(report
             .candidates
             .iter()
@@ -562,5 +591,13 @@ mod tests {
         }
         over_limit.campaign.generated_candidates = over_limit.candidates.len();
         assert!(replay(&over_limit).unwrap_err().contains("over limit"));
+    }
+
+    #[test]
+    fn replay_validation_refuses_overflowing_attempt_work_without_panicking() {
+        let mut report = run().unwrap();
+        report.candidates[0].attempt.work_units = usize::MAX;
+        let error = validate_replay_source(&report).unwrap_err();
+        assert!(error.contains("exceeds the attempt limit"));
     }
 }

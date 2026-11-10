@@ -284,6 +284,17 @@ fn bounded_order_candidate_inventory_executes_distinct_legal_plans_on_one_snapsh
     assert_eq!(campaign.work_units(), 192);
     assert_eq!(candidates.candidates.len(), 3);
     assert_eq!(candidates.distinct_candidate_count, 2);
+    assert_eq!(
+        candidates.retained_result_bytes,
+        candidates
+            .candidates
+            .iter()
+            .filter_map(|candidate| candidate.output.result.as_ref().ok())
+            .map(|result| result.output.rows.retained_memory_bytes())
+            .sum::<usize>()
+    );
+    assert!(candidates.retained_result_bytes > 0);
+    assert!(candidates.retained_result_bytes <= candidates.result_memory_limit);
     assert_eq!(candidates.candidates[0].same_plan_as, None);
     assert!(candidates.candidates[1..]
         .iter()
@@ -375,7 +386,89 @@ fn bounded_order_candidate_inventory_executes_distinct_legal_plans_on_one_snapsh
         .candidates
         .iter()
         .all(|candidate| candidate.output.work_units == 64));
+    assert_eq!(
+        reordered.retained_result_bytes,
+        candidates.retained_result_bytes
+    );
     reordered.verify_complete_results().unwrap();
+}
+
+#[test]
+fn bounded_order_candidate_inventory_enforces_one_cumulative_result_budget() {
+    let db = fixture(64);
+    let mut read = db.begin_read_transaction().unwrap();
+    let query = "MATCH (n:Item) RETURN n.external AS id ORDER BY id LIMIT 30";
+    let probe_task = crate::RuntimeTaskContext::default()
+        .with_memory_reservation(crate::RuntimeMemoryReservation::new(64 << 20, 1 << 20));
+    let probe = read
+        .qualify_optimizer_query(
+            crate::QueryRequest::new(query).with_task_context(&probe_task),
+            OptimizerQualificationOptions::default(),
+            OptimizerSearchDirective::Memo,
+        )
+        .unwrap();
+    let one_result_bytes = probe
+        .result
+        .as_ref()
+        .unwrap()
+        .output
+        .rows
+        .retained_memory_bytes();
+    assert!(one_result_bytes > 0);
+    drop(probe);
+
+    let mut minimum_attempt_result_bytes = one_result_bytes;
+    let mut upper = 1usize << 20;
+    while minimum_attempt_result_bytes < upper {
+        let candidate = minimum_attempt_result_bytes + (upper - minimum_attempt_result_bytes) / 2;
+        let task = crate::RuntimeTaskContext::default().with_memory_reservation(
+            crate::RuntimeMemoryReservation::new(64 << 20, u64::try_from(candidate).unwrap()),
+        );
+        let output = read
+            .qualify_optimizer_query(
+                crate::QueryRequest::new(query).with_task_context(&task),
+                OptimizerQualificationOptions::default(),
+                OptimizerSearchDirective::Memo,
+            )
+            .unwrap();
+        let completed = output.result.is_ok();
+        drop(output);
+        if completed {
+            upper = candidate;
+        } else {
+            minimum_attempt_result_bytes = candidate + 1;
+        }
+    }
+    let campaign_result_bytes = minimum_attempt_result_bytes
+        .checked_add(one_result_bytes)
+        .unwrap();
+    let campaign = crate::RuntimeTaskContext::with_timeout(std::time::Duration::from_secs(10))
+        .with_work_limit(30_000_000)
+        .with_memory_reservation(crate::RuntimeMemoryReservation::new(
+            64 << 20,
+            u64::try_from(campaign_result_bytes).unwrap(),
+        ));
+    let candidates = read
+        .qualify_optimizer_bounded_order_candidates(
+            crate::QueryRequest::new(query).with_task_context(&campaign),
+            crate::OptimizerQualificationAttemptLimits::new(
+                std::time::Duration::from_secs(5),
+                10_000_000,
+            )
+            .unwrap(),
+            OptimizerSearchDirective::Memo,
+        )
+        .unwrap();
+    assert_eq!(candidates.result_memory_limit, campaign_result_bytes);
+    assert_eq!(
+        candidates.retained_result_bytes,
+        one_result_bytes.checked_mul(2).unwrap()
+    );
+    assert!(candidates.candidates[0].output.result.is_ok());
+    assert!(candidates.candidates[1].output.result.is_ok());
+    let error = candidates.candidates[2].output.result.as_ref().unwrap_err();
+    assert!(error.to_string().contains("result_materialization"));
+    assert!(candidates.verify_complete_results().is_err());
 }
 
 #[test]
@@ -426,6 +519,11 @@ fn explicit_bounded_order_candidate_refuses_missing_and_ambiguous_controls() {
         10_000_000,
     )
     .unwrap();
+    let timeout_error =
+        crate::OptimizerQualificationAttemptLimits::new(std::time::Duration::MAX, 1).unwrap_err();
+    assert!(timeout_error
+        .to_string()
+        .contains("monotonic deadline range"));
     let duplicate = read
         .qualify_optimizer_bounded_order_candidate_requests(
             request,

@@ -109,8 +109,10 @@ cumulative campaign deadline/work admission; every candidate gets a fresh,
 equal attempt deadline/work scope constrained by that campaign. Tests execute
 the same three candidates in different orders at their exact individual work
 limit, assert equal attempt usage and assert the enclosing campaign is charged
-for all three. Candidate requests above eight fail instead of returning a
-truncated inventory.
+for all three. The effective result-memory limit is cumulative across the
+candidate set: completed owned rows retain their exact executor charge, and
+each later attempt receives only the unspent result-memory allowance. Candidate
+requests above eight fail instead of returning a truncated inventory.
 
 ## Local Shiro workflow
 

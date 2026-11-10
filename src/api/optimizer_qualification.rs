@@ -32,6 +32,12 @@ impl OptimizerQualificationAttemptLimits {
                 "optimizer qualification attempt timeout must be nonzero".into(),
             ));
         }
+        if std::time::Instant::now().checked_add(timeout).is_none() {
+            return Err(HawDBError::Execution(
+                "optimizer qualification attempt timeout exceeds the supported monotonic deadline range"
+                    .into(),
+            ));
+        }
         if work_units == 0 {
             return Err(HawDBError::Execution(
                 "optimizer qualification attempt work limit must be nonzero".into(),
@@ -51,8 +57,20 @@ impl OptimizerQualificationAttemptLimits {
         self.work_units
     }
 
-    fn task_context(self) -> hawdb_core::RuntimeTaskContext {
-        hawdb_core::RuntimeTaskContext::with_timeout(self.timeout).with_work_limit(self.work_units)
+    fn task_context(self) -> Result<hawdb_core::RuntimeTaskContext> {
+        let deadline = std::time::Instant::now()
+            .checked_add(self.timeout)
+            .ok_or_else(|| {
+                HawDBError::Execution(
+                    "optimizer qualification attempt timeout exceeds the supported monotonic deadline range"
+                        .into(),
+                )
+            })?;
+        Ok(hawdb_core::RuntimeTaskContext::new(
+            hawdb_core::RuntimeCancellationToken::new(),
+            Some(deadline),
+        )
+        .with_work_limit(self.work_units))
     }
 }
 
@@ -135,6 +153,10 @@ pub struct OptimizerQualificationCandidateSetOutput {
     pub snapshot_epoch: u64,
     pub candidate_limit: usize,
     pub distinct_candidate_count: usize,
+    /// Aggregate result-materialization ceiling for the complete candidate set.
+    pub result_memory_limit: usize,
+    /// Exact result-materialization bytes retained by all successful candidates.
+    pub retained_result_bytes: usize,
     pub candidates: Vec<OptimizerQualificationCandidateOutput>,
 }
 
@@ -437,7 +459,26 @@ impl<S: executor::ExecutionStore> DatabaseReadTransaction<S> {
             }
         }
 
+        let campaign_task =
+            query_request::bind_request_context(self.task_context.as_ref(), request.task_context)?;
+        let result_memory_limit = executor::enforced_result_memory_budget(
+            &self.config.execution_memory,
+            campaign_task.as_ref(),
+        )?
+        .get();
+        let working_memory_limit = executor::enforced_query_memory_budget(
+            &self.config.execution_memory,
+            campaign_task.as_ref(),
+        )?
+        .get();
+        let working_memory_limit = u64::try_from(working_memory_limit).map_err(|_| {
+            HawDBError::Execution(
+                "optimizer qualification campaign working-memory limit does not fit u64".into(),
+            )
+        })?;
+
         let mut candidates = Vec::with_capacity(requests.len());
+        let mut retained_result_bytes = 0usize;
         for candidate_request in requests {
             let kind = candidate_request.kind;
             let qualification = match kind {
@@ -449,11 +490,30 @@ impl<S: executor::ExecutionStore> DatabaseReadTransaction<S> {
                         .with_bounded_order_alternative(alternative)
                 }
             };
-            let attempt_task = attempt_limits.task_context();
-            let attempt_task = request.task_context.map_or_else(
-                || Ok(attempt_task.clone()),
-                |campaign_task| campaign_task.constrained_by(&attempt_task),
-            )?;
+            let remaining_result_bytes = result_memory_limit
+                .checked_sub(retained_result_bytes)
+                .filter(|remaining| *remaining != 0)
+                .ok_or_else(|| {
+                    HawDBError::Execution(format!(
+                        "optimizer qualification campaign exhausted its {result_memory_limit}-byte result-memory budget after retaining {retained_result_bytes} bytes"
+                    ))
+                })?;
+            let remaining_result_bytes = u64::try_from(remaining_result_bytes).map_err(|_| {
+                HawDBError::Execution(
+                    "optimizer qualification campaign result-memory limit does not fit u64".into(),
+                )
+            })?;
+            let attempt_task = attempt_limits.task_context()?;
+            let attempt_task = request
+                .task_context
+                .map_or_else(
+                    || Ok(attempt_task.clone()),
+                    |campaign_task| campaign_task.constrained_by(&attempt_task),
+                )?
+                .with_memory_reservation(hawdb_core::RuntimeMemoryReservation::new(
+                    working_memory_limit,
+                    remaining_result_bytes,
+                ));
             let attempt_request = QueryRequest {
                 task_context: Some(&attempt_task),
                 ..request
@@ -475,6 +535,19 @@ impl<S: executor::ExecutionStore> DatabaseReadTransaction<S> {
                         candidate.output.selected_plan_instance_fingerprint
                             == output.selected_plan_instance_fingerprint
                     });
+            let candidate_result_bytes = output
+                .result
+                .as_ref()
+                .map_or(0, |result| result.output.rows.retained_memory_bytes());
+            retained_result_bytes = retained_result_bytes
+                .checked_add(candidate_result_bytes)
+                .filter(|retained| *retained <= result_memory_limit)
+                .ok_or_else(|| {
+                    HawDBError::Execution(format!(
+                        "optimizer qualification candidate {} exceeded the campaign's {result_memory_limit}-byte result-memory budget",
+                        kind.as_str()
+                    ))
+                })?;
             candidates.push(OptimizerQualificationCandidateOutput {
                 kind,
                 same_plan_as,
@@ -506,6 +579,8 @@ impl<S: executor::ExecutionStore> DatabaseReadTransaction<S> {
             snapshot_epoch,
             candidate_limit: OPTIMIZER_QUALIFICATION_CANDIDATE_LIMIT,
             distinct_candidate_count,
+            result_memory_limit,
+            retained_result_bytes,
             candidates,
         })
     }
