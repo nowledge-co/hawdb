@@ -322,6 +322,27 @@ being admitted to cache. `Database::scrub_storage` is the explicit full scan:
 it streams every canonical artifact through CRC32C and SHA-256, validates WAL
 framing and LSN continuity, and poisons the open handle on any integrity error.
 
+Immutable branch objects are not re-hashed when this same process has just
+produced them. A streamed object publication hashes the exact bytes it writes
+into a new staging inode, syncs it, links it into `objects/` and syncs the
+directories; only then does it record that inode's native identity, length and
+modification time in a process-local registry, and it skips the staged
+read-back. Later in the same process, selector dependency checks, branch mount
+and cold immutable-handle validation skip the whole-object identity hash when
+the opened descriptor still has exactly that identity, length and modification
+time. Everything else still hashes the complete object: objects found on disk
+(cold open, another process, any open after a crash or restart, since the
+registry is memory-only), reuse of an existing object, reclamation, recovery
+dependency checks, `doctor` WAL repair and derived-artifact health checks
+(`verify_stored`), and `scrub_storage`. Content-level checks against manifest
+digests and all page/block checks on reads are unchanged. The stamp detects a
+replaced inode and ordinary later writes. It does not detect media corruption,
+a rewrite within one coarse timestamp tick, or a writer that restores the
+modification time. Such damage in this exclusively owned directory is refused by
+format checksums when read, reported by `scrub_storage`, and refused by
+the full identity check on the next cold open; it is never served as valid
+data.
+
 `max_wal_replay_entries` counts these top-level WAL records, not the child
 operations inside a batch, so a budgeted recovery either applies a complete
 batch record or rejects the open before applying the next record.

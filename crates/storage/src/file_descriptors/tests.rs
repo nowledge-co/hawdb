@@ -1171,3 +1171,81 @@ fn component_scope_charges_the_original_domain_and_restores_after_unwind() {
     assert_eq!(foreign.project.metrics().open, 1);
     drop(file);
 }
+
+/// Publishes `bytes` through the streamed object store under the fixture
+/// root, so this process records the exact inode it hashed while writing.
+fn published_binding(fixture: &Fixture, name: &str, bytes: &[u8]) -> ImmutableFileBinding {
+    let source = fixture.root.join(format!("{name}.source"));
+    std::fs::write(&source, bytes).unwrap();
+    let reference = ObjectReference::for_bytes(ObjectKind::CheckpointArtifact, 1, bytes);
+    let mut store =
+        crate::immutable_object::ImmutableObjectStore::open(fixture.root.join(name)).unwrap();
+    store.publish_file(reference, &source).unwrap();
+    ImmutableFileBinding {
+        reference,
+        object_path: store.object_path(reference),
+    }
+}
+
+#[test]
+fn published_object_mount_and_cold_handle_skip_rehash_until_forgotten() {
+    use crate::immutable_object::{forget_published_object, published_object_skipped_rehashes};
+
+    let fixture = Fixture::new(8);
+    let context = context_for_path(&fixture.root).unwrap();
+    let binding = published_binding(&fixture, "published-mount", b"published mount payload");
+    let skipped = || published_object_skipped_rehashes(&binding.object_path).unwrap();
+    assert_eq!(skipped(), Some(0));
+
+    // Branch admission mounts the alias without re-hashing the object.
+    let alias = fixture.root.join("published-mount.alias");
+    fixture
+        .project
+        .immutable_handles
+        .mount(&alias, binding.clone(), &context)
+        .unwrap();
+    assert_eq!(skipped(), Some(1));
+
+    // A cold handle neither charges nor reports validation bytes.
+    let (file, validation_bytes) = fixture
+        .project
+        .immutable_handles
+        .get_admitted(&binding, &context, |_| {
+            panic!("a same-process publication must not be re-hashed")
+        })
+        .unwrap();
+    assert_eq!(validation_bytes, 0);
+    assert_eq!(skipped(), Some(2));
+    let mut value = vec![0; binding.reference.byte_length as usize];
+    crate::io::read_exact_at(&file, &mut value, 0).unwrap();
+    assert_eq!(value, b"published mount payload");
+    drop(file);
+
+    // Without the record (a new process), mount hashes every byte again.
+    assert!(forget_published_object(&binding.object_path).unwrap());
+    let modified = std::fs::metadata(&binding.object_path)
+        .unwrap()
+        .modified()
+        .unwrap();
+    let mut object = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&binding.object_path)
+        .unwrap();
+    object.seek(SeekFrom::Start(3)).unwrap();
+    object.write_all(b"X").unwrap();
+    object
+        .set_times(std::fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    drop(object);
+    let error = fixture
+        .project
+        .immutable_handles
+        .mount(
+            &fixture.root.join("published-mount.cold-alias"),
+            binding.clone(),
+            &context,
+        )
+        .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(skipped(), None);
+}
