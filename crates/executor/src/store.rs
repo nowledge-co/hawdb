@@ -258,6 +258,25 @@ pub trait GraphExecutionRead {
         ))
     }
 
+    /// [`Self::relationship_with_allocation`] whose record keeps only
+    /// `required_properties` beside its endpoints and type. Readers that
+    /// cannot skip properties read the whole record, under its full
+    /// admission, and drop the rest.
+    fn projected_relationship_with_allocation(
+        &self,
+        id: hawdb_storage::RelId,
+        required_properties: &BTreeSet<String>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+    ) -> Result<hawdb_storage::read_view::AdmittedRelationshipRead> {
+        let mut read = self.relationship_with_allocation(id, admit)?;
+        if let hawdb_storage::read_view::AdmittedRelationshipRead::Relationship(relationship) =
+            &mut read
+        {
+            relationship.retain_properties(|name| required_properties.contains(name));
+        }
+        Ok(read)
+    }
+
     /// Selected-column point read. Implementations must call admission before
     /// allocating the owned result, and propagate rejection without decoding.
     fn projected_node_owned_admitted(
