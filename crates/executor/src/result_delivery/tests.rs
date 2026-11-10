@@ -170,6 +170,31 @@ fn retained_consumer_memory_lives_until_accumulator_drop() {
 }
 
 #[test]
+fn owned_result_memory_lives_until_every_row_handle_is_dropped() {
+    let memory = ExecutionMemoryConfig::default();
+    let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+    let mut output = QueryOutputAccumulator::new_owned(
+        OutputLimits::default(),
+        memory.query_memory_bytes,
+        &ledger,
+    )
+    .unwrap();
+    output.emit(binding("retained")).unwrap();
+
+    let rows = output.take_owned_rows().unwrap();
+    let retained_bytes = rows.retained_memory_bytes();
+    assert!(retained_bytes > 0);
+    let row = rows.as_slice()[0].clone();
+    drop(rows);
+    drop(output);
+
+    assert_eq!(ledger.snapshot().used_bytes, retained_bytes);
+    assert_eq!(row["value"], Value::String("retained".into()));
+    drop(row);
+    assert_eq!(ledger.snapshot().used_bytes, 0);
+}
+
+#[test]
 fn output_limits_stop_before_calling_the_consumer() {
     let memory = ExecutionMemoryConfig::default();
     let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
@@ -359,6 +384,8 @@ fn compact_owned_results_admit_scalar_string_fixture_under_16_mib() {
         Some("xxxxxxxxxxxxxxxxxxxxxxxx")
     );
     drop(output);
+    assert_eq!(ledger.snapshot().used_bytes, rows.retained_memory_bytes());
+    drop(rows);
     assert_eq!(ledger.snapshot().used_bytes, 0);
 }
 
@@ -420,6 +447,8 @@ fn compact_owned_results_preserve_sparse_multi_level_maps() {
     assert_eq!(values.get("key-0999"), Some(&Value::Int(999)));
     assert!(!values.contains_key("key-0000"));
     drop(output);
+    assert_eq!(ledger.snapshot().used_bytes, rows.retained_memory_bytes());
+    drop(rows);
     assert_eq!(ledger.snapshot().used_bytes, 0);
 }
 
@@ -503,6 +532,8 @@ fn compact_owned_results_roll_back_failed_segment_boundary_payload() {
         );
     }
     drop(output);
+    assert_eq!(ledger.snapshot().used_bytes, rows.retained_memory_bytes());
+    drop(rows);
     assert_eq!(ledger.snapshot().used_bytes, 0);
 }
 
@@ -587,6 +618,8 @@ fn declared_owned_schema_preserves_empty_rows_and_reorders_named_values() {
         }
         assert!(ledger.snapshot().used_bytes > 0);
         drop(output);
+        assert_eq!(ledger.snapshot().used_bytes, rows.retained_memory_bytes());
+        drop(rows);
         assert_eq!(ledger.snapshot().used_bytes, 0);
     }
 }
@@ -694,5 +727,7 @@ fn declared_schema_accepts_changing_input_orders_across_segments() {
         );
     }
     drop(output);
+    assert_eq!(ledger.snapshot().used_bytes, rows.retained_memory_bytes());
+    drop(rows);
     assert_eq!(ledger.snapshot().used_bytes, 0);
 }

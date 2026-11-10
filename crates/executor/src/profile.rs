@@ -14,6 +14,7 @@
 
 use crate::binding::value_payload_bytes;
 use crate::columnar::ColumnarRowRef;
+use crate::QueryMemoryLease;
 use hawdb_core::{HawDBError, Result, Value, ValueRef};
 use hawdb_plan_cypher::{PhysicalOperatorId, PhysicalPlanKind};
 use std::collections::BTreeMap;
@@ -73,6 +74,9 @@ struct QueryRowStorage {
     schema: QuerySchema,
     values: QueryStoredValues,
     row_count: usize,
+    // Keep the exact result-materialization charge alive for every owned row
+    // handle that can retain this storage after execution returns.
+    retained_memory: Option<Arc<QueryMemoryLease>>,
 }
 
 #[derive(Debug)]
@@ -316,6 +320,7 @@ impl QueryRows {
                 schema,
                 values: QueryStoredValues::Flat(values),
                 row_count,
+                retained_memory: None,
             }),
             indexed_rows: OnceLock::new(),
         }
@@ -400,6 +405,7 @@ impl QueryRows {
             schema: self.schema().clone(),
             values: QueryStoredValues::Flat(values),
             row_count: retained_row_count,
+            retained_memory: self.storage.retained_memory.clone(),
         });
         self.indexed_rows = OnceLock::new();
     }
@@ -419,6 +425,17 @@ impl QueryRows {
         stored_values(&self.storage).fold(names, |total, value| {
             total.saturating_add(value_payload_bytes(value))
         })
+    }
+
+    /// Exact result-materialization bytes retained by this owned result.
+    ///
+    /// Results built outside the admitted executor return zero.
+    #[doc(hidden)]
+    pub fn retained_memory_bytes(&self) -> usize {
+        self.storage
+            .retained_memory
+            .as_deref()
+            .map_or(0, QueryMemoryLease::bytes)
     }
 
     fn indexed_rows(&self) -> &[QueryRow] {
@@ -622,14 +639,26 @@ impl QueryRowsBuilder {
         Ok(())
     }
 
-    pub fn finish(mut self) -> QueryRows {
+    pub fn finish(self) -> QueryRows {
+        self.finish_with_retained_memory(None)
+    }
+
+    pub(crate) fn finish_with_retained_memory(
+        mut self,
+        retained_memory: Option<QueryMemoryLease>,
+    ) -> QueryRows {
+        let retained_memory = retained_memory.map(Arc::new);
         if let Some(mut segments) = self.segments.take() {
             if segments.is_empty() {
-                return QueryRows::from_flat_values_unchecked(
-                    self.schema.unwrap_or_else(QuerySchema::empty),
-                    self.values,
-                    self.row_count,
-                );
+                return QueryRows {
+                    storage: Arc::new(QueryRowStorage {
+                        schema: self.schema.unwrap_or_else(QuerySchema::empty),
+                        values: QueryStoredValues::Flat(self.values),
+                        row_count: self.row_count,
+                        retained_memory,
+                    }),
+                    indexed_rows: OnceLock::new(),
+                };
             }
             if !self.values.is_empty() {
                 segments.push(self.values);
@@ -639,15 +668,20 @@ impl QueryRowsBuilder {
                     schema: self.schema.unwrap_or_else(QuerySchema::empty),
                     values: QueryStoredValues::Segmented(segments),
                     row_count: self.row_count,
+                    retained_memory,
                 }),
                 indexed_rows: OnceLock::new(),
             };
         }
-        QueryRows::from_flat_values_unchecked(
-            self.schema.unwrap_or_else(QuerySchema::empty),
-            self.values,
-            self.row_count,
-        )
+        QueryRows {
+            storage: Arc::new(QueryRowStorage {
+                schema: self.schema.unwrap_or_else(QuerySchema::empty),
+                values: QueryStoredValues::Flat(self.values),
+                row_count: self.row_count,
+                retained_memory,
+            }),
+            indexed_rows: OnceLock::new(),
+        }
     }
 }
 

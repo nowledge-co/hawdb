@@ -27,7 +27,10 @@ pub use context::{
     ExplainMode, OptimizerConfig, OptimizerContext, QueryFamily, ResourceHints, StatementClass,
     TraceSink,
 };
-pub use cost::{PlanCost, PlanCostBreakdown};
+pub use cost::{
+    PlanCost, PlanCostBreakdown, PlanCostWeights, DEFAULT_PLAN_COST_POLICY_ID,
+    DEFAULT_PLAN_COST_WEIGHTS,
+};
 pub use memo::{GroupId, Memo, MemoGroup};
 pub use properties::{
     Distribution, MemoryBudgetClass, PhysicalProperties, RequiredProperties, ScanPruningSupport,
@@ -46,8 +49,8 @@ pub use stage::{
 };
 
 pub use qualification::{
-    InvalidOptimizerCostPerturbation, OptimizerCostPerturbation, OptimizerQualificationOptions,
-    OptionalOptimizerRule,
+    InvalidOptimizerCostPerturbation, OptimizerBoundedOrderAlternative, OptimizerCostPerturbation,
+    OptimizerQualificationOptions, OptionalOptimizerRule, BOUNDED_ORDER_QUALIFICATION_RULE,
 };
 
 pub use qualification::{

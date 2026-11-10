@@ -3,8 +3,9 @@
 
 use super::*;
 use crate::optimizer::{
-    OptimizerCostPerturbation, OptimizerQualificationOptions, OptimizerRuleAssertion,
-    OptimizerSearchDirective, OptionalOptimizerRule,
+    OptimizerBoundedOrderAlternative, OptimizerCostPerturbation, OptimizerQualificationOptions,
+    OptimizerRuleAssertion, OptimizerSearchDirective, OptionalOptimizerRule,
+    DEFAULT_PLAN_COST_POLICY_ID, DEFAULT_PLAN_COST_WEIGHTS,
 };
 
 fn fixture(rows: i64) -> Database {
@@ -239,6 +240,458 @@ fn seeded_ranking_changes_legal_bounded_plans_without_changing_reported_costs() 
         fingerprints.len() >= 2,
         "perturbation must exercise distinct executable alternatives"
     );
+}
+
+#[test]
+fn bounded_order_candidate_inventory_executes_distinct_legal_plans_on_one_snapshot() {
+    let mut db = Database::new();
+    db.query("CREATE NODE TABLE Item").unwrap();
+    db.query("CREATE PROPERTY ON NODE TABLE Item(id) TYPE INT NOT NULL")
+        .unwrap();
+    db.query("CREATE PROPERTY ON NODE TABLE Item(sort_key) TYPE INT NOT NULL")
+        .unwrap();
+    let rows = (0..64)
+        .map(|id| {
+            Value::Map(BTreeMap::from([
+                ("id".into(), Value::Int(id)),
+                ("sort_key".into(), Value::Int(id % 7)),
+            ]))
+        })
+        .collect();
+    db.query_with_params(
+        "UNWIND $rows AS r CREATE (:Item {id:r.id, sort_key:r.sort_key})",
+        &BTreeMap::from([("rows".into(), Value::List(rows))]),
+    )
+    .unwrap();
+    let mut read = db.begin_read_transaction().unwrap();
+    let query =
+        "MATCH (n:Item) RETURN n.sort_key AS sort_key, n.id AS id ORDER BY sort_key, id LIMIT 30";
+    let campaign = crate::RuntimeTaskContext::with_timeout(std::time::Duration::from_secs(10))
+        .with_work_limit(192);
+    let attempt_limits =
+        crate::OptimizerQualificationAttemptLimits::new(std::time::Duration::from_secs(5), 64)
+            .unwrap();
+    let candidates = read
+        .qualify_optimizer_bounded_order_candidates(
+            crate::QueryRequest::new(query).with_task_context(&campaign),
+            attempt_limits,
+            OptimizerSearchDirective::Memo,
+        )
+        .unwrap();
+
+    assert_eq!(candidates.snapshot_epoch, read.commit_epoch());
+    assert_eq!(candidates.candidate_limit, 8);
+    assert_eq!(campaign.work_units(), 192);
+    assert_eq!(candidates.candidates.len(), 3);
+    assert_eq!(candidates.distinct_candidate_count, 2);
+    assert_eq!(
+        candidates.retained_result_bytes,
+        candidates
+            .candidates
+            .iter()
+            .filter_map(|candidate| candidate.output.result.as_ref().ok())
+            .map(|result| result.output.rows.retained_memory_bytes())
+            .sum::<usize>()
+    );
+    assert!(candidates.retained_result_bytes > 0);
+    assert!(candidates.retained_result_bytes <= candidates.result_memory_limit);
+    assert_eq!(candidates.candidates[0].same_plan_as, None);
+    assert!(candidates.candidates[1..]
+        .iter()
+        .any(|candidate| candidate.same_plan_as == Some(0)));
+    assert_eq!(
+        candidates.candidates[1].kind,
+        crate::OptimizerQualificationCandidateKind::BoundedOrder(
+            OptimizerBoundedOrderAlternative::TopN
+        )
+    );
+    assert_eq!(
+        candidates.candidates[2].kind,
+        crate::OptimizerQualificationCandidateKind::BoundedOrder(
+            OptimizerBoundedOrderAlternative::SortThenLimit
+        )
+    );
+    assert!(candidates.candidates[1]
+        .output
+        .selected_plan_instance_fingerprint
+        .contains("TopNExec"));
+    assert!(candidates.candidates[2]
+        .output
+        .selected_plan_instance_fingerprint
+        .contains("SortExec"));
+    for candidate in &candidates.candidates {
+        assert_eq!(candidate.output.snapshot_epoch, candidates.snapshot_epoch);
+        assert_eq!(candidate.output.work_units, 64);
+        assert_eq!(candidate.output.cost_policy_id, DEFAULT_PLAN_COST_POLICY_ID);
+        assert_eq!(candidate.output.cost_weights, DEFAULT_PLAN_COST_WEIGHTS);
+        assert_eq!(
+            candidate
+                .output
+                .optimizer_trace
+                .selected_plan_cost_breakdown
+                .score_with_weights(candidate.output.cost_weights),
+            candidate.output.optimizer_trace.selected_plan_cost
+        );
+    }
+    candidates.verify_complete_results().unwrap();
+    let expected = (0..7)
+        .flat_map(|sort_key| {
+            (0..64).filter(move |id| id % 7 == sort_key).map(move |id| {
+                BTreeMap::from([
+                    ("sort_key".into(), Value::Int(sort_key)),
+                    ("id".into(), Value::Int(id)),
+                ])
+            })
+        })
+        .take(30)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        candidates.candidates[0]
+            .output
+            .result
+            .as_ref()
+            .unwrap()
+            .output
+            .rows,
+        expected
+    );
+
+    let reordered_campaign =
+        crate::RuntimeTaskContext::with_timeout(std::time::Duration::from_secs(10))
+            .with_work_limit(192);
+    let reordered = read
+        .qualify_optimizer_bounded_order_candidate_requests(
+            crate::QueryRequest::new(query).with_task_context(&reordered_campaign),
+            &[
+                crate::OptimizerQualificationCandidateRequest::new(
+                    crate::OptimizerQualificationCandidateKind::BoundedOrder(
+                        OptimizerBoundedOrderAlternative::SortThenLimit,
+                    ),
+                ),
+                crate::OptimizerQualificationCandidateRequest::new(
+                    crate::OptimizerQualificationCandidateKind::Ordinary,
+                ),
+                crate::OptimizerQualificationCandidateRequest::new(
+                    crate::OptimizerQualificationCandidateKind::BoundedOrder(
+                        OptimizerBoundedOrderAlternative::TopN,
+                    ),
+                ),
+            ],
+            attempt_limits,
+            OptimizerSearchDirective::Memo,
+        )
+        .unwrap();
+    assert_eq!(reordered_campaign.work_units(), 192);
+    assert!(reordered
+        .candidates
+        .iter()
+        .all(|candidate| candidate.output.work_units == 64));
+    assert_eq!(
+        reordered.retained_result_bytes,
+        candidates.retained_result_bytes
+    );
+    reordered.verify_complete_results().unwrap();
+}
+
+const CLOCK_CANDIDATE_QUERY: &str = "MATCH (n:Item) RETURN n.external AS id, datetime() AS observed, CASE WHEN true THEN CURRENT_TIMESTAMP() END AS stamp, datetime($zone) AS zoned ORDER BY id LIMIT 30";
+
+fn clock_attempt_limits() -> crate::OptimizerQualificationAttemptLimits {
+    crate::OptimizerQualificationAttemptLimits::new(std::time::Duration::from_secs(5), 10_000_000)
+        .unwrap()
+}
+
+#[test]
+fn bounded_order_candidates_share_one_automatic_statement_clock() {
+    let db = fixture(64);
+    let mut read = db.begin_read_transaction().unwrap();
+    let parameters = BTreeMap::from([(
+        "zone".into(),
+        Value::Map(BTreeMap::from([(
+            "timezone".into(),
+            Value::String("+01:00".into()),
+        )])),
+    )]);
+    let previous = hawdb_core::temporal::pinned_statement_clock();
+    let candidates = read
+        .qualify_optimizer_bounded_order_candidates(
+            crate::QueryRequest::new(CLOCK_CANDIDATE_QUERY).with_params(&parameters),
+            clock_attempt_limits(),
+            OptimizerSearchDirective::Memo,
+        )
+        .unwrap();
+    assert_eq!(hawdb_core::temporal::pinned_statement_clock(), previous);
+    candidates.verify_complete_results().unwrap();
+    assert_eq!(candidates.distinct_candidate_count, 2);
+    assert!(candidates.candidates[1..]
+        .iter()
+        .any(|candidate| candidate.same_plan_as == Some(0)));
+    let rows = &candidates.candidates[0]
+        .output
+        .result
+        .as_ref()
+        .unwrap()
+        .output
+        .rows;
+    let Value::DateTime(instant) = rows[0]["observed"] else {
+        panic!("expected a statement datetime");
+    };
+    let zoned = instant.with_timezone(&hawdb_core::temporal::FixedOffset::east_opt(3600).unwrap());
+    assert_eq!(rows.len(), 30);
+    for (index, row) in rows.iter().enumerate() {
+        assert_eq!(row["id"], Value::Int(index as i64));
+        assert_eq!(row["observed"], Value::DateTime(instant));
+        assert_eq!(
+            row["stamp"],
+            Value::Int(instant.timestamp_nanos_opt().unwrap())
+        );
+        assert_eq!(row["zoned"], Value::DateTime(zoned));
+    }
+}
+
+#[test]
+fn bounded_order_clock_replay_preserves_the_caller_pin_and_refuses_another_instant() {
+    use hawdb_core::temporal::{self, DateTime, TimeDelta};
+
+    let db = fixture(64);
+    let mut read = db.begin_read_transaction().unwrap();
+    let query =
+        "MATCH (n:Item) RETURN n.external AS id, datetime() AS observed ORDER BY id LIMIT 30";
+    let instant = DateTime::from_timestamp(1_793_361_600, 123).unwrap();
+    let previous = temporal::pinned_statement_clock();
+    temporal::with_statement_clock(instant, || {
+        let first = read
+            .qualify_optimizer_bounded_order_candidates(
+                crate::QueryRequest::new(query),
+                clock_attempt_limits(),
+                OptimizerSearchDirective::Memo,
+            )
+            .unwrap();
+        first.verify_complete_results().unwrap();
+        let requests = first
+            .candidates
+            .iter()
+            .rev()
+            .map(|candidate| {
+                crate::OptimizerQualificationCandidateRequest::new(candidate.kind)
+                    .with_expected_plan_instance_fingerprint(
+                        &candidate.output.selected_plan_instance_fingerprint,
+                    )
+            })
+            .collect::<Vec<_>>();
+        let replay = read
+            .qualify_optimizer_bounded_order_candidate_requests(
+                crate::QueryRequest::new(query),
+                &requests,
+                clock_attempt_limits(),
+                OptimizerSearchDirective::Memo,
+            )
+            .unwrap();
+        replay.verify_complete_results().unwrap();
+        assert_eq!(replay.distinct_candidate_count, 2);
+        for candidate in &replay.candidates {
+            let output = &candidate.output.result.as_ref().unwrap().output;
+            assert_eq!(
+                output.rows[0]["observed"],
+                Value::DateTime(instant.fixed_offset())
+            );
+            assert_eq!(
+                *output,
+                first.candidates[0].output.result.as_ref().unwrap().output
+            );
+        }
+        let stale = temporal::with_statement_clock(instant + TimeDelta::seconds(1), || {
+            read.qualify_optimizer_bounded_order_candidate_requests(
+                crate::QueryRequest::new(query),
+                &requests,
+                clock_attempt_limits(),
+                OptimizerSearchDirective::Memo,
+            )
+        })
+        .unwrap_err();
+        assert!(stale.to_string().contains("is stale"), "{stale}");
+        assert_eq!(temporal::pinned_statement_clock(), Some(instant));
+    });
+    assert_eq!(temporal::pinned_statement_clock(), previous);
+}
+
+#[test]
+fn bounded_order_candidate_inventory_enforces_one_cumulative_result_budget() {
+    let db = fixture(64);
+    let mut read = db.begin_read_transaction().unwrap();
+    let query = "MATCH (n:Item) RETURN n.external AS id ORDER BY id LIMIT 30";
+    let probe_task = crate::RuntimeTaskContext::default()
+        .with_memory_reservation(crate::RuntimeMemoryReservation::new(64 << 20, 1 << 20));
+    let probe = read
+        .qualify_optimizer_query(
+            crate::QueryRequest::new(query).with_task_context(&probe_task),
+            OptimizerQualificationOptions::default(),
+            OptimizerSearchDirective::Memo,
+        )
+        .unwrap();
+    let one_result_bytes = probe
+        .result
+        .as_ref()
+        .unwrap()
+        .output
+        .rows
+        .retained_memory_bytes();
+    assert!(one_result_bytes > 0);
+    drop(probe);
+
+    let mut minimum_attempt_result_bytes = one_result_bytes;
+    let mut upper = 1usize << 20;
+    while minimum_attempt_result_bytes < upper {
+        let candidate = minimum_attempt_result_bytes + (upper - minimum_attempt_result_bytes) / 2;
+        let task = crate::RuntimeTaskContext::default().with_memory_reservation(
+            crate::RuntimeMemoryReservation::new(64 << 20, u64::try_from(candidate).unwrap()),
+        );
+        let output = read
+            .qualify_optimizer_query(
+                crate::QueryRequest::new(query).with_task_context(&task),
+                OptimizerQualificationOptions::default(),
+                OptimizerSearchDirective::Memo,
+            )
+            .unwrap();
+        let completed = output.result.is_ok();
+        drop(output);
+        if completed {
+            upper = candidate;
+        } else {
+            minimum_attempt_result_bytes = candidate + 1;
+        }
+    }
+    let campaign_result_bytes = minimum_attempt_result_bytes
+        .checked_add(one_result_bytes)
+        .unwrap();
+    let campaign = crate::RuntimeTaskContext::with_timeout(std::time::Duration::from_secs(10))
+        .with_work_limit(30_000_000)
+        .with_memory_reservation(crate::RuntimeMemoryReservation::new(
+            64 << 20,
+            u64::try_from(campaign_result_bytes).unwrap(),
+        ));
+    let candidates = read
+        .qualify_optimizer_bounded_order_candidates(
+            crate::QueryRequest::new(query).with_task_context(&campaign),
+            crate::OptimizerQualificationAttemptLimits::new(
+                std::time::Duration::from_secs(5),
+                10_000_000,
+            )
+            .unwrap(),
+            OptimizerSearchDirective::Memo,
+        )
+        .unwrap();
+    assert_eq!(candidates.result_memory_limit, campaign_result_bytes);
+    assert_eq!(
+        candidates.retained_result_bytes,
+        one_result_bytes.checked_mul(2).unwrap()
+    );
+    assert!(candidates.candidates[0].output.result.is_ok());
+    assert!(candidates.candidates[1].output.result.is_ok());
+    let error = candidates.candidates[2].output.result.as_ref().unwrap_err();
+    assert!(error.to_string().contains("result_materialization"));
+    assert!(candidates.verify_complete_results().is_err());
+}
+
+#[test]
+fn explicit_bounded_order_candidate_refuses_missing_and_ambiguous_controls() {
+    let db = fixture(12);
+    let mut read = db.begin_read_transaction().unwrap();
+    let request = crate::QueryRequest::new("MATCH (n:Item) RETURN n.external AS id");
+    let missing = read
+        .qualify_optimizer_query(
+            request,
+            OptimizerQualificationOptions::default()
+                .with_bounded_order_alternative(OptimizerBoundedOrderAlternative::TopN),
+            OptimizerSearchDirective::Memo,
+        )
+        .unwrap_err();
+    assert!(missing
+        .to_string()
+        .contains("found 0 legal selection sites"));
+
+    let conflicting = read
+        .qualify_optimizer_query(
+            request,
+            OptimizerQualificationOptions::default()
+                .with_cost_perturbation(OptimizerCostPerturbation::new(7, 25).unwrap())
+                .with_bounded_order_alternative(OptimizerBoundedOrderAlternative::TopN),
+            OptimizerSearchDirective::Memo,
+        )
+        .unwrap_err();
+    assert!(conflicting
+        .to_string()
+        .contains("cannot combine cost perturbation"));
+
+    let ordinary = crate::OptimizerQualificationCandidateRequest::new(
+        crate::OptimizerQualificationCandidateKind::Ordinary,
+    );
+    let top_n = crate::OptimizerQualificationCandidateRequest::new(
+        crate::OptimizerQualificationCandidateKind::BoundedOrder(
+            OptimizerBoundedOrderAlternative::TopN,
+        ),
+    );
+    let sort_then_limit = crate::OptimizerQualificationCandidateRequest::new(
+        crate::OptimizerQualificationCandidateKind::BoundedOrder(
+            OptimizerBoundedOrderAlternative::SortThenLimit,
+        ),
+    );
+    let attempt_limits = crate::OptimizerQualificationAttemptLimits::new(
+        std::time::Duration::from_secs(5),
+        10_000_000,
+    )
+    .unwrap();
+    let timeout_error =
+        crate::OptimizerQualificationAttemptLimits::new(std::time::Duration::MAX, 1).unwrap_err();
+    assert!(timeout_error
+        .to_string()
+        .contains("monotonic deadline range"));
+    let duplicate = read
+        .qualify_optimizer_bounded_order_candidate_requests(
+            request,
+            &[ordinary, ordinary, top_n],
+            attempt_limits,
+            OptimizerSearchDirective::Memo,
+        )
+        .unwrap_err();
+    assert!(duplicate.to_string().contains("duplicate kind ordinary"));
+    let missing_ordinary = read
+        .qualify_optimizer_bounded_order_candidate_requests(
+            request,
+            &[top_n, sort_then_limit],
+            attempt_limits,
+            OptimizerSearchDirective::Memo,
+        )
+        .unwrap_err();
+    assert!(missing_ordinary
+        .to_string()
+        .contains("missing the ordinary plan"));
+    let over_limit = read
+        .qualify_optimizer_bounded_order_candidate_requests(
+            request,
+            &[ordinary; crate::OPTIMIZER_QUALIFICATION_CANDIDATE_LIMIT + 1],
+            attempt_limits,
+            OptimizerSearchDirective::Memo,
+        )
+        .unwrap_err();
+    assert!(over_limit.to_string().contains("limit is 8"));
+
+    let db = fixture(12);
+    let mut read = db.begin_read_transaction().unwrap();
+    let bounded_request =
+        crate::QueryRequest::new("MATCH (n:Item) RETURN n.external AS id ORDER BY id LIMIT 5");
+    let stale = read
+        .qualify_optimizer_bounded_order_candidate_requests(
+            bounded_request,
+            &[
+                ordinary.with_expected_plan_instance_fingerprint("stale-plan"),
+                top_n,
+                sort_then_limit,
+            ],
+            attempt_limits,
+            OptimizerSearchDirective::Memo,
+        )
+        .unwrap_err();
+    assert!(stale.to_string().contains("candidate ordinary is stale"));
 }
 
 #[test]

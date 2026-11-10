@@ -104,11 +104,36 @@ impl OptimizerCostPerturbation {
     }
 }
 
+/// Named legal alternatives for one bounded `ORDER BY ... LIMIT` decision.
+///
+/// The optimizer still constructs and validates both physical candidates. This
+/// selector is available only through the offline qualification entry point;
+/// it cannot inject an arbitrary physical plan into serving execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptimizerBoundedOrderAlternative {
+    TopN,
+    SortThenLimit,
+}
+
+impl OptimizerBoundedOrderAlternative {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::TopN => "top_n",
+            Self::SortThenLimit => "sort_then_limit",
+        }
+    }
+}
+
+/// Structured trace rule emitted exactly once when an explicit bounded-order
+/// alternative is selected successfully.
+pub const BOUNDED_ORDER_QUALIFICATION_RULE: &str = "qualification:bounded_order_alternative";
+
 /// Fixed-size controls; unknown/essential rules cannot enter the disabled mask.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct OptimizerQualificationOptions {
     disabled_rules: u8,
     perturbation: Option<OptimizerCostPerturbation>,
+    bounded_order_alternative: Option<OptimizerBoundedOrderAlternative>,
 }
 
 impl OptimizerQualificationOptions {
@@ -120,11 +145,21 @@ impl OptimizerQualificationOptions {
         self.perturbation = Some(perturbation);
         self
     }
+    pub fn with_bounded_order_alternative(
+        mut self,
+        alternative: OptimizerBoundedOrderAlternative,
+    ) -> Self {
+        self.bounded_order_alternative = Some(alternative);
+        self
+    }
     pub const fn rule_enabled(self, rule: OptionalOptimizerRule) -> bool {
         self.disabled_rules & rule.bit() == 0
     }
     pub const fn cost_perturbation(self) -> Option<OptimizerCostPerturbation> {
         self.perturbation
+    }
+    pub const fn bounded_order_alternative(self) -> Option<OptimizerBoundedOrderAlternative> {
+        self.bounded_order_alternative
     }
     pub fn is_active(self) -> bool {
         self != Self::default()
@@ -146,6 +181,13 @@ mod tests {
         assert!(qualified.rule_enabled(OptionalOptimizerRule::RedundantOrdering));
         assert!(!qualified.rule_enabled(OptionalOptimizerRule::RedundantDistinct));
         assert!(OptimizerCostPerturbation::new(7, 26).is_err());
+        assert_eq!(normal.bounded_order_alternative(), None);
+        assert_eq!(
+            normal
+                .with_bounded_order_alternative(OptimizerBoundedOrderAlternative::TopN)
+                .bounded_order_alternative(),
+            Some(OptimizerBoundedOrderAlternative::TopN)
+        );
     }
     #[test]
     fn perturbation_replays_with_bounded_saturating_costs() {

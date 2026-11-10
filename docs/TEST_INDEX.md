@@ -2948,6 +2948,28 @@ coverage. The manual workload prerequisite now has concrete owners:
   They validate diagnostic classification, not a global Q-error performance gate.
   The graph adapter also checks frozen fixture counts, same-execution
   cost/operator evidence, pinned replay and refusal of early-stop skeletons.
+  The phase-1 cost proof executes ordinary, TopN and Sort-plus-Limit plans on
+  one pinned Cypher snapshot, compares complete ordered results and retains raw
+  costs, immutable policy identity, physical properties, cardinality estimates
+  statistics decisions, complete fingerprints and bounded work usage. Fresh
+  equal per-candidate deadline/work scopes remain constrained by one cumulative
+  campaign context; the root regression reverses candidate order at the exact
+  individual work allowance and proves all three complete while the campaign is
+  charged for their sum. Replay rejects stale fingerprints and duplicate,
+  missing or over-limit inventories. The phase-1 report protocol explicitly
+  excludes source/build attestation, timing and regret, which remain unavailable.
+  Root `api::tests::optimizer_proofs` also owns automatic batch-clock sharing,
+  clock-function/parameter-map parity, caller-pin preservation, reversed replay
+  and stale-clock refusal under the existing CI root lane. Shiro's existing
+  optimizer qualification tests cover unpinned candidate clock sharing,
+  deterministic clock replay, named-plan
+  controls and error-versus-agreement classification. Its generated
+  `temporal_case` family now checks seeded-clock candidate results against an
+  independent NULL/duplicate/pagination model, including per-row timezone
+  reads and empty input; editable capability replay retains the seed and clock
+  derivation. Replay: `cargo test --locked --manifest-path tools/shiro/Cargo.toml
+  --lib temporal_candidate_models` and `--lib clock_reading_variants`.
+  No existing case mapping, feature, profile, timeout or lane is removed.
 
 All three are included in local `//tools/shiro:shiro_tests`; no ordinary CI,
 schedule, profile override or performance gate is added. Cargo replay uses
@@ -2956,7 +2978,7 @@ schedule, profile override or performance gate is added. Cargo replay uses
 See [query-lab](../tools/query-lab/README.md) for frozen manifests, exact CLI
 replay, cooperative-budget limits and the unqualified ordinary-plan baseline.
 Existing Shiro oracle suites and CLI controls remain intact. Candidate-plan
-qualification phases remain pending.
+timing, regret, diagnosis and coefficient-promotion phases remain pending.
 
 
 ## Embedded architecture ownership (#1222)
