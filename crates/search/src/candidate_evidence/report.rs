@@ -837,6 +837,10 @@ fn search_predicate_pushdown_report_json(
         "persisted_segment_descriptor_used": report.persisted_segment_descriptor_used,
         "physical_range_read_count": report.physical_range_read_count,
         "physical_bytes_read": report.physical_bytes_read,
+        "postings_segment_count": report.postings_segment_count,
+        "postings_predicate_count": report.postings_predicate_count,
+        "postings_residual_predicate_count": report.postings_residual_predicate_count,
+        "postings_prefiltered_segment_count": report.postings_prefiltered_segment_count,
         "field_summaries": report.field_summaries.iter().map(search_predicate_field_pruning_report_json).collect::<Vec<_>>(),
     })
 }

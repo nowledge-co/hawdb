@@ -13,6 +13,13 @@ use hawdb_optimizer_predicate::SearchPredicateSet;
 
 const DIMENSION: usize = 4;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PostingUse {
+    Complete,
+    Prefiltered,
+    None,
+}
+
 /// Restores the thread's postings switches even when an assertion fails.
 struct Switches;
 impl Switches {
@@ -52,13 +59,17 @@ fn corpus() -> Vec<SearchDocument> {
                 (_, 0) => "Gamma ",
                 (_, _) => "gAMMA",
             };
+            let kind = match pair % 3 {
+                0 if number % 2 == 0 => "Memory",
+                0 => "memory",
+                1 if number % 2 == 0 => "SourceChunk",
+                1 => "chunk",
+                _ => "note",
+            };
             let mut metadata = BTreeMap::from([
                 ("team".to_string(), team.to_string()),
                 ("unique".to_string(), format!("U{number:02}")),
-                (
-                    "kind".to_string(),
-                    if number % 3 == 0 { "memory" } else { "note" }.to_string(),
-                ),
+                ("kind".to_string(), kind.to_string()),
                 (
                     "labels".to_string(),
                     if number % 4 == 0 {
@@ -75,6 +86,23 @@ fn corpus() -> Vec<SearchDocument> {
                     "tier".to_string(),
                     if number % 2 == 0 { "Gold" } else { " gold" }.to_string(),
                 );
+            }
+            match pair % 3 {
+                0 => {}
+                1 => {
+                    metadata.insert(
+                        "space_id".to_string(),
+                        if number % 2 == 0 {
+                            "Team-A"
+                        } else {
+                            " team-a "
+                        }
+                        .to_string(),
+                    );
+                }
+                _ => {
+                    metadata.insert("space_id".to_string(), String::new());
+                }
             }
             SearchDocument {
                 id: format!("memory:{number:04}"),
@@ -119,38 +147,58 @@ fn build_resident(name: &str, documents: &[SearchDocument]) -> PathBuf {
     path
 }
 
-fn filters() -> Vec<(BTreeMap<String, String>, bool)> {
+fn filters() -> Vec<(BTreeMap<String, String>, PostingUse)> {
     let filter = |pairs: &[(&str, &str)]| {
         pairs
             .iter()
             .map(|(key, value)| (key.to_string(), value.to_string()))
             .collect::<BTreeMap<_, _>>()
     };
-    // (filter, whether every predicate is an Eq/In on an indexed field)
+    // (filter, how its predicates use postings on an uncapped V4 segment)
     vec![
-        (filter(&[("team", "alpha")]), true),
-        (filter(&[("team", " ALPHA  ")]), true),
+        (filter(&[("team", "alpha")]), PostingUse::Complete),
+        (filter(&[("team", " ALPHA  ")]), PostingUse::Complete),
         (
             filter(&[("team__in", "[\"Alpha\",\"gamma\",\"none\"]")]),
-            true,
+            PostingUse::Complete,
         ),
-        (filter(&[("team", "beta"), ("tier", "GOLD")]), true),
+        (
+            filter(&[("team", "beta"), ("tier", "GOLD")]),
+            PostingUse::Complete,
+        ),
         (
             filter(&[("team__in", "[\"beta\",\"alpha\"]"), ("tier", "gold")]),
-            true,
+            PostingUse::Complete,
         ),
-        (filter(&[("unique", "u07")]), true),
-        (filter(&[("unique__in", "[\"U03\",\"u31\"]")]), true),
-        (filter(&[("team", "nobody")]), true),
-        (filter(&[("absent", "x")]), true),
-        (filter(&[("kind", "memory")]), false),
-        (filter(&[("labels", "blue")]), false),
-        (filter(&[("metadata.topics", "x")]), false),
-        (filter(&[("team", "alpha"), ("space_id", "default")]), false),
-        (filter(&[("team__not_in", "[\"alpha\"]")]), false),
-        (filter(&[("unique__gte", "U30")]), false),
-        (filter(&[("tier__exists", "true")]), false),
-        (filter(&[("team__in", "[]")]), false),
+        (filter(&[("unique", "u07")]), PostingUse::Complete),
+        (
+            filter(&[("unique__in", "[\"U03\",\"u31\"]")]),
+            PostingUse::Complete,
+        ),
+        (filter(&[("team", "nobody")]), PostingUse::Complete),
+        (filter(&[("absent", "x")]), PostingUse::Complete),
+        (filter(&[("kind", "memory")]), PostingUse::Complete),
+        (filter(&[("kind", "source_chunk")]), PostingUse::Complete),
+        (filter(&[("space_id", "default")]), PostingUse::Complete),
+        (filter(&[("space_id", "TEAM-A")]), PostingUse::Complete),
+        (filter(&[("labels", "blue")]), PostingUse::None),
+        (
+            filter(&[("team", "alpha"), ("labels", "blue")]),
+            PostingUse::Prefiltered,
+        ),
+        (filter(&[("metadata.topics", "x")]), PostingUse::None),
+        (
+            filter(&[("team", "alpha"), ("space_id", "default")]),
+            PostingUse::Complete,
+        ),
+        (
+            filter(&[("team", "alpha"), ("unique__gte", "U10")]),
+            PostingUse::Prefiltered,
+        ),
+        (filter(&[("team__not_in", "[\"alpha\"]")]), PostingUse::None),
+        (filter(&[("unique__gte", "U30")]), PostingUse::None),
+        (filter(&[("tier__exists", "true")]), PostingUse::None),
+        (filter(&[("team__in", "[]")]), PostingUse::None),
     ]
 }
 
@@ -233,10 +281,13 @@ fn expected_entries(
         .collect()
 }
 
+type HitRows = Vec<(String, u64, u64)>;
+type PostingSegmentCounts = (usize, usize);
+
 fn hits(
     reader: &SearchOutOfCoreReader,
     filter: &BTreeMap<String, String>,
-) -> (Vec<(String, u64, u64)>, usize) {
+) -> (HitRows, PostingSegmentCounts) {
     let query = embedding(9);
     let (mode, query) = match (
         cfg!(feature = "full-text-search"),
@@ -248,7 +299,13 @@ fn hits(
         // No retriever is compiled: compare the candidate sets only.
         (false, false) => {
             let (_, report) = candidates(reader, filter, None).unwrap();
-            return (Vec::new(), report.postings_segment_count);
+            return (
+                Vec::new(),
+                (
+                    report.postings_segment_count,
+                    report.postings_prefiltered_segment_count,
+                ),
+            );
         }
     };
     let mut options = options(40, None);
@@ -269,12 +326,31 @@ fn hits(
                 )
             })
             .collect(),
-        output
-            .result
-            .candidate_set
-            .metadata_predicate_pushdown
-            .postings_segment_count,
+        (
+            output
+                .result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .postings_segment_count,
+            output
+                .result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .postings_prefiltered_segment_count,
+        ),
     )
+}
+
+fn posting_use(report: &SearchPredicatePushdownReport) -> PostingUse {
+    match (
+        report.postings_segment_count > 0,
+        report.postings_prefiltered_segment_count > 0,
+    ) {
+        (true, false) => PostingUse::Complete,
+        (false, true) => PostingUse::Prefiltered,
+        (false, false) => PostingUse::None,
+        (true, true) => panic!("one predicate plan mixed complete and residual segment use"),
+    }
 }
 
 #[test]
@@ -296,7 +372,7 @@ fn postings_select_the_scanned_candidates_and_hits() {
                 .iter()
                 .all(|layout| layout.postings.is_some()));
         }
-        for (filter, indexed) in filters() {
+        for (filter, expected_use) in filters() {
             disable_read(false);
             let (entries, report) = candidates(&reader, &filter, None).unwrap();
             let (searched, searched_postings) = hits(&reader, &filter);
@@ -321,16 +397,33 @@ fn postings_select_the_scanned_candidates_and_hits() {
                 assert_eq!(ordinal.is_some(), document.embedding.is_some(), "{id}");
             }
             assert_eq!(scan_report.postings_segment_count, 0);
-            assert_eq!(scan_postings, 0);
-            assert_eq!(searched_postings, report.postings_segment_count);
-            let capped = cap == 1 && filter.keys().any(|key| key.starts_with("unique"));
+            assert_eq!(scan_postings, (0, 0));
             assert_eq!(
-                report.postings_segment_count > 0,
-                indexed && !capped && report.scanned_segment_count > 0,
+                searched_postings,
+                (
+                    report.postings_segment_count,
+                    report.postings_prefiltered_segment_count,
+                )
+            );
+            let capped = cap == 1
+                && filter
+                    .keys()
+                    .any(|key| key == "unique" || key == "unique__in");
+            let expected_use = if capped || report.scanned_segment_count == 0 {
+                PostingUse::None
+            } else {
+                expected_use
+            };
+            assert_eq!(
+                posting_use(&report),
+                expected_use,
                 "{filter:?} cap {cap}: {report:?}"
             );
-            if indexed && !capped {
-                assert_eq!(report.postings_segment_count, report.scanned_segment_count);
+            if expected_use != PostingUse::None {
+                assert_eq!(
+                    report.postings_segment_count + report.postings_prefiltered_segment_count,
+                    report.scanned_segment_count
+                );
             }
         }
         drop(reader);
@@ -344,17 +437,18 @@ fn query_admitted_postings_select_the_scanned_candidates() {
     let _switches = Switches::new(MAX_DISTINCT_VALUES, false);
     let path = build("postings-query", &documents);
     let reader = SearchOutOfCoreReader::open(&path).unwrap();
-    for (filter, indexed) in filters() {
+    for (filter, expected_use) in filters() {
         disable_read(false);
         let (entries, report) = query_candidates(&reader, &filter, None).unwrap();
         disable_read(true);
         let (scanned, _) = query_candidates(&reader, &filter, None).unwrap();
         assert_eq!(entries, scanned, "{filter:?}");
-        assert_eq!(
-            report.postings_segment_count > 0,
-            indexed && report.scanned_segment_count > 0,
-            "{filter:?}"
-        );
+        let expected_use = if report.scanned_segment_count == 0 {
+            PostingUse::None
+        } else {
+            expected_use
+        };
+        assert_eq!(posting_use(&report), expected_use, "{filter:?}");
     }
     disable_read(false);
     drop(reader);
@@ -395,7 +489,7 @@ fn postingless_v2_layouts_search_through_the_metadata_scan() {
         assert_eq!(legacy_report.postings_segment_count, 0);
         let (legacy_hits, legacy_postings) = hits(&legacy_reader, &filter);
         assert_eq!(legacy_hits, hits(&current_reader, &filter).0, "{filter:?}");
-        assert_eq!(legacy_postings, 0);
+        assert_eq!(legacy_postings, (0, 0));
     }
 
     // V2 cannot carry postings, and an unknown newer layout is refused.
@@ -411,7 +505,7 @@ fn postingless_v2_layouts_search_through_the_metadata_scan() {
     validate(&layout).unwrap();
     for format in [
         POSTINGLESS_OUT_OF_CORE_LAYOUT_FORMAT,
-        "HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V4",
+        "HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V5",
     ] {
         layout.format = format.into();
         let error = validate(&layout).unwrap_err();
@@ -499,6 +593,81 @@ fn postings_reads_fail_closed_under_a_tight_query_budget() {
 }
 
 #[test]
+fn postings_admission_ignores_scalar_padding() {
+    let _switches = Switches::new(MAX_DISTINCT_VALUES, false);
+    let padding = " ".repeat(8192);
+    for (field, value) in [
+        ("team", "alpha"),
+        ("team", "İ"),
+        ("team", ""),
+        ("space_id", "alpha"),
+    ] {
+        let mut documents = corpus()[..2].to_vec();
+        for document in &mut documents {
+            document.metadata = BTreeMap::from([(field.to_string(), value.to_string())]);
+        }
+        let expected = encode_with_postings_budget(&documents).unwrap();
+        documents[0].metadata.insert(
+            field.to_string(),
+            format!("\u{2003}{padding}{value}{padding}\u{2003}"),
+        );
+        let actual = encode_with_postings_budget(&documents).unwrap();
+        assert_eq!(actual, expected, "{field}={value:?}");
+    }
+}
+
+#[test]
+fn postings_admission_preserves_raw_unknown_kind() {
+    let _switches = Switches::new(MAX_DISTINCT_VALUES, false);
+    let mut documents = corpus()[..2].to_vec();
+    for value in ["  Custom Kind  ", " \u{2003}", "SourceChunk"] {
+        for document in &mut documents {
+            document.metadata = BTreeMap::from([("kind".to_string(), value.to_string())]);
+        }
+        let payload = encode_with_postings_budget(&documents).unwrap();
+        let normalized = crate::normalize_metadata_posting_value("kind", value);
+        assert!(payload
+            .windows(normalized.len())
+            .any(|bytes| bytes == normalized.as_bytes()));
+        if value != "SourceChunk" {
+            assert_eq!(normalized, value);
+        }
+    }
+    documents[0].metadata.insert(
+        "kind".to_string(),
+        format!("{}Custom Kind{}", " ".repeat(8192), " ".repeat(8192)),
+    );
+    assert!(matches!(
+        encode_with_postings_budget(&documents),
+        Err(HawDBError::ResourceBudgetExceeded(_))
+    ));
+}
+
+fn encode_with_postings_budget(documents: &[SearchDocument]) -> Result<Vec<u8>> {
+    use hawdb_executor::{QueryMemoryClass, QueryMemoryLedger};
+    let budget = NonZeroUsize::new(8 << 10).unwrap();
+    let ledger = QueryMemoryLedger::new(budget);
+    let account = ledger.account(QueryMemoryClass::ExternalRead, "postings", budget);
+    let result = encode(
+        documents,
+        Some(EncodeAdmission {
+            scratch: &account,
+            payload: &account,
+        }),
+        1 << 20,
+        || Ok(()),
+    )
+    .map(|encoded| {
+        encoded
+            .expect("two short values fit the postings byte cap")
+            .payload
+            .clone()
+    });
+    assert_eq!(ledger.snapshot().used_bytes, 0);
+    result
+}
+
+#[test]
 fn payload_validation_refuses_inconsistent_postings() {
     let documents = corpus()[..2].to_vec();
     let references = documents.iter().collect::<Vec<_>>();
@@ -523,42 +692,63 @@ fn payload_validation_refuses_inconsistent_postings() {
         },
         postings: Some(range),
     };
-    let query = |filter: &[(&str, &str)]| {
+    let predicate_set = |filter: &[(&str, &str)]| {
         let filter = filter
             .iter()
             .map(|(key, value)| (key.to_string(), value.to_string()))
             .collect();
-        Query::new(&predicates(&filter), None).unwrap()
+        predicates(&filter)
     };
-    let select = |payload: &[u8], query: &Query| {
+    let select = |payload: &[u8], predicates: &SearchPredicateSet| {
+        let query = Query::new(predicates, None).unwrap().unwrap();
         Segment::parse(payload, &descriptor, &layout)
-            .and_then(|segment| segment.select(query, None, &mut || Ok(())))
-            .map(|selected| selected.map(|(indexes, _)| indexes))
+            .and_then(|segment| segment.select(&query, None, &mut || Ok(())))
+            .map(|selected| selected.map(|selected| selected.indexes().to_vec()))
     };
-    let team = query(&[("team", "ALPHA")]).unwrap();
+    let team = predicate_set(&[("team", "ALPHA")]);
     assert_eq!(select(&payload, &team).unwrap(), Some(vec![0, 1]));
     assert_eq!(
         select(
             &payload,
-            &query(&[("tier", "gold"), ("unique", "u01")]).unwrap()
+            &predicate_set(&[("tier", "gold"), ("unique", "u01")])
         )
         .unwrap(),
         Some(vec![1])
     );
     assert_eq!(
-        select(&payload, &query(&[("absent", "x")]).unwrap()).unwrap(),
+        select(&payload, &predicate_set(&[("absent", "x")])).unwrap(),
         Some(vec![])
     );
     for filter in [
-        &[("kind", "memory")][..],
         &[("labels", "red")],
         &[("metadata.topics", "x")],
-        &[("space_id", "default")],
         &[("document_id", "memory:0000")],
         &[("team__not_in", "[\"x\"]")],
     ] {
-        assert!(query(filter).is_none(), "{filter:?}");
+        let predicates = predicate_set(filter);
+        assert!(
+            Query::new(&predicates, None).unwrap().is_none(),
+            "{filter:?}"
+        );
     }
+    assert_eq!(
+        select(&payload, &predicate_set(&[("kind", "memory")])).unwrap(),
+        Some(vec![0, 1])
+    );
+    assert_eq!(
+        select(&payload, &predicate_set(&[("space_id", "default")])).unwrap(),
+        Some(vec![0, 1])
+    );
+
+    // V3 postings have no reserved-field semantic capability. They still
+    // serve plain fields but make reserved fields fall back to metadata.
+    let mut legacy_payload = payload.clone();
+    legacy_payload[..MAGIC.len()].copy_from_slice(LEGACY_MAGIC);
+    assert_eq!(select(&legacy_payload, &team).unwrap(), Some(vec![0, 1]));
+    assert_eq!(
+        select(&legacy_payload, &predicate_set(&[("kind", "memory")])).unwrap(),
+        None
+    );
 
     let capped = {
         set_distinct_cap(1);
@@ -567,7 +757,7 @@ fn payload_validation_refuses_inconsistent_postings() {
         encoded.unwrap().unwrap().payload
     };
     assert_eq!(
-        select(&capped, &query(&[("unique", "u01")]).unwrap()).unwrap(),
+        select(&capped, &predicate_set(&[("unique", "u01")])).unwrap(),
         None
     );
     assert_eq!(select(&capped, &team).unwrap(), Some(vec![0, 1]));
@@ -582,7 +772,7 @@ fn payload_validation_refuses_inconsistent_postings() {
         .unwrap()
         .payload;
     assert_eq!(
-        select(&long_payload, &query(&[("note", "short")]).unwrap()).unwrap(),
+        select(&long_payload, &predicate_set(&[("note", "short")])).unwrap(),
         None
     );
     assert_eq!(select(&long_payload, &team).unwrap(), Some(vec![0, 1]));
@@ -663,19 +853,20 @@ fn postings_over_the_reader_segment_budget_fall_back_to_the_metadata_scan() {
     config.max_compressed_segment_bytes = NonZeroU64::new(largest_other).unwrap();
     let tight = SearchOutOfCoreReader::open_with_config(&path, config).unwrap();
     assert!(tight.postings_byte_limit() < smallest_postings);
-    for (filter, indexed) in filters() {
+    for (filter, expected_use) in filters() {
         let (expected, report) = candidates(&reader, &filter, None).unwrap();
-        assert_eq!(
-            report.postings_segment_count > 0,
-            indexed && report.scanned_segment_count > 0,
-            "{filter:?}"
-        );
+        let expected_use = if report.scanned_segment_count == 0 {
+            PostingUse::None
+        } else {
+            expected_use
+        };
+        assert_eq!(posting_use(&report), expected_use, "{filter:?}");
         let (entries, report) = candidates(&tight, &filter, None).unwrap();
         assert_eq!(entries, expected, "{filter:?}");
-        assert_eq!(report.postings_segment_count, 0, "{filter:?}");
+        assert_eq!(posting_use(&report), PostingUse::None, "{filter:?}");
         let (queried, report) = query_candidates(&tight, &filter, None).unwrap();
         assert_eq!(queried, expected, "{filter:?}");
-        assert_eq!(report.postings_segment_count, 0, "{filter:?}");
+        assert_eq!(posting_use(&report), PostingUse::None, "{filter:?}");
     }
     drop(tight);
     drop(reader);
@@ -761,7 +952,7 @@ fn postings_respect_documents_overwritten_or_deleted_in_newer_layers() {
 
     let reader = SearchOutOfCoreReader::open(&path).unwrap();
     assert_eq!(reader.manifest.segments.len(), 2);
-    for (filter, indexed) in filters() {
+    for (filter, expected_use) in filters() {
         disable_read(false);
         let (entries, report) = candidates(&reader, &filter, None).unwrap();
         let (queried, _) = query_candidates(&reader, &filter, None).unwrap();
@@ -776,11 +967,12 @@ fn postings_respect_documents_overwritten_or_deleted_in_newer_layers() {
             .collect::<Vec<_>>();
         ids.sort();
         assert_eq!(ids, expected_entries(&documents, &filter), "{filter:?}");
-        assert_eq!(
-            report.postings_segment_count > 0,
-            indexed && report.scanned_segment_count > 0,
-            "{filter:?}: {report:?}"
-        );
+        let expected_use = if report.scanned_segment_count == 0 {
+            PostingUse::None
+        } else {
+            expected_use
+        };
+        assert_eq!(posting_use(&report), expected_use, "{filter:?}: {report:?}");
     }
     drop(reader);
     fs::remove_dir_all(path).unwrap();

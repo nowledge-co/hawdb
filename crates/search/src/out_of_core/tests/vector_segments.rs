@@ -155,7 +155,7 @@ fn stored_vectors_keep_input_bits_and_current_layout() {
     let reader = SearchOutOfCoreReader::open(&path).unwrap();
     let mut stored = Vec::new();
     for artifact in &reader.segments {
-        assert_eq!(artifact.layout.format, "HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V3");
+        assert_eq!(artifact.layout.format, "HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V4");
         for segment in &artifact.descriptor.segments {
             let mut metrics = SearchOutOfCoreMetrics::default();
             for document in reader

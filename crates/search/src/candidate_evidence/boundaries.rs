@@ -152,6 +152,51 @@ fn report_json_preserves_complete_field_set_and_provenance() {
         7
     );
     assert_eq!(json["candidate_set"]["policy_epoch"], 2);
+    let pushdown = &json["candidate_set"]["metadata_predicate_pushdown"];
+    let mut pushdown_keys = pushdown
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let mut expected_pushdown_keys = vec![
+        "input_predicate_count",
+        "pushed_predicate_count",
+        "residual_predicate_count",
+        "unsatisfiable",
+        "parse_error",
+        "segment_count",
+        "pruned_segment_count",
+        "scanned_segment_count",
+        "segment_pruning_candidate_document_count",
+        "segment_pruned_document_count",
+        "segment_scanned_document_count",
+        "persisted_segment_descriptor_used",
+        "physical_range_read_count",
+        "physical_bytes_read",
+        "postings_segment_count",
+        "postings_predicate_count",
+        "postings_residual_predicate_count",
+        "postings_prefiltered_segment_count",
+        "field_summaries",
+    ];
+    pushdown_keys.sort_unstable();
+    expected_pushdown_keys.sort_unstable();
+    assert_eq!(pushdown_keys, expected_pushdown_keys);
+    assert_eq!(pushdown["postings_segment_count"], 2);
+    assert_eq!(pushdown["postings_predicate_count"], 1);
+    assert_eq!(pushdown["postings_residual_predicate_count"], 0);
+    assert_eq!(pushdown["postings_prefiltered_segment_count"], 0);
+
+    let readiness = SearchCandidateReadinessReport::from_candidate_report(
+        report,
+        &SearchCandidateReadinessOptions::default(),
+    )
+    .json();
+    assert_eq!(
+        readiness["candidate_report"]["candidate_set"]["metadata_predicate_pushdown"],
+        *pushdown
+    );
     assert_eq!(json["projection_embedding_model"], "model");
     assert_eq!(json["retriever_available"]["text"], true);
     assert_eq!(json["retrieval_projection_advisor"]["ready"], false);

@@ -1339,44 +1339,53 @@ compatibility obligation for development generations (see `AGENTS.md`), so
 readers do not decode V1: opening a V1 generation fails closed with a storage
 error naming the superseded layout and asking for a projection rebuild. Rebuild
 it from canonical data, for example with `SearchOutOfCoreGenerationWriter`, or
-let the next resident `SearchIndex::checkpoint` publish a fresh V3 generation;
+let the next resident `SearchIndex::checkpoint` publish a fresh V4 generation;
 neither path decodes the superseded sidecars.
 
-### Metadata value postings (layout V3)
+### Metadata value postings (layout V4)
 
-Layout `HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V3` adds an optional `postings` range per
+Layout `HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V4` adds an optional `postings` range per
 segment, stored in the metadata artifact right after that segment's metadata
 sidecar range and validated like it (contiguous offset, exact document count,
 compressed-segment limit, range checksum). The uncompressed payload
-(`out_of_core::postings`, magic `HDPOST01`) holds the segment's document IDs in
+(`out_of_core::postings`, magic `HDPOST02`) holds the segment's document IDs in
 order, one vector flag per document (ordinals are `vector_ordinal_base` plus
-the preceding flagged documents), and for every plain metadata field each
-value, normalized as filters compare it (trimmed, lowercased), with the
-ascending indexes of the documents holding it. Plain fields exclude `kind`,
-`labels`, `metadata.*`, `space_id` and `document_id`, whose matching differs. A
+the preceding flagged documents), and for every supported scalar field each
+value, normalized exactly as filters compare it, with the ascending indexes of
+the documents holding it. Ordinary metadata uses trimmed, case-folded values;
+`kind` uses its canonical projection aliases; and a missing or empty `space_id`
+is indexed as `default`. Multi-valued `labels` and `metadata.*`, plus
+`document_id`, remain residual fields. A
 field with more than 4,096 distinct values, or a normalized value longer than
 256 bytes, in the segment is recorded as not indexed, so free-text metadata is
 not copied uncompressed. A segment whose payload would exceed the segment byte limit has no
 postings range.
 
-When every predicate of a candidate filter is `Eq` or `In` on a plain field,
-the candidate build reads each unpruned segment's postings range instead of
-its metadata sidecar. It intersects the predicates' value lists and passes the
-selected documents, in segment order, through the same visibility, eligibility
-and candidate encoding as the scan. A segment without postings, whose
+The candidate build compiles every supported `Eq` or `In` predicate into a
+postings plan. It intersects those predicates' value lists. With no residual
+predicate, the selected documents pass directly, in segment order, through the
+same visibility, eligibility and candidate encoding as the scan. With residual
+predicates, the metadata sidecar is still read and validated sequentially, but
+only posting-selected records decode the residual fields and reach residual
+matching. A segment without postings, whose
 postings do not index a predicate's field, or whose postings range exceeds
 the reader's segment byte budget, uses the metadata scan. Opening does not
 apply that budget to postings ranges, so a reader configured tighter than the
 writer still opens the projection. The read is
 checksummed and, on the query path, charged to the query memory account. The
 document table, field and value order, and every document index are validated,
-so corrupt postings fail with a storage error. Other filter shapes keep the
-scan, which decodes only the predicates' metadata keys.
+so corrupt postings fail with a storage error. A filter with no posting-supported
+predicate keeps the scan, which decodes only the predicates' metadata keys.
 `SearchPredicatePushdownReport::postings_segment_count` counts the segments
-that used postings.
+that used postings without metadata decoding;
+`postings_prefiltered_segment_count` counts segments that used postings before
+residual metadata matching. The report also records the compiled postings and
+residual predicate counts.
 
-Readers still open V2 generations: they have no postings and use the scan.
-Readers from before V3 refuse V3 layouts explicitly by their format string.
+Readers still open V2 generations (no postings) and V3 generations (plain
+metadata postings). V3 postings fall back to the metadata scan for `kind` and
+`space_id`, because their payload lacks the V4 semantic capability. Readers
+from before V4 refuse V4 layouts explicitly by their format string.
 
 `SearchOutOfCoreReader` opens only these manifests and descriptors, not the
 complete document snapshot. Metadata and ACL predicates prune descriptors,

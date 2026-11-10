@@ -19,6 +19,28 @@ use crate::build_memory::{checked_add as add, reserve_capacity, MAP_ENTRY_BYTES}
 use crate::lexical_projection::QueryContext;
 use std::io::BufRead;
 
+#[derive(Clone, Copy)]
+pub(super) struct MetadataVisit<'a> {
+    keys: Option<&'a crate::MetadataKeys>,
+    selected: Option<&'a [usize]>,
+}
+
+impl<'a> MetadataVisit<'a> {
+    pub(super) fn all(keys: Option<&'a crate::MetadataKeys>) -> Self {
+        Self {
+            keys,
+            selected: None,
+        }
+    }
+
+    pub(super) fn selected(keys: &'a crate::MetadataKeys, selected: &'a [usize]) -> Self {
+        Self {
+            keys: Some(keys),
+            selected: Some(selected),
+        }
+    }
+}
+
 impl SearchOutOfCoreReader {
     pub(super) fn visit_query_metadata_segment(
         &self,
@@ -26,7 +48,7 @@ impl SearchOutOfCoreReader {
         segment: &SearchSegmentDescriptorEntry,
         metrics: &mut SearchOutOfCoreMetrics,
         context: QueryContext<'_>,
-        keys: Option<&crate::MetadataKeys>,
+        plan: MetadataVisit<'_>,
         visit: impl FnMut(&SearchMetadataDocument) -> Result<()>,
     ) -> Result<()> {
         let layout = Self::artifact_layout_range(artifact, segment.segment_id)?;
@@ -57,7 +79,7 @@ impl SearchOutOfCoreReader {
                     layout,
                     self.config.max_uncompressed_segment_bytes,
                     context,
-                    keys,
+                    plan,
                     visit,
                 )?;
                 Ok(())
@@ -83,7 +105,7 @@ fn visit_records(
     layout: &SearchOutOfCoreSegmentLayout,
     max_record_bytes: NonZeroU64,
     context: QueryContext<'_>,
-    keys: Option<&crate::MetadataKeys>,
+    plan: MetadataVisit<'_>,
     mut visit: impl FnMut(&SearchMetadataDocument) -> Result<()>,
 ) -> Result<u64> {
     let limit = usize::try_from(max_record_bytes.get()).unwrap_or(usize::MAX);
@@ -97,6 +119,11 @@ fn visit_records(
     let mut vector_count = 0usize;
     let mut text_bytes = 0u64;
     let mut header = false;
+    let empty_keys = crate::MetadataKeys::default();
+    let mut selected_offset = 0usize;
+    debug_assert!(plan
+        .selected
+        .is_none_or(|selected| selected.windows(2).all(|pair| pair[0] < pair[1])));
     while hydration::read_record(text, &mut line, limit, context.task, &mut line_memory)? {
         text_bytes = text_bytes.saturating_add(line.len() as u64);
         let record = std::str::from_utf8(&line).map_err(|_| invalid("non-ASCII record"))?;
@@ -122,10 +149,21 @@ fn visit_records(
         ) else {
             return Err(invalid("invalid sidecar line"));
         };
+        let document_index = count;
         count = add(count, 1)?;
         if count > layout.metadata.entry_count {
             return Err(invalid("sidecar count exceeded"));
         }
+        let selected_record = match plan.selected {
+            Some(selected) => {
+                let selected_record = selected.get(selected_offset) == Some(&document_index);
+                if selected_record {
+                    selected_offset += 1;
+                }
+                selected_record
+            }
+            None => true,
+        };
         let mut decode_bytes = add(size_of::<SearchMetadataDocument>(), hex_size(raw_id)?)?;
         if !raw_metadata.is_empty() {
             for pair in raw_metadata.split(';') {
@@ -133,7 +171,7 @@ fn visit_records(
                     .split_once('=')
                     .ok_or_else(|| invalid("invalid metadata pair"))?;
                 // Only the pairs that will be decoded are admitted (#1613).
-                if keys.is_some_and(|keys| !keys.contains(key)) {
+                if !selected_record || plan.keys.is_some_and(|keys| !keys.contains(key)) {
                     continue;
                 }
                 decode_bytes = add(
@@ -146,7 +184,14 @@ fn visit_records(
         let document = SearchMetadataDocument {
             id: decode_string(raw_id)?,
             vector_ordinal: decode_optional_vector_ordinal(raw_vector)?,
-            metadata: crate::decode_metadata_keys(raw_metadata, keys)?,
+            metadata: crate::decode_metadata_keys(
+                raw_metadata,
+                if selected_record {
+                    plan.keys
+                } else {
+                    Some(&empty_keys)
+                },
+            )?,
         };
         if (count == 1 && document.id != segment.first_document_id)
             || (count > 1 && previous.as_slice() >= document.id.as_bytes())
@@ -162,13 +207,18 @@ fn visit_records(
         previous.clear();
         reserve_capacity(&mut previous, document.id.len(), &mut previous_memory)?;
         previous.extend_from_slice(document.id.as_bytes());
-        visit(&document)?;
+        if selected_record {
+            visit(&document)?;
+        }
     }
     if !header
         || count != layout.metadata.entry_count
         || count != segment.document_count
         || previous.as_slice() != segment.last_document_id.as_bytes()
         || vector_count != layout.vectors.entry_count
+        || plan
+            .selected
+            .is_some_and(|selected| selected_offset != selected.len())
     {
         return Err(invalid("sidecar count, bounds or vector layout mismatch"));
     }
@@ -236,7 +286,7 @@ mod tests {
                     execution: None,
                     io_scope: None,
                 },
-                None,
+                MetadataVisit::all(None),
                 |actual| {
                     assert_eq!(actual.id, document.id);
                     assert_eq!(actual.metadata, document.metadata);
@@ -321,7 +371,7 @@ mod tests {
                         &layout,
                         NonZeroU64::new(16 << 10).unwrap(),
                         context,
-                        None,
+                        MetadataVisit::all(None),
                         |document| {
                             assert_eq!(document.id, documents[count].id);
                             assert_eq!(document.metadata, documents[count].metadata);
