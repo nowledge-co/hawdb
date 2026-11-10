@@ -639,13 +639,26 @@ impl RuntimeTaskContext {
     }
 
     pub fn checkpoint(&self) -> Result<(), RuntimeCancellationReason> {
-        if let Some(reason) = self.cancellation.reason() {
-            return Err(reason);
+        self.check_cancellation()?;
+        if self.deadline.is_some() {
+            self.check_deadline_at(Instant::now())?;
         }
-        if self
-            .deadline
-            .is_some_and(|deadline| Instant::now() >= deadline)
-        {
+        Ok(())
+    }
+
+    /// Observe cancellation without reading the clock. Batched callers pair
+    /// this per-step check with [`Self::check_deadline_at`] at bounded
+    /// boundaries that already own a timestamp.
+    pub fn check_cancellation(&self) -> Result<(), RuntimeCancellationReason> {
+        match self.cancellation.reason() {
+            Some(reason) => Err(reason),
+            None => Ok(()),
+        }
+    }
+
+    /// Compare the deadline with a caller-supplied timestamp.
+    pub fn check_deadline_at(&self, now: Instant) -> Result<(), RuntimeCancellationReason> {
+        if self.deadline.is_some_and(|deadline| now >= deadline) {
             return Err(RuntimeCancellationReason::DeadlineExceeded);
         }
         Ok(())

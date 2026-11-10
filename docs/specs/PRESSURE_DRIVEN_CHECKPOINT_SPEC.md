@@ -451,8 +451,9 @@ cleanup, subsequent writes and complete ordinary reopen.
 Checkpoint-base canonical records, property-spill blocks, descriptor leaves and
 interior pages now share the already-admitted task context. Source hydration is
 inside the record lease; bounded encoding, page construction, metadata hashing
-and metadata writes acquire actual per-unit local permits when a local scheduler
-is supplied. Each I/O wave is released before a nested builder acquires another
+and metadata writes run as actual bounded units under batched local admission
+when a local scheduler is supplied (see "Batched local admission of builder
+units"). Each I/O wave is released before a nested builder acquires another
 wave. Focused tests construct and completely read back 2,000 records/descriptors
 with a per-work operation limit of one and a total limit of four, cancel during
 record and interior-page construction, and cancel at every I/O admission point
@@ -2316,6 +2317,52 @@ configuration fixture writes 1,057 nodes with 512-byte bodies, continues writing
 every 20 ms and verifies two completed generations, every value and reopen.
 The same fixture previously deferred without completing a generation; its age,
 15-second observation windows, workload and assertions remain unchanged.
+
+### Batched local admission of builder units
+
+Builder units stay bounded by their own record, element or 64 KiB block
+limits, and they remain the granularity of cancellation and progress. Before
+[#1616](https://github.com/nowledge-co/hawdb/issues/1616) every unit took and
+released its own one-operation `LocalQosPermit`: a scheduler mutex round trip,
+two telemetry events and two monotonic clock reads. Units can be as small as
+one record or property-key intern; #1616 measured this bookkeeping at 58% of
+the background checkpoint thread's samples during TPC-C execution.
+
+With a local scheduler, a `CheckpointWorkContext` and its clones now charge
+consecutive units to one one-operation `LocalQosBatchPermit` covering at most
+`CHECKPOINT_UNITS_PER_ADMISSION` (64) units:
+
+- Every unit observes cancellation before it starts and after it is admitted,
+  without reading the clock. After a cancellation is published, no further
+  unit starts.
+- Batch boundaries apply the scheduler policy, record admission/completion
+  telemetry and check the task deadline. One monotonic clock read serves the
+  previous batch's completion time, the deadline and the next admission time.
+- The batch charges its operation only while a unit runs. Between units it is
+  idle: `LocalQosScheduler::state` and snapshots exclude it, and any background
+  admission that its charge would refuse reclaims it first. The builder's next
+  unit must then admit again and is deferred while the competitor holds the
+  budget. A running unit is never reclaimed, as with a per-unit permit, and
+  nested units join the running batch.
+- A batch also ends when a unit is dropped unfinished (released at once with a
+  failed outcome), at the end of `classify`, on `release_unit_batch`, and when
+  the last context clone drops. Every automatic-owner context with a scheduler
+  runs inside `classify`.
+- Progress still counts each finished unit. Telemetry admission/completion
+  events are per batch. A sink that opts in with
+  `QosTelemetrySink::observes_units` also receives a started and an ended event
+  for each unit; the host telemetry sink does not opt in. Replacing the sink
+  reclaims idle batches, so later admissions and units report to the new sink.
+
+Bounds: cancellation and competing background admissions take effect at the
+next unit. A deadline that expires inside a batch is observed after at most 63
+more units, that is, within one batch of bounded units. Foreground work is never
+gated by the local background budget. Runtime-governor I/O waves and execution
+admission, where foreground work takes priority, are still requested per call
+and are not batched. When two contexts share a one-operation budget, each
+reclaims the other's idle batch, so both make progress at per-unit admission
+cost. Tests: `background::checkpoint::batch_tests` in the storage crate and
+`batch_tests` in the QoS crate.
 
 Resumable maintenance uses `RuntimeGovernor::try_admit_resumable_maintenance`
 and the facade-exported `RuntimeMaintenanceWork`. Its original conservative

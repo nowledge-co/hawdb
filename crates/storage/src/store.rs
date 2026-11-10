@@ -10709,11 +10709,21 @@ mod tests {
         file_bytes_at_cancellation: std::sync::atomic::AtomicU64,
     }
 
+    /// Cancels once `cancel_after_file` units have ended after the private
+    /// file appeared, independently of local admission batches (#1616).
     impl hawdb_qos::QosTelemetrySink for CancelCheckpointAtFile {
         fn record_qos(&self, event: hawdb_qos::QosTelemetryEvent) {
-            use std::sync::atomic::Ordering;
-            let completed = event.phase == hawdb_qos::QosTelemetryPhase::Completion;
             self.probe.record_qos(event);
+        }
+
+        fn observes_units(&self) -> bool {
+            true
+        }
+
+        fn record_qos_unit(&self, event: hawdb_qos::QosUnitEvent) {
+            use std::sync::atomic::Ordering;
+            let completed = event.phase != hawdb_qos::QosUnitPhase::Started;
+            self.probe.record_qos_unit(event);
             if completed && self.path.exists() {
                 self.observed_file.store(true, Ordering::SeqCst);
                 let completed = self.completed_after_file.fetch_add(1, Ordering::SeqCst) + 1;

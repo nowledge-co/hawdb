@@ -98,7 +98,12 @@ fn checkpoint_units_row_root_visits_all_1025_descriptors_without_leases_across_n
     let mut actual = Vec::new();
     reader
         .visit_table_pages_with_work_context("documents", &work, |descriptor| {
-            assert_eq!(probe.active_units.load(Ordering::SeqCst), 0);
+            // No unit runs and an idle batch charges nothing (#1616).
+            assert_eq!(
+                probe.started.load(Ordering::SeqCst),
+                probe.completed.load(Ordering::SeqCst)
+            );
+            assert_eq!(local.state().running_background_operations, 0);
             assert_eq!(probe.active_io.load(Ordering::SeqCst), 0);
             let unit = work.start_unit().unwrap();
             unit.finish();
