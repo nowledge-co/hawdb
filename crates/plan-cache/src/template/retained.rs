@@ -158,9 +158,9 @@ fn expression_bytes(expression: &ProjectionExpression) -> Option<usize> {
             boxed(left.as_ref(), expression_bytes),
             boxed(right.as_ref(), expression_bytes),
         ]),
-        E::JsonValue { expression, path } => {
-            boxed(expression.as_ref(), expression_bytes)?.checked_add(path.capacity())
-        }
+        E::JsonValue {
+            expression, path, ..
+        } => boxed(expression.as_ref(), expression_bytes)?.checked_add(path.capacity()),
         E::Case {
             operand,
             branches,

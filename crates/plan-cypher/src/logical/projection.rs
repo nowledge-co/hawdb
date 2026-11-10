@@ -582,7 +582,11 @@ pub(super) fn plan_projection_with_columns(
             ),
             "coalesce".to_string(),
         ),
-        ScalarExpressionKind::JsonValue { expression, path } => (
+        ScalarExpressionKind::JsonValue {
+            expression,
+            path,
+            null_on_non_scalar,
+        } => (
             ProjectionExpression::JsonValue {
                 expression: Box::new(plan_scalar_expression_with_columns(
                     scope,
@@ -591,6 +595,7 @@ pub(super) fn plan_projection_with_columns(
                     parameters,
                 )?),
                 path: bind_json_value_path(path, parameters)?,
+                null_on_non_scalar: *null_on_non_scalar,
             },
             "json_value".to_string(),
         ),
@@ -1392,17 +1397,20 @@ pub(super) fn plan_scalar_expression_with_columns(
                 })
                 .collect::<Result<Vec<_>>>()?,
         )),
-        ScalarExpressionKind::JsonValue { expression, path } => {
-            Ok(ProjectionExpression::JsonValue {
-                expression: Box::new(plan_scalar_expression_with_columns(
-                    scope,
-                    column_scope,
-                    expression,
-                    parameters,
-                )?),
-                path: bind_json_value_path(path, parameters)?,
-            })
-        }
+        ScalarExpressionKind::JsonValue {
+            expression,
+            path,
+            null_on_non_scalar,
+        } => Ok(ProjectionExpression::JsonValue {
+            expression: Box::new(plan_scalar_expression_with_columns(
+                scope,
+                column_scope,
+                expression,
+                parameters,
+            )?),
+            path: bind_json_value_path(path, parameters)?,
+            null_on_non_scalar: *null_on_non_scalar,
+        }),
         ScalarExpressionKind::Left { expression, length } => Ok(ProjectionExpression::Left {
             expression: Box::new(plan_scalar_expression_with_columns(
                 scope,

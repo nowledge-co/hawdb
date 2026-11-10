@@ -33,14 +33,19 @@ does not describe them.
 `bounded_path_complete_through_hop` records a publisher's completed directed
 enumeration horizon. A missing tuple within that horizon is a zero in the
 statistics snapshot. Raw zero evidence is kept separate from positive planning
-cardinality and traversal work: a failed walk still probes its source and visits
-shorter prefixes. MATCH uses a minimum-one whole-label planning estimate for
-known-zero completions, while charging conservative unfiltered fanout plus the
-shorter prefixes and source probes. Failed first-hop work uses at least the
-relationship-type population per source-label row because intermediate nodes
-may have other labels, even when the final endpoint pair has a positive count. Relationship predicates do not discount those inspected
-prefixes. Generic adjacency costing retains its positive fanout fallback rather
-than multiplying its shared row/work estimate by zero.
+cardinality and traversal work. MATCH uses a minimum-one whole-label planning
+estimate for known-zero completions. Traversal work independently charges the
+source probe, candidate visits at every depth through the maximum hop, and
+adjacency probes for prefixes that can still expand. This includes depths below
+the minimum matching hop and prefixes ending at any intermediate label, whether
+the requested-hop completion count is zero or positive. First-hop work uses at
+least the relationship-type population per source-label row; deeper directed
+prefixes aggregate published bounded counts across endpoint labels. A complete
+horizon can establish no candidates at a depth without removing the preceding
+prefix probes. Unknown depths retain a fanout fallback. Relationship predicates
+do not discount inspected prefixes. Generic adjacency costing retains its
+positive fanout fallback rather than multiplying its shared row/work estimate
+by zero.
 
 Missing coverage (including truncated or legacy statistics) and hops outside
 the declared horizon keep the heuristic fallback. Explicit legacy counts remain

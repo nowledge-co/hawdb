@@ -74,7 +74,7 @@ fn scan_seek_and_expansion_share_frequency_and_direction_statistics() {
     };
     seed.properties.insert("key".into(), Value::Int(1));
     let selective = cost(&program, &catalog);
-    assert_eq!((selective.estimated_rows, selective.random_io), (5, 8));
+    assert_eq!((selective.estimated_rows, selective.random_io), (5, 9));
 
     let histogram = CompressedHistogram::from_sample(
         100,
@@ -112,7 +112,7 @@ fn seeded_union_costs_actual_branches_and_charges_input_once() {
     union.seeded_union = vec![branch.clone(), branch];
     let input = PlanCostBreakdown::new(3, 7, 11, 13, 17);
     let cost = estimate(&union, &catalog(), &PlanBindings::default(), input);
-    assert_eq!((cost.estimated_rows, cost.random_io), (30, 11 + 2 * 3 * 8));
+    assert_eq!((cost.estimated_rows, cost.random_io), (30, 11 + 2 * 3 * 9));
     assert_eq!(
         (cost.cpu, cost.sequential_io, cost.output_rows),
         (7, 13, 17)
@@ -133,7 +133,8 @@ fn bound_endpoint_filters_candidates_and_optional_preserves_input_floor() {
         .insert(("A".into(), "R".into(), "A".into()), 50);
     let required = cost(&program, &catalog);
     assert_eq!(required.estimated_rows, 1);
-    assert_eq!(required.random_io, 151);
+    // The 500 A -> B candidates are visited before the bound A filter too.
+    assert_eq!(required.random_io, 751);
     program.optional = true;
     let optional = estimate(
         &program,
@@ -213,7 +214,7 @@ fn relationship_frequency_filters_matches_without_discounting_candidate_reads() 
         .insert(("R".into(), "flag".into()), histogram);
     let estimate = cost(&program, &catalog);
     assert_eq!(estimate.estimated_rows, 10);
-    assert_eq!(estimate.random_io, 601);
+    assert_eq!(estimate.random_io, 701);
 }
 
 #[test]
@@ -325,4 +326,128 @@ fn failed_prefixes_include_intermediate_labels_outside_the_endpoint_pair() {
     let estimate = cost(&program, &catalog);
     assert_eq!(estimate.estimated_rows, 1);
     assert!(estimate.random_io > 10_000 + 2 * 100, "{estimate:?}");
+}
+
+#[test]
+fn positive_completions_charge_failed_prefixes_in_both_directions() {
+    for reverse in [false, true] {
+        let mut program = program();
+        let GraphMatchStep::Expand {
+            min_hops,
+            max_hops,
+            direction,
+            ..
+        } = &mut program.steps[1]
+        else {
+            unreachable!()
+        };
+        *min_hops = 2;
+        *max_hops = 2;
+        *direction = if reverse {
+            RelationshipDirection::Incoming
+        } else {
+            RelationshipDirection::Outgoing
+        };
+        let mut catalog = catalog();
+        catalog.label_counts.insert("A".into(), 1);
+        catalog.label_counts.insert("B".into(), 10_001);
+        catalog.label_counts.insert("X".into(), 1);
+        catalog.rel_type_counts.insert("R".into(), 10_002);
+        catalog.path_counts.clear();
+        for (source, target, count) in [("A", "B", 10_000), ("A", "X", 1), ("X", "B", 1)] {
+            let (source, target) = if reverse {
+                (target, source)
+            } else {
+                (source, target)
+            };
+            catalog
+                .path_counts
+                .insert((source.into(), "R".into(), target.into()), count);
+            catalog
+                .bounded_path_counts
+                .insert((source.into(), "R".into(), target.into(), 1), count);
+        }
+        let (source, target) = if reverse { ("B", "A") } else { ("A", "B") };
+        catalog
+            .bounded_path_counts
+            .insert((source.into(), "R".into(), target.into(), 2), 1);
+        catalog.bounded_path_complete_through_hop = Some(3);
+        let estimate = cost(&program, &catalog);
+        assert_eq!(estimate.estimated_rows, 1);
+        // Ten thousand first-hop dead ends still require candidate visits and
+        // adjacency probes, even with one successful two-hop completion.
+        assert!(
+            estimate.random_io > 2 * 10_001,
+            "reverse={reverse}: {estimate:?}"
+        );
+    }
+}
+
+#[test]
+fn positive_completions_charge_deeper_prefixes_with_other_labels() {
+    for reverse in [false, true] {
+        let mut program = program();
+        let GraphMatchStep::Expand {
+            min_hops,
+            max_hops,
+            direction,
+            ..
+        } = &mut program.steps[1]
+        else {
+            unreachable!()
+        };
+        *min_hops = 3;
+        *max_hops = 3;
+        *direction = if reverse {
+            RelationshipDirection::Incoming
+        } else {
+            RelationshipDirection::Outgoing
+        };
+        let mut catalog = catalog();
+        catalog.label_counts.insert("A".into(), 1);
+        catalog.label_counts.insert("B".into(), 10_001);
+        catalog.label_counts.insert("X".into(), 10_000);
+        catalog.label_counts.insert("Y".into(), 1);
+        catalog.label_counts.insert("Z".into(), 1);
+        catalog.rel_type_counts.insert("R".into(), 20_003);
+        catalog.path_counts.clear();
+        for (source, target, count) in [
+            ("A", "B", 10_000),
+            ("A", "Y", 1),
+            ("Y", "X", 10_000),
+            ("Y", "Z", 1),
+            ("Z", "B", 1),
+        ] {
+            let (source, target) = if reverse {
+                (target, source)
+            } else {
+                (source, target)
+            };
+            catalog
+                .path_counts
+                .insert((source.into(), "R".into(), target.into()), count);
+            catalog
+                .bounded_path_counts
+                .insert((source.into(), "R".into(), target.into(), 1), count);
+        }
+        for (target, hop, count) in [("X", 2, 10_000), ("Z", 2, 1), ("B", 3, 1)] {
+            let (source, target) = if reverse {
+                (target, "A")
+            } else {
+                ("A", target)
+            };
+            catalog
+                .bounded_path_counts
+                .insert((source.into(), "R".into(), target.into(), hop), count);
+        }
+        catalog.bounded_path_complete_through_hop = Some(3);
+        let estimate = cost(&program, &catalog);
+        assert_eq!(estimate.estimated_rows, 1);
+        // Both shorter depths visit 10,001 prefixes, including X/Y/Z nodes
+        // absent from the requested A/B endpoint pair.
+        assert!(
+            estimate.random_io > 4 * 10_001,
+            "reverse={reverse}: {estimate:?}"
+        );
+    }
 }

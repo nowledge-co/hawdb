@@ -996,6 +996,7 @@ fn spilled_json_sort_keys_use_query_working_memory_during_merge_and_compaction()
                 key: SortKey::Expression(ProjectionExpression::JsonValue {
                     expression: Box::new(ProjectionExpression::Column("metadata".into())),
                     path: "$.rank".into(),
+                    null_on_non_scalar: false,
                 }),
                 direction: SortDirection::Asc,
             }];

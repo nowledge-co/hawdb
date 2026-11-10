@@ -15,9 +15,11 @@
 //! Content-addressed immutable object publication.
 //!
 //! Objects are first written to an operation-owned staging file.  The file is
-//! synced and read back before an exclusive hard-link installation.  Existing
-//! objects are accepted only when their complete bytes match the requested
-//! reference; an immutable path is never replaced.
+//! synced before an exclusive hard-link installation. A buffered payload is
+//! read back and compared first; a streamed file is hashed as it is written
+//! and recorded in the process-local `published` registry once durable.
+//! Existing objects are accepted only when their complete bytes match the
+//! requested reference; an immutable path is never replaced.
 
 use crate::file_io::{self as fs, File, OpenOptions};
 use hawdb_integrity::{IntegrityHasher, Sha256Digest};
@@ -26,6 +28,11 @@ use std::fmt::{self, Display, Formatter};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+
+mod published;
+pub(crate) use published::skip_rehash as skip_published_rehash;
+#[doc(hidden)]
+pub use published::{forget_published_object, published_object_skipped_rehashes};
 
 const OBJECTS_DIRECTORY: &str = "objects";
 const STAGING_DIRECTORY: &str = ".staging";
@@ -419,10 +426,22 @@ impl ImmutableObjectStore {
         }
     }
 
-    /// Verifies a stored object by streaming its identity, without reading it
-    /// into memory.
+    /// Verifies a stored object by streaming its full identity, without
+    /// reading it into memory. Diagnostic and repair callers (doctor WAL
+    /// repair, derived-artifact health) rely on this to find damage, so it
+    /// never consults same-process publication records.
     pub fn verify_stored(&self, reference: ObjectReference) -> Result<(), ImmutableObjectError> {
         self.verify(reference)
+    }
+
+    /// [`Self::verify_stored`] for the branch-selector dependency check only:
+    /// an object this process published, still the same unmodified inode, is
+    /// not re-hashed (see the `published` module).
+    pub(crate) fn verify_stored_trusting_publication(
+        &self,
+        reference: ObjectReference,
+    ) -> Result<(), ImmutableObjectError> {
+        self.verify_object(reference, false, true)
     }
 
     pub fn object_path(&self, reference: ObjectReference) -> PathBuf {
@@ -545,17 +564,18 @@ impl ImmutableObjectStore {
         &self,
         reference: ObjectReference,
     ) -> Result<(), ImmutableObjectError> {
-        self.verify_object(reference, true)
+        self.verify_object(reference, true, false)
     }
 
     fn verify(&self, reference: ObjectReference) -> Result<(), ImmutableObjectError> {
-        self.verify_object(reference, false)
+        self.verify_object(reference, false, false)
     }
 
     fn verify_object(
         &self,
         reference: ObjectReference,
         synchronize: bool,
+        trust_published: bool,
     ) -> Result<(), ImmutableObjectError> {
         let path = self.object_path(reference);
         let metadata = map_io(
@@ -578,6 +598,13 @@ impl ImmutableObjectStore {
                 .write(synchronize && cfg!(windows))
                 .open(&path),
         )?;
+        if trust_published
+            && file
+                .with_native(|native| Ok(published::skip_rehash(reference, native)))
+                .unwrap_or(false)
+        {
+            return Ok(());
+        }
         let mut hasher = identity_hasher(
             reference.kind,
             reference.format_version,
@@ -844,6 +871,7 @@ impl ImmutableObjectStore {
         let install_result = self.install_staged(
             reference,
             Some(payload),
+            None,
             &staging,
             &destination,
             BlockWork::default(),
@@ -855,10 +883,11 @@ impl ImmutableObjectStore {
     }
 
     /// Publishes a file-backed payload without buffering it. The source is
-    /// streamed into staging while its identity is recomputed, and both the
-    /// staged read-back and reuse of an existing object are authenticated by
-    /// streaming identity checks, so memory stays bounded by one I/O buffer
-    /// regardless of the object size.
+    /// streamed into staging while its identity is recomputed over the exact
+    /// bytes written. The synced staging inode is installed without a
+    /// read-back when its stamp is unchanged; otherwise, and for reuse of an
+    /// existing object, a streaming identity check authenticates it. Memory
+    /// stays bounded by one I/O buffer regardless of the object size.
     pub fn publish_file(
         &mut self,
         reference: ObjectReference,
@@ -892,8 +921,9 @@ impl ImmutableObjectStore {
             return self.validate_existing(reference, None, &destination, work);
         }
 
-        let staging = self.stage_file(reference, source, work)?;
-        let install_result = self.install_staged(reference, None, &staging, &destination, work);
+        let (staging, written) = self.stage_file(reference, source, work)?;
+        let install_result =
+            self.install_staged(reference, None, written, &staging, &destination, work);
         if install_result.is_err() {
             let _ = fs::remove_file(&staging);
         }
@@ -963,7 +993,7 @@ impl ImmutableObjectStore {
         reference: ObjectReference,
         source: &Path,
         work: BlockWork<'_>,
-    ) -> Result<PathBuf, ImmutableObjectError> {
+    ) -> Result<(PathBuf, Option<published::WrittenStamp>), ImmutableObjectError> {
         let mut input = map_io("open immutable object source", File::open(source))?;
         let staging_directory = self.root.join(OBJECTS_DIRECTORY).join(STAGING_DIRECTORY);
         let sequence = STAGING_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -972,7 +1002,7 @@ impl ImmutableObjectStore {
             "create immutable object staging file",
             OpenOptions::new().write(true).create_new(true).open(&path),
         )?;
-        let copied = (|| -> Result<(), ImmutableObjectError> {
+        let copied = (|| -> Result<Option<published::WrittenStamp>, ImmutableObjectError> {
             let mut identity = ObjectReferenceWriter::new(
                 reference.kind,
                 reference.format_version,
@@ -1000,31 +1030,50 @@ impl ImmutableObjectStore {
             if identity.finish()? != reference {
                 return Err(ImmutableObjectError::ReferenceMismatch);
             }
-            map_io("sync immutable object staging file", file.sync_all())
+            map_io("sync immutable object staging file", file.sync_all())?;
+            // The descriptor that wrote exactly the hashed bytes. Without a
+            // stamp, installation falls back to a complete read-back.
+            Ok(file.with_native(published::WrittenStamp::of_native).ok())
         })();
-        if let Err(error) = copied {
-            drop(file);
-            let _ = fs::remove_file(&path);
-            return Err(error);
+        match copied {
+            Ok(written) => Ok((path, written)),
+            Err(error) => {
+                drop(file);
+                let _ = fs::remove_file(&path);
+                Err(error)
+            }
         }
-        Ok(path)
     }
 
+    /// `written` is the stamp of a streamed staging file whose exact bytes
+    /// were hashed while written and then synced. That file is not read back
+    /// when the staging path still names that unmodified inode; it is
+    /// recorded as published only after its namespace entry is durable.
     fn install_staged(
         &mut self,
         reference: ObjectReference,
         payload: Option<&[u8]>,
+        written: Option<published::WrittenStamp>,
         staging: &Path,
         destination: &Path,
         work: BlockWork<'_>,
     ) -> Result<PublishOutcome, ImmutableObjectError> {
-        validate_file(
-            staging,
-            reference,
-            payload,
-            self.payload_limit(reference, payload),
-            work,
-        )?;
+        let written = written.filter(|stamp| {
+            payload.is_none()
+                && reference.byte_length <= self.payload_limit(reference, payload)
+                && File::open(staging)
+                    .and_then(|file| file.with_native(published::WrittenStamp::of_native))
+                    .is_ok_and(|current| current == *stamp)
+        });
+        if written.is_none() {
+            validate_file(
+                staging,
+                reference,
+                payload,
+                self.payload_limit(reference, payload),
+                work,
+            )?;
+        }
         match fs::hard_link(staging, destination) {
             Ok(()) => {
                 if let Err(error) = fs::remove_file(staging) {
@@ -1034,6 +1083,9 @@ impl ImmutableObjectStore {
                 if let Err(error) = sync_publication_directories(destination, staging.parent()) {
                     self.poisoned = true;
                     return Err(ImmutableObjectError::PublicationUncertain { source: error });
+                }
+                if let Some(stamp) = written {
+                    published::record(reference, stamp);
                 }
                 Ok(PublishOutcome::Published)
             }
@@ -1303,6 +1355,9 @@ fn fail_next_publication_sync() -> PublicationSyncFailureGuard {
 
 #[cfg(test)]
 mod work_tests;
+
+#[cfg(test)]
+mod published_tests;
 
 #[cfg(test)]
 mod tests {

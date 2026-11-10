@@ -10,9 +10,9 @@
 //! walking a path from each candidate start, using only maintained catalog
 //! statistics, and names a start only when it is clearly cheaper.
 //!
-//! The estimate is the sum of the candidate rows every step reads. A step
-//! from `u` to `v` reads `rows * fanout`, where the fanout is the number of
-//! relationships of that type between the two labels, in the direction the
+//! The estimate sums adjacency probes and candidate visits at every depth,
+//! independently of the number of complete matches. Output fanout uses the
+//! number of relationships of that type between the two labels, in the direction the
 //! step walks, divided by the size of `u`'s label. Equality filters on `v`
 //! then keep `1 / distinct_count` of those rows, and reaching a bound or
 //! already visited node keeps `1 / label_count`. Directed variable-length
@@ -423,37 +423,67 @@ pub(super) fn expand_work(
         match count {
             Some(count) if count > 0.0 => (count / population, false),
             // Raw zero is snapshot evidence, not a generic planning multiplier.
-            // Keep a positive fallback until failed-prefix work is conditioned
-            // independently of the complete-match statistics.
-            Some(_) => (fallback.powi(hop as i32).max(1.0 / population), true),
+            // Keep a positive planning floor; traversal work is estimated
+            // independently from the unfiltered prefixes below.
+            Some(_) => (1.0 / population, true),
             None if one_hop > 0.0 => (one_hop.powi(hop as i32), false),
             None => (fallback.powi(hop as i32).max(1.0 / population), false),
         }
     };
     let mut rows = 0.0;
-    let mut work = 0.0;
-    let mut conservative = one_hop == 0.0;
     for hop in edge.min_hops..=edge.max_hops {
         let (candidates, fallback) = hop_fanout(hop);
         let matches = candidates * selectivity.powi(hop as i32);
         rows += if fallback { 1.0 / population } else { matches };
-        work += candidates;
-        conservative |= fallback;
     }
-    if conservative && edge.max_hops > 0 {
-        // A failed walk still probes its source and visits shorter prefixes.
-        // Its first adjacency includes targets with other labels, which the
-        // final endpoint's label-pair count does not describe.
-        work += 1.0;
-        let first_hop =
-            (catalog.relationship_count(rel_type) as f64 / population).max(hop_fanout(1).0);
-        if edge.min_hops > 1 {
-            work += first_hop;
-            for hop in 2..edge.min_hops {
-                work += hop_fanout(hop).0;
+
+    // Completion counts describe output, not the prefixes inspected on the
+    // way there. Aggregate every endpoint label in the traversal direction,
+    // including depths below min_hops and failed prefixes of successful walks.
+    let mut prefixes = [0.0; MAX_ESTIMATED_HOPS + 1];
+    let orientations = |source: &str, target: &str| match direction {
+        RelationshipDirection::Outgoing => u8::from(source == from.label),
+        RelationshipDirection::Incoming => u8::from(target == from.label),
+        RelationshipDirection::Undirected => {
+            u8::from(source == from.label) + u8::from(target == from.label)
+        }
+    };
+    for ((source, kind, target), count) in &catalog.path_counts {
+        if kind == rel_type {
+            prefixes[1] += *count as f64 * orientations(source, target) as f64 / population;
+        }
+    }
+    // Preserve the conservative type-population fallback for first-hop
+    // candidates, including intermediate labels absent from path statistics.
+    prefixes[1] = prefixes[1].max(catalog.relationship_count(rel_type) as f64 / population);
+    if direction != RelationshipDirection::Undirected {
+        for ((source, kind, target, hop), count) in &catalog.bounded_path_counts {
+            if kind == rel_type
+                && (2..=edge.max_hops).contains(hop)
+                && catalog
+                    .bounded_path_complete_through_hop
+                    .is_none_or(|horizon| *hop <= horizon)
+            {
+                prefixes[*hop] += *count as f64 * orientations(source, target) as f64 / population;
             }
+        }
+    }
+    // Probe the source even when no candidate survives. Every shorter prefix
+    // also probes its adjacency; only the final depth stops without probing.
+    let mut work = 1.0;
+    for (hop, prefix) in prefixes.iter().enumerate().take(edge.max_hops + 1).skip(1) {
+        let known = direction != RelationshipDirection::Undirected
+            && catalog
+                .bounded_path_complete_through_hop
+                .is_some_and(|horizon| hop <= horizon);
+        let candidates = if hop == 1 || *prefix > 0.0 || known {
+            *prefix
         } else {
-            work += (first_hop - hop_fanout(1).0).max(0.0);
+            prefixes[1].powi(hop as i32)
+        };
+        work += candidates;
+        if hop < edge.max_hops {
+            work += candidates;
         }
     }
     Some(WalkEstimate { work, rows })

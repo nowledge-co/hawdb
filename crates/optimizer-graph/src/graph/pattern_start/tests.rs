@@ -90,10 +90,11 @@ fn a_seekable_end_replaces_a_label_scan_start() {
     };
     assert_eq!(choice.start, 2);
     assert_eq!(choice.property, "name");
-    // Scan 3,000 persons, read one job and one location each.
-    assert_eq!(choice.current_work, 9_000.0);
-    // Seek one place, read ~6.8 organisations and ~2.7 jobs.
-    assert!(choice.work < 12.0, "{choice:?}");
+    // Scan 3,000 persons, then probe and read one job and one location each.
+    assert_eq!(choice.current_work, 15_000.0);
+    // Seek one place, probe its adjacency and the ~6.8 organisations,
+    // then read ~6.8 organisations and ~2.7 jobs.
+    assert!(choice.work < 20.0, "{choice:?}");
 }
 
 #[test]
@@ -126,7 +127,7 @@ fn directed_bounded_paths_replace_the_power_of_one_hop_fallback() {
         panic!("the measured reverse fanout should select the B seek");
     };
     assert_eq!(choice.start, 1);
-    assert_eq!((choice.current_work, choice.work), (4_000.0, 102.0));
+    assert_eq!((choice.current_work, choice.work), (10_000.0, 303.0));
     assert_eq!(walk(&catalog, &nodes, &edges, 1).unwrap().rows, 100.0);
 
     let reverse_nodes = [nodes[1].clone(), nodes[0].clone()];
@@ -177,7 +178,7 @@ fn complete_horizon_distinguishes_absent_paths_from_unknown_and_deeper_hops() {
     catalog.bounded_path_complete_through_hop = Some(3);
     let complete = walk(&catalog, &nodes, &edges, 0).unwrap();
     assert_eq!(complete.rows, 1.0);
-    assert!(complete.work > unknown.work);
+    assert!(complete.work < unknown.work);
     assert!(complete.work >= 2.0 * 3_000.0 + 24_000.0);
     edges[0].direction = Incoming;
     assert_eq!(walk(&catalog, &nodes, &edges, 0).unwrap(), complete);
@@ -280,16 +281,16 @@ fn reaching_a_bound_node_filters_and_incoming_steps_use_the_stored_orientation()
     // From the place: 7,500 / 1,100 organisations per place, then 3,000 /
     // 7,500 jobs per organisation.
     let work = walk_work(&catalog, &nodes, &edges, 2).unwrap();
-    let expected = 2.0 + 7_500.0 / 1_100.0 + 7_500.0 / 1_100.0 * 0.4;
+    let expected = 2.0 + 1.0 + 2.0 * 7_500.0 / 1_100.0 + 7_500.0 / 1_100.0 * 0.4;
     assert!((work - expected).abs() < 1e-9, "{work} vs {expected}");
-    // A bound person start reads one job, then one location.
+    // A bound person start probes and reads one job, then one location.
     nodes[0].bound = true;
-    assert_eq!(walk_work(&catalog, &nodes, &edges, 0), Some(3.0));
+    assert_eq!(walk_work(&catalog, &nodes, &edges, 0), Some(5.0));
     let reversed = [node("p", "Place", &[]), node("c", "Organisation", &[])];
     let incoming = [edge("IS_LOCATED_IN", Incoming)];
     assert_eq!(
         walk_work(&catalog, &reversed, &incoming, 1),
-        Some(7_500.0 + 7_500.0)
+        Some(7_500.0 + 2.0 * 7_500.0)
     );
 }
 
