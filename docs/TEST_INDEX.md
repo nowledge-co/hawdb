@@ -500,6 +500,34 @@ change misses the cached plan and re-plans the start. Replay with
 `cargo test --locked -p hawdb-optimizer-graph pattern_start chain_start match_order`.
 No lane, fixture, feature matrix or deadline changes.
 
+Directed bounded-path estimates additionally cover heterogeneous intermediate
+labels, incoming reversal and the undirected mixed-direction fallback in
+`graph::pattern_start::tests`, including missing tuples in a complete horizon,
+empty complete maps, legacy/truncated coverage and out-of-horizon fallbacks.
+Known-zero completions retain positive planning rows and charge dense/sparse
+failed prefixes and probes in both directions; relationship predicates cannot
+discount the unfiltered prefix work. Rare positive two-hop and three-hop
+completions also retain visits and probes for dead ends, shorter depths and
+intermediate labels outside the requested endpoint pair, in both orientations. These regressions replace the former
+zero-work expectation. `graph::costing::graph_match::tests` owns
+frequency-aware seed/expansion costs, actual seeded-union branches with shared
+input cost, imported input labels, bound endpoints, OPTIONAL cardinality floors
+and bounded fallback for unbounded/type-disjunctive paths. These use the existing
+optimizer unit lane and profiles. The manual embedded example
+`cargo run --locked --release --example optimizer_path_statistics` compares
+fully consumed, identical ordered results for ordinary and rule-disabled plans
+on one pinned synthetic snapshot, with alternating order, two warmups, fifteen
+measurements and raw cost/execution profiles. It is a developer experiment,
+not a new CI performance gate or a general LDBC acceptance claim.
+
+Bounded-path provenance follows the existing statistics lanes: storage
+`statistics::tests` and `statistics::checkpoint::tests` cover completed versus
+budget-exhausted collection and retained copies; checkpoint metadata tests
+cover ordinary/cooperative byte parity, round-trip, duplicate rejection and
+legacy unknown coverage. Root `api::tests::statistics` covers external-refresh
+truncation, checkpoint/reopen and retaining runtime MATCH execution with a
+positive planning floor and charged visits to 64 dead-end first-hop edges. No lane, profile, timeout or fixture scope is removed.
+
 Early `GraphMatchExec` WHERE placement (#1424) is owned by optimizer
 `graph::lowering::match_predicates::tests` and root `api::tests::early_match_predicates`.
 The optimizer cases include dependencies nested in scalar conversions, temporal functions,

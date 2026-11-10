@@ -336,6 +336,29 @@ fn bounded_multi_hop_statistics_drive_expand_estimates() {
 }
 
 #[test]
+fn absent_complete_bounded_path_keeps_runtime_match_and_charges_dead_end_prefixes() {
+    let mut db = Database::new();
+    db.query("CREATE (:A {id: 0})").unwrap();
+    db.query("CREATE (:C {id: 0})").unwrap();
+    for id in 0..64 {
+        db.query(&format!("MERGE (:A {{id: 0}})-[:R]->(:B {{id: {id}}})"))
+            .unwrap();
+    }
+    let statistics = db.statistics().unwrap();
+    assert_eq!(statistics.bounded_path_complete_through_hop, Some(3));
+    assert!(!statistics.bounded_path_counts.is_empty());
+    // Every R prefix reaches a B with no outgoing R: the runtime must inspect
+    // all 64 first-hop edges before finding no length-two completion.
+    let query = "MATCH (a:A)-[:R*2..2]->(b:B)-[:R]->(c:C) RETURN c.id AS id";
+    let explain = db.explain_query(query).unwrap();
+    assert!(explain.trace.selected_plan_cost.estimated_rows > 0);
+    assert!(explain.trace.selected_plan_cost.cost >= 64);
+    let physical = explain.physical_plan.explain(0);
+    assert!(physical.contains("GraphMatchExec"), "{physical}");
+    assert!(db.query(query).unwrap().rows.is_empty());
+}
+
+#[test]
 fn optimizer_retains_complete_advanced_statistics_after_graph_epoch_advances() {
     let path = unique_test_dir("optimizer_advanced_statistics_freshness");
     let spill_root = path.join("statistics-spill");
@@ -491,6 +514,7 @@ fn checkpoint_persists_index_descriptors_and_statistics() {
     assert!(checkpoint.contains("stat_rel_type_source_count"));
     assert!(checkpoint.contains("stat_path_count"));
     assert!(checkpoint.contains("stat_bounded_path_count"));
+    assert!(checkpoint.contains("stat_bounded_path_complete_through_hop\t3\n"));
     assert!(checkpoint.contains("stat_bounded_path_source_distinct_count"));
     assert!(checkpoint.contains("stat_bounded_path_target_distinct_count"));
     assert!(checkpoint.contains("stat_index_sample"));
@@ -512,6 +536,10 @@ fn checkpoint_persists_index_descriptors_and_statistics() {
         assert_eq!(db.statistics().unwrap().computed_at_commit_epoch, 5);
         assert!(db.statistics().unwrap().advanced_statistics_complete);
         assert_eq!(db.statistics().unwrap().histogram_sample_limit, 512);
+        assert_eq!(
+            db.statistics().unwrap().bounded_path_complete_through_hop,
+            Some(3)
+        );
         assert_eq!(db.statistics().unwrap().node_count, 3);
         assert_eq!(db.statistics().unwrap().relationship_count, 1);
     }
@@ -559,6 +587,10 @@ fn external_optimizer_statistics_refresh_truncates_bounded_paths_instead_of_fail
         .unwrap();
     assert!(!report.bounded_path_truncated);
     assert!(report.bounded_path_group_count > 0);
+    assert_eq!(
+        db.statistics().unwrap().bounded_path_complete_through_hop,
+        Some(3)
+    );
     assert!(!db.statistics().unwrap().bounded_path_counts.is_empty());
 
     let report = db
@@ -569,6 +601,7 @@ fn external_optimizer_statistics_refresh_truncates_bounded_paths_instead_of_fail
     assert!(report.path_group_count > 0);
     let statistics = db.statistics().unwrap();
     assert!(statistics.bounded_path_counts.is_empty());
+    assert_eq!(statistics.bounded_path_complete_through_hop, None);
     assert!(statistics.bounded_path_source_distinct_counts.is_empty());
     assert!(statistics.bounded_path_target_distinct_counts.is_empty());
     assert!(!statistics.path_counts.is_empty());

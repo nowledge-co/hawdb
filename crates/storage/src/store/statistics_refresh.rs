@@ -198,6 +198,8 @@ impl GraphStore {
             statistics.bounded_path_counts.clear();
             statistics.bounded_path_source_distinct_counts.clear();
             statistics.bounded_path_target_distinct_counts.clear();
+        } else {
+            statistics.bounded_path_complete_through_hop = Some(MAX_BOUNDED_PATH_STAT_HOPS);
         }
         if source_commit_epoch != self.commit_epoch {
             return Err(HawDBError::Execution(

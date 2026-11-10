@@ -20,6 +20,67 @@ qualify later context or metadata-count changes.
 
 ## Composition
 
+Graph MATCH path selection and final `GraphMatchExec` costing share seed
+equality estimates (including MCV frequencies), direction-aware label-pair
+fanout and endpoint selectivity. A directed bounded walk prefers the existing
+checkpoint count for its hop length over a power of the one-hop fanout; the
+intermediate nodes need not share either endpoint's label or degree. Incoming
+walks reverse the count key. These counts estimate walks, not a proof of trail
+uniqueness or result emptiness. Undirected walks retain the fanout fallback
+because they may mix incoming and outgoing edges; adding two directed counts
+does not describe them.
+
+`bounded_path_complete_through_hop` records a publisher's completed directed
+enumeration horizon. A missing tuple within that horizon is a zero in the
+statistics snapshot. Raw zero evidence is kept separate from positive planning
+cardinality and traversal work. MATCH uses a minimum-one whole-label planning
+estimate for known-zero completions. Traversal work independently charges the
+source probe, candidate visits at every depth through the maximum hop, and
+adjacency probes for prefixes that can still expand. This includes depths below
+the minimum matching hop and prefixes ending at any intermediate label, whether
+the requested-hop completion count is zero or positive. First-hop work uses at
+least the relationship-type population per source-label row; deeper directed
+prefixes aggregate published bounded counts across endpoint labels. A complete
+horizon can establish no candidates at a depth without removing the preceding
+prefix probes. Unknown depths retain a fanout fallback. Relationship predicates
+do not discount inspected prefixes. Generic adjacency costing retains its
+positive fanout fallback rather than multiplying its shared row/work estimate
+by zero.
+
+Missing coverage (including truncated or legacy statistics) and hops outside
+the declared horizon keep the heuristic fallback. Explicit legacy counts remain
+usable without establishing completeness for absent tuples. Prefix work and
+conditioning remain estimates, not exact physical read counts or empty-execution
+properties. No statistics snapshot substitutes an empty plan for runtime MATCH.
+
+Materialized collection, cooperative checkpoint collection and external
+refresh publish the horizon only after completing their bounded pass. Copies
+retain it, and ordinary/cooperative checkpoint metadata encoders round-trip it
+as the optional `stat_bounded_path_complete_through_hop` record. Older
+checkpoints without the record retain unknown coverage. Older binaries may
+reject the new derived-metadata record; canonical graph/relational records and
+WAL transactions are unchanged. The provenance adds one scalar field to each
+statistics DTO/catalog, with no data-sized map or collector budget increase.
+
+Final MATCH cost follows the executed steps, counts candidate visits before
+bound-endpoint/property filtering, and scales the local walk by input rows.
+Seeded unions sum their actual branch walks and charge the shared input once.
+Imported labels are read from the input binding scope. OPTIONAL estimates
+retain the input cardinality floor; predicate placement changes intermediate
+work without changing the full predicate's output selectivity. Unsupported
+steps, missing advanced statistics, unlabelled/union labels, type disjunctions
+and unbounded walks retain bounded structural fallbacks. Hash builds and
+shortest-path programs retain their previous structural model.
+
+This consumes immutable published statistics; it does not add a collector,
+sample, persistent map, runtime scan, cost coefficient or plan-cache key.
+Temporary estimation state scales with statement steps/properties, not graph
+size. Maintained statistics remain estimates and never authorize a semantic
+rewrite or replace runtime memory admission. The manual
+[`optimizer_path_statistics`](../examples/optimizer_path_statistics.rs) example
+checks a concrete directed multi-hop plan change; full LDBC timing and physical
+cost calibration remain separate qualification work.
+
 The constructor weights the raw components exactly once. Unary/binary and
 probe composition add or scale raw components before constructing a new total;
 they never add a weighted total into an I/O component. The CPU normalization

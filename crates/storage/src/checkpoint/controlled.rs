@@ -202,6 +202,11 @@ pub(crate) fn encode_checkpoint_body_with_work_context<'a>(
         statistics.histogram_sample_limit
     ))?;
     body.write(format_args!("stat_node_count\t{}\n", statistics.node_count))?;
+    if let Some(hops) = statistics.bounded_path_complete_through_hop {
+        body.write(format_args!(
+            "stat_bounded_path_complete_through_hop\t{hops}\n"
+        ))?;
+    }
     body.write(format_args!(
         "stat_relationship_count\t{}\n",
         statistics.relationship_count
