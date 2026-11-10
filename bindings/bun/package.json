@@ -1,6 +1,6 @@
 {
   "name": "@nowledge/hawdb-bun",
-  "version": "0.0.0",
+  "version": "0.30.0",
   "private": true,
   "type": "module",
   "exports": {
