@@ -110,6 +110,25 @@ impl GraphExecutionRead for ReadFixture {
         };
         AdmittedNodeRecord::clone_admitted(node, allocation).map(AdmittedNodeRead::Node)
     }
+    fn relationship_with_allocation(
+        &self,
+        id: hawdb_storage::RelId,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+    ) -> Result<hawdb_storage::read_view::AdmittedRelationshipRead> {
+        use hawdb_storage::read_view::{AdmittedRelationshipRead, AdmittedRelationshipRecord};
+        let Some(relationship) = self.relationships.iter().find(|record| record.id == id) else {
+            return Ok(AdmittedRelationshipRead::Missing);
+        };
+        let Some(allocation) =
+            admit.reserve(hawdb_core::ids::relationship_allocation_bytes(relationship))?
+        else {
+            return Ok(AdmittedRelationshipRead::Stopped);
+        };
+        self.relationship_copies
+            .set(self.relationship_copies.get() + 1);
+        AdmittedRelationshipRecord::clone_admitted(relationship, allocation)
+            .map(AdmittedRelationshipRead::Relationship)
+    }
     fn visit_adjacent_relationships_owned(
         &self,
         node_id: NodeId,
