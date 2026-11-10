@@ -11,8 +11,7 @@ use hawdb::optimizer::{
 use hawdb::{
     Database, OptimizerQualificationAttemptLimits, OptimizerQualificationCandidateKind,
     OptimizerQualificationCandidateRequest, QueryRequest, QueryStreamOptions,
-    RuntimeMemoryReservation, RuntimeTaskContext, Value,
-    OPTIMIZER_QUALIFICATION_CANDIDATE_LIMIT,
+    RuntimeMemoryReservation, RuntimeTaskContext, Value, OPTIMIZER_QUALIFICATION_CANDIDATE_LIMIT,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
@@ -305,12 +304,20 @@ fn validate_replay_source(report: &Report) -> Result<(), String> {
     {
         return Err("qualification report candidate work exceeds the attempt limit".into());
     }
-    let reported_work_units = report.candidates.iter().try_fold(0usize, |total, candidate| {
-        total.checked_add(candidate.attempt.work_units)
-    }).ok_or_else(|| "qualification report candidate work total overflows usize".to_string())?;
-    let reported_result_bytes = report.candidates.iter().try_fold(0usize, |total, candidate| {
-        total.checked_add(candidate.attempt.retained_result_bytes)
-    }).ok_or_else(|| "qualification report retained result total overflows usize".to_string())?;
+    let reported_work_units = report
+        .candidates
+        .iter()
+        .try_fold(0usize, |total, candidate| {
+            total.checked_add(candidate.attempt.work_units)
+        })
+        .ok_or_else(|| "qualification report candidate work total overflows usize".to_string())?;
+    let reported_result_bytes = report
+        .candidates
+        .iter()
+        .try_fold(0usize, |total, candidate| {
+            total.checked_add(candidate.attempt.retained_result_bytes)
+        })
+        .ok_or_else(|| "qualification report retained result total overflows usize".to_string())?;
     let result_bytes = usize::try_from(RESULT_BYTES)
         .map_err(|_| "qualification result-memory limit does not fit usize".to_string())?;
     if report.campaign.candidate_order
@@ -324,8 +331,7 @@ fn validate_replay_source(report: &Report) -> Result<(), String> {
             .iter()
             .enumerate()
             .any(|(position, candidate)| candidate.attempt.schedule_position != position)
-        || report.campaign.campaign_work_units_used
-            != reported_work_units
+        || report.campaign.campaign_work_units_used != reported_work_units
         || report.campaign.campaign_work_units_used > CAMPAIGN_WORK_UNITS
         || report.campaign.result_bytes_used != reported_result_bytes
         || report.campaign.result_bytes_used > result_bytes
@@ -405,9 +411,10 @@ fn execute(expected: Option<&Report>) -> Result<Report, String> {
             let trace = output.optimizer_trace;
             let cost = trace.selected_plan_cost_breakdown;
             let properties = trace.selected_plan_properties;
-            let retained_result_bytes = output.result.as_ref().map_or(0, |result| {
-                result.output.rows.retained_memory_bytes()
-            });
+            let retained_result_bytes = output
+                .result
+                .as_ref()
+                .map_or(0, |result| result.output.rows.retained_memory_bytes());
             let (status, error, result) = match output.result {
                 Ok(output) => (AttemptStatus::Completed, None, Some(full_result(&output))),
                 Err(error) => (AttemptStatus::EngineError, Some(error.to_string()), None),
