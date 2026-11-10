@@ -41,7 +41,7 @@ mod pipeline;
 mod visibility;
 pub use pipeline::{
     plan_normalized_pipeline_query, plan_parsed_pipeline_query, plan_pipeline_query,
-    unique_projection_names,
+    unique_projection_names, with_legacy_graph_group_keys,
 };
 pub use visibility::{apply_node_visibility_predicates, validate_node_visibility_predicates};
 mod binding;
@@ -581,6 +581,8 @@ pub enum LogicalPlan {
     Aggregate {
         group_keys: Vec<Projection>,
         items: Vec<Aggregation>,
+        /// How group keys that are bound graph variables leave the operator.
+        graph_keys: GraphGroupKeys,
         input: Box<LogicalPlan>,
     },
     Distinct {
@@ -737,6 +739,30 @@ pub enum RelationshipCountFilter {
 pub enum RelationshipOnCreateValue {
     Value(Value),
     MatchedRelationshipProperty { property: String },
+}
+
+/// How an aggregation outputs a group key that is a bound node or relationship
+/// variable (`ProjectionExpression::Variable`). Such a key always groups by
+/// entity identity and keeps the first row's record (#1615); this only
+/// selects the output form.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum GraphGroupKeys {
+    /// The record leaves as a map value column, as any projected entity.
+    #[default]
+    Values,
+    /// The record leaves in the output row's graph slot of the same name, so
+    /// later clauses read it as a bound graph variable. Groups leave in key
+    /// order.
+    Slots,
+    /// As `Slots`, but groups leave in first-occurrence order while they fit
+    /// in memory: the grouping implements `WITH DISTINCT`.
+    DistinctSlots,
+}
+
+impl GraphGroupKeys {
+    pub fn retains_slots(self) -> bool {
+        !matches!(self, Self::Values)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

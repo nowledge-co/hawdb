@@ -219,10 +219,12 @@ fn rewrite_bottom_up(plan: LogicalPlan, events: &mut Vec<RuleEvent>) -> LogicalP
         LogicalPlan::Aggregate {
             group_keys,
             items,
+            graph_keys,
             input,
         } => LogicalPlan::Aggregate {
             group_keys,
             items,
+            graph_keys,
             input: Box::new(rewrite_bottom_up(*input, events)),
         },
         LogicalPlan::Distinct { input } => LogicalPlan::Distinct {
@@ -355,6 +357,7 @@ fn rewrite_project(
         LogicalPlan::Aggregate {
             group_keys,
             items: aggregate_items,
+            graph_keys,
             input,
         } => {
             let Some(required_columns) = projection_column_dependencies(&items) else {
@@ -363,6 +366,7 @@ fn rewrite_project(
                     input: Box::new(LogicalPlan::Aggregate {
                         group_keys,
                         items: aggregate_items,
+                        graph_keys,
                         input,
                     }),
                 };
@@ -378,6 +382,7 @@ fn rewrite_project(
                     input: Box::new(LogicalPlan::Aggregate {
                         group_keys,
                         items: aggregate_items,
+                        graph_keys,
                         input,
                     }),
                 };
@@ -395,6 +400,7 @@ fn rewrite_project(
                 input: Box::new(LogicalPlan::Aggregate {
                     group_keys,
                     items: aggregate_items,
+                    graph_keys,
                     input,
                 }),
             }
@@ -1577,11 +1583,13 @@ mod tests {
             name: "memory_count".to_string(),
         };
         let global = LogicalPlan::Aggregate {
+            graph_keys: Default::default(),
             group_keys: Vec::new(),
             items: vec![count.clone()],
             input: Box::new(empty.clone()),
         };
         let grouped = LogicalPlan::Aggregate {
+            graph_keys: Default::default(),
             group_keys: vec![Projection {
                 expression: ProjectionExpression::Property {
                     variable: "m".to_string(),
@@ -1652,6 +1660,7 @@ mod tests {
                 name: "memory_count".to_string(),
             }],
             input: Box::new(LogicalPlan::Aggregate {
+                graph_keys: Default::default(),
                 group_keys: vec![Projection {
                     expression: ProjectionExpression::Property {
                         variable: "m".to_string(),

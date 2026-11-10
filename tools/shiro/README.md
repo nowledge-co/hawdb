@@ -111,6 +111,15 @@ rendered query AST metadata, all query variants, result semantics, plan fingerpr
 stages, predicate rewrites, metamorphic transforms, and a direct reproduction command. Every
 failure carries a stable oracle-specific signature; reducers retain only candidates that
 reproduce that signature.
+Cypher differential execution uses a deterministic semantic statement clock
+(`2026-10-30T12:00:00Z` by default), preserving an explicit caller pin. Replay
+and qualification evidence retain the clock, and qualification variants retain
+their named bounded-order choice. Monotonic execution deadlines remain real.
+The generated `temporal_case` capability also derives replayable clocks from
+its seed/variant and compares ordinary, TopN and Sort-plus-Limit results with
+an independent model covering runtime timezone reads, NULL/duplicate sort
+keys, reversed candidate order, pagination and empty results. Matching errors
+still fail differential qualification rather than count as plan agreement.
 Plan-fingerprint novelty is reported as coverage telemetry and never changes a correctness verdict.
 The differential reducer first minimizes graph mutations and then typed query AST nodes. It accepts
 a candidate only when the same failure signature still triggers, so a setup, parse, or execution

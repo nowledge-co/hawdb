@@ -1,0 +1,11 @@
+package(default_visibility = ["//visibility:public"])
+
+filegroup(
+    name = "hawdb_bun_sources",
+    srcs = glob([
+        "*.json",
+        "*.md",
+        "src/**",
+        "tests/**",
+    ]),
+)

@@ -134,6 +134,15 @@ impl GraphExecutionRead for GraphStore {
         GraphStore::relationship_with_allocation(self, id, admit)
     }
 
+    fn projected_relationship_with_allocation(
+        &self,
+        id: RelId,
+        required_properties: &BTreeSet<String>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+    ) -> Result<hawdb_storage::read_view::AdmittedRelationshipRead> {
+        GraphStore::projected_relationship_with_allocation(self, id, required_properties, admit)
+    }
+
     fn scan_nodes_borrowed<'a>(
         &'a self,
         label_id: Option<LabelId>,

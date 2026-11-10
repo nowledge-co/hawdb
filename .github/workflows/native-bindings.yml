@@ -67,6 +67,7 @@ on:
       - "tests/in_memory_portable.rs"
       - "tests/branch_project_open.rs"
       - "bindings/ffi/**"
+      - "bindings/bun/**"
       - "bindings/go/**"
       - "bindings/moonbit/**"
       - "MODULE.bazel"
@@ -96,6 +97,7 @@ on:
       - "tests/in_memory_portable.rs"
       - "tests/branch_project_open.rs"
       - "bindings/ffi/**"
+      - "bindings/bun/**"
       - "bindings/go/**"
       - "bindings/moonbit/**"
       - "MODULE.bazel"
@@ -150,6 +152,18 @@ jobs:
 
       - name: Test Go against the Bazel-built C ABI
         run: bazel test --test_output=errors --test_arg=-test.v //bindings/go:hawdb_go_tests
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+
+      - name: Test Bun against the Bazel-built C ABI
+        working-directory: bindings/bun
+        run: |
+          bun install --frozen-lockfile
+          bun run typecheck
+          bun test
 
       - name: Test original generation spool ownership
         run: >-

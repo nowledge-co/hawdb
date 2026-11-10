@@ -41,13 +41,45 @@ pub struct PlanCostBreakdown {
     pub output_rows: u64,
 }
 
+/// Relative weights applied once to raw logical work components.
+///
+/// These are planning units rather than hardware latency coefficients. Exposing
+/// the immutable policy lets offline qualification re-score frozen candidates;
+/// it does not add a runtime tuning surface or change the engine default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlanCostWeights {
+    pub cpu: u64,
+    pub random_access: u64,
+    pub sequential_access: u64,
+    pub output: u64,
+}
+
+impl PlanCostWeights {
+    pub const fn new(cpu: u64, random_access: u64, sequential_access: u64, output: u64) -> Self {
+        Self {
+            cpu,
+            random_access,
+            sequential_access,
+            output,
+        }
+    }
+
+    fn score(self, cpu: u64, random_access: u64, sequential_access: u64, output: u64) -> u64 {
+        cpu.saturating_mul(self.cpu)
+            .saturating_add(random_access.saturating_mul(self.random_access))
+            .saturating_add(sequential_access.saturating_mul(self.sequential_access))
+            .saturating_add(output.saturating_mul(self.output))
+    }
+}
+
+/// Stable identity of the default logical-work policy recorded in qualification
+/// evidence. A different default requires a separately reviewed policy change.
+pub const DEFAULT_PLAN_COST_POLICY_ID: &str = "hawdb-logical-cost-v1";
+
 // CPU is the scalar normalization unit: from_scalar must not weight a cost twice.
 // These are conservative logical-work weights, not physical page counts or time.
 // Random access costs more than sequential access even when the OS caches bytes.
-const CPU_WEIGHT: u64 = 1;
-const RANDOM_ACCESS_WEIGHT: u64 = 2;
-const SEQUENTIAL_ACCESS_WEIGHT: u64 = 1;
-const OUTPUT_WEIGHT: u64 = 1;
+pub const DEFAULT_PLAN_COST_WEIGHTS: PlanCostWeights = PlanCostWeights::new(1, 2, 1, 1);
 
 impl PlanCostBreakdown {
     pub fn with_cardinality_floor(self) -> Self {
@@ -66,15 +98,26 @@ impl PlanCostBreakdown {
     ) -> Self {
         Self {
             estimated_rows,
-            cost: cpu
-                .saturating_mul(CPU_WEIGHT)
-                .saturating_add(random_io.saturating_mul(RANDOM_ACCESS_WEIGHT))
-                .saturating_add(sequential_io.saturating_mul(SEQUENTIAL_ACCESS_WEIGHT))
-                .saturating_add(output_rows.saturating_mul(OUTPUT_WEIGHT)),
+            cost: DEFAULT_PLAN_COST_WEIGHTS.score(cpu, random_io, sequential_io, output_rows),
             cpu,
             random_io,
             sequential_io,
             output_rows,
+        }
+        .with_cardinality_floor()
+    }
+
+    /// Re-scores retained raw work without changing cardinality or the stored
+    /// engine-default total. Intended for offline qualification and fitting.
+    pub fn score_with_weights(self, weights: PlanCostWeights) -> PlanCost {
+        PlanCost {
+            estimated_rows: self.estimated_rows,
+            cost: weights.score(
+                self.cpu,
+                self.random_io,
+                self.sequential_io,
+                self.output_rows,
+            ),
         }
         .with_cardinality_floor()
     }
@@ -132,7 +175,10 @@ impl PlanCostBreakdown {
 
 #[cfg(test)]
 mod tests {
-    use super::{PlanCost, PlanCostBreakdown};
+    use super::{
+        PlanCost, PlanCostBreakdown, PlanCostWeights, DEFAULT_PLAN_COST_POLICY_ID,
+        DEFAULT_PLAN_COST_WEIGHTS,
+    };
 
     #[test]
     fn cost_breakdown_sums_stable_components() {
@@ -182,5 +228,22 @@ mod tests {
 
         assert_eq!(cost.estimated_rows, 1);
         assert_eq!(cost.cost, 7);
+    }
+
+    #[test]
+    fn qualification_can_rescore_raw_work_without_mutating_the_default_total() {
+        let cost = PlanCostBreakdown::new(7, 10, 20, 30, 40);
+
+        assert_eq!(DEFAULT_PLAN_COST_POLICY_ID, "hawdb-logical-cost-v1");
+        assert_eq!(DEFAULT_PLAN_COST_WEIGHTS, PlanCostWeights::new(1, 2, 1, 1));
+        assert_eq!(cost.cost, 120);
+        assert_eq!(
+            cost.score_with_weights(PlanCostWeights::new(1, 5, 2, 0)),
+            PlanCost {
+                estimated_rows: 7,
+                cost: 170,
+            }
+        );
+        assert_eq!(cost.cost, 120);
     }
 }

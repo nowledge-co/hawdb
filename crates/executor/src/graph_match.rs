@@ -619,42 +619,36 @@ impl MatchRuntime<'_> {
                     let source = NodeId(
                         source.expect("relationships always import their source from the column"),
                     );
-                    let mut found = None;
-                    self.store
-                        .visit_ordered_adjacent_relationships_with_allocation(
-                            source,
-                            None,
-                            AdjacencyDirection::Outgoing,
-                            self.adjacency_memory(),
-                            &mut hawdb_storage::read_view::ControlledGraphReadAllocator::new(
-                                &mut |bytes| {
-                                    admit_graph_read(
-                                        self.source_account,
-                                        self.context.task_context,
-                                        bytes
-                                            .saturating_add(import.variable.len())
-                                            .saturating_add(1024),
-                                    )
-                                    .map(Some)
-                                },
-                                self.context.task_context,
-                            ),
-                            &mut |input| {
-                                let (relationship, allocation) = input.into_parts();
-                                runtime_checkpoint(self.context.task_context)?;
-                                if relationship.id == RelId(id) {
-                                    found = Some((relationship, allocation));
-                                    Ok(ScanControl::Stop)
-                                } else {
-                                    Ok(ScanControl::Continue)
-                                }
+                    // A point read sees the record the source's outgoing
+                    // adjacency would list under this id (#1644).
+                    let read = self.store.relationship_with_allocation(
+                        RelId(id),
+                        &mut hawdb_storage::read_view::ControlledGraphReadAllocator::new(
+                            &mut |bytes| {
+                                admit_graph_read(
+                                    self.source_account,
+                                    self.context.task_context,
+                                    bytes
+                                        .saturating_add(import.variable.len())
+                                        .saturating_add(1024),
+                                )
+                                .map(Some)
                             },
-                        )?;
-                    let (relationship, allocation) = found.ok_or_else(|| {
+                            self.context.task_context,
+                        ),
+                    )?;
+                    let disappeared = || {
                         HawDBError::Execution(
                             "bound relationship disappeared during MATCH".to_string(),
                         )
-                    })?;
+                    };
+                    let AdmittedRelationshipRead::Relationship(relationship) = read else {
+                        return Err(disappeared());
+                    };
+                    let (relationship, allocation) = relationship.into_parts();
+                    if relationship.source != source {
+                        return Err(disappeared());
+                    }
                     leases.try_push(allocation)?;
                     row.relationships
                         .insert(import.variable.clone(), relationship);

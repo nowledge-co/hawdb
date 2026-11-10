@@ -1,11 +1,11 @@
 # Optimizer cost qualification and calibration
 
-Status: proposed, 2026-11-04. This document defines prospective acceptance
-criteria. The candidate runner, cardinality replay and coefficient fitter are
-not implemented by this documentation change. Existing optimizer and admission
-contracts remain authoritative.
+Status: phase 1 candidate proof implemented, 2026-11-10; phases 2 through 5
+remain prospective acceptance criteria. The four-family timing runner,
+observed-cardinality diagnosis and coefficient fitter are not implemented.
+Existing optimizer and admission contracts remain authoritative.
 
-Tracking: [#216](https://github.com/nowledge-co/hawdb/issues/216).
+Tracking: [#1596](https://github.com/nowledge-co/hawdb/issues/1596).
 Delivery sequence: [development plan](../OPTIMIZER_COST_QUALIFICATION_PLAN.md).
 Incomplete work is tracked only in [TODO](../../TODO.md).
 
@@ -72,7 +72,9 @@ production crate dependency. Initial coefficient experiments remain offline.
    family, retain legal alternatives before cost-based pruning where available;
    the current cost winner alone cannot define the comparison inventory.
    Limit the initial protocol to eight distinct candidates per query, including
-   the ordinary selection, and report any truncation explicitly.
+   the ordinary selection, and report any enumeration truncation explicitly.
+   The fixed phase-1 named inventory instead refuses an over-limit request and
+   never returns a partial inventory.
 4. Record the actual executed physical fingerprint, including access/index
    identity, ordering and relevant physical properties. Requested hints,
    equal scalar costs or operator-name lists do not prove plan identity.
@@ -96,8 +98,14 @@ entrypoint must not be described as that already implemented adapter.
 
 ## Evidence model
 
-The proposed report protocol is `hawdb-optimizer-cost-qualification-v1`.
-Its implementation MUST preserve raw observations, not only aggregates.
+The proposed complete report protocol is
+`hawdb-optimizer-cost-qualification-v1`. Its implementation MUST preserve raw
+observations, not only aggregates. The implemented fixed correctness proof uses
+the distinct `hawdb-optimizer-cost-qualification-phase1-v1` protocol. It records
+its ordered candidates, cumulative campaign bounds, equal per-attempt bounds,
+work usage and complete results, but deliberately has no engine/build SHA,
+measurement environment, timing samples or regret claim. Therefore it is a
+phase-1 prerequisite, not an implementation of the complete protocol below.
 
 | Record | Required evidence |
 | --- | --- |

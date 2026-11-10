@@ -813,6 +813,7 @@ fn grouped_aggregate_pipeline_spills_and_merges_groups() {
             .unwrap();
     }
     let plan = PhysicalPlan::AggregateExec {
+        graph_keys: Default::default(),
         group_keys: vec![Projection {
             expression: ProjectionExpression::Property {
                 variable: "n".to_string(),
@@ -895,6 +896,7 @@ fn grouped_partial_aggregate_spill_does_not_write_unused_binding_payloads() {
             .unwrap();
     }
     let plan = PhysicalPlan::AggregateExec {
+        graph_keys: Default::default(),
         group_keys: vec![Projection {
             expression: ProjectionExpression::Property {
                 variable: "n".to_string(),
@@ -1138,6 +1140,7 @@ fn collect_aggregate_rejects_unbounded_group_state() {
             .unwrap();
     }
     let plan = PhysicalPlan::AggregateExec {
+        graph_keys: Default::default(),
         group_keys: Vec::new(),
         items: vec![Aggregation {
             function: AggregateFunction::Collect,
@@ -1189,6 +1192,7 @@ fn grouped_mixed_aggregate_spills_only_required_operands() {
             .unwrap();
     }
     let plan = PhysicalPlan::AggregateExec {
+        graph_keys: Default::default(),
         group_keys: vec![Projection {
             expression: ProjectionExpression::Property {
                 variable: "n".to_string(),

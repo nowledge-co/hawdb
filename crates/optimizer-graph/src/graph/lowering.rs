@@ -268,7 +268,7 @@ fn record_qualification(report: &mut OptimizationSearchReport, context: &Optimiz
             .filter(|rule| !options.rule_enabled(*rule))
             .map(crate::OptionalOptimizerRule::as_str)
             .collect::<Vec<_>>();
-        report.push_rule_event(RuleEvent::selected("optimizer qualification", format!("disabled={disabled:?} perturbation={:?}; legality/resource checks remain mandatory; reported costs are unperturbed", options.cost_perturbation())));
+        report.push_rule_event(RuleEvent::selected("optimizer qualification", format!("disabled={disabled:?} perturbation={:?} bounded_order_alternative={:?}; legality/resource checks remain mandatory; reported costs are unperturbed", options.cost_perturbation(), options.bounded_order_alternative())));
     }
 }
 
@@ -465,6 +465,36 @@ fn select_bounded_sort_plan(
     };
     let top_n_cost = estimate_physical_plan_cost_with_context(&top_n, catalog, context);
     let sort_limit_cost = estimate_physical_plan_cost_with_context(&sort_limit, catalog, context);
+    if let Some(alternative) = context.qualification_options().bounded_order_alternative() {
+        decisions.push(
+            RuleEvent::applied(
+                crate::BOUNDED_ORDER_QUALIFICATION_RULE,
+                format!(
+                    "alternative={} top_n_cost={} sort_then_limit_cost={}",
+                    alternative.as_str(),
+                    top_n_cost.cost,
+                    sort_limit_cost.cost
+                ),
+            )
+            .into_decision(),
+        );
+        return match alternative {
+            crate::OptimizerBoundedOrderAlternative::TopN => PhysicalPlan::TopNExec {
+                items,
+                offset,
+                limit,
+                input: Box::new(input),
+            },
+            crate::OptimizerBoundedOrderAlternative::SortThenLimit => PhysicalPlan::LimitExec {
+                offset,
+                limit: Some(limit),
+                input: Box::new(PhysicalPlan::SortExec {
+                    items,
+                    input: Box::new(input),
+                }),
+            },
+        };
+    }
     if ranking_cost(&top_n, top_n_cost.cost, context)
         <= ranking_cost(&sort_limit, sort_limit_cost.cost, context)
     {
@@ -1253,6 +1283,7 @@ fn lower_logical(
         LogicalPlan::Aggregate {
             group_keys,
             items,
+            graph_keys,
             input,
         } => {
             let input = children.lower(
@@ -1274,6 +1305,7 @@ fn lower_logical(
             PhysicalPlan::AggregateExec {
                 group_keys: group_keys.clone(),
                 items: items.clone(),
+                graph_keys: *graph_keys,
                 input: Box::new(input),
             }
         }
@@ -1411,6 +1443,7 @@ fn select_node_count_fast_path(
         group_keys,
         items,
         input,
+        ..
     } = logical
     else {
         return None;
@@ -1461,6 +1494,7 @@ fn select_relationship_count_fast_path(
         group_keys,
         items,
         input,
+        ..
     } = logical
     else {
         return None;
@@ -1557,6 +1591,7 @@ fn finalize_required_node_properties(
         PhysicalPlan::AggregateExec {
             group_keys,
             items,
+            graph_keys,
             input,
         } => {
             let input = select_node_aggregate_required_scan(
@@ -1571,6 +1606,7 @@ fn finalize_required_node_properties(
             PhysicalPlan::AggregateExec {
                 group_keys,
                 items,
+                graph_keys,
                 input,
             }
         }

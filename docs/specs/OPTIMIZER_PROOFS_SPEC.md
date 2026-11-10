@@ -97,10 +97,31 @@ compute the extra ranking fingerprints.
 
 The outer result covers preparation/planning failures. Successful preparation
 returns `OptimizerQualificationOutput` with the actual selected trace, snapshot
-epoch and an inner execution result, retaining plan evidence on runtime error.
+epoch, scoped work usage and an inner execution result, retaining plan evidence
+on runtime error.
 Owned successful rows remain charged while held by the caller. `verify_rules`
 accepts up to six required/forbidden assertions over structured Applied events;
 mere diagnostic mentions, estimates and skipped rules do not satisfy them.
+
+`qualify_optimizer_bounded_order_candidates` and its explicit-inventory variant
+require `OptimizerQualificationAttemptLimits`. The request task context is the
+cumulative campaign deadline/work admission; every candidate gets a fresh,
+equal attempt deadline/work scope constrained by that campaign. Tests execute
+the same three candidates in different orders at their exact individual work
+limit, assert equal attempt usage and assert the enclosing campaign is charged
+for all three. The effective result-memory limit is cumulative across the
+candidate set: completed owned rows retain their exact executor charge, and
+each later attempt receives only the unspent result-memory allowance. Candidate
+requests above eight fail instead of returning a truncated inventory.
+
+Candidate batches also share one logical statement clock through planning and
+execution. An existing caller pin is preserved; otherwise the batch samples
+one instant and releases its pin on return. This semantic clock does not
+replace the independent monotonic deadlines or cumulative work admission.
+Cross-campaign replay of clock-dependent queries must supply the same explicit
+caller pin. A later unpinned campaign observes a new instant and may correctly
+refuse the previous instance fingerprint as stale. The fixed phase-1 CLI query
+does not read the clock and its report does not attest a replay clock.
 
 ## Local Shiro workflow
 
@@ -108,6 +129,11 @@ Existing DQP now sends identical statement text and parameters through typed
 search selection and records the same plan it executes. Both its normal
 campaign coverage and the opt-in qualification report separate different-plan
 agreement from same-plan agreement. Arbitrary matching errors remain failures.
+Shiro uses a fixed semantic clock by default and preserves an explicit caller
+pin. Replay evidence records that clock and explicit bounded-order controls.
+The existing generated temporal capability family additionally compares all
+three bounded-order candidates against a host model with seeded clocks,
+runtime timezone reads, NULL/duplicate keys, pagination and empty results.
 
 `qualify_optimizer_read` loads a fixture through ordinary embedded APIs, pins one
 reader, and compares the baseline with one to eight typed variants. Each variant

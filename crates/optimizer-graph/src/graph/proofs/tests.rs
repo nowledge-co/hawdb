@@ -278,11 +278,13 @@ fn unsupported_domains_and_late_errors_do_not_acquire_a_rewrite_proof() {
 fn singleton_group_rewrite_requires_values_only_scope_and_preserves_empty_group_semantics() {
     let catalog = catalog(false, PropertyType::String);
     let inner = LogicalPlan::Aggregate {
+        graph_keys: Default::default(),
         group_keys: vec![projection("g", property("n", "a"))],
         items: vec![count("total")],
         input: Box::new(scan("n", "Item")),
     };
     let outer = LogicalPlan::Aggregate {
+        graph_keys: Default::default(),
         group_keys: vec![projection("g", col("g"))],
         items: vec![count("one")],
         input: Box::new(inner.clone()),
@@ -298,12 +300,14 @@ fn singleton_group_rewrite_requires_values_only_scope_and_preserves_empty_group_
     assert!(matches!(*input, LogicalPlan::Aggregate { .. }));
     assert!(hit(&events, OptionalOptimizerRule::SingletonGroup));
     let ungrouped = LogicalPlan::Aggregate {
+        graph_keys: Default::default(),
         group_keys: vec![],
         items: vec![count("all")],
         input: Box::new(inner),
     };
     assert_eq!(run(ungrouped.clone(), &catalog, None).0, ungrouped);
     let graph_scope = LogicalPlan::Aggregate {
+        graph_keys: Default::default(),
         group_keys: vec![projection("id", property("n", "external"))],
         items: vec![count("one")],
         input: Box::new(scan("n", "Item")),

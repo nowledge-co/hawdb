@@ -21,8 +21,7 @@ use crate::graph_match::{visit_correlated_matches, MatchContext};
 use crate::store::{GraphExecutionRead, ScanControl};
 use hawdb_plan_cypher::Predicate;
 use hawdb_plan_cypher::{GraphEntityKind, GraphMatchProgram, GraphMatchStep, PatternProjection};
-use hawdb_storage::adjacency::AdjacencyDirection;
-use hawdb_storage::read_view::AdmittedNodeRead;
+use hawdb_storage::read_view::{AdmittedNodeRead, AdmittedRelationshipRead};
 use hawdb_storage::{NodeId, RelId, RelRecord};
 use std::collections::BTreeSet;
 
@@ -423,7 +422,11 @@ pub(super) fn relationship_value_endpoint<'a>(
     read_node(name, node, visibility, catalog, account, graph)
 }
 
-/// The stored relationship `id` among the outgoing relationships of `source`.
+/// The stored relationship `id` when its source is `source`, by a point read
+/// of its endpoints and type in the graph snapshot (#1644). The snapshot's
+/// point read resolves transaction and uncheckpointed overlays and tombstones
+/// exactly as its adjacency does, so this finds the record the source's
+/// outgoing adjacency would list under `id`, without visiting the rest.
 fn stored_relationship(
     graph: &ExpressionGraph<'_>,
     account: &QueryMemoryAccount,
@@ -431,33 +434,25 @@ fn stored_relationship(
     source: NodeId,
 ) -> Result<Option<RelRecord>> {
     let task_context = graph.context.task_context;
-    let mut found = None;
-    graph
-        .store
-        .visit_ordered_adjacent_relationships_with_allocation(
-            source,
-            None,
-            AdjacencyDirection::Outgoing,
-            crate::store::AdjacencyReadMemory {
-                budget_bytes: graph.context.query_memory_bytes.get(),
-                account: Some(account),
-            },
-            &mut hawdb_storage::read_view::ControlledGraphReadAllocator::new(
-                &mut |bytes| crate::store::admit_graph_read(account, task_context, bytes).map(Some),
-                task_context,
-            ),
-            &mut |input| {
-                let (relationship, _allocation) = input.into_parts();
-                crate::pipeline::runtime_checkpoint(task_context)?;
-                if relationship.id == id {
-                    found = Some(relationship);
-                    Ok(ScanControl::Stop)
-                } else {
-                    Ok(ScanControl::Continue)
-                }
-            },
-        )?;
-    Ok(found)
+    let read = graph.store.projected_relationship_with_allocation(
+        id,
+        &BTreeSet::new(),
+        &mut hawdb_storage::read_view::ControlledGraphReadAllocator::new(
+            &mut |bytes| crate::store::admit_graph_read(account, task_context, bytes).map(Some),
+            task_context,
+        ),
+    )?;
+    match read {
+        AdmittedRelationshipRead::Relationship(relationship) => {
+            let (relationship, _allocation) = relationship.into_parts();
+            Ok((relationship.source == source).then_some(relationship))
+        }
+        AdmittedRelationshipRead::Missing => Ok(None),
+        // Admission above never declines a read.
+        AdmittedRelationshipRead::Stopped => Err(HawDBError::Execution(
+            "relationship point read stopped before admission".into(),
+        )),
+    }
 }
 
 /// The node `id` of a relationship bound in the row, as a node value read

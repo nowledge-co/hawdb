@@ -215,6 +215,7 @@ fn aggregates_read_identity_for_count_and_whole_nodes_for_collect() {
         name: "value".into(),
     };
     let plan = PhysicalPlan::AggregateExec {
+        graph_keys: Default::default(),
         group_keys: vec![Projection {
             expression: property("a", "name"),
             name: "name".into(),
@@ -458,6 +459,7 @@ fn relationship_reads_keep_the_properties_later_operators_and_the_predicate_use(
     assert_eq!(relationship_projection(plan), expected(&[("r", &[])]));
     // `count(r)` tests only that it is bound.
     let plan = PhysicalPlan::AggregateExec {
+        graph_keys: Default::default(),
         group_keys: Vec::new(),
         items: vec![Aggregation {
             function: AggregateFunction::Count,
@@ -490,6 +492,7 @@ fn whole_relationship_uses_read_every_property() {
     // RETURN r, collect(r), r in a list, type(r) (kept whole as for nodes),
     // or a column of the same name.
     let collect = PhysicalPlan::AggregateExec {
+        graph_keys: Default::default(),
         group_keys: Vec::new(),
         items: vec![Aggregation {
             function: AggregateFunction::Collect,
