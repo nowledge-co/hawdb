@@ -245,6 +245,22 @@ fn mtime_preserving_corruption_is_caught_by_remaining_checks_or_cold_open() {
         "unexpected error: {message}"
     );
 
+    // The diagnostic check ignores the record, even in this same process, and
+    // reports the damage instead of declaring the artifact healthy.
+    assert!(published_object_skipped_rehashes(&object)
+        .unwrap()
+        .is_some());
+    let health = hawdb_storage::store::doctor::DatabaseDoctor::derived_artifact_health(
+        &path,
+        hawdb_storage::derived_repair::DerivedArtifactRebuildOptions::default(),
+    );
+    assert!(
+        health
+            .as_ref()
+            .map_or(true, |health| health.repair_required),
+        "derived-artifact health must not accept mtime-preserving damage: {health:?}"
+    );
+
     // A cold open (no record) fails during branch admission itself.
     forget_published_object(&object).unwrap();
     let cold = Database::open(&path)

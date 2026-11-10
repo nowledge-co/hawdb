@@ -426,10 +426,21 @@ impl ImmutableObjectStore {
         }
     }
 
-    /// Verifies a stored object by streaming its identity, without reading it
-    /// into memory. An object this process published, still the same
-    /// unmodified inode, is not re-hashed (see the `published` module).
+    /// Verifies a stored object by streaming its full identity, without
+    /// reading it into memory. Diagnostic and repair callers (doctor WAL
+    /// repair, derived-artifact health) rely on this to find damage, so it
+    /// never consults same-process publication records.
     pub fn verify_stored(&self, reference: ObjectReference) -> Result<(), ImmutableObjectError> {
+        self.verify(reference)
+    }
+
+    /// [`Self::verify_stored`] for the branch-selector dependency check only:
+    /// an object this process published, still the same unmodified inode, is
+    /// not re-hashed (see the `published` module).
+    pub(crate) fn verify_stored_trusting_publication(
+        &self,
+        reference: ObjectReference,
+    ) -> Result<(), ImmutableObjectError> {
         self.verify_object(reference, false, true)
     }
 

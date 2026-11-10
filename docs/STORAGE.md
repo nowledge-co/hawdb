@@ -333,7 +333,8 @@ the opened descriptor still has exactly that identity, length and modification
 time. Everything else still hashes the complete object: objects found on disk
 (cold open, another process, any open after a crash or restart, since the
 registry is memory-only), reuse of an existing object, reclamation, recovery
-dependency checks, and `scrub_storage`. Content-level checks against manifest
+dependency checks, `doctor` WAL repair and derived-artifact health checks
+(`verify_stored`), and `scrub_storage`. Content-level checks against manifest
 digests and all page/block checks on reads are unchanged. The stamp detects a
 replaced inode and ordinary later writes. It does not detect media corruption,
 a rewrite within one coarse timestamp tick, or a writer that restores the

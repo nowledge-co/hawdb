@@ -87,11 +87,17 @@ fn flip_byte(path: &Path, offset: u64, modified: Option<SystemTime>) {
 }
 
 #[test]
-fn streamed_publication_skips_same_process_verify_stored_rehash() {
+fn streamed_publication_skips_same_process_selector_rehash() {
     let fixture = Fixture::published("skip");
     assert_eq!(fixture.skipped(), Some(0));
-    fixture.store.verify_stored(fixture.reference).unwrap();
-    fixture.store.verify_stored(fixture.reference).unwrap();
+    fixture
+        .store
+        .verify_stored_trusting_publication(fixture.reference)
+        .unwrap();
+    fixture
+        .store
+        .verify_stored_trusting_publication(fixture.reference)
+        .unwrap();
     assert_eq!(fixture.skipped(), Some(2));
 }
 
@@ -106,7 +112,10 @@ fn buffered_publication_and_reuse_do_not_record() {
     );
     let path = fixture.store.object_path(reference);
     assert_eq!(published_object_skipped_rehashes(&path).unwrap(), None);
-    fixture.store.verify_stored(reference).unwrap();
+    fixture
+        .store
+        .verify_stored_trusting_publication(reference)
+        .unwrap();
     assert_eq!(published_object_skipped_rehashes(&path).unwrap(), None);
 
     // Reusing an existing object validates it fully and records nothing new.
@@ -125,13 +134,18 @@ fn forgotten_publication_is_fully_rehashed_and_corruption_rejected() {
     let fixture = Fixture::published("cold");
     assert!(forget_published_object(&fixture.object).unwrap());
     assert!(!forget_published_object(&fixture.object).unwrap());
-    fixture.store.verify_stored(fixture.reference).unwrap();
+    fixture
+        .store
+        .verify_stored_trusting_publication(fixture.reference)
+        .unwrap();
     assert_eq!(fixture.skipped(), None);
 
     // A cold check hashes every byte: even an mtime-preserving flip fails.
     flip_byte(&fixture.object, fixture.reference.byte_length / 2, None);
     assert!(matches!(
-        fixture.store.verify_stored(fixture.reference),
+        fixture
+            .store
+            .verify_stored_trusting_publication(fixture.reference),
         Err(ImmutableObjectError::ExistingObjectCorrupt { .. })
     ));
 }
@@ -148,7 +162,9 @@ fn modified_published_object_is_rehashed_and_rejected() {
     // The record no longer describes the file, so nothing can be skipped.
     assert_eq!(fixture.skipped(), None);
     assert!(matches!(
-        fixture.store.verify_stored(fixture.reference),
+        fixture
+            .store
+            .verify_stored_trusting_publication(fixture.reference),
         Err(ImmutableObjectError::ExistingObjectCorrupt { .. })
     ));
 }
@@ -161,7 +177,10 @@ fn replaced_published_object_is_rehashed() {
     let replacement = fixture.root.join("replacement.bin");
     std::fs::write(&replacement, &bytes).unwrap();
     std::fs::rename(&replacement, &fixture.object).unwrap();
-    fixture.store.verify_stored(fixture.reference).unwrap();
+    fixture
+        .store
+        .verify_stored_trusting_publication(fixture.reference)
+        .unwrap();
     assert_eq!(fixture.skipped(), None);
 }
 
@@ -177,6 +196,21 @@ fn reclamation_verification_ignores_publication_records() {
     ));
     assert!(matches!(
         fixture.store.verify_and_sync(fixture.reference),
+        Err(ImmutableObjectError::ExistingObjectCorrupt { .. })
+    ));
+    assert_eq!(fixture.skipped(), Some(0));
+}
+
+#[test]
+fn diagnostic_verification_ignores_publication_records() {
+    let fixture = Fixture::published("diagnostic");
+    fixture.store.verify_stored(fixture.reference).unwrap();
+    assert_eq!(fixture.skipped(), Some(0));
+    // Doctor and derived-artifact health checks hash every byte, so even the
+    // mtime-preserving flip that the record cannot see is reported.
+    flip_byte(&fixture.object, 11, None);
+    assert!(matches!(
+        fixture.store.verify_stored(fixture.reference),
         Err(ImmutableObjectError::ExistingObjectCorrupt { .. })
     ));
     assert_eq!(fixture.skipped(), Some(0));
