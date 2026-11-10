@@ -593,6 +593,81 @@ fn postings_reads_fail_closed_under_a_tight_query_budget() {
 }
 
 #[test]
+fn postings_admission_ignores_scalar_padding() {
+    let _switches = Switches::new(MAX_DISTINCT_VALUES, false);
+    let padding = " ".repeat(8192);
+    for (field, value) in [
+        ("team", "alpha"),
+        ("team", "İ"),
+        ("team", ""),
+        ("space_id", "alpha"),
+    ] {
+        let mut documents = corpus()[..2].to_vec();
+        for document in &mut documents {
+            document.metadata = BTreeMap::from([(field.to_string(), value.to_string())]);
+        }
+        let expected = encode_with_postings_budget(&documents).unwrap();
+        documents[0].metadata.insert(
+            field.to_string(),
+            format!("\u{2003}{padding}{value}{padding}\u{2003}"),
+        );
+        let actual = encode_with_postings_budget(&documents).unwrap();
+        assert_eq!(actual, expected, "{field}={value:?}");
+    }
+}
+
+#[test]
+fn postings_admission_preserves_raw_unknown_kind() {
+    let _switches = Switches::new(MAX_DISTINCT_VALUES, false);
+    let mut documents = corpus()[..2].to_vec();
+    for value in ["  Custom Kind  ", " \u{2003}", "SourceChunk"] {
+        for document in &mut documents {
+            document.metadata = BTreeMap::from([("kind".to_string(), value.to_string())]);
+        }
+        let payload = encode_with_postings_budget(&documents).unwrap();
+        let normalized = crate::normalize_metadata_posting_value("kind", value);
+        assert!(payload
+            .windows(normalized.len())
+            .any(|bytes| bytes == normalized.as_bytes()));
+        if value != "SourceChunk" {
+            assert_eq!(normalized, value);
+        }
+    }
+    documents[0].metadata.insert(
+        "kind".to_string(),
+        format!("{}Custom Kind{}", " ".repeat(8192), " ".repeat(8192)),
+    );
+    assert!(matches!(
+        encode_with_postings_budget(&documents),
+        Err(HawDBError::ResourceBudgetExceeded(_))
+    ));
+}
+
+fn encode_with_postings_budget(documents: &[SearchDocument]) -> Result<Vec<u8>> {
+    use hawdb_executor::{QueryMemoryClass, QueryMemoryLedger};
+    let budget = NonZeroUsize::new(8 << 10).unwrap();
+    let ledger = QueryMemoryLedger::new(budget);
+    let account = ledger.account(QueryMemoryClass::ExternalRead, "postings", budget);
+    let result = encode(
+        documents,
+        Some(EncodeAdmission {
+            scratch: &account,
+            payload: &account,
+        }),
+        1 << 20,
+        || Ok(()),
+    )
+    .map(|encoded| {
+        encoded
+            .expect("two short values fit the postings byte cap")
+            .payload
+            .clone()
+    });
+    assert_eq!(ledger.snapshot().used_bytes, 0);
+    result
+}
+
+#[test]
 fn payload_validation_refuses_inconsistent_postings() {
     let documents = corpus()[..2].to_vec();
     let references = documents.iter().collect::<Vec<_>>();

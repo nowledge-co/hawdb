@@ -71,6 +71,23 @@ impl FieldPolicy {
         matches!(self, Self::CanonicalKind | Self::DefaultedScalar(_))
     }
 
+    fn normalization_admission(self, value: &str) -> Result<usize> {
+        let value = match self {
+            // Unknown kinds preserve their exact spelling, including whitespace.
+            Self::CanonicalKind => return mul(value.len(), 3),
+            _ => value.trim(),
+        };
+        // Lowercasing expands UTF-8 by at most 3/2 and `to_lowercase` at most
+        // doubles its capacity. Rust 1.97.1 also has an 8-byte minimum growth
+        // capacity, relevant to short expanding Unicode inputs such as U+0130.
+        let admitted = mul(value.len(), 3)?;
+        Ok(if admitted < 8 && !value.is_ascii() {
+            8
+        } else {
+            admitted
+        })
+    }
+
     fn effective_value(self, value: Option<&str>) -> Option<&str> {
         match self {
             Self::DefaultedScalar(default) => {
@@ -193,9 +210,7 @@ fn push_entry<'a>(
     value: &str,
     document: u32,
 ) -> Result<()> {
-    // Lowercasing expands UTF-8 by at most 3/2 and `to_lowercase` at most
-    // doubles its capacity: admit three times the input.
-    let admitted = mul(value.len(), 3)?;
+    let admitted = field_policy(field).normalization_admission(value)?;
     if let Some(lease) = scratch {
         lease.grow(admitted)?;
     }
@@ -465,7 +480,7 @@ impl<'a> Query<'a> {
                 bytes = add(
                     bytes,
                     add(
-                        mul(value.trim().len(), 3)?,
+                        field_policy(predicate.field().name()).normalization_admission(value)?,
                         crate::build_memory::SET_ENTRY_BYTES,
                     )?,
                 )?;
