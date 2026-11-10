@@ -448,6 +448,26 @@ mod tests {
     }
 
     #[test]
+    fn temporal_candidate_models_preserve_clock_inputs_and_replay() {
+        for variant in 0..8 {
+            let case = Case {
+                seed: 42,
+                family: 3,
+                variant,
+                values: vec![-2, -1, 0, 0, 2, 3, 3],
+            };
+            let output = report(&case);
+            assert_eq!(output["success"], true, "{output:#}");
+            assert!(output["verified"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|phase| phase == "clock_bounded_order"));
+            assert_eq!(report(&Case::read(&case.json()).unwrap()), output);
+        }
+    }
+
+    #[test]
     fn scalar_regex_capability_model_covers_matches_and_typed_refusals() {
         let case = Case::generate(7, 1);
         assert_eq!(FAMILIES[case.family], "cypher_pipeline");

@@ -425,6 +425,7 @@ pub struct ReplayBundle {
     pub graph_predicate_rewrite: GraphPredicateRewriteCase,
     pub metamorphic: MetamorphicCase,
     pub index_enabled: bool,
+    statement_clock: String,
 }
 
 impl ReplayBundle {
@@ -440,6 +441,7 @@ impl ReplayBundle {
             graph_predicate_rewrite: case.graph_predicate_rewrite.clone(),
             metamorphic: case.metamorphic.clone(),
             index_enabled: case.index_enabled,
+            statement_clock: optimizer_qualification::qualification_clock().to_rfc3339(),
         }
     }
 
@@ -450,6 +452,7 @@ impl ReplayBundle {
             "shape": self.shape,
             "index_enabled": self.index_enabled,
             "optimizer_search_variants": ["memo", "direct_fallback"],
+            "statement_clock": self.statement_clock,
             "mutations": self.mutations.iter().map(mutation_json).collect::<Vec<_>>(),
             "query": query_invocation_json(&self.query),
             "query_ast": self.query_ast.json(),

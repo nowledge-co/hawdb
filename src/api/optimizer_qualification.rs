@@ -425,7 +425,22 @@ impl<S: executor::ExecutionStore> DatabaseReadTransaction<S> {
     /// Executes a bounded, caller-ordered inventory of named legal candidates.
     /// Requests are validated before planning; replay identities are checked
     /// before any candidate can be accepted as matching prior evidence.
+    /// All attempts share one logical statement clock, preserving an existing
+    /// caller pin. Replaying clock-dependent queries requires the same caller
+    /// pin; an unpinned later campaign samples a new instant and may be stale.
     pub fn qualify_optimizer_bounded_order_candidate_requests(
+        &mut self,
+        request: QueryRequest<'_>,
+        requests: &[OptimizerQualificationCandidateRequest<'_>],
+        attempt_limits: OptimizerQualificationAttemptLimits,
+        search: OptimizerSearchDirective,
+    ) -> Result<OptimizerQualificationCandidateSetOutput> {
+        hawdb_core::temporal::with_stable_statement_clock(|| {
+            self.qualify_optimizer_candidate_requests(request, requests, attempt_limits, search)
+        })
+    }
+
+    fn qualify_optimizer_candidate_requests(
         &mut self,
         request: QueryRequest<'_>,
         requests: &[OptimizerQualificationCandidateRequest<'_>],

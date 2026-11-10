@@ -3,6 +3,8 @@
 
 use super::*;
 
+mod clock;
+
 pub(super) fn pipeline(case: &Case, run: &mut Run) -> Result<()> {
     let mut db = Database::new();
     let mut entities = Vec::new();
@@ -329,5 +331,6 @@ pub(super) fn temporal(case: &Case, run: &mut Run) -> Result<()> {
         &actual,
         &[row(&[("same", Value::Bool(false)), ("day", date(30))])],
         true,
-    )
+    )?;
+    clock::bounded_order(case, run)
 }

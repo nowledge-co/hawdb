@@ -393,6 +393,127 @@ fn bounded_order_candidate_inventory_executes_distinct_legal_plans_on_one_snapsh
     reordered.verify_complete_results().unwrap();
 }
 
+const CLOCK_CANDIDATE_QUERY: &str = "MATCH (n:Item) RETURN n.external AS id, datetime() AS observed, CASE WHEN true THEN CURRENT_TIMESTAMP() END AS stamp, datetime($zone) AS zoned ORDER BY id LIMIT 30";
+
+fn clock_attempt_limits() -> crate::OptimizerQualificationAttemptLimits {
+    crate::OptimizerQualificationAttemptLimits::new(std::time::Duration::from_secs(5), 10_000_000)
+        .unwrap()
+}
+
+#[test]
+fn bounded_order_candidates_share_one_automatic_statement_clock() {
+    let db = fixture(64);
+    let mut read = db.begin_read_transaction().unwrap();
+    let parameters = BTreeMap::from([(
+        "zone".into(),
+        Value::Map(BTreeMap::from([(
+            "timezone".into(),
+            Value::String("+01:00".into()),
+        )])),
+    )]);
+    let previous = hawdb_core::temporal::pinned_statement_clock();
+    let candidates = read
+        .qualify_optimizer_bounded_order_candidates(
+            crate::QueryRequest::new(CLOCK_CANDIDATE_QUERY).with_params(&parameters),
+            clock_attempt_limits(),
+            OptimizerSearchDirective::Memo,
+        )
+        .unwrap();
+    assert_eq!(hawdb_core::temporal::pinned_statement_clock(), previous);
+    candidates.verify_complete_results().unwrap();
+    assert_eq!(candidates.distinct_candidate_count, 2);
+    assert!(candidates.candidates[1..]
+        .iter()
+        .any(|candidate| candidate.same_plan_as == Some(0)));
+    let rows = &candidates.candidates[0]
+        .output
+        .result
+        .as_ref()
+        .unwrap()
+        .output
+        .rows;
+    let Value::DateTime(instant) = rows[0]["observed"] else {
+        panic!("expected a statement datetime");
+    };
+    let zoned = instant.with_timezone(&hawdb_core::temporal::FixedOffset::east_opt(3600).unwrap());
+    assert_eq!(rows.len(), 30);
+    for (index, row) in rows.iter().enumerate() {
+        assert_eq!(row["id"], Value::Int(index as i64));
+        assert_eq!(row["observed"], Value::DateTime(instant));
+        assert_eq!(
+            row["stamp"],
+            Value::Int(instant.timestamp_nanos_opt().unwrap())
+        );
+        assert_eq!(row["zoned"], Value::DateTime(zoned));
+    }
+}
+
+#[test]
+fn bounded_order_clock_replay_preserves_the_caller_pin_and_refuses_another_instant() {
+    use hawdb_core::temporal::{self, DateTime, TimeDelta};
+
+    let db = fixture(64);
+    let mut read = db.begin_read_transaction().unwrap();
+    let query =
+        "MATCH (n:Item) RETURN n.external AS id, datetime() AS observed ORDER BY id LIMIT 30";
+    let instant = DateTime::from_timestamp(1_793_361_600, 123).unwrap();
+    let previous = temporal::pinned_statement_clock();
+    temporal::with_statement_clock(instant, || {
+        let first = read
+            .qualify_optimizer_bounded_order_candidates(
+                crate::QueryRequest::new(query),
+                clock_attempt_limits(),
+                OptimizerSearchDirective::Memo,
+            )
+            .unwrap();
+        first.verify_complete_results().unwrap();
+        let requests = first
+            .candidates
+            .iter()
+            .rev()
+            .map(|candidate| {
+                crate::OptimizerQualificationCandidateRequest::new(candidate.kind)
+                    .with_expected_plan_instance_fingerprint(
+                        &candidate.output.selected_plan_instance_fingerprint,
+                    )
+            })
+            .collect::<Vec<_>>();
+        let replay = read
+            .qualify_optimizer_bounded_order_candidate_requests(
+                crate::QueryRequest::new(query),
+                &requests,
+                clock_attempt_limits(),
+                OptimizerSearchDirective::Memo,
+            )
+            .unwrap();
+        replay.verify_complete_results().unwrap();
+        assert_eq!(replay.distinct_candidate_count, 2);
+        for candidate in &replay.candidates {
+            let output = &candidate.output.result.as_ref().unwrap().output;
+            assert_eq!(
+                output.rows[0]["observed"],
+                Value::DateTime(instant.fixed_offset())
+            );
+            assert_eq!(
+                *output,
+                first.candidates[0].output.result.as_ref().unwrap().output
+            );
+        }
+        let stale = temporal::with_statement_clock(instant + TimeDelta::seconds(1), || {
+            read.qualify_optimizer_bounded_order_candidate_requests(
+                crate::QueryRequest::new(query),
+                &requests,
+                clock_attempt_limits(),
+                OptimizerSearchDirective::Memo,
+            )
+        })
+        .unwrap_err();
+        assert!(stale.to_string().contains("is stale"), "{stale}");
+        assert_eq!(temporal::pinned_statement_clock(), Some(instant));
+    });
+    assert_eq!(temporal::pinned_statement_clock(), previous);
+}
+
 #[test]
 fn bounded_order_candidate_inventory_enforces_one_cumulative_result_budget() {
     let db = fixture(64);
