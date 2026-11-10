@@ -66,6 +66,7 @@ pub(super) fn normalize(plan: LogicalPlan) -> LogicalPlan {
         LogicalPlan::Aggregate {
             group_keys,
             items,
+            graph_keys,
             input,
         } => {
             let input = normalize(*input);
@@ -78,6 +79,7 @@ pub(super) fn normalize(plan: LogicalPlan) -> LogicalPlan {
             LogicalPlan::Aggregate {
                 group_keys,
                 items,
+                graph_keys,
                 input: Box::new(input),
             }
         }
@@ -902,6 +904,7 @@ fn project(projections: Vec<Projection>, input: LogicalPlan) -> LogicalPlan {
             let LogicalPlan::Aggregate {
                 mut group_keys,
                 mut items,
+                graph_keys,
                 input,
             } = input
             else {
@@ -918,6 +921,7 @@ fn project(projections: Vec<Projection>, input: LogicalPlan) -> LogicalPlan {
             return LogicalPlan::Aggregate {
                 group_keys,
                 items,
+                graph_keys,
                 input,
             };
         }

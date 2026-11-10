@@ -413,6 +413,7 @@ fn grouping_resolves_aliases_in_the_input_scope_and_publishes_only_output_column
         input: Box::new(scan()),
     };
     let aggregate = PhysicalPlan::AggregateExec {
+        graph_keys: Default::default(),
         group_keys: [("u", "v"), ("v", "w")]
             .map(|(output, input)| Projection {
                 name: output.into(),

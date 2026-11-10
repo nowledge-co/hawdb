@@ -185,8 +185,12 @@ fn project(
         PhysicalPlan::AggregateExec {
             group_keys,
             items,
+            graph_keys,
             input,
         } => {
+            // A graph key leaves as the record it grouped by, so demand from
+            // above on that name reaches the same variable's reads; a whole
+            // variable key reads every property anyway.
             for key in &group_keys {
                 expression(&key.expression, &mut demand);
             }
@@ -196,6 +200,7 @@ fn project(
             PhysicalPlan::AggregateExec {
                 group_keys,
                 items,
+                graph_keys,
                 input: Box::new(project(*input, demand, false, walk)),
             }
         }

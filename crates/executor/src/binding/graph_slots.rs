@@ -66,6 +66,10 @@ impl<T> GraphSlots<T> {
     pub fn values(&self) -> impl Iterator<Item = &T> {
         self.iter().map(|(_, value)| value)
     }
+    /// The shared record bound to `name`, for a holder that outlives the row.
+    pub(crate) fn get_shared(&self, name: &str) -> Option<&Arc<T>> {
+        self.position(name).ok().map(|i| &self.entries()[i].1)
+    }
     pub fn clear(&mut self) {
         self.slots = None;
     }
@@ -104,6 +108,15 @@ impl<T: Clone> GraphSlots<T> {
     pub fn get_mut(&mut self, name: &str) -> Option<&mut T> {
         let i = self.position(name).ok()?;
         Some(Arc::make_mut(&mut self.entries_mut()[i].1))
+    }
+    /// Binds `name` to a shared record without copying it.
+    pub(crate) fn insert_arc(&mut self, name: String, value: Arc<T>) {
+        let position = self.position(&name);
+        let slots = self.entries_mut();
+        match position {
+            Ok(i) => slots[i].1 = value,
+            Err(i) => slots.insert(i, (Arc::new(name), value)),
+        }
     }
     /// Join graph slots without converting shared records back to owned values.
     pub(crate) fn extend_shared(&mut self, other: &Self) {

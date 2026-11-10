@@ -26,13 +26,13 @@ struct PartialGroup {
 }
 
 impl PartialGroup {
-    fn memory_bytes(&self, key: &[Value]) -> usize {
+    fn memory_bytes(&self, key: &[GroupKeyValue]) -> usize {
         partial_group_payload_bytes(key, &self.states)
     }
 }
 
 struct PartialRunRow {
-    key: Vec<Value>,
+    key: Vec<GroupKeyValue>,
     ordinal: u64,
     states: Vec<AggregateState>,
 }
@@ -54,7 +54,7 @@ pub(super) fn partial_aggregation_is_mergeable(item: &Aggregation) -> bool {
     }
 }
 
-fn partial_group_memory_bytes(key: &[Value], states: &[AggregateState]) -> usize {
+fn partial_group_memory_bytes(key: &[GroupKeyValue], states: &[AggregateState]) -> usize {
     partial_group_base_memory_bytes(key).saturating_add(
         states.iter().fold(0usize, |total, state| {
             total.saturating_add(state.partial_memory_bytes())
@@ -62,13 +62,11 @@ fn partial_group_memory_bytes(key: &[Value], states: &[AggregateState]) -> usize
     )
 }
 
-fn partial_key_payload_bytes(key: &[Value]) -> usize {
-    key.iter().fold(0usize, |total, value| {
-        total.saturating_add(value_memory_bytes(value))
-    })
+fn partial_key_payload_bytes(key: &[GroupKeyValue]) -> usize {
+    group_key_memory_bytes(key)
 }
 
-fn partial_group_payload_bytes(key: &[Value], states: &[AggregateState]) -> usize {
+fn partial_group_payload_bytes(key: &[GroupKeyValue], states: &[AggregateState]) -> usize {
     states
         .iter()
         .fold(partial_key_payload_bytes(key), |total, state| {
@@ -76,20 +74,17 @@ fn partial_group_payload_bytes(key: &[Value], states: &[AggregateState]) -> usiz
         })
 }
 
-fn partial_group_base_memory_bytes(key: &[Value]) -> usize {
+fn partial_group_base_memory_bytes(key: &[GroupKeyValue]) -> usize {
     std::mem::size_of::<PartialGroup>()
         .saturating_add(
-            key.iter()
-                .fold(std::mem::size_of::<Vec<Value>>(), |total, value| {
-                    total.saturating_add(value_memory_bytes(value))
-                }),
+            std::mem::size_of::<Vec<GroupKeyValue>>().saturating_add(group_key_memory_bytes(key)),
         )
         .saturating_add(std::mem::size_of::<Vec<AggregateState>>())
         .saturating_add(std::mem::size_of::<usize>() * 6)
 }
 
 fn partial_group_memory_bytes_after_merge(
-    key: &[Value],
+    key: &[GroupKeyValue],
     states: &[AggregateState],
     incoming: &[AggregateState],
 ) -> Result<usize> {
@@ -162,7 +157,7 @@ pub(super) fn stream_partial_aggregate_batches(
     );
     let mut spill_budget =
         SpillBudgetTracker::with_ledger("AggregateExec", memory, context.memory_ledger);
-    let mut groups = HashGroups::<Vec<Value>, PartialGroup>::default();
+    let mut groups = HashGroups::<Vec<GroupKeyValue>, PartialGroup>::default();
     let key_hasher = RandomState::new();
     let mut runs = Vec::<spill::SpillRun>::new();
     let mut ordinal = 0u64;
@@ -178,7 +173,7 @@ pub(super) fn stream_partial_aggregate_batches(
             let PreparedKey {
                 mut allocation,
                 values,
-            } = key_memory.group(
+            } = key_memory.group_by_identity(
                 group_keys,
                 context.catalog,
                 &binding,
@@ -319,8 +314,8 @@ fn partial_item_limit_error(
 }
 
 fn insert_partial_group(
-    groups: &mut HashGroups<Vec<Value>, PartialGroup>,
-    key: HashedKey<Vec<Value>>,
+    groups: &mut HashGroups<Vec<GroupKeyValue>, PartialGroup>,
+    key: HashedKey<Vec<GroupKeyValue>>,
     ordinal: u64,
     states: Vec<AggregateState>,
     tracker: &mut OperatorMemoryTracker,
@@ -351,23 +346,24 @@ fn insert_partial_group(
 }
 
 fn finish_partial_group(
-    key: Vec<Value>,
+    key: Vec<GroupKeyValue>,
     states: Vec<AggregateState>,
-    group_keys: &[Projection],
-    items: &[Aggregation],
+    context: &AggregateExecutionContext<'_>,
 ) -> Binding {
-    let mut values = BTreeMap::new();
-    for (item, value) in group_keys.iter().zip(key) {
-        insert_projected_value(&mut values, &item.name, value);
-    }
-    for (item, state) in items.iter().zip(states) {
-        insert_projected_value(&mut values, &item.name, state.finish());
-    }
-    Binding::values(values)
+    finish_group(
+        GroupOutput {
+            group_keys: context.group_keys,
+            items: context.items,
+            graph_keys: context.graph_keys,
+            catalog: context.catalog,
+        },
+        key,
+        states,
+    )
 }
 
 fn emit_partial_groups(
-    groups: HashGroups<Vec<Value>, PartialGroup>,
+    groups: HashGroups<Vec<GroupKeyValue>, PartialGroup>,
     mut group_tracker: OperatorMemoryTracker,
     context: AggregateExecutionContext<'_>,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
@@ -379,12 +375,12 @@ fn emit_partial_groups(
         context.memory_ledger,
     );
     let mut emitted = 0usize;
-    let (groups, released_bytes) = groups.into_sorted();
+    let (groups, released_bytes) = groups.into_output_order(context.graph_keys);
     group_tracker.release(released_bytes);
     for (key, group) in groups {
         runtime_checkpoint(context.task_context)?;
         let group_bytes = group.memory_bytes(&key);
-        let binding = finish_partial_group(key, group.states, context.group_keys, context.items);
+        let binding = finish_partial_group(key, group.states, &context);
         if output.transfer_from(&mut group_tracker, group_bytes, binding, emit)?
             == BatchControl::Stop
         {
@@ -403,9 +399,10 @@ fn emit_partial_groups(
     Ok(BatchControl::Continue)
 }
 
-fn encode_partial_binding(key: Vec<Value>, states: Vec<AggregateState>) -> Result<Binding> {
+fn encode_partial_binding(key: Vec<GroupKeyValue>, states: Vec<AggregateState>) -> Result<Binding> {
+    let mut binding = Binding::values(BTreeMap::new());
     let mut encoded = Vec::with_capacity(states.len().saturating_add(1));
-    encoded.push(Value::List(key));
+    encoded.push(compact::encode_group_key(key, &mut binding));
     for state in states {
         let value = match state {
             AggregateState::Count {
@@ -425,10 +422,14 @@ fn encode_partial_binding(key: Vec<Value>, states: Vec<AggregateState>) -> Resul
         };
         encoded.push(value);
     }
-    Ok(Binding::scalar(
-        PARTIAL_AGGREGATE_VALUE,
-        Value::List(encoded),
-    ))
+    binding
+        .values
+        .insert(PARTIAL_AGGREGATE_VALUE.to_string(), Value::List(encoded));
+    Ok(binding)
+}
+
+fn invalid_partial_row(reason: &str) -> HawDBError {
+    HawDBError::Execution(format!("AggregateExec partial spill record {reason}"))
 }
 
 fn decode_partial_binding(
@@ -436,7 +437,7 @@ fn decode_partial_binding(
     mut binding: Binding,
     items: &[Aggregation],
 ) -> Result<PartialRunRow> {
-    if !binding.nodes.is_empty() || !binding.relationships.is_empty() || binding.values.len() != 1 {
+    if binding.values.len() != 1 {
         return Err(HawDBError::Execution(
             "AggregateExec partial spill record has an invalid shape".to_string(),
         ));
@@ -518,14 +519,14 @@ fn decode_partial_binding(
         ));
     }
     Ok(PartialRunRow {
-        key,
+        key: compact::decode_group_key(key, &binding, invalid_partial_row)?,
         ordinal,
         states,
     })
 }
 
 fn spill_partial_group_run(
-    groups: &mut HashGroups<Vec<Value>, PartialGroup>,
+    groups: &mut HashGroups<Vec<GroupKeyValue>, PartialGroup>,
     spill_budget: &mut SpillBudgetTracker,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<spill::SpillRun> {
@@ -721,7 +722,7 @@ fn merge_partial_runs(
             advance_right,
             released_bytes,
         } = selection;
-        let binding = finish_partial_group(row.key, row.states, context.group_keys, context.items);
+        let binding = finish_partial_group(row.key, row.states, &context);
         if output.transfer_from(&mut tracker, released_bytes, binding, emit)? == BatchControl::Stop
         {
             return Ok(BatchControl::Stop);
@@ -797,8 +798,12 @@ fn take_next_partial_row(
         }
         Ordering::Equal => {
             let mut row = left.take().expect("left partial row exists");
-            let other = right.take().expect("right partial row exists");
+            let mut other = right.take().expect("right partial row exists");
             let released_bytes = row.memory_bytes().saturating_add(other.memory_bytes());
+            // The group keeps the first row's key, and so its graph record.
+            if other.ordinal < row.ordinal {
+                std::mem::swap(&mut row.key, &mut other.key);
+            }
             row.ordinal = row.ordinal.min(other.ordinal);
             merge_partial_states(&mut row.states, other.states)?;
             PartialRowSelection {
@@ -818,7 +823,7 @@ mod tests {
 
     #[test]
     fn partial_merge_memory_preflight_matches_materialized_merge() {
-        let key = vec![Value::String("group".to_string())];
+        let key = vec![GroupKeyValue::Value(Value::String("group".to_string()))];
         let states = vec![
             AggregateState::Count {
                 count: 3,
@@ -853,7 +858,7 @@ mod tests {
 
     #[test]
     fn partial_merge_memory_preflight_preserves_budget_boundary() {
-        let key = vec![Value::Int(1)];
+        let key = vec![GroupKeyValue::Value(Value::Int(1))];
         let states = vec![AggregateState::Min(Some(Value::String("z".repeat(8))))];
         let incoming = vec![AggregateState::Min(Some(Value::String("a".repeat(128))))];
         let previous_bytes = partial_group_memory_bytes(&key, &states);

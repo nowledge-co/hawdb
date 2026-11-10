@@ -998,6 +998,7 @@ fn marker_use_in_logical_plan(plan: &LogicalPlan, name: &str) -> MarkerUse {
             group_keys,
             items,
             input,
+            ..
         } => marker_use_in_projections(group_keys, name, false)
             .combine(marker_use_in_aggregations(items, name))
             .combine(marker_use_in_logical_plan(input, name)),
@@ -1485,6 +1486,7 @@ fn bind_physical_plan(plan: &mut PhysicalPlan, parameters: BindingAction<'_>) ->
             group_keys,
             items,
             input,
+            ..
         } => {
             bind_projections(group_keys, parameters)?;
             bind_aggregations(items, parameters)?;
@@ -1696,6 +1698,7 @@ fn bind_logical_plan(plan: &mut LogicalPlan, parameters: BindingAction<'_>) -> R
             group_keys,
             items,
             input,
+            ..
         } => {
             bind_projections(group_keys, parameters)?;
             bind_aggregations(items, parameters)?;

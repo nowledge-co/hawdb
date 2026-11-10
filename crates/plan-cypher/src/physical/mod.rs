@@ -13,10 +13,10 @@
 // limitations under the License.
 
 use crate::{
-    Aggregation, BatchMutationOperation, GraphAlgorithmKind, GraphAlgorithmOptions, Predicate,
-    Projection, RelationshipCountLeg, RelationshipOnCreateValue, RelationshipSetAssignment,
-    SchemaObjectState, SchemaPropertyType, SchemaTableKind, SetAssignment,
-    SetNodePropertiesReturnMode, SetValue, ShortestPathProjection, SortItem,
+    Aggregation, BatchMutationOperation, GraphAlgorithmKind, GraphAlgorithmOptions, GraphGroupKeys,
+    Predicate, Projection, RelationshipCountLeg, RelationshipOnCreateValue,
+    RelationshipSetAssignment, SchemaObjectState, SchemaPropertyType, SchemaTableKind,
+    SetAssignment, SetNodePropertiesReturnMode, SetValue, ShortestPathProjection, SortItem,
 };
 
 mod scoring_input;
@@ -557,6 +557,7 @@ pub enum PhysicalPlan {
     AggregateExec {
         group_keys: Vec<Projection>,
         items: Vec<Aggregation>,
+        graph_keys: GraphGroupKeys,
         input: Box<PhysicalPlan>,
     },
     DistinctExec {

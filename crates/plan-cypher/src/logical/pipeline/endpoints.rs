@@ -40,6 +40,7 @@ pub(super) fn resolve(plan: &mut LogicalPlan) -> Result<()> {
             group_keys,
             items,
             input,
+            ..
         } => {
             resolve(input)?;
             for key in group_keys {

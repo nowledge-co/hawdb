@@ -1143,9 +1143,18 @@ fn dispatch_batch_operator<D: BatchDispatch>(plan: &PhysicalPlan, dispatch: D) -
         PhysicalPlan::AggregateExec {
             group_keys,
             items,
+            graph_keys,
             input,
         } => dispatch.supported(|context, execution_limit, emit| {
-            stream_aggregate_batches(input, group_keys, items, context, execution_limit, emit)
+            stream_aggregate_batches(
+                input,
+                group_keys,
+                items,
+                *graph_keys,
+                context,
+                execution_limit,
+                emit,
+            )
         }),
         PhysicalPlan::DistinctExec { input } => {
             dispatch.supported(|context, execution_limit, emit| {

@@ -143,6 +143,7 @@ fn generated_plan(seed: u64, depth: usize) -> LogicalPlan {
             input,
         },
         6 => LogicalPlan::Aggregate {
+            graph_keys: Default::default(),
             group_keys: Vec::new(),
             items: vec![Aggregation {
                 function: AggregateFunction::Count,

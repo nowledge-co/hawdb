@@ -55,6 +55,7 @@ fn main() {
         .import_graph_snapshot_rows(&mut catalog, nodes, Vec::new())
         .expect("benchmark graph import must succeed");
     let plan = PhysicalPlan::AggregateExec {
+        graph_keys: Default::default(),
         group_keys: vec![Projection {
             expression: ProjectionExpression::Property {
                 variable: "n".to_string(),
@@ -74,6 +75,7 @@ fn main() {
         }),
     };
     let compact_plan = PhysicalPlan::AggregateExec {
+        graph_keys: Default::default(),
         group_keys: vec![Projection {
             expression: ProjectionExpression::Property {
                 variable: "n".to_string(),

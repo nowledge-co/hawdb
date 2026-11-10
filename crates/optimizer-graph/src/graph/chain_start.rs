@@ -152,10 +152,12 @@ fn visit(
         LogicalPlan::Aggregate {
             group_keys,
             items,
+            graph_keys,
             input,
         } => LogicalPlan::Aggregate {
             group_keys,
             items,
+            graph_keys,
             input: child(input),
         },
         LogicalPlan::Distinct { input } => LogicalPlan::Distinct {

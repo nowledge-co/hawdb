@@ -726,6 +726,7 @@ impl PhysicalPlan {
             PhysicalPlan::AggregateExec {
                 group_keys,
                 items,
+                graph_keys,
                 ..
             } => {
                 let mut columns = group_keys
@@ -734,7 +735,13 @@ impl PhysicalPlan {
                     .collect::<Vec<_>>();
                 columns.extend(items.iter().map(|item| item.name.as_str()));
                 let columns = columns.join(", ");
-                format!("{pad}AggregateExec columns=[{columns}]")
+                // Grouped graph variables leave as graph slots (#1615).
+                let graph_keys = match graph_keys {
+                    crate::GraphGroupKeys::Values => "",
+                    crate::GraphGroupKeys::Slots => " graph_keys=slots",
+                    crate::GraphGroupKeys::DistinctSlots => " graph_keys=distinct_slots",
+                };
+                format!("{pad}AggregateExec columns=[{columns}]{graph_keys}")
             }
             PhysicalPlan::DistinctExec { .. } => {
                 format!("{pad}DistinctExec")

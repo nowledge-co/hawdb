@@ -15,6 +15,7 @@
 use super::*;
 use hawdb_plan_cypher::{GraphMatchStep, LogicalPlan, ProjectionExpression};
 
+mod identity_group_keys;
 mod indexed_node;
 mod ledger_accounting;
 mod seeded_union;
@@ -33,10 +34,12 @@ fn lower(plan: LogicalPlan) -> PhysicalPlan {
         LogicalPlan::Aggregate {
             group_keys,
             items,
+            graph_keys,
             input,
         } => PhysicalPlan::AggregateExec {
             group_keys,
             items,
+            graph_keys,
             input: Box::new(lower(*input)),
         },
         LogicalPlan::Filter { predicate, input } => PhysicalPlan::FilterExec {
@@ -57,6 +60,16 @@ fn lower(plan: LogicalPlan) -> PhysicalPlan {
             input: Box::new(lower(*input)),
         },
         LogicalPlan::Distinct { input } => PhysicalPlan::DistinctExec {
+            input: Box::new(lower(*input)),
+        },
+        LogicalPlan::UnwindRows {
+            expression,
+            variable,
+            input,
+        } => PhysicalPlan::UnwindRowsExec {
+            expression,
+            variable,
+            consumes_source: false,
             input: Box::new(lower(*input)),
         },
         _ => panic!("unexpected generic plan: {plan:?}"),

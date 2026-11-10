@@ -838,6 +838,7 @@ impl RetainedHeapBytes for PhysicalPlan {
                 group_keys,
                 items,
                 input,
+                ..
             } => checked_retained_heap_sum([
                 group_keys.retained_heap_bytes(),
                 items.retained_heap_bytes(),

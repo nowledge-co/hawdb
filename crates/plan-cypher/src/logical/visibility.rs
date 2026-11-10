@@ -206,6 +206,7 @@ pub fn apply_node_visibility_predicates(
         LogicalPlan::Aggregate {
             mut group_keys,
             mut items,
+            graph_keys,
             input,
         } => {
             restrict_projections(&mut group_keys, predicate_for);
@@ -217,6 +218,7 @@ pub fn apply_node_visibility_predicates(
             LogicalPlan::Aggregate {
                 group_keys,
                 items,
+                graph_keys,
                 input: Box::new(apply_node_visibility_predicates(*input, predicate_for)),
             }
         }
@@ -542,6 +544,7 @@ pub fn validate_node_visibility_predicates(
             group_keys,
             items,
             input,
+            ..
         } => {
             expressions.extend(group_keys.iter().map(|item| &item.expression));
             expressions.extend(items.iter().filter_map(|item| match &item.target {

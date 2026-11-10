@@ -101,7 +101,7 @@ fn fixture_context<T>(
     })
 }
 
-const QUERIES: [&str; 5] = [
+const QUERIES: [&str; 8] = [
     // Expansion with relationship and node property reads.
     "MATCH (a:Memory)-[r:MENTIONS]->(b:Memory) RETURN a.name AS an, b.tags AS bt, r.weight AS w",
     // Two expansions: rows grow and shrink as slots bind and unbind.
@@ -112,6 +112,13 @@ const QUERIES: [&str; 5] = [
     "MATCH (a:Memory)-[:MENTIONS]->(b:Memory) RETURN a.id AS id, collect(b.name) AS names",
     // Retained distinct state over maps and nulls.
     "MATCH (a:Memory)-[:MENTIONS]->(b:Memory) RETURN DISTINCT b.meta AS meta",
+    // Identity group keys that keep shared node and relationship records and
+    // leave them in graph slots (#1615).
+    "MATCH (a:Memory)-[r:MENTIONS]->(b:Memory) WITH a, r, count(*) AS c RETURN a.name AS an, r.weight AS w, c",
+    // WITH DISTINCT as an identity grouping, read through the carried records.
+    "MATCH (a:Memory)-[:MENTIONS]->(b:Memory) WITH DISTINCT a, b RETURN a.meta AS am, b.tags AS bt",
+    // An identity group key that leaves as its map.
+    "MATCH (a:Memory)-[:MENTIONS]->(b:Memory) RETURN a, collect(b.id) AS ids",
 ];
 
 fn plan(query: &str) -> PhysicalPlan {
