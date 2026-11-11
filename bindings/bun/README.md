@@ -33,8 +33,10 @@ hawdb.close();
 `loadHawDB()` without an argument resolves the installed platform package with
 ordinary module resolution. It fails with the package it expected when that
 package is missing (for example after installing with optional dependencies
-disabled) and with `UnsupportedPlatformError` on hosts without a prebuilt
-library, such as musl Linux.
+disabled) or comes from another release than `@nowledge/hawdb-bun`, and with
+`UnsupportedPlatformError` on hosts without a prebuilt library, such as a Bun
+process running on musl. The C library is that of the running process, read
+from its executable's program interpreter, not guessed from installed loaders.
 
 ## Explicit library path
 

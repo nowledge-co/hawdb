@@ -158,6 +158,13 @@ dependency, pinned to the same version; each platform package declares `os`,
 one. It contains the shared library, `hawdb_ffi.h`, LICENSE and a README.
 `loadHawDB()` without a path resolves that installed package; an explicit
 path still loads exactly that file. No environment variable is consulted.
+On Linux it chooses glibc or musl from the program interpreter of the running
+Bun executable (`/proc/self/exe`), not from loader files on disk, so a glibc
+host that also has musl installed still selects the glibc package. The exact
+`optionalDependencies` pin does not constrain module resolution, so
+`loadHawDB()` also reads the resolved platform package's `package.json` and
+refuses one whose version differs from `@nowledge/hawdb-bun`'s (for example an
+older copy left after installing with optional dependencies disabled).
 
 Package versions equal the HawDB release version. The release workflow
 assembles the packages from the archives it just uploaded (so npm and the

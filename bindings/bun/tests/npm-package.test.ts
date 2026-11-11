@@ -131,3 +131,54 @@ test("packed packages load HawDB without an explicit library path", () => {
   expect(output.version).toBe(`hawdb ${version}`);
   expect(output.rows).toEqual([{ answer: 42 }]);
 });
+
+test("refuses an older platform package resolved in place of the pinned one", () => {
+  // Reproduces installing the main package with optional dependencies omitted
+  // beside a directly installed platform package from an earlier release:
+  // module resolution finds it although optionalDependencies pins `version`.
+  const older = "0.29.0";
+  expect(version).not.toBe(older);
+  const summary = assemble({
+    version,
+    out: join(root, "mismatched"),
+    libraries: new Map([[platform.id, libraryPath]]),
+  });
+  const [platformPackage, mainPackage] = summary.publish;
+  const manifestPath = join(platformPackage.directory, "package.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  writeFileSync(manifestPath, `${JSON.stringify({ ...manifest, version: older }, null, 2)}\n`);
+
+  const consumer = join(root, "mismatched-consumer");
+  mkdirSync(consumer);
+  writeFileSync(join(consumer, "package.json"), JSON.stringify({ name: "consumer", private: true, type: "module" }));
+  cpSync(platformPackage.directory, join(consumer, "node_modules", platformPackage.name), { recursive: true });
+  cpSync(mainPackage.directory, join(consumer, "node_modules", mainPackage.name), { recursive: true });
+  writeFileSync(
+    join(consumer, "check.ts"),
+    [
+      'import { loadHawDB, resolvePrebuiltLibrary } from "@nowledge/hawdb-bun";',
+      "for (const attempt of [() => resolvePrebuiltLibrary(), () => loadHawDB()]) {",
+      "  try {",
+      "    attempt();",
+      '    console.log("LOADED");',
+      "  } catch (error) {",
+      "    console.log(String((error as Error).message));",
+      "  }",
+      "}",
+    ].join("\n"),
+  );
+  const child = Bun.spawnSync([process.execPath, "check.ts"], {
+    cwd: consumer,
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: 60_000,
+  });
+  expect(new TextDecoder().decode(child.stderr)).toBe("");
+  const lines = new TextDecoder().decode(child.stdout).trim().split("\n");
+  expect(lines).toHaveLength(2);
+  for (const line of lines) {
+    expect(line).toContain(
+      `${platformPackageName(platform)} is version ${older}, but @nowledge/hawdb-bun is ${version}`,
+    );
+  }
+});
