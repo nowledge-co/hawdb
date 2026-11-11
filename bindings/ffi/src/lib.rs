@@ -422,6 +422,10 @@ fn output_to_json(output: &QueryOutput) -> serde_json::Value {
 ///   Branch creation, deletion and head publication stay power-loss safe.
 /// - `"max_read_result_rows": integer >= 0 | null` (default null). Host-wide
 ///   read row ceiling; 0 and null mean no row ceiling.
+/// - `"max_read_intermediate_rows": integer >= 0 | null` (default null).
+///   Host-wide ceiling on the rows one relational SQL statement may scan,
+///   join or aggregate, independent of the rows it returns. null inherits
+///   `max_read_result_rows`; 0 means no intermediate row ceiling.
 /// - `"max_read_result_payload_bytes": integer > 0` (default 67108864).
 ///   Host-wide read result payload budget; it can be tuned but not removed.
 /// - `"relational_monotonic_append_fast_path": bool` (default false). Opt-in

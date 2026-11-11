@@ -84,8 +84,8 @@ mod access_control;
 mod config;
 use config::*;
 pub use config::{
-    DatabaseConfig, SessionConfig, DEFAULT_MAX_READ_RESULT_PAYLOAD_BYTES,
-    DEFAULT_MAX_READ_RESULT_ROWS,
+    DatabaseConfig, SessionConfig, DEFAULT_MAX_READ_INTERMEDIATE_ROWS,
+    DEFAULT_MAX_READ_RESULT_PAYLOAD_BYTES, DEFAULT_MAX_READ_RESULT_ROWS,
 };
 mod database_lifecycle;
 mod database_maintenance;

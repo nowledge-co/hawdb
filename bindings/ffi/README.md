@@ -110,6 +110,7 @@ before the database path is touched.
 | `read_only` | bool | `false` | `DatabaseConfig::read_only` (also selects strict recovery) |
 | `durability` | `"sync_on_every_write"`, `"sync_on_checkpoint"` | `"sync_on_every_write"` | `HawDBEmbeddedOpenOptions::durability` |
 | `max_read_result_rows` | integer >= 0, or `null` | `null` (no ceiling) | `DatabaseConfig::max_read_result_rows` |
+| `max_read_intermediate_rows` | integer >= 0, or `null` | `null` (inherit `max_read_result_rows`) | `DatabaseConfig::max_read_intermediate_rows` |
 | `max_read_result_payload_bytes` | integer > 0 | `67108864` (64 MiB) | `DatabaseConfig::max_read_result_payload_bytes` |
 | `relational_monotonic_append_fast_path` | bool | `false` | `DatabaseConfig::relational_monotonic_append_fast_path` |
 
@@ -127,7 +128,11 @@ acknowledged transactions. Recovery never exposes part of a transaction, and
 branch creation, deletion and head publication remain power-loss safe.
 Options apply to one open; reopening without them restores the defaults.
 
-`max_read_result_rows` of `0` or `null` disables the host row ceiling. The
+`max_read_result_rows` of `0` or `null` disables the host row ceiling.
+`max_read_intermediate_rows` separately bounds the rows one relational SQL
+statement may scan, join or aggregate: `null` inherits `max_read_result_rows`,
+and `0` disables only this ceiling. Raising it lets a one-row aggregate such
+as `SELECT COUNT(*) FROM t` read more rows than the result ceiling returns. The
 payload budget can be lowered or raised but not removed. A read over either
 budget fails (`read_budget_exceeded`, or `resource_budget_exceeded` with a
 `resource_budget` object) instead of returning a partial result.
