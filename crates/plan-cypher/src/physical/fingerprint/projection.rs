@@ -512,6 +512,8 @@ pub fn write_projection_expression(output: &mut String, expression: &ProjectionE
                 }
                 super::graph_match::write_program(output, &seeds.program);
             }
+            output.push_str(",identity=");
+            super::common::write_identifier_list(output, &pattern.identity_columns);
             output.push_str(",columns=");
             super::common::write_identifier_list(output, &pattern.columns);
             output.push_str(",where=");

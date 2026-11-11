@@ -19,35 +19,35 @@ use hawdb_storage::{RelId, RelRecord};
 use std::collections::BTreeSet;
 
 /// A deterministic xorshift generator; the graphs only need variety.
-struct Random(u64);
+pub(super) struct Random(u64);
 
 impl Random {
-    fn next(&mut self) -> u64 {
+    pub(super) fn next(&mut self) -> u64 {
         self.0 ^= self.0 << 13;
         self.0 ^= self.0 >> 7;
         self.0 ^= self.0 << 17;
         self.0
     }
 
-    fn below(&mut self, bound: u64) -> u64 {
+    pub(super) fn below(&mut self, bound: u64) -> u64 {
         self.next() % bound
     }
 
-    fn chance(&mut self, percent: u64) -> bool {
+    pub(super) fn chance(&mut self, percent: u64) -> bool {
         self.below(100) < percent
     }
 }
 
-struct Graph {
-    catalog: Catalog,
-    nodes: Vec<NodeRecord>,
-    relationships: Vec<RelRecord>,
+pub(super) struct Graph {
+    pub(super) catalog: Catalog,
+    pub(super) nodes: Vec<NodeRecord>,
+    pub(super) relationships: Vec<RelRecord>,
 }
 
 /// Nodes draw properties from small domains, so different nodes often have
 /// equal properties; some properties are missing and one name sorts before
 /// `_id`. Relationships include self-loops and parallel edges.
-fn random_graph(seed: u64) -> Graph {
+pub(super) fn random_graph(seed: u64) -> Graph {
     let mut random = Random(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     let mut catalog = Catalog::default();
     let a = catalog.get_or_create_label("A");
@@ -236,7 +236,9 @@ const QUERIES: &[(&str, bool)] = &[
     ),
 ];
 
-fn memory_configs(directory: &std::path::Path) -> [(&'static str, ExecutionMemoryConfig); 2] {
+pub(super) fn memory_configs(
+    directory: &std::path::Path,
+) -> [(&'static str, ExecutionMemoryConfig); 2] {
     [
         ("in-memory", ExecutionMemoryConfig::default()),
         (
@@ -254,13 +256,15 @@ fn memory_configs(directory: &std::path::Path) -> [(&'static str, ExecutionMemor
     ]
 }
 
-struct Outcome {
-    rows: Result<Vec<BTreeMap<String, Value>>>,
-    spilled_aggregates: usize,
-    ledger: QueryMemoryLedgerSnapshot,
+pub(super) struct Outcome {
+    pub(super) rows: Result<Vec<BTreeMap<String, Value>>>,
+    pub(super) spilled_aggregates: usize,
+    pub(super) ledger: QueryMemoryLedgerSnapshot,
+    /// Existence reads of nodes by id, outside matching.
+    pub(super) node_owned_reads: usize,
 }
 
-fn run(graph: &Graph, plan: &PhysicalPlan, memory: &ExecutionMemoryConfig) -> Outcome {
+pub(super) fn run(graph: &Graph, plan: &PhysicalPlan, memory: &ExecutionMemoryConfig) -> Outcome {
     let store = store::ReadFixture {
         nodes: graph.nodes.clone(),
         relationships: graph.relationships.clone(),
@@ -307,6 +311,7 @@ fn run(graph: &Graph, plan: &PhysicalPlan, memory: &ExecutionMemoryConfig) -> Ou
         rows: result.map(|_| rows),
         spilled_aggregates,
         ledger: ledger.snapshot(),
+        node_owned_reads: store.node_owned_reads.get(),
     }
 }
 
@@ -329,11 +334,9 @@ fn graph_key_modes(plan: &PhysicalPlan, modes: &mut Vec<GraphGroupKeys>) {
     });
 }
 
-fn spill_directory(seed: u64) -> std::path::PathBuf {
-    let directory = std::env::temp_dir().join(format!(
-        "hawdb-identity-group-keys-{}-{seed}",
-        std::process::id()
-    ));
+pub(super) fn spill_directory(prefix: &str, seed: u64) -> std::path::PathBuf {
+    let directory =
+        std::env::temp_dir().join(format!("hawdb-{prefix}-{}-{seed}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
     directory
 }
@@ -344,7 +347,7 @@ fn identity_grouping_matches_map_grouping_on_random_graphs() {
     let mut spilled_queries = BTreeSet::new();
     for seed in 1..=10u64 {
         let graph = random_graph(seed);
-        let directory = spill_directory(seed);
+        let directory = spill_directory("identity-group-keys", seed);
         for (config, memory) in memory_configs(&directory) {
             for (query, ordered) in QUERIES {
                 let current = plan(query, false);

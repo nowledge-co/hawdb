@@ -389,6 +389,14 @@ pub struct PatternProjection {
     /// Start values for a node the pattern introduces, when every disjunct
     /// of `predicate` equates it with an enclosing-row expression (#1607).
     pub seeds: Option<PatternSeeds>,
+    /// Import columns of the subquery row, among `arguments` and the seed
+    /// column, that the programs read only as graph imports: neither body
+    /// reads the row column itself. The executor passes such a column to the
+    /// match as the imported entity's identity instead of copying its value
+    /// into the subquery row, and takes a seed bound to a graph slot by its
+    /// record's id (#1615). Empty in plans made before #1615, which copy
+    /// every argument and seed value.
+    pub identity_columns: Vec<String>,
 }
 
 /// Seeds for one node variable that `PatternProjection::program`
@@ -1292,6 +1300,7 @@ hawdb_core::impl_retained_heap_for_struct!(PatternProjection {
     predicate,
     projection,
     seeds,
+    identity_columns,
 });
 
 // Retained query ownership: PatternSeeds.

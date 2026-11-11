@@ -10,6 +10,10 @@
 //! subquery row holds only the enclosing graph variables and imported values
 //! the pattern reads; enclosing columns its body reads are lent as locals, so
 //! a large column such as a collected list is never copied per evaluation.
+//! A value imported only to name the entity a pattern variable starts from,
+//! such as a list element node, reaches the match as that entity's identity,
+//! and a seed bound to a graph slot as its record's id, without copying the
+//! value (#1615).
 //! Records read, subquery rows and the produced list are charged to the
 //! evaluation's memory account, every candidate the match visits is charged
 //! as list-expression work, and the runtime checks cancellation between
@@ -17,12 +21,18 @@
 //! its endpoint is read, and that read honors the plan's node visibility.
 
 use super::*;
-use crate::graph_match::{visit_correlated_matches, MatchContext};
+use crate::graph_match::{
+    import_identity, visit_correlated_matches, CorrelatedInput, ImportIdentity, MatchContext,
+    ResolvedImport,
+};
 use crate::store::{GraphExecutionRead, ScanControl};
 use hawdb_plan_cypher::Predicate;
-use hawdb_plan_cypher::{GraphEntityKind, GraphMatchProgram, GraphMatchStep, PatternProjection};
+use hawdb_plan_cypher::{
+    GraphBindingImport, GraphEntityKind, GraphMatchProgram, GraphMatchStep, PatternProjection,
+};
 use hawdb_storage::read_view::{AdmittedNodeRead, AdmittedRelationshipRead};
 use hawdb_storage::{NodeId, RelId, RelRecord};
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 
 /// Read access to the graph snapshot for one evaluation site.
@@ -152,6 +162,11 @@ pub(super) fn evaluate<'a>(
         }
         row.values.insert(name.clone(), Value::Null);
     }
+    // An argument read only as an import reaches the match by the identity
+    // of the entity it holds, without an owned copy of its value. A value
+    // that is not such an entity is copied as before, so the import fails
+    // on it where and as it always did.
+    let mut identities = Vec::new();
     let mut _arguments = account.reserve(0)?;
     for (column, argument) in &pattern.arguments {
         let value = evaluate_scoped(
@@ -162,8 +177,17 @@ pub(super) fn evaluate<'a>(
             Some(account),
             scope.work,
             Some(graph),
-        )?
-        .into_owned_accounted(&mut _arguments)?;
+        )?;
+        if let Some(import) = identity_import(pattern, &pattern.program, column)
+            && let Ok(Some(identity)) = import_identity(value.as_ref(), import)
+        {
+            identities.push(ImportIdentity {
+                column: column.as_str(),
+                identity,
+            });
+            continue;
+        }
+        let value = value.into_owned_accounted(&mut _arguments)?;
         row.values.insert(column.clone(), value);
     }
     // A seeded pattern matches once from each distinct node among the seed
@@ -171,11 +195,30 @@ pub(super) fn evaluate<'a>(
     // (#1607). Seed values that are NULL or not nodes cannot equal the node.
     let mut _seeds = account.reserve(0)?;
     let runs = match &pattern.seeds {
-        None => vec![(&pattern.program, row)],
+        None => vec![(&pattern.program, Cow::Borrowed(&row), identities)],
         Some(seeds) => {
+            let by_identity = identity_import(pattern, &seeds.program, &seeds.column).is_some();
             let mut runs = Vec::new();
             let mut seen = BTreeSet::new();
             for expression in &seeds.expressions {
+                if by_identity {
+                    let Some(id) = seed_identity(expression, &scope, graph, account)? else {
+                        continue;
+                    };
+                    if !seen.insert(id) {
+                        continue;
+                    }
+                    let mut seeded = identities.clone();
+                    seeded.push(ImportIdentity {
+                        column: seeds.column.as_str(),
+                        identity: ResolvedImport {
+                            id: id.0,
+                            source: None,
+                        },
+                    });
+                    runs.push((&seeds.program, Cow::Borrowed(&row), seeded));
+                    continue;
+                }
                 // A computed seed (such as `startNode(r)`) is charged to this
                 // account while it is built; its owned copy is charged to the
                 // seeds lease on the same account, so the charge moves rather
@@ -201,7 +244,7 @@ pub(super) fn evaluate<'a>(
                 }
                 let mut seeded = row.clone();
                 seeded.values.insert(seeds.column.clone(), value);
-                runs.push((&seeds.program, seeded));
+                runs.push((&seeds.program, Cow::Owned(seeded), identities.clone()));
             }
             runs
         }
@@ -217,7 +260,7 @@ pub(super) fn evaluate<'a>(
                 .as_ref()
                 .map(|_| list::ListBuilder::new(Some(account), scope.work, 0))
                 .transpose()?;
-            for (program, row) in &runs {
+            for (program, row, identities) in &runs {
                 if found {
                     break;
                 }
@@ -226,7 +269,7 @@ pub(super) fn evaluate<'a>(
                     graph.store,
                     graph.context,
                     account,
-                    row,
+                    CorrelatedInput { row, identities },
                     // Every candidate the match visits is list-expression work,
                     // so a pattern that scans is bounded like one that matches.
                     &|| scope.work.charge(1),
@@ -276,6 +319,76 @@ pub(super) fn evaluate<'a>(
             })
         },
     )
+}
+
+/// The import of `program` that reads `column`, when the pattern passes that
+/// column by identity.
+fn identity_import<'p>(
+    pattern: &PatternProjection,
+    program: &'p GraphMatchProgram,
+    column: &str,
+) -> Option<&'p GraphBindingImport> {
+    if !pattern.identity_columns.iter().any(|name| name == column) {
+        return None;
+    }
+    program
+        .imports
+        .iter()
+        .find(|import| import.column == column)
+}
+
+/// The id of the node a seed expression can equal, as [`seed_node_id`] of
+/// its value. A seed that names a node bound in the enclosing row's graph
+/// slots is that node, already read from this snapshot, so neither its
+/// value nor another read of it is needed.
+fn seed_identity(
+    expression: &ProjectionExpression,
+    scope: &Scope<'_, '_>,
+    graph: &ExpressionGraph<'_>,
+    account: &QueryMemoryAccount,
+) -> Result<Option<NodeId>> {
+    if let Some(node) = slot_node(expression, scope.binding) {
+        return Ok(Some(node.id));
+    }
+    let value = evaluate_scoped(
+        expression,
+        scope.catalog,
+        scope.binding,
+        scope.locals,
+        Some(account),
+        scope.work,
+        Some(graph),
+    )?;
+    seed_node_id(graph.store, value.as_ref())
+}
+
+/// The node bound in `binding`'s graph slots that `expression` evaluates to,
+/// when it reads one directly: a node variable, or the endpoint of a
+/// relationship that its MATCH step binds beside it. `None` for every other
+/// expression, which is evaluated instead.
+fn slot_node<'b>(
+    expression: &ProjectionExpression,
+    binding: &'b Binding,
+) -> Option<&'b NodeRecord> {
+    match expression {
+        ProjectionExpression::Variable { variable } => binding.nodes.get(variable),
+        ProjectionExpression::RelationshipEndpoint {
+            endpoint,
+            variable,
+            endpoints: Some(endpoints),
+        } => {
+            let relationship = binding.relationships.get(variable)?;
+            let id = match endpoint {
+                hawdb_core::RelationshipEndpoint::Start => relationship.source,
+                hawdb_core::RelationshipEndpoint::End => relationship.target,
+            };
+            endpoints
+                .iter()
+                .filter_map(|name| binding.nodes.get(name))
+                .find(|node| node.id == id)
+        }
+        _ => None,
+    }
 }
 
 /// The id of the node a seed value can equal, or `None` when it can equal no

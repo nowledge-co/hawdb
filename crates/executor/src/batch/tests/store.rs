@@ -41,6 +41,8 @@ pub(super) struct ReadFixture {
     pub(super) node_admissions: Cell<usize>,
     pub(super) node_copies: Cell<usize>,
     pub(super) relationship_copies: Cell<usize>,
+    /// Calls of `node_owned`, an existence read outside matching.
+    pub(super) node_owned_reads: Cell<usize>,
 }
 
 impl ReadFixture {
@@ -90,6 +92,7 @@ impl GraphExecutionRead for ReadFixture {
         panic!("unexpected batch test store read: relationship_count_for_type")
     }
     fn node_owned(&self, id: NodeId) -> Result<Option<NodeRecord>> {
+        self.node_owned_reads.set(self.node_owned_reads.get() + 1);
         Ok(self.nodes.iter().find(|node| node.id == id).cloned())
     }
     fn node_with_allocation(
