@@ -76,6 +76,11 @@ pub struct CheckpointWorkContext {
 
 /// The immutable part of a context, shared by its clones. The builder
 /// methods copy it on write, so a published value never changes.
+///
+/// Every mutation must go through `Arc::make_mut` on a context's own handle.
+/// `CheckpointWorkContext::is_same` (used by `rebind`) treats pointer
+/// equality as context equality, which holds only while no published value
+/// is ever modified in place.
 #[derive(Debug, Clone, Default)]
 struct WorkShared {
     task: RuntimeTaskContext,
