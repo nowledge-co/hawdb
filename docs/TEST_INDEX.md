@@ -520,6 +520,17 @@ on one pinned synthetic snapshot, with alternating order, two warmups, fifteen
 measurements and raw cost/execution profiles. It is a developer experiment,
 not a new CI performance gate or a general LDBC acceptance claim.
 
+Planning prefix scratch is covered by `graph::pattern_start::tests` in the
+same optimizer unit lane: orientation and hop-limit reuse, independent catalog
+lifetimes, a 2 KiB stack ceiling, and direct-computation fallback after 16 keys.
+The ignored `prefix_statistics_scaling_measurement` is a manual metadata-only
+experiment at 100, 10,000 and 100,000 path tuples with 64 repeated estimates.
+Replay with `cargo test --locked --release -p hawdb-optimizer-graph --lib
+prefix_statistics_scaling_measurement -- --ignored --nocapture --test-threads=1`.
+It compares identical prefix arithmetic with and without per-estimate reuse;
+its timings exclude query execution and do not establish application speedup.
+No new CI lane, feature, profile override or timeout is introduced.
+
 Bounded-path provenance follows the existing statistics lanes: storage
 `statistics::tests` and `statistics::checkpoint::tests` cover completed versus
 budget-exhausted collection and retained copies; checkpoint metadata tests

@@ -24,6 +24,8 @@
 
 use super::OptimizerCatalog;
 use hawdb_core::RelationshipDirection;
+use std::borrow::Cow;
+use std::fmt::Write;
 
 /// A candidate replaces the current start only when its estimated work is at
 /// most half of the current start's.
@@ -38,6 +40,65 @@ pub(super) const START_COST_MARGIN: f64 = 2.0;
 
 /// Variable-length steps longer than this are not estimated.
 const MAX_ESTIMATED_HOPS: usize = 8;
+
+// Keep scratch independent of graph size and borrow keys from this estimate.
+const PREFIX_CACHE_CAPACITY: usize = 16;
+
+#[derive(Clone, Copy)]
+struct PrefixEntry<'a> {
+    label: &'a str,
+    rel_type: &'a str,
+    direction: RelationshipDirection,
+    prefixes: [f64; MAX_ESTIMATED_HOPS + 1],
+}
+
+pub(super) struct WalkContext<'a> {
+    catalog: &'a OptimizerCatalog,
+    entries: [Option<PrefixEntry<'a>>; PREFIX_CACHE_CAPACITY],
+    len: usize,
+    #[cfg(test)]
+    scans: usize,
+}
+
+impl<'a> WalkContext<'a> {
+    pub(super) fn new(catalog: &'a OptimizerCatalog) -> Self {
+        Self {
+            catalog,
+            entries: [None; PREFIX_CACHE_CAPACITY],
+            len: 0,
+            #[cfg(test)]
+            scans: 0,
+        }
+    }
+
+    fn prefixes(
+        &mut self,
+        label: &'a str,
+        rel_type: &'a str,
+        direction: RelationshipDirection,
+    ) -> [f64; MAX_ESTIMATED_HOPS + 1] {
+        for entry in self.entries[..self.len].iter().flatten() {
+            if entry.label == label && entry.rel_type == rel_type && entry.direction == direction {
+                return entry.prefixes;
+            }
+        }
+        #[cfg(test)]
+        {
+            self.scans += 1;
+        }
+        let prefixes = collect_prefixes(self.catalog, label, rel_type, direction);
+        if self.len < PREFIX_CACHE_CAPACITY {
+            self.entries[self.len] = Some(PrefixEntry {
+                label,
+                rel_type,
+                direction,
+                prefixes,
+            });
+            self.len += 1;
+        }
+        prefixes
+    }
+}
 
 /// One node of a path, in text order.
 #[derive(Debug, Clone)]
@@ -118,27 +179,30 @@ pub(super) fn choose_start(
     current: usize,
 ) -> Option<StartDecision> {
     debug_assert_eq!(nodes.len(), edges.len() + 1);
-    let candidates = nodes
+    let mut candidates = nodes
         .iter()
         .enumerate()
         .filter(|(position, _)| *position != current)
         .filter_map(|(position, node)| {
             seekable_property(catalog, node).map(|property| (position, property))
         })
-        .collect::<Vec<_>>();
-    if candidates.is_empty() {
-        return None;
-    }
+        .peekable();
+    candidates.peek()?;
     // Without an estimate for the current start there is nothing to beat.
-    let current_work = walk_work(catalog, nodes, edges, current)?;
+    let mut context = WalkContext::new(catalog);
+    let current_work = walk_with_context(&mut context, nodes, edges, current)?.work;
     let mut best: Option<StartChoice> = None;
-    let mut considered = Vec::new();
+    let mut considered = String::new();
     for (start, property) in candidates {
-        let Some(work) = walk_work(catalog, nodes, edges, start) else {
-            considered.push(format!("{}=unknown", nodes[start].variable));
+        if !considered.is_empty() {
+            considered.push_str(", ");
+        }
+        let Some(estimate) = walk_with_context(&mut context, nodes, edges, start) else {
+            write!(considered, "{}=unknown", nodes[start].variable).unwrap();
             continue;
         };
-        considered.push(format!("{}={work:.1}", nodes[start].variable));
+        let work = estimate.work;
+        write!(considered, "{}={work:.1}", nodes[start].variable).unwrap();
         if best.as_ref().is_none_or(|best| work < best.work) {
             best = Some(StartChoice {
                 start,
@@ -156,7 +220,7 @@ pub(super) fn choose_start(
             detail: format!(
                 "current start {} estimated work {current_work:.1}; candidates [{}] are not {START_COST_MARGIN}x cheaper",
                 nodes[current].variable,
-                considered.join(", ")
+                considered
             ),
         }),
     }
@@ -188,32 +252,46 @@ pub(super) fn walk(
     edges: &[PathEdge<'_>],
     start: usize,
 ) -> Option<WalkEstimate> {
+    walk_with_context(&mut WalkContext::new(catalog), nodes, edges, start)
+}
+
+fn walk_with_context<'a>(
+    context: &mut WalkContext<'a>,
+    nodes: &[PathNode<'a>],
+    edges: &[PathEdge<'a>],
+    start: usize,
+) -> Option<WalkEstimate> {
+    let catalog = context.catalog;
     // Without published path statistics every fanout would be a guess.
     if catalog.path_counts.is_empty() && catalog.bounded_path_complete_through_hop.is_none() {
         return None;
     }
     // A repeated variable carries its label on one occurrence only.
-    let labelled = nodes
-        .iter()
-        .map(|node| {
-            let label = nodes
+    let label = |node: &PathNode<'a>| {
+        nodes
+            .iter()
+            .find(|other| other.variable == node.variable && !other.label.is_empty())
+            .map_or(node.label, |other| other.label)
+    };
+    let labelled: Cow<'_, [PathNode<'a>]> = if nodes.iter().any(|node| label(node) != node.label) {
+        Cow::Owned(
+            nodes
                 .iter()
-                .find(|other| other.variable == node.variable && !other.label.is_empty())
-                .map_or(node.label, |other| other.label);
-            PathNode {
-                label,
-                ..node.clone()
-            }
-        })
-        .collect::<Vec<_>>();
-    let nodes = labelled.as_slice();
+                .map(|node| PathNode {
+                    label: label(node),
+                    ..node.clone()
+                })
+                .collect(),
+        )
+    } else {
+        Cow::Borrowed(nodes)
+    };
+    let nodes = labelled.as_ref();
     if edges[..start].iter().any(|edge| !edge.reversible) {
         return None;
     }
     let initial = node_work(catalog, &nodes[start])?;
     let (mut rows, mut work) = (initial.rows, initial.work);
-    let mut visited = vec![false; nodes.len()];
-    visited[start] = true;
     let steps = (start..edges.len())
         .map(|index| (index, index + 1, edges[index].direction))
         .chain(
@@ -223,21 +301,22 @@ pub(super) fn walk(
         );
     for (from, to, direction) in steps {
         let edge = &edges[from.min(to)];
-        let expansion = expand_work(catalog, &nodes[from], &nodes[to], edge, direction)?;
+        let expansion = expand_work(context, &nodes[from], &nodes[to], edge, direction)?;
         work += rows * expansion.work;
         let candidates = rows * expansion.rows;
         let target = &nodes[to];
         // A repeated variable closes a cycle: the step only checks identity.
-        let repeated = nodes
-            .iter()
-            .enumerate()
-            .any(|(position, node)| visited[position] && node.variable == target.variable);
+        let visited = if to > start {
+            &nodes[start..to]
+        } else {
+            &nodes[to + 1..]
+        };
+        let repeated = visited.iter().any(|node| node.variable == target.variable);
         rows = if target.bound || repeated {
             candidates / catalog.label_count(target.label) as f64
         } else {
             candidates * node_selectivity(catalog, target)
         };
-        visited[to] = true;
     }
     Some(WalkEstimate { work, rows })
 }
@@ -344,13 +423,14 @@ pub(super) fn meeting(
 
 /// Candidate visits and matching paths per source row. Relationship property
 /// tests reduce matches, but do not remove the reads needed to test them.
-pub(super) fn expand_work(
-    catalog: &OptimizerCatalog,
-    from: &PathNode<'_>,
+pub(super) fn expand_work<'a>(
+    context: &mut WalkContext<'a>,
+    from: &PathNode<'a>,
     to: &PathNode<'_>,
-    edge: &PathEdge<'_>,
+    edge: &PathEdge<'a>,
     direction: RelationshipDirection,
 ) -> Option<WalkEstimate> {
+    let catalog = context.catalog;
     let rel_type = edge.rel_type?;
     let complete = catalog
         .bounded_path_complete_through_hop
@@ -437,37 +517,7 @@ pub(super) fn expand_work(
         rows += if fallback { 1.0 / population } else { matches };
     }
 
-    // Completion counts describe output, not the prefixes inspected on the
-    // way there. Aggregate every endpoint label in the traversal direction,
-    // including depths below min_hops and failed prefixes of successful walks.
-    let mut prefixes = [0.0; MAX_ESTIMATED_HOPS + 1];
-    let orientations = |source: &str, target: &str| match direction {
-        RelationshipDirection::Outgoing => u8::from(source == from.label),
-        RelationshipDirection::Incoming => u8::from(target == from.label),
-        RelationshipDirection::Undirected => {
-            u8::from(source == from.label) + u8::from(target == from.label)
-        }
-    };
-    for ((source, kind, target), count) in &catalog.path_counts {
-        if kind == rel_type {
-            prefixes[1] += *count as f64 * orientations(source, target) as f64 / population;
-        }
-    }
-    // Preserve the conservative type-population fallback for first-hop
-    // candidates, including intermediate labels absent from path statistics.
-    prefixes[1] = prefixes[1].max(catalog.relationship_count(rel_type) as f64 / population);
-    if direction != RelationshipDirection::Undirected {
-        for ((source, kind, target, hop), count) in &catalog.bounded_path_counts {
-            if kind == rel_type
-                && (2..=edge.max_hops).contains(hop)
-                && catalog
-                    .bounded_path_complete_through_hop
-                    .is_none_or(|horizon| *hop <= horizon)
-            {
-                prefixes[*hop] += *count as f64 * orientations(source, target) as f64 / population;
-            }
-        }
-    }
+    let prefixes = context.prefixes(from.label, rel_type, direction);
     // Probe the source even when no candidate survives. Every shorter prefix
     // also probes its adjacency; only the final depth stops without probing.
     let mut work = 1.0;
@@ -487,6 +537,45 @@ pub(super) fn expand_work(
         }
     }
     Some(WalkEstimate { work, rows })
+}
+
+fn collect_prefixes(
+    catalog: &OptimizerCatalog,
+    label: &str,
+    rel_type: &str,
+    direction: RelationshipDirection,
+) -> [f64; MAX_ESTIMATED_HOPS + 1] {
+    let population = catalog.label_count(label) as f64;
+    // Completion counts describe output, not the prefixes inspected on the
+    // way there. Aggregate every endpoint label in the traversal direction,
+    // including depths below min_hops and failed prefixes of successful walks.
+    let mut prefixes = [0.0; MAX_ESTIMATED_HOPS + 1];
+    let orientations = |source: &str, target: &str| match direction {
+        RelationshipDirection::Outgoing => u8::from(source == label),
+        RelationshipDirection::Incoming => u8::from(target == label),
+        RelationshipDirection::Undirected => u8::from(source == label) + u8::from(target == label),
+    };
+    for ((source, kind, target), count) in &catalog.path_counts {
+        if kind == rel_type {
+            prefixes[1] += *count as f64 * orientations(source, target) as f64 / population;
+        }
+    }
+    // Preserve the conservative type-population fallback for first-hop
+    // candidates, including intermediate labels absent from path statistics.
+    prefixes[1] = prefixes[1].max(catalog.relationship_count(rel_type) as f64 / population);
+    if direction != RelationshipDirection::Undirected {
+        for ((source, kind, target, hop), count) in &catalog.bounded_path_counts {
+            if kind == rel_type
+                && (2..=MAX_ESTIMATED_HOPS).contains(hop)
+                && catalog
+                    .bounded_path_complete_through_hop
+                    .is_none_or(|horizon| *hop <= horizon)
+            {
+                prefixes[*hop] += *count as f64 * orientations(source, target) as f64 / population;
+            }
+        }
+    }
+    prefixes
 }
 
 pub(super) fn node_selectivity(catalog: &OptimizerCatalog, node: &PathNode<'_>) -> f64 {
