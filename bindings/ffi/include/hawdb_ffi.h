@@ -668,9 +668,15 @@ bool hawdb_transaction_query_sql(struct HawdbDatabase *db,
  * Commit the open transaction as one durable commit.
  *
  * On success returns true and `result_out` receives the commit's result
- * envelope (`{"columns": [...], "rows": [...]}`). The transaction is closed
- * after this call whether or not it succeeds: a failed commit (for example
- * a write conflict or a budget refusal) publishes none of its statements.
+ * envelope (`{"columns": [...], "rows": [...]}`), and every statement is
+ * committed, durable under the handle's `durability` option. The
+ * transaction is closed after this call whether or not it succeeds. The
+ * commit is all or nothing, never partial: a commit refused before
+ * publication (for example a write conflict or a budget refusal)
+ * publishes none of its statements, but an error raised while publishing,
+ * or a crash before this call returns, leaves the outcome unknown, and
+ * recovery may show the whole transaction committed. Reconcile or retry
+ * idempotently; a missing acknowledgment is not proof of rollback.
  * Fails with `no_transaction` when no transaction is open.
  *
  * # Safety

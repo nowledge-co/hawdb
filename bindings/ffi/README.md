@@ -123,12 +123,20 @@ hawdb_commit_transaction(db, &res, &err);   /* or hawdb_rollback_transaction(db,
   without an open transaction (including after a commit or rollback) fail
   with `kind: "no_transaction"`. SQL `BEGIN` / `COMMIT` stay rejected.
 - A failed statement leaves the transaction open; roll it back. Commit
-  closes the transaction whether or not it succeeds; a failed commit
-  publishes nothing.
-- `hawdb_close` on a handle with an open transaction rolls it back. A process
-  crash before the commit returns recovers none of the transaction's
-  statements; a crash after it returns recovers all of them. Recovery never
-  exposes part of a transaction.
+  closes the transaction whether or not it succeeds.
+- A commit is all or nothing, never partial. A commit refused before it
+  publishes (for example a write conflict or a budget refusal) leaves none of
+  its statements. A successful return means all of them are durable (under
+  the handle's `durability` option).
+- `hawdb_close` on a handle with an open transaction rolls it back, and a
+  process crash before `hawdb_commit_transaction` is called recovers none of
+  the transaction's statements.
+- A lost acknowledgment does not prove rollback. If the process dies while
+  `hawdb_commit_transaction` is running, the commit may already be durable
+  even though the caller never saw it return; an error raised while
+  publishing is equally uncertain. Recovery then shows either the whole
+  transaction or none of it. Reconcile against the reopened database, or make
+  the retry idempotent, rather than blindly running the transaction again.
 
 ## Options
 

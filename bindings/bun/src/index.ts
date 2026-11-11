@@ -515,6 +515,12 @@ export class Database {
    * `body` throws, every statement is rolled back and the error is
    * rethrown. `body` must be synchronous: a returned promise rolls the
    * transaction back and throws. Returns `body`'s result.
+   *
+   * The commit is all or nothing, never partial. A commit refused before
+   * publication (for example a write conflict) publishes nothing, but an
+   * error raised while publishing, or a crash before `transaction` returns,
+   * leaves the outcome unknown: after a reopen the whole transaction may be
+   * committed. Reconcile or retry idempotently rather than rerunning blindly.
    */
   transaction<T>(body: (transaction: Transaction) => T): T {
     if (typeof body !== "function") {

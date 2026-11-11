@@ -65,7 +65,11 @@ HAWDB_LIBRARY="$PWD/bazel-bin/bindings/ffi/libhawdb_ffi.dylib" \
   synchronous; returning a promise rolls back and throws. While it runs,
   `database.query`/`querySQL`, a nested `database.transaction` and
   `database.close()` throw `HawDBError` with kind `transaction_open`, and a
-  `tx` used after its body finished throws `no_transaction`.
+  `tx` used after its body finished throws `no_transaction`. A commit is never
+  partial, but a crash or an error while it publishes leaves the outcome
+  unknown (the whole transaction may be committed after a reopen), so
+  reconcile or retry idempotently instead of rerunning it blindly; see the
+  [C ABI notes](../ffi/README.md#transactions).
 - Close databases explicitly before closing the library. Both close operations
   are idempotent. The library refuses to unload while a database is live.
 - Every native result/error buffer is copied and released before a call returns.
