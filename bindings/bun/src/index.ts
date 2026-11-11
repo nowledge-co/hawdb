@@ -43,8 +43,51 @@ export type HawDBValue =
 
 export type HawDBParameter = HawDBValue;
 
+/** WAL synchronization policy; see the C ABI `hawdb_open` documentation. */
+export type Durability = "sync_on_every_write" | "sync_on_checkpoint";
+
+/**
+ * Options for `HawDBLibrary.open`. Each key mirrors one `hawdb_open` option;
+ * an absent or `undefined` key keeps the native default (power-loss-safe
+ * `sync_on_every_write`, no row ceiling, a 64 MiB read payload budget and the
+ * monotonic-append fast path off). The native library validates every value.
+ */
 export interface OpenOptions {
   readOnly?: boolean;
+  durability?: Durability;
+  /** Host-wide read row ceiling; `0` and `null` mean no row ceiling. */
+  maxReadResultRows?: number | bigint | null;
+  /** Host-wide read result payload budget in bytes; must be positive. */
+  maxReadResultPayloadBytes?: number | bigint;
+  relationalMonotonicAppendFastPath?: boolean;
+}
+
+const openOptionKeys: Record<keyof OpenOptions, string> = {
+  readOnly: "read_only",
+  durability: "durability",
+  maxReadResultRows: "max_read_result_rows",
+  maxReadResultPayloadBytes: "max_read_result_payload_bytes",
+  relationalMonotonicAppendFastPath: "relational_monotonic_append_fast_path",
+};
+
+function nativeOpenOptions(options: OpenOptions): Record<string, HawDBParameter> {
+  if (options === null || typeof options !== "object" || Array.isArray(options)) {
+    throw new TypeError("HawDB open options must be an object");
+  }
+  const native: Record<string, HawDBParameter> = {};
+  for (const key of Object.keys(options)) {
+    if (!Object.hasOwn(openOptionKeys, key)) {
+      throw new HawDBError(
+        "invalid_argument",
+        `unknown HawDB open option "${key}"; supported options are ${Object.keys(openOptionKeys).join(", ")}`,
+      );
+    }
+    const value = (options as Record<string, unknown>)[key];
+    if (value !== undefined) {
+      native[openOptionKeys[key as keyof OpenOptions]] = value as HawDBParameter;
+    }
+  }
+  return native;
 }
 
 export class QueryResult {
@@ -215,7 +258,7 @@ export class HawDBLibrary {
       throw new TypeError("HawDB database path must not be empty");
     }
     const pathBytes = encoder.encode(path);
-    const optionsBytes = encoder.encode(stringifyParameters({ read_only: options.readOnly ?? false }));
+    const optionsBytes = encoder.encode(stringifyParameters(nativeOpenOptions(options)));
     const error = outputBuffer();
     this.assertOpen();
     const handle = this.native.symbols.hawdb_open(
