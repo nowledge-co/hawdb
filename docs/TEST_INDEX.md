@@ -3414,3 +3414,16 @@ existing digest/hash framing vectors and capacity checks remain unchanged.
 parameter binding byte limits, capability/cancellation checks, statistics
 isolation and WAL replay coverage. `in_memory_portable` and minimal WASM strict
 Clippy cover the embedded facade. No new crate or CI job is introduced.
+
+### Manual search and durable-write component profiles (#1669)
+
+`examples/component_profiles.rs` is a manual release-only driver over existing
+public search and concurrent-database APIs. Search rotates candidate selection,
+selected-ID hydration and combined calls on a pinned synthetic generation,
+asserting all score/rank fields, IDs and hydrated content. Writes verify complete
+rows before checkpoint and after reopen under default strict durability while
+recording preparation/commit and existing overlapping coordinator metrics.
+The example's inline checks and bounded argument refusals are its local owner;
+ordinary CI compiles it but does not run performance campaigns. Replay and
+measurement limits are in [component profiles](COMPONENT_PROFILES.md). No new
+test lane, feature, target-local profile, timeout or production dependency.
