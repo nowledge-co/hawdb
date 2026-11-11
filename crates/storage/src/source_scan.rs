@@ -544,7 +544,7 @@ impl SourceScanWritePreparation {
         index: usize,
         work: &CheckpointWorkContext,
     ) -> Result<()> {
-        self.memory.work = work.clone();
+        self.memory.work.rebind(work);
         let segment = &projection.segments[index];
         if self.segments.len() == index {
             self.memory

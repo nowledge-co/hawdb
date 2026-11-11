@@ -2364,6 +2364,36 @@ reclaims the other's idle batch, so both make progress at per-unit admission
 cost. Tests: `background::checkpoint::batch_tests` in the storage crate and
 `batch_tests` in the QoS crate.
 
+### Per-unit context bookkeeping
+
+[#1651](https://github.com/nowledge-co/hawdb/issues/1651) keeps the semantics
+above and lowers what each unit and record pays outside the encoding work:
+
+- A `CheckpointWorkContext` is one shared handle. Its task, scheduler, batch and
+  progress counter are immutable once built and shared by all clones, so a
+  clone or drop is one reference count instead of one per task controller. The
+  builder methods (`with_scheduler`, `with_progress_counter`) copy on write and
+  never change a handle that is already shared. `classify` still gives its
+  operation a distinct scope with its own failure slot.
+- Retained builders are still re-bound to the caller's context before every
+  record, so a resumed attempt always runs under its own task. When the stored
+  context is the same handle as the caller's, re-binding is a pointer
+  comparison instead of a clone. Each re-bind still checks cancellation (and
+  the deadline, if the task has one).
+- A unit holds only its context's unit accounting (batch and progress), not the
+  task. Without a scheduler, starting and ending a unit are inlined:
+  cancellation is still checked at every unit, and a unit with no progress
+  counter holds nothing.
+- `RuntimeCancellationToken` checks its own state with one inlined acquire
+  load. Only a cancelled token or one with parents walks its ancestors, in the
+  same depth-first order, so it reports the same reason.
+
+Unit, progress, admission and cancellation counts are unchanged:
+`canonical::checkpoint_writer::state::rebind_tests` encodes the same records
+under the shared handle and under a distinct handle per record (what each
+per-record clone used to produce) and compares the exact counts and every
+cancellation cut point.
+
 Resumable maintenance uses `RuntimeGovernor::try_admit_resumable_maintenance`
 and the facade-exported `RuntimeMaintenanceWork`. Its original conservative
 memory and host process-memory reservations remain owned by the candidate.

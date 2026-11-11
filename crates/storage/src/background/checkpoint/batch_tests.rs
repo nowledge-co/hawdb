@@ -331,3 +331,110 @@ fn contexts_sharing_a_one_operation_budget_interleave_their_batches() {
     assert_eq!(scheduler.state().running_background_operations, 0);
     assert_eq!(alternations.load(Ordering::Relaxed), 3 * N);
 }
+
+/// #1651: clones are one shared handle. Units started through any clone are
+/// charged to the same batch and progress counter, and the builder methods
+/// copy on write, so an already published handle never changes.
+#[test]
+fn clones_share_one_handle_and_builders_copy_on_write() {
+    let scheduler = one_operation();
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    let progress = Arc::new(AtomicU64::new(0));
+    let work = probe
+        .context(scheduler.clone())
+        .with_progress_counter(progress.clone());
+    let clone = work.clone();
+    assert!(work.is_same(&clone));
+    for index in 0..(3 * N + 5) {
+        let context = if index % 2 == 0 { &work } else { &clone };
+        context.start_unit().unwrap().finish();
+    }
+    let units = 3 * N as u64 + 5;
+    assert_eq!(progress.load(Ordering::Relaxed), units);
+    assert_eq!(work.unit_batch_stats(), clone.unit_batch_stats());
+    assert_eq!(work.unit_batch_stats().units, units);
+    assert_eq!(work.unit_batch_stats().admissions, batches(units as usize));
+
+    // A builder applied to a clone leaves the original handle untouched but
+    // keeps charging the same batch.
+    let other = Arc::new(AtomicU64::new(0));
+    let retracked = clone.with_progress_counter(other.clone());
+    assert!(!work.is_same(&retracked));
+    retracked.start_unit().unwrap().finish();
+    work.start_unit().unwrap().finish();
+    assert_eq!(other.load(Ordering::Relaxed), 1);
+    assert_eq!(progress.load(Ordering::Relaxed), units + 1);
+    assert_eq!(work.unit_batch_stats().units, units + 2);
+    assert_eq!(retracked.unit_batch_stats(), work.unit_batch_stats());
+    work.release_unit_batch();
+    probe.assert_released(&scheduler);
+}
+
+/// #1651: retained builders re-bind per record; only another context (a new
+/// attempt or a classification scope) replaces the stored one.
+#[test]
+fn rebind_replaces_only_another_context() {
+    let work = CheckpointWorkContext::default().with_scheduler(one_operation());
+    let mut bound = work.clone();
+    let before = super::tests::rebinds();
+    for _ in 0..1_000 {
+        bound.rebind(&work);
+    }
+    assert_eq!(super::tests::rebinds(), before);
+    assert!(bound.is_same(&work));
+
+    let forked = work.fork_handle();
+    assert!(!forked.is_same(&work));
+    bound.rebind(&forked);
+    assert_eq!(super::tests::rebinds(), before + 1);
+    assert!(bound.is_same(&forked));
+
+    work.classify(|scoped| {
+        assert!(!scoped.is_same(&work));
+        bound.rebind(scoped);
+        bound.rebind(scoped);
+        Ok::<_, ()>(())
+    })
+    .unwrap();
+    assert_eq!(super::tests::rebinds(), before + 2);
+    let fresh = CheckpointWorkContext::default();
+    bound.rebind(&fresh);
+    assert_eq!(super::tests::rebinds(), before + 3);
+    assert!(bound.is_same(&fresh));
+}
+
+/// Without a scheduler each unit still observes cancellation and counts
+/// progress exactly; a unit without a progress counter holds nothing.
+#[test]
+fn unscheduled_units_count_progress_and_observe_cancellation_at_every_unit() {
+    for cut in [1usize, 2, N - 1, N, N + 1, 3 * N] {
+        let token = RuntimeCancellationToken::new();
+        let progress = Arc::new(AtomicU64::new(0));
+        let work = CheckpointWorkContext::new(RuntimeTaskContext::without_deadline(token.clone()))
+            .with_progress_counter(progress.clone());
+        let mut started = 0usize;
+        let error = loop {
+            match work.start_unit() {
+                Ok(unit) => {
+                    started += 1;
+                    unit.finish();
+                    if started == cut {
+                        token.cancel();
+                    }
+                }
+                Err(error) => break error,
+            }
+        };
+        assert_eq!(
+            error,
+            CheckpointWorkError::Stopped(RuntimeCancellationReason::Cancelled)
+        );
+        assert_eq!(started, cut);
+        assert_eq!(progress.load(Ordering::Relaxed), cut as u64);
+        assert_eq!(work.unit_batch_stats(), CheckpointUnitBatchStats::default());
+    }
+    let plain = CheckpointWorkContext::default();
+    let unit = plain.start_unit().unwrap();
+    assert!(unit.accounting.is_none());
+    unit.finish();
+}
