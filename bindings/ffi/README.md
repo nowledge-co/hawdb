@@ -100,7 +100,45 @@ JSON queries for exact Decimal results.
 
 ## Options
 
-`hawdb_open` takes `options_json`: `{"read_only": bool}` (default false).
+`hawdb_open` takes `options_json`, NULL or a JSON object. Each key is optional
+and sets the typed Rust field of the same name; absent keys keep the embedded
+defaults. Unknown keys and ill-typed values fail with `invalid_argument`
+before the database path is touched.
+
+| Key | Values | Default | Rust field |
+|---|---|---|---|
+| `read_only` | bool | `false` | `DatabaseConfig::read_only` (also selects strict recovery) |
+| `durability` | `"sync_on_every_write"`, `"sync_on_checkpoint"` | `"sync_on_every_write"` | `HawDBEmbeddedOpenOptions::durability` |
+| `max_read_result_rows` | integer >= 0, or `null` | `null` (no ceiling) | `DatabaseConfig::max_read_result_rows` |
+| `max_read_result_payload_bytes` | integer > 0 | `67108864` (64 MiB) | `DatabaseConfig::max_read_result_payload_bytes` |
+| `relational_monotonic_append_fast_path` | bool | `false` | `DatabaseConfig::relational_monotonic_append_fast_path` |
+
+```json
+{"durability": "sync_on_checkpoint", "relational_monotonic_append_fast_path": true,
+ "max_read_result_rows": 10000, "max_read_result_payload_bytes": 8388608}
+```
+
+The default is power-loss safe: every commit is synchronized before it is
+acknowledged. `"sync_on_checkpoint"` is an explicit host choice for write-heavy
+workloads such as event logs: a commit's complete WAL is flushed to the OS
+before it is acknowledged, but storage is synchronized only at checkpoint
+boundaries, so a power failure (not a process crash) can lose recently
+acknowledged transactions. Recovery never exposes part of a transaction, and
+branch creation, deletion and head publication remain power-loss safe.
+Options apply to one open; reopening without them restores the defaults.
+
+`max_read_result_rows` of `0` or `null` disables the host row ceiling. The
+payload budget can be lowered or raised but not removed. A read over either
+budget fails (`read_budget_exceeded`, or `resource_budget_exceeded` with a
+`resource_budget` object) instead of returning a partial result.
+
+`relational_monotonic_append_fast_path` enables the metadata-only INSERT path
+for RowPage tables whose primary keys arrive in increasing order. Inserts that
+are out of order or duplicate fall back to the ordinary checked path with the
+same results and errors.
+
+One handle serializes its calls, so it has no group-commit setting; Rust hosts
+that need WAL group commit across concurrent writers use `ConcurrentDatabase`.
 
 ## Consumers
 

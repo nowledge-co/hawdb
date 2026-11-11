@@ -285,8 +285,30 @@ void hawdb_boundary_profile_snapshot(struct BoundaryProfileSnapshot *out);
  * Open a HawDB database at `path`, creating it if needed.
  *
  * `path` is `path_len` UTF-8 bytes and must not be NULL. `options_json`
- * may be NULL or a JSON object; currently supported keys:
- * `{"read_only": bool}`.
+ * may be NULL or a JSON object. Every key is optional and names the typed
+ * Rust configuration field it sets; an absent key keeps the embedded
+ * default. Unknown keys and ill-typed values fail with `invalid_argument`.
+ *
+ * - `"read_only": bool` (default false). A read-only open uses strict
+ *   recovery and never repairs a torn WAL tail.
+ * - `"durability": "sync_on_every_write" | "sync_on_checkpoint"` (default
+ *   `"sync_on_every_write"`, power-loss safe). `"sync_on_checkpoint"`
+ *   flushes each committed transaction's WAL to the OS before acknowledging
+ *   it but synchronizes storage only at checkpoint boundaries, so a power
+ *   failure may lose recently acknowledged transactions (never part of one).
+ *   Branch creation, deletion and head publication stay power-loss safe.
+ * - `"max_read_result_rows": integer >= 0 | null` (default null). Host-wide
+ *   read row ceiling; 0 and null mean no row ceiling.
+ * - `"max_read_result_payload_bytes": integer > 0` (default 67108864).
+ *   Host-wide read result payload budget; it can be tuned but not removed.
+ * - `"relational_monotonic_append_fast_path": bool` (default false). Opt-in
+ *   metadata-only INSERT path for RowPage tables whose primary keys arrive
+ *   in increasing order; other inserts fall back to the ordinary path.
+ *
+ * A read that exceeds a budget fails (`read_budget_exceeded`, or
+ * `resource_budget_exceeded` with a `resource_budget` object) rather than
+ * returning a partial result. Calls on one handle are serialized, so the
+ * handle has no group commit to configure.
  *
  * Returns a handle to pass to the other functions, or NULL on failure
  * with `err_out` filled. Close the handle with [`hawdb_close`].

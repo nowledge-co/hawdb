@@ -40,8 +40,22 @@ HAWDB_LIBRARY="$PWD/bazel-bin/bindings/ffi/libhawdb_ffi.dylib" \
 
 - `loadHawDB(path)` maps the shared library and registers the stable ordinary
   query symbols.
-- `library.open(path, { readOnly })` and `library.openInMemory()` return a
-  database handle.
+- `library.open(path, options)` and `library.openInMemory()` return a
+  database handle. `options` mirrors the C ABI `hawdb_open` options; omitted
+  or `undefined` keys keep the native defaults:
+  - `readOnly?: boolean` (default `false`);
+  - `durability?: "sync_on_every_write" | "sync_on_checkpoint"` (default
+    `"sync_on_every_write"`, power-loss safe; `"sync_on_checkpoint"` may lose
+    recently acknowledged transactions after a power failure, never part of one);
+  - `maxReadResultRows?: number | bigint | null` (default `null`; `0` or `null`
+    means no row ceiling);
+  - `maxReadResultPayloadBytes?: number | bigint` (default 64 MiB; must be
+    positive);
+  - `relationalMonotonicAppendFastPath?: boolean` (default `false`).
+
+  Unknown keys throw `HawDBError` with kind `invalid_argument`; the native
+  library validates values with the same kind. Reads over a budget throw
+  instead of returning partial results.
 - `database.query(cypher, parameters)` and `database.querySQL(sql, parameters)`
   return `QueryResult { columns, rows }`; `dicts()` converts rows to objects.
 - Close databases explicitly before closing the library. Both close operations
