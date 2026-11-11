@@ -29,8 +29,8 @@ pub(crate) use checkpoint::{
 };
 #[doc(hidden)]
 pub use checkpoint::{
-    CheckpointOperationError, CheckpointSharedBytes, CheckpointText, CheckpointWorkContext,
-    CheckpointWorkError,
+    CheckpointOperationError, CheckpointSharedBytes, CheckpointText, CheckpointUnitBatchStats,
+    CheckpointWorkContext, CheckpointWorkError, CHECKPOINT_UNITS_PER_ADMISSION,
 };
 pub(crate) use checkpoint::{CheckpointSharedValues, CheckpointValues};
 

@@ -15,6 +15,7 @@
 use super::*;
 use hawdb_qos::{
     LocalQosPolicy, QosTelemetryEvent, QosTelemetryOutcome, QosTelemetryPhase, QosTelemetrySink,
+    QosUnitEvent, QosUnitPhase,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -23,6 +24,8 @@ struct Units {
     admitted: AtomicUsize,
     denied: AtomicUsize,
     oversized: AtomicUsize,
+    started: AtomicUsize,
+    ended: AtomicUsize,
 }
 
 impl QosTelemetrySink for Units {
@@ -37,6 +40,19 @@ impl QosTelemetrySink for Units {
             self.admitted.fetch_add(1, Ordering::SeqCst);
         } else {
             self.denied.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn observes_units(&self) -> bool {
+        true
+    }
+
+    fn record_qos_unit(&self, event: QosUnitEvent) {
+        assert!(event.unit_in_batch <= hawdb_storage::background::CHECKPOINT_UNITS_PER_ADMISSION);
+        if event.phase == QosUnitPhase::Started {
+            self.started.fetch_add(1, Ordering::SeqCst);
+        } else {
+            self.ended.fetch_add(1, Ordering::SeqCst);
         }
     }
 }
@@ -118,7 +134,14 @@ fn actual_owner_prepares_and_replays_with_one_local_operation_available() {
     owner.stop();
     assert_eq!(std::fs::read(&base).unwrap(), base_bytes);
     assert_eq!(scheduler.state().running_background_operations, 0);
-    assert!(units.admitted.load(Ordering::SeqCst) > 32);
+    // Every builder unit ran under a one-operation local admission, and
+    // those admissions are batched (#1616).
+    let admitted = units.admitted.load(Ordering::SeqCst);
+    let started = units.started.load(Ordering::SeqCst);
+    assert!(started > 32);
+    assert_eq!(units.ended.load(Ordering::SeqCst), started);
+    assert!(admitted >= 1);
+    assert!(admitted < started, "admitted={admitted} units={started}");
     assert_eq!(units.denied.load(Ordering::SeqCst), 0);
     assert_eq!(units.oversized.load(Ordering::SeqCst), 0);
     assert_eq!(control.lock().unwrap().report.failed_attempts, 0);

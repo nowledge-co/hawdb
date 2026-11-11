@@ -1071,7 +1071,10 @@ database-owned `LocalQosScheduler` path. Shared scheduler handles track running
 background operation budgets between start and finish, including optional
 per-class budgets for projection, import, analytics, and shadow lanes; it does
 not own worker threads, reorder jobs, or gate foreground explicit rebuild
-requests.
+requests. Checkpoint builders use `LocalQosBatchPermit` to cover up to 64
+bounded units with one admission; an idle batch is not counted as running and
+is reclaimed by any background admission it would refuse (see the pressure
+checkpoint spec, #1616).
 Callers that maintain their own background loop can build a
 `BackgroundWorkPlan` with `BackgroundWorkHint` signals for active topic,
 recent delta size, query probability, staleness TTL, freshness SLO, and tenant

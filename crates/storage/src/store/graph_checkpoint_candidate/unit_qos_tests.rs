@@ -16,8 +16,9 @@ use super::*;
 use hawdb_core::RuntimeCancellationToken;
 use hawdb_qos::{
     IoConcurrencyBudget, LocalQosPolicy, LocalQosScheduler, QosTelemetryEvent, QosTelemetryPhase,
-    QosTelemetrySink, RuntimeGovernor, RuntimeGovernorConfig, RuntimeMemorySnapshot,
-    RuntimeResourceBudget, RuntimeResourceSnapshot, RuntimeWorkRequest, WorkClass, WorkRequest,
+    QosTelemetrySink, QosUnitEvent, QosUnitPhase, RuntimeGovernor, RuntimeGovernorConfig,
+    RuntimeMemorySnapshot, RuntimeResourceBudget, RuntimeResourceSnapshot, RuntimeWorkRequest,
+    WorkClass, WorkRequest,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -166,12 +167,23 @@ struct CancelPlanning {
     cancellation: RuntimeCancellationToken,
 }
 
+/// Cancels when the tenth planning unit starts. Units share batched local
+/// admissions (#1616), each of one operation.
 impl QosTelemetrySink for CancelPlanning {
     fn record_qos(&self, event: QosTelemetryEvent) {
-        if event.phase == QosTelemetryPhase::Admission
+        if event.phase == QosTelemetryPhase::Admission {
+            assert_eq!(event.estimated_operations, 1);
+        }
+    }
+
+    fn observes_units(&self) -> bool {
+        true
+    }
+
+    fn record_qos_unit(&self, event: QosUnitEvent) {
+        if event.phase == QosUnitPhase::Started
             && self.calls.fetch_add(1, Ordering::SeqCst) + 1 == 10
         {
-            assert_eq!(event.estimated_operations, 1);
             self.cancellation.cancel();
         }
     }

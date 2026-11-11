@@ -17,8 +17,8 @@ use crate::append_table::AppendOrderMode;
 use crate::background::CheckpointWorkProbe;
 use crate::relational::{RelationalColumnSchema, RelationalRow, RelationalScalarType};
 use hawdb_qos::{
-    LocalQosPermit, LocalQosPolicy, LocalQosScheduler, QosTelemetryEvent, QosTelemetryOutcome,
-    QosTelemetryPhase, QosTelemetrySink, WorkClass, WorkRequest,
+    LocalQosPermit, LocalQosPolicy, LocalQosScheduler, QosTelemetryEvent, QosTelemetrySink,
+    QosUnitEvent, QosUnitPhase, WorkClass, WorkRequest,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -434,11 +434,21 @@ struct DenyNextUnit {
     blocker: Mutex<Option<LocalQosPermit>>,
 }
 
+/// Competing background work takes the only local operation after `after`
+/// units. The builder's idle batch is reclaimed, so its next unit must admit
+/// again and is deferred at exactly that boundary (#1616).
 impl QosTelemetrySink for DenyNextUnit {
     fn record_qos(&self, event: QosTelemetryEvent) {
         self.probe.record_qos(event);
-        if event.phase == QosTelemetryPhase::Completion
-            && event.outcome == QosTelemetryOutcome::Completed
+    }
+
+    fn observes_units(&self) -> bool {
+        true
+    }
+
+    fn record_qos_unit(&self, event: QosUnitEvent) {
+        self.probe.record_qos_unit(event);
+        if event.phase == QosUnitPhase::Finished
             && self.probe.completed.load(Ordering::SeqCst) == self.after
         {
             let permit = self
