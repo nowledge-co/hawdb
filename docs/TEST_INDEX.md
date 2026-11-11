@@ -660,10 +660,13 @@ stride directory and 1/24 of the segment, that reads of dense-id segments
 examine exactly one directory entry and at most one stride plus one frame
 (gapped ids still binary search), and that a directory entry with a wrong id,
 a wrong offset or a wrong length fails closed. The single-walk projected
-decode equals the two-walk reference in rows and admitted bytes for every
-one- and two-key selection, every key prefix (past the eight-value located
-capacity, which falls back) and absent keys, and an admission refusal decodes
-nothing. The root case compares out-of-core projected rows with the resident
+decode equals the two-walk reference in rows and admitted bytes on three
+records of a directory-backed segment for a bounded table of named
+selections: none, each key alone (one per encoded value type of the
+fixture), exactly the eight-value located capacity, nine values (which falls
+back to the two-walk path), every key, and absent keys; each admission sees
+the reference bytes before decoding and a refusal decodes nothing. The root
+case compares out-of-core projected rows with the resident
 store before and after committed uncheckpointed updates, deletions
 (tombstones) and creations, with spilled selected and unselected values, and
 after a checkpoint and reopen. Structural assertions use the test-only
