@@ -53,6 +53,7 @@ mod load_csv_tests;
 #[cfg(test)]
 mod math_reduce_endpoint_tests;
 mod pattern_expression;
+pub use pattern_expression::with_legacy_pattern_value_imports;
 #[cfg(test)]
 mod pattern_expression_tests;
 mod projection;

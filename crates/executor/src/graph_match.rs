@@ -233,7 +233,7 @@ pub(crate) fn stream_graph_match(
     // Each input row is consumed: its working row moves rather than copies.
     let mut visit_input = |input: Binding| -> Result<BatchControl> {
         runtime_checkpoint(context.task_context)?;
-        let (mut binding, _leases) = runtime.prepare(Cow::Owned(input))?;
+        let (mut binding, _leases) = runtime.prepare(Cow::Owned(input), &[])?;
         runtime.deferred.set(false);
         runtime.memberships.reset();
         let mut matched = false;
@@ -363,7 +363,7 @@ pub(crate) fn visit_correlated_matches(
     store: &dyn GraphExecutionRead,
     context: MatchContext<'_>,
     account: &QueryMemoryAccount,
-    input: &Binding,
+    input: CorrelatedInput<'_>,
     candidate: &dyn Fn() -> Result<()>,
     emit: &mut dyn FnMut(&Binding) -> Result<ScanControl>,
 ) -> Result<ScanControl> {
@@ -381,8 +381,16 @@ pub(crate) fn visit_correlated_matches(
         candidate: Some(candidate),
         memberships: membership::MembershipSets::default(),
     };
-    let (mut binding, _leases) = runtime.prepare(Cow::Borrowed(input))?;
+    let (mut binding, _leases) = runtime.prepare(Cow::Borrowed(input.row), input.identities)?;
     runtime.visit(0, &mut binding, &mut BTreeSet::new(), emit)
+}
+
+/// The incoming row of a correlated match. An import whose column has an
+/// entry in `identities` reads that entity instead of the row's column.
+#[derive(Clone, Copy)]
+pub(crate) struct CorrelatedInput<'a> {
+    pub(crate) row: &'a Binding,
+    pub(crate) identities: &'a [ImportIdentity<'a>],
 }
 
 fn validate_program(program: &GraphMatchProgram) -> Result<()> {
@@ -527,6 +535,7 @@ impl MatchRuntime<'_> {
     fn prepare(
         &self,
         input: Cow<'_, Binding>,
+        identities: &[ImportIdentity<'_>],
     ) -> Result<(Binding, AdmittedVec<Box<dyn GraphReadAllocation>>)> {
         let mut admit =
             |bytes| admit_graph_read(self.source_account, self.context.task_context, bytes);
@@ -539,7 +548,13 @@ impl MatchRuntime<'_> {
         )?)?;
         let mut resolved = Vec::with_capacity(self.program.imports.len());
         for import in &self.program.imports {
-            let resolution = resolve_import(&input, import);
+            let resolution = match identities
+                .iter()
+                .find(|identity| identity.column == import.column)
+            {
+                Some(identity) => Ok(Some(identity.identity)),
+                None => resolve_import(&input, import),
+            };
             let failed = resolution.is_err();
             resolved.push(resolution);
             if failed {
@@ -1506,15 +1521,22 @@ impl MatchRuntime<'_> {
     }
 }
 
-/// Checks that an imported column holds an entity of the import's kind. The
-/// column may come from an untyped source such as an UNWIND element (#1486),
-/// so a non-entity value fails with the variable named rather than being read
-/// as an identity.
 /// The identity of one graph import, read from the unmodified input row.
-struct ResolvedImport {
-    id: u64,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ResolvedImport {
+    pub(crate) id: u64,
     /// The source node of an imported relationship.
-    source: Option<u64>,
+    pub(crate) source: Option<u64>,
+}
+
+/// The identity a caller resolved for the import reading `column`, in
+/// place of a value in the input row's column (#1615). The import reads
+/// the entity from the snapshot by this identity, as it would by the id the
+/// column's value holds.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ImportIdentity<'a> {
+    pub(crate) column: &'a str,
+    pub(crate) identity: ResolvedImport,
 }
 
 /// `None` when the import's column is NULL. A node bound by an earlier
@@ -1534,6 +1556,17 @@ fn resolve_import(input: &Binding, import: &GraphBindingImport) -> Result<Option
             import.column
         ))
     })?;
+    import_identity(value, import)
+}
+
+/// The identity of the entity `value` holds for `import`, `None` when it is
+/// NULL. The value may come from an untyped source such as an UNWIND element
+/// (#1486), so a value that is not an entity of the import's kind fails with
+/// the variable named rather than being read as an identity.
+pub(crate) fn import_identity(
+    value: &Value,
+    import: &GraphBindingImport,
+) -> Result<Option<ResolvedImport>> {
     if value == &Value::Null {
         return Ok(None);
     }

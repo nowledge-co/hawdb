@@ -15,6 +15,7 @@
 
 use super::*;
 use hawdb_cypher::{MatchPattern, RelationshipDirection};
+use std::cell::Cell;
 
 /// The parts of a pattern expression in source form.
 pub(super) struct PatternParts<'a> {
@@ -243,6 +244,7 @@ pub(super) fn plan_pattern_expression(
     // read the row column itself (path functions, the column CASE forms)
     // read a copy the subquery row receives as an argument.
     let mut columns = Vec::new();
+    let mut copied_columns = BTreeSet::new();
     for column in column_scope {
         let mut lent = false;
         let mut copied = false;
@@ -257,10 +259,27 @@ pub(super) fn plan_pattern_expression(
         if lent {
             columns.push(column.clone());
         }
-        if copied && !arguments.iter().any(|(name, _)| name == column) {
-            arguments.push((column.clone(), ProjectionExpression::Column(column.clone())));
+        if copied {
+            copied_columns.insert(column.clone());
+            if !arguments.iter().any(|(name, _)| name == column) {
+                arguments.push((column.clone(), ProjectionExpression::Column(column.clone())));
+            }
         }
     }
+    // Import columns the body never reads from the subquery row reach the
+    // match by identity alone (#1615).
+    let identity_columns = if LEGACY_VALUE_IMPORTS.with(Cell::get) {
+        Vec::new()
+    } else {
+        program
+            .imports
+            .iter()
+            .map(|import| &import.column)
+            .filter(|column| !copied_columns.contains(*column))
+            .chain(seeds.iter().map(|seeds| &seeds.column))
+            .cloned()
+            .collect()
+    };
     let mut read = BTreeSet::new();
     for expression in &body {
         graph_variables_read(expression, &mut read);
@@ -283,7 +302,28 @@ pub(super) fn plan_pattern_expression(
         predicate,
         projection,
         seeds,
+        identity_columns,
     })))
+}
+
+thread_local! {
+    static LEGACY_VALUE_IMPORTS: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Plans `f` with pattern expressions that copy every argument and seed value
+/// into the subquery row, as before #1615, on this thread only. Differential
+/// tests compare it with the default planning; it is not a production
+/// control.
+#[doc(hidden)]
+pub fn with_legacy_pattern_value_imports<T>(f: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            LEGACY_VALUE_IMPORTS.with(|legacy| legacy.set(self.0));
+        }
+    }
+    let _restore = Restore(LEGACY_VALUE_IMPORTS.with(|legacy| legacy.replace(true)));
+    f()
 }
 
 /// The most disjuncts of a pattern WHERE that seed planning considers.

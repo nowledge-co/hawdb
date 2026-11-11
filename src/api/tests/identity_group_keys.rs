@@ -25,7 +25,7 @@ impl Random {
 /// Persons with small property domains, so different persons often have
 /// equal properties, some properties missing and a long `bio` that projected
 /// reads skip; KNOWS and LIKES relationships with optional weights.
-fn statements(seed: u64) -> Vec<String> {
+pub(super) fn statements(seed: u64) -> Vec<String> {
     let mut random = Random(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     let persons = 12 + random.below(12);
     let mut statements = Vec::new();
@@ -65,7 +65,10 @@ fn statements(seed: u64) -> Vec<String> {
 }
 
 /// The same graph resident in memory, or checkpointed and reopened out of core.
-fn open(statements: &[String], out_of_core: bool) -> (Database, Option<std::path::PathBuf>) {
+pub(super) fn open(
+    statements: &[String],
+    out_of_core: bool,
+) -> (Database, Option<std::path::PathBuf>) {
     if !out_of_core {
         let mut db = Database::new();
         for statement in statements {
@@ -156,7 +159,7 @@ const QUERIES: &[(&str, bool, Option<&str>)] = &[
     ),
 ];
 
-fn rows(db: &mut Database, query: &str) -> Vec<String> {
+pub(super) fn rows(db: &mut Database, query: &str) -> Vec<String> {
     let output = db
         .query(query)
         .unwrap_or_else(|error| panic!("{query}: {error}"));

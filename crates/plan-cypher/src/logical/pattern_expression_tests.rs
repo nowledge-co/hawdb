@@ -567,3 +567,74 @@ fn where_equalities_seed_an_introduced_node() {
         assert!(seeds(unseeded).is_none(), "{unseeded}");
     }
 }
+
+#[test]
+fn import_only_columns_reach_the_match_by_identity() {
+    let identity = |query: &str, scope: &[&str], columns: &[&str]| {
+        let items = returns(query, scope, columns).unwrap();
+        pattern(&items[0].expression).identity_columns
+    };
+    // A comprehension element and a column imported as a node or a
+    // relationship, read by the body only as locals.
+    assert_eq!(
+        identity(
+            "MATCH (person) RETURN [p IN posts WHERE (p)-[:HAS_TAG]->()<-[:HAS_INTEREST]-(person)] AS c",
+            &["person"],
+            &["posts"],
+        ),
+        ["p"]
+    );
+    assert_eq!(
+        identity(
+            "MATCH (a) RETURN [(x)-[q]->(y) | [x.name, q.w]] AS c",
+            &["a"],
+            &["x", "q"],
+        ),
+        ["x", "q"]
+    );
+    // A column the body reads from the row itself keeps its value.
+    assert_eq!(
+        identity(
+            "MATCH (a) RETURN [(x)-[:R]->(c) | CASE WHEN x.title IS NULL OR x.title = '' THEN 'none' ELSE x.title END] AS c",
+            &["a"],
+            &["x"],
+        ),
+        Vec::<String>::new()
+    );
+    // Graph variables are shared from the row, not imported.
+    assert_eq!(
+        identity("MATCH (a) RETURN [(a)-[:R]->(c) | c] AS c", &["a"], &[]),
+        Vec::<String>::new()
+    );
+    // A seed column holds only the seed's identity.
+    let items = returns(
+        "MATCH ()-[r:KNOWS]->() RETURN [(a:Person)<-[:HAS_CREATOR]-(m) WHERE a = startNode(r) | m] AS c",
+        &["r"],
+        &[],
+    )
+    .unwrap();
+    let seeded = pattern(&items[0].expression);
+    assert_eq!(
+        seeded.identity_columns,
+        [seeded.seeds.as_ref().unwrap().column.clone()]
+    );
+    // Legacy planning copies every argument and seed value.
+    for (query, scope, columns) in [
+        (
+            "MATCH (person) RETURN [p IN posts WHERE (p)-[:HAS_TAG]->()<-[:HAS_INTEREST]-(person)] AS c",
+            &["person"][..],
+            &["posts"][..],
+        ),
+        (
+            "MATCH ()-[r:KNOWS]->() RETURN [(a:Person)<-[:HAS_CREATOR]-(m) WHERE a = startNode(r) | m] AS c",
+            &["r"][..],
+            &[][..],
+        ),
+    ] {
+        let legacy =
+            with_legacy_pattern_value_imports(|| returns(query, scope, columns)).unwrap();
+        let legacy = pattern(&legacy[0].expression);
+        assert!(!legacy.arguments.is_empty() || legacy.seeds.is_some(), "{query}");
+        assert!(legacy.identity_columns.is_empty(), "{query}");
+    }
+}
