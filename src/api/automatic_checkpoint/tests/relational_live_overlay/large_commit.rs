@@ -170,6 +170,58 @@ fn district_sized_commits_above_the_free_headroom_drain_first_and_succeed() {
     assert_order_line_totals(&mut reopened, lines);
 }
 
+/// A district commit above the free headroom whose drain keeps failing is
+/// rejected with the retryable `BranchBusy`, never the live-view admission
+/// error, and its retries re-arm the stopped circuit (#1618). On main the
+/// first retry after one failed drain returns the non-retryable error.
+#[test]
+fn a_district_commit_retries_while_its_drain_fails_and_succeeds_once_the_fault_clears() {
+    let fixture = Fixture::new();
+    let mut db = Database::open_with_config(&fixture.0, config()).unwrap();
+    let lines = fill_below_trigger(&mut db);
+    let initial = completed(&db);
+    let epoch = db.commit_epoch().unwrap();
+    let obstruction = obstruct_next_checkpoint(&mut db);
+    let mut busy_retries = 0;
+    let mut cleared = false;
+    loop {
+        match insert_line_range(&mut db, lines..lines + LARGE_DISTRICT_LINES) {
+            Ok(()) => break,
+            Err(HawDBError::BranchBusy {
+                resource: "automatic checkpoint capacity",
+            }) if busy_retries < 100 => busy_retries += 1,
+            Err(error) => panic!(
+                "district failed after {busy_retries} busy retries: {error}; {:?}; {:?}",
+                debt(&db).relational_live,
+                db.automatic_checkpoint_report()
+            ),
+        }
+        // Every rejected attempt applied nothing.
+        assert_eq!(db.commit_epoch().unwrap(), epoch);
+        let report = db.automatic_checkpoint_report().unwrap().unwrap();
+        assert_eq!(report.completed_checkpoints, initial, "{report:?}");
+        if !cleared && report.operation_failures > u64::from(MAX_OPERATION_FAILURES) {
+            // The circuit stopped and a retry re-armed it at least once.
+            assert!(report.operation_retry_rearms >= 1, "{report:?}");
+            std::fs::remove_file(&obstruction).unwrap();
+            cleared = true;
+        }
+    }
+    let report = db.automatic_checkpoint_report().unwrap().unwrap();
+    eprintln!("district after fault: busy_retries={busy_retries}, report={report:?}");
+    assert!(cleared, "{report:?}");
+    assert!(report.completed_checkpoints > initial, "{report:?}");
+    assert!(!report.operation_retry_exhausted, "{report:?}");
+    assert_eq!(db.commit_epoch().unwrap(), epoch + 1);
+    let lines = lines + LARGE_DISTRICT_LINES;
+    assert_order_lines(&mut db, lines);
+    drop(db);
+    let mut reopened = Database::open_with_config(&fixture.0, config()).unwrap();
+    assert_order_lines(&mut reopened, lines);
+    reopened.checkpoint().unwrap();
+    assert_order_line_totals(&mut reopened, lines);
+}
+
 const WIDE_COLUMNS: usize = 40;
 
 /// Wide rows per INSERT statement, within the SQL parser's memo limit.

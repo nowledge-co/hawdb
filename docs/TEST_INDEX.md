@@ -1285,6 +1285,36 @@ root presubmit excludes these explicit leaves.
 Replay with `cargo test --locked
 -p hawdb --lib api::automatic_checkpoint::tests::relational_live_overlay`.
 
+Transient checkpoint faults on a long-lived handle
+([#1618](https://github.com/nowledge-co/hawdb/issues/1618)) inject the fault
+deterministically: a regular file at the next generation's private staging path
+makes every automatic preparation fail with an operation error before any
+selector or WAL mutation, and removing it clears the fault (no timing or disk
+exhaustion is needed). `steady_inserts_outlast_a_transient_checkpoint_fault_and_keep_draining`
+(in `//:hawdb_unit_checkpoint_headroom_controls_tests`) runs the growing-table
+2,500-line commits with the fault in place until the stopped circuit has been
+re-armed and failed again, clears it, and continues through two drains. Every
+commit succeeds or gets the retryable `BranchBusy` (at most 200 retries), live
+and, until the first drain, base-relative row debt stay below the envelope,
+failures stay within three plus one per re-arm, and reads and totals hold after
+reopen; base `1141d6a7` rejects commit 26 with exactly the #1618 live-view
+admission error (67,500 entries/67,299,228 bytes). In
+`//:hawdb_unit_checkpoint_large_commit_tests`,
+`a_district_commit_retries_while_its_drain_fails_and_succeeds_once_the_fault_clears`
+fills to about 67% and retries one 40,000-line district: each rejection applies
+nothing (unchanged epoch), and once the fault clears the district drains first and
+commits; base `1141d6a7` returns the non-retryable error after one failed drain.
+On an Apple M4 (Cargo test profile, loaded host) each takes about 52 s, most of
+it the bounded 1 s/2 s/4 s re-arm backoff. `api::automatic_checkpoint::tests::operation_retry`
+(`//:hawdb_unit_checkpoint_lifecycle_tests`) pins the circuit itself without a
+database: the recorded cause, one attempt per re-arm and the doubling backoff up
+to its 30 s cap; its existing cases still prove that an idle handle never
+retries a stopped circuit and that a manual checkpoint re-arms it. Replay with
+`cargo test --locked -p hawdb --lib transient_checkpoint_fault`,
+`cargo test --locked -p hawdb --lib drain_fails_and_succeeds` and
+`cargo test --locked -p hawdb --lib operation_retry`. No lane, profile,
+feature matrix or deadline changes.
+
 ## Component regression owners
 
 The manual `concurrent_writers` benchmark accepts

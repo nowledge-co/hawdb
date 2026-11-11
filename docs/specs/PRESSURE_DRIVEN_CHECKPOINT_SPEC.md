@@ -50,11 +50,15 @@ before the wait and again after it, once the drained generation is adopted and
 immediately before the retried commit: a task cancelled or past its deadline
 while waiting fails with nothing applied (no WAL append, no new epoch), and its
 runtime, barrier, sequencer and host admission are released. A further retry
-needs a newly completed checkpoint. A parked,
-suspended, stopped or exhausted owner, or a build or handle without background
-maintenance, fails closed with the same pre-WAL rejection, which states the
-commit size and that a checkpoint must drain the overlay first; the synchronous
-manual checkpoint then drains it. A transaction-private row view charges only the
+needs a newly completed checkpoint: when the wait completed none (the owner
+deferred or failed that attempt), the commit fails with the retryable
+`BranchBusy`, nothing applied, and a later commit waits again
+([#1618](https://github.com/nowledge-co/hawdb/issues/1618)). An owner whose
+operation circuit is exhausted still counts as able to drain, because a waiting
+writer re-arms it (below). A parked, suspended, stopped or failed owner, or a
+build or handle without background maintenance, fails closed with the same
+pre-WAL rejection, which states the commit size and that a checkpoint must
+drain the overlay first; the synchronous manual checkpoint then drains it. A transaction-private row view charges only the
 transaction's own changes, so the commit, not a statement, decides headroom.
 Explicit transaction commits (on a database or a concurrent handle) and
 autocommit SQL statements take this path; other write paths keep the plain
@@ -194,11 +198,28 @@ Non-admission preparation, replay or publication failures consume a budget of
 three attempts per durable WAL generation. Exhaustion releases the unselected
 candidate and its admission, parks automatic scheduling, and sets
 `AutomaticCheckpointReport::operation_retry_exhausted`; the cumulative
-`operation_failures` counter remains observable. Additional foreground commits
-do not reset this circuit. A successful caller-triggered `checkpoint()` advances
-the durable generation and permits automatic work again. The synchronous manual
-APIs remain available while automatic scheduling is parked. Publication
-uncertainty still retains recovery evidence and fails closed.
+`operation_failures` counter and the latest failure's diagnostic,
+`last_operation_error`, remain observable. Additional foreground commits do not
+reset this circuit, and an idle database never retries it. A writer that would
+wait for checkpoint headroom does
+([#1618](https://github.com/nowledge-co/hawdb/issues/1618)): when WAL, delta or
+base-relative live-overlay debt reaches the writer fence, or a commit does not
+fit the live headroom, the writer waits within the same 5 s capacity deadline
+until the circuit's backoff expires, then re-arms exactly one attempt
+(`operation_retry_rearms`). The backoff is 1 s after the first stop and doubles
+with each later stop in the same WAL generation, up to 30 s, so a persistent
+fault costs at most one attempt per backoff and only while writers press on
+capacity. Until a checkpoint completes, writers near the base-relative limit
+also wait while that attempt prepares, so the debt never grows past what one
+drain can capture; a writer whose deadline expires gets the retryable
+`BranchBusy` with nothing applied. Without this, one transient I/O fault on a
+long-lived handle (for example ENOSPC from another process filling a shared
+temporary filesystem) stopped draining for good, and steady inserts then failed
+with the non-retryable live-view admission error. Any completed checkpoint,
+automatic or caller-triggered, advances the durable generation and resets the
+circuit and its backoff. The synchronous manual APIs remain available while
+automatic scheduling is parked. Publication uncertainty still retains recovery
+evidence and fails closed.
 
 Preparation owns its original source/catalog and completed projected-graph and
 source-row plans across safe resource/cancellation deferrals. Submitting a later

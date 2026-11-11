@@ -273,8 +273,11 @@ impl BranchRuntimeCell {
     ///
     /// The wait reuses the bounded live-overlay capacity waits. It ends with
     /// the original rejection when no owner can drain (no background
-    /// maintenance, a stopped or exhausted owner) or a wait completed no
-    /// checkpoint, and with `BranchBusy` when the drain stops progressing.
+    /// maintenance, a stopped, suspended or failed owner). It ends with the
+    /// retryable `BranchBusy`, nothing applied, when the drain stops
+    /// progressing or a wait completed no checkpoint: the owner deferred or
+    /// failed that attempt, and a later commit waits for (or re-arms) the
+    /// next one (#1618).
     /// `task_context` is checked before the wait and again after it, once the
     /// drained generation is adopted and immediately before the retry, so a
     /// task cancelled or past its deadline while waiting applies nothing.
@@ -309,9 +312,16 @@ impl BranchRuntimeCell {
                     let completed = self.publication.completed_checkpoints();
                     if !self.needs_publication_barrier()
                         || !self.publication.can_drain_for_headroom()
-                        || observed_checkpoints == Some(completed)
                     {
                         return Err(error);
+                    }
+                    if observed_checkpoints == Some(completed) {
+                        // The owner can still drain, but the attempt this
+                        // commit waited for completed nothing. The commit
+                        // was rejected before WAL append; retrying is safe.
+                        return Err(HawDBError::BranchBusy {
+                            resource: "automatic checkpoint capacity",
+                        });
                     }
                     super::query_runtime::query_runtime_checkpoint(task_context)?;
                     observed_checkpoints = Some(completed);
