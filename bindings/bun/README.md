@@ -58,6 +58,14 @@ HAWDB_LIBRARY="$PWD/bazel-bin/bindings/ffi/libhawdb_ffi.dylib" \
   instead of returning partial results.
 - `database.query(cypher, parameters)` and `database.querySQL(sql, parameters)`
   return `QueryResult { columns, rows }`; `dicts()` converts rows to objects.
+- `database.transaction((tx) => { ... })` runs the body as one atomic
+  transaction: `tx.query`, `tx.querySQL` and `tx.exec` run inside it, it
+  commits when the body returns (returning the body's value) and rolls back
+  every statement when the body throws, rethrowing the error. The body must be
+  synchronous; returning a promise rolls back and throws. While it runs,
+  `database.query`/`querySQL`, a nested `database.transaction` and
+  `database.close()` throw `HawDBError` with kind `transaction_open`, and a
+  `tx` used after its body finished throws `no_transaction`.
 - Close databases explicitly before closing the library. Both close operations
   are idempotent. The library refuses to unload while a database is live.
 - Every native result/error buffer is copied and released before a call returns.

@@ -338,6 +338,10 @@ struct HawdbDatabase *hawdb_open_in_memory(struct HawdbBuffer *err_out);
 /**
  * Close a database handle and release its resources.
  *
+ * A transaction still open on the handle (see
+ * [`hawdb_begin_transaction`]) is rolled back: none of its statements are
+ * committed or visible after a reopen.
+ *
  * # Safety
  * `db` must be a handle returned by [`hawdb_open`] and not already
  * closed. Passing NULL is a no-op.
@@ -601,3 +605,88 @@ uint32_t hawdb_retained_node_retain(uint64_t owner_namespace,
                                     uint64_t owner_id,
                                     struct HawdbRetainedNodeV1 *out,
                                     uint32_t out_size);
+
+/**
+ * Begin a user transaction on `db`.
+ *
+ * Statements then run through [`hawdb_transaction_query`] and
+ * [`hawdb_transaction_query_sql`], see their own writes, and become durable
+ * and visible to other readers only together, at
+ * [`hawdb_commit_transaction`]. [`hawdb_rollback_transaction`] discards
+ * them. While the transaction is open, [`hawdb_query`] and
+ * [`hawdb_query_sql`] on this handle fail with `transaction_open`.
+ *
+ * Returns true on success. Fails with `transaction_open` if a transaction
+ * is already open on the handle (there is no nesting) and with the engine's
+ * own error kind if the database cannot start one (for example a read-only
+ * open).
+ *
+ * # Safety
+ * `db` must be a live [`super::hawdb_open`] handle; `err_out` must be NULL
+ * or writable [`HawdbBuffer`] storage.
+ */
+bool hawdb_begin_transaction(struct HawdbDatabase *db, struct HawdbBuffer *err_out);
+
+/**
+ * Run one Cypher statement inside the open transaction.
+ *
+ * Arguments, value encoding and result/error conventions match
+ * [`super::hawdb_query`]. Fails with `no_transaction` when no transaction is
+ * open. A failed statement leaves the transaction open; roll it back (a
+ * later commit may also refuse it).
+ *
+ * # Safety
+ * Same contract as [`super::hawdb_query`].
+ */
+bool hawdb_transaction_query(struct HawdbDatabase *db,
+                             const char *cypher,
+                             uintptr_t cypher_len,
+                             const char *params_json,
+                             uintptr_t params_len,
+                             struct HawdbBuffer *result_out,
+                             struct HawdbBuffer *err_out);
+
+/**
+ * Run one SQL statement inside the open transaction.
+ *
+ * Arguments, value encoding and result/error conventions match
+ * [`super::hawdb_query_sql`]; otherwise behaves like
+ * [`hawdb_transaction_query`].
+ *
+ * # Safety
+ * Same contract as [`super::hawdb_query`].
+ */
+bool hawdb_transaction_query_sql(struct HawdbDatabase *db,
+                                 const char *sql,
+                                 uintptr_t sql_len,
+                                 const char *params_json,
+                                 uintptr_t params_len,
+                                 struct HawdbBuffer *result_out,
+                                 struct HawdbBuffer *err_out);
+
+/**
+ * Commit the open transaction as one durable commit.
+ *
+ * On success returns true and `result_out` receives the commit's result
+ * envelope (`{"columns": [...], "rows": [...]}`). The transaction is closed
+ * after this call whether or not it succeeds: a failed commit (for example
+ * a write conflict or a budget refusal) publishes none of its statements.
+ * Fails with `no_transaction` when no transaction is open.
+ *
+ * # Safety
+ * `db` must be a live [`super::hawdb_open`] handle; `result_out` and
+ * `err_out` must be NULL or writable [`HawdbBuffer`] storage.
+ */
+bool hawdb_commit_transaction(struct HawdbDatabase *db,
+                              struct HawdbBuffer *result_out,
+                              struct HawdbBuffer *err_out);
+
+/**
+ * Roll back the open transaction, discarding all of its statements.
+ * Fails with `no_transaction` when no transaction is open.
+ *
+ * # Safety
+ * `db` must be a live [`super::hawdb_open`] handle; `err_out` must be NULL
+ * or writable [`HawdbBuffer`] storage.
+ */
+bool hawdb_rollback_transaction(struct HawdbDatabase *db, struct HawdbBuffer *err_out);
