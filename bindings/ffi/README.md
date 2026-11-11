@@ -28,8 +28,9 @@ the ABI. The Go test target runs with cgo disabled and loads the Bazel-built
 shared library from its declared runfiles, so no `HAWDB_LIBRARY` setup or
 prebuilt Cargo artifact is required.
 
-Released versions also ship these libraries prebuilt for macOS, Linux (glibc)
-and Windows, with the header, a manifest and checksums; see
+Development prereleases also ship these libraries prebuilt for macOS, Linux
+(glibc) and Windows, with the header, a manifest and checksums (stable releases
+do not); see
 [Prebuilt C ABI libraries](../../docs/PREBUILT_LIBRARIES.md).
 [`examples/embed.c`](examples/embed.c) is a minimal linked host.
 

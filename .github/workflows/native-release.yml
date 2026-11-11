@@ -1,8 +1,12 @@
 name: Native Release
 
 # Builds the HawDB C ABI for every prebuilt target, attaches the archives and
-# SHA256SUMS to the GitHub Release, and publishes the Bun package and its
-# per-platform library packages to npm through trusted publishing (OIDC).
+# SHA256SUMS to a development prerelease, and publishes the Bun package and its
+# per-platform library packages to npm under that channel's dist-tag through
+# trusted publishing (OIDC). AGENTS.md keeps HawDB out of stable and GA
+# releases, so a stable release never starts these jobs: `source` runs only for
+# a GitHub prerelease, and scripts/native-release-mode.py refuses anything but a
+# prerelease whose version is <x.y.z>-dev.<n> or <x.y.z>-nightly.<n>.
 # Pull requests that change this pipeline build and smoke-test every archive
 # without uploading or publishing. See docs/PREBUILT_LIBRARIES.md.
 
@@ -12,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag to build, upload or retry
+        description: Existing development prerelease tag (v<x.y.z>-dev.<n> or -nightly.<n>) to build, upload or retry
         required: true
         type: string
   pull_request:
@@ -20,6 +24,8 @@ on:
       - ".github/workflows/native-release.yml"
       - "scripts/package-ffi-release.py"
       - "scripts/package-ffi-release.test.py"
+      - "scripts/native-release-mode.py"
+      - "scripts/native-release-mode.test.py"
       - "scripts/npm/**"
       - "bindings/ffi/examples/**"
       - "bindings/bun/scripts/**"
@@ -39,20 +45,24 @@ env:
 jobs:
   source:
     name: Resolve released source
+    # Stable releases never start this workflow's jobs; every other job needs
+    # this one and a development or pull-request mode from it.
+    if: github.event_name != 'release' || github.event.release.prerelease
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.release.outputs.version }}
       tag: ${{ steps.release.outputs.tag }}
       sha: ${{ steps.release.outputs.sha }}
       epoch: ${{ steps.release.outputs.epoch }}
-      publish: ${{ steps.release.outputs.publish }}
+      mode: ${{ steps.release.outputs.mode }}
+      npm_tag: ${{ steps.release.outputs.npm_tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.event_name == 'pull_request' && github.sha || format('refs/tags/{0}', github.event.release.tag_name || inputs.tag) }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Validate the release tag and engine versions
+      - name: Validate the release mode, tag and engine versions
         id: release
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
@@ -67,27 +77,26 @@ jobs:
           test "$ffi" = "$version" && test "$bun" = "$version"
           test "$bazel_versions" = "version = \"$version\""
           if [[ "$EVENT" == pull_request ]]; then
-            publish=false
-            tag="v$version"
+            python3 scripts/native-release-mode.py --event "$EVENT" --version "$version" > "$RUNNER_TEMP/mode"
           else
-            test "$RELEASE_TAG" = "v$version"
-            gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --json isDraft \
-              --jq 'if .isDraft then error("draft release") else . end' > /dev/null
+            gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --json tagName,isDraft,isPrerelease \
+              > "$RUNNER_TEMP/release.json"
+            # Refuses stable releases, drafts and non-development versions.
+            python3 scripts/native-release-mode.py --event "$EVENT" --tag "$RELEASE_TAG" \
+              --version "$version" --release "$RUNNER_TEMP/release.json" > "$RUNNER_TEMP/mode"
             git merge-base --is-ancestor HEAD origin/main
-            publish=true
-            tag="$RELEASE_TAG"
           fi
           {
             echo "version=$version"
-            echo "tag=$tag"
+            cat "$RUNNER_TEMP/mode"
             echo "sha=$(git rev-parse HEAD)"
             echo "epoch=$(git log -1 --format=%ct)"
-            echo "publish=$publish"
           } | tee -a "$GITHUB_OUTPUT"
 
   build:
     name: C ABI (${{ matrix.target }})
     needs: source
+    if: needs.source.outputs.mode == 'development' || needs.source.outputs.mode == 'pull-request'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 150
     strategy:
@@ -276,6 +285,7 @@ jobs:
   assets:
     name: Release assets and checksums
     needs: [source, build]
+    if: needs.source.outputs.mode == 'development' || needs.source.outputs.mode == 'pull-request'
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -309,7 +319,7 @@ jobs:
           path: dist
           if-no-files-found: error
       - name: Upload to the GitHub Release, refusing different existing bytes
-        if: needs.source.outputs.publish == 'true'
+        if: needs.source.outputs.mode == 'development'
         working-directory: dist
         env:
           GH_TOKEN: ${{ github.token }}
@@ -338,7 +348,7 @@ jobs:
   npm-not-configured:
     name: npm trusted publishing not enabled
     needs: [source, assets]
-    if: needs.source.outputs.publish == 'true' && vars.NPM_TRUSTED_PUBLISHING != 'enabled'
+    if: needs.source.outputs.mode == 'development' && vars.NPM_TRUSTED_PUBLISHING != 'enabled'
     runs-on: ubuntu-24.04
     steps:
       - name: Explain the skipped npm publish
@@ -348,7 +358,7 @@ jobs:
   npm:
     name: Publish npm packages (trusted publishing)
     needs: [source, assets]
-    if: needs.source.outputs.publish == 'true' && vars.NPM_TRUSTED_PUBLISHING == 'enabled'
+    if: needs.source.outputs.mode == 'development' && vars.NPM_TRUSTED_PUBLISHING == 'enabled'
     runs-on: ubuntu-24.04
     environment:
       name: npm
@@ -397,7 +407,12 @@ jobs:
             > "$RUNNER_TEMP/npm-summary.json"
           cat "$RUNNER_TEMP/npm-summary.json"
       - name: Publish platform packages, then the main package
-        run: bash scripts/npm/publish-assembled.sh "$RUNNER_TEMP/npm-summary.json" --publish --provenance
+        env:
+          # dev or nightly, from the release version; never latest.
+          NPM_TAG: ${{ needs.source.outputs.npm_tag }}
+        run: |
+          set -euo pipefail
+          bash scripts/npm/publish-assembled.sh "$RUNNER_TEMP/npm-summary.json" --tag "$NPM_TAG" --publish --provenance
       - name: Install the public package and load HawDB without a path
         env:
           VERSION: ${{ needs.source.outputs.version }}

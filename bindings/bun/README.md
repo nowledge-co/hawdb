@@ -7,8 +7,11 @@ add another Rust integration surface.
 ## Install
 
 ```sh
-bun add @nowledge/hawdb-bun
+bun add @nowledge/hawdb-bun@dev
 ```
+
+HawDB is published to npm only as development prereleases, under the `dev`
+(or `nightly`) dist-tag; there is no stable npm release yet.
 
 The package installs the prebuilt HawDB C ABI library for the current host
 through one optional `@nowledge/hawdb-ffi-<platform>` dependency: macOS arm64
@@ -69,7 +72,9 @@ packages from that library, packs them, installs the tarballs into a fresh
 
 The [Native Release workflow](../../.github/workflows/native-release.yml)
 publishes `@nowledge/hawdb-bun` and the platform packages with npm trusted
-publishing at the HawDB release version.
+publishing for development prereleases only, at the prerelease version and
+under its `dev` or `nightly` dist-tag. Stable releases do not publish them (see
+[release modes](../../docs/PREBUILT_LIBRARIES.md#release-modes)).
 [`scripts/assemble-npm.ts`](scripts/assemble-npm.ts) derives the publishable
 manifests from this directory's `package.json`, which stays `private` so the
 development workspace is never published directly. The one-time bootstrap and

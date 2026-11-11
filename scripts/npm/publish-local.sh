@@ -6,6 +6,11 @@
 #
 #   scripts/npm/publish-local.sh <version> <libhawdb_ffi.dylib> [--publish]
 #
+# <version> must be a development prerelease (<x.y.z>-dev.<n> or
+# <x.y.z>-nightly.<n>, matching the source tree); its packages are published
+# under that channel's dist-tag, never `latest` (AGENTS.md keeps HawDB out of
+# stable releases).
+#
 # npm trusted publishing can only be configured for packages that already
 # exist, so the first publish is manual. This assembles and publishes:
 #
@@ -32,6 +37,11 @@ case "$mode" in
   *) echo "unknown argument: $mode" >&2; exit 64 ;;
 esac
 
+if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-(dev|nightly)(\.[0-9A-Za-z-]+)+$ ]]; then
+  echo "publish-local.sh publishes only development prereleases (<x.y.z>-dev.<n> or -nightly.<n>), not $version" >&2
+  exit 64
+fi
+channel="${BASH_REMATCH[1]}"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 if [[ "$(uname -s)-$(uname -m)" != Darwin-arm64 ]]; then
   echo "publish-local.sh publishes the darwin-arm64 package and must run on macOS arm64" >&2
@@ -57,8 +67,8 @@ jq -r '.placeholders[], .publish[] | "\(.name)@\(.version)  \(.directory)"' "$su
 
 if [[ "$mode" == --publish ]]; then
   npm whoami > /dev/null
-  bash "$root/scripts/npm/publish-assembled.sh" "$summary" --placeholders --publish
+  bash "$root/scripts/npm/publish-assembled.sh" "$summary" --tag "$channel" --placeholders --publish
 else
-  bash "$root/scripts/npm/publish-assembled.sh" "$summary" --placeholders
+  bash "$root/scripts/npm/publish-assembled.sh" "$summary" --tag "$channel" --placeholders
   echo "Dry run complete. Re-run with --publish after npm login to publish."
 fi
