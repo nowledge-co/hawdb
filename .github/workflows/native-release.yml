@@ -1,0 +1,422 @@
+name: Native Release
+
+# Builds the HawDB C ABI for every prebuilt target, attaches the archives and
+# SHA256SUMS to the GitHub Release, and publishes the Bun package and its
+# per-platform library packages to npm through trusted publishing (OIDC).
+# Pull requests that change this pipeline build and smoke-test every archive
+# without uploading or publishing. See docs/PREBUILT_LIBRARIES.md.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build, upload or retry
+        required: true
+        type: string
+  pull_request:
+    paths:
+      - ".github/workflows/native-release.yml"
+      - "scripts/package-ffi-release.py"
+      - "scripts/package-ffi-release.test.py"
+      - "scripts/npm/**"
+      - "bindings/ffi/examples/**"
+      - "bindings/bun/scripts/**"
+      - "bindings/bun/src/platform.ts"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-release-${{ github.event.release.tag_name || inputs.tag || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  USE_BAZEL_VERSION: "9.3.1"
+  BUN_VERSION: "1.4.3"
+
+jobs:
+  source:
+    name: Resolve released source
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+      sha: ${{ steps.release.outputs.sha }}
+      epoch: ${{ steps.release.outputs.epoch }}
+      publish: ${{ steps.release.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.sha || format('refs/tags/{0}', github.event.release.tag_name || inputs.tag) }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate the release tag and engine versions
+        id: release
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          EVENT: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')"
+          ffi="$(python3 -c 'import tomllib; print(tomllib.load(open("bindings/ffi/Cargo.toml", "rb"))["package"]["version"])')"
+          bun="$(python3 -c 'import json; print(json.load(open("bindings/bun/package.json"))["version"])')"
+          bazel_versions="$(grep -Eo 'version = "[^"]+"' bindings/ffi/BUILD.bazel | sort -u)"
+          test "$ffi" = "$version" && test "$bun" = "$version"
+          test "$bazel_versions" = "version = \"$version\""
+          if [[ "$EVENT" == pull_request ]]; then
+            publish=false
+            tag="v$version"
+          else
+            test "$RELEASE_TAG" = "v$version"
+            gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --json isDraft \
+              --jq 'if .isDraft then error("draft release") else . end' > /dev/null
+            git merge-base --is-ancestor HEAD origin/main
+            publish=true
+            tag="$RELEASE_TAG"
+          fi
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "sha=$(git rev-parse HEAD)"
+            echo "epoch=$(git log -1 --format=%ct)"
+            echo "publish=$publish"
+          } | tee -a "$GITHUB_OUTPUT"
+
+  build:
+    name: C ABI (${{ matrix.target }})
+    needs: source
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            npm: linux-x64-gnu
+            arch: x86_64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            npm: linux-arm64-gnu
+            arch: aarch64
+          - os: macos-15
+            target: aarch64-apple-darwin
+            npm: darwin-arm64
+            arch: arm64
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            npm: darwin-x64
+            arch: x86_64
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            npm: win32-x64-msvc
+            arch: x86_64
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: "3.12"
+      - name: Check the runner architecture
+        run: test "$(uname -m)" = "${{ matrix.arch }}"
+      - name: Install Bazel
+        if: runner.os != 'Windows'
+        uses: bazel-contrib/setup-bazel@104e3eea9447cdaa4b00d0fb46191a3985d26ab3 # 0.19.1
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}-${{ matrix.target }}
+          repository-cache: true
+          external-cache: true
+      - name: Restore native Windows Bazel toolchain and caches
+        id: windows-bazel
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/windows-bazel
+        with:
+          cache-scope: native-release
+      - name: Build the release-profile C ABI libraries
+        id: build
+        run: |
+          set -euo pipefail
+          files() { bazel cquery --config=prebuilt --output=files "$1" 2>/dev/null; }
+          if [[ '${{ runner.os }}' == Windows ]]; then
+            bazel build --config=prebuilt //bindings/ffi:hawdb_ffi
+            shared="$(files //bindings/ffi:hawdb_ffi | grep -E '\.dll$')"
+            import="$(files //bindings/ffi:hawdb_ffi | grep -E '\.dll\.lib$')"
+            static=""
+          else
+            bazel build --config=prebuilt //bindings/ffi:hawdb_ffi //bindings/ffi:hawdb_ffi_static
+            shared="$(files //bindings/ffi:hawdb_ffi | grep -E '\.(so|dylib)$')"
+            static="$(files //bindings/ffi:hawdb_ffi_static | grep -E '\.a$')"
+            import=""
+          fi
+          for file in "$shared" ${static:+"$static"} ${import:+"$import"}; do test -f "$file"; done
+          {
+            echo "shared=$shared"
+            echo "static=$static"
+            echo "import=$import"
+          } | tee -a "$GITHUB_OUTPUT"
+      - name: Package the archive and manifest
+        id: package
+        env:
+          VERSION: ${{ needs.source.outputs.version }}
+          SHA: ${{ needs.source.outputs.sha }}
+          EPOCH: ${{ needs.source.outputs.epoch }}
+          SHARED: ${{ steps.build.outputs.shared }}
+          STATIC: ${{ steps.build.outputs.static }}
+          IMPORT: ${{ steps.build.outputs.import }}
+        run: |
+          set -euo pipefail
+          archive="$(python scripts/package-ffi-release.py --version "$VERSION" \
+            --target '${{ matrix.target }}' --revision "$SHA" --runner '${{ matrix.os }}' \
+            --shared "$SHARED" ${STATIC:+--static "$STATIC"} ${IMPORT:+--import-lib "$IMPORT"} \
+            --source-date-epoch "$EPOCH" --out dist)"
+          echo "archive=$archive" | tee -a "$GITHUB_OUTPUT"
+      - name: Unpack the archive as a downstream host would
+        id: unpack
+        env:
+          ARCHIVE: ${{ steps.package.outputs.archive }}
+          VERSION: ${{ needs.source.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/unpacked"
+          python - "$ARCHIVE" "$RUNNER_TEMP/unpacked" <<'PY'
+          import shutil, sys
+          shutil.unpack_archive(sys.argv[1], sys.argv[2])
+          PY
+          root="$RUNNER_TEMP/unpacked/hawdb-ffi-$VERSION-${{ matrix.target }}"
+          python - "$root" "$VERSION" <<'PY'
+          import hashlib, json, sys
+          from pathlib import Path
+          root, version = Path(sys.argv[1]), sys.argv[2]
+          manifest = json.loads((root / "manifest.json").read_text())
+          assert manifest["version"] == version, manifest["version"]
+          for name, entry in manifest["files"].items():
+              assert hashlib.sha256((root / name).read_bytes()).hexdigest() == entry["sha256"], name
+          print(json.dumps(manifest["requirements"], indent=2))
+          PY
+          if [[ '${{ runner.os }}' == Windows ]]; then
+            library="$root/bin/hawdb_ffi.dll"
+          else
+            library="$(ls "$root"/lib/libhawdb_ffi.{so,dylib} 2>/dev/null)"
+          fi
+          echo "root=$root" | tee -a "$GITHUB_OUTPUT"
+          echo "library=$library" | tee -a "$GITHUB_OUTPUT"
+      - name: Link the C example against the shared and static libraries
+        if: runner.os != 'Windows'
+        env:
+          ROOT: ${{ steps.unpack.outputs.root }}
+          VERSION: ${{ needs.source.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Link with exactly the flags the manifest documents for hosts.
+          read -r -a system_libs < <(python -c 'import json, sys; print(" ".join(json.load(open(sys.argv[1]))["requirements"]["static_link_flags"]))' "$ROOT/manifest.json")
+          cc -I "$ROOT/include" bindings/ffi/examples/embed.c -L "$ROOT/lib" -lhawdb_ffi \
+            -Wl,-rpath,"$ROOT/lib" -o "$RUNNER_TEMP/embed-shared"
+          cc -I "$ROOT/include" bindings/ffi/examples/embed.c "$ROOT/lib/libhawdb_ffi.a" \
+            "${system_libs[@]}" -o "$RUNNER_TEMP/embed-static"
+          for binary in embed-shared embed-static; do
+            output="$("$RUNNER_TEMP/$binary")"
+            echo "$output"
+            grep -qx "hawdb $VERSION" <<<"$output"
+            grep -q '"answer"' <<<"$output"
+          done
+      - name: Set up MSVC for the Windows link check
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+      - name: Link the C example against the Windows import library
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          ROOT: ${{ steps.unpack.outputs.root }}
+          VERSION: ${{ needs.source.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = Join-Path $env:RUNNER_TEMP 'embed.exe'
+          cl /nologo /I "$env:ROOT/include" bindings/ffi/examples/embed.c "$env:ROOT/lib/hawdb_ffi.dll.lib" /Fe:$out
+          if ($LASTEXITCODE -ne 0) { throw 'link failed' }
+          $env:PATH = "$env:ROOT/bin;$env:PATH"
+          $output = & $out
+          if ($LASTEXITCODE -ne 0) { throw 'embed.exe failed' }
+          $output
+          if ($output[0] -ne "hawdb $env:VERSION") { throw 'unexpected version' }
+          if (-not ($output -match '"answer"')) { throw 'unexpected result' }
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Test the Bun binding and its npm packages against the archive
+        working-directory: bindings/bun
+        env:
+          HAWDB_LIBRARY: ${{ steps.unpack.outputs.library }}
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          bun run typecheck
+          bun test
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: ffi-${{ matrix.target }}
+          path: ${{ steps.package.outputs.archive }}
+          if-no-files-found: error
+      - name: Save updated Windows disk actions
+        if: always() && runner.os == 'Windows' && steps.windows-bazel.outputs.disk-cache-key != '' && steps.windows-bazel.outputs.disk-cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: D:/hawdb-bazel-disk
+          key: ${{ steps.windows-bazel.outputs.disk-cache-key }}
+
+  assets:
+    name: Release assets and checksums
+    needs: [source, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: ffi-*
+          merge-multiple: true
+          path: dist
+      - name: Write SHA256SUMS for the complete archive set
+        working-directory: dist
+        env:
+          VERSION: ${{ needs.source.outputs.version }}
+        run: |
+          set -euo pipefail
+          expected=(
+            "hawdb-ffi-$VERSION-aarch64-apple-darwin.tar.gz"
+            "hawdb-ffi-$VERSION-x86_64-apple-darwin.tar.gz"
+            "hawdb-ffi-$VERSION-x86_64-unknown-linux-gnu.tar.gz"
+            "hawdb-ffi-$VERSION-aarch64-unknown-linux-gnu.tar.gz"
+            "hawdb-ffi-$VERSION-x86_64-pc-windows-msvc.zip"
+          )
+          test "$(find . -maxdepth 1 -type f -printf '%f\n' | sort)" = "$(printf '%s\n' "${expected[@]}" | sort)"
+          sha256sum -- * > "$RUNNER_TEMP/SHA256SUMS"
+          mv "$RUNNER_TEMP/SHA256SUMS" SHA256SUMS
+          cat SHA256SUMS
+          sha256sum --check --strict SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: ffi-release-assets
+          path: dist
+          if-no-files-found: error
+      - name: Upload to the GitHub Release, refusing different existing bytes
+        if: needs.source.outputs.publish == 'true'
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.source.outputs.tag }}
+        run: |
+          set -euo pipefail
+          existing="$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          mkdir -p "$RUNNER_TEMP/existing"
+          upload=()
+          for file in *; do
+            if grep -qx -- "$file" <<<"$existing"; then
+              gh release download "$TAG" -R "$GITHUB_REPOSITORY" --pattern "$file" --dir "$RUNNER_TEMP/existing" --clobber
+              if ! cmp -s "$file" "$RUNNER_TEMP/existing/$file"; then
+                echo "::error::$file on $TAG differs from this build; delete it deliberately before retrying"
+                exit 1
+              fi
+              echo "$file is already attached with identical bytes"
+            else
+              upload+=("$file")
+            fi
+          done
+          if (( ${#upload[@]} > 0 )); then
+            gh release upload "$TAG" -R "$GITHUB_REPOSITORY" "${upload[@]}"
+          fi
+
+  npm-not-configured:
+    name: npm trusted publishing not enabled
+    needs: [source, assets]
+    if: needs.source.outputs.publish == 'true' && vars.NPM_TRUSTED_PUBLISHING != 'enabled'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Explain the skipped npm publish
+        run: |
+          echo "::notice::npm publishing skipped: set the repository variable NPM_TRUSTED_PUBLISHING=enabled after configuring trusted publishers (docs/PREBUILT_LIBRARIES.md#npm-trusted-publishing), then rerun with workflow_dispatch."
+
+  npm:
+    name: Publish npm packages (trusted publishing)
+    needs: [source, assets]
+    if: needs.source.outputs.publish == 'true' && vars.NPM_TRUSTED_PUBLISHING == 'enabled'
+    runs-on: ubuntu-24.04
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/@nowledge/hawdb-bun
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          # No registry-url: a generated .npmrc token placeholder must not
+          # shadow the OIDC exchange npm performs for trusted publishing.
+          node-version: "24"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Install the npm CLI required for trusted publishing
+        run: |
+          npm install --global npm@11.21.1
+          npm --version
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ffi-release-assets
+          path: dist
+      - name: Assemble the npm packages from the released archives
+        env:
+          VERSION: ${{ needs.source.outputs.version }}
+        run: |
+          set -euo pipefail
+          (cd dist && sha256sum --check --strict SHA256SUMS)
+          mkdir -p "$RUNNER_TEMP/libraries"
+          for archive in dist/hawdb-ffi-*; do
+            python3 -c 'import shutil, sys; shutil.unpack_archive(sys.argv[1], sys.argv[2])' "$archive" "$RUNNER_TEMP/libraries"
+          done
+          libs="$RUNNER_TEMP/libraries"
+          bun bindings/bun/scripts/assemble-npm.ts --version "$VERSION" --out "$RUNNER_TEMP/npm" \
+            --library "darwin-arm64=$libs/hawdb-ffi-$VERSION-aarch64-apple-darwin/lib/libhawdb_ffi.dylib" \
+            --library "darwin-x64=$libs/hawdb-ffi-$VERSION-x86_64-apple-darwin/lib/libhawdb_ffi.dylib" \
+            --library "linux-x64-gnu=$libs/hawdb-ffi-$VERSION-x86_64-unknown-linux-gnu/lib/libhawdb_ffi.so" \
+            --library "linux-arm64-gnu=$libs/hawdb-ffi-$VERSION-aarch64-unknown-linux-gnu/lib/libhawdb_ffi.so" \
+            --library "win32-x64-msvc=$libs/hawdb-ffi-$VERSION-x86_64-pc-windows-msvc/bin/hawdb_ffi.dll" \
+            > "$RUNNER_TEMP/npm-summary.json"
+          cat "$RUNNER_TEMP/npm-summary.json"
+      - name: Publish platform packages, then the main package
+        run: bash scripts/npm/publish-assembled.sh "$RUNNER_TEMP/npm-summary.json" --publish --provenance
+      - name: Install the public package and load HawDB without a path
+        env:
+          VERSION: ${{ needs.source.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/consumer" && cd "$RUNNER_TEMP/consumer"
+          echo '{"name":"consumer","private":true,"type":"module"}' > package.json
+          for attempt in {1..6}; do
+            if bun add "@nowledge/hawdb-bun@$VERSION"; then break; fi
+            if [[ "$attempt" == 6 ]]; then exit 1; fi
+            sleep 20
+          done
+          cat > check.ts <<'TS'
+          import { loadHawDB } from "@nowledge/hawdb-bun";
+          const hawdb = loadHawDB();
+          const database = hawdb.openInMemory();
+          console.log(hawdb.version(), JSON.stringify(database.query("UNWIND [42] AS answer RETURN answer").dicts()));
+          database.close();
+          hawdb.close();
+          TS
+          output="$(bun check.ts)"
+          echo "$output"
+          grep -q "^hawdb $VERSION " <<<"$output"

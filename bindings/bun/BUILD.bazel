@@ -5,6 +5,7 @@ filegroup(
     srcs = glob([
         "*.json",
         "*.md",
+        "scripts/**",
         "src/**",
         "tests/**",
     ]),
