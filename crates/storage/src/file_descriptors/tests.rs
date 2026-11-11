@@ -1382,8 +1382,9 @@ fn a_write_racing_the_mount_hash_leaves_no_reusable_record() {
         fn checkpoint(&mut self) -> std::io::Result<()> {
             if self.admitted && !self.touched {
                 self.touched = true;
-                // The owner may set times through a read-only descriptor.
-                let file = std::fs::File::open(&self.object)?;
+                // Windows needs write-attribute access to set times, so
+                // open for writing like `flip_byte_in_place`.
+                let file = std::fs::OpenOptions::new().write(true).open(&self.object)?;
                 let modified = file.metadata()?.modified()? + std::time::Duration::from_secs(5);
                 file.set_times(std::fs::FileTimes::new().set_modified(modified))?;
             }
