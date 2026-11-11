@@ -514,6 +514,10 @@ dependencies and owners. This work supports [#1596](https://github.com/nowledge-
 - [ ] Deliver the explicit offline four-family runner and supported SQL/Cypher
   adapters, with frozen manifests, serial paired sampling, complete replay and
   separate residency/cache/timing cohorts (phase 2).
+- [x] Add a separately scoped warm materialized Cypher bounded-order pilot
+  with frozen fingerprints, preparation/execution timings, full typed parity,
+  paired samples, memory counters and tie-aware inversion/regret diagnostics.
+  The other families/adapters and observed-cardinality re-costing remain open.
 - [ ] Add within-query rank/regret metrics and frozen-plan observed-cardinality
   diagnosis, retaining unsupported, partial, timed-out and refused cases
   rather than counting them as successful coverage (phase 3).

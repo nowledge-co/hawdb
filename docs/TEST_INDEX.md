@@ -3017,7 +3017,20 @@ schedule, profile override or performance gate is added. Cargo replay uses
 See [query-lab](../tools/query-lab/README.md) for frozen manifests, exact CLI
 replay, cooperative-budget limits and the unqualified ordinary-plan baseline.
 Existing Shiro oracle suites and CLI controls remain intact. Candidate-plan
-timing, regret, diagnosis and coefficient-promotion phases remain pending.
+qualification across all four families and coefficient promotion remain pending.
+
+`cost_measurement::tests` additionally owns the separate paired bounded-order
+diagnostic: bounded manifests, explicit unsupported-family inventory, complete
+typed result/snapshot/identity parity across the 3-warmup/15-sample schedule,
+NULL/duplicates, offset/wide output and empty results, equal-plan deduplication,
+reliable inversion controls and refusal of missing/failed/zero-duration regret.
+The existing embedded qualification entry point exposes preparation and
+execution/materialization durations without changing ordinary query execution.
+Replay with `cargo test --locked --manifest-path tools/query-lab/Cargo.toml
+cost_measurement -- --test-threads=1`. Actual performance uses the repository
+release profile and Cargo's compiled source receipt through `cost-measure`;
+Bazel/checked runs remain correctness controls. See the query-lab README for
+the bounded cohorts and unimplemented adapters. No CI lane or timeout changes.
 
 
 ## Embedded architecture ownership (#1222)

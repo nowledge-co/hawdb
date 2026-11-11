@@ -6,6 +6,7 @@
 
 pub mod cardinality;
 pub mod cli;
+pub mod cost_measurement;
 pub mod cost_qualification;
 pub mod graph_statistics;
 pub mod manifest;
