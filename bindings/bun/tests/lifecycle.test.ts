@@ -26,6 +26,11 @@ for (const scenario of [
   "sql-reuse",
   "query-library-close",
   "open-library-close",
+  "backup-close",
+  "backup-reuse",
+  "restore-backup-library-close",
+  "restore-destination-library-close",
+  "maintenance-healthy",
   "healthy",
 ]) {
   test(`guards native lifetime: ${scenario}`, () => {

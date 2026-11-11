@@ -429,26 +429,40 @@ export class HawDBLibrary {
     return parseReport<T>(text, fields);
   }
 
-  private liveForMaintenance(handle: NativePointer): void {
+  private liveLifetime(handle: NativePointer): symbol {
     this.assertOpen();
-    if (!this.handles.has(handle)) {
+    const lifetime = this.handles.get(handle);
+    if (lifetime === undefined) {
+      throw new HawDBError("invalid_handle", "HawDB database handle is not live");
+    }
+    return lifetime;
+  }
+
+  // Converting a path can run its toString/Symbol.toPrimitive, which may close
+  // this database, open another at the same address, or unload the library.
+  // Recheck the library and the lifetime token, not only the address, after
+  // every argument has been converted and immediately before native dispatch.
+  private assertStillLive(handle: NativePointer, lifetime: symbol): void {
+    this.assertOpen();
+    if (this.handles.get(handle) !== lifetime) {
       throw new HawDBError("invalid_handle", "HawDB database handle is not live");
     }
   }
 
   backup(handle: NativePointer, destination: string): BackupReport {
-    this.liveForMaintenance(handle);
-    if (destination.length === 0) {
+    const lifetime = this.liveLifetime(handle);
+    const destinationBytes = encoder.encode(destination);
+    if (destinationBytes.length === 0) {
       throw new TypeError("HawDB backup destination must not be empty");
     }
-    const destinationBytes = encoder.encode(destination);
+    this.assertStillLive(handle, lifetime);
     return this.report(backupReportFields, "backup", (report, error) =>
       this.native.symbols.hawdb_backup(handle, destinationBytes, destinationBytes, report, error),
     );
   }
 
   scrub(handle: NativePointer): ScrubReport {
-    this.liveForMaintenance(handle);
+    this.liveLifetime(handle);
     return this.report(scrubReportFields, "scrub", (report, error) =>
       this.native.symbols.hawdb_scrub(handle, report, error),
     );
@@ -461,11 +475,13 @@ export class HawDBLibrary {
    */
   restore(backup: string, destination: string): RestoreReport {
     this.assertOpen();
-    if (backup.length === 0 || destination.length === 0) {
-      throw new TypeError("HawDB restore paths must not be empty");
-    }
     const backupBytes = encoder.encode(backup);
     const destinationBytes = encoder.encode(destination);
+    if (backupBytes.length === 0 || destinationBytes.length === 0) {
+      throw new TypeError("HawDB restore paths must not be empty");
+    }
+    // Path conversion may have unloaded the library.
+    this.assertOpen();
     return this.report(backupReportFields, "restore", (report, error) =>
       this.native.symbols.hawdb_restore(
         backupBytes,
