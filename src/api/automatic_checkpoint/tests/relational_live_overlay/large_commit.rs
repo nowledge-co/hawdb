@@ -170,6 +170,129 @@ fn district_sized_commits_above_the_free_headroom_drain_first_and_succeed() {
     assert_order_line_totals(&mut reopened, lines);
 }
 
+/// Asserts that the live admission envelope holds.
+fn assert_within_envelope(db: &Database) {
+    for (retained, limit) in debt(db).relational_live.admission_pairs() {
+        assert!(limit.is_none_or(|limit| retained <= limit));
+    }
+}
+
+/// The owner can drain but its attempt is deferred (a background admission
+/// denial, as under memory pressure): the commit that needs that drain gets
+/// the retryable `BranchBusy`, not the live-view admission error, applies
+/// nothing, and commits once the owner can drain again (#1637).
+#[test]
+fn a_deferred_drain_returns_retryable_busy_and_applies_nothing() {
+    let fixture = Fixture::new();
+    let mut db = Database::open_with_config(&fixture.0, config()).unwrap();
+    let lines = fill_below_trigger(&mut db);
+    let (epoch, checkpoints) = (db.commit_epoch().unwrap(), completed(&db));
+    db.set_runtime_governor(governor(1));
+    let error = insert_line_range(&mut db, lines..lines + LARGE_DISTRICT_LINES).unwrap_err();
+    let report = db.automatic_checkpoint_report().unwrap().unwrap();
+    assert!(
+        matches!(
+            error,
+            HawDBError::BranchBusy {
+                resource: "automatic checkpoint capacity"
+            }
+        ),
+        "{error}; {report:?}"
+    );
+    assert!(report.deferred_attempts >= 1, "{report:?}");
+    assert!(!report.operation_retry_exhausted, "{report:?}");
+    assert!(!db.storage_handle_poisoned().unwrap());
+    assert_eq!(db.commit_epoch().unwrap(), epoch);
+    assert_eq!(completed(&db), checkpoints);
+    assert_within_envelope(&db);
+    assert_order_lines(&mut db, lines);
+    db.set_runtime_governor(governor(8 * 1024 * 1024 * 1024));
+    let mut busy_retries = 0;
+    commit_with_busy_retries(
+        &mut db,
+        lines..lines + LARGE_DISTRICT_LINES,
+        &mut busy_retries,
+    )
+    .unwrap();
+    assert!(completed(&db) > checkpoints);
+    assert_within_envelope(&db);
+    assert_order_lines(&mut db, lines + LARGE_DISTRICT_LINES);
+}
+
+/// Holds the owner just before the drain a large commit requested, makes it
+/// unable to drain with `disable`, and asserts that the commit keeps the
+/// non-retryable pre-WAL live-view rejection rather than `BranchBusy`:
+/// waiting cannot help, and the synchronous manual checkpoint then drains
+/// the overlay so the same commit succeeds (#1637). `disable` returns a guard
+/// that is dropped before that manual checkpoint.
+fn assert_unable_owner_keeps_the_rejection<G>(disable: impl FnOnce(&Arc<Control>) -> G) {
+    let fixture = Fixture::new();
+    let mut db = Database::open_with_config(&fixture.0, config()).unwrap();
+    let lines = fill_below_trigger(&mut db);
+    let (epoch, checkpoints) = (db.commit_epoch().unwrap(), completed(&db));
+    let pause = RequestedDrainPause::install(&db);
+    let control = Arc::clone(&pause.control);
+    let (error, guard) = std::thread::scope(|scope| {
+        let writer =
+            scope.spawn(|| insert_line_range(&mut db, lines..lines + LARGE_DISTRICT_LINES));
+        pause.wait_until_drain_is_held();
+        // The owner re-evaluates its state when released, so it starts no
+        // drain; the waiting commit wakes, fails to fit again and returns.
+        let guard = disable(&control);
+        control.notify_all();
+        pause.release();
+        (writer.join().unwrap().unwrap_err(), guard)
+    });
+    let report = db.automatic_checkpoint_report().unwrap().unwrap();
+    let message = error.to_string();
+    assert!(
+        !matches!(error, HawDBError::BranchBusy { .. })
+            && message.contains("before WAL append")
+            && message.contains("a checkpoint must drain the overlay first"),
+        "{message}; {report:?}"
+    );
+    assert!(!db.storage_handle_poisoned().unwrap());
+    assert_eq!(db.commit_epoch().unwrap(), epoch);
+    assert_eq!(completed(&db), checkpoints);
+    assert_within_envelope(&db);
+    assert_order_lines(&mut db, lines);
+    drop(guard);
+    db.checkpoint().unwrap();
+    insert_line_range(&mut db, lines..lines + LARGE_DISTRICT_LINES).unwrap();
+    assert_within_envelope(&db);
+    assert_order_lines(&mut db, lines + LARGE_DISTRICT_LINES);
+}
+
+/// A suspended owner starts no drain, so the waiting commit keeps the
+/// live-view rejection.
+#[test]
+fn a_commit_waiting_on_a_suspended_owner_keeps_the_live_view_rejection() {
+    assert_unable_owner_keeps_the_rejection(|control| control.suspend().unwrap());
+}
+
+/// A stopped owner (as at shutdown) starts no drain, so the waiting commit
+/// keeps the live-view rejection.
+#[test]
+fn a_commit_waiting_on_a_stopped_owner_keeps_the_live_view_rejection() {
+    assert_unable_owner_keeps_the_rejection(|control| {
+        control.lock().unwrap().stopping = true;
+    });
+}
+
+/// An owner whose operation retries are exhausted starts no drain until a
+/// manual checkpoint or a new WAL generation, so the waiting commit keeps
+/// the live-view rejection.
+#[test]
+fn a_commit_waiting_on_an_exhausted_owner_keeps_the_live_view_rejection() {
+    assert_unable_owner_keeps_the_rejection(|control| {
+        let mut state = control.lock().unwrap();
+        for _ in 0..MAX_OPERATION_FAILURES {
+            record_operation_failure(&mut state);
+        }
+        assert!(state.report.operation_retry_exhausted);
+    });
+}
+
 const WIDE_COLUMNS: usize = 40;
 
 /// Wide rows per INSERT statement, within the SQL parser's memo limit.

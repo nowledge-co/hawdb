@@ -1274,8 +1274,18 @@ succeed, with no failed attempt, exact totals and reads after reopen (base
 `bd26dc4d` rejects the first, commit 22, before WAL append). A 30,000-line
 autocommit statement drains first too. A commit larger than the whole envelope
 is rejected, in a transaction and in autocommit, with the limits and its size
-named, no drain, an unchanged epoch and nothing written. The concurrent-handle
-and task cases hold the idle owner just before it starts the drain that a
+named, no drain, an unchanged epoch and nothing written. When the owner can
+drain but its attempt is deferred (a one-byte governor denies background
+admission, as under memory pressure), a district that needs the drain gets the
+retryable `BranchBusy` with an unchanged epoch, no completed checkpoint and
+nothing written, then commits once the governor admits the drain
+([#1637](https://github.com/nowledge-co/hawdb/issues/1637),
+[#1618](https://github.com/nowledge-co/hawdb/issues/1618); main returns the
+non-retryable live-view admission error). An owner made unable to drain while
+it is held before the drain a waiting district requested (suspended, stopped,
+or with its operation retries exhausted) keeps that live-view rejection, with
+nothing written, and the district commits after a manual checkpoint. The
+concurrent-handle and task cases hold the idle owner just before it starts the drain that a
 waiting district requested (no sleeps or free-running threads): on a concurrent
 handle a reader keeps its published view during the wait, and another writer
 queues behind the district and commits after it. A district whose task is
