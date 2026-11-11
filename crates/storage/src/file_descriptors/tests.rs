@@ -1362,3 +1362,61 @@ fn mount_verification_is_reused_once_by_the_next_cold_open() {
     assert_eq!(metrics().identity_verified_bytes, hashed + length);
     assert_eq!(metrics().mount_verification_reuses, 1);
 }
+
+/// #1440: the mount stamps the descriptor before reading the first payload
+/// byte and records it only if the stamp is unchanged after the hash. A write
+/// that lands while the mount is hashing therefore leaves no record, and the
+/// next cold open hashes in full.
+#[test]
+fn a_write_racing_the_mount_hash_leaves_no_reusable_record() {
+    struct TouchDuringHash {
+        object: PathBuf,
+        admitted: bool,
+        touched: bool,
+    }
+    impl crate::file_io::ReadAdmissionControl for TouchDuringHash {
+        fn admit_validation(&mut self, _bytes: u64) -> std::io::Result<()> {
+            self.admitted = true;
+            Ok(())
+        }
+        fn checkpoint(&mut self) -> std::io::Result<()> {
+            if self.admitted && !self.touched {
+                self.touched = true;
+                // The owner may set times through a read-only descriptor.
+                let file = std::fs::File::open(&self.object)?;
+                let modified = file.metadata()?.modified()? + std::time::Duration::from_secs(5);
+                file.set_times(std::fs::FileTimes::new().set_modified(modified))?;
+            }
+            Ok(())
+        }
+    }
+
+    let fixture = Fixture::new(8);
+    let context = context_for_path(&fixture.root).unwrap();
+    let payload = b"mounted while a writer touches the object";
+    let length = payload.len() as u64;
+    let binding = fixture.binding("raced-object", payload);
+    let handles = &fixture.project.immutable_handles;
+    let alias = fixture.root.join("raced-object.alias");
+    let mut control = TouchDuringHash {
+        object: binding.object_path.clone(),
+        admitted: false,
+        touched: false,
+    };
+
+    handles
+        .mount_controlled(&alias, binding.clone(), &context, &mut control)
+        .unwrap();
+    assert!(control.touched, "the write must land inside the mount hash");
+    assert_eq!(fixture.project.metrics().identity_verified_bytes, length);
+
+    let (_file, validated) = handles
+        .get_admitted(&binding, &context, |_| Ok(()))
+        .unwrap();
+    assert_eq!(validated, length);
+    assert_eq!(
+        fixture.project.metrics().identity_verified_bytes,
+        2 * length
+    );
+    assert_eq!(fixture.project.metrics().mount_verification_reuses, 0);
+}

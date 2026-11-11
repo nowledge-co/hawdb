@@ -36,8 +36,9 @@ mod checkpoint_lock_tests;
 /// How a verified open established the object's identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IdentityCheck {
-    /// The complete object was hashed.
-    Hashed,
+    /// The complete object was hashed. Carries the descriptor's stamp taken
+    /// before the first payload byte was read, if it could be taken.
+    Hashed(Option<ObjectStamp>),
     /// A captured native identity, or this process's publication record.
     Trusted,
     /// The preceding mount's verification of this unmodified inode.
@@ -192,6 +193,16 @@ impl ImmutableFileHandles {
         binding: ImmutableFileBinding,
         context: &FileOpenContext,
     ) -> io::Result<()> {
+        self.mount_controlled(path, binding, context, &mut ValidationAdmission(|_| Ok(())))
+    }
+
+    pub(crate) fn mount_controlled(
+        &self,
+        path: &Path,
+        binding: ImmutableFileBinding,
+        context: &FileOpenContext,
+        control: &mut impl crate::file_io::ReadAdmissionControl,
+    ) -> io::Result<()> {
         // Mount validation uses a transient handle and a fixed-size buffer;
         // mounting an unopened artifact must not warm the descriptor cache.
         // Keep the verified handle alive until the alias has been installed.
@@ -200,15 +211,26 @@ impl ImmutableFileHandles {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .remove(&binding.reference);
-        let (verified, hashed) =
-            Self::open_verified_object(&binding, context, DescriptorKind::Transient)?;
+        let (verified, hashed, check) = Self::open_verified_object_controlled_from(
+            Some(&binding),
+            None,
+            context,
+            DescriptorKind::Transient,
+            control,
+            None,
+        )?;
         self.state.record_identity_verified(hashed);
-        // Stamp the descriptor that was hashed, after the hash completed. A
-        // skipped (same-process publication) hash leaves no mount record.
-        let verified_stamp = if hashed != 0 && hashed == binding.reference.byte_length {
-            verified.with_native(ObjectStamp::of_native).ok()
-        } else {
-            None
+        // Record only a complete hash whose descriptor stamp, taken before the
+        // first payload read, still matches after the hash. A skipped
+        // (same-process publication) hash leaves no mount record.
+        let verified_stamp = match check {
+            IdentityCheck::Hashed(Some(before)) if hashed == binding.reference.byte_length => {
+                verified
+                    .with_native(ObjectStamp::of_native)
+                    .ok()
+                    .filter(|after| *after == before)
+            }
+            _ => None,
         };
         let reference = binding.reference;
         let mounted = self.mount_alias(path, binding, &verified);
@@ -395,7 +417,7 @@ impl ImmutableFileHandles {
             mount_verified,
         )?;
         match check {
-            IdentityCheck::Hashed => self.state.record_identity_verified(validated),
+            IdentityCheck::Hashed(_) => self.state.record_identity_verified(validated),
             IdentityCheck::ReusedMount => self.state.record_mount_verification_reuse(),
             IdentityCheck::Trusted => {}
         }
@@ -441,45 +463,6 @@ impl ImmutableFileHandles {
     }
 
     /// Returns the verified handle and the number of payload bytes hashed.
-    fn open_verified_object(
-        binding: &ImmutableFileBinding,
-        context: &FileOpenContext,
-        kind: DescriptorKind,
-    ) -> io::Result<(File, u64)> {
-        Self::open_verified_object_admitted(binding, context, kind, |_| Ok(()))
-    }
-
-    fn open_verified_object_admitted(
-        binding: &ImmutableFileBinding,
-        context: &FileOpenContext,
-        kind: DescriptorKind,
-        admit_validation: impl FnMut(u64) -> io::Result<()>,
-    ) -> io::Result<(File, u64)> {
-        Self::open_verified_object_controlled(
-            binding,
-            context,
-            kind,
-            &mut ValidationAdmission(admit_validation),
-        )
-    }
-
-    fn open_verified_object_controlled(
-        binding: &ImmutableFileBinding,
-        context: &FileOpenContext,
-        kind: DescriptorKind,
-        control: &mut impl crate::file_io::ReadAdmissionControl,
-    ) -> io::Result<(File, u64)> {
-        Self::open_verified_object_controlled_from(
-            Some(binding),
-            None,
-            context,
-            kind,
-            control,
-            None,
-        )
-        .map(|(file, validated, _)| (file, validated))
-    }
-
     /// Returns the handle, the validation bytes charged, and how identity was
     /// established. `mount_verified` is the stamp a mount recorded after
     /// hashing this object; it is used only if the opened descriptor matches.
@@ -556,6 +539,9 @@ impl ImmutableFileHandles {
         // Descriptor rejection occurs before this charge. No payload may be
         // read until the caller has reserved the complete identity validation.
         control.admit_validation(binding.reference.byte_length)?;
+        // Stamp before hashing: a mount records only a stamp that is unchanged
+        // across the whole hash, so a write racing the hash cannot be recorded.
+        let pre_hash_stamp = file.with_native(ObjectStamp::of_native).ok();
         let mut hasher = crate::immutable_object::identity_hasher(
             binding.reference.kind,
             binding.reference.format_version,
@@ -589,7 +575,11 @@ impl ImmutableFileHandles {
                 "immutable handle identity digest mismatch",
             ));
         }
-        Ok((file, binding.reference.byte_length, IdentityCheck::Hashed))
+        Ok((
+            file,
+            binding.reference.byte_length,
+            IdentityCheck::Hashed(pre_hash_stamp),
+        ))
     }
 }
 

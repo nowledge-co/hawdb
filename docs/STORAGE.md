@@ -347,14 +347,19 @@ Branch mount of an object this process did not publish (including every
 object on a new-process open) always hashes the complete object, so each branch
 admission still authenticates its whole checkpoint closure before use
 ([#1440](https://github.com/nowledge-co/hawdb/issues/1440)). Admission then opens the
-mounted artifacts through the immutable-handle cache. That first cold handle open
-does not hash the same inode a second time: the mount leaves a one-shot,
-per-project record of the hashed descriptor's native identity, length and
-modification time, and the cold open skips the hash only when its descriptor
-still matches that stamp. The record is consumed by that open whether or not
-it matches, cleared before every remount (so a refused remount leaves none) and
-dropped on reclamation; any later cold open of the object, for example after
-descriptor-cache eviction, hashes it in full again. The stamp's limits are those
+mounted artifacts through the immutable-handle cache. The next cold handle open
+of a mounted object does not hash the same inode a second time: the mount
+leaves a one-shot, per-project record of the hashed descriptor's native
+identity, length and modification time, and that open skips the hash only when
+its descriptor still matches that stamp. The mount takes the stamp before
+reading the first payload byte and records it only if it is unchanged once the
+hash completes, so a write that races the hash leaves no record. The record has
+no time limit: if the object is not opened right after admission it waits for
+the next cold open, however late, and the stamp alone then decides. It is
+consumed by that open whether or not it matches, cleared before every remount
+(so a refused remount leaves none) and dropped on reclamation; any later cold
+open of the object, for example after descriptor-cache eviction, hashes it in
+full again. The stamp's limits are those
 of the publication record above, and page/block checks on reads are unchanged.
 `FileDescriptorMetrics::identity_verified_bytes` and
 `mount_verification_reuses` report the whole-object identity bytes verified
