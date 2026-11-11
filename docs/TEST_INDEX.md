@@ -673,6 +673,18 @@ test --locked -p hawdb-storage point_read_scope` and `cargo test --locked -p
 hawdb --lib api::tests::point_read_reuse`. No lane, profile or deadline
 changes.
 
+Shared graph-slot cleanup (#1615) is owned by executor
+`binding::graph_slots::tests` in the existing executor unit lane. It proves
+that discarding a slot never clones its shared record, leaves retained output
+snapshots intact, and releases the final slot array; owned `remove` still
+returns an independent record. MATCH, OPTIONAL and hash-join cleanup use this
+discard path. The ignored `shared_slot_cleanup_measurement` compares 10,000
+owned-removal/discard operations at 64 B, 4 KiB and 64 KiB payloads, asserting
+the exact clone count and copied payload bytes. Replay with `cargo test
+--locked --release -p hawdb-executor --lib shared_slot_cleanup_measurement --
+--ignored --nocapture --test-threads=1`. This is a cleanup-kernel measurement,
+not full-query latency or process-RSS evidence. No lane/profile/timeout changes.
+
 The adaptive execution family extends those existing executor owners with
 encoded non-expression key selection, complete-record validation, 64-KiB nested
 payload forwarding, descriptor/memory-driven 8/4/2-way merges, and live host

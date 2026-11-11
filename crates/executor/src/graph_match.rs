@@ -259,8 +259,8 @@ pub(crate) fn stream_graph_match(
             )?;
             let mut row = binding;
             for name in &program.introduced {
-                row.nodes.remove(name);
-                row.relationships.remove(name);
+                row.nodes.discard(name);
+                row.relationships.discard(name);
                 row.values.insert(name.clone(), Value::Null);
             }
             if context.observer.seed_graph_scoring_input().is_some() {
@@ -563,13 +563,13 @@ impl MatchRuntime<'_> {
         }
         let mut row = input.into_owned();
         for name in &self.program.introduced {
-            row.nodes.remove(name);
-            row.relationships.remove(name);
+            row.nodes.discard(name);
+            row.relationships.discard(name);
             row.values.remove(name);
         }
         for (import, resolution) in self.program.imports.iter().zip(resolved) {
-            row.nodes.remove(&import.variable);
-            row.relationships.remove(&import.variable);
+            row.nodes.discard(&import.variable);
+            row.relationships.discard(&import.variable);
             let Some(ResolvedImport { id, source }) = resolution? else {
                 row.values.insert(import.variable.clone(), Value::Null);
                 continue;
@@ -1173,7 +1173,7 @@ impl MatchRuntime<'_> {
                                 emit,
                             );
                             if let Some(variable) = inserted {
-                                row.relationships.remove(variable);
+                                row.relationships.discard(variable);
                             }
                             used.remove(&edge_id);
                             control
@@ -1279,7 +1279,7 @@ impl MatchRuntime<'_> {
         row.nodes.insert(variable.to_string(), node);
         // Evaluate placed conjuncts while this candidate's slot is bound.
         let control = self.visit(index + 1, row, used, emit);
-        row.nodes.remove(variable);
+        row.nodes.discard(variable);
         control
     }
 
