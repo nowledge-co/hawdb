@@ -592,3 +592,97 @@ fn descriptor_corruption_fails_closed_inside_a_scope() {
     assert!(reader.is_poisoned());
     assert_eq!(retained_segments(), 0);
 }
+
+#[test]
+fn single_walk_projection_equals_the_two_walk_reference() {
+    let (path, manifest) = write("scope_single_walk", 4, LARGE_SEGMENT);
+    let reader = open(path.as_ref(), &manifest, &cache());
+    let keys = node(FIRST_ID, 4).properties.into_keys().collect::<Vec<_>>();
+    assert!(keys.len() > LOCATED_SELECTION_CAPACITY);
+    // No key, every key alone and in pairs, every longer prefix up to all
+    // keys (past the located capacity), and keys a record does not hold.
+    let mut selections = vec![BTreeSet::new()];
+    for (index, first) in keys.iter().enumerate() {
+        selections.push(BTreeSet::from([first.clone()]));
+        for second in &keys[index + 1..] {
+            selections.push(BTreeSet::from([first.clone(), second.clone()]));
+        }
+    }
+    for length in 3..=keys.len() {
+        selections.push(keys[..length].iter().cloned().collect());
+    }
+    selections.push(BTreeSet::from([
+        "missing".to_string(),
+        "content".to_string(),
+    ]));
+    let expected = nodes(4);
+    let (mut located, mut fallback) = (0, 0);
+    for segment in collect_descriptors(&reader, CanonicalSegmentKind::Nodes) {
+        // Only payloads of directory-validated segments take the single walk.
+        if segment.record_count <= point_directory::POINT_DIRECTORY_STRIDE {
+            continue;
+        }
+        let bytes = reader.read_segment(&segment).unwrap();
+        decode_segment_records(&bytes, manifest.generation, &segment, |id, payload| {
+            let node = expected.iter().find(|node| node.id.0 == id).unwrap();
+            let keys = reader.property_keys();
+            for properties in &selections {
+                let reference_bytes =
+                    node_payload_allocation_bytes(payload, keys, None, Some(properties), true)
+                        .unwrap();
+                let reference = decode_projected_node_with_property_spills(
+                    id,
+                    payload,
+                    None,
+                    Some(keys),
+                    properties,
+                    true,
+                )
+                .unwrap();
+                assert_eq!(reference, project(node, properties));
+                match SelectedNodeValues::locate(payload, keys, None, properties).unwrap() {
+                    Some(selection) => {
+                        located += 1;
+                        assert_eq!(selection.allocation_bytes, reference_bytes);
+                        assert_eq!(
+                            selection.decode(NodeId(id), payload, None).unwrap(),
+                            reference
+                        );
+                    }
+                    None => {
+                        fallback += 1;
+                        assert!(properties.len() > LOCATED_SELECTION_CAPACITY);
+                    }
+                }
+                // As the store reads: admission sees exactly the reference
+                // bytes before decoding, and a refusal decodes nothing.
+                let input = CanonicalNodeInput {
+                    id: NodeId(id),
+                    payload,
+                    property_keys: keys,
+                    property_spills: None,
+                    values_validated: true,
+                };
+                let mut admitted = None;
+                let (read, ()) = input
+                    .decode_selected(properties, |bytes| {
+                        admitted = Some(bytes);
+                        Ok(())
+                    })
+                    .unwrap();
+                assert_eq!(admitted, Some(reference_bytes), "{properties:?}");
+                assert_eq!(read, reference);
+                let refused = input.decode_selected(properties, |_| {
+                    Err::<(), _>(CanonicalSegmentError::Source("refused".into()))
+                });
+                assert!(matches!(refused, Err(CanonicalSegmentError::Source(_))));
+            }
+            Ok(())
+        })
+        .unwrap();
+    }
+    assert!(
+        located > 0 && fallback > 0,
+        "{located} located, {fallback} fallback"
+    );
+}

@@ -651,6 +651,28 @@ the always-compiled `point_descriptor_seeks_for_test` counter. Replay with
 -p hawdb --lib api::tests::point_read_reuse`. No lane, profile or deadline
 changes.
 
+Canonical point-read work per record (#1615) is owned by storage
+`canonical::point_directory::tests` and `canonical::point_read_scope_tests`
+plus root `api::tests::point_read_reuse` (`//:hawdb_unit_general_tests`).
+Storage cases prove that a point directory's stride adapts to the segment's
+frame size while its bytes never exceed the larger of the former 32-record
+stride directory and 1/24 of the segment, that reads of dense-id segments
+examine exactly one directory entry and at most one stride plus one frame
+(gapped ids still binary search), and that a directory entry with a wrong id,
+a wrong offset or a wrong length fails closed. The single-walk projected
+decode equals the two-walk reference in rows and admitted bytes for every
+one- and two-key selection, every key prefix (past the eight-value located
+capacity, which falls back) and absent keys, and an admission refusal decodes
+nothing. The root case compares out-of-core projected rows with the resident
+store before and after committed uncheckpointed updates, deletions
+(tombstones) and creations, with spilled selected and unselected values, and
+after a checkpoint and reopen. Structural assertions use the test-only
+`point_frames_examined` and `point_directory_entries_examined` counters.
+Replay with `cargo test --locked -p hawdb-storage point_directory`, `cargo
+test --locked -p hawdb-storage point_read_scope` and `cargo test --locked -p
+hawdb --lib api::tests::point_read_reuse`. No lane, profile or deadline
+changes.
+
 The adaptive execution family extends those existing executor owners with
 encoded non-expression key selection, complete-record validation, 64-KiB nested
 payload forwarding, descriptor/memory-driven 8/4/2-way merges, and live host
