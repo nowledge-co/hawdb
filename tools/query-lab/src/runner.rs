@@ -333,7 +333,7 @@ fn replay_before(frozen: &Frozen, cell: usize, deadline: Instant) -> Result<Obse
     ))
 }
 
-fn environment() -> Json {
+pub(crate) fn environment() -> Json {
     let command = |program: &str, args: &[&str]| {
         std::process::Command::new(program)
             .args(args)

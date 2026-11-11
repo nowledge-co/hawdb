@@ -127,6 +127,10 @@ pub struct OptimizerQualificationOutput {
     pub cost_weights: crate::optimizer::PlanCostWeights,
     /// Work charged while preparing and executing this qualified read.
     pub work_units: usize,
+    /// Parse, bind and uncached plan preparation, excluding result execution.
+    pub preparation_elapsed: std::time::Duration,
+    /// Admitted execution and complete result materialization, including errors.
+    pub execution_elapsed: std::time::Duration,
     pub result: Result<BoundedReadQueryOutput>,
 }
 impl OptimizerQualificationOutput {
@@ -252,6 +256,7 @@ impl<S: executor::ExecutionStore> DatabaseReadTransaction<S> {
         qualification: OptimizerQualificationOptions,
         search: OptimizerSearchDirective,
     ) -> Result<OptimizerQualificationOutput> {
+        let preparation_started = std::time::Instant::now();
         if qualification.cost_perturbation().is_some()
             && qualification.bounded_order_alternative().is_some()
         {
@@ -351,6 +356,8 @@ impl<S: executor::ExecutionStore> DatabaseReadTransaction<S> {
         let snapshot_epoch = self.commit_epoch();
         let row_limit = self.read_result_row_limit();
         let mut external = executor::NoExternalReadOperator;
+        let preparation_elapsed = preparation_started.elapsed();
+        let execution_started = std::time::Instant::now();
         let result = read_execution::PreparedReadExecution {
             statement,
             optimized,
@@ -374,6 +381,7 @@ impl<S: executor::ExecutionStore> DatabaseReadTransaction<S> {
                 execution_profile,
             })
         });
+        let execution_elapsed = execution_started.elapsed();
         self.store.poison_on_storage_error(&result);
         let work_units = task
             .as_ref()
@@ -386,6 +394,8 @@ impl<S: executor::ExecutionStore> DatabaseReadTransaction<S> {
             cost_policy_id: DEFAULT_PLAN_COST_POLICY_ID,
             cost_weights: DEFAULT_PLAN_COST_WEIGHTS,
             work_units,
+            preparation_elapsed,
+            execution_elapsed,
             result,
         })
     }

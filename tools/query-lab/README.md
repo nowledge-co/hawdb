@@ -247,6 +247,59 @@ NULL/multiplicity, negative parse/output-refusal controls, setup censoring,
 frozen cost sampling and the bounded candidate proof/refusal cases. It is
 selected only by the manual Shiro test suite.
 
+## Paired bounded-order measurements
+
+The separate `hawdb-bounded-order-paired-measurement-v1` protocol adds a
+manual diagnostic campaign for the current Cypher candidate adapter. Freeze
+the manifest before measuring:
+
+```console
+cargo run --locked --release --manifest-path tools/query-lab/Cargo.toml -- cost-measure-freeze /tmp/order-manifest.json 4096
+cargo run --locked --release --manifest-path tools/query-lab/Cargo.toml -- cost-measure /tmp/order-manifest.json /tmp/order-report.json
+```
+
+`cost-measure-check` runs the same result/scheduling controls without a
+performance claim. The manifest bounds rows (64..32768), cases (8), warmups
+(3), repetitions (15..30), payload width (1024 bytes), work and deadline.
+Three default cells exercise broad duplicate/NULL keys, selective wide rows
+with an offset, and empty output. All output is totally ordered by key/id.
+
+Each cell retains one read snapshot. An initial untimed round freezes the
+ordinary, TopN and Sort-plus-Limit identities, followed by three warmups and
+fifteen rotated, serial paired rounds. Expected complete fingerprints guard
+every repeat. Complete typed results are compared each time; the report keeps
+one full result, avoiding repeated payload retention. Candidate results share
+the existing bounded batch-result budget and are released between rounds.
+The campaign records every scheduled cell/attempt, including setup failure,
+batch refusal and unrun remainder. A batch error does not invent individual
+timings for the candidates whose evidence the engine could not return.
+
+The embedded qualification output separates preparation from admitted
+execution plus complete result materialization. JSON conversion, comparison,
+bootstrap analysis and fixture setup are outside those execution timings.
+Reports retain raw samples, costs, operator outputs, work, ledger peaks,
+available RSS observations and explicit unavailable input/probe/device-I/O
+counters. Below-LIMIT operator outputs are not full-input cardinalities.
+
+Cargo builds embed a Git revision and SHA-256 of repository Rust/Cargo/C/header
+inputs, including untracked source, and the runner hashes its executable.
+The receipt does not hash external registry contents; preserve lockfiles,
+toolchain, build command and binary. Bazel correctness tools lack that Cargo
+receipt and cannot claim a measurement run. Runtime checkout state remains a
+separate observation. These manual receipts do not change production builds.
+
+Within each query, equal fingerprints are deduplicated. The report retains
+observed median regret, 5% practical ties and paired 95% bootstrap intervals
+(2000 resamples with the manifest seed), and flags reliable cost inversions.
+Failed, missing, unequal or zero-duration samples cannot yield regret. Fifteen
+samples make no stable p99 claim. Observed-cardinality re-costing remains
+unavailable: output counters alone cannot reconstruct input/probe work.
+
+This is the first measured family, not the complete four-family protocol.
+The report explicitly lists unsupported access, coverage and ordered-index
+selectors, SQL, fresh-handle and OutOfCore adapters. Keep those gaps in the
+denominator; no coefficient fitting or default policy change is included.
+
 ## Initial local evidence (2026-11-04 UTC)
 
 Engine base: `612d010d4188fda6c6d9dca7c03a7ce82dd288d0`; tool changes are in
