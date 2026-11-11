@@ -18,6 +18,8 @@ use std::fmt::Debug;
 
 mod checkpoint;
 #[cfg(test)]
+pub(crate) use checkpoint::tests::rebinds as checkpoint_rebinds;
+#[cfg(test)]
 pub(crate) use checkpoint::tests::CheckpointWorkProbe;
 pub(crate) use checkpoint::{
     checkpoint_decode_allocation, CheckpointBytes, CheckpointDecodeContext, CheckpointVectorPush,

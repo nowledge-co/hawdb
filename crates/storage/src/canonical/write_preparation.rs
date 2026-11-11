@@ -128,7 +128,10 @@ impl Preparation {
                 "canonical preparation is already finishing".into(),
             ));
         }
-        self.writer.work = Some(work.clone());
+        match &mut self.writer.work {
+            Some(bound) => bound.rebind(work),
+            None => self.writer.work = Some(work.clone()),
+        }
         if self.state.is_none() {
             let tree = create_canonical_descriptor_tree(
                 &self.path,

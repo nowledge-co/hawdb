@@ -60,13 +60,40 @@ pub const CHECKPOINT_UNITS_PER_ADMISSION: usize = 64;
 /// background admission it would otherwise refuse. A batch also ends at the
 /// end of [`Self::classify`], on [`Self::release_unit_batch`], when a unit is
 /// abandoned, and when the last clone is dropped.
+///
+/// A context is a shared handle (#1651): its task, scheduler and unit
+/// accounting are immutable once built and are shared by every clone, so a
+/// clone or drop is one reference count, not one per task controller.
+/// Builders that store a context compare handles with
+/// [`Self::rebind`] instead of cloning the same attempt's context per record.
 #[doc(hidden)]
 #[derive(Debug, Clone, Default)]
 pub struct CheckpointWorkContext {
+    shared: Arc<WorkShared>,
+    /// Scoped by [`Self::classify`]; not shared with the enclosing context.
+    recorded_failure: Option<Arc<Mutex<Option<CheckpointWorkError>>>>,
+}
+
+/// The immutable part of a context, shared by its clones. The builder
+/// methods copy it on write, so a published value never changes.
+///
+/// Every mutation must go through `Arc::make_mut` on a context's own handle.
+/// `CheckpointWorkContext::is_same` (used by `rebind`) treats pointer
+/// equality as context equality, which holds only while no published value
+/// is ever modified in place.
+#[derive(Debug, Clone, Default)]
+struct WorkShared {
     task: RuntimeTaskContext,
     scheduler: Option<LocalQosScheduler>,
+    /// Held by each unit that has a batch to end or progress to count.
+    units: Option<Arc<UnitAccounting>>,
+}
+
+/// What a started unit needs when it ends. Kept apart from the task so a
+/// unit retains no task controller.
+#[derive(Debug, Default)]
+struct UnitAccounting {
     batch: Option<Arc<UnitBatch>>,
-    recorded_failure: Option<Arc<Mutex<Option<CheckpointWorkError>>>>,
     progress: Option<Arc<AtomicU64>>,
 }
 
@@ -246,23 +273,27 @@ impl Drop for UnitBatch {
 }
 
 impl CheckpointWorkContext {
+    #[inline]
     pub(crate) fn task_context(&self) -> &RuntimeTaskContext {
-        &self.task
+        &self.shared.task
     }
 
     pub fn new(task: RuntimeTaskContext) -> Self {
         Self {
-            task,
-            scheduler: None,
-            batch: None,
+            shared: Arc::new(WorkShared {
+                task,
+                scheduler: None,
+                units: None,
+            }),
             recorded_failure: None,
-            progress: None,
         }
     }
 
     pub fn with_scheduler(mut self, scheduler: LocalQosScheduler) -> Self {
-        self.batch = Some(Arc::new(UnitBatch::new(scheduler.clone())));
-        self.scheduler = Some(scheduler);
+        let batch = Some(Arc::new(UnitBatch::new(scheduler.clone())));
+        let shared = Arc::make_mut(&mut self.shared);
+        shared.scheduler = Some(scheduler);
+        shared.set_units(|units| units.batch = batch);
         self
     }
 
@@ -270,15 +301,14 @@ impl CheckpointWorkContext {
     /// when no unit is active, otherwise when the last active unit ends.
     /// Owners call this before they wait or park outside builder work.
     pub fn release_unit_batch(&self) {
-        if let Some(batch) = &self.batch {
+        if let Some(batch) = self.batch() {
             batch.close(false);
         }
     }
 
     /// Admission counters shared by this context and its clones.
     pub fn unit_batch_stats(&self) -> CheckpointUnitBatchStats {
-        self.batch
-            .as_ref()
+        self.batch()
             .map(|batch| batch.lock().stats)
             .unwrap_or_default()
     }
@@ -286,22 +316,67 @@ impl CheckpointWorkContext {
     /// Observes completed builder units without counting failed admission or
     /// classification alone as progress. This does not reserve any resources.
     pub fn with_progress_counter(mut self, progress: Arc<AtomicU64>) -> Self {
-        self.progress = Some(progress);
+        Arc::make_mut(&mut self.shared).set_units(|units| units.progress = Some(progress));
         self
     }
 
+    /// Whether `other` is this same context: the same shared handle and the
+    /// same classification scope. Such contexts are interchangeable, because
+    /// a context's shared part never changes after it is built.
+    #[inline]
+    pub(crate) fn is_same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.shared, &other.shared)
+            && match (&self.recorded_failure, &other.recorded_failure) {
+                (None, None) => true,
+                (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+                _ => false,
+            }
+    }
+
+    /// Store `work` in a builder field unless the field already holds this
+    /// same context. Retained builders are re-bound to the caller's context
+    /// before every record or attempt; within one attempt that is the same
+    /// context, so the common case costs one pointer comparison (#1651).
+    #[inline]
+    pub(crate) fn rebind(&mut self, work: &Self) {
+        if !self.is_same(work) {
+            #[cfg(test)]
+            tests::REBINDS.with(|rebinds| rebinds.set(rebinds.get() + 1));
+            *self = work.clone();
+        }
+    }
+
+    /// A distinct handle over the same task, scheduler, batch and progress:
+    /// what every per-record clone produced before #1651. Tests use it to
+    /// force the re-binding path and compare its counts with the shared one.
+    #[cfg(test)]
+    pub(crate) fn fork_handle(&self) -> Self {
+        Self {
+            shared: Arc::new((*self.shared).clone()),
+            recorded_failure: self.recorded_failure.clone(),
+        }
+    }
+
+    #[inline]
+    fn batch(&self) -> Option<&Arc<UnitBatch>> {
+        self.shared.units.as_ref()?.batch.as_ref()
+    }
+
     pub(crate) fn scheduler(&self) -> Option<LocalQosScheduler> {
-        self.scheduler.clone()
+        self.shared.scheduler.clone()
     }
 
     pub(crate) fn memory_ceiling(&self) -> u64 {
-        self.task
+        self.shared
+            .task
             .memory_reservation()
             .map_or(u64::MAX, |reservation| reservation.memory_bytes())
     }
 
+    #[inline]
     pub fn checkpoint(&self) -> Result<(), CheckpointWorkError> {
-        self.task
+        self.shared
+            .task
             .checkpoint()
             .map_err(CheckpointWorkError::Stopped)
             .map_err(|error| self.record_failure(error))
@@ -333,6 +408,7 @@ impl CheckpointWorkContext {
         }
     }
 
+    #[cold]
     pub(crate) fn record_failure(&self, error: CheckpointWorkError) -> CheckpointWorkError {
         if let Some(recorded) = &self.recorded_failure {
             let mut first = recorded
@@ -345,16 +421,31 @@ impl CheckpointWorkContext {
         error
     }
 
+    /// Start one bounded unit. Without a scheduler this is inlined into the
+    /// builder: a cancellation (and deadline) check plus, with a progress
+    /// counter, one reference count (#1651).
+    #[inline]
     pub(crate) fn start_unit(&self) -> Result<CheckpointWorkUnit, CheckpointWorkError> {
-        let Some(batch) = &self.batch else {
-            self.checkpoint()?;
-            return Ok(CheckpointWorkUnit {
-                batch: None,
-                progress: self.progress.clone(),
-                observer: None,
-            });
-        };
-        if let Err(reason) = self.task.check_cancellation() {
+        match self.batch() {
+            None => {
+                self.checkpoint()?;
+                Ok(CheckpointWorkUnit {
+                    // Only a progress counter needs the unit to hold anything.
+                    accounting: self.shared.units.clone(),
+                    observer: None,
+                })
+            }
+            Some(batch) => self.start_batched_unit(batch),
+        }
+    }
+
+    #[inline(never)]
+    fn start_batched_unit(
+        &self,
+        batch: &Arc<UnitBatch>,
+    ) -> Result<CheckpointWorkUnit, CheckpointWorkError> {
+        let task = &self.shared.task;
+        if let Err(reason) = task.check_cancellation() {
             // Do not keep an idle permit for a stopped task. Its completed
             // units succeeded; an active unit's drop marks the batch failed.
             batch.close(false);
@@ -364,13 +455,12 @@ impl CheckpointWorkContext {
             observer,
             unit_in_batch,
             admitted,
-        } = match batch.start(&self.task) {
+        } = match batch.start(task) {
             Ok(started) => started,
             Err(error) => return Err(self.record_failure(error)),
         };
         let unit = CheckpointWorkUnit {
-            batch: Some(batch.clone()),
-            progress: self.progress.clone(),
+            accounting: self.shared.units.clone(),
             observer: observer.map(|observer| (observer, unit_in_batch)),
         };
         if let Some((observer, unit_in_batch)) = &unit.observer {
@@ -383,8 +473,7 @@ impl CheckpointWorkContext {
         // An admission or unit telemetry callback can cancel while the unit
         // is being started. Dropping the unit marks the batch failed.
         if admitted || unit.observer.is_some() {
-            self.task
-                .check_cancellation()
+            task.check_cancellation()
                 .map_err(CheckpointWorkError::Stopped)
                 .map_err(|error| self.record_failure(error))?;
         }
@@ -417,7 +506,8 @@ impl CheckpointWorkContext {
     pub(crate) fn io_wave(
         &self,
     ) -> Result<Option<Box<dyn RuntimeIoWavePermit>>, CheckpointWorkError> {
-        self.task
+        self.shared
+            .task
             .acquire_io_wave(NonZeroUsize::MIN)
             .map_err(CheckpointWorkError::Io)
             .map_err(|error| self.record_failure(error))
@@ -433,7 +523,8 @@ impl CheckpointWorkContext {
                 available_bytes: 0,
             })
         })?;
-        self.task
+        self.shared
+            .task
             .reserve_working_memory(bytes)
             .map_err(CheckpointWorkError::Memory)
             .map_err(|error| self.record_failure(error))
@@ -477,18 +568,37 @@ impl CheckpointWorkContext {
     }
 }
 
+impl WorkShared {
+    /// Replace the unit accounting with an edited copy. Units already
+    /// started keep the accounting they were started with.
+    fn set_units(&mut self, edit: impl FnOnce(&mut UnitAccounting)) {
+        let mut units = UnitAccounting::default();
+        if let Some(current) = &self.units {
+            units.batch = current.batch.clone();
+            units.progress = current.progress.clone();
+        }
+        edit(&mut units);
+        self.units = (units.batch.is_some() || units.progress.is_some()).then(|| Arc::new(units));
+    }
+}
+
 /// One bounded builder unit. Finishing it counts progress; dropping it
 /// unfinished marks its admission batch failed and releases that batch as
-/// soon as no other unit is active.
+/// soon as no other unit is active. It holds one reference to its context's
+/// unit accounting, or nothing when there is neither batch nor progress.
 pub(crate) struct CheckpointWorkUnit {
-    batch: Option<Arc<UnitBatch>>,
-    progress: Option<Arc<AtomicU64>>,
+    accounting: Option<Arc<UnitAccounting>>,
     observer: Option<(Arc<dyn QosTelemetrySink>, usize)>,
 }
 
 impl CheckpointWorkUnit {
+    #[inline]
     pub(crate) fn finish(mut self) {
-        if let Some(progress) = &self.progress {
+        if let Some(progress) = self
+            .accounting
+            .as_ref()
+            .and_then(|units| units.progress.as_ref())
+        {
             progress.fetch_add(1, Ordering::Relaxed);
         }
         self.end(true);
@@ -498,8 +608,17 @@ impl CheckpointWorkUnit {
         self.end(true);
     }
 
+    /// Inlined, so ending or dropping a unit that holds nothing is one test.
+    #[inline]
     fn end(&mut self, success: bool) {
-        let Some(batch) = self.batch.take() else {
+        if let Some(accounting) = self.accounting.take() {
+            self.end_accounted(accounting, success);
+        }
+    }
+
+    #[inline(never)]
+    fn end_accounted(&mut self, accounting: Arc<UnitAccounting>, success: bool) {
+        let Some(batch) = &accounting.batch else {
             return;
         };
         batch.end(success);
@@ -518,6 +637,7 @@ impl CheckpointWorkUnit {
 }
 
 impl Drop for CheckpointWorkUnit {
+    #[inline]
     fn drop(&mut self) {
         self.end(false);
     }
@@ -595,8 +715,19 @@ pub(crate) mod tests {
     use super::*;
     use hawdb_core::{RuntimeCancellationToken, RuntimeIoWaveController};
     use hawdb_qos::{QosTelemetryEvent, QosTelemetryOutcome, QosTelemetryPhase, QosTelemetrySink};
+    use std::cell::Cell;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+
+    thread_local! {
+        /// Builder fields actually re-bound to another context by
+        /// [`CheckpointWorkContext::rebind`] on this thread (#1651).
+        pub(crate) static REBINDS: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn rebinds() -> u64 {
+        REBINDS.with(Cell::get)
+    }
 
     #[test]
     fn progress_counts_completed_work_but_not_classification_denial_or_abandonment() {

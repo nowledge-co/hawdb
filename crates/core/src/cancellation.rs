@@ -36,6 +36,8 @@ pub struct RuntimeCancellationToken {
 #[derive(Debug)]
 struct RuntimeCancellationState {
     cancellation_reason: AtomicU8,
+    /// Filled from the front: a second parent implies a first one, so a
+    /// root token is recognized by `parents[0].is_none()` alone.
     parents: [Option<RuntimeCancellationToken>; 2],
     next_waiter_id: AtomicU64,
     waiters: Mutex<BTreeMap<u64, Waker>>,
@@ -93,16 +95,31 @@ impl RuntimeCancellationToken {
         true
     }
 
+    #[inline]
     pub fn is_cancelled(&self) -> bool {
         self.reason().is_some()
     }
 
+    /// Hot path of every cooperative cancellation check (#1651): one
+    /// acquire load of this token's own state, inlined into the caller. Only
+    /// a token that is cancelled or has parents takes the out-of-line walk,
+    /// which selects the same reason in the same depth-first order.
+    #[inline]
     fn reason(&self) -> Option<RuntimeCancellationReason> {
-        match self.state.cancellation_reason.load(Ordering::Acquire) {
+        let code = self.state.cancellation_reason.load(Ordering::Acquire);
+        if code == NOT_CANCELLED && self.state.parents[0].is_none() {
+            return None;
+        }
+        Self::reason_of(&self.state, code)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn reason_of(state: &RuntimeCancellationState, code: u8) -> Option<RuntimeCancellationReason> {
+        match code {
             CANCELLED => Some(RuntimeCancellationReason::Cancelled),
             RESOURCE_EXHAUSTED => Some(RuntimeCancellationReason::ResourceExhausted),
-            _ => self
-                .state
+            _ => state
                 .parents
                 .iter()
                 .flatten()
@@ -638,6 +655,7 @@ impl RuntimeTaskContext {
             .map(|deadline| deadline.saturating_duration_since(Instant::now()))
     }
 
+    #[inline]
     pub fn checkpoint(&self) -> Result<(), RuntimeCancellationReason> {
         self.check_cancellation()?;
         if self.deadline.is_some() {
@@ -649,6 +667,7 @@ impl RuntimeTaskContext {
     /// Observe cancellation without reading the clock. Batched callers pair
     /// this per-step check with [`Self::check_deadline_at`] at bounded
     /// boundaries that already own a timestamp.
+    #[inline]
     pub fn check_cancellation(&self) -> Result<(), RuntimeCancellationReason> {
         match self.cancellation.reason() {
             Some(reason) => Err(reason),
@@ -657,6 +676,7 @@ impl RuntimeTaskContext {
     }
 
     /// Compare the deadline with a caller-supplied timestamp.
+    #[inline]
     pub fn check_deadline_at(&self, now: Instant) -> Result<(), RuntimeCancellationReason> {
         if self.deadline.is_some_and(|deadline| now >= deadline) {
             return Err(RuntimeCancellationReason::DeadlineExceeded);
@@ -809,6 +829,39 @@ mod tests {
             cancelled.checkpoint(),
             Err(RuntimeCancellationReason::Cancelled)
         );
+    }
+
+    #[test]
+    fn reason_fast_path_and_ancestor_walk_select_the_same_first_cause() {
+        // Root tokens answer from their own state; descendants walk parents
+        // depth first, first parent before second (#1651).
+        let root = RuntimeCancellationToken::new();
+        assert!(root.state.parents[0].is_none());
+        assert_eq!(root.reason(), None);
+        let first = RuntimeCancellationToken::new();
+        let second = RuntimeCancellationToken::new();
+        let linked = first.linked(&second);
+        let grandchild = linked.child();
+        assert_eq!(linked.reason(), None);
+        assert_eq!(grandchild.reason(), None);
+        assert!(second.cancel_for_resource_exhaustion());
+        assert_eq!(
+            grandchild.reason(),
+            Some(RuntimeCancellationReason::ResourceExhausted)
+        );
+        assert!(first.cancel());
+        for token in [&linked, &grandchild] {
+            assert_eq!(token.reason(), Some(RuntimeCancellationReason::Cancelled));
+        }
+        assert!(grandchild.cancel_for_resource_exhaustion());
+        assert_eq!(
+            grandchild.reason(),
+            Some(RuntimeCancellationReason::ResourceExhausted)
+        );
+        assert_eq!(linked.reason(), Some(RuntimeCancellationReason::Cancelled));
+        assert_eq!(root.reason(), None);
+        assert!(root.cancel());
+        assert!(root.is_cancelled());
     }
 
     #[derive(Default)]

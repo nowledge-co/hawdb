@@ -178,12 +178,14 @@ impl State {
         &mut self,
         work: &CheckpointWorkContext,
     ) -> Result<(), CanonicalSegmentError> {
+        // Observe cancellation at every record. The bindings below are
+        // pointer comparisons unless the caller started a new attempt.
         work.checkpoint()?;
-        self.work = work.clone();
+        self.work.rebind(work);
         self.accumulator.bind_checkpoint_attempt(work);
         self.descriptor_tree.bind_checkpoint_attempt(work);
         if let Some(dictionary) = self.property_keys.checkpoint.as_mut() {
-            dictionary.work = work.clone();
+            dictionary.work.rebind(work);
         }
         Ok(())
     }
@@ -707,5 +709,183 @@ mod finish_tests {
         drop(prepared);
         drop(manifest);
         fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+/// #1651: the writer re-binds its retained builders to the caller's context
+/// before every record. Re-binding the same context is now a pointer
+/// comparison; these tests check that units, progress, admissions and
+/// cancellation cut points are the same as when every record re-binds to a
+/// distinct handle over the same task (what every per-record clone did).
+#[cfg(test)]
+mod rebind_tests {
+    use super::*;
+    use crate::background::{CheckpointUnitBatchStats, CheckpointWorkProbe};
+    use hawdb_core::RuntimeTaskContext;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    const RECORDS: u64 = 300;
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct Counts {
+        records: u64,
+        started: usize,
+        completed: usize,
+        progress: u64,
+        stats: CheckpointUnitBatchStats,
+        stopped: bool,
+    }
+
+    fn node(id: u64) -> NodeRecord {
+        NodeRecord {
+            id: NodeId(id),
+            labels: BTreeSet::new(),
+            properties: BTreeMap::from([
+                ("name".into(), Value::String(format!("node-{id}"))),
+                ("rank".into(), Value::Int(id as i64)),
+                ("blob".into(), Value::Binary(vec![id as u8; 48])),
+            ]),
+        }
+    }
+
+    /// Encode and append `RECORDS` nodes, re-binding to `work` itself or to a
+    /// fresh handle over it before each record. Returns the unit counts and
+    /// how many builder re-bindings actually replaced a context.
+    fn run(fork_per_record: bool, cancel_after: Option<usize>) -> (Counts, u64) {
+        let ceiling = 16 * 1024 * 1024;
+        let governor = super::super::tests::governor(ceiling);
+        let permit = governor
+            .try_admit(
+                hawdb_qos::RuntimeWorkRequest::background_maintenance(ceiling)
+                    .with_io_wave_slots(1),
+            )
+            .unwrap();
+        let local = super::super::tests::local();
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        local.set_telemetry_sink(Some(probe.clone()));
+        let progress = Arc::new(AtomicU64::new(0));
+        let work = CheckpointWorkContext::new(permit.bind_task_context(
+            RuntimeTaskContext::without_deadline(probe.cancellation.clone()),
+        ))
+        .with_scheduler(local.clone())
+        .with_progress_counter(progress.clone());
+        let directory = std::env::temp_dir().join(format!(
+            "hawdb-canonical-rebind-{}",
+            hawdb_core::generate_uuidv7().unwrap()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join("canonical.hawdb");
+        let writer = CanonicalSegmentWriter {
+            source_admits: true,
+            config: CanonicalSegmentConfig::default(),
+            work: Some(work.clone()),
+        };
+        let generation = ManifestGeneration(17);
+        let tree = create_canonical_descriptor_tree(&path, generation, 17, &work, true).unwrap();
+        let mut state = State::create(
+            &writer,
+            &path,
+            CanonicalWriteIdentity {
+                generation,
+                source_commit_epoch: 17,
+            },
+            tree,
+        )
+        .unwrap();
+        // Setup units are not part of the comparison window.
+        work.release_unit_batch();
+        let base_started = probe.started.load(Ordering::SeqCst);
+        let base_completed = probe.completed.load(Ordering::SeqCst);
+        let base_progress = progress.load(Ordering::Relaxed);
+        let base_stats = work.unit_batch_stats();
+        probe.cancel_after.store(
+            cancel_after.map_or(0, |cut| base_completed + cut),
+            Ordering::SeqCst,
+        );
+        let rebinds = crate::background::checkpoint_rebinds();
+        let mut records = 0;
+        let mut stopped = false;
+        for id in 1..=RECORDS {
+            let record = node(id);
+            let attempt = if fork_per_record {
+                work.fork_handle()
+            } else {
+                work.clone()
+            };
+            let result = state
+                .encode_node(&record, None, &attempt)
+                .and_then(|()| state.append_node(&record));
+            match result {
+                Ok(()) => records += 1,
+                Err(CanonicalSegmentError::Work(CheckpointWorkError::Stopped(_))) => {
+                    stopped = true;
+                    break;
+                }
+                Err(other) => panic!("unexpected append result: {other:?}"),
+            }
+        }
+        let rebinds = crate::background::checkpoint_rebinds() - rebinds;
+        work.release_unit_batch();
+        probe.assert_released(&local);
+        let stats = work.unit_batch_stats();
+        let counts = Counts {
+            records,
+            started: probe.started.load(Ordering::SeqCst) - base_started,
+            completed: probe.completed.load(Ordering::SeqCst) - base_completed,
+            progress: progress.load(Ordering::Relaxed) - base_progress,
+            stats: CheckpointUnitBatchStats {
+                units: stats.units - base_stats.units,
+                finished_units: stats.finished_units - base_stats.finished_units,
+                abandoned_units: stats.abandoned_units - base_stats.abandoned_units,
+                admissions: stats.admissions - base_stats.admissions,
+                refusals: stats.refusals - base_stats.refusals,
+                clock_reads: stats.clock_reads - base_stats.clock_reads,
+            },
+            stopped,
+        };
+        local.set_telemetry_sink(None);
+        drop(state);
+        drop(writer);
+        drop(work);
+        drop(permit);
+        assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+        fs::remove_dir_all(directory).unwrap();
+        (counts, rebinds)
+    }
+
+    #[test]
+    fn same_context_rebinding_keeps_unit_progress_and_admission_counts() {
+        let (shared, shared_rebinds) = run(false, None);
+        let (forked, forked_rebinds) = run(true, None);
+        assert_eq!(shared, forked);
+        assert_eq!(shared.records, RECORDS);
+        assert!(!shared.stopped);
+        assert_eq!(shared.started, shared.completed);
+        assert_eq!(shared.stats.units, shared.started as u64);
+        assert_eq!(shared.stats.abandoned_units, 0);
+        assert!(shared.progress > 0 && shared.progress <= shared.stats.finished_units);
+        assert!(
+            shared.started as u64 > 3 * RECORDS,
+            "several units per record"
+        );
+        // A fresh handle per record replaces the writer's context, its
+        // accumulator's, descriptor tree's and key dictionary's: at least
+        // four rebinds per record. The shared handle replaces none.
+        assert_eq!(shared_rebinds, 0);
+        assert!(forked_rebinds >= 4 * RECORDS, "{forked_rebinds}");
+    }
+
+    #[test]
+    fn same_context_rebinding_keeps_cancellation_cut_points() {
+        for cut in [1usize, 2, 7, 63, 64, 65, 129, 500] {
+            let (shared, _) = run(false, Some(cut));
+            let (forked, _) = run(true, Some(cut));
+            assert_eq!(shared, forked, "cut={cut}");
+            assert!(shared.stopped, "cut={cut}");
+            // Cancellation is visible at the next unit: none starts after it.
+            assert_eq!(shared.completed, cut, "cut={cut}");
+            assert_eq!(shared.started, cut, "cut={cut}");
+            assert!(shared.records < RECORDS);
+        }
     }
 }
