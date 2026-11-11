@@ -343,6 +343,23 @@ format checksums when read, reported by `scrub_storage`, and refused by
 the full identity check on the next cold open; it is never served as valid
 data.
 
+Branch mount of an object this process did not publish (including every
+object on a new-process open) always hashes the complete object, so each branch
+admission still authenticates its whole checkpoint closure before use
+([#1440](https://github.com/nowledge-co/hawdb/issues/1440)). Admission then opens the
+mounted artifacts through the immutable-handle cache. That first cold handle open
+does not hash the same inode a second time: the mount leaves a one-shot,
+per-project record of the hashed descriptor's native identity, length and
+modification time, and the cold open skips the hash only when its descriptor
+still matches that stamp. The record is consumed by that open whether or not
+it matches, cleared before every remount (so a refused remount leaves none) and
+dropped on reclamation; any later cold open of the object, for example after
+descriptor-cache eviction, hashes it in full again. The stamp's limits are those
+of the publication record above, and page/block checks on reads are unchanged.
+`FileDescriptorMetrics::identity_verified_bytes` and
+`mount_verification_reuses` report the whole-object identity bytes verified
+and the cold opens that reused a mount's verification.
+
 `max_wal_replay_entries` counts these top-level WAL records, not the child
 operations inside a batch, so a budgeted recovery either applies a complete
 batch record or rejects the open before applying the next record.

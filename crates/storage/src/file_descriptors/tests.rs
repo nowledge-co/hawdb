@@ -1249,3 +1249,116 @@ fn published_object_mount_and_cold_handle_skip_rehash_until_forgotten() {
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
     assert_eq!(skipped(), None);
 }
+
+/// Rewrites one byte of `path` in place: same inode and length. The
+/// modification time is restored unless `later` is set.
+fn flip_byte_in_place(path: &std::path::Path, offset: u64, later: bool) {
+    let modified = std::fs::metadata(path).unwrap().modified().unwrap();
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .unwrap();
+    let mut byte = [0_u8];
+    file.seek(SeekFrom::Start(offset)).unwrap();
+    file.read_exact(&mut byte).unwrap();
+    byte[0] ^= 0x5a;
+    file.seek(SeekFrom::Start(offset)).unwrap();
+    file.write_all(&byte).unwrap();
+    let modified = if later {
+        modified + std::time::Duration::from_secs(2)
+    } else {
+        modified
+    };
+    file.set_times(std::fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+}
+
+/// #1440: an object found on disk (no publication record, as in a new
+/// process) is hashed in full by every mount. The first cold handle open after
+/// that mount reuses the verification instead of hashing the same inode
+/// again, but only once and only while native identity, length and
+/// modification time still match.
+#[test]
+fn mount_verification_is_reused_once_by_the_next_cold_open() {
+    use crate::file_descriptors::DescriptorCache;
+
+    let fixture = Fixture::new(8);
+    let context = context_for_path(&fixture.root).unwrap();
+    let payload = b"mounted from disk, never published by this process";
+    let length = payload.len() as u64;
+    let binding = fixture.binding("disk-object", payload);
+    let handles = &fixture.project.immutable_handles;
+    let metrics = || fixture.project.metrics();
+    let alias = fixture.root.join("disk-object.alias");
+
+    // The mount hashes every byte once.
+    handles.mount(&alias, binding.clone(), &context).unwrap();
+    assert_eq!(metrics().identity_verified_bytes, length);
+    assert_eq!(metrics().mount_verification_reuses, 0);
+
+    // The next cold open neither charges nor hashes: the mount just did.
+    let (file, validated) = handles
+        .get_admitted(&binding, &context, |_| {
+            panic!("the mount verification must be reused")
+        })
+        .unwrap();
+    assert_eq!(validated, 0);
+    assert_eq!(metrics().identity_verified_bytes, length);
+    assert_eq!(metrics().mount_verification_reuses, 1);
+    let mut value = vec![0; payload.len()];
+    crate::io::read_exact_at(&file, &mut value, 0).unwrap();
+    assert_eq!(value, payload);
+    drop(file);
+
+    // The record was consumed: a later cold open hashes in full again and so
+    // refuses even modification-time-preserving damage.
+    handles.evict_idle(usize::MAX);
+    flip_byte_in_place(&binding.object_path, 4, false);
+    let error = handles
+        .get_admitted(&binding, &context, |_| Ok(()))
+        .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(metrics().identity_verified_bytes, length);
+    assert_eq!(metrics().mount_verification_reuses, 1);
+
+    // Every mount still hashes, so a remount refuses the same damage, and a
+    // refused remount discards an earlier mount's unconsumed record.
+    flip_byte_in_place(&binding.object_path, 4, false);
+    handles.mount(&alias, binding.clone(), &context).unwrap();
+    flip_byte_in_place(&binding.object_path, 4, false);
+    let error = handles
+        .mount(&alias, binding.clone(), &context)
+        .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    let error = handles
+        .get_admitted(&binding, &context, |_| Ok(()))
+        .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(metrics().mount_verification_reuses, 1);
+    flip_byte_in_place(&binding.object_path, 4, false);
+
+    // Damage after the mount that changes the modification time disqualifies
+    // the record, so the cold open hashes and refuses it.
+    handles.mount(&alias, binding.clone(), &context).unwrap();
+    flip_byte_in_place(&binding.object_path, 7, true);
+    let error = handles
+        .get_admitted(&binding, &context, |_| Ok(()))
+        .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(metrics().mount_verification_reuses, 1);
+    flip_byte_in_place(&binding.object_path, 7, true);
+
+    // A replaced inode with identical bytes is not the one the mount hashed.
+    handles.mount(&alias, binding.clone(), &context).unwrap();
+    let replacement = fixture.root.join("disk-object.replacement");
+    std::fs::write(&replacement, payload).unwrap();
+    std::fs::rename(&replacement, &binding.object_path).unwrap();
+    let hashed = metrics().identity_verified_bytes;
+    let (_file, validated) = handles
+        .get_admitted(&binding, &context, |_| Ok(()))
+        .unwrap();
+    assert_eq!(validated, length);
+    assert_eq!(metrics().identity_verified_bytes, hashed + length);
+    assert_eq!(metrics().mount_verification_reuses, 1);
+}
