@@ -157,6 +157,17 @@ query ceilings remain enforced. See [the estimation contract](QUERY_JOINT_STATIS
 The manual `joint_ndv_planning` benchmark is local-only; no test lane, feature
 matrix, timeout or compilation profile changes.
 
+The same optimizer owner checks MATCH seed/target correlation, complete versus
+sparse/invalid joint populations, and MCV/exact-point precedence. Catalog
+controls retain the 32-group cap and ambiguity/staleness rules, share the
+immutable view across query overrides and retain one label key per label.
+The ignored `joint_key_lookup_measurement` compares the former owned-key
+lookup with the four-key borrowed stack path, checking equal results and
+reporting retained label keys. Replay with `cargo test --locked --release
+-p hawdb-optimizer-graph --lib joint_key_lookup_measurement -- --ignored
+--nocapture --test-threads=1`. Metadata-only timings do not qualify query latency
+or process RSS; collection and persistence lanes are unchanged.
+
 `//:pypi_publish_script_test` belongs to the required root
 `//:hawdb_unit_tests` aggregate. It executes the publisher workflow's Python
 preflight and registry verification with temporary distributions and mocked
