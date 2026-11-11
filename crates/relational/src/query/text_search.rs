@@ -276,9 +276,11 @@ pub(super) fn execute_text_search_select<R: RelationalQueryStoreReader>(
         },
         CandidateScore {
             function: "text_search",
+            context: "text_search",
             column: TEXT_SEARCH_SCORE_COLUMN,
             valid: |score| score.is_finite() && score >= 0.0,
             invalid: "invalid text_search BM25 score",
+            absent: "text_search candidate is absent from the bound SQL snapshot",
             max_accepted: Some(bound.top_k),
         },
     )?;

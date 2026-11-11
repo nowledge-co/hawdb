@@ -39,20 +39,26 @@ pub struct VectorIndexInput<'a> {
 pub(super) struct CandidateScore {
     /// Default qualifier when the call has no alias.
     pub function: &'static str,
+    /// Subject of user-facing refusals.
+    pub context: &'static str,
     /// Virtual DOUBLE PRECISION output column; a source column of the same
     /// name is refused.
     pub column: &'static str,
     pub valid: fn(f64) -> bool,
     pub invalid: &'static str,
+    /// Integrity refusal when a ranked identity has no row in the snapshot.
+    pub absent: &'static str,
     /// Stop after this many candidates satisfy WHERE (filter before ranking).
     pub max_accepted: Option<usize>,
 }
 
 const VECTOR_DISTANCE: CandidateScore = CandidateScore {
     function: "vector_index_search",
+    context: "vector index SQL",
     column: "distance",
     valid: |distance| distance.is_finite() && (0.0..=2.0).contains(&distance),
     invalid: "invalid vector index cosine distance",
+    absent: "vector candidate is absent from the bound SQL snapshot",
     max_accepted: None,
 };
 
@@ -326,7 +332,7 @@ pub(super) fn execute_candidate_select<R: RelationalRowStoreReader>(
     if canonical_schema.column_position(score.column).is_some() {
         return Err(HawDBError::Semantic(format!(
             "{} reserves the {} output column",
-            score.function, score.column
+            score.context, score.column
         )));
     }
     let ledger = execution.admitted_ledger()?;
@@ -567,12 +573,7 @@ impl BindingBatchSource<()> for CandidateRows<'_> {
             let (row, _point_allocation) = self
                 .row_runtime
                 .read_point_admitted(self.input.table, &key)?;
-            let row = row.ok_or_else(|| {
-                HawDBError::StorageIntegrity(format!(
-                    "{} candidate is absent from the bound SQL snapshot",
-                    self.score.function
-                ))
-            })?;
+            let row = row.ok_or_else(|| HawDBError::StorageIntegrity(self.score.absent.into()))?;
             // The decoded row remains admitted while adding the virtual column.
             // Projection and sort copies are admitted per expression below.
             let _row_memory =
