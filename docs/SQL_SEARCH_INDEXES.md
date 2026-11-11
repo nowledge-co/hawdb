@@ -201,11 +201,90 @@ dictionaries regardless, and tombstoned postings would need a filter on every
 query plus a compaction whose cost grows with a term's frequency.
 
 `text_search` reads the statistics row, then per query term the dictionary
-row and (if any) the term's sealed blocks through one primary-key range, and
-fetches each needed lengths row once. Scores are computed with the same
-operations, in the same term order, as a brute-force evaluation, so they are
-exactly equal to it. Decoders check every count against the dictionary and
+row and (if any) the term's sealed blocks through one primary-key range, then
+the lengths rows of all scored documents in one ordered range scan (one point
+read per lengths row costs a page decode each on a persistent snapshot).
+Scores are computed with the same operations, in the same term order, as a
+brute-force evaluation, so they are exactly equal to it. Decoders check every count against the dictionary and
 refuse an inconsistent index as a storage-integrity error.
+
+### Measurements
+
+Temporary local harness (not committed), repository release profile, macOS
+arm64, persistent database with the default `SyncOnEveryWrite`. Each event row
+has about 30 English words, 30 distinct `wNNNN` tokens and two short Chinese
+sentences, about 70 postings. "Old" is the previous revision of this change
+(one row per `(term, document)`); "new" is the layout above. The three
+variants ran side by side on a host that other workloads also loaded, so
+latencies are comparable within a table, not across tables or machines.
+
+10,000 events, one INSERT per transaction:
+
+| | no index | old layout | new layout |
+| --- | --- | --- | --- |
+| index relation rows | – | 695,348 | 18,351 |
+| estimated resident row bytes, all tables | 5.28 MB | 79.96 MB | 9.14 MB |
+| of which the index | – | 74.68 MB | 3.86 MB (19x less) |
+| full checkpoint file `relational.N.hawdb` (batched load) | 4.80 MB | 42.14 MB | 7.51 MB (index 2.71 MB, 14x less) |
+| database directory after checkpoint | 42.0 MB | 978.3 MB | 189.5 MB |
+| of which WAL / other files | 7.4 / 34.7 MB | 71.8 / 906.5 MB | 73.9 / 115.7 MB |
+| INSERT mean / p50 / p99 | 19.7 / 15.0 / 35.4 ms | 28.1 / 16.8 / 39.8 ms | 24.2 / 16.5 / 39.2 ms |
+| `w42` (rare term) | – | 1.97 ms | 2.60 ms |
+| `deploy failed` (thousands of matches) | – | 6.77 ms | 5.09 ms |
+| `数据库 搜索` (four common bigrams) | – | 7.84 ms | 4.39 ms |
+| `WHERE stream = 's0'` (matches early) | – | 7.40 ms | 6.01 ms |
+| `WHERE stream = 's3'` (rejects all 3,334 candidates) | – | 277 ms | 338 ms |
+| reopen + first query after checkpoint | 0.40 s | 1.08 s | 0.29 s |
+| the same queries after reopen | – | 0.87 / 4.68 / 5.15 / 4.58 / 132 ms | 0.94 / 2.94 / 2.36 / 2.82 / 130 ms |
+
+100,000 events: 99,000 loaded in 500-row transactions, then 1,000 timed
+single-row INSERTs. The old layout's load took 40 minutes, so its INSERT and
+query phases ran with the other two variants already finished; the INSERT and
+query rows below therefore come from runs of each variant alone, and the
+unindexed p99 varied between 12 and 29 ms across repeated runs on this host.
+
+| | no index | old layout | new layout |
+| --- | --- | --- | --- |
+| index relation rows | – | 6,953,348 | 157,520 |
+| estimated resident row bytes, all tables | 52.78 MB | 799.60 MB | 88.66 MB |
+| of which the index | – | 746.82 MB | 35.87 MB (21x less) |
+| full checkpoint file `relational.N.hawdb` (batched load) | 47.98 MB | not measured | 73.87 MB (index 25.9 MB) |
+| database directory after checkpoint | 322.2 MB | 41.2 GB | 1.80 GB (23x less) |
+| of which WAL / other files | 58.5 / 263.7 MB | 0.44 / 40.8 GB | 0.18 / 1.63 GB |
+| 99,000-row batched load | 5.5 s | 2,433 s | 202 s |
+| INSERT p50 / p99 (mean) | 6.3 / 28.5 (9.6) ms | 8.4 / 13.0 (55.3) ms | 7.6 / 28.7 (14.8) ms |
+| `w42` / `deploy failed` / `数据库 搜索` | – | 16.0 / 68.1 / 118.5 ms | 4.6 / 24.6 / 19.4 ms |
+| `WHERE stream = 's0'` / `'s3'` | – | 80.9 ms / 6.30 s | 19.8 ms / 3.22 s |
+| reopen + first query after checkpoint | 0.32 s | 9.84 s | 0.48 s |
+
+What the numbers say:
+
+- Resident memory and checkpointed index bytes drop by more than an order of
+  magnitude: the index's resident cost at 100,000 events is 36 MB rather than
+  747 MB, and the database directory 1.8 GB rather than 41 GB. Queries are
+  faster at 100,000 events, and reopen plus the first query takes 0.48 s
+  instead of 9.8 s.
+- Single-row INSERT p50 and p99 stay within 1.2x of the unindexed table at
+  both sizes; means are 1.2x (10,000) and 1.55x (100,000). The means include
+  automatic checkpoint pauses, which write a larger relational state when the
+  index exists (the old layout's 100,000-event mean is 55 ms for the same
+  reason).
+- WAL bytes do not shrink for one-row transactions (73.9 MB against 71.8 MB
+  at 10,000 events): each WAL record carries the primary keys every relation
+  changed, and an insert still changes one index row per distinct term (about
+  70 here) in either layout. In batched loads they do shrink (0.18 GB against
+  0.44 GB at 100,000 events), because a term's dictionary row changes once per
+  transaction rather than once per posting. The other files include the
+  checkpoint artifacts also stored under `objects/` and retained earlier
+  generations; `reclaim_branch_storage` brings the 100,000-event directory
+  (batched load) to 1.00 GB against 0.29 GB without the index.
+- Bulk loading in large transactions is the slow path: every index row write
+  copies its row page and the page directory, so a 500-row transaction that
+  touches about 5,000 terms costs about a second at 100,000 events (the old
+  layout wrote about 35,000 rows per such transaction). Reducing that per-row
+  write cost is a storage-engine change outside this layout.
+- A filtered query whose `WHERE` rejects every candidate still hydrates them
+  all; a candidate-side filter remains future work.
 
 ## Format
 
@@ -236,11 +315,17 @@ and HawDB's development-phase format policy.
 
 `api::tests::search_indexes` (root general unit lane) checks every query
 against a brute-force BM25 oracle over `SELECT * FROM events` with the same
-analyzer, through inserts, updates (including primary-key moves and NULL),
+analyzer, requiring bit-equal scores, through inserts, updates (including primary-key moves and NULL),
 deletes, upserts, drop/re-create backfill, explicit transactions and rollback,
 WAL replay, checkpoint reopen, torn WAL tails (strict refusal and repair),
 shadow/demand-paged index modes, out-of-core residency, authoritative refusal,
 branch isolation, concurrent writers, admission refusal and coexistence with a
-materialized view. Storage and SQL units cover the analyzer, the schema codec
-and the grammar. The Bun suite runs the same SQL through `querySQL` on a
+materialized view. Layout cases check exact block shapes as tails seal,
+changes to older documents at block boundaries, a block split by one large
+transaction, many updates of one document keeping its ordinal, and
+delete-heavy churn compacting blocks until the relation is empty. Storage and
+SQL units cover the analyzer, the layout codec (varint widths and refused
+spellings, block/dictionary/statistics/lengths round trips and corrupt
+inputs), the schema codec with unknown analyzer and layout tags, and the
+grammar. The Bun suite runs the same SQL through `querySQL` on a
 persistent database and a read-only reopen.
