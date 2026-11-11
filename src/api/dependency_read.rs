@@ -808,7 +808,9 @@ mod tests {
             (Some(4), Some(2), 8, (Some(4), Some(2))),
             (Some(4), Some(0), 8, (Some(4), Some(8))),
             // Unset, the intermediate ceiling follows the result ceiling
-            // exactly, including the existing host `Some(0)` combination.
+            // exactly. Known bug, not intended: a host `Some(0)` result
+            // ceiling ignores `statement_rows` (#1685); this row pins the
+            // current behaviour until that is fixed.
             (Some(0), None, 8, (None, None)),
             (Some(0), Some(1_000), 8, (None, Some(8))),
         ] {
