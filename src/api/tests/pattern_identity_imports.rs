@@ -144,6 +144,44 @@ fn import_errors_match_value_imports() {
     }
 }
 
+/// A node created or merged earlier in the same statement cannot reach a
+/// pattern-expression seed or import: CREATE and MERGE accept no following
+/// read clause, so these statements are refused, with the same error as
+/// when every value was copied. This pins the assumption that a slot node
+/// always exists in the snapshot the pattern reads (#1615); if such a
+/// statement ever becomes valid, it must return the rows of value imports.
+#[test]
+fn nodes_written_in_the_same_statement_behave_as_value_imports() {
+    let statements = statements(5);
+    for query in [
+        "CREATE (n:Person {id: 9001}) RETURN [(a:Person)-[:KNOWS]->(b) WHERE a = n | b.id] AS v",
+        "CREATE (n:Person {id: 9002}) RETURN [(n)-[:KNOWS]->(b) | b.id] AS v",
+        "MATCH (m:Person {id: 0}) CREATE (n:Person {id: 9003})-[:KNOWS]->(m) \
+         RETURN [(a:Person)-[:KNOWS]->(b) WHERE a = n | b.id] AS v",
+        "MERGE (n:Person {id: 0}) RETURN [(a:Person)-[:KNOWS]->(b) WHERE a = n | b.id] AS v",
+        "MERGE (n:Person {id: 9004}) RETURN [(n)-[:KNOWS]->(b) | b.id] AS v",
+    ] {
+        let (mut current, _) = open(&statements, false);
+        let (mut legacy, _) = open(&statements, false);
+        let actual = current
+            .query(query)
+            .map(|output| format!("{:?}", output.rows));
+        let previous = hawdb_plan_cypher::with_legacy_pattern_value_imports(|| {
+            legacy
+                .query(query)
+                .map(|output| format!("{:?}", output.rows))
+        });
+        match (actual, previous) {
+            (Err(actual), Err(previous)) => {
+                assert_eq!(actual.to_string(), previous.to_string(), "{query}")
+            }
+            (actual, previous) => {
+                panic!("{query}: expected refusal, got {actual:?} (value imports: {previous:?})")
+            }
+        }
+    }
+}
+
 #[cfg(feature = "acl")]
 mod access_control {
     use super::*;
