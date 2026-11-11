@@ -51,6 +51,15 @@ const symbols = {
     ],
     returns: "bool",
   },
+  hawdb_backup: {
+    args: ["ptr", "buffer", "buffer_length", "buffer", "buffer"],
+    returns: "bool",
+  },
+  hawdb_restore: {
+    args: ["buffer", "buffer_length", "buffer", "buffer_length", "buffer", "buffer"],
+    returns: "bool",
+  },
+  hawdb_scrub: { args: ["ptr", "buffer", "buffer"], returns: "bool" },
   hawdb_buffer_free: { args: ["buffer"], returns: "void" },
   hawdb_version: { args: ["buffer"], returns: "void" },
 } as const;

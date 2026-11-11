@@ -98,6 +98,30 @@ The experimental retained ABI has no Decimal buffer type and reports
 `HAWDB_RETAINED_UNSUPPORTED_TYPE` for Decimal node scalar access. Use ordinary
 JSON queries for exact Decimal results.
 
+## Backup, restore and scrub
+
+Each call returns a JSON report through `report_out` (unsigned 64-bit counts;
+preserve their precision) or fills `err_out`:
+
+- `hawdb_backup(db, dest_path, dest_len, &report, &err)` checkpoints the open
+  database and writes a self-verifying backup directory to `dest_path`, which
+  must not exist yet (its parent must). The backup holds every transaction
+  committed before the call; the handle stays open. Report: `generation`,
+  `checkpoint_commit_epoch`, `file_count`, `total_bytes`, `manifest_checksum`.
+  Read-only and in-memory handles are refused.
+- `hawdb_restore(src_path, src_len, dest_path, dest_len, &report, &err)`
+  needs no handle. It verifies every backup file (length, CRC32C, SHA-256)
+  before writing a new database directory at `dest_path`, then reports the
+  same fields as the backup. A damaged backup or an existing destination fails
+  without creating `dest_path`. Open the result with `hawdb_open`.
+- `hawdb_scrub(db, &report, &err)` verifies the open database's published
+  files and WAL against their checksums. Report: `generation`,
+  `checked_file_count`, `checked_bytes`, `sha256_verified_file_count`,
+  `wal_record_count`, `wal_bytes`. Damage fails with the engine's storage
+  error and a message naming the mismatch, and poisons that handle: later
+  statements fail until it is closed and the database reopened, or restored
+  from a backup. Read-only handles can be scrubbed.
+
 ## Options
 
 `hawdb_open` takes `options_json`, NULL or a JSON object. Each key is optional

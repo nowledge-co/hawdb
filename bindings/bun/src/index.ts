@@ -90,6 +90,62 @@ function nativeOpenOptions(options: OpenOptions): Record<string, HawDBParameter>
   return native;
 }
 
+/** An unsigned 64-bit count: `number` when safe, otherwise `bigint`. */
+export type Count = number | bigint;
+
+/** `database.backup` result; `library.restore` returns the same fields. */
+export interface BackupReport {
+  generation: Count;
+  checkpoint_commit_epoch: Count;
+  file_count: Count;
+  total_bytes: Count;
+  manifest_checksum: Count;
+}
+
+export type RestoreReport = BackupReport;
+
+/** `database.scrub` result. */
+export interface ScrubReport {
+  generation: Count;
+  checked_file_count: Count;
+  checked_bytes: Count;
+  sha256_verified_file_count: Count;
+  wal_record_count: Count;
+  wal_bytes: Count;
+}
+
+function parseReport<T>(text: string | null, fields: readonly string[]): T {
+  if (text === null) {
+    throw new HawDBError("ffi", "HawDB maintenance call returned no report");
+  }
+  const report = parseLosslessJson(text);
+  if (
+    report === null ||
+    Array.isArray(report) ||
+    typeof report !== "object" ||
+    !fields.every((field) => typeof report[field] === "number" || typeof report[field] === "bigint")
+  ) {
+    throw new TypeError("HawDB returned a malformed maintenance report");
+  }
+  return report as T;
+}
+
+const backupReportFields = [
+  "generation",
+  "checkpoint_commit_epoch",
+  "file_count",
+  "total_bytes",
+  "manifest_checksum",
+] as const;
+const scrubReportFields = [
+  "generation",
+  "checked_file_count",
+  "checked_bytes",
+  "sha256_verified_file_count",
+  "wal_record_count",
+  "wal_bytes",
+] as const;
+
 export class QueryResult {
   constructor(
     public readonly columns: string[],
@@ -353,6 +409,91 @@ export class HawDBLibrary {
     return parseResult(text);
   }
 
+  private report<T>(
+    fields: readonly string[],
+    action: string,
+    call: (report: BigUint64Array, error: BigUint64Array) => boolean,
+  ): T {
+    const report = outputBuffer();
+    const error = outputBuffer();
+    const ok = call(report, error);
+    if (!ok) {
+      this.takeBuffer(report);
+      throw this.errorFrom(error, `HawDB ${action} failed`);
+    }
+    const unexpected = this.takeBuffer(error);
+    const text = this.takeBuffer(report);
+    if (unexpected !== null) {
+      throw new HawDBError("ffi", `HawDB ${action} succeeded with an error payload: ${unexpected}`);
+    }
+    return parseReport<T>(text, fields);
+  }
+
+  private liveLifetime(handle: NativePointer): symbol {
+    this.assertOpen();
+    const lifetime = this.handles.get(handle);
+    if (lifetime === undefined) {
+      throw new HawDBError("invalid_handle", "HawDB database handle is not live");
+    }
+    return lifetime;
+  }
+
+  // Converting a path can run its toString/Symbol.toPrimitive, which may close
+  // this database, open another at the same address, or unload the library.
+  // Recheck the library and the lifetime token, not only the address, after
+  // every argument has been converted and immediately before native dispatch.
+  private assertStillLive(handle: NativePointer, lifetime: symbol): void {
+    this.assertOpen();
+    if (this.handles.get(handle) !== lifetime) {
+      throw new HawDBError("invalid_handle", "HawDB database handle is not live");
+    }
+  }
+
+  backup(handle: NativePointer, destination: string): BackupReport {
+    const lifetime = this.liveLifetime(handle);
+    const destinationBytes = encoder.encode(destination);
+    if (destinationBytes.length === 0) {
+      throw new TypeError("HawDB backup destination must not be empty");
+    }
+    this.assertStillLive(handle, lifetime);
+    return this.report(backupReportFields, "backup", (report, error) =>
+      this.native.symbols.hawdb_backup(handle, destinationBytes, destinationBytes, report, error),
+    );
+  }
+
+  scrub(handle: NativePointer): ScrubReport {
+    this.liveLifetime(handle);
+    return this.report(scrubReportFields, "scrub", (report, error) =>
+      this.native.symbols.hawdb_scrub(handle, report, error),
+    );
+  }
+
+  /**
+   * Restore the backup directory `backup` into `destination`, a directory
+   * that must not exist yet. The backup is verified before anything is
+   * written; open the result with `open`. Needs no open database.
+   */
+  restore(backup: string, destination: string): RestoreReport {
+    this.assertOpen();
+    const backupBytes = encoder.encode(backup);
+    const destinationBytes = encoder.encode(destination);
+    if (backupBytes.length === 0 || destinationBytes.length === 0) {
+      throw new TypeError("HawDB restore paths must not be empty");
+    }
+    // Path conversion may have unloaded the library.
+    this.assertOpen();
+    return this.report(backupReportFields, "restore", (report, error) =>
+      this.native.symbols.hawdb_restore(
+        backupBytes,
+        backupBytes,
+        destinationBytes,
+        destinationBytes,
+        report,
+        error,
+      ),
+    );
+  }
+
   closeDatabase(database: Database, handle: NativePointer): void {
     this.finalizer.unregister(database);
     if (!this.closed && this.handles.delete(handle)) {
@@ -417,6 +558,24 @@ export class Database {
 
   exec(cypher: string, parameters: Record<string, HawDBParameter> = {}): void {
     this.query(cypher, parameters);
+  }
+
+  /**
+   * Write a consistent, self-verifying backup of this open database to
+   * `destination`, a directory that must not exist yet. The database stays
+   * open; the backup holds everything committed before the call.
+   */
+  backup(destination: string): BackupReport {
+    return this.library.backup(this.liveHandle(), destination);
+  }
+
+  /**
+   * Verify every durable file and the WAL against their checksums. Damage
+   * throws a `HawDBError`, after which this handle refuses statements until
+   * it is closed and the database reopened or restored.
+   */
+  scrub(): ScrubReport {
+    return this.library.scrub(this.liveHandle());
   }
 
   close(): void {
