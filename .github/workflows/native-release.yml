@@ -202,11 +202,12 @@ jobs:
               assert hashlib.sha256((root / name).read_bytes()).hexdigest() == entry["sha256"], name
           print(json.dumps(manifest["requirements"], indent=2))
           PY
-          if [[ '${{ runner.os }}' == Windows ]]; then
-            library="$root/bin/hawdb_ffi.dll"
-          else
-            library="$(ls "$root"/lib/libhawdb_ffi.{so,dylib} 2>/dev/null)"
-          fi
+          case '${{ runner.os }}' in
+            Windows) library="$root/bin/hawdb_ffi.dll" ;;
+            macOS) library="$root/lib/libhawdb_ffi.dylib" ;;
+            *) library="$root/lib/libhawdb_ffi.so" ;;
+          esac
+          test -f "$library"
           echo "root=$root" | tee -a "$GITHUB_OUTPUT"
           echo "library=$library" | tee -a "$GITHUB_OUTPUT"
       - name: Link the C example against the shared and static libraries
