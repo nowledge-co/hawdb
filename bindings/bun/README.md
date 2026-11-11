@@ -58,6 +58,17 @@ HAWDB_LIBRARY="$PWD/bazel-bin/bindings/ffi/libhawdb_ffi.dylib" \
   instead of returning partial results.
 - `database.query(cypher, parameters)` and `database.querySQL(sql, parameters)`
   return `QueryResult { columns, rows }`; `dicts()` converts rows to objects.
+- `database.backup(destination)` writes a consistent backup directory of the
+  open database (the destination must not exist) and returns
+  `{ generation, checkpoint_commit_epoch, file_count, total_bytes,
+  manifest_checksum }`. `library.restore(backup, destination)` verifies the
+  backup and restores it into a new directory, returning the same fields;
+  open the result with `library.open`. `database.scrub()` verifies the
+  database's durable files and WAL and returns `{ generation,
+  checked_file_count, checked_bytes, sha256_verified_file_count,
+  wal_record_count, wal_bytes }`; damage throws `HawDBError` and that handle
+  then refuses statements until it is closed and reopened. Report counts are
+  `number`, or `bigint` beyond JavaScript's safe range.
 - Close databases explicitly before closing the library. Both close operations
   are idempotent. The library refuses to unload while a database is live.
 - Every native result/error buffer is copied and released before a call returns.
