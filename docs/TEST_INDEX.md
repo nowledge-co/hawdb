@@ -665,7 +665,8 @@ records of a directory-backed segment for a bounded table of named
 selections: none, each key alone (one per encoded value type of the
 fixture), exactly the eight-value located capacity, nine values (which falls
 back to the two-walk path), every key, and absent keys; each admission sees
-the reference bytes before decoding and a refusal decodes nothing. The root case compares out-of-core projected rows with the resident
+the reference bytes before decoding and a refusal decodes nothing. The root
+case compares out-of-core projected rows with the resident
 store before and after committed uncheckpointed updates, deletions
 (tombstones) and creations, with spilled selected and unselected values, and
 after a checkpoint and reopen. Structural assertions use the test-only
