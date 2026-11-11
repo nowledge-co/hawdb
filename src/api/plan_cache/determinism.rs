@@ -143,6 +143,7 @@ pub(in crate::api) fn scalar_is_deterministic(expression: &cypher::ScalarExpress
         | Scalar::Property { .. }
         | Scalar::Id(_)
         | Scalar::RelationshipType(_)
+        | Scalar::Label { .. }
         | Scalar::Coalesce(_)
         | Scalar::Lower(_)
         | Scalar::DatePart { .. }

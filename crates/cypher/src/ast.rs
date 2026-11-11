@@ -517,7 +517,14 @@ pub enum ScalarExpressionKind {
         property: String,
     },
     Id(String),
+    /// `type(r)` of a relationship variable.
     RelationshipType(String),
+    /// Kùzu `label(x)` of a node or relationship variable, or openCypher
+    /// `labels(n)` of a node variable; see [`hawdb_core::LabelFunction`].
+    Label {
+        function: hawdb_core::LabelFunction,
+        variable: String,
+    },
     Value(ValueExpression),
     Coalesce(Vec<ScalarExpression>),
     VectorDistance {

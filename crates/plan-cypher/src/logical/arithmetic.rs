@@ -294,6 +294,7 @@ pub(super) fn scalar_expression_is_scoped(
         ScalarExpressionKind::Path(path) => column_names.contains(path.path_variable()),
         ScalarExpressionKind::Id(_)
         | ScalarExpressionKind::RelationshipType(_)
+        | ScalarExpressionKind::Label { .. }
         | ScalarExpressionKind::RelationshipEndpoint { .. }
         | ScalarExpressionKind::DatePart { .. }
         | ScalarExpressionKind::PatternPredicate(_)

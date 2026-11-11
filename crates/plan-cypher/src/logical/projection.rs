@@ -564,6 +564,10 @@ pub(super) fn plan_projection_with_columns(
                 format!("label({variable})"),
             )
         }
+        ScalarExpressionKind::Label { function, variable } => (
+            plan_label(scope, *function, variable)?,
+            format!("{}({variable})", function.function_name()),
+        ),
         ScalarExpressionKind::Value(value) => (
             ProjectionExpression::Literal(bind_value(value, parameters)?),
             "literal".to_string(),
@@ -1388,6 +1392,9 @@ pub(super) fn plan_scalar_expression_with_columns(
                 variable: variable.clone(),
             })
         }
+        ScalarExpressionKind::Label { function, variable } => {
+            plan_label(scope, *function, variable)
+        }
         ScalarExpressionKind::Value(value) => Ok(ProjectionExpression::Literal(bind_value(
             value, parameters,
         )?)),
@@ -1833,6 +1840,24 @@ struct ListComprehensionParts<'a> {
     list: &'a ScalarExpression,
     predicate: Option<&'a ScalarExpression>,
     projection: Option<&'a ScalarExpression>,
+}
+
+/// `label(x)` or `labels(n)` over a graph variable in scope. Whether `x` is a
+/// node or a relationship is decided by the bound record at execution time.
+fn plan_label(
+    scope: &BTreeSet<String>,
+    function: hawdb_core::LabelFunction,
+    variable: &str,
+) -> Result<ProjectionExpression> {
+    if !scope.contains(variable) {
+        return Err(HawDBError::Semantic(format!(
+            "unknown variable '{variable}' in return item"
+        )));
+    }
+    Ok(ProjectionExpression::Label {
+        function,
+        variable: variable.to_owned(),
+    })
 }
 
 /// Plans `[variable IN list WHERE predicate | projection]`.

@@ -72,6 +72,7 @@ mod descriptor_capacity;
 mod disjunctive_seed_union;
 mod early_match_predicates;
 mod edge_predicates;
+mod entity_label_functions;
 mod entity_labels;
 mod entity_writes;
 mod expression_functions;

@@ -23,6 +23,8 @@ use std::borrow::Cow;
 
 #[cfg(test)]
 mod conversion_tests;
+#[cfg(test)]
+mod label_tests;
 mod list;
 #[cfg(test)]
 mod math_reduce_tests;
@@ -566,6 +568,15 @@ fn evaluate_scoped<'a>(
                 None => Ok(ProjectedValue::scalar(Value::Null)),
             }
         }
+        ProjectionExpression::Label { variable, .. }
+            if binding.values.get(variable) == Some(&Value::Null)
+                && !binding_has_variable(binding, variable) =>
+        {
+            Ok(ProjectedValue::scalar(Value::Null))
+        }
+        ProjectionExpression::Label { function, variable } => {
+            entity_label(*function, variable, binding, catalog, account)
+        }
         ProjectionExpression::Literal(value) => Ok(ProjectedValue::borrowed(value)),
         ProjectionExpression::Coalesce(expressions) => {
             for expression in expressions {
@@ -1054,6 +1065,63 @@ fn relationship_endpoint<'a>(
     allocated(node_value_bytes(node, catalog), account, || {
         node_value(node, catalog)
     })
+}
+
+/// `label(x)` or `labels(n)` of the node or relationship bound to `variable`.
+/// See [`hawdb_core::LabelFunction`] for the semantics.
+fn entity_label<'a>(
+    function: hawdb_core::LabelFunction,
+    variable: &str,
+    binding: &Binding,
+    catalog: &Catalog,
+    account: Option<&QueryMemoryAccount>,
+) -> Result<ProjectedValue<'a>> {
+    use hawdb_core::LabelFunction;
+    let string_bytes = |name: &str| std::mem::size_of::<Value>() + name.len();
+    if let Some(node) = binding.nodes.get(variable) {
+        let names = || {
+            node.labels
+                .iter()
+                .filter_map(|label| catalog.label_name(*label))
+        };
+        return match function {
+            LabelFunction::Label => {
+                let mut labels = names();
+                match (labels.next(), labels.next()) {
+                    (None, _) => Ok(ProjectedValue::scalar(Value::Null)),
+                    (Some(name), None) => {
+                        allocated(string_bytes(name), account, || Value::String(name.into()))
+                    }
+                    (Some(_), Some(_)) => Err(HawDBError::Execution(format!(
+                        "label({variable}) requires a node with one label, but the node has {}; use labels({variable})",
+                        names().count()
+                    ))),
+                }
+            }
+            LabelFunction::Labels => {
+                let bytes = names().fold(std::mem::size_of::<Value>(), |total, name| {
+                    total.saturating_add(string_bytes(name))
+                });
+                allocated(bytes, account, || {
+                    Value::List(names().map(|name| Value::String(name.into())).collect())
+                })
+            }
+        };
+    }
+    if let Some(relationship) = binding.relationships.get(variable) {
+        if function == LabelFunction::Labels {
+            return Err(HawDBError::Execution(format!(
+                "labels({variable}) requires a node, but '{variable}' is a relationship; use label({variable}) or type({variable})"
+            )));
+        }
+        return match catalog.rel_type_name(relationship.rel_type) {
+            Some(name) => allocated(string_bytes(name), account, || Value::String(name.into())),
+            None => Ok(ProjectedValue::scalar(Value::Null)),
+        };
+    }
+    Err(HawDBError::Execution(format!(
+        "missing variable '{variable}' during projection"
+    )))
 }
 
 /// The bytes [`node_value`] materializes for `node`.

@@ -328,6 +328,7 @@ fn public_expression_at(expression: &ProjectionExpression, depth: usize) -> bool
         | ProjectionExpression::Property { variable, .. }
         | ProjectionExpression::Id { variable }
         | ProjectionExpression::RelationshipType { variable }
+        | ProjectionExpression::Label { variable, .. }
         | ProjectionExpression::RelationshipEndpoint { variable, .. }
         | ProjectionExpression::DatePart { variable, .. }
         | ProjectionExpression::DefaultIfNullOrEq { variable, .. }

@@ -86,6 +86,7 @@ fn expected_after_main_transitions(expected: &serde_json::Value) -> &serde_json:
     // #1489 admits unbounded variable-length relationship patterns.
     // #1488 plans WHERE pattern predicates over the whole pattern.
     // #1683 adds an optional DEFAULT to CREATE PROPERTY (AST field only).
+    // #1678 parses Kuzu label(x) as an entity label expression, not type(r).
     let transitions = TRANSITIONS.get_or_init(|| {
         [
             include_str!("../../../fixtures/migration_main_1411_peg_baseline_v1.jsonl"),
@@ -109,6 +110,7 @@ fn expected_after_main_transitions(expected: &serde_json::Value) -> &serde_json:
             include_str!(
                 "../../../fixtures/migration_main_1683_property_defaults_peg_baseline_v1.jsonl"
             ),
+            include_str!("../../../fixtures/migration_main_1678_label_peg_baseline_v1.jsonl"),
         ]
         .map(|fixture| {
             fixture
@@ -796,6 +798,25 @@ fn frozen_main_1488_pattern_predicate_transitions_preserve_complete_ir() {
         count += 1;
     }
     assert_eq!(count, 87);
+}
+
+#[test]
+fn frozen_main_1678_label_transitions_preserve_complete_ir() {
+    let mut count = 0;
+    for line in
+        include_str!("../../../fixtures/migration_main_1678_label_peg_baseline_v1.jsonl").lines()
+    {
+        let expected: serde_json::Value = serde_json::from_str(line).unwrap();
+        // Each reviewed case was accepted with `label(r)` in RETURN, which
+        // parsed as `type(r)`; only that expression's AST changes.
+        assert_eq!(expected["previous_kind"], "accept");
+        assert_eq!(expected["kind"], "accept");
+        let query = expected["query"].as_str().unwrap();
+        assert!(query.contains("label(r"), "{query}");
+        assert_frozen(&expected);
+        count += 1;
+    }
+    assert_eq!(count, 18);
 }
 
 #[test]

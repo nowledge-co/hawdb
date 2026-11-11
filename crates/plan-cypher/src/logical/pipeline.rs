@@ -1801,6 +1801,7 @@ fn reads_only_group_keys(expression: &ProjectionExpression, keys: &[Projection])
         ProjectionExpression::Property { variable, .. }
         | ProjectionExpression::Id { variable }
         | ProjectionExpression::RelationshipType { variable }
+        | ProjectionExpression::Label { variable, .. }
         | ProjectionExpression::CaseCoalesceDifferenceFloorZero { variable, .. } => {
             grouped_variable(variable)
         }

@@ -90,6 +90,17 @@ already accepted `CREATE PROPERTY` statement that stays accepted; its AST gains
 `default: None` (the new optional `DEFAULT <literal>` clause). No frozen case
 changes between rejection and acceptance.
 
+`migration_main_1678_label_peg_baseline_v1.jsonl` records the 18 reviewed
+statement/pipeline transitions introduced by issue #1678. Each case was already
+accepted with Kùzu `label(r)` in RETURN, which used to parse as `type(r)`
+(`RelationshipType`). It now parses as the entity label expression
+`Label { function: Label, .. }`, which also reads node labels. Replacing that
+expression by the former one reproduces every previous AST hash exactly; nothing
+else changes. The planner golden `owner-0090` changes the same way (recorded in
+`migration_default_pipeline_v1.json`). No frozen case changes between rejection
+and acceptance: the Kùzu snapshot cases `mem-0057`..`mem-0060` stay rejected
+because they also use `offset(id(x))`.
+
 Run the default owner and complete local fuzz surface:
 
 ```sh
