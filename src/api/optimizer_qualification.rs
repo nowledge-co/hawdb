@@ -32,7 +32,10 @@ impl OptimizerQualificationAttemptLimits {
                 "optimizer qualification attempt timeout must be nonzero".into(),
             ));
         }
-        if std::time::Instant::now().checked_add(timeout).is_none() {
+        if hawdb_core::time::Instant::now()
+            .checked_add(timeout)
+            .is_none()
+        {
             return Err(HawDBError::Execution(
                 "optimizer qualification attempt timeout exceeds the supported monotonic deadline range"
                     .into(),
@@ -58,7 +61,7 @@ impl OptimizerQualificationAttemptLimits {
     }
 
     fn task_context(self) -> Result<hawdb_core::RuntimeTaskContext> {
-        let deadline = std::time::Instant::now()
+        let deadline = hawdb_core::time::Instant::now()
             .checked_add(self.timeout)
             .ok_or_else(|| {
                 HawDBError::Execution(
@@ -256,7 +259,7 @@ impl<S: executor::ExecutionStore> DatabaseReadTransaction<S> {
         qualification: OptimizerQualificationOptions,
         search: OptimizerSearchDirective,
     ) -> Result<OptimizerQualificationOutput> {
-        let preparation_started = std::time::Instant::now();
+        let preparation_started = hawdb_core::time::Instant::now();
         if qualification.cost_perturbation().is_some()
             && qualification.bounded_order_alternative().is_some()
         {
@@ -357,7 +360,7 @@ impl<S: executor::ExecutionStore> DatabaseReadTransaction<S> {
         let row_limit = self.read_result_row_limit();
         let mut external = executor::NoExternalReadOperator;
         let preparation_elapsed = preparation_started.elapsed();
-        let execution_started = std::time::Instant::now();
+        let execution_started = hawdb_core::time::Instant::now();
         let result = read_execution::PreparedReadExecution {
             statement,
             optimized,
