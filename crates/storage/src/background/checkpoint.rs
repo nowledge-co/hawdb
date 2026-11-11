@@ -136,6 +136,11 @@ impl UnitBatch {
     /// Start one unit, admitting a new batch first when none is held or the
     /// held one is exhausted. Exactly one clock read serves the previous
     /// batch's completion time, the deadline and the new admission time.
+    ///
+    /// Units of one context (and its clones) run sequentially or nested:
+    /// they share this batch's single background slot. Units of clones run
+    /// in parallel would all run under that one slot, so the scheduler
+    /// would account them as a single background operation.
     fn start(&self, task: &RuntimeTaskContext) -> Result<StartedUnit, CheckpointWorkError> {
         let mut state = self.lock();
         // A running batch cannot be reclaimed: nested units join it.
