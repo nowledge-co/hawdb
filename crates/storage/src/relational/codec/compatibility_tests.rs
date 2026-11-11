@@ -182,7 +182,7 @@ fn intact_unknown_view_expression_is_not_corruption() {
 }
 
 #[test]
-fn search_index_definitions_round_trip_and_refuse_unknown_analyzers() {
+fn search_index_definitions_round_trip_and_refuse_unknown_analyzers_and_layouts() {
     use crate::relational::{SearchIndexAnalyzer, SearchIndexSpec};
     let column = |name: &str, scalar_type| RelationalColumnSchema {
         name: name.into(),
@@ -234,8 +234,9 @@ fn search_index_definitions_round_trip_and_refuse_unknown_analyzers() {
     let state = RelationalState::default()
         .stage_transaction(transaction.clone(), Default::default(), Default::default())
         .unwrap();
-    // Postings: 数, 数据, 据, 据库, 库, search, plus the statistics row.
-    assert_eq!(state.row_count("events_text"), 7);
+    // Six term dictionary rows (数, 数据, 据, 据库, 库, search) with inline
+    // postings, one document row, one lengths row and the statistics row.
+    assert_eq!(state.row_count("events_text"), 9);
     let wal = encode_relational_wal_batch(1, &transaction).unwrap();
     assert_eq!(
         decode_relational_wal_batch(&wal, RelationalDecodeLimits::wal())
@@ -252,31 +253,35 @@ fn search_index_definitions_round_trip_and_refuse_unknown_analyzers() {
         decoded.rows("events_text").collect::<Vec<_>>(),
         state.rows("events_text").collect::<Vec<_>>()
     );
-    let expected = StorageFormatError::UnsupportedFeature {
-        format: "relational schema",
-        feature: "search index analyzer",
-        tag: 255,
-    };
-    let mutate = |encoded: &mut Vec<u8>| {
-        let name = b"search_body_column";
-        let offset = encoded
-            .windows(name.len())
-            .rposition(|bytes| bytes == name)
-            .unwrap()
-            + name.len();
-        assert_eq!(encoded[offset], 1);
-        encoded[offset] = 255;
-        let digest = integrity_digest(&encoded[HEADER_BYTES..]);
-        encoded[28..32].copy_from_slice(&digest.crc32c.get().to_le_bytes());
-        encoded[32..64].copy_from_slice(digest.sha256.as_bytes());
-    };
-    let mut wal = wal;
-    mutate(&mut wal);
-    assert_unsupported(
-        decode_relational_wal_batch(&wal, RelationalDecodeLimits::wal()).unwrap_err(),
-        &expected,
-    );
-    let mut checkpoint = checkpoint;
-    mutate(&mut checkpoint);
-    verify_checkpoint(&checkpoint, &expected);
+    // The analyzer tag, then the physical layout tag, follow the column name.
+    for (position, feature) in [(0, "search index analyzer"), (1, "search index layout")] {
+        let expected = StorageFormatError::UnsupportedFeature {
+            format: "relational schema",
+            feature,
+            tag: 255,
+        };
+        let mutate = |encoded: &mut Vec<u8>| {
+            let name = b"search_body_column";
+            let offset = encoded
+                .windows(name.len())
+                .rposition(|bytes| bytes == name)
+                .unwrap()
+                + name.len()
+                + position;
+            assert_eq!(encoded[offset], 1);
+            encoded[offset] = 255;
+            let digest = integrity_digest(&encoded[HEADER_BYTES..]);
+            encoded[28..32].copy_from_slice(&digest.crc32c.get().to_le_bytes());
+            encoded[32..64].copy_from_slice(digest.sha256.as_bytes());
+        };
+        let mut wal = wal.clone();
+        mutate(&mut wal);
+        assert_unsupported(
+            decode_relational_wal_batch(&wal, RelationalDecodeLimits::wal()).unwrap_err(),
+            &expected,
+        );
+        let mut checkpoint = checkpoint.clone();
+        mutate(&mut checkpoint);
+        verify_checkpoint(&checkpoint, &expected);
+    }
 }

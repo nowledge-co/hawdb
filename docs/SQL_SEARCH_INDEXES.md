@@ -106,16 +106,16 @@ Exceeding a limit fails the query; it never returns a truncated ranking.
 
 The index is a synchronous derived relation built on the
 [materialized view](MATERIALIZED_VIEWS.md) maintenance kernel. Its rows live in
-a hidden RowPage relation keyed by `(term, encoded primary key)`: one posting
-per distinct term per document holding the term frequency and document length,
-plus one statistics row with the document count and total token count. A
-document with a NULL or token-free column is not part of the corpus.
+a hidden RowPage relation with a compact postings layout (see
+[Physical layout](#physical-layout)). A document with a NULL or token-free
+column is not part of the corpus.
 
 - **Commit.** For each source key a transaction changed, maintenance analyzes
-  the old and new row images, deletes postings of terms that disappeared,
-  writes changed postings, and adjusts the statistics row. Unchanged text costs
-  no posting writes. Writes go through the same transaction, WAL record and
-  commit acknowledgement as the source row; the index is never behind.
+  the old and new row images and gathers the changed postings for the whole
+  commit; then each affected term's dictionary row, and only the posting blocks
+  that own changed older documents, are rewritten once. Unchanged text costs
+  nothing. Writes go through the same transaction, WAL record and commit
+  acknowledgement as the source row; the index is never behind.
 - **Recovery.** WAL replay re-runs the same deterministic maintenance, so a
   replayed transaction restores its postings with its rows; an incomplete
   transaction restores neither. Checkpoints publish the postings with the
@@ -131,27 +131,90 @@ document with a NULL or token-free column is not part of the corpus.
   optimistic validation, and `text_search` reads record a database-wide read
   dependency, because BM25 statistics depend on every document.
 
-Admission follows the materialized view rules: posting writes and row reads
-share the transaction's `RelationalMutationLimits` budget (250,000 row work
-units and 64 MiB of logical payload by default). A document with `t` distinct
-terms costs about `t` row units per insert, and a backfill costs about the
-source row count plus the total distinct-term count. A transaction that exceeds
-the budget is rejected before WAL append with its source rows; create the index
-before bulk loading, or load in smaller transactions, when the corpus is large.
+Admission follows the materialized view rules: index row reads and writes and
+the gathered postings share the transaction's `RelationalMutationLimits` budget
+(250,000 row work units and 64 MiB of logical payload by default). A document
+with `t` distinct terms costs about `t` dictionary-row reads and writes per
+insert; a backfill costs about the source row count plus the corpus's distinct
+term count, plus a few dozen payload bytes per posting. A transaction that
+exceeds the budget is rejected before WAL append with its source rows; load in
+smaller transactions, or create the index on a smaller corpus first, when a
+backfill is refused.
 
-The same residency requirement applies as for materialized views: postings are
-resident relational rows, and `RelationalIndexMode::Authoritative` refuses a
+The same residency requirement applies as for materialized views: index rows
+are resident relational rows, and `RelationalIndexMode::Authoritative` refuses a
 database containing a search index. Shadow, demand-paged and the default
 materialized index modes, and `OutOfCore` residency with materialized postings,
 are supported.
+
+## Physical layout
+
+Layout tag `1`. Every row of the hidden relation has the primary key
+`(kind BIGINT, name BYTEA, slot BIGINT)` and one `data BYTEA` payload of
+unsigned LEB128 varints (canonical spelling only; decoders refuse overlong,
+truncated or trailing bytes):
+
+| kind | name | slot | data |
+| --- | --- | --- | --- |
+| 0 statistics | empty | 0 | live documents, total tokens, next ordinal |
+| 1 document | encoded source primary key | 0 | the document's ordinal |
+| 2 lengths | empty | ordinal / 64 | per ordinal: token count (0 = none), encoded primary key |
+| 3 term dictionary | term (UTF-8) | `i64::MAX` | document frequency, sealed block count, tail start, tail postings |
+| 3 sealed block | term (UTF-8) | fence | postings |
+
+- **Ordinals.** A document entering the corpus gets the next dense integer
+  ordinal, in source-key order within a commit; ordinals are never reused,
+  and an update keeps its document's ordinal. WAL replay assigns the same
+  ordinals. Posting lists carry ordinals, not primary keys; the lengths rows
+  map an ordinal back to its primary key and store each document's length
+  once, not once per posting.
+- **Posting lists** are a count followed by `(ordinal delta, term frequency)`
+  pairs, sorted by ordinal. The first delta is relative to the list's base
+  and every later delta is at least 1.
+- **Term dictionary.** One row per term carries its document frequency, how
+  many sealed blocks it has, and the tail start; up to 127 postings at or
+  above the tail start live inline in the dictionary row. A rare term is
+  therefore one row, `text_search` knows each term's document frequency (and
+  refuses an over-budget term) before reading any block, and an append
+  rewrites only the dictionary row.
+- **Sealed blocks.** When the tail reaches 128 postings it is flushed: first
+  into the term's last sealed block if deletes left room there (up to 128),
+  then into new blocks keyed by their fence (the tail start at the time), and
+  the tail start moves past the last flushed ordinal. Block `f` owns the
+  term's ordinals in `[f, next fence)`; the first block's fence is 0, and it
+  is kept, possibly empty, while the term exists, so every older ordinal has
+  an owner.
+- **Updates and deletes rewrite blocks in place; there are no tombstones.**
+  A change to an older document rewrites the one block that owns its ordinal
+  (at most 256 postings, a few hundred bytes), so BM25 statistics stay exact
+  without a dead-posting filter, nothing accumulates, and the cost per commit
+  is bounded by the number of changed postings, not by a term's document
+  frequency. A block that grows past 256 postings splits into 128-posting
+  blocks; a changed block that shrinks below 32 merges into a neighbour when
+  the two fit in 128, so delete-heavy churn cannot leave a run of nearly
+  empty blocks. When a term's last posting goes, its rows go; when the last
+  document goes, the relation is empty.
+
+Tombstones were rejected: exact BM25 needs live document frequencies and
+document counts anyway, so a delete must touch every one of its terms'
+dictionaries regardless, and tombstoned postings would need a filter on every
+query plus a compaction whose cost grows with a term's frequency.
+
+`text_search` reads the statistics row, then per query term the dictionary
+row and (if any) the term's sealed blocks through one primary-key range, and
+fetches each needed lengths row once. Scores are computed with the same
+operations, in the same term order, as a brute-force evaluation, so they are
+exactly equal to it. Decoders check every count against the dictionary and
+refuse an inconsistent index as a storage-integrity error.
 
 ## Format
 
 The relational schema encoding tags the derived-relation definition: `0` none,
 `1` materialized view (unchanged layout), `2` search index (source table,
-column, analyzer tag; `cjk_ngram` is `1`). Existing databases read unchanged.
-Older binaries refuse a schema with tag `2`, and current binaries refuse
-unknown tags or analyzer tags as an unsupported format rather than guessing.
+column, analyzer tag, physical layout tag; `cjk_ngram` is analyzer `1`, the
+layout above is layout `1`). Existing databases read unchanged. Older binaries
+refuse a schema with tag `2`, and current binaries refuse unknown tags,
+analyzer tags or layout tags as an unsupported format rather than guessing.
 No codec version changes, following the materialized view MIN/MAX precedent
 and HawDB's development-phase format policy.
 
@@ -162,8 +225,9 @@ and HawDB's development-phase format policy.
 - Joins in the same SELECT as `text_search`, and `EXPLAIN` output for it.
 - Multi-column indexes, non-TEXT columns, strict append source tables, and a
   search index over a materialized view.
-- Compact posting storage. Postings are one row each; resident memory grows
-  with the total distinct-term count. A compact layout is the subject of #206.
+- Block-max or WAND pruning, and SIMD bit-packing of posting blocks. Every
+  matching document is still scored; the graph-side lexical projection's
+  layout work is #206 and its follow-ups.
 - A dictionary analyzer (for example the graph search kernel's Jieba-based
   analyzer); `cjk_ngram` is dictionary-free and recall-oriented.
 - Background or chunked backfill of large existing tables.

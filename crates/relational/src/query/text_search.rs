@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! `FROM text_search(index, query, top_k => k)`: BM25 over an engine-owned
-//! search index. Postings are read from the index relation in the same
-//! snapshot as the source rows, scored exactly, and hydrated in descending
+//! search index. Each query term's dictionary row and posting blocks are read
+//! from the index relation in the same snapshot as the source rows, scored
+//! exactly with per-document lengths, and hydrated in descending
 //! score order until `k` rows satisfy WHERE. Projection, ORDER BY, LIMIT and
 //! OFFSET then apply to those rows.
 
@@ -14,7 +15,11 @@ use super::vector_index::{
 use super::*;
 use hawdb_sql::SqlTextSearch;
 use hawdb_storage::relational::{
-    search_index_statistics_key, search_index_term_range, SEARCH_INDEX_COLUMN_COUNT,
+    decode_search_sealed_block, search_index_block_fence, search_index_dictionary_key,
+    search_index_length_block_range, search_index_length_block_start,
+    search_index_sealed_block_range, search_index_statistics_key, SearchIndexStatistics,
+    SearchLengthBlock, SearchPosting, SearchTermDictionary, SEARCH_INDEX_COLUMN_COUNT,
+    SEARCH_INDEX_LENGTH_BLOCK_DOCUMENTS,
 };
 
 /// Okapi BM25 with the conventional Lucene defaults.
@@ -98,11 +103,15 @@ fn identity(document: &[u8]) -> String {
     identity
 }
 
-fn bigint(row: &RelationalReadRow, ordinal: usize) -> Result<i64> {
-    match row.value(ordinal)? {
-        RelationalValue::BigInt(value) if *value >= 0 => Ok(*value),
+fn integrity(error: hawdb_storage::relational::RelationalError) -> HawDBError {
+    HawDBError::StorageIntegrity(error.to_string())
+}
+
+fn data(row: &RelationalReadRow) -> Result<&[u8]> {
+    match row.value(3)? {
+        RelationalValue::Bytea(data) => Ok(data),
         _ => Err(HawDBError::StorageIntegrity(
-            "search index row has an invalid count".into(),
+            "search index row has an invalid payload".into(),
         )),
     }
 }
@@ -129,63 +138,138 @@ fn rank<R: RelationalRowStoreReader>(
     let Some(statistics) = runtime.read_point(index, &search_index_statistics_key())? else {
         return Ok((Vec::new(), runtime.evidence()));
     };
-    let documents = bigint(&statistics, 2)? as f64;
-    let tokens = bigint(&statistics, 3)? as f64;
-    if documents <= 0.0 || tokens <= 0.0 {
+    let statistics = SearchIndexStatistics::decode(data(&statistics)?).map_err(integrity)?;
+    if statistics.documents == 0 || statistics.tokens == 0 {
         return Ok((Vec::new(), runtime.evidence()));
     }
-    let average_length = tokens / documents;
+    let documents = statistics.documents as f64;
+    let average_length = statistics.tokens as f64 / documents;
     let account = ledger.account(
         QueryMemoryClass::BlockingState,
         "TextSearch scores",
         resources.execution_memory.blocking_operator_bytes,
     );
     let mut memory = account.reserve(0)?;
-    let mut scores = BTreeMap::<Vec<u8>, f64>::new();
     let mut work = 0usize;
     let max_work = resources.limits.max_candidate_work;
+    let mut charge_work = |amount: usize| {
+        work = work.saturating_add(amount);
+        if work > max_work {
+            return Err(HawDBError::read_budget_exceeded(
+                hawdb_core::ReadBudgetResource::Rows,
+                max_work,
+                "text_search postings exceed SQL candidate work admission",
+            ));
+        }
+        Ok(())
+    };
+    // Phase 1: every query term's postings and IDF, in query-term order.
+    let mut gathered = Vec::<(f64, Vec<SearchPosting>)>::with_capacity(terms.len());
+    let mut needed = BTreeSet::<u64>::new();
     for term in terms {
         hawdb_executor::pipeline::runtime_checkpoint(resources.task_context)?;
-        let mut postings = Vec::new();
-        runtime.visit_primary_key_range(
-            index,
-            &search_index_term_range(term)
-                .map_err(|error| HawDBError::Execution(error.to_string()))?,
-            |row| {
-                work += 1;
-                if work > max_work {
-                    return Err(HawDBError::read_budget_exceeded(
-                        hawdb_core::ReadBudgetResource::Rows,
-                        max_work,
-                        "text_search postings exceed SQL candidate work admission",
-                    ));
-                }
-                let RelationalValue::Bytea(document) = row.value(1)? else {
-                    return Err(HawDBError::StorageIntegrity(
-                        "search index posting has an invalid document".into(),
-                    ));
-                };
-                memory.grow(document.len().saturating_add(96))?;
-                postings.push((document.clone(), bigint(&row, 2)?, bigint(&row, 3)?));
-                Ok(true)
-            },
-        )?;
+        let Some(row) = runtime.read_point(index, &search_index_dictionary_key(term))? else {
+            continue;
+        };
+        let dictionary = SearchTermDictionary::decode(data(&row)?).map_err(integrity)?;
+        // The dictionary carries the document frequency, so an over-budget
+        // term is refused before any of its blocks is read.
+        let frequency = usize::try_from(dictionary.document_frequency).unwrap_or(usize::MAX);
+        charge_work(frequency)?;
+        memory.grow(frequency.saturating_mul(std::mem::size_of::<SearchPosting>() + 16))?;
+        let mut postings = Vec::with_capacity(frequency);
+        if dictionary.sealed_blocks > 0 {
+            let mut blocks = 0u64;
+            runtime.visit_primary_key_range(
+                index,
+                &search_index_sealed_block_range(term).map_err(integrity)?,
+                |row| {
+                    blocks += 1;
+                    let fence = search_index_block_fence(row.value(2)?).map_err(integrity)?;
+                    decode_search_sealed_block(fence, data(&row)?, &mut postings)
+                        .map_err(integrity)?;
+                    Ok(true)
+                },
+            )?;
+            if blocks != dictionary.sealed_blocks {
+                return Err(HawDBError::StorageIntegrity(
+                    "search index sealed block count disagrees with its dictionary".into(),
+                ));
+            }
+        }
+        postings.extend_from_slice(&dictionary.tail);
+        if postings.len() as u64 != dictionary.document_frequency
+            || postings
+                .windows(2)
+                .any(|pair| pair[0].ordinal >= pair[1].ordinal)
+        {
+            return Err(HawDBError::StorageIntegrity(
+                "search index postings disagree with their document frequency".into(),
+            ));
+        }
         if postings.is_empty() {
             continue;
         }
+        for posting in &postings {
+            needed.insert(posting.ordinal / SEARCH_INDEX_LENGTH_BLOCK_DOCUMENTS);
+        }
         let frequency = postings.len() as f64;
         let idf = (1.0 + (documents - frequency + 0.5) / (frequency + 0.5)).ln();
-        for (document, term_frequency, length) in postings {
-            let term_frequency = term_frequency as f64;
+        gathered.push((idf, postings));
+    }
+    let (Some(&first), Some(&last)) = (needed.first(), needed.last()) else {
+        return Ok((Vec::new(), runtime.evidence()));
+    };
+    // Phase 2: the lengths rows of every scored document, in one ordered
+    // range scan rather than one point read per row.
+    let mut lengths = BTreeMap::<u64, SearchLengthBlock>::new();
+    runtime.visit_primary_key_range(
+        index,
+        &search_index_length_block_range(
+            first * SEARCH_INDEX_LENGTH_BLOCK_DOCUMENTS,
+            last * SEARCH_INDEX_LENGTH_BLOCK_DOCUMENTS,
+        )
+        .map_err(integrity)?,
+        |row| {
+            charge_work(1)?;
+            let block = search_index_length_block_start(row.value(2)?).map_err(integrity)?
+                / SEARCH_INDEX_LENGTH_BLOCK_DOCUMENTS;
+            if needed.contains(&block) {
+                let data = data(&row)?;
+                memory.grow(data.len().saturating_mul(2).saturating_add(96))?;
+                lengths.insert(block, SearchLengthBlock::decode(data).map_err(integrity)?);
+            }
+            Ok(true)
+        },
+    )?;
+    let entry = |ordinal: u64| {
+        lengths
+            .get(&(ordinal / SEARCH_INDEX_LENGTH_BLOCK_DOCUMENTS))
+            .and_then(|block| block.get(ordinal))
+            .ok_or_else(|| {
+                HawDBError::StorageIntegrity("search index posting names an absent document".into())
+            })
+    };
+    // Phase 3: scores, accumulated per document in query-term order with the
+    // same floating-point operations as a brute-force evaluation.
+    let mut scores = BTreeMap::<u64, f64>::new();
+    for (idf, postings) in &gathered {
+        hawdb_executor::pipeline::runtime_checkpoint(resources.task_context)?;
+        for posting in postings {
+            let length = entry(posting.ordinal)?.length;
+            let term_frequency = posting.frequency as f64;
             let normalization = BM25_K1 * (1.0 - BM25_B + BM25_B * length as f64 / average_length);
-            *scores.entry(document).or_insert(0.0) +=
+            *scores.entry(posting.ordinal).or_insert(0.0) +=
                 idf * term_frequency * (BM25_K1 + 1.0) / (term_frequency + normalization);
         }
     }
-    let mut ranked = scores
-        .into_iter()
-        .map(|(document, score)| (identity(&document), score))
-        .collect::<Vec<_>>();
+    drop(gathered);
+    let mut ranked = Vec::with_capacity(scores.len());
+    for (ordinal, score) in scores {
+        let document = &entry(ordinal)?.key;
+        memory.grow(document.len().saturating_mul(2).saturating_add(64))?;
+        ranked.push((identity(document), score));
+    }
     // Hex identities preserve the encoded-key byte order used for ties.
     ranked.sort_by(|left, right| {
         right

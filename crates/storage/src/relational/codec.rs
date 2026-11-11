@@ -2266,6 +2266,16 @@ impl<I: DecodeInput> Decoder<I> {
                         },
                     )
                 })?;
+            let layout = self.u8()?;
+            if layout != super::materialized_view::SEARCH_INDEX_LAYOUT_TAG {
+                return Err(RelationalError::UnsupportedFormat(
+                    hawdb_core::StorageFormatError::UnsupportedFeature {
+                        format: "relational schema",
+                        feature: "search index layout",
+                        tag: u64::from(layout),
+                    },
+                ));
+            }
             if let Some(context) = self.input.checkpoint_allocation_context() {
                 context
                     .reserve(std::mem::size_of::<MaterializedViewDefinition>())

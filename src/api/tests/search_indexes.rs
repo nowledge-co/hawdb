@@ -105,8 +105,14 @@ fn assert_matches_oracle(db: &mut Database, query: &str) {
     let actual = search(db, query, 50);
     let expected = oracle(db, query, 50);
     assert_eq!(ids(&actual), ids(&expected), "query {query}");
+    // The index evaluates the same floating-point operations in the same
+    // term order as the oracle, so scores are bit-for-bit equal.
     for ((_, actual), (_, expected)) in actual.iter().zip(&expected) {
-        assert!((actual - expected).abs() < 1e-9, "{actual} != {expected}");
+        assert_eq!(
+            actual.to_bits(),
+            expected.to_bits(),
+            "{actual} != {expected}"
+        );
     }
 }
 
@@ -331,13 +337,13 @@ fn search_index_ddl_and_catalog_guards() {
         ),
         ("SELECT * FROM events_text", "search index"),
         (
-            "INSERT INTO events_text (__hawdb_search_term) VALUES ('x')",
+            "INSERT INTO events_text (__hawdb_search_kind) VALUES (0)",
             "read-only",
         ),
         ("DROP MATERIALIZED VIEW events_text", "DROP SEARCH INDEX"),
         ("DROP SEARCH INDEX events", "unknown search index"),
         (
-            "CREATE INDEX on_postings ON events_text (__hawdb_search_term)",
+            "CREATE INDEX on_postings ON events_text (__hawdb_search_name)",
             "visible",
         ),
     ] {
@@ -727,4 +733,243 @@ fn search_index_analyzes_overflowed_text_and_survives_schema_extension() {
     assert_matches_oracle(&mut db, "short omegaword");
     drop(db);
     std::fs::remove_dir_all(path).unwrap();
+}
+
+/// Hidden index rows by kind: statistics, documents, lengths, term
+/// dictionaries and sealed posting blocks.
+fn layout_rows(db: &Database) -> [usize; 5] {
+    use hawdb_storage::relational::RelationalValue;
+    let runtime = db.runtime.get().unwrap();
+    let state = runtime.store.relational_state();
+    let mut counts = [0; 5];
+    for (key, _) in state.rows("events_text") {
+        let (RelationalValue::BigInt(kind), RelationalValue::BigInt(slot)) = (&key.0[0], &key.0[2])
+        else {
+            panic!("unexpected search index key {key:?}");
+        };
+        let kind = match (*kind, *slot) {
+            (3, i64::MAX) => 3,
+            (3, _) => 4,
+            (kind, _) => usize::try_from(kind).unwrap(),
+        };
+        counts[kind] += 1;
+    }
+    counts
+}
+
+fn row_data(db: &Database, key: &hawdb_storage::relational::RelationalKey) -> Option<Vec<u8>> {
+    use hawdb_storage::relational::RelationalValue;
+    let runtime = db.runtime.get().unwrap();
+    let state = runtime.store.relational_state();
+    let row = state.row("events_text", key)?;
+    let RelationalValue::Bytea(data) = &row.values()[3] else {
+        panic!("unexpected search index payload");
+    };
+    Some(data.clone())
+}
+
+fn next_ordinal(db: &Database) -> u64 {
+    use hawdb_storage::relational::{search_index_statistics_key, SearchIndexStatistics};
+    SearchIndexStatistics::decode(&row_data(db, &search_index_statistics_key()).unwrap())
+        .unwrap()
+        .next_ordinal
+}
+
+/// Posting counts of a term's sealed blocks in fence order, then its tail.
+fn term_blocks(db: &Database, term: &str) -> (Vec<usize>, usize) {
+    use hawdb_storage::relational::{
+        decode_search_sealed_block, search_index_block_fence, search_index_dictionary_key,
+        RelationalValue, SearchTermDictionary,
+    };
+    let Some(data) = row_data(db, &search_index_dictionary_key(term)) else {
+        return (Vec::new(), 0);
+    };
+    let dictionary = SearchTermDictionary::decode(&data).unwrap();
+    let runtime = db.runtime.get().unwrap();
+    let state = runtime.store.relational_state();
+    let mut sealed = Vec::new();
+    for (key, row) in state.rows("events_text") {
+        if key.0[0] != RelationalValue::BigInt(3)
+            || key.0[1] != RelationalValue::Bytea(term.as_bytes().to_vec())
+            || key.0[2] == RelationalValue::BigInt(i64::MAX)
+        {
+            continue;
+        }
+        let RelationalValue::Bytea(data) = &row.values()[3] else {
+            panic!("unexpected sealed block payload");
+        };
+        let mut postings = Vec::new();
+        decode_search_sealed_block(
+            search_index_block_fence(&key.0[2]).unwrap(),
+            data,
+            &mut postings,
+        )
+        .unwrap();
+        sealed.push(postings.len());
+    }
+    assert_eq!(sealed.len() as u64, dictionary.sealed_blocks, "{term}");
+    assert_eq!(
+        sealed.iter().sum::<usize>() + dictionary.tail.len(),
+        usize::try_from(dictionary.document_frequency).unwrap(),
+        "{term}"
+    );
+    (sealed, dictionary.tail.len())
+}
+
+#[test]
+fn search_index_blocks_seal_split_and_route_older_changes_exactly() {
+    use hawdb_storage::relational::{
+        SEARCH_INDEX_BLOCK_POSTINGS as BLOCK, SEARCH_INDEX_LENGTH_BLOCK_DOCUMENTS,
+    };
+    let mut db = Database::new();
+    db.query_sql(SCHEMA).unwrap();
+    db.query_sql(INDEX).unwrap();
+    // "common" is in every document, "odd" in every other one and "sparse" in
+    // every fourth; one INSERT per document seals tails one posting at a time.
+    let total = 520i64;
+    let text = |id: i64| {
+        format!(
+            "common doc{id}{}{}",
+            if id % 2 == 1 { " odd" } else { "" },
+            if id % 4 == 0 { " sparse" } else { "" }
+        )
+    };
+    for id in 0..total {
+        insert(&mut db, id, "s", Some(&text(id)));
+    }
+    let [statistics, documents, lengths, dictionaries, sealed] = layout_rows(&db);
+    assert_eq!((statistics, documents), (1, 520));
+    assert_eq!(
+        lengths as u64,
+        520u64.div_ceil(SEARCH_INDEX_LENGTH_BLOCK_DOCUMENTS)
+    );
+    assert_eq!(dictionaries, 520 + 3);
+    assert_eq!(term_blocks(&db, "common"), (vec![BLOCK; 4], 8));
+    assert_eq!(term_blocks(&db, "odd"), (vec![BLOCK; 2], 4));
+    assert_eq!(term_blocks(&db, "sparse"), (vec![BLOCK], 2));
+    assert_eq!(term_blocks(&db, "doc7"), (vec![], 1));
+    assert_eq!(sealed, 7);
+    let queries = [
+        "common",
+        "odd",
+        "sparse",
+        "doc7",
+        "common odd",
+        "doc127 doc128 doc511 doc512",
+        "sparse odd doc0",
+    ];
+    for query in queries {
+        assert_matches_oracle(&mut db, query);
+    }
+    // Older documents gain, change and lose terms inside sealed blocks, at
+    // and around block boundaries.
+    for (id, text) in [
+        (0, "common common odd late"),
+        (127, "sparse late"),
+        (128, "common doc128 odd odd"),
+        (255, "doc255"),
+        (256, "late"),
+        (511, "common sparse sparse"),
+    ] {
+        db.query_sql_with_params(
+            "UPDATE events SET text = $1 WHERE id = $2",
+            &[Value::String(text.into()), Value::Int(id)],
+        )
+        .unwrap();
+        for query in queries.iter().chain(&["late"]) {
+            assert_matches_oracle(&mut db, query);
+        }
+    }
+    // One transaction adds "sparse" to hundreds of older documents that all
+    // belong to its first sealed block: the block splits into full blocks.
+    let mut tx = db.begin_transaction().unwrap();
+    for id in (1..509).filter(|id| id % 4 != 0) {
+        tx.query_sql_with_params(
+            "UPDATE events SET text = $1 WHERE id = $2",
+            &[
+                Value::String(format!("common sparse doc{id}")),
+                Value::Int(id),
+            ],
+        )
+        .unwrap();
+    }
+    tx.commit().unwrap();
+    let (blocks, _) = term_blocks(&db, "sparse");
+    assert!(blocks.len() >= 4, "{blocks:?}");
+    assert!(blocks.iter().all(|count| *count <= 2 * BLOCK), "{blocks:?}");
+    for query in queries.iter().chain(&["late"]) {
+        assert_matches_oracle(&mut db, query);
+    }
+    assert_eq!(next_ordinal(&db), 520, "updates keep their ordinals");
+}
+
+#[test]
+fn search_index_one_document_updated_many_times_keeps_one_ordinal() {
+    let mut db = Database::new();
+    corpus(&mut db);
+    db.query_sql(INDEX).unwrap();
+    let before = layout_rows(&db);
+    let ordinal = next_ordinal(&db);
+    for revision in 0..300 {
+        let text = format!(
+            "revision{revision} {} hawdb",
+            "search ".repeat(revision % 7 + 1)
+        );
+        db.query_sql_with_params(
+            "UPDATE events SET text = $1 WHERE id = 1",
+            &[Value::String(text)],
+        )
+        .unwrap();
+        if revision % 50 == 0 {
+            for query in QUERIES.iter().chain(&["revision0 search"]) {
+                assert_matches_oracle(&mut db, query);
+            }
+        }
+    }
+    assert_eq!(next_ordinal(&db), ordinal);
+    assert_eq!(ids(&search(&mut db, "revision299", 5)), [1]);
+    assert!(search(&mut db, "revision298", 5).is_empty());
+    // Earlier revisions' words left the dictionary; rows stay bounded.
+    let after = layout_rows(&db);
+    assert_eq!(after[..3], before[..3]);
+    assert!(after[3] <= before[3] + 2, "{before:?} {after:?}");
+    for query in QUERIES {
+        assert_matches_oracle(&mut db, query);
+    }
+}
+
+#[test]
+fn search_index_delete_churn_compacts_blocks_and_empties_the_relation() {
+    use hawdb_storage::relational::SEARCH_INDEX_BLOCK_POSTINGS as BLOCK;
+    let mut db = Database::new();
+    db.query_sql(SCHEMA).unwrap();
+    db.query_sql(INDEX).unwrap();
+    for id in 0..(4 * BLOCK as i64) {
+        insert(&mut db, id, "s", Some(&format!("common doc{id} 共同")));
+    }
+    assert_eq!(term_blocks(&db, "common"), (vec![BLOCK; 4], 0));
+    // Delete seven of every eight documents, one statement each.
+    for id in (0..(4 * BLOCK as i64)).filter(|id| id % 8 != 0) {
+        db.query_sql_with_params("DELETE FROM events WHERE id = $1", &[Value::Int(id)])
+            .unwrap();
+    }
+    let (blocks, tail) = term_blocks(&db, "common");
+    assert_eq!(blocks.iter().sum::<usize>() + tail, BLOCK / 2);
+    assert!(blocks.len() <= 2, "{blocks:?}");
+    for query in ["common", "共同", "doc8 doc16", "doc9"] {
+        assert_matches_oracle(&mut db, query);
+    }
+    // Re-inserting appends new ordinals after the compacted blocks.
+    for id in 1000..1010 {
+        insert(&mut db, id, "s", Some("common 共同 again"));
+    }
+    for query in ["common again", "共同"] {
+        assert_matches_oracle(&mut db, query);
+    }
+    db.query_sql("DELETE FROM events WHERE id >= 0").unwrap();
+    assert_eq!(layout_rows(&db), [0; 5]);
+    assert!(search(&mut db, "common", 5).is_empty());
+    insert(&mut db, 1, "s", Some("fresh start"));
+    assert_eq!(next_ordinal(&db), 1);
+    assert_matches_oracle(&mut db, "fresh");
 }
