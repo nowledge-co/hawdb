@@ -410,6 +410,77 @@ void hawdb_buffer_free(struct HawdbBuffer *buffer);
 void hawdb_version(struct HawdbBuffer *out);
 
 /**
+ * The engine-wide persistent format version of this library. Two library
+ * builds with the same value open each other's databases. Before replacing
+ * the library with one whose value differs, export each database with
+ * [`hawdb_export`] using the old library and import it with
+ * [`hawdb_import`] using the new one.
+ */
+uint32_t hawdb_format_version(void);
+
+/**
+ * The newest logical dump format version this library writes and reads.
+ * [`hawdb_import`] accepts every dump version up to this one.
+ */
+uint32_t hawdb_dump_format_version(void);
+
+/**
+ * Export the handle's current snapshot as a logical dump directory at
+ * `dest_path` (`dest_len` UTF-8 bytes), which must not exist; its parent
+ * must. The dump is written beside the destination and renamed onto it only
+ * when complete, so a failed export leaves nothing at `dest_path`. The call
+ * holds the handle for its duration, so it reflects one consistent snapshot.
+ *
+ * On success returns true and `report_out` receives
+ * `{"dump_format_version", "persistent_format_version", "hawdb_version",
+ * "branch", "commit_epoch", "table_count", "table_row_count", "node_count",
+ * "relationship_count", "file_count", "total_bytes", "manifest_sha256"}`.
+ * On failure returns false and `err_out` receives `{"kind", "message"}`:
+ * `semantic` when the database holds a kind of data the dump format cannot
+ * represent yet (nothing is written), `transaction_open` while the handle has
+ * an open transaction, `invalid_argument` for a NULL or non-UTF-8 argument.
+ *
+ * # Safety
+ * `db` must be a live [`crate::hawdb_open`] handle or NULL; `dest_path` must
+ * be readable for `dest_len` bytes or NULL; `report_out` and `err_out` must
+ * be NULL or writable [`HawdbBuffer`] storage.
+ */
+bool hawdb_export(struct HawdbDatabase *db,
+                  const char *dest_path,
+                  uintptr_t dest_len,
+                  struct HawdbBuffer *report_out,
+                  struct HawdbBuffer *err_out);
+
+/**
+ * Build a new database at `dest_path` from the logical dump at `src_path`.
+ * `dest_path` must not exist; its parent must. The database is built in an
+ * unpublished directory beside the destination, every file is verified
+ * against the dump's SHA-256 and record counts, and the result is renamed
+ * onto `dest_path` only on complete success: a failed or interrupted import
+ * never leaves a database at `dest_path`. Needs no open handle; open the
+ * result with [`crate::hawdb_open`].
+ *
+ * On success returns true and `report_out` receives
+ * `{"dump_format_version", "source_hawdb_version",
+ * "source_persistent_format_version", "persistent_format_version",
+ * "table_count", "table_row_count", "node_count", "relationship_count",
+ * "file_count", "total_bytes", "manifest_sha256"}`. A dump written by a
+ * newer HawDB fails with `unsupported_storage_format`; a damaged or
+ * incomplete dump fails with `storage_integrity`.
+ *
+ * # Safety
+ * `src_path` and `dest_path` must be readable for `src_len` / `dest_len`
+ * bytes or NULL; `report_out` and `err_out` must be NULL or writable
+ * [`HawdbBuffer`] storage.
+ */
+bool hawdb_import(const char *src_path,
+                  uintptr_t src_len,
+                  const char *dest_path,
+                  uintptr_t dest_len,
+                  struct HawdbBuffer *report_out,
+                  struct HawdbBuffer *err_out);
+
+/**
  * Return the additive experimental retained descriptor ABI version.
  */
 uint32_t hawdb_retained_abi_version(void);

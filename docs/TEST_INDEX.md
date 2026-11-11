@@ -3401,3 +3401,63 @@ existing digest/hash framing vectors and capacity checks remain unchanged.
 parameter binding byte limits, capability/cancellation checks, statistics
 isolation and WAL replay coverage. `in_memory_portable` and minimal WASM strict
 Clippy cover the embedded facade. No new crate or CI job is introduced.
+
+## Logical dump and persistent format version (#1655)
+
+Specification: [LOGICAL_DUMP.md](LOGICAL_DUMP.md).
+
+- `tests/logical_dump.rs` (Bazel `//:hawdb_logical_dump_tests`, in the
+  required `//:hawdb_unit_tests` suite; Cargo
+  `cargo test --locked -p hawdb --test logical_dump`) is the public embedded
+  API owner. It covers:
+  - round-trip equality on a persistent database with every relational scalar
+    type, Unicode/CJK/emoji text, the full `i64` range, NaN/±Inf/-0.0,
+    binary with NUL and newline bytes, decimals, vectors, timestamps, column
+    defaults, composite keys, a keyless table with duplicate rows, quoted
+    identifiers, a self-referencing foreign key whose children precede their
+    parents in key order, and a typed graph with indexes and constraints.
+    Equality is checked by query comparison and by `dump(import(dump(db)))`
+    being byte-identical to `dump(db)`. Pages of 7 rows and files of 10
+    records exercise keyset paging and file rotation.
+  - snapshot consistency: a pinned read transaction exports while another
+    thread commits inserts, an update, a delete and graph writes.
+  - fail-closed export: strict append tables, materialized views, a VECTOR
+    default, an open transaction and an existing destination. Nothing is
+    published and no staging directory is left behind.
+  - import atomicity: a flipped byte in the last relationship file (after
+    every table and node was written to the unpublished target), a truncated
+    table file, a missing data file, a missing manifest, a damaged schema, a
+    path-escaping manifest entry and an existing destination. Each publishes
+    nothing and leaves no staging directory. A stale staging directory from
+    an interrupted earlier import is neither adopted nor removed.
+  - a newer `dump_format_version` is a typed `UnsupportedStorageFormat`
+    refusal before any write, and unknown manifest fields are ignored.
+  - the checked-in golden format 1 dump (`tests/logical_dump/golden_v1/`)
+    imports with exact values. These bytes must never change. Regenerate a
+    new golden version only with the `#[ignore]`d `write_golden_format_1_dump`
+    and `HAWDB_GOLDEN_OUT=<dir>`.
+  - a legacy store whose storage manifest declares `hawdb-storage-v0` is
+    refused through the embedded open with
+    `UnsupportedStorageFormat(UnsupportedVersion { "storage manifest", 0, 1 })`,
+    changes nothing, and opens again once the version is restored.
+
+  DDL dominates the cost (about 1.5 s per statement in the checked profile),
+  so the damage cases share a one-table fixture. The round-trip case is the
+  slowest, at about 35 s locally on an Apple M-series machine.
+- `src/logical_dump/value.rs` unit tests (root unit binary,
+  `logical_dump::value::tests`) cover base64 for every padding length and
+  value round trips, including a map whose key is a tag name.
+- `crates/storage` `durable_manifest` tests and the two
+  `rejects_unsupported_*_storage_version` store tests pin the typed storage
+  manifest/checkpoint version refusal. `graph_recovery` keeps the Lightning
+  empty-target import over the shared bounded `import_graph_rows_batch`.
+- `bindings/ffi/src/dump_tests.rs` (`//bindings/ffi:hawdb_ffi_tests`;
+  `cargo test --locked --manifest-path bindings/ffi/Cargo.toml dump`) covers
+  the C ABI JSON reports and error kinds (`storage`, `semantic`,
+  `invalid_argument`, `unsupported_storage_format`, `storage_integrity`).
+  `bindings/bun/tests/dump.test.ts` covers the Bun adapter, including handle
+  revalidation after path conversion closes the database.
+- `scripts/check-persistent-format.test.py` and
+  `scripts/check-persistent-format.py` run in the `Persistent Format`
+  workflow on every pull request. On a published release, the same workflow
+  appends `Persistent format changed: yes|no (...)` to the release notes.

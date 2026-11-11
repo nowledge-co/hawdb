@@ -102,6 +102,7 @@ pub(crate) use transactions::{
     execute_database_transaction_sql_request,
 };
 mod graph_adapter;
+mod logical_dump_access;
 mod read;
 
 mod artifact_jobs;

@@ -140,6 +140,29 @@ same results and errors.
 One handle serializes its calls, so it has no group-commit setting; Rust hosts
 that need WAL group commit across concurrent writers use `ConcurrentDatabase`.
 
+## Upgrading across a persistent format change
+
+`hawdb_format_version()` returns the engine-wide persistent format version.
+Two library builds with the same value open each other's databases. Before
+shipping a library whose value differs, export each database with the old
+library and import it with the new one:
+
+```c
+bool hawdb_export(struct HawdbDatabase *db, const char *dest_path, uintptr_t dest_len,
+                  struct HawdbBuffer *report_out, struct HawdbBuffer *err_out);
+bool hawdb_import(const char *src_path, uintptr_t src_len, const char *dest_path,
+                  uintptr_t dest_len, struct HawdbBuffer *report_out,
+                  struct HawdbBuffer *err_out);
+uint32_t hawdb_format_version(void);
+uint32_t hawdb_dump_format_version(void);
+```
+
+Both write only to a destination that does not exist yet and publish it only
+on complete success. Reports are JSON objects mirroring the Rust
+`LogicalDumpExportReport` / `LogicalDumpImportReport`; errors use the usual
+`{"kind", "message"}` envelope. See [docs/LOGICAL_DUMP.md](../../docs/LOGICAL_DUMP.md)
+for the dump format, the host recipe and what the format covers.
+
 ## Consumers
 
 - `bindings/go` — purego client (no cgo): `LoadLibrary` registers the

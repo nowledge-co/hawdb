@@ -1,0 +1,104 @@
+# Copyright 2026 Nowledge
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Keeps PERSISTENT_FORMAT_VERSION honest on every change, and states in each
+# release's notes whether the persistent format changed since the previous
+# release (docs/LOGICAL_DUMP.md, "Upgrading an embedded database").
+name: Persistent Format
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag whose notes to (re)annotate
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: persistent-format-${{ github.event.release.tag_name || inputs.tag || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lock:
+    name: Persistent format lock
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Test the persistent format lock check
+        run: python3 scripts/check-persistent-format.test.py
+
+      - name: Check the persistent format lock
+        run: python3 scripts/check-persistent-format.py
+
+  release-notes:
+    name: Annotate release notes
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Compare the format version with the previous release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          script="$PWD/scripts/check-persistent-format.py"
+          previous="$(git describe --tags --abbrev=0 --match 'v*' "${RELEASE_TAG}^" 2>/dev/null || true)"
+          read_version() {
+            local ref="$1" tree
+            tree="$(mktemp -d)"
+            git archive "$ref" crates/storage/src 2>/dev/null | tar -x -C "$tree" || true
+            python3 "$script" --version --root "$tree"
+            rm -rf "$tree"
+          }
+          current="$(read_version "$RELEASE_TAG")"
+          if [ -z "$previous" ]; then
+            line="Persistent format changed: unknown (no previous release; format version ${current})"
+          else
+            before="$(read_version "$previous")"
+            if [ "$before" = "none" ]; then
+              line="Persistent format changed: unknown (${previous} predates the format version; ${RELEASE_TAG} uses format version ${current})"
+            elif [ "$before" = "$current" ]; then
+              line="Persistent format changed: no (format version ${current}, same as ${previous})"
+            else
+              line="Persistent format changed: yes (format version ${before} in ${previous} -> ${current} in ${RELEASE_TAG}; export with the old library and import with the new one, see docs/LOGICAL_DUMP.md)"
+            fi
+          fi
+          echo "$line"
+          notes="$(mktemp)"
+          gh release view "$RELEASE_TAG" --json body --jq .body \
+            | grep -v '^Persistent format changed: ' > "$notes" || true
+          printf '\n%s\n' "$line" >> "$notes"
+          gh release edit "$RELEASE_TAG" --notes-file "$notes"

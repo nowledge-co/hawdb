@@ -51,6 +51,16 @@ const symbols = {
     ],
     returns: "bool",
   },
+  hawdb_export: {
+    args: ["ptr", "buffer", "buffer_length", "buffer", "buffer"],
+    returns: "bool",
+  },
+  hawdb_import: {
+    args: ["buffer", "buffer_length", "buffer", "buffer_length", "buffer", "buffer"],
+    returns: "bool",
+  },
+  hawdb_format_version: { args: [], returns: "u32" },
+  hawdb_dump_format_version: { args: [], returns: "u32" },
   hawdb_buffer_free: { args: ["buffer"], returns: "void" },
   hawdb_version: { args: ["buffer"], returns: "void" },
 } as const;
