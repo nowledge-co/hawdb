@@ -30,6 +30,8 @@ const WARMUPS: usize = 3;
 const LIMIT: usize = 10;
 const PAYLOAD_BYTES: usize = 128;
 const MEMORY_BYTES: u64 = 64 << 20;
+const SEARCH_TIMEOUT: Duration = Duration::from_secs(120);
+const SEARCH_WORK_UNITS: usize = 100_000_000;
 
 type ScoreSignature = (String, [u64; 6], [Option<usize>; 2]);
 
@@ -196,6 +198,27 @@ fn search_metrics(metrics: &SearchOutOfCoreMetrics) -> Json {
         "physical_device_io_bytes":null,"scope":"engine requested/decoded ranges, not physical device I/O"})
 }
 
+fn profile_search_call<T>(
+    search: impl FnOnce(SearchOutOfCoreExecutionContext<'_>) -> Result<T>,
+) -> Result<(T, u64)> {
+    // Cloning a task preserves its absolute deadline and shared work usage.
+    // Independent observations therefore need a new task before timing starts.
+    let task = RuntimeTaskContext::with_timeout(SEARCH_TIMEOUT)
+        .with_work_limit(SEARCH_WORK_UNITS)
+        .with_memory_reservation(RuntimeMemoryReservation::new(MEMORY_BYTES, 1 << 20));
+    let execution = SearchOutOfCoreExecutionContext {
+        vector_execution_options: VectorSearchExecutionOptions::bounded(
+            NonZeroUsize::MIN,
+            MEMORY_BYTES as usize,
+            Some(&task),
+        ),
+        ..Default::default()
+    };
+    let started = Instant::now();
+    let output = search(execution)?;
+    Ok((output, nanos(started)))
+}
+
 fn search(documents: usize, repeats: usize) -> Result<Json> {
     let path = directory()?;
     let started = Instant::now();
@@ -243,24 +266,15 @@ fn search(documents: usize, repeats: usize) -> Result<Json> {
     let mut samples = Vec::new();
     let mut controls = Vec::new();
     for (name, mode) in [("text", SearchMode::Text), ("hybrid", SearchMode::Hybrid)] {
-        let task = RuntimeTaskContext::with_timeout(Duration::from_secs(120))
-            .with_work_limit(100_000_000)
-            .with_memory_reservation(RuntimeMemoryReservation::new(MEMORY_BYTES, 1 << 20));
-        let execution = SearchOutOfCoreExecutionContext {
-            vector_execution_options: VectorSearchExecutionOptions::bounded(
-                NonZeroUsize::MIN,
-                MEMORY_BYTES as usize,
-                Some(&task),
-            ),
-            ..Default::default()
-        };
-        let reference = reader.search_candidates_with_context(
-            query,
-            Some(&embedding),
-            mode,
-            options(),
-            execution,
-        )?;
+        let (reference, _) = profile_search_call(|execution| {
+            Ok(reader.search_candidates_with_context(
+                query,
+                Some(&embedding),
+                mode,
+                options(),
+                execution,
+            )?)
+        })?;
         let expected = reference
             .result
             .hits
@@ -269,14 +283,16 @@ fn search(documents: usize, repeats: usize) -> Result<Json> {
             .collect::<Vec<_>>();
         assert!(!expected.is_empty() && expected.len() <= LIMIT);
         let ids = expected.iter().map(|hit| hit.0.clone()).collect::<Vec<_>>();
-        let full_reference = reader.search_with_hydration(
-            query,
-            Some(&embedding),
-            mode,
-            options(),
-            execution,
-            SearchHitHydration::Documents,
-        )?;
+        let (full_reference, _) = profile_search_call(|execution| {
+            Ok(reader.search_with_hydration(
+                query,
+                Some(&embedding),
+                mode,
+                options(),
+                execution,
+                SearchHitHydration::Documents,
+            )?)
+        })?;
         let expected_full = full_reference
             .result
             .hits
@@ -320,17 +336,17 @@ fn search(documents: usize, repeats: usize) -> Result<Json> {
                     [(position + round) % 3];
                 emit(&json!({"event":"attempt_started","mode":name,"round":round,"phase":phase}))?;
                 let before = ProcessMemorySnapshot::capture().ok();
-                let started = Instant::now();
                 let (elapsed, metrics, observation) = match phase {
                     "candidates" => {
-                        let output = reader.search_candidates_with_context(
-                            query,
-                            Some(&embedding),
-                            mode,
-                            options(),
-                            execution,
-                        )?;
-                        let elapsed = nanos(started);
+                        let (output, elapsed) = profile_search_call(|execution| {
+                            Ok(reader.search_candidates_with_context(
+                                query,
+                                Some(&embedding),
+                                mode,
+                                options(),
+                                execution,
+                            )?)
+                        })?;
                         let observation = memory(before);
                         assert_eq!(
                             output
@@ -345,6 +361,7 @@ fn search(documents: usize, repeats: usize) -> Result<Json> {
                         (elapsed, output.metrics, observation)
                     }
                     "hydrate_selected_ids" => {
+                        let started = Instant::now();
                         let output = reader.hydrate_documents(&ids)?;
                         let elapsed = nanos(started);
                         let observation = memory(before);
@@ -364,15 +381,16 @@ fn search(documents: usize, repeats: usize) -> Result<Json> {
                         (elapsed, output.metrics, observation)
                     }
                     _ => {
-                        let output = reader.search_with_hydration(
-                            query,
-                            Some(&embedding),
-                            mode,
-                            options(),
-                            execution,
-                            SearchHitHydration::Documents,
-                        )?;
-                        let elapsed = nanos(started);
+                        let (output, elapsed) = profile_search_call(|execution| {
+                            Ok(reader.search_with_hydration(
+                                query,
+                                Some(&embedding),
+                                mode,
+                                options(),
+                                execution,
+                                SearchHitHydration::Documents,
+                            )?)
+                        })?;
                         let observation = memory(before);
                         assert_eq!(
                             output
@@ -399,6 +417,8 @@ fn search(documents: usize, repeats: usize) -> Result<Json> {
         json!({"mode":"search","fixture_setup_ns":fixture_setup_ns,"open_ns":open_ns,"documents":documents,
         "fixture":"common/rare lexical tokens; 90-percent hot Space; 8-dimensional vectors; deterministic IDs",
         "query":query,"limit":LIMIT,"rank_window":64,"warmups":WARMUPS,"repetitions":repeats,
+        "ranking_call_budget":{"scope":"independent task per preflight, warmup and measured ranking call",
+            "timeout_ms":SEARCH_TIMEOUT.as_millis(),"work_units":SEARCH_WORK_UNITS},
         "vector_working_byte_limit":MEMORY_BYTES,"controls":controls,"samples":samples,
         "scope":"warm immutable native reader; candidate selection, selected-ID hydration and combined calls are independent observations, not additive timings; backend is recorded; no recall/cold-device claim"}),
     )
@@ -524,4 +544,48 @@ fn main() -> Result<()> {
     emit(
         &json!({"event":"report","protocol":"hawdb-component-profiles-v1","environment":environment,"report":report}),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ranking_calls_do_not_share_work_or_cancellation() {
+        for _ in 0..4 {
+            profile_search_call(|execution| {
+                let task = execution.vector_execution_options.task_context.unwrap();
+                assert_eq!(task.work_units(), 0);
+                assert!(task.checkpoint().is_ok());
+                task.charge_work(SEARCH_WORK_UNITS)?;
+                assert!(task.charge_work(1).is_err());
+                task.cancellation().cancel();
+                Ok(())
+            })
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn ranking_calls_renew_the_absolute_deadline() {
+        let (first_deadline, _) = profile_search_call(|execution| {
+            Ok(execution
+                .vector_execution_options
+                .task_context
+                .unwrap()
+                .deadline()
+                .unwrap())
+        })
+        .unwrap();
+        let next_started = hawdb_core::time::Instant::now();
+        profile_search_call(|execution| {
+            let task = execution.vector_execution_options.task_context.unwrap();
+            let deadline = task.deadline().unwrap();
+            assert!(deadline >= next_started + SEARCH_TIMEOUT);
+            assert!(task.check_deadline_at(first_deadline).is_ok());
+            assert!(task.check_deadline_at(deadline).is_err());
+            Ok(())
+        })
+        .unwrap();
+    }
 }
