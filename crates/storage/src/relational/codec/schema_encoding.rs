@@ -245,6 +245,15 @@ fn materialized_view(
     sink: &mut impl Sink,
     definition: Option<&MaterializedViewDefinition>,
 ) -> Result<(), RelationalError> {
+    // Tag 0: none; 1: materialized view; 2: search index. Readers refuse
+    // unknown tags rather than guessing a layout.
+    if let Some(spec) = definition.and_then(|view| view.search.as_ref()) {
+        let view = definition.expect("search definition");
+        sink.raw(&[2])?;
+        bytes(sink, view.source.as_bytes())?;
+        bytes(sink, spec.column.as_bytes())?;
+        return sink.raw(&[spec.analyzer.tag()]);
+    }
     sink.raw(&[u8::from(definition.is_some())])?;
     if let Some(view) = definition {
         bytes(sink, view.source.as_bytes())?;

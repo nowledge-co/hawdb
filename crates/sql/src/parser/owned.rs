@@ -176,19 +176,19 @@ impl<'a> Lowerer<'a> {
                 })
             })
             .collect::<Result<_>>()?;
-        let vector_index = if let Some(syntax::PostgresFromSyntax {
+        let mut table_function = None;
+        if let Some(syntax::PostgresFromSyntax {
             relation: syntax::PostgresFromItemSyntax::Relation(relation),
             ..
         }) = select.from.first()
+            && let Some(arguments) = relation.arguments.as_ref()
         {
-            relation
-                .arguments
-                .as_ref()
-                .map(|arguments| self.vector_call(&relation.name, arguments).map(Box::new))
-                .transpose()?
-        } else {
-            None
-        };
+            table_function = Some(Box::new(if self.is_text_search_call(&relation.name)? {
+                SqlTableFunction::TextSearch(self.text_search_call(arguments)?)
+            } else {
+                SqlTableFunction::VectorIndexSearch(self.vector_call(&relation.name, arguments)?)
+            }));
+        }
         let mut joins = Vec::new();
         let mut base = None;
         for (index, from) in select.from.iter().enumerate() {
@@ -242,7 +242,7 @@ impl<'a> Lowerer<'a> {
             }
         }
         let statement = SelectStatement {
-            vector_index,
+            table_function,
             projection,
             distinct: select.distinct,
             from: base.as_ref().map(|base| base.0.clone()),

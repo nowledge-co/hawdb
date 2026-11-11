@@ -747,6 +747,30 @@ The existing recovery preparation/discard case additionally lowers foreground
 payload admission to one byte; recovery still stages and retries without
 changing live state until installation. No CI lane, feature or timeout changes.
 
+The `api::tests::search_indexes` family ([#1654](https://github.com/nowledge-co/hawdb/issues/1654))
+covers engine-owned SQL search indexes through SQL only: `CREATE`/`DROP SEARCH
+INDEX` guards and catalog visibility, `text_search` argument and shape refusals,
+BM25 results compared with a brute-force oracle over `SELECT * FROM events`
+(Latin, Chinese, Japanese and Korean text) after inserts, updates, primary-key
+moves, NULLs, deletes, upserts and drop/re-create backfill, WHERE-before-top-k
+filtering with outer ORDER BY/LIMIT/OFFSET, explicit transactions and rollback,
+WAL replay, checkpoint reopen, a torn WAL tail (strict refusal; repair drops the
+incomplete transaction's rows and postings together), Shadow/DemandPaged index
+modes, OutOfCore residency, Authoritative refusal, branch isolation, four
+concurrent writers, transaction-budget refusal of an oversized backfill and an
+oversized document, and coexistence with a materialized view. It belongs to the
+existing root general unit lane and Cargo library tests; the reopen/mode case
+takes about 25 seconds locally and the admission case about 5 seconds. Replay:
+`cargo test --locked -p hawdb --lib api::tests::search_indexes`. The storage
+unit lane owns the `cjk_ngram` analyzer cases and the schema codec round trip
+with unknown-analyzer refusal (`cargo test --locked -p hawdb-storage --lib
+search_index`); `hawdb-sql`'s `tests::search_index` covers the DDL and table
+function grammar (`cargo test --locked -p hawdb-sql --lib search_index`). The
+Bun suite (`bindings/bun/tests/hawdb.test.ts`, Native Bindings matrix) runs the
+same SQL through `querySQL` on a persistent database and a read-only reopen.
+No new lane, profile, timeout, fixture or fuzz target. See
+[the guide](SQL_SEARCH_INDEXES.md).
+
 The manual [IMV work-limit diagnostic](benchmarks/imv_work_limits_2026_10_30/README.md)
 measures process peak RSS at the row-work ceiling and near the unchanged payload
 ceiling through the public SQL facade. It is an unpublished temporary Cargo host

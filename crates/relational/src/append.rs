@@ -321,7 +321,7 @@ pub fn compile_prepared_append_select_sql(
         return Ok(None);
     };
 
-    if select.vector_index.is_some() {
+    if select.vector_index().is_some() {
         return Ok(None);
     }
     if select.from.is_none() {
@@ -364,7 +364,7 @@ pub fn compile_prepared_append_explain_sql(
         return Ok(None);
     };
 
-    if select.vector_index.is_some() {
+    if select.vector_index().is_some() {
         return Ok(None);
     }
     if select.from.is_none() {

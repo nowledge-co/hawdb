@@ -17,6 +17,13 @@
 
 use super::*;
 
+mod search_index;
+pub use search_index::{
+    search_index_statistics_key, search_index_term_range, SearchIndexAnalyzer, SearchIndexSpec,
+    SEARCH_INDEX_COLUMN_COUNT, SEARCH_INDEX_DOCUMENT_COLUMN, SEARCH_INDEX_FREQUENCY_COLUMN,
+    SEARCH_INDEX_LENGTH_COLUMN, SEARCH_INDEX_MAX_TOKEN_BYTES, SEARCH_INDEX_TERM_COLUMN,
+};
+
 const INTERNAL_PREFIX: &str = "__hawdb_mv_";
 const KEY_COLUMN: &str = "__hawdb_mv_key";
 
@@ -26,6 +33,10 @@ pub struct MaterializedViewDefinition {
     pub columns: Vec<MaterializedViewColumn>,
     pub group_by: Vec<String>,
     pub filter: Option<RelationalPredicate>,
+    /// A search index is a derived relation of BM25 postings rather than a
+    /// queryable projection. It has no visible columns and is read only
+    /// through the `text_search` table function.
+    pub search: Option<SearchIndexSpec>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +61,15 @@ impl RelationalTableSchema {
             .as_ref()
             .map_or(self.columns.len(), |view| view.columns.len());
         &self.columns[..count]
+    }
+}
+
+impl RelationalTableSchema {
+    /// The search index definition when this relation holds BM25 postings.
+    pub fn search_index(&self) -> Option<&SearchIndexSpec> {
+        self.materialized_view
+            .as_ref()
+            .and_then(|view| view.search.as_ref())
     }
 }
 
@@ -80,6 +100,9 @@ impl MaterializedViewDefinition {
             return Err(RelationalError::Schema(
                 "materialized views require one base RowPage table".into(),
             ));
+        }
+        if let Some(spec) = &self.search {
+            return search_index::table_schema(name, self, spec, source);
         }
         if self.columns.is_empty() {
             return Err(RelationalError::Schema(
@@ -223,6 +246,16 @@ pub(super) fn clone_definition(
             .filter
             .as_ref()
             .map(|filter| clone_filter(filter, context))
+            .transpose()?,
+        search: view
+            .search
+            .as_ref()
+            .map(|spec| {
+                Ok::<_, RelationalError>(SearchIndexSpec {
+                    column: name(&spec.column)?,
+                    analyzer: spec.analyzer,
+                })
+            })
             .transpose()?,
     }))
 }
@@ -553,7 +586,22 @@ pub(super) fn maintain(
         };
         let view_keys =
             changed_table_keys_with_allocations(changed_keys, &schema.name, allocations)?;
-        if definition.grouped() {
+        if let Some(spec) = &definition.search {
+            search_index::maintain(
+                search_index::SearchMaintenance {
+                    previous,
+                    next,
+                    schema: &schema,
+                    source: &source,
+                    spec,
+                    rebuild,
+                    view_keys,
+                    overflow_config,
+                    budget: &mut budget,
+                },
+                &keys,
+            )?;
+        } else if definition.grouped() {
             let mut deltas = BTreeMap::<RelationalKey, GroupDelta>::new();
             if rebuild && definition.group_by.is_empty() {
                 budget.charge(0, GroupDelta::estimated_bytes(definition))?;

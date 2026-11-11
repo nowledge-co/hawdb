@@ -234,6 +234,21 @@ pub fn statement_writes_system_schema_registry(statement: &SqlStatement) -> bool
         SqlStatement::AlterTableAddColumn(statement) => Some(&statement.table),
         SqlStatement::CreateMaterializedView(statement) => Some(&statement.name),
         SqlStatement::DropMaterializedView(statement) => Some(&statement.name),
+        SqlStatement::CreateSearchIndex(statement) => {
+            if statement_writes_system_schema_registry(&SqlStatement::CreateIndex(
+                hawdb_sql::CreateIndexStatement {
+                    name: String::new(),
+                    table: statement.table.clone(),
+                    columns: Vec::new(),
+                    unique: false,
+                    if_not_exists: false,
+                },
+            )) {
+                return true;
+            }
+            Some(&statement.name)
+        }
+        SqlStatement::DropSearchIndex(statement) => Some(&statement.name),
         SqlStatement::Select(_) | SqlStatement::Explain(_) | SqlStatement::Branch(_) => None,
     };
     table.is_some_and(|table| {

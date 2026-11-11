@@ -76,6 +76,7 @@ pub(super) use crate::locator::{
 use crate::predicate::BoundStreamingPredicate;
 use crate::streaming_projection::BoundStreamingProjection;
 
+pub mod text_search;
 pub mod vector_index;
 
 mod access;
@@ -472,6 +473,17 @@ pub fn execute_prepared_relational_query_with_resources<'a, R: RelationalQuerySt
     };
     match prepared.statement {
         SqlStatement::Select(mut select) => {
+            if select.text_search().is_some() {
+                crate::literal_coercion::coerce_select(&mut select, state, parameters)?;
+                return text_search::execute_text_search_select(
+                    &select,
+                    parameters,
+                    state,
+                    read_modes,
+                    resources,
+                    initial_stage_timings,
+                );
+            }
             if select.from.is_none() {
                 crate::literal_coercion::coerce_select(&mut select, state, parameters)?;
                 return execute_fromless_select(
