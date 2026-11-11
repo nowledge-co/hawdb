@@ -252,20 +252,21 @@ pub(super) fn node_work(catalog: &OptimizerCatalog, node: &PathNode<'_>) -> Opti
         let seek = node.values.get(property).map_or_else(
             || catalog.estimate_property_index_eq_rows(node.label, property),
             |value| catalog.estimate_property_index_value_rows(node.label, property, value),
-        ) as f64;
-        let rows = node
-            .equalities
-            .iter()
-            .filter(|other| **other != property)
-            .fold(seek, |rows, other| {
-                rows * equality_selectivity(
-                    catalog,
-                    node.label,
-                    other,
-                    node.values.get(other).copied(),
-                )
-            });
-        (rows, seek + 1.0)
+        );
+        let rows = joint_node_rows(catalog, node, Some(property), seek).unwrap_or_else(|| {
+            node.equalities
+                .iter()
+                .filter(|other| **other != property)
+                .fold(seek as f64, |rows, other| {
+                    rows * equality_selectivity(
+                        catalog,
+                        node.label,
+                        other,
+                        node.values.get(other).copied(),
+                    )
+                })
+        });
+        (rows, seek as f64 + 1.0)
     } else {
         let scanned = catalog.label_count(node.label) as f64;
         (scanned * node_selectivity(catalog, node), scanned)
@@ -493,6 +494,9 @@ pub(super) fn node_selectivity(catalog: &OptimizerCatalog, node: &PathNode<'_>) 
     if !single_label(node.label) {
         return 1.0;
     }
+    if let Some(rows) = joint_node_rows(catalog, node, None, catalog.label_count(node.label)) {
+        return rows / catalog.label_count(node.label) as f64;
+    }
     node.equalities.iter().fold(1.0, |selectivity, property| {
         selectivity
             * equality_selectivity(
@@ -502,6 +506,61 @@ pub(super) fn node_selectivity(catalog: &OptimizerCatalog, node: &PathNode<'_>) 
                 node.values.get(property).copied(),
             )
     })
+}
+
+/// Reuse bounded joint domains without replacing value-specific frequency
+/// evidence with a uniform NDV assumption.
+fn joint_node_rows(
+    catalog: &OptimizerCatalog,
+    node: &PathNode<'_>,
+    covered: Option<&str>,
+    input_rows: u64,
+) -> Option<f64> {
+    if node.equalities.len() < 2 || !catalog.has_joint_statistics() {
+        return None;
+    }
+    let mut properties = [""; 4];
+    let mut len = 0;
+    let population = catalog.label_count(node.label);
+    for property in &node.equalities {
+        if properties[..len].contains(property) {
+            continue;
+        }
+        if len == properties.len() {
+            return None;
+        }
+        properties[len] = property;
+        len += 1;
+    }
+    let covered_property = [covered.unwrap_or("")];
+    let estimate = catalog.estimate_joint_equality_rows(
+        node.label,
+        &properties[..len],
+        if covered.is_some() {
+            &covered_property
+        } else {
+            &[]
+        },
+        input_rows,
+    )?;
+    for property in &properties[..len] {
+        if catalog
+            .query_local_property_eq_rows(node.label, property)
+            .is_some()
+        {
+            return None;
+        }
+        if let Some(value) = node.values.get(property).copied()
+            && (matches!(
+                value,
+                hawdb_core::Value::Null | hawdb_core::Value::List(_) | hawdb_core::Value::Map(_)
+            ) || catalog.estimate_property_value_rows(node.label, property, value, population)
+                != catalog.estimate_property_eq_rows(node.label, property, population))
+        {
+            return None;
+        }
+    }
+    Some(estimate.rows as f64)
 }
 
 fn equality_selectivity(

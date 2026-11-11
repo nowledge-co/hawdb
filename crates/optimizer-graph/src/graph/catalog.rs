@@ -69,7 +69,7 @@ pub struct OptimizerCatalog {
         BTreeMap<(String, Vec<String>), Vec<hawdb_core::PropertyType>>,
     pub(super) full_text_property_indexes: BTreeSet<(String, String)>,
     property_equality_row_count: Option<((String, String), u64)>,
-    joint_statistics: BTreeMap<(String, Vec<String>), Option<OptimizerIndexStatistics>>,
+    joint_statistics: std::sync::Arc<joint::Statistics>,
 
     statistics: std::sync::Arc<OptimizerCatalogStatistics>,
 }
@@ -447,7 +447,7 @@ impl OptimizerCatalog {
             ordered_composite_indexes: BTreeMap::new(),
             full_text_property_indexes: indexes.full_text_property_indexes,
             property_equality_row_count: None,
-            joint_statistics,
+            joint_statistics: std::sync::Arc::new(joint_statistics),
             statistics: std::sync::Arc::new(statistics),
         }
     }
@@ -466,7 +466,7 @@ impl OptimizerCatalog {
         self
     }
 
-    fn query_local_property_eq_rows(&self, label: &str, property: &str) -> Option<u64> {
+    pub(super) fn query_local_property_eq_rows(&self, label: &str, property: &str) -> Option<u64> {
         self.property_equality_row_count
             .as_ref()
             .filter(|((local_label, local_property), _)| {
