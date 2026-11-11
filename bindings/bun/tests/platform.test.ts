@@ -108,7 +108,7 @@ describe("installed library resolution", () => {
       exists: () => true,
     });
     expect(requested).toEqual(["@nowledge/hawdb-ffi-linux-arm64-gnu/package.json"]);
-    expect(path).toBe("/app/node_modules/@nowledge/hawdb-ffi-linux-arm64-gnu/libhawdb_ffi.so");
+    expect(path).toBe(join("/app/node_modules/@nowledge/hawdb-ffi-linux-arm64-gnu", "libhawdb_ffi.so"));
   });
 
   test("names the missing package and the explicit-path alternative", () => {

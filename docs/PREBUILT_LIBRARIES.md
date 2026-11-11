@@ -18,14 +18,16 @@ every archive without uploading anything.
 | --- | --- | --- | --- | --- |
 | macOS arm64 | `hawdb-ffi-<version>-aarch64-apple-darwin.tar.gz` | `@nowledge/hawdb-ffi-darwin-arm64` | `macos-15` | macOS 11.0 |
 | macOS x86-64 | `hawdb-ffi-<version>-x86_64-apple-darwin.tar.gz` | `@nowledge/hawdb-ffi-darwin-x64` | `macos-15-intel` | macOS 11.0 |
-| Linux x86-64, glibc | `hawdb-ffi-<version>-x86_64-unknown-linux-gnu.tar.gz` | `@nowledge/hawdb-ffi-linux-x64-gnu` | `ubuntu-24.04` | glibc in `manifest.json` (at most 2.39) |
-| Linux AArch64, glibc | `hawdb-ffi-<version>-aarch64-unknown-linux-gnu.tar.gz` | `@nowledge/hawdb-ffi-linux-arm64-gnu` | `ubuntu-24.04-arm` | glibc in `manifest.json` (at most 2.39) |
+| Linux x86-64, glibc | `hawdb-ffi-<version>-x86_64-unknown-linux-gnu.tar.gz` | `@nowledge/hawdb-ffi-linux-x64-gnu` | `ubuntu-24.04` | glibc 2.34 |
+| Linux AArch64, glibc | `hawdb-ffi-<version>-aarch64-unknown-linux-gnu.tar.gz` | `@nowledge/hawdb-ffi-linux-arm64-gnu` | `ubuntu-24.04-arm` | glibc 2.34 |
 | Windows x86-64, MSVC | `hawdb-ffi-<version>-x86_64-pc-windows-msvc.zip` | `@nowledge/hawdb-ffi-win32-x64-msvc` | `windows-2025` | Windows 10; Visual C++ runtime |
 
 The minimum runtime is measured from each packaged binary, not assumed from
 the build image: the macOS deployment target is read from `LC_BUILD_VERSION`
 and the glibc floor is the highest `GLIBC_*` symbol version the library
-imports. Each archive's `manifest.json` records the exact value. The macOS
+imports. Each archive's `manifest.json` records the exact value; the table
+shows what the current build images produce (Ubuntu 24.04 ships glibc 2.39,
+but the library only imports symbols up to `GLIBC_2.34`). The macOS
 floor is set by `--config=prebuilt` in [`.bazelrc`](../.bazelrc). The Windows
 DLL uses the dynamic MSVC runtime (`vcruntime140.dll` and the Universal CRT),
 which a host installer must provide.
