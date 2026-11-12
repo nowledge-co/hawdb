@@ -26,6 +26,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 mod automatic_checkpoint;
 mod branch_abandonment;
+mod branch_wal_reclamation;
 mod consumer_reclamation;
 #[cfg(feature = "vector-search")]
 mod consumer_vector_incremental;
