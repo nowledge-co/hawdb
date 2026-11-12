@@ -75,7 +75,7 @@ fn expected_after_main_transitions(expected: &serde_json::Value) -> &serde_json:
     use std::collections::BTreeMap;
     use std::sync::OnceLock;
     type TransitionMap = BTreeMap<(String, String), serde_json::Value>;
-    static TRANSITIONS: OnceLock<[TransitionMap; 9]> = OnceLock::new();
+    static TRANSITIONS: OnceLock<[TransitionMap; 10]> = OnceLock::new();
     // Keep each earlier oracle immutable. Main #1411 changes row bindings and
     // read-only UNWIND; #1403 expands ORDER BY and changes aggregate sort ASTs.
     // #1382 adds temporal syntax and generic scalar/postfix behavior. Every
