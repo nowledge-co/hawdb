@@ -15,15 +15,16 @@ use super::*;
 mod layout;
 use layout::{
     decode_document_ordinal, document_key, put_varint, sealed_block_key, sealed_block_range,
-    MAX_BLOCK_POSTINGS, MIN_BLOCK_POSTINGS,
+    MIN_BLOCK_POSTINGS,
 };
 pub use layout::{
-    decode_search_sealed_block, search_index_block_fence, search_index_dictionary_key,
-    search_index_length_block_key, search_index_length_block_range,
-    search_index_length_block_start, search_index_sealed_block_range, search_index_statistics_key,
-    SearchDocumentEntry, SearchIndexStatistics, SearchLengthBlock, SearchPosting,
+    decode_search_sealed_block, decode_search_sealed_block_header, search_index_block_fence,
+    search_index_dictionary_key, search_index_length_block_key, search_index_length_block_range,
+    search_index_length_block_start, search_index_sealed_block_after_range,
+    search_index_sealed_block_range, search_index_statistics_key, SearchDocumentEntry,
+    SearchIndexStatistics, SearchLengthBlock, SearchPosting, SearchPostingBlockHeader,
     SearchTermDictionary, SEARCH_INDEX_BLOCK_POSTINGS, SEARCH_INDEX_LENGTH_BLOCK_DOCUMENTS,
-    SEARCH_INDEX_TAIL_POSTINGS,
+    SEARCH_INDEX_MAX_BLOCK_POSTINGS, SEARCH_INDEX_TAIL_POSTINGS,
 };
 
 /// Every row of a search index relation is `(kind, name, slot) -> data`; see
@@ -36,7 +37,7 @@ pub const SEARCH_INDEX_DATA_COLUMN: &str = "__hawdb_search_data";
 pub const SEARCH_INDEX_COLUMN_COUNT: usize = 4;
 /// The physical layout recorded with every search index definition. Readers
 /// refuse any other layout as an unsupported format.
-pub(crate) const SEARCH_INDEX_LAYOUT_TAG: u8 = 1;
+pub(crate) const SEARCH_INDEX_LAYOUT_TAG: u8 = 2;
 /// Tokens longer than this many bytes are not indexed (encoded blobs, hashes).
 pub const SEARCH_INDEX_MAX_TOKEN_BYTES: usize = 128;
 
@@ -642,7 +643,7 @@ pub(super) fn maintain(
 /// Applies one commit's ordinal-sorted changes to one term. Appends touch
 /// only the dictionary row (flushing a full tail into sealed blocks); changes to
 /// older documents rewrite the sealed blocks that own them. Every rewritten
-/// block holds at most `MAX_BLOCK_POSTINGS` postings, so the work is bounded
+/// block holds at most `SEARCH_INDEX_MAX_BLOCK_POSTINGS` postings, so the work is bounded
 /// by the number of changes rather than by the term's document frequency.
 fn maintain_term(
     index: &mut IndexRows<'_, '_>,
@@ -688,7 +689,7 @@ fn maintain_term(
         let mut postings = Vec::new();
         decode_search_sealed_block(fence, &data, &mut postings)?;
         apply_changes(&mut postings, &changes, &mut dictionary.document_frequency)?;
-        if postings.len() > MAX_BLOCK_POSTINGS {
+        if postings.len() > SEARCH_INDEX_MAX_BLOCK_POSTINGS {
             // Many older documents gained this term in one commit: split into
             // full blocks keyed by their first ordinals.
             let rest = postings.split_off(SEARCH_INDEX_BLOCK_POSTINGS);

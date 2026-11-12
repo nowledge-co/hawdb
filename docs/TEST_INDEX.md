@@ -750,6 +750,7 @@ changing live state until installation. No CI lane, feature or timeout changes.
 The `api::tests::search_indexes` family ([#1654](https://github.com/nowledge-co/hawdb/issues/1654))
 covers engine-owned SQL search indexes through SQL only: `CREATE`/`DROP SEARCH
 INDEX` guards and catalog visibility, `text_search` argument and shape refusals,
+ordinary `EXPLAIN` without execution and `EXPLAIN ANALYZE` search-work evidence,
 BM25 results compared bit-for-bit with a brute-force oracle over `SELECT *
 FROM events` (Latin, Chinese, Japanese and Korean text) after inserts, updates, primary-key
 moves, NULLs, deletes, upserts and drop/re-create backfill, WHERE-before-top-k
@@ -782,11 +783,11 @@ schema codec round trip with unknown-analyzer and unknown-layout refusal
 (`cargo test --locked -p hawdb-storage --lib search_index`); `hawdb-sql`'s `tests::search_index` covers the DDL and table
 function grammar (`cargo test --locked -p hawdb-sql --lib search_index`).
 `hawdb-relational`'s
-`query::tests::text_search_admission::text_search_admits_broad_term_score_state_before_allocating_it`
-indexes 4,096 documents sharing one term and, under a blocking-memory budget
-that fits the postings and lengths rows, requires the refusal to come from the
-score account with fewer than half of the control run's score-map leaf
-allocations (counted by the existing `projection_admission` test allocator)
+`query::tests::text_search_admission` indexes 4,096 documents and proves the
+bounded top-k WAND path succeeds under a budget that refused the former
+per-document score map, visits fewer postings than the corpus and skips losing
+blocks. Its multi-term case compares exact rows and score bits with the
+filter-triggered exhaustive path across sealed-block boundaries
 (`cargo test --locked -p hawdb-relational --lib text_search`). The
 Bun suite (`bindings/bun/tests/hawdb.test.ts`, Native Bindings matrix) runs the
 same SQL through `querySQL` on a persistent database and a read-only reopen.

@@ -1,7 +1,7 @@
 // Copyright 2026 Nowledge
 // SPDX-License-Identifier: Apache-2.0
 
-//! Physical layout of a search index relation (layout tag 1).
+//! Physical layout of a search index relation (layout tag 2).
 //!
 //! Every row has the primary key `(kind BIGINT, name BYTEA, slot BIGINT)` and
 //! one `data BYTEA` payload of unsigned LEB128 varints:
@@ -12,7 +12,7 @@
 //! | 1 document | encoded source primary key | 0 | ordinal |
 //! | 2 lengths | empty | ordinal / 64 | slot count, then per slot: length (0 = no document), key length, key |
 //! | 3 term dictionary | term | `i64::MAX` | df, sealed blocks, tail start, tail postings |
-//! | 3 sealed block | term | fence | postings |
+//! | 3 sealed block | term | fence | bounds, postings, CRC32C |
 //!
 //! Documents get dense, never reused ordinals in commit order. A posting list
 //! is a count followed by `(ordinal delta, term frequency)` pairs; the first
@@ -40,7 +40,7 @@ pub const SEARCH_INDEX_BLOCK_POSTINGS: usize = 128;
 /// fewer bytes per append but touches more rows and WAL key footprint.
 pub const SEARCH_INDEX_TAIL_POSTINGS: usize = SEARCH_INDEX_BLOCK_POSTINGS;
 /// A sealed block that grows past this many postings is split in two.
-pub(super) const MAX_BLOCK_POSTINGS: usize = 2 * SEARCH_INDEX_BLOCK_POSTINGS;
+pub const SEARCH_INDEX_MAX_BLOCK_POSTINGS: usize = 2 * SEARCH_INDEX_BLOCK_POSTINGS;
 /// A changed sealed block below this many postings absorbs its successor
 /// when the two fit in one block.
 pub(super) const MIN_BLOCK_POSTINGS: usize = SEARCH_INDEX_BLOCK_POSTINGS / 4;
@@ -120,6 +120,17 @@ pub struct SearchPosting {
     pub frequency: u64,
 }
 
+/// Bounds available without decoding a sealed block's postings. The checksum
+/// covers both these bounds and the posting payload, so a block skipped by a
+/// top-k query is still verified before its upper bound is trusted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SearchPostingBlockHeader {
+    pub count: usize,
+    pub first_ordinal: Option<u64>,
+    pub last_ordinal: Option<u64>,
+    pub max_frequency: u64,
+}
+
 pub(super) fn encode_postings(out: &mut Vec<u8>, base: u64, postings: &[SearchPosting]) {
     put_varint(out, postings.len() as u64);
     let mut previous = base;
@@ -169,15 +180,149 @@ pub fn decode_search_sealed_block(
     data: &[u8],
     out: &mut Vec<SearchPosting>,
 ) -> Result<(), RelationalError> {
-    let mut reader = Reader::new(data, "sealed posting block");
-    decode_postings(&mut reader, fence, MAX_ORDINAL + 1, out)?;
-    reader.finish()
+    let header = decode_search_sealed_block_header(fence, data)?;
+    let payload = &data[..data.len() - std::mem::size_of::<u32>()];
+    let mut reader = Reader::new(payload, "sealed posting block");
+    let count = reader.varint()?;
+    if count != header.count as u64 {
+        return Err(corrupt("sealed posting block"));
+    }
+    if count == 0 {
+        return reader.finish();
+    }
+    let _first_delta = reader.varint()?;
+    let _last_delta = reader.varint()?;
+    let _max_frequency = reader.varint()?;
+    let before = out.len();
+    decode_posting_pairs(&mut reader, fence, MAX_ORDINAL + 1, count, out)?;
+    reader.finish()?;
+    let decoded = &out[before..];
+    if decoded.first().map(|posting| posting.ordinal) != header.first_ordinal
+        || decoded.last().map(|posting| posting.ordinal) != header.last_ordinal
+        || decoded
+            .iter()
+            .map(|posting| posting.frequency)
+            .max()
+            .unwrap_or_default()
+            != header.max_frequency
+    {
+        return Err(corrupt("sealed posting block bounds"));
+    }
+    Ok(())
 }
 
 pub(super) fn encode_sealed_block(fence: u64, postings: &[SearchPosting]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(1 + postings.len() * 3);
-    encode_postings(&mut out, fence, postings);
+    let mut out = Vec::with_capacity(16 + postings.len() * 3);
+    put_varint(&mut out, postings.len() as u64);
+    if let (Some(first), Some(last)) = (postings.first(), postings.last()) {
+        put_varint(&mut out, first.ordinal - fence);
+        put_varint(&mut out, last.ordinal - first.ordinal);
+        put_varint(
+            &mut out,
+            postings
+                .iter()
+                .map(|posting| posting.frequency)
+                .max()
+                .expect("non-empty postings"),
+        );
+        encode_posting_pairs(&mut out, fence, postings);
+    }
+    out.extend_from_slice(&hawdb_integrity::crc32c(&out).get().to_le_bytes());
     out
+}
+
+fn encode_posting_pairs(out: &mut Vec<u8>, base: u64, postings: &[SearchPosting]) {
+    let mut previous = base;
+    for posting in postings {
+        put_varint(out, posting.ordinal - previous);
+        put_varint(out, posting.frequency);
+        previous = posting.ordinal;
+    }
+}
+
+fn decode_posting_pairs(
+    reader: &mut Reader<'_>,
+    base: u64,
+    upper: u64,
+    count: u64,
+    out: &mut Vec<SearchPosting>,
+) -> Result<(), RelationalError> {
+    if count > (reader.bytes.len() / 2) as u64 {
+        return Err(corrupt(reader.what));
+    }
+    out.reserve(count as usize);
+    let mut previous = base;
+    for index in 0..count {
+        let delta = reader.varint()?;
+        if index > 0 && delta == 0 {
+            return Err(corrupt(reader.what));
+        }
+        let ordinal = previous
+            .checked_add(delta)
+            .filter(|ordinal| *ordinal < upper)
+            .ok_or_else(|| corrupt(reader.what))?;
+        let frequency = reader.varint()?;
+        if frequency == 0 {
+            return Err(corrupt(reader.what));
+        }
+        out.push(SearchPosting { ordinal, frequency });
+        previous = ordinal;
+    }
+    Ok(())
+}
+
+/// Verifies a sealed block and returns its safe skipping/scoring bounds without
+/// materializing any postings.
+pub fn decode_search_sealed_block_header(
+    fence: u64,
+    data: &[u8],
+) -> Result<SearchPostingBlockHeader, RelationalError> {
+    let checksum_at = data
+        .len()
+        .checked_sub(std::mem::size_of::<u32>())
+        .ok_or_else(|| corrupt("sealed posting block"))?;
+    let (payload, checksum) = data.split_at(checksum_at);
+    let expected = u32::from_le_bytes(
+        checksum
+            .try_into()
+            .map_err(|_| corrupt("sealed posting block"))?,
+    );
+    if hawdb_integrity::crc32c(payload).get() != expected {
+        return Err(corrupt("sealed posting block checksum"));
+    }
+    let mut reader = Reader::new(payload, "sealed posting block");
+    let count = reader.varint()?;
+    let count = usize::try_from(count).map_err(|_| corrupt("sealed posting block"))?;
+    if count > SEARCH_INDEX_MAX_BLOCK_POSTINGS {
+        return Err(corrupt("sealed posting block count"));
+    }
+    if count == 0 {
+        reader.finish()?;
+        return Ok(SearchPostingBlockHeader {
+            count,
+            first_ordinal: None,
+            last_ordinal: None,
+            max_frequency: 0,
+        });
+    }
+    let first = fence
+        .checked_add(reader.varint()?)
+        .filter(|ordinal| *ordinal <= MAX_ORDINAL)
+        .ok_or_else(|| corrupt("sealed posting block bounds"))?;
+    let last = first
+        .checked_add(reader.varint()?)
+        .filter(|ordinal| *ordinal <= MAX_ORDINAL)
+        .ok_or_else(|| corrupt("sealed posting block bounds"))?;
+    let max_frequency = reader.varint()?;
+    if max_frequency == 0 || count > reader.bytes.len() / 2 {
+        return Err(corrupt("sealed posting block bounds"));
+    }
+    Ok(SearchPostingBlockHeader {
+        count,
+        first_ordinal: Some(first),
+        last_ordinal: Some(last),
+        max_frequency,
+    })
 }
 
 /// A term's dictionary entry: its document frequency, how many sealed blocks
@@ -455,6 +600,15 @@ pub fn search_index_sealed_block_range(
     sealed_block_range(term, (0, true), None)
 }
 
+/// Sealed blocks of `term` after an optional fence, in fence order. A query
+/// uses this to fetch one block at a time without retaining the posting list.
+pub fn search_index_sealed_block_after_range(
+    term: &str,
+    after: Option<u64>,
+) -> Result<RelationalPrimaryKeyRange, RelationalError> {
+    sealed_block_range(term, after.map_or((0, true), |fence| (fence, false)), None)
+}
+
 /// The fence of a sealed block row read back from the index relation.
 pub fn search_index_block_fence(slot: &RelationalValue) -> Result<u64, RelationalError> {
     match slot {
@@ -474,6 +628,11 @@ mod tests {
         assert_eq!(reader.varint().unwrap(), value);
         reader.finish().unwrap();
         out.len()
+    }
+
+    fn checksummed(mut payload: Vec<u8>) -> Vec<u8> {
+        payload.extend_from_slice(&hawdb_integrity::crc32c(&payload).get().to_le_bytes());
+        payload
     }
 
     #[test]
@@ -521,24 +680,59 @@ mod tests {
         let mut decoded = Vec::new();
         decode_search_sealed_block(1_000, &encoded, &mut decoded).unwrap();
         assert_eq!(decoded, postings);
-        // An empty block (the retained fence-0 block) is one byte.
-        assert_eq!(encode_sealed_block(0, &[]), [0]);
+        assert_eq!(
+            decode_search_sealed_block_header(1_000, &encoded).unwrap(),
+            SearchPostingBlockHeader {
+                count: postings.len(),
+                first_ordinal: Some(1_000),
+                last_ordinal: Some(MAX_ORDINAL),
+                max_frequency: u64::MAX,
+            }
+        );
+        // An empty block (the retained fence-0 block) remains checksummed.
+        let empty = encode_sealed_block(0, &[]);
+        assert_eq!(empty.len(), 1 + std::mem::size_of::<u32>());
+        assert_eq!(
+            decode_search_sealed_block_header(0, &empty).unwrap(),
+            SearchPostingBlockHeader {
+                count: 0,
+                first_ordinal: None,
+                last_ordinal: None,
+                max_frequency: 0,
+            }
+        );
+        for bad in [vec![], vec![0], vec![0, 0, 0, 0]] {
+            assert!(
+                decode_search_sealed_block(0, &bad, &mut Vec::new()).is_err(),
+                "{bad:?}"
+            );
+        }
         for bad in [
-            vec![2, 0, 1, 0, 1],   // repeated ordinal
-            vec![1, 0, 0],         // zero frequency
-            vec![2, 0, 1],         // truncated
-            vec![1, 0, 1, 9],      // trailing bytes
-            vec![200, 0, 1, 1, 1], // count larger than the payload
+            // Repeated ordinal.
+            checksummed(vec![2, 0, 0, 1, 0, 1, 0, 1]),
+            // Zero frequency.
+            checksummed(vec![1, 0, 0, 1, 0, 0]),
+            // Header maximum disagrees with the selected payload.
+            checksummed(vec![1, 0, 0, 1, 0, 2]),
+            // Count cannot fit the remaining posting pairs.
+            checksummed(vec![2, 0, 1, 1, 0, 1]),
+            // A physical block cannot exceed its split bound.
+            checksummed(vec![0x81, 0x02]),
+            // Canonical trailing payload is refused even with a valid CRC.
+            checksummed(vec![1, 0, 0, 1, 0, 1, 9]),
         ] {
             assert!(
                 decode_search_sealed_block(0, &bad, &mut Vec::new()).is_err(),
                 "{bad:?}"
             );
         }
+        for offset in 0..encoded.len() {
+            let mut bad = encoded.clone();
+            bad[offset] ^= 1;
+            assert!(decode_search_sealed_block(1_000, &bad, &mut Vec::new()).is_err());
+        }
         // An ordinal past the bound is refused even with valid varints.
-        let mut past = Vec::new();
-        encode_postings(
-            &mut past,
+        let past = encode_sealed_block(
             MAX_ORDINAL,
             &[SearchPosting {
                 ordinal: MAX_ORDINAL + 1,

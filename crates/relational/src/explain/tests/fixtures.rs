@@ -226,6 +226,9 @@ impl Case {
                 borrowed_rows_visited: n + 12,
                 owned_rows_visited: n + 13,
                 index_covered_rows: n + 14,
+                postings_visited: n + 15,
+                posting_blocks_read: n + 16,
+                posting_blocks_skipped: n + 17,
                 projection_generation: self.present.then(|| "projection".into()),
                 projection_source_watermark: optional(5),
                 projection_version: optional(6),
@@ -353,6 +356,9 @@ impl Case {
             ("row_borrowed_rows", 12),
             ("row_owned_rows", 13),
             ("row_index_covered_rows", 14),
+            ("postings_visited", 15),
+            ("posting_blocks_read", 16),
+            ("posting_blocks_skipped", 17),
         ] {
             entries.push((key, (n + offset).to_string()));
         }

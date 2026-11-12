@@ -302,11 +302,30 @@ fn search_results_filter_before_top_k_and_compose_with_sql() {
             "SELECT e.id FROM text_search('events_text', 'x', top_k => 3) AS e JOIN events o ON o.id = e.id",
             "single source",
         ),
-        ("EXPLAIN SELECT id FROM text_search('events_text', 'x', top_k => 3)", "text_search"),
     ] {
         let error = db.query_sql(sql).unwrap_err().to_string();
         assert!(error.contains(message), "{sql}: {error}");
     }
+    let plan = db
+        .query_sql("EXPLAIN SELECT id FROM text_search('events_text', 'deploy', top_k => 3)")
+        .unwrap();
+    assert!(plan.rows.iter().any(|row| {
+        matches!(row.get("access object"), Some(Value::String(object)) if object.contains("events_text"))
+            && matches!(row.get("operator info"), Some(Value::String(info)) if info.contains("row_runtime_path=not_executed"))
+    }));
+    let error = db
+        .query_sql("EXPLAIN SELECT absent FROM text_search('events_text', 'deploy', top_k => 3)")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("absent"), "{error}");
+    let profile = db
+        .query_sql(
+            "EXPLAIN ANALYZE SELECT id FROM text_search('events_text', 'deploy', top_k => 3)",
+        )
+        .unwrap();
+    assert!(profile.rows.iter().any(|row| {
+        matches!(row.get("operator info"), Some(Value::String(info)) if info.contains("postings_visited="))
+    }));
 }
 
 #[test]

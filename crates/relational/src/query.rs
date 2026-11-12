@@ -508,7 +508,7 @@ pub fn execute_prepared_relational_query_with_resources<'a, R: RelationalQuerySt
             execute_select_timed(&prepared, parameters, execution)
         }
         SqlStatement::Explain(explain) => {
-            let SqlStatement::Select(select) = *explain.statement else {
+            let SqlStatement::Select(mut select) = *explain.statement else {
                 return Err(HawDBError::Semantic(
                     "EXPLAIN only supports relational SELECT".to_string(),
                 ));
@@ -528,6 +528,18 @@ pub fn execute_prepared_relational_query_with_resources<'a, R: RelationalQuerySt
                 },
                 ..resources
             };
+            if select.text_search().is_some() {
+                crate::literal_coercion::coerce_select(&mut select, state, parameters)?;
+                return text_search::execute_text_search_explain(
+                    &select,
+                    parameters,
+                    state,
+                    read_modes,
+                    planning_resources,
+                    initial_stage_timings,
+                    explain.analyze,
+                );
+            }
             let (prepared, snapshot) = prepare_relational_select_with_snapshot(
                 select,
                 parameters,

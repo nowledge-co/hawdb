@@ -268,7 +268,7 @@ fn search_index_definitions_round_trip_and_refuse_unknown_analyzers_and_layouts(
                 .unwrap()
                 + name.len()
                 + position;
-            assert_eq!(encoded[offset], 1);
+            assert_eq!(encoded[offset], if position == 0 { 1 } else { 2 });
             encoded[offset] = 255;
             let digest = integrity_digest(&encoded[HEADER_BYTES..]);
             encoded[28..32].copy_from_slice(&digest.crc32c.get().to_le_bytes());

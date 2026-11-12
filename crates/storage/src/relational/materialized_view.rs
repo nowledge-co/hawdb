@@ -20,14 +20,16 @@ use super::*;
 mod search_index;
 pub(crate) use search_index::SEARCH_INDEX_LAYOUT_TAG;
 pub use search_index::{
-    decode_search_sealed_block, search_index_block_fence, search_index_dictionary_key,
-    search_index_length_block_key, search_index_length_block_range,
-    search_index_length_block_start, search_index_sealed_block_range, search_index_statistics_key,
-    SearchDocumentEntry, SearchIndexAnalyzer, SearchIndexSpec, SearchIndexStatistics,
-    SearchLengthBlock, SearchPosting, SearchTermDictionary, SEARCH_INDEX_BLOCK_POSTINGS,
+    decode_search_sealed_block, decode_search_sealed_block_header, search_index_block_fence,
+    search_index_dictionary_key, search_index_length_block_key, search_index_length_block_range,
+    search_index_length_block_start, search_index_sealed_block_after_range,
+    search_index_sealed_block_range, search_index_statistics_key, SearchDocumentEntry,
+    SearchIndexAnalyzer, SearchIndexSpec, SearchIndexStatistics, SearchLengthBlock, SearchPosting,
+    SearchPostingBlockHeader, SearchTermDictionary, SEARCH_INDEX_BLOCK_POSTINGS,
     SEARCH_INDEX_COLUMN_COUNT, SEARCH_INDEX_DATA_COLUMN, SEARCH_INDEX_KIND_COLUMN,
-    SEARCH_INDEX_LENGTH_BLOCK_DOCUMENTS, SEARCH_INDEX_MAX_TOKEN_BYTES, SEARCH_INDEX_NAME_COLUMN,
-    SEARCH_INDEX_SLOT_COLUMN, SEARCH_INDEX_TAIL_POSTINGS,
+    SEARCH_INDEX_LENGTH_BLOCK_DOCUMENTS, SEARCH_INDEX_MAX_BLOCK_POSTINGS,
+    SEARCH_INDEX_MAX_TOKEN_BYTES, SEARCH_INDEX_NAME_COLUMN, SEARCH_INDEX_SLOT_COLUMN,
+    SEARCH_INDEX_TAIL_POSTINGS,
 };
 
 const INTERNAL_PREFIX: &str = "__hawdb_mv_";

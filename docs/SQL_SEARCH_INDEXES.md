@@ -77,17 +77,30 @@ Semantics:
 
 Joins, grouping, aggregates, `DISTINCT` and locking clauses are refused with
 `text_search` in this release; filter on the source columns directly instead
-of joining back to the source table. `EXPLAIN` of a `text_search` query is
-refused. Inside an explicit transaction, `text_search` reads the transaction's
-own staged writes, like any other SELECT.
+of joining back to the source table. `EXPLAIN` reports the search index access
+without executing it; `EXPLAIN ANALYZE` also reports `postings_visited`,
+`posting_blocks_read` and `posting_blocks_skipped`. Inside an explicit
+transaction, `text_search` reads the transaction's own staged writes, like any
+other SELECT.
 
-Work is bounded by the ordinary SQL read limits: postings visited by the
-ranking phase and rows hydrated for `WHERE` count against the query's
-candidate-work limit, and the query's terms, gathered postings, the set of
-needed lengths rows, each document's score entry and the ranked identities are
-charged to the query memory ledger before each is allocated, so a broad term is
-refused before its score map outgrows the budget.
-Exceeding a limit fails the query; it never returns a truncated ranking.
+Without a residual `WHERE`, ranking is a storage-native exact Block-Max WAND
+scan once the query terms cover at least 4,096 postings. It keeps one posting
+block per term, one lengths block and a `top_k` score heap; it does not build a
+score map or materialize every posting. Per-block maximum term frequency gives
+a safe BM25 upper bound. Cursors advance only to the earlier of the WAND pivot
+and the first current-block boundary, and only a bound valid for all remaining
+postings may terminate the scan. Strict comparisons preserve equal-score
+primary-key tie breaking. Smaller inputs use exhaustive streaming because its
+bound bookkeeping costs more than it saves.
+
+A residual `WHERE` still uses exhaustive scoring in this release, then hydrates
+rows in rank order until `top_k` rows pass the predicate. This deliberately
+preserves filter-before-top-k semantics; the WAND heap must not be cut before a
+source-row predicate has run. Work remains bounded by the ordinary SQL read
+limits: decoded postings and hydrated rows count against candidate work, and
+query terms, cursor buffers, the score heap and retained identities are charged
+to the query memory ledger before allocation. Exceeding a limit fails the
+query; it never returns a truncated ranking.
 
 ## Analyzer `cjk_ngram`
 
@@ -157,7 +170,7 @@ are supported.
 
 ## Physical layout
 
-Layout tag `1`. Every row of the hidden relation has the primary key
+Layout tag `2`. Every row of the hidden relation has the primary key
 `(kind BIGINT, name BYTEA, slot BIGINT)` and one `data BYTEA` payload of
 unsigned LEB128 varints (canonical spelling only; decoders refuse overlong,
 truncated or trailing bytes):
@@ -168,7 +181,7 @@ truncated or trailing bytes):
 | 1 document | encoded source primary key | 0 | the document's ordinal |
 | 2 lengths | empty | ordinal / 64 | per ordinal: token count (0 = none), encoded primary key |
 | 3 term dictionary | term (UTF-8) | `i64::MAX` | document frequency, sealed block count, tail start, tail postings |
-| 3 sealed block | term (UTF-8) | fence | postings |
+| 3 sealed block | term (UTF-8) | fence | posting count, first/last ordinal, maximum term frequency, postings, CRC32C |
 
 - **Ordinals.** A document entering the corpus gets the next dense integer
   ordinal, in source-key order within a commit; ordinals are never reused,
@@ -179,6 +192,12 @@ truncated or trailing bytes):
 - **Posting lists** are a count followed by `(ordinal delta, term frequency)`
   pairs, sorted by ordinal. The first delta is relative to the list's base
   and every later delta is at least 1.
+- **Verified block bounds.** Every sealed block records its first and last
+  ordinal and maximum term frequency before the posting pairs. A trailing
+  CRC32C covers both the bounds and the complete posting payload. WAND can
+  therefore trust a checksummed bound and skip posting decoding without letting
+  torn or bit-corrupt bytes pass silently; a selected block also checks
+  that decoded first/last/max values exactly match its header.
 - **Term dictionary.** One row per term carries its document frequency, how
   many sealed blocks it has, and the tail start; up to 127 postings at or
   above the tail start live inline in the dictionary row. A rare term is
@@ -208,21 +227,26 @@ document counts anyway, so a delete must touch every one of its terms'
 dictionaries regardless, and tombstoned postings would need a filter on every
 query plus a compaction whose cost grows with a term's frequency.
 
-`text_search` reads the statistics row, then per query term the dictionary
-row and (if any) the term's sealed blocks through one primary-key range, then
-the lengths rows of all scored documents in one ordered range scan (one point
-read per lengths row costs a page decode each on a persistent snapshot).
-Scores are computed with the same operations, in the same term order, as a
-brute-force evaluation, so they are exactly equal to it. Decoders check every count against the dictionary and
-refuse an inconsistent index as a storage-integrity error.
+`text_search` reads the statistics and dictionary rows, then advances each term
+through ordered sealed-block ranges. It verifies a block header before deciding
+whether its posting payload must be decoded, and point-reads one lengths block
+at a time as candidate ordinals advance. Scores use the same floating-point
+operations in analyzer term order as a brute-force evaluation, so they are
+bit-for-bit equal. Decoders check counts, ordering, dictionary bounds, block
+bounds and checksums and refuse an inconsistent index as a storage-integrity
+error.
 
 ### Measurements
 
-Temporary local harness (not committed), repository release profile, macOS
+These measurements predate layout tag 2 and the WAND executor; they describe
+the tag-1 compact-block baseline retained by PR #1670 and must not be read as a
+performance claim for the current head. Temporary local harness (not
+committed), repository release profile, macOS
 arm64, persistent database with the default `SyncOnEveryWrite`. Each event row
 has about 30 English words, 30 distinct `wNNNN` tokens and two short Chinese
 sentences, about 70 postings. "Old" is the previous revision of this change
-(one row per `(term, document)`); "new" is the layout above. The three
+(one row per `(term, document)`); "new" is the tag-1 compact-block layout
+measured before the tag-2 bounds/checksum addition. The three
 variants ran side by side on a host that other workloads also loaded, so
 latencies are comparable within a table, not across tables or machines.
 
@@ -299,7 +323,7 @@ What the numbers say:
 The relational schema encoding tags the derived-relation definition: `0` none,
 `1` materialized view (unchanged layout), `2` search index (source table,
 column, analyzer tag, physical layout tag; `cjk_ngram` is analyzer `1`, the
-layout above is layout `1`). Existing databases read unchanged. Older binaries
+layout above is layout `2`). Existing databases read unchanged. Older binaries
 refuse a schema with tag `2`, and current binaries refuse unknown tags,
 analyzer tags or layout tags as an unsupported format rather than guessing.
 No codec version changes, following the materialized view MIN/MAX precedent
@@ -309,12 +333,12 @@ and HawDB's development-phase format policy.
 
 - Vector and hybrid scoring (#1471, #293); phrase, prefix, fuzzy and boolean
   query syntax; per-field weights; highlighting and snippets.
-- Joins in the same SELECT as `text_search`, and `EXPLAIN` output for it.
+- Joins in the same SELECT as `text_search`.
 - Multi-column indexes, non-TEXT columns, strict append source tables, and a
   search index over a materialized view.
-- Block-max or WAND pruning, and SIMD bit-packing of posting blocks. Every
-  matching document is still scored; the graph-side lexical projection's
-  layout work is #206 and its follow-ups.
+- SIMD bit-packing of posting blocks and predicate-aware WAND. A residual
+  `WHERE` currently uses the exhaustive exact scorer so filtering remains
+  before the top-k cut.
 - A dictionary analyzer (for example the graph search kernel's Jieba-based
   analyzer); `cjk_ngram` is dictionary-free and recall-oriented.
 - Background or chunked backfill of large existing tables.
@@ -335,9 +359,11 @@ transaction, many updates of one document keeping its ordinal, and
 delete-heavy churn compacting blocks until the relation is empty. Storage and
 SQL units cover the analyzer (streamed document terms equal to the
 materialized tokens, and an allocation-observed refusal of a 1,000,000-ideograph
-value before expansion), `text_search` admitting score entries before the
-score map grows (an allocation-observed broad-term refusal), the layout codec (varint widths and refused
-spellings, block/dictionary/statistics/lengths round trips and corrupt
-inputs), the schema codec with unknown analyzer and layout tags, and the
-grammar. The Bun suite runs the same SQL through `querySQL` on a
+value before expansion), exact WAND/exhaustive score-bit parity across block
+boundaries, a bounded top-k heap succeeding under a budget that refused the
+former score map, and observable losing-block skips. The layout codec covers
+varint widths, checksums, bounds, refused spellings, block/dictionary/statistics/
+lengths round trips and corrupt inputs. Further units cover the schema codec
+with unknown analyzer and layout tags and the grammar. The Bun suite runs the
+same SQL through `querySQL` on a
 persistent database and a read-only reopen.
