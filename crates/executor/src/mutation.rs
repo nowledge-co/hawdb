@@ -73,12 +73,14 @@ pub fn mutation_command(plan: &PhysicalPlan) -> Result<Option<GraphMutation>> {
             property,
             value_type,
             nullable,
+            default,
         } => Ok(Some(GraphMutation::CreateProperty {
             table_kind: table_kind_to_core(*table_kind),
             table: table.clone(),
             property: property.clone(),
             value_type: property_type_to_core(*value_type),
             nullable: *nullable,
+            default: default.clone(),
         })),
         PhysicalPlan::AlterTableState {
             table_kind,

@@ -86,6 +86,7 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
                 property: String::new(),
                 value_type: hawdb_plan_cypher::SchemaPropertyType::Any,
                 nullable: false,
+                default: None,
             },
             false,
         ),

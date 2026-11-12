@@ -21,6 +21,8 @@ use crate::{QueryMemoryAccount, QueryMemoryLease};
 use hawdb_core::{MAX_LIST_EXPRESSION_WORK, MAX_UNACCOUNTED_LIST_BYTES};
 use std::borrow::Cow;
 
+#[cfg(test)]
+mod conversion_tests;
 mod list;
 #[cfg(test)]
 mod math_reduce_tests;
@@ -339,9 +341,9 @@ fn evaluate_scoped<'a>(
                 _allocation: allocation,
             })
         }
-        ProjectionExpression::Conversion { function, argument } => function
-            .apply(evaluate(argument)?.as_ref())
-            .map(ProjectedValue::scalar),
+        ProjectionExpression::Conversion { function, argument } => {
+            conversion(*function, evaluate(argument)?.as_ref(), account, work)
+        }
         ProjectionExpression::ListComprehension(comprehension) => {
             let list = evaluate(&comprehension.list)?;
             let values = match list.as_ref() {
@@ -1144,6 +1146,33 @@ fn column<'a>(binding: &'a Binding, name: &str) -> Result<&'a Value> {
         .values
         .get(name)
         .ok_or_else(|| HawDBError::Execution(format!("missing column '{name}' during projection")))
+}
+
+/// Converts a value, charging a string result to the evaluation's work and
+/// memory budgets before the string is allocated: `string(x)` output can be
+/// far larger than its input (`1e308` renders as ~310 bytes).
+fn conversion<'a>(
+    function: hawdb_core::ConversionFunction,
+    value: &Value,
+    account: Option<&QueryMemoryAccount>,
+    work: &ListWork,
+) -> Result<ProjectedValue<'a>> {
+    let mut allocation = None;
+    let value = function.apply_ref_charged(value.as_ref(), &mut |bytes| {
+        work.charge(bytes.saturating_add(1))?;
+        match account {
+            Some(account) => {
+                allocation =
+                    Some(account.reserve(std::mem::size_of::<Value>().saturating_add(bytes))?);
+            }
+            None => work.charge_unaccounted(bytes)?,
+        }
+        Ok(())
+    })?;
+    Ok(ProjectedValue {
+        value: Cow::Owned(value),
+        _allocation: allocation,
+    })
 }
 
 fn binary<'a>(

@@ -36,7 +36,18 @@ pub struct DatabaseConfig {
     pub branch_create_recovery_limits: BranchCreateRecoveryLimits,
     /// Optional host-wide read row ceiling. `Some(0)` and `None` (the default) mean unlimited.
     /// Session settings may lower a positive ceiling, but cannot raise it.
+    /// It also bounds relational intermediate rows unless
+    /// `max_read_intermediate_rows` is set.
     pub max_read_result_rows: Option<usize>,
+    /// Optional host-wide ceiling on the intermediate rows one relational SQL
+    /// statement may scan, join or aggregate, independent of the rows it
+    /// returns. The scan-page, row-read and index-read budgets derive from it.
+    /// `None` (the default) inherits the effective `max_read_result_rows`
+    /// ceiling, so a host that sets only the result ceiling keeps the coupled
+    /// bound. `Some(0)` removes the intermediate row ceiling; byte, page-size
+    /// and query-memory budgets remain enforced. `max_read_result_rows` and
+    /// session settings continue to bound returned rows.
+    pub max_read_intermediate_rows: Option<usize>,
     pub max_read_result_payload_bytes: Option<usize>,
     pub execution_memory: executor::ExecutionMemoryConfig,
     pub mutation_limits: hawdb_storage::mutation::MutationLimits,
@@ -137,6 +148,8 @@ pub struct DatabaseConfig {
 
 /// Default host row-count ceiling: no ceiling. Byte budgets remain active.
 pub const DEFAULT_MAX_READ_RESULT_ROWS: Option<usize> = None;
+/// Default relational intermediate-row ceiling: inherit the result-row ceiling.
+pub const DEFAULT_MAX_READ_INTERMEDIATE_ROWS: Option<usize> = None;
 pub const DEFAULT_MAX_READ_RESULT_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
 
 /// Per-session result policy. Independent sessions start with no row-count limit.
@@ -164,6 +177,16 @@ impl DatabaseConfig {
     /// Effective host row-count ceiling. Both zero and `None` disable it.
     pub fn read_result_row_limit(&self) -> Option<usize> {
         self.max_read_result_rows.filter(|rows| *rows != 0)
+    }
+
+    /// Effective relational intermediate-row ceiling. `None` inherits
+    /// [`Self::read_result_row_limit`]; `Some(0)` disables the ceiling.
+    pub fn read_intermediate_row_limit(&self) -> Option<usize> {
+        match self.max_read_intermediate_rows {
+            None => self.read_result_row_limit(),
+            Some(0) => None,
+            Some(rows) => Some(rows),
+        }
     }
 
     /// The `LOAD CSV` file policy, or `None` when CSV import is disabled.
@@ -205,6 +228,7 @@ impl Default for DatabaseConfig {
             automatic_checkpoint_max_age: std::time::Duration::from_secs(60),
             branch_create_recovery_limits: BranchCreateRecoveryLimits::default(),
             max_read_result_rows: DEFAULT_MAX_READ_RESULT_ROWS,
+            max_read_intermediate_rows: DEFAULT_MAX_READ_INTERMEDIATE_ROWS,
             max_read_result_payload_bytes: Some(DEFAULT_MAX_READ_RESULT_PAYLOAD_BYTES),
             execution_memory: executor::ExecutionMemoryConfig::default(),
             mutation_limits: hawdb_storage::mutation::MutationLimits::default(),
@@ -294,7 +318,9 @@ pub(super) fn relational_query_limits_with_payload(
     let max_output_payload_bytes =
         restrictive_query_limit(config.max_read_result_payload_bytes, max_payload_bytes)
             .unwrap_or(DEFAULT_MAX_READ_RESULT_PAYLOAD_BYTES);
-    let max_intermediate_rows = config.read_result_row_limit().unwrap_or(usize::MAX);
+    // Intermediate work has its own host ceiling (#1679). Unset, it inherits
+    // the result-row ceiling; a request's output limit never lowers it.
+    let max_intermediate_rows = config.read_intermediate_row_limit().unwrap_or(usize::MAX);
     // A blocking relational query first reads the bounded scan projection and
     // then re-reads at most `max_output_rows` selected locators with the final
     // output projection. Budget both phases explicitly so a scan that exactly

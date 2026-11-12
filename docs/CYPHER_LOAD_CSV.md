@@ -116,6 +116,48 @@ parsing. A value of a type the function does not accept (for example
 `toBoolean(1.5)` or `toString([1])`), or a float outside the integer range in
 `toInteger`, fails the query, as in Neo4j.
 
+### Kùzu `string(x)`
+
+`string(x)` and its alias `to_string(x)` are Kùzu's string cast. Nowledge Mem
+compares text produced by Kùzu before migration with text produced by HawDB
+afterwards (thread version stamps such as
+`COALESCE(string(t.updated_at), '') + '|' + COALESCE(string(t.message_count), '')`),
+so the function reproduces Kùzu 0.11.3 output byte for byte instead of
+`toString`'s Neo4j text. `toString` is unchanged. `NULL` converts to `NULL`.
+String concatenation with `+` is not yet supported in HawDB Cypher (it fails
+with `arithmetic requires numeric operands`), so the stamp expression above
+also needs that separate fix.
+
+The cast is driven by the value's type. HawDB graph properties are not
+declared as `TIMESTAMP`: a property holding a native local or zoned datetime
+(for example bound from a host `datetime` parameter) renders as Kùzu timestamp
+text, but HawDB's Kùzu-compatible `timestamp(...)`, `CAST(... AS TIMESTAMP)`
+and `CURRENT_TIMESTAMP()` return INT64 epoch nanoseconds, and such a property
+renders as those digits (`1704164645120000000`).
+
+| Value | `string(x)` | Note |
+| --- | --- | --- |
+| `TIMESTAMP` / local datetime | `2024-01-02 03:04:05`, `2024-01-02 03:04:05.12`, `2024-01-02 03:04:05.123456` | space separator, microseconds with trailing zeros removed (finer digits truncated) |
+| zoned datetime | `2024-01-02 01:04:05` for `2024-01-02T03:04:05+02:00` | the UTC instant without a zone, as Kùzu `TIMESTAMP` stores it |
+| date | `2024-01-02`; `10000-01-02`; `0001-12-31 (BC)` | years up to 1 BC carry ` (BC)` |
+| integer | `42`, `-7` | |
+| float | `-0.500000`, `1.000000`, `0.000003`, `inf`, `-inf`, `nan` | C `%f`: six decimals, exact rounding |
+| boolean | `True`, `False` | |
+| string | the string itself | |
+| list | `[1,2]`, `[a,b]`, `[1,]` | no spaces, members unquoted, `NULL` members empty |
+| map | `{a: 1, b: x}` | Kùzu `STRUCT` text; HawDB orders keys by name |
+| duration | `1 day 02:00:00`, `1 year 2 months 3 days`, `-1 days -03:04:05`, `00:00:00` | Kùzu `INTERVAL`: years/months from the month count, days, then `hh:mm:ss[.ffffff]` (hours not folded into days) |
+| UUID | `0f5c7b3a-0a43-4fa8-9c4b-6e9a2a0d1e7c` | |
+| bytes | `abc`, `\x00\xFF` | printable ASCII except `\`, `'`, `"` as is, other bytes `\xHH` |
+| vector | `[0.100000,0.250000]` | as a Kùzu `FLOAT[n]` array |
+
+A local time or a decimal fails the query: Kùzu has no `TIME` type, and Kùzu
+0.11.3 renders `DECIMAL` casts inconsistently (`string(cast(1.50 as
+decimal(5,2)))` returns `0.000000`), so HawDB does not guess a format. Kùzu
+`STRUCT` keys keep declaration order; HawDB maps keep keys in name order, so a
+map literal whose keys are not already sorted renders in a different order
+than Kùzu would.
+
 ## Security
 
 `LOAD CSV` is disabled unless the host sets an import directory:

@@ -25,6 +25,7 @@ use hawdb_optimizer::{
 use hawdb_storage::relational::{RelationalMutationLimits, RelationalOverflowConfig};
 use std::num::{NonZeroU64, NonZeroUsize};
 
+mod aggregate_memory;
 mod authoritative_nested_index;
 mod columnar_aggregate;
 mod cross_join;

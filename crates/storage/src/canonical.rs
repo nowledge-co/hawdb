@@ -2146,11 +2146,11 @@ impl CanonicalSegmentReader {
                         };
                         let read = self.read_segment_with_report(&descriptor)?;
                         let directory = self.point_directory_for(&descriptor, &read.payload)?;
-                        let segment = PointSegment {
-                            descriptor: std::rc::Rc::new(descriptor),
+                        let segment = std::rc::Rc::new(PointSegment {
+                            descriptor,
                             bytes: read.payload,
                             directory,
-                        };
+                        });
                         if let Some((cache, _, _)) = self.range_reader.cache_identity() {
                             point_read_scope::retain_segment(
                                 self.point_read_identity,
@@ -3708,6 +3708,20 @@ impl CanonicalNodeInput<'_> {
         required_properties: Option<&BTreeSet<String>>,
         admit: impl FnOnce(usize) -> Result<P, CanonicalSegmentError>,
     ) -> Result<(ProjectedNodeRecord, P), CanonicalSegmentError> {
+        if let Some(required) = required_properties
+            && self.values_validated
+            && let Some(selection) = SelectedNodeValues::locate(
+                self.payload,
+                self.property_keys,
+                self.property_spills,
+                required,
+            )?
+        {
+            let allocation = admit(selection.allocation_bytes)?;
+            return selection
+                .decode(self.id, self.payload, self.property_spills)
+                .map(|node| (node, allocation));
+        }
         let bytes = node_payload_allocation_bytes(
             self.payload,
             self.property_keys,
@@ -3740,6 +3754,115 @@ impl CanonicalNodeInput<'_> {
             }
         };
         Ok((node, allocation))
+    }
+}
+
+/// Most selected values a projected read locates in one walk; larger
+/// selections take the two-walk path.
+const LOCATED_SELECTION_CAPACITY: usize = 8;
+
+/// The selected values of one validated node payload, located by a single
+/// walk that also sizes them exactly as [`node_payload_allocation_bytes`]
+/// does. Decoding then reads only the located values instead of walking
+/// (and matching the key of) every property again.
+struct SelectedNodeValues<'k> {
+    allocation_bytes: usize,
+    label_count: usize,
+    /// Key and value offset of each selected property, in payload order.
+    values: [(&'k str, usize); LOCATED_SELECTION_CAPACITY],
+    selected: usize,
+}
+
+impl<'k> SelectedNodeValues<'k> {
+    /// `None` when more than [`LOCATED_SELECTION_CAPACITY`] properties are
+    /// selected. Only for payloads whose segment validated every record, as
+    /// unselected values are skipped by their encoded length.
+    fn locate(
+        payload: &[u8],
+        property_keys: &'k [String],
+        property_spills: Option<&PropertySpillReader>,
+        required: &BTreeSet<String>,
+    ) -> Result<Option<Self>, CanonicalSegmentError> {
+        let mut cursor = SliceCursor::new(payload);
+        let label_count = cursor.read_u32()? as usize;
+        cursor.read_exact(label_count.checked_mul(4).ok_or_else(|| {
+            CanonicalSegmentError::Corrupt("node label allocation overflow".into())
+        })?)?;
+        let mut values = [("", 0); LOCATED_SELECTION_CAPACITY];
+        let mut selected = 0usize;
+        let mut bytes = 0usize;
+        for _ in 0..cursor.read_u32()? {
+            let key = property_keys
+                .get(cursor.read_u32()? as usize)
+                .ok_or_else(|| {
+                    CanonicalSegmentError::Corrupt(
+                        "unknown property key in allocation preflight".into(),
+                    )
+                })?
+                .as_str();
+            if required.contains(key) {
+                let Some(slot) = values.get_mut(selected) else {
+                    return Ok(None);
+                };
+                *slot = (key, cursor.offset);
+                selected += 1;
+                bytes =
+                    bytes
+                        .saturating_add(key.len())
+                        .saturating_add(encoded_value_allocation_bytes(
+                            &mut cursor,
+                            1,
+                            property_spills,
+                        )?);
+            } else {
+                skip_validated_value(&mut cursor, 1)?;
+            }
+        }
+        if !cursor.is_empty() {
+            return Err(CanonicalSegmentError::Corrupt(
+                "record allocation preflight has trailing bytes".into(),
+            ));
+        }
+        let allocation_bytes = std::mem::size_of::<ProjectedNodeRecord>()
+            .saturating_add(label_count.saturating_mul(128))
+            .saturating_add(bytes.saturating_add(
+                hawdb_core::ids::property_container_allocation_bytes(selected),
+            ));
+        Ok(Some(Self {
+            allocation_bytes,
+            label_count,
+            values,
+            selected,
+        }))
+    }
+
+    /// Call only after admission of `allocation_bytes`.
+    fn decode(
+        &self,
+        id: NodeId,
+        payload: &[u8],
+        property_spills: Option<&PropertySpillReader>,
+    ) -> Result<ProjectedNodeRecord, CanonicalSegmentError> {
+        let mut cursor = SliceCursor::new(payload);
+        cursor.read_u32()?;
+        let mut labels = BTreeSet::new();
+        for _ in 0..self.label_count {
+            labels.insert(LabelId(cursor.read_u32()?));
+        }
+        let mut properties = BTreeMap::new();
+        for &(key, offset) in &self.values[..self.selected] {
+            cursor.offset = offset;
+            // A validated record holds each key once, so this never replaces.
+            properties.insert(
+                key.to_string(),
+                decode_value_with_property_spills(&mut cursor, 1, property_spills)?,
+            );
+        }
+        Ok(ProjectedNodeRecord {
+            id,
+            labels,
+            properties,
+        })
     }
 }
 

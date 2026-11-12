@@ -25,11 +25,25 @@ rust.toolchain(
 )
 use_repo(rust, "rust_toolchains")
 
+# rules_rust's default crate-universe triples plus x86_64 macOS, which the
+# prebuilt C ABI release matrix builds (docs/PREBUILT_LIBRARIES.md).
+_CRATE_PLATFORM_TRIPLES = [
+    "aarch64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "wasm32-unknown-unknown",
+    "wasm32-wasip1",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-nixos-gnu",
+]
+
 crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
 crate.from_cargo(
     name = "crate_index",
     cargo_lockfile = "//:Cargo.lock",
     manifests = ["//:Cargo.toml"],
+    supported_platform_triples = _CRATE_PLATFORM_TRIPLES,
 )
 use_repo(crate, "crate_index")
 
@@ -44,6 +58,7 @@ crate.spec(
 crate.from_specs(
     name = "telemetry_crates",
     cargo_lockfile = "//crates/telemetry:Cargo.Bazel.lock",
+    supported_platform_triples = _CRATE_PLATFORM_TRIPLES,
 )
 use_repo(crate, "telemetry_crates")
 
@@ -57,6 +72,7 @@ crate.spec(
 crate.from_specs(
     name = "ffi_crates",
     cargo_lockfile = "//bindings/ffi:Cargo.Bazel.lock",
+    supported_platform_triples = _CRATE_PLATFORM_TRIPLES,
 )
 use_repo(crate, "ffi_crates")
 

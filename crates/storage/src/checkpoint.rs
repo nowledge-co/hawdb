@@ -305,6 +305,18 @@ pub(crate) fn encode_checkpoint_body_with_changes<'a>(
             encode_schema_object_state(property.state)
         ));
     }
+    // A separate record kind: checkpoints without defaults keep their exact
+    // pre-default bytes, and older binaries reject this line explicitly.
+    for property in image.catalog.property_descriptors() {
+        if let Some(default) = &property.default {
+            body.push_str(&format!(
+                "property_default\t{}\t{}\t{}\n",
+                property.id.0,
+                encode_string(&crate::text::encode_property_default(&default.value)),
+                encode_string(&crate::text::encode_value(&default.backfill_value))
+            ));
+        }
+    }
     for constraint in image.catalog.unique_constraints() {
         let ConstraintSubject::Node(label_id) = constraint.subject else {
             continue;
@@ -914,6 +926,19 @@ pub fn parse_checkpoint(
                     decode_nullable(raw_nullable)?,
                     decode_schema_object_state(raw_state)?,
                 );
+            }
+            ["property_default", raw_id, raw_default, raw_backfill] => {
+                let id = PropertyId(parse_u32(raw_id, "property default id")?);
+                let default = hawdb_core::DeclaredPropertyDefault {
+                    value: crate::text::decode_property_default(&decode_string(raw_default)?)?,
+                    backfill_value: crate::text::decode_value(&decode_string(raw_backfill)?)?,
+                };
+                if !catalog.set_property_default(id, Some(default)) {
+                    return Err(HawDBError::Storage(format!(
+                        "checkpoint property default references missing property {}",
+                        id.0
+                    )));
+                }
             }
             ["unique_constraint", raw_id, raw_label_id, raw_property] => {
                 catalog.import_unique_constraint(

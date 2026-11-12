@@ -82,10 +82,10 @@ pub use regex::ValidatedRegex;
 pub use retained_heap::{checked_retained_heap_sum, RetainedHeapBytes};
 pub use schema::{
     AdvancedStatisticsFreshness, BasicGraphStatistics, Catalog, CompositeIndexDescriptor,
-    ConstraintDescriptor, ConstraintId, ConstraintKind, ConstraintSubject, GraphStatistics,
-    IndexDescriptor, IndexId, IndexKind, IndexStatisticsSample, Label, LabelId, PropertyDescriptor,
-    PropertyId, PropertyType, RelType, RelTypeId, SchemaObjectState, TableDescriptor, TableId,
-    TableKind,
+    ConstraintDescriptor, ConstraintId, ConstraintKind, ConstraintSubject, DeclaredPropertyDefault,
+    GraphStatistics, IndexDescriptor, IndexId, IndexKind, IndexStatisticsSample, Label, LabelId,
+    PropertyDefault, PropertyDescriptor, PropertyId, PropertySchema, PropertyType, RelType,
+    RelTypeId, SchemaObjectState, TableDescriptor, TableId, TableKind,
 };
 pub use sql_timestamp::TimestampPrecision;
 pub use string_function::StringFunction;

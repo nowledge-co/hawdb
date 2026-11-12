@@ -576,6 +576,17 @@ impl Database {
             limits.dependency_bytes.get(),
         )?;
         let mut read = self.begin_read_transaction()?;
+        // A source statement's row limit also bounds its relational
+        // intermediate work, as it did before the two host ceilings were
+        // separated (#1679). An unset intermediate ceiling inherits the
+        // lowered result ceiling below; an explicit one keeps the smaller of
+        // its effective value and the statement limit.
+        if read.config.max_read_intermediate_rows.is_some() {
+            read.config.max_read_intermediate_rows = restrictive_query_limit(
+                read.config.read_intermediate_row_limit(),
+                Some(limits.statement_rows.get()),
+            );
+        }
         read.config.max_read_result_rows = restrictive_query_limit(
             read.config.max_read_result_rows,
             Some(limits.statement_rows.get()),
@@ -782,6 +793,50 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn prepared_read_statement_rows_lower_both_row_ceilings() {
+        // (result, intermediate, statement_rows) ->
+        // (effective result, effective intermediate) (#1679).
+        for (result, intermediate, statement_rows, expected) in [
+            (None, None, 8, (Some(8), Some(8))),
+            (Some(4), None, 8, (Some(4), Some(4))),
+            (Some(100), None, 8, (Some(8), Some(8))),
+            (Some(4), Some(1_000), 8, (Some(4), Some(8))),
+            (Some(4), Some(2), 8, (Some(4), Some(2))),
+            (Some(4), Some(0), 8, (Some(4), Some(8))),
+            // Unset, the intermediate ceiling follows the result ceiling
+            // exactly. Known bug, not intended: a host `Some(0)` result
+            // ceiling ignores `statement_rows` (#1685); this row pins the
+            // current behaviour until that is fixed.
+            (Some(0), None, 8, (None, None)),
+            (Some(0), Some(1_000), 8, (None, Some(8))),
+        ] {
+            let db = Database::new_with_config(DatabaseConfig {
+                max_read_result_rows: result,
+                max_read_intermediate_rows: intermediate,
+                ..DatabaseConfig::default()
+            });
+            let read = db
+                .begin_prepared_read(PreparedReadLimits {
+                    dependency_entries: NonZeroUsize::new(16).unwrap(),
+                    dependency_bytes: NonZeroUsize::new(4096).unwrap(),
+                    statement_rows: NonZeroUsize::new(statement_rows).unwrap(),
+                    statement_payload_bytes: NonZeroUsize::new(4096).unwrap(),
+                })
+                .unwrap();
+            assert_eq!(
+                (
+                    read.read.config.read_result_row_limit(),
+                    read.read.config.read_intermediate_row_limit()
+                ),
+                expected,
+                "result={result:?}, intermediate={intermediate:?}"
+            );
+            // The host configuration itself is unchanged.
+            assert_eq!(db.config().max_read_intermediate_rows, intermediate);
         }
     }
 

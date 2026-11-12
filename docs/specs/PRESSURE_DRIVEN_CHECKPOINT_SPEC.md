@@ -50,11 +50,17 @@ before the wait and again after it, once the drained generation is adopted and
 immediately before the retried commit: a task cancelled or past its deadline
 while waiting fails with nothing applied (no WAL append, no new epoch), and its
 runtime, barrier, sequencer and host admission are released. A further retry
-needs a newly completed checkpoint. A parked,
-suspended, stopped or exhausted owner, or a build or handle without background
+needs a newly completed checkpoint: when the wait completes none while the
+owner can still drain (its attempt was deferred, for example by memory
+pressure, or failed below the retry limit), the commit returns the retryable
+`HawDBError::BranchBusy { resource: "automatic checkpoint capacity" }` with
+nothing applied ([#1637](https://github.com/nowledge-co/hawdb/issues/1637)).
+A suspended, stopped or exhausted owner, or a build or handle without background
 maintenance, fails closed with the same pre-WAL rejection, which states the
 commit size and that a checkpoint must drain the overlay first; the synchronous
-manual checkpoint then drains it. A transaction-private row view charges only the
+manual checkpoint then drains it. Waiting cannot help there: an exhausted owner
+starts no drain until a manual checkpoint or a new WAL generation resets it.
+A transaction-private row view charges only the
 transaction's own changes, so the commit, not a statement, decides headroom.
 Explicit transaction commits (on a database or a concurrent handle) and
 autocommit SQL statements take this path; other write paths keep the plain

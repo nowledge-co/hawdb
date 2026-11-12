@@ -596,9 +596,17 @@ impl GraphStore {
                 property,
                 value_type,
                 nullable,
+                default,
             } => {
                 let table_id = ensure_table_descriptor(catalog, table_kind, &table);
-                catalog.get_or_create_property(table_id, &property, value_type, nullable);
+                catalog.get_or_create_property_with_default(
+                    table_id,
+                    &property,
+                    value_type,
+                    nullable,
+                    default.map(|default| *default),
+                    SchemaObjectState::Public,
+                );
             }
             WalOp::AlterTableState {
                 table_kind,

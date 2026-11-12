@@ -75,7 +75,7 @@ fn expected_after_main_transitions(expected: &serde_json::Value) -> &serde_json:
     use std::collections::BTreeMap;
     use std::sync::OnceLock;
     type TransitionMap = BTreeMap<(String, String), serde_json::Value>;
-    static TRANSITIONS: OnceLock<[TransitionMap; 8]> = OnceLock::new();
+    static TRANSITIONS: OnceLock<[TransitionMap; 9]> = OnceLock::new();
     // Keep each earlier oracle immutable. Main #1411 changes row bindings and
     // read-only UNWIND; #1403 expands ORDER BY and changes aggregate sort ASTs.
     // #1382 adds temporal syntax and generic scalar/postfix behavior. Every
@@ -85,6 +85,7 @@ fn expected_after_main_transitions(expected: &serde_json::Value) -> &serde_json:
     // #1550 admits bounded scalar expressions on the left of regex predicates.
     // #1489 admits unbounded variable-length relationship patterns.
     // #1488 plans WHERE pattern predicates over the whole pattern.
+    // #1683 adds an optional DEFAULT to CREATE PROPERTY (AST field only).
     let transitions = TRANSITIONS.get_or_init(|| {
         [
             include_str!("../../../fixtures/migration_main_1411_peg_baseline_v1.jsonl"),
@@ -104,6 +105,9 @@ fn expected_after_main_transitions(expected: &serde_json::Value) -> &serde_json:
             ),
             include_str!(
                 "../../../fixtures/migration_main_1488_pattern_predicates_peg_baseline_v1.jsonl"
+            ),
+            include_str!(
+                "../../../fixtures/migration_main_1683_property_defaults_peg_baseline_v1.jsonl"
             ),
         ]
         .map(|fixture| {
