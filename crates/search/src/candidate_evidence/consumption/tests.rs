@@ -154,9 +154,10 @@ mod retrieval {
         drop(index);
 
         let request = SearchCandidateRequest::text("common rare", 10);
+        // Analysis includes the adjacent-word alias `common_rare`.
         for (policy, cap, reduced) in [
-            (crate::LexicalQueryTermPolicy::Exact, 2, false),
-            (crate::LexicalQueryTermPolicy::MostSelective, 2, false),
+            (crate::LexicalQueryTermPolicy::Exact, 3, false),
+            (crate::LexicalQueryTermPolicy::MostSelective, 3, false),
             (crate::LexicalQueryTermPolicy::MostSelective, 1, true),
         ] {
             let reader = crate::SearchOutOfCoreReader::open_with_config(
