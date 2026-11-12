@@ -764,6 +764,31 @@ impl HawDBEmbedded {
         &mut self,
         request: crate::SqlQueryRequest<'_>,
     ) -> Result<QueryOutput> {
+        self.transaction_query_sql_request_with_result(request)
+            .map(|result| result.output)
+    }
+
+    /// Runs one SQL statement inside the open user transaction and returns
+    /// its rows together with the staged RowPage mutation outcome.
+    ///
+    /// `mutation` is `None` for queries, DDL and Strict Append writes. Its
+    /// counts are provisional (`provisional == true`) until
+    /// [`Self::commit_transaction`] publishes the transaction.
+    pub fn transaction_query_sql_with_result_and_params(
+        &mut self,
+        sql_text: &str,
+        parameters: &[Value],
+    ) -> Result<crate::SqlStatementResult> {
+        self.transaction_query_sql_request_with_result(
+            crate::SqlQueryRequest::new(sql_text).with_params(parameters),
+        )
+    }
+
+    /// Request form of [`Self::transaction_query_sql_with_result_and_params`].
+    pub fn transaction_query_sql_request_with_result(
+        &mut self,
+        request: crate::SqlQueryRequest<'_>,
+    ) -> Result<crate::SqlStatementResult> {
         let transaction = self.transaction_mut()?;
         crate::api::execute_database_transaction_sql_request(
             &transaction.runtime,
@@ -771,7 +796,6 @@ impl HawDBEmbedded {
             request,
             None,
         )
-        .map(|result| result.output)
     }
 
     /// Publishes the open transaction as one durable commit.
@@ -1086,6 +1110,131 @@ mod tests {
             .query_admitted("MATCH (i:Item) RETURN i.id AS id")
             .unwrap();
         assert_eq!(published.rows.len(), 1);
+    }
+
+    fn affected_rows(result: &crate::SqlStatementResult) -> Option<usize> {
+        result
+            .mutation
+            .as_ref()
+            .map(|mutation| mutation.affected_rows)
+    }
+
+    fn assert_autocommit_sql_reports_affected_rows(engine: &mut HawDBEmbedded) {
+        let database = engine.database_mut();
+        let ddl = database
+            .query_sql_with_result_and_params(
+                "CREATE TABLE items (id BIGINT PRIMARY KEY, qty BIGINT)",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(affected_rows(&ddl), None);
+        let inserted = database
+            .query_sql_with_result_and_params(
+                "INSERT INTO items (id, qty) VALUES ($1, 1), ($2, 2), ($3, 3)",
+                &[Value::Int(1), Value::Int(2), Value::Int(3)],
+            )
+            .unwrap();
+        assert_eq!(affected_rows(&inserted), Some(3));
+        assert!(!inserted.mutation.as_ref().unwrap().provisional);
+        assert!(inserted.output.rows.is_empty());
+        let returning = database
+            .query_sql_with_result_and_params(
+                "INSERT INTO items (id, qty) VALUES ($1, 4) RETURNING id",
+                &[Value::Int(4)],
+            )
+            .unwrap();
+        assert_eq!(affected_rows(&returning), Some(1));
+        assert_eq!(returning.output.rows.len(), 1);
+        let updated = database
+            .query_sql_with_result_and_params(
+                "UPDATE items SET qty = qty + 10 WHERE qty >= $1",
+                &[Value::Int(2)],
+            )
+            .unwrap();
+        assert_eq!(affected_rows(&updated), Some(3));
+        let unmatched = database
+            .query_sql_with_result_and_params("UPDATE items SET qty = 0 WHERE id = 99", &[])
+            .unwrap();
+        assert_eq!(affected_rows(&unmatched), Some(0));
+        let deleted = database
+            .query_sql_with_result_and_params("DELETE FROM items WHERE id <= $1", &[Value::Int(2)])
+            .unwrap();
+        assert_eq!(affected_rows(&deleted), Some(2));
+        let selected = database
+            .query_sql_with_result_and_params("SELECT id FROM items", &[])
+            .unwrap();
+        assert_eq!(affected_rows(&selected), None);
+        assert_eq!(selected.output.rows.len(), 2);
+        // The output-only entry point is unchanged.
+        assert!(database
+            .query_sql_with_params("DELETE FROM items WHERE id = 3", &[])
+            .unwrap()
+            .rows
+            .is_empty());
+    }
+
+    #[test]
+    fn autocommit_sql_reports_committed_affected_rows() {
+        // Default limits commit count-only RowPage DML in one native pass.
+        assert_autocommit_sql_reports_affected_rows(&mut HawDBEmbedded::open_in_memory());
+        // A custom mutation ceiling validates every DML statement in a
+        // transaction before publication instead.
+        let mut config = DatabaseConfig::default();
+        config.mutation_limits.max_affected_rows = NonZeroUsize::new(1_000).unwrap();
+        assert_autocommit_sql_reports_affected_rows(
+            &mut HawDBEmbedded::open_in_memory_with_config(config),
+        );
+    }
+
+    #[test]
+    fn transaction_sql_reports_provisional_affected_rows() {
+        let mut engine = HawDBEmbedded::open_in_memory();
+        engine
+            .database_mut()
+            .query_sql("CREATE TABLE items (id BIGINT PRIMARY KEY, qty BIGINT)")
+            .unwrap();
+        engine.begin_transaction().unwrap();
+        let ddl = engine
+            .transaction_query_sql_with_result_and_params(
+                "CREATE TABLE other (id BIGINT PRIMARY KEY)",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(affected_rows(&ddl), None);
+        let inserted = engine
+            .transaction_query_sql_with_result_and_params(
+                "INSERT INTO items (id, qty) VALUES ($1, 1), ($2, 2), ($3, 3)",
+                &[Value::Int(1), Value::Int(2), Value::Int(3)],
+            )
+            .unwrap();
+        assert_eq!(affected_rows(&inserted), Some(3));
+        assert!(inserted.mutation.as_ref().unwrap().provisional);
+        let updated = engine
+            .transaction_query_sql_with_result_and_params(
+                "UPDATE items SET qty = 0 WHERE id >= $1",
+                &[Value::Int(2)],
+            )
+            .unwrap();
+        assert_eq!(affected_rows(&updated), Some(2));
+        let deleted = engine
+            .transaction_query_sql_with_result_and_params("DELETE FROM items WHERE id = 1", &[])
+            .unwrap();
+        assert_eq!(affected_rows(&deleted), Some(1));
+        let selected = engine
+            .transaction_query_sql_with_result_and_params("SELECT id FROM items", &[])
+            .unwrap();
+        assert_eq!(affected_rows(&selected), None);
+        assert_eq!(selected.output.rows.len(), 2);
+        engine.commit_transaction().unwrap();
+        assert_eq!(
+            engine
+                .database_mut()
+                .query_sql("SELECT id FROM items")
+                .unwrap()
+                .rows
+                .len(),
+            2
+        );
     }
 
     #[test]
