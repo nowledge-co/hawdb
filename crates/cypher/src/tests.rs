@@ -175,6 +175,7 @@ fn assert_grouped_count(
 mod backtracking;
 mod comparison_chains;
 mod default_pipeline;
+mod entity_labels;
 mod list_functions;
 mod list_literals;
 mod load_csv;
@@ -1696,7 +1697,10 @@ fn parses_untyped_relationship_match_and_label_return() {
     assert_eq!(
         pipeline_return(&query).items[2].expression,
         AstNode::synthetic(ReturnExpressionKind::Value(AstNode::synthetic(
-            ScalarExpressionKind::RelationshipType("r".to_string())
+            ScalarExpressionKind::Label {
+                function: hawdb_core::LabelFunction::Label,
+                variable: "r".to_string(),
+            }
         )))
     );
 }

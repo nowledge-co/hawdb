@@ -99,6 +99,7 @@ fn expression_bytes(expression: &ProjectionExpression) -> Option<usize> {
         E::Variable { variable }
         | E::Id { variable }
         | E::RelationshipType { variable }
+        | E::Label { variable, .. }
         | E::Column(variable) => Some(variable.capacity()),
         E::RelationshipEndpoint {
             variable,

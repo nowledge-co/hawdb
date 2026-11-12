@@ -474,7 +474,7 @@ impl RelationalRowPages {
     pub(super) fn range(
         &self,
         range: Option<RelationalPrimaryKeyRange>,
-    ) -> impl Iterator<Item = (&RelationalKey, &RelationalRow)> {
+    ) -> impl DoubleEndedIterator<Item = (&RelationalKey, &RelationalRow)> {
         use std::ops::Bound;
         let range = range.unwrap_or(RelationalPrimaryKeyRange {
             lower: Bound::Unbounded,

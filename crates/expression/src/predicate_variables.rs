@@ -77,6 +77,7 @@ fn expression_names(expression: &ProjectionExpression, names: &mut BTreeSet<Stri
         | ProjectionExpression::Property { variable, .. }
         | ProjectionExpression::Id { variable }
         | ProjectionExpression::RelationshipType { variable }
+        | ProjectionExpression::Label { variable, .. }
         | ProjectionExpression::DatePart { variable, .. }
         | ProjectionExpression::DefaultIfNullOrEq { variable, .. }
         | ProjectionExpression::DefaultIfNull { variable, .. }

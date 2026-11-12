@@ -478,6 +478,7 @@ pub(super) fn graph_variables_read(expression: &ProjectionExpression, read: &mut
         | ProjectionExpression::Property { variable, .. }
         | ProjectionExpression::Id { variable }
         | ProjectionExpression::RelationshipType { variable }
+        | ProjectionExpression::Label { variable, .. }
         | ProjectionExpression::RelationshipEndpoint { variable, .. }
         | ProjectionExpression::DatePart { variable, .. }
         | ProjectionExpression::DefaultIfNullOrEq { variable, .. }

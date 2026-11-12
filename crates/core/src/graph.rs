@@ -44,3 +44,35 @@ impl RelationshipEndpoint {
         }
     }
 }
+
+/// A Kùzu-style `label(x)` or openCypher `labels(n)` call over a bound graph
+/// variable.
+///
+/// - `label(n)` is the single label of a node as a STRING; `label(r)` is the
+///   relationship type. A node with no label yields NULL, and a node with
+///   more than one label is an execution error (use `labels(n)`).
+/// - `labels(n)` is the list of a node's labels, in label-id order (the order
+///   of the `labels` entry of a returned node value). A relationship is an
+///   execution error.
+///
+/// Both yield NULL for a NULL variable, such as an unmatched OPTIONAL MATCH.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum LabelFunction {
+    Label,
+    Labels,
+}
+
+impl LabelFunction {
+    pub fn from_function_name(name: &str) -> Option<Self> {
+        [Self::Label, Self::Labels]
+            .into_iter()
+            .find(|function| name.eq_ignore_ascii_case(function.function_name()))
+    }
+
+    pub const fn function_name(self) -> &'static str {
+        match self {
+            Self::Label => "label",
+            Self::Labels => "labels",
+        }
+    }
+}

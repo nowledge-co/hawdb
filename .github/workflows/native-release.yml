@@ -1,12 +1,12 @@
 name: Native Release
 
 # Builds the HawDB C ABI for every prebuilt target, attaches the archives and
-# SHA256SUMS to a development prerelease, and publishes the Bun package and its
-# per-platform library packages to npm under that channel's dist-tag through
-# trusted publishing (OIDC). AGENTS.md keeps HawDB out of stable and GA
-# releases, so a stable release never starts these jobs: `source` runs only for
-# a GitHub prerelease, and scripts/native-release-mode.py refuses anything but a
-# prerelease whose version is <x.y.z>-dev.<n> or <x.y.z>-nightly.<n>.
+# SHA256SUMS to a published GitHub Release, and publishes the Bun package and
+# its per-platform library packages to npm through trusted publishing (OIDC).
+# scripts/native-release-mode.py maps a stable release (<x.y.z>) to the npm
+# `latest` dist-tag and a prerelease (<x.y.z>-dev.<n> or -nightly.<n>) to `dev`
+# or `nightly`, and refuses drafts, tag/version mismatches and any other
+# combination.
 # Pull requests that change this pipeline build and smoke-test every archive
 # without uploading or publishing. See docs/PREBUILT_LIBRARIES.md.
 
@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing development prerelease tag (v<x.y.z>-dev.<n> or -nightly.<n>) to build, upload or retry
+        description: Existing release tag (v<x.y.z>, v<x.y.z>-dev.<n> or -nightly.<n>) to build, upload or retry
         required: true
         type: string
   pull_request:
@@ -45,9 +45,7 @@ env:
 jobs:
   source:
     name: Resolve released source
-    # Stable releases never start this workflow's jobs; every other job needs
-    # this one and a development or pull-request mode from it.
-    if: github.event_name != 'release' || github.event.release.prerelease
+    # Every other job needs this one and a release or pull-request mode from it.
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.release.outputs.version }}
@@ -81,7 +79,7 @@ jobs:
           else
             gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --json tagName,isDraft,isPrerelease \
               > "$RUNNER_TEMP/release.json"
-            # Refuses stable releases, drafts and non-development versions.
+            # Refuses drafts, tag mismatches and a prerelease flag that disagrees with the version.
             python3 scripts/native-release-mode.py --event "$EVENT" --tag "$RELEASE_TAG" \
               --version "$version" --release "$RUNNER_TEMP/release.json" > "$RUNNER_TEMP/mode"
             git merge-base --is-ancestor HEAD origin/main
@@ -96,7 +94,7 @@ jobs:
   build:
     name: C ABI (${{ matrix.target }})
     needs: source
-    if: needs.source.outputs.mode == 'development' || needs.source.outputs.mode == 'pull-request'
+    if: needs.source.outputs.mode == 'release' || needs.source.outputs.mode == 'pull-request'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 150
     strategy:
@@ -285,7 +283,7 @@ jobs:
   assets:
     name: Release assets and checksums
     needs: [source, build]
-    if: needs.source.outputs.mode == 'development' || needs.source.outputs.mode == 'pull-request'
+    if: needs.source.outputs.mode == 'release' || needs.source.outputs.mode == 'pull-request'
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -319,7 +317,7 @@ jobs:
           path: dist
           if-no-files-found: error
       - name: Upload to the GitHub Release, refusing different existing bytes
-        if: needs.source.outputs.mode == 'development'
+        if: needs.source.outputs.mode == 'release'
         working-directory: dist
         env:
           GH_TOKEN: ${{ github.token }}
@@ -348,7 +346,7 @@ jobs:
   npm-not-configured:
     name: npm trusted publishing not enabled
     needs: [source, assets]
-    if: needs.source.outputs.mode == 'development' && vars.NPM_TRUSTED_PUBLISHING != 'enabled'
+    if: needs.source.outputs.mode == 'release' && vars.NPM_TRUSTED_PUBLISHING != 'enabled'
     runs-on: ubuntu-24.04
     steps:
       - name: Explain the skipped npm publish
@@ -358,7 +356,7 @@ jobs:
   npm:
     name: Publish npm packages (trusted publishing)
     needs: [source, assets]
-    if: needs.source.outputs.mode == 'development' && vars.NPM_TRUSTED_PUBLISHING == 'enabled'
+    if: needs.source.outputs.mode == 'release' && vars.NPM_TRUSTED_PUBLISHING == 'enabled'
     runs-on: ubuntu-24.04
     environment:
       name: npm
@@ -408,7 +406,7 @@ jobs:
           cat "$RUNNER_TEMP/npm-summary.json"
       - name: Publish platform packages, then the main package
         env:
-          # dev or nightly, from the release version; never latest.
+          # latest for a stable version, dev or nightly for a prerelease.
           NPM_TAG: ${{ needs.source.outputs.npm_tag }}
         run: |
           set -euo pipefail

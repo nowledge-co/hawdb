@@ -2251,7 +2251,52 @@ impl<I: DecodeInput> Decoder<I> {
         let foreign_keys = self.repeated(foreign_key_count, Self::foreign_key)?;
         let index_count = self.count(self.limits.max_values, "indexes")?;
         let indexes = self.repeated(index_count, Self::index)?;
-        let materialized_view = if self.boolean("materialized view")? {
+        let derived_relation = self.u8()?;
+        let materialized_view = if derived_relation == 2 {
+            let source = self.string()?;
+            let column = self.string()?;
+            let tag = self.u8()?;
+            let analyzer = super::materialized_view::SearchIndexAnalyzer::from_tag(tag)
+                .ok_or_else(|| {
+                    RelationalError::UnsupportedFormat(
+                        hawdb_core::StorageFormatError::UnsupportedFeature {
+                            format: "relational schema",
+                            feature: "search index analyzer",
+                            tag: u64::from(tag),
+                        },
+                    )
+                })?;
+            let layout = self.u8()?;
+            if layout != super::materialized_view::SEARCH_INDEX_LAYOUT_TAG {
+                return Err(RelationalError::UnsupportedFormat(
+                    hawdb_core::StorageFormatError::UnsupportedFeature {
+                        format: "relational schema",
+                        feature: "search index layout",
+                        tag: u64::from(layout),
+                    },
+                ));
+            }
+            if let Some(context) = self.input.checkpoint_allocation_context() {
+                context
+                    .reserve(std::mem::size_of::<MaterializedViewDefinition>())
+                    .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            }
+            Some(Box::new(MaterializedViewDefinition {
+                source,
+                group_by: Vec::new(),
+                columns: Vec::new(),
+                filter: None,
+                search: Some(super::materialized_view::SearchIndexSpec { column, analyzer }),
+            }))
+        } else if derived_relation > 1 {
+            return Err(RelationalError::UnsupportedFormat(
+                hawdb_core::StorageFormatError::UnsupportedFeature {
+                    format: "relational schema",
+                    feature: "derived relation",
+                    tag: u64::from(derived_relation),
+                },
+            ));
+        } else if derived_relation == 1 {
             let source = self.string()?;
             let group_by = self.string_list()?;
             let count = self.count(self.limits.max_values, "materialized view columns")?;
@@ -2291,6 +2336,7 @@ impl<I: DecodeInput> Decoder<I> {
                 group_by,
                 columns,
                 filter,
+                search: None,
             }))
         } else {
             None

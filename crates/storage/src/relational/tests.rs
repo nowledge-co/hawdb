@@ -2766,6 +2766,7 @@ fn wal_recovery_ignores_foreground_work_limits_and_preserves_view_maintenance() 
         }],
         group_by: Vec::new(),
         filter: None,
+        search: None,
     }
     .table_schema(
         "counts".into(),

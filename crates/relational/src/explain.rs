@@ -544,7 +544,7 @@ fn explain_access_path(
     }
 
     let row = format!(
-        "row_runtime_path={}, row_projection_generation={}, row_projection_source_watermark={}, row_projection_version={}, row_projection_publication_epoch={}, row_base_generation={}, row_delta_generation={}, row_base_epoch={}, row_visible_epoch={}, row_root_set_digest={}, row_descriptor_reads={}, row_logical_pages={}, row_logical_bytes={}, row_physical_pages={}, row_physical_bytes={}, row_cache_hits={}, row_cache_misses={}, row_cache_admission_rejections={}, row_overlay_entries={}, row_overlay_bytes={}, row_rows={}, row_borrowed_rows={}, row_owned_rows={}, row_index_covered_rows={}",
+        "row_runtime_path={}, row_projection_generation={}, row_projection_source_watermark={}, row_projection_version={}, row_projection_publication_epoch={}, row_base_generation={}, row_delta_generation={}, row_base_epoch={}, row_visible_epoch={}, row_root_set_digest={}, row_descriptor_reads={}, row_logical_pages={}, row_logical_bytes={}, row_physical_pages={}, row_physical_bytes={}, row_cache_hits={}, row_cache_misses={}, row_cache_admission_rejections={}, row_overlay_entries={}, row_overlay_bytes={}, row_rows={}, row_borrowed_rows={}, row_owned_rows={}, row_index_covered_rows={}, postings_visited={}, posting_blocks_read={}, posting_blocks_skipped={}",
         row_evidence.runtime_path,
         row_evidence
             .projection_generation
@@ -572,6 +572,9 @@ fn explain_access_path(
         row_evidence.borrowed_rows_visited,
         row_evidence.owned_rows_visited,
         row_evidence.index_covered_rows,
+        row_evidence.postings_visited,
+        row_evidence.posting_blocks_read,
+        row_evidence.posting_blocks_skipped,
     );
     let Some(evidence) = evidence else {
         return format!("{planned}, {row}");

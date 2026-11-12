@@ -47,6 +47,8 @@ pub use visibility::{apply_node_visibility_predicates, validate_node_visibility_
 mod binding;
 mod case;
 #[cfg(test)]
+mod entity_label_tests;
+#[cfg(test)]
 mod list_tests;
 #[cfg(test)]
 mod load_csv_tests;

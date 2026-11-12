@@ -4,12 +4,12 @@
 
 # Publish npm packages assembled by bindings/bun/scripts/assemble-npm.ts.
 #
-#   publish-assembled.sh <summary.json> --tag <dev|nightly> [--publish] [--provenance] [--placeholders]
+#   publish-assembled.sh <summary.json> --tag <latest|dev|nightly> [--publish] [--provenance] [--placeholders]
 #
-# HawDB ships only in development prereleases (AGENTS.md), so every library
-# and main package is published under the release channel's dist-tag, `dev`
-# or `nightly`, and must have that channel's prerelease version; `latest` and
-# any other tag are refused. Without --publish this is a dry run
+# Every library and main package is published under the release's dist-tag:
+# `latest` takes only a stable <x.y.z> version, and `dev` or `nightly` only
+# that channel's prerelease version (<x.y.z>-dev.<n> or -nightly.<n>); any
+# other tag or combination is refused. Without --publish this is a dry run
 # (`npm publish --dry-run`). Packages are published in the summary's order:
 # platform packages before the main package that pins them. A version already
 # on the registry is skipped when its tarball shasum equals the local pack, and
@@ -20,7 +20,7 @@
 
 set -euo pipefail
 
-usage="usage: publish-assembled.sh <summary.json> --tag <dev|nightly> [--publish] [--provenance] [--placeholders]"
+usage="usage: publish-assembled.sh <summary.json> --tag <latest|dev|nightly> [--publish] [--provenance] [--placeholders]"
 summary="${1:?$usage}"
 shift
 publish=false
@@ -41,8 +41,8 @@ while (( $# > 0 )); do
   shift
 done
 case "$tag" in
-  dev | nightly) ;;
-  *) echo "--tag must be dev or nightly, not '$tag': HawDB is published only as a development prerelease" >&2; exit 64 ;;
+  latest | dev | nightly) ;;
+  *) echo "--tag must be latest, dev or nightly, not '$tag'" >&2; exit 64 ;;
 esac
 
 entries() {
@@ -68,7 +68,10 @@ while IFS=$'\t' read -r name version directory kind; do
   command=(npm publish "$directory" --access public)
   if [[ "$kind" == placeholder ]]; then
     command+=(--tag placeholder)
-  elif [[ "$version" != *-"$tag".* ]]; then
+  elif [[ "$tag" == latest && ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "::error::$name@$version is not a stable version; refusing to publish it under latest" >&2
+    exit 1
+  elif [[ "$tag" != latest && "$version" != *-"$tag".* ]]; then
     echo "::error::$name@$version is not a $tag prerelease; refusing to publish it" >&2
     exit 1
   else

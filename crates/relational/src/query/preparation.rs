@@ -129,9 +129,16 @@ pub(super) fn prepare_relational_select_with_snapshot(
     resources: RelationalQueryResourceContext<'_>,
     initial_stage_timings: RelationalSqlStageTimings,
 ) -> Result<(PreparedRelationalSelect, RelationalQueryPlanningSnapshot)> {
-    if select.vector_index.is_some() {
+    if select.vector_index().is_some() {
         return Err(HawDBError::Semantic(
             "vector index SQL requires a bound canonical/index read domain".into(),
+        ));
+    }
+    if select.text_search().is_some() {
+        return Err(HawDBError::Semantic(
+            "text_search supports SELECT through the relational query entrypoint; EXPLAIN and \
+             prepared plan reuse are not supported"
+                .into(),
         ));
     }
     let limits = resources.limits;

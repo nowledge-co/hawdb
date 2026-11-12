@@ -380,7 +380,7 @@ impl ConcurrentDatabaseTransaction {
             return Ok(fallback());
         }
         let select = SelectStatement {
-            vector_index: None,
+            table_function: None,
             projection: columns
                 .iter()
                 .map(|name| crate::sql::SelectProjection::Expression {

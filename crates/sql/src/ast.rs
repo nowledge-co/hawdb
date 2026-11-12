@@ -32,6 +32,8 @@ pub enum SqlStatement {
     CreateIndex(CreateIndexStatement),
     CreateMaterializedView(CreateMaterializedViewStatement),
     DropMaterializedView(DropMaterializedViewStatement),
+    CreateSearchIndex(CreateSearchIndexStatement),
+    DropSearchIndex(DropSearchIndexStatement),
     AlterTableAddColumn(AlterTableAddColumnStatement),
     /// Project-scoped branch lifecycle commands. These are deliberately
     /// distinct from relational DDL: their executor operates on the durable
@@ -48,6 +50,24 @@ pub struct CreateMaterializedViewStatement {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DropMaterializedViewStatement {
+    pub name: SqlTableName,
+    pub if_exists: bool,
+}
+
+/// `CREATE SEARCH INDEX [IF NOT EXISTS] name ON table (column)
+/// [WITH (analyzer = '...')]`: an engine-maintained BM25 index over one TEXT
+/// column of a RowPage table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateSearchIndexStatement {
+    pub name: SqlTableName,
+    pub table: SqlTableName,
+    pub column: String,
+    pub analyzer: Option<String>,
+    pub if_not_exists: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DropSearchIndexStatement {
     pub name: SqlTableName,
     pub if_exists: bool,
 }
@@ -148,9 +168,25 @@ pub struct SqlVectorIndexSearch {
     pub top_k: SqlValue,
 }
 
+/// `FROM text_search(index, query, top_k => k) [AS alias]`: the top-k source
+/// rows by BM25 score among rows satisfying WHERE, with a virtual `score`.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SqlTextSearch {
+    pub index: SqlValue,
+    pub query: SqlValue,
+    pub top_k: SqlValue,
+}
+
+/// A table function in the first FROM position.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SqlTableFunction {
+    VectorIndexSearch(SqlVectorIndexSearch),
+    TextSearch(SqlTextSearch),
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub struct SelectStatement {
-    pub vector_index: Option<Box<SqlVectorIndexSearch>>,
+    pub table_function: Option<Box<SqlTableFunction>>,
     pub projection: Vec<SelectProjection>,
     pub distinct: bool,
     /// `None` for a FROM-less SELECT (e.g. `SELECT version();`): the
@@ -169,7 +205,48 @@ pub struct SelectStatement {
     pub lock_strength: Option<SqlLockStrength>,
 }
 
+/// Debug output keeps the pre-`text_search` field layout, so the frozen AST
+/// digests of the parser baselines stay valid for every existing statement;
+/// `text_search` appears only when present.
+impl std::fmt::Debug for SelectStatement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = f.debug_struct("SelectStatement");
+        debug.field("vector_index", &self.vector_index());
+        if let Some(search) = self.text_search() {
+            debug.field("text_search", search);
+        }
+        debug
+            .field("projection", &self.projection)
+            .field("distinct", &self.distinct)
+            .field("from", &self.from)
+            .field("from_alias", &self.from_alias)
+            .field("joins", &self.joins)
+            .field("selection", &self.selection)
+            .field("group_by", &self.group_by)
+            .field("having", &self.having)
+            .field("order_by", &self.order_by)
+            .field("limit", &self.limit)
+            .field("offset", &self.offset)
+            .field("lock_strength", &self.lock_strength)
+            .finish()
+    }
+}
+
 impl SelectStatement {
+    pub fn vector_index(&self) -> Option<&SqlVectorIndexSearch> {
+        match self.table_function.as_deref() {
+            Some(SqlTableFunction::VectorIndexSearch(search)) => Some(search),
+            _ => None,
+        }
+    }
+
+    pub fn text_search(&self) -> Option<&SqlTextSearch> {
+        match self.table_function.as_deref() {
+            Some(SqlTableFunction::TextSearch(search)) => Some(search),
+            _ => None,
+        }
+    }
+
     /// The base table, for every code path that only ever runs on a real
     /// table (catalog resolution, access-path selection, join planning, row
     /// scanning). FROM-less selects never reach these paths — they're

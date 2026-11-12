@@ -315,3 +315,84 @@ fn every_skipped_object_corruption_is_refused_or_scrubbed() {
     }
     std::fs::remove_dir_all(path).unwrap();
 }
+
+/// Object files the single branch mounts: those sharing an inode with a
+/// branch `data` alias, with their lengths.
+#[cfg(unix)]
+fn mounted_objects(root: &Path) -> BTreeMap<PathBuf, u64> {
+    use std::os::unix::fs::MetadataExt;
+    let identity = |metadata: &std::fs::Metadata| (metadata.dev(), metadata.ino());
+    let mut aliases = std::collections::BTreeSet::new();
+    for branch in std::fs::read_dir(root.join("branches")).unwrap() {
+        let Ok(entries) = std::fs::read_dir(branch.unwrap().path().join("data")) else {
+            continue;
+        };
+        for alias in entries {
+            aliases.insert(identity(&std::fs::metadata(alias.unwrap().path()).unwrap()));
+        }
+    }
+    let mounted = object_files(root)
+        .into_iter()
+        .filter_map(|object| {
+            let metadata = std::fs::metadata(&object).unwrap();
+            aliases
+                .contains(&identity(&metadata))
+                .then_some((object, metadata.len()))
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert!(!mounted.is_empty(), "the branch mounts checkpoint objects");
+    mounted
+}
+
+/// #1440: a new-process open (no publication records) hashes every mounted
+/// checkpoint object exactly once. Admission's first cold handle open of each
+/// mounted object reuses the mount's verification instead of hashing the same
+/// inode again; results are identical and cold-open damage is still refused
+/// at branch admission.
+#[cfg(unix)]
+#[test]
+fn new_process_open_hashes_each_mounted_object_once() {
+    let path = populated("mount_verification_reuse");
+    let expected = {
+        let mut db = Database::open(&path).unwrap();
+        results(&mut db)
+    };
+    let forget_all = |path: &Path| {
+        for object in object_files(path) {
+            forget_published_object(&object).unwrap();
+        }
+    };
+    forget_all(&path);
+    {
+        let mut db = Database::open(&path).unwrap();
+        // Branch admission runs on the first statement.
+        assert_eq!(results(&mut db), expected);
+        let metrics = db.file_descriptor_metrics().unwrap();
+        assert_eq!(
+            metrics.identity_verified_bytes,
+            mounted_objects(&path).values().sum::<u64>(),
+            "each mounted object is hashed once, not again on its first cold open: {metrics:?}"
+        );
+        assert!(metrics.mount_verification_reuses > 0, "{metrics:?}");
+    }
+    for (object, skipped) in skips(&path) {
+        assert_eq!(skipped, None, "{}", object.display());
+    }
+
+    // Damage that keeps inode, length and modification time is still refused
+    // by the mount's full hash when a new process admits the branch.
+    let (object, _) = mounted_objects(&path)
+        .into_iter()
+        .max_by_key(|(_, length)| *length)
+        .unwrap();
+    flip_middle_byte(&object, None);
+    forget_all(&path);
+    let error = Database::open(&path)
+        .and_then(|mut db| db.query(GRAPH).map(|_| ()))
+        .unwrap_err();
+    assert!(
+        matches!(error, HawDBError::StorageIntegrity(_)),
+        "unexpected cold error: {error}"
+    );
+    std::fs::remove_dir_all(path).unwrap();
+}

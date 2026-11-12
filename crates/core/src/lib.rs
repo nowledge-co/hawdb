@@ -55,7 +55,7 @@ pub use error::{
     HawDBError, ReadBudgetError, ReadBudgetResource, ResourceBudgetError, ResourceBudgetKind,
     ResourceBudgetScope, Result, StorageFormatError, TransactionRetryError, TransactionRetryReason,
 };
-pub use graph::{RelationshipDirection, RelationshipEndpoint};
+pub use graph::{LabelFunction, RelationshipDirection, RelationshipEndpoint};
 pub use graph_rag::{
     build_graph_rag_schema_context, GraphRagCommonPathSummary, GraphRagGeneratedQuery,
     GraphRagLabelSummary, GraphRagPropertySubject, GraphRagPropertySummary, GraphRagQueryBinding,

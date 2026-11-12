@@ -128,6 +128,8 @@ impl Transformer<'_> {
                     hawdb_core::RelationshipEndpoint::from_function_name(name)
                 {
                     ScalarExpressionKind::RelationshipEndpoint { endpoint, variable }
+                } else if let Some(function) = hawdb_core::LabelFunction::from_function_name(name) {
+                    ScalarExpressionKind::Label { function, variable }
                 } else {
                     ScalarExpressionKind::RelationshipType(variable)
                 }

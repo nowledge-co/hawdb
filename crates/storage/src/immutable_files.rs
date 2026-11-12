@@ -17,7 +17,7 @@
 use crate::file_descriptors::{BudgetState, DescriptorCache, DescriptorKind, FileOpenContext};
 use crate::file_io::captured_immutable::{CacheKey, CapturedIdentity, CapturedSource};
 use crate::file_io::{self as fs, File, OpenOptions};
-use crate::immutable_object::ObjectReference;
+use crate::immutable_object::{ObjectReference, ObjectStamp};
 use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -32,6 +32,18 @@ pub(crate) use checkpoint::CheckpointImmutableFileError;
 #[cfg(test)]
 #[path = "immutable_files/checkpoint_lock_tests.rs"]
 mod checkpoint_lock_tests;
+
+/// How a verified open established the object's identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IdentityCheck {
+    /// The complete object was hashed. Carries the descriptor's stamp taken
+    /// before the first payload byte was read, if it could be taken.
+    Hashed(Option<ObjectStamp>),
+    /// A captured native identity, or this process's publication record.
+    Trusted,
+    /// The preceding mount's verification of this unmodified inode.
+    ReusedMount,
+}
 
 struct AliasCandidate(PathBuf);
 
@@ -72,10 +84,64 @@ pub(crate) struct ImmutableFileHandles {
     handles: Mutex<BTreeMap<CacheKey, CachedHandle>>,
     access_tick: AtomicU64,
     bindings: Mutex<BTreeMap<PathBuf, ImmutableFileBinding>>,
+    /// Objects whose complete identity hash the most recent mount computed,
+    /// with the stamp of the hashed descriptor. The next cold handle open of
+    /// that object consumes the entry; see [`Self::mount`]. Bounded by
+    /// [`MOUNT_VERIFICATION_RECORDS_PER_PROJECT`].
+    mount_verified: Mutex<MountVerificationRecords>,
     opening: Mutex<()>,
     // Private checkpoint validation keeps objects protected after releasing
     // the short cache-opening lock. Retirement can defer without waiting.
     checkpoint_validation: RwLock<()>,
+}
+
+/// Per-project cap on unconsumed mount-verification records. A record is
+/// optional performance state: evicting one only restores the full identity
+/// hash on that object's next cold open. One admission mounts each object of
+/// its checkpoint closure once (about 50 on LDBC SF0.1), so the cap leaves
+/// ample room for a whole admission while bounding a long-lived project that
+/// mounts objects which are already warm in the cache or never opened.
+pub(crate) const MOUNT_VERIFICATION_RECORDS_PER_PROJECT: usize = 4096;
+
+/// Unconsumed mount-verification records, evicted oldest-inserted first.
+#[derive(Debug, Default)]
+pub(crate) struct MountVerificationRecords {
+    records: BTreeMap<ObjectReference, (u64, ObjectStamp)>,
+    order: BTreeMap<u64, ObjectReference>,
+    next: u64,
+}
+
+impl MountVerificationRecords {
+    /// Inserts or replaces `reference`'s record. Returns whether an older
+    /// record was evicted to stay within `capacity`.
+    fn insert(&mut self, reference: ObjectReference, stamp: ObjectStamp, capacity: usize) -> bool {
+        self.remove(&reference);
+        let mut evicted = false;
+        while self.records.len() >= capacity.max(1) {
+            let Some((_, oldest)) = self.order.pop_first() else {
+                break;
+            };
+            self.records.remove(&oldest);
+            evicted = true;
+        }
+        let sequence = self.next;
+        self.next = self.next.wrapping_add(1);
+        self.order.insert(sequence, reference);
+        self.records.insert(reference, (sequence, stamp));
+        evicted
+    }
+
+    fn remove(&mut self, reference: &ObjectReference) -> Option<ObjectStamp> {
+        let (sequence, stamp) = self.records.remove(reference)?;
+        self.order.remove(&sequence);
+        Some(stamp)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        debug_assert_eq!(self.records.len(), self.order.len());
+        self.records.len()
+    }
 }
 
 impl ImmutableFileHandles {
@@ -85,6 +151,7 @@ impl ImmutableFileHandles {
             handles: Mutex::new(BTreeMap::new()),
             access_tick: AtomicU64::new(0),
             bindings: Mutex::new(BTreeMap::new()),
+            mount_verified: Mutex::new(MountVerificationRecords::default()),
             opening: Mutex::new(()),
             checkpoint_validation: RwLock::new(()),
         }
@@ -149,6 +216,10 @@ impl ImmutableFileHandles {
         }
         drop(handles);
         self.remove_idle_matching(|key| key.reference() == Some(reference), usize::MAX);
+        self.mount_verified
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&reference);
         self.bindings
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -158,17 +229,92 @@ impl ImmutableFileHandles {
 
     /// Mounts verified checkpoint content without copying the dataset. The
     /// alias and the immutable object share an inode; mutable opens detach it.
+    ///
+    /// Every mount hashes the complete object (unless this process published
+    /// that exact inode). Admission then opens the mounted artifacts through
+    /// the handle cache, whose cold validation would hash the same inode a
+    /// second time. The mount therefore leaves a one-shot record: the next
+    /// cold open of the object skips the identity hash only when its
+    /// descriptor still has the hashed descriptor's native identity, length
+    /// and modification time. Later cold opens hash in full again.
+    #[cfg(test)]
+    pub(crate) fn mount_verification_record_count(&self) -> usize {
+        self.mount_verified
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .len()
+    }
+
     pub(crate) fn mount(
         &self,
         path: &Path,
         binding: ImmutableFileBinding,
         context: &FileOpenContext,
     ) -> io::Result<()> {
+        self.mount_controlled(path, binding, context, &mut ValidationAdmission(|_| Ok(())))
+    }
+
+    pub(crate) fn mount_controlled(
+        &self,
+        path: &Path,
+        binding: ImmutableFileBinding,
+        context: &FileOpenContext,
+        control: &mut impl crate::file_io::ReadAdmissionControl,
+    ) -> io::Result<()> {
         // Mount validation uses a transient handle and a fixed-size buffer;
         // mounting an unopened artifact must not warm the descriptor cache.
         // Keep the verified handle alive until the alias has been installed.
-        let (_verified, _) =
-            Self::open_verified_object(&binding, context, DescriptorKind::Transient)?;
+        // A failed remount must not leave an earlier mount's record behind.
+        self.mount_verified
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&binding.reference);
+        let (verified, hashed, check) = Self::open_verified_object_controlled_from(
+            Some(&binding),
+            None,
+            context,
+            DescriptorKind::Transient,
+            control,
+            None,
+        )?;
+        self.state.record_identity_verified(hashed);
+        // Record only a complete hash whose descriptor stamp, taken before the
+        // first payload read, still matches after the hash. A skipped
+        // (same-process publication) hash leaves no mount record.
+        let verified_stamp = match check {
+            IdentityCheck::Hashed(Some(before)) if hashed == binding.reference.byte_length => {
+                verified
+                    .with_native(ObjectStamp::of_native)
+                    .ok()
+                    .filter(|after| *after == before)
+            }
+            _ => None,
+        };
+        let reference = binding.reference;
+        let mounted = self.mount_alias(path, binding, &verified);
+        let mut records = self
+            .mount_verified
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        match verified_stamp.filter(|_| mounted.is_ok()) {
+            Some(stamp) => {
+                if records.insert(reference, stamp, MOUNT_VERIFICATION_RECORDS_PER_PROJECT) {
+                    self.state.record_mount_verification_eviction();
+                }
+            }
+            None => {
+                records.remove(&reference);
+            }
+        }
+        mounted
+    }
+
+    fn mount_alias(
+        &self,
+        path: &Path,
+        binding: ImmutableFileBinding,
+        _verified: &File,
+    ) -> io::Result<()> {
         // Reopening a branch usually finds the checkpoint alias already mounted.
         // Only reuse a regular, no-follow alias to this exact verified inode.
         // Equal bytes, link counts and the binding map cannot establish that.
@@ -317,13 +463,28 @@ impl ImmutableFileHandles {
             return Ok((file, 0));
         }
         self.state.record_cache_miss();
-        let (file, validated) = Self::open_verified_object_controlled_from(
+        // Consume the mount's one-shot record whether or not it still matches.
+        let mount_verified = match (source, binding) {
+            (None, Some(binding)) => self
+                .mount_verified
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&binding.reference),
+            _ => None,
+        };
+        let (file, validated, check) = Self::open_verified_object_controlled_from(
             binding,
             source,
             context,
             DescriptorKind::ImmutableCache,
             control,
+            mount_verified,
         )?;
+        match check {
+            IdentityCheck::Hashed(_) => self.state.record_identity_verified(validated),
+            IdentityCheck::ReusedMount => self.state.record_mount_verification_reuse(),
+            IdentityCheck::Trusted => {}
+        }
         let file = Arc::new(file);
         self.handles
             .lock()
@@ -366,44 +527,17 @@ impl ImmutableFileHandles {
     }
 
     /// Returns the verified handle and the number of payload bytes hashed.
-    fn open_verified_object(
-        binding: &ImmutableFileBinding,
-        context: &FileOpenContext,
-        kind: DescriptorKind,
-    ) -> io::Result<(File, u64)> {
-        Self::open_verified_object_admitted(binding, context, kind, |_| Ok(()))
-    }
-
-    fn open_verified_object_admitted(
-        binding: &ImmutableFileBinding,
-        context: &FileOpenContext,
-        kind: DescriptorKind,
-        admit_validation: impl FnMut(u64) -> io::Result<()>,
-    ) -> io::Result<(File, u64)> {
-        Self::open_verified_object_controlled(
-            binding,
-            context,
-            kind,
-            &mut ValidationAdmission(admit_validation),
-        )
-    }
-
-    fn open_verified_object_controlled(
-        binding: &ImmutableFileBinding,
-        context: &FileOpenContext,
-        kind: DescriptorKind,
-        control: &mut impl crate::file_io::ReadAdmissionControl,
-    ) -> io::Result<(File, u64)> {
-        Self::open_verified_object_controlled_from(Some(binding), None, context, kind, control)
-    }
-
+    /// Returns the handle, the validation bytes charged, and how identity was
+    /// established. `mount_verified` is the stamp a mount recorded after
+    /// hashing this object; it is used only if the opened descriptor matches.
     fn open_verified_object_controlled_from(
         binding: Option<&ImmutableFileBinding>,
         source: Option<&CapturedSource>,
         context: &FileOpenContext,
         kind: DescriptorKind,
         control: &mut impl crate::file_io::ReadAdmissionControl,
-    ) -> io::Result<(File, u64)> {
+        mount_verified: Option<ObjectStamp>,
+    ) -> io::Result<(File, u64, IdentityCheck)> {
         control.checkpoint()?;
         let mut file = match source {
             Some(source) => source
@@ -437,6 +571,7 @@ impl ImmutableFileHandles {
             return Ok((
                 file,
                 binding.map_or(0, |binding| binding.reference.byte_length),
+                IdentityCheck::Trusted,
             ));
         }
         let binding = binding.ok_or_else(|| io::Error::other("missing managed binding"))?;
@@ -454,11 +589,23 @@ impl ImmutableFileHandles {
                 native,
             ))
         })? {
-            return Ok((file, 0));
+            return Ok((file, 0, IdentityCheck::Trusted));
+        }
+        // The mount that just hashed this exact inode, unmodified since,
+        // already authenticated these bytes. Demand reads keep block checks.
+        if let Some(stamp) = mount_verified
+            && file
+                .with_native(ObjectStamp::of_native)
+                .is_ok_and(|current| current == stamp)
+        {
+            return Ok((file, 0, IdentityCheck::ReusedMount));
         }
         // Descriptor rejection occurs before this charge. No payload may be
         // read until the caller has reserved the complete identity validation.
         control.admit_validation(binding.reference.byte_length)?;
+        // Stamp before hashing: a mount records only a stamp that is unchanged
+        // across the whole hash, so a write racing the hash cannot be recorded.
+        let pre_hash_stamp = file.with_native(ObjectStamp::of_native).ok();
         let mut hasher = crate::immutable_object::identity_hasher(
             binding.reference.kind,
             binding.reference.format_version,
@@ -492,7 +639,11 @@ impl ImmutableFileHandles {
                 "immutable handle identity digest mismatch",
             ));
         }
-        Ok((file, binding.reference.byte_length))
+        Ok((
+            file,
+            binding.reference.byte_length,
+            IdentityCheck::Hashed(pre_hash_stamp),
+        ))
     }
 }
 

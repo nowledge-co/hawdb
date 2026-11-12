@@ -16,12 +16,12 @@
 
 use hawdb_core::{HawDBError, Result};
 use hawdb_sql::{
-    CreateMaterializedViewStatement, DropMaterializedViewStatement, ExprKind, SelectProjection,
-    SqlFunctionArgument,
+    CreateMaterializedViewStatement, CreateSearchIndexStatement, DropMaterializedViewStatement,
+    DropSearchIndexStatement, ExprKind, SelectProjection, SqlFunctionArgument,
 };
 use hawdb_storage::relational::{
     MaterializedViewColumn, MaterializedViewDefinition, MaterializedViewExpression,
-    RelationalState, RelationalWrite,
+    RelationalState, RelationalWrite, SearchIndexAnalyzer, SearchIndexSpec,
 };
 
 pub(super) fn create(
@@ -30,7 +30,10 @@ pub(super) fn create(
 ) -> Result<Vec<RelationalWrite>> {
     crate::reject_non_public_schema(create.name.schema.as_deref())?;
     if let Some(schema) = state.table_schema(&create.name.name) {
-        return if create.if_not_exists && schema.materialized_view.is_some() {
+        return if create.if_not_exists
+            && schema.materialized_view.is_some()
+            && schema.search_index().is_none()
+        {
             Ok(Vec::new())
         } else {
             Err(HawDBError::Semantic(format!(
@@ -40,7 +43,8 @@ pub(super) fn create(
         };
     }
     let select = *create.query;
-    if select.vector_index.is_some()
+    if select.vector_index().is_some()
+        || select.text_search().is_some()
         || select.distinct
         || !select.joins.is_empty()
         || select.having.is_some()
@@ -163,11 +167,74 @@ pub(super) fn create(
             .map(|column| column.name)
             .collect(),
         filter,
+        search: None,
     };
     let schema = definition
         .table_schema(create.name.name, source)
         .map_err(|error| HawDBError::Semantic(error.to_string()))?;
     Ok(vec![RelationalWrite::CreateTable(schema)])
+}
+
+pub(super) fn create_search_index(
+    create: &CreateSearchIndexStatement,
+    state: &RelationalState,
+) -> Result<Vec<RelationalWrite>> {
+    crate::reject_non_public_schema(create.name.schema.as_deref())?;
+    crate::reject_non_public_schema(create.table.schema.as_deref())?;
+    let analyzer = match &create.analyzer {
+        None => SearchIndexAnalyzer::DEFAULT,
+        Some(name) => SearchIndexAnalyzer::parse(name).ok_or_else(|| {
+            HawDBError::Semantic(format!(
+                "unsupported search index analyzer {name}; supported: cjk_ngram"
+            ))
+        })?,
+    };
+    if let Some(existing) = state.table_schema(&create.name.name) {
+        return if create.if_not_exists && existing.search_index().is_some() {
+            Ok(Vec::new())
+        } else {
+            Err(HawDBError::Semantic(format!(
+                "relation {} already exists",
+                create.name.name
+            )))
+        };
+    }
+    let source = state.table_schema(&create.table.name).ok_or_else(|| {
+        HawDBError::Semantic(format!("unknown relational table {}", create.table.name))
+    })?;
+    let definition = MaterializedViewDefinition {
+        source: create.table.name.clone(),
+        columns: Vec::new(),
+        group_by: Vec::new(),
+        filter: None,
+        search: Some(SearchIndexSpec {
+            column: create.column.clone(),
+            analyzer,
+        }),
+    };
+    let schema = definition
+        .table_schema(create.name.name.clone(), source)
+        .map_err(|error| HawDBError::Semantic(error.to_string()))?;
+    Ok(vec![RelationalWrite::CreateTable(schema)])
+}
+
+pub(super) fn drop_search_index(
+    drop: &DropSearchIndexStatement,
+    state: &RelationalState,
+) -> Result<Vec<RelationalWrite>> {
+    crate::reject_non_public_schema(drop.name.schema.as_deref())?;
+    match state.table_schema(&drop.name.name) {
+        None if drop.if_exists => Ok(Vec::new()),
+        Some(schema) if schema.search_index().is_some() => {
+            Ok(vec![RelationalWrite::DropMaterializedView {
+                table: drop.name.name.clone(),
+            }])
+        }
+        _ => Err(HawDBError::Semantic(format!(
+            "unknown search index {}",
+            drop.name.name
+        ))),
+    }
 }
 
 pub(super) fn drop_view(
@@ -177,6 +244,10 @@ pub(super) fn drop_view(
     crate::reject_non_public_schema(drop.name.schema.as_deref())?;
     match state.table_schema(&drop.name.name) {
         None if drop.if_exists => Ok(Vec::new()),
+        Some(schema) if schema.search_index().is_some() => Err(HawDBError::Semantic(format!(
+            "{} is a search index; use DROP SEARCH INDEX",
+            drop.name.name
+        ))),
         Some(schema) if schema.materialized_view.is_some() => {
             Ok(vec![RelationalWrite::DropMaterializedView {
                 table: drop.name.name,
@@ -209,6 +280,15 @@ pub(super) fn prepare_select(
                 .map(|schema| (alias.unwrap_or(&table.name).to_owned(), schema))
         })
         .collect::<Vec<_>>();
+    if let Some((_, schema)) = relations
+        .iter()
+        .find(|(_, schema)| schema.search_index().is_some())
+    {
+        return Err(HawDBError::Semantic(format!(
+            "{} is a search index; query it with text_search",
+            schema.name
+        )));
+    }
     if !relations
         .iter()
         .any(|(_, schema)| schema.materialized_view.is_some())

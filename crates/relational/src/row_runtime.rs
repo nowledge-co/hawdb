@@ -63,6 +63,12 @@ pub struct RelationalRowExecutionEvidence {
     pub borrowed_rows_visited: usize,
     pub owned_rows_visited: usize,
     pub index_covered_rows: usize,
+    /// Search postings whose payloads were decoded by an index-native ranker.
+    pub postings_visited: usize,
+    /// Search posting blocks whose headers and payloads were read.
+    pub posting_blocks_read: usize,
+    /// Search posting blocks excluded by safe block bounds without decoding.
+    pub posting_blocks_skipped: usize,
     pub overlay_entries: usize,
     pub overlay_resident_bytes: usize,
     pub projection_generation: Option<String>,

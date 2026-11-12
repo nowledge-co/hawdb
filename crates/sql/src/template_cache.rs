@@ -150,6 +150,8 @@ fn is_cacheable_query(statement: &SqlStatement) -> bool {
         SqlStatement::Insert(_)
         | SqlStatement::CreateMaterializedView(_)
         | SqlStatement::DropMaterializedView(_)
+        | SqlStatement::CreateSearchIndex(_)
+        | SqlStatement::DropSearchIndex(_)
         | SqlStatement::Update(_)
         | SqlStatement::Delete(_)
         | SqlStatement::CreateTable(_)

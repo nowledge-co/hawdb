@@ -4,26 +4,26 @@
 
 """Decide whether the Native Release workflow may build and publish.
 
-AGENTS.md keeps HawDB out of every stable or GA release during the current
-development phase: only nightly or development builds may compile, bundle or
-ship it. The Native Release workflow therefore has exactly two modes:
+HawDB's own release artifacts may ship as stable releases (AGENTS.md, Mem
+release modes). The Native Release workflow has two modes:
 
 - ``pull-request``: a pull request that changes the pipeline builds and tests
   every archive and uploads or publishes nothing;
-- ``development``: a GitHub Release that is marked as a prerelease *and* whose
-  version is a development prerelease, ``<major>.<minor>.<patch>-dev.<n>`` or
-  ``-nightly.<n>``. Its archives are attached to that prerelease and its npm
-  packages are published under the ``dev`` or ``nightly`` dist-tag, never
-  ``latest``.
+- ``release``: a published, non-draft GitHub Release whose prerelease flag
+  agrees with its version. A stable release has version
+  ``<major>.<minor>.<patch>`` and publishes its npm packages under ``latest``;
+  a prerelease has version ``<major>.<minor>.<patch>-dev.<n>`` or
+  ``-nightly.<n>`` and publishes under ``dev`` or ``nightly``. Its archives are
+  attached to that GitHub Release.
 
-Everything else, including any stable (non-prerelease) release and a
-prerelease flag on a stable version number, is refused. Requiring both the
-GitHub flag and the version suffix means promoting the GitHub Release to
-stable afterwards still cannot produce a stable-numbered artifact.
+A draft, a tag that differs from the source version, a stable release with a
+prerelease version, and a prerelease with a stable or other prerelease version
+(for example ``-rc.1``) are refused, so npm ``latest`` never receives a
+prerelease version.
 
     native-release-mode.py --event pull_request --version 0.31.0
-    native-release-mode.py --event release --tag v0.31.0-dev.1 \
-        --version 0.31.0-dev.1 --release release.json
+    native-release-mode.py --event release --tag v0.31.0 \
+        --version 0.31.0 --release release.json
 
 ``release.json`` is ``gh release view <tag> --json tagName,isDraft,isPrerelease``.
 Prints ``mode``, ``tag`` and ``npm_tag`` as ``key=value`` lines for
@@ -35,16 +35,11 @@ import json
 import re
 import sys
 
-MODES = ("pull-request", "development")
+MODES = ("pull-request", "release")
 RELEASE_EVENTS = ("release", "workflow_dispatch")
-DEVELOPMENT_VERSION = re.compile(
-    r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
-    r"-(?P<channel>dev|nightly)(\.[0-9A-Za-z-]+)+"
-)
-POLICY = (
-    "HawDB must not appear in a stable or GA release (AGENTS.md, Mem release modes); "
-    "Native Release builds and publishes only development prereleases"
-)
+CORE = r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+STABLE_VERSION = re.compile(CORE)
+DEVELOPMENT_VERSION = re.compile(CORE + r"-(?P<channel>dev|nightly)(\.[0-9A-Za-z-]+)+")
 
 
 class Refused(Exception):
@@ -65,14 +60,23 @@ def resolve(event, version, tag=None, release=None):
         raise Refused(f"GitHub Release metadata is for {release.get('tagName')!r}, not {tag}")
     if release.get("isDraft") is not False:
         raise Refused(f"{tag} is a draft release")
-    if release.get("isPrerelease") is not True:
-        raise Refused(f"{tag} is a stable release. {POLICY}")
+    prerelease = release.get("isPrerelease")
+    if prerelease is False:
+        if STABLE_VERSION.fullmatch(version) is None:
+            raise Refused(
+                f"{tag} is a stable release but {version} is not a stable version (<x.y.z>); "
+                "npm latest takes only stable versions"
+            )
+        return {"mode": "release", "tag": tag, "npm_tag": "latest"}
+    if prerelease is not True:
+        raise Refused(f"{tag} has no prerelease flag")
     match = DEVELOPMENT_VERSION.fullmatch(version)
     if match is None:
         raise Refused(
-            f"{version} is not a development version (<x.y.z>-dev.<n> or <x.y.z>-nightly.<n>). {POLICY}"
+            f"{tag} is a prerelease but {version} is not a development version "
+            "(<x.y.z>-dev.<n> or <x.y.z>-nightly.<n>)"
         )
-    return {"mode": "development", "tag": tag, "npm_tag": match.group("channel")}
+    return {"mode": "release", "tag": tag, "npm_tag": match.group("channel")}
 
 
 def main(argv=None):

@@ -9,6 +9,7 @@
 //! fail with the same error.
 
 use super::identity_group_keys::{open, rows, statements};
+#[cfg(feature = "acl")]
 use super::*;
 
 /// Queries, and whether their plan passes some column by identity.

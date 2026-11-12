@@ -164,7 +164,15 @@ pub enum ProjectionExpression {
     Id {
         variable: String,
     },
+    /// `type(r)`: the type of the relationship bound to `variable`.
     RelationshipType {
+        variable: String,
+    },
+    /// Kùzu `label(x)` or openCypher `labels(n)` of the node or relationship
+    /// bound to `variable`; see [`hawdb_core::LabelFunction`] for the
+    /// semantics. Reads only the record's labels or type.
+    Label {
+        function: hawdb_core::LabelFunction,
         variable: String,
     },
     Literal(Value),
@@ -1044,6 +1052,10 @@ impl hawdb_core::RetainedHeapBytes for ProjectionExpression {
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(variable),
             ]),
             Self::RelationshipType { variable } => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(variable),
+            ]),
+            Self::Label { function, variable } => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(function),
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(variable),
             ]),
             Self::Literal(value0) => hawdb_core::checked_retained_heap_sum([

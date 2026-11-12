@@ -98,6 +98,62 @@ describe("Bun FFI binding", () => {
     }
   }, 30_000);
 
+  test("searches SQL rows with an engine-owned BM25 index across reopen", () => {
+    const directory = mkdtempSync(join(tmpdir(), "hawdb-bun-search-"));
+    const path = join(directory, "database");
+    const search =
+      "SELECT e.id, e.seq, score FROM text_search('events_text', $1, top_k => $2) AS e " +
+      "WHERE e.stream = $3 ORDER BY score DESC, e.id";
+    try {
+      const writer = library.open(path);
+      try {
+        writer.querySQL(
+          "CREATE TABLE events (id BIGINT PRIMARY KEY, stream TEXT NOT NULL, seq BIGINT NOT NULL, text TEXT)",
+        );
+        writer.querySQL(
+          "CREATE SEARCH INDEX events_text ON events (text) WITH (analyzer = 'cjk_ngram')",
+        );
+        const rows: [number, string, number, string][] = [
+          [1, "chat", 1, "上次我们讨论了数据库的全文搜索"],
+          [2, "chat", 2, "Lexical recall over the event log"],
+          [3, "task", 3, "数据库迁移任务完成"],
+          [4, "chat", 4, "unrelated note"],
+        ];
+        for (const [id, stream, seq, text] of rows) {
+          writer.querySQL(
+            "INSERT INTO events (id, stream, seq, text) VALUES ($1, $2, $3, $4)",
+            [id, stream, seq, text],
+          );
+        }
+        const chinese = writer.querySQL(search, ["数据库", 10, "chat"]);
+        expect(chinese.columns).toEqual(["id", "seq", "score"]);
+        expect(chinese.rows.map((row) => row[0])).toEqual([1]);
+        expect(chinese.rows[0][2]).toBeGreaterThan(0);
+        writer.querySQL("UPDATE events SET text = $1 WHERE id = 4", ["数据库 recall note"]);
+        writer.querySQL("DELETE FROM events WHERE id = 2");
+      } finally {
+        writer.close();
+      }
+
+      const reader = library.open(path, { readOnly: true });
+      try {
+        const reopened = reader.querySQL(search, ["数据库", 10, "chat"]).rows;
+        expect(reopened.map((row) => row[0]).sort()).toEqual([1, 4]);
+        expect(reopened[0][2]).toBeGreaterThanOrEqual(reopened[1][2] as number);
+        expect(
+          reader.querySQL(search, ["lexical recall", 10, "chat"]).rows.map((row) => row[0]),
+        ).toEqual([4]);
+        expect(reader.querySQL(search, ["数据库", 10, "task"]).rows.map((row) => row[1])).toEqual([
+          3,
+        ]);
+      } finally {
+        reader.close();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   test("does not unload the library while a database is live", () => {
     const database = library.openInMemory();
     expect(() => library.close()).toThrow("live database handle");

@@ -23,6 +23,9 @@ can build the source distribution with the repository-pinned Rust toolchain.
 The default wheel includes the engine's default features; `lite` remains an
 explicit source build. Pydantic stays optional: `pip install 'hawdb[pydantic]'`.
 
+HawDB's on-disk format carries no compatibility promise until HawDB declares
+one, so a database may need to be recreated after an upgrade.
+
 ## Publishing
 
 [Publish Python to PyPI](../../.github/workflows/pypi.yaml) runs whenever a

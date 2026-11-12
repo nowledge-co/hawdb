@@ -910,6 +910,47 @@ fn read_hex(
 }
 
 impl Lowerer<'_> {
+    pub(in crate::parser) fn is_text_search_call(
+        &self,
+        name: &syntax::QualifiedName,
+    ) -> Result<bool> {
+        let name = self.name(name)?;
+        Ok(name.schema.is_none() && name.name == "text_search")
+    }
+
+    /// `text_search(index, query, top_k => k)`. Arguments are literals or
+    /// positional parameters; the runtime validates their types after binding.
+    pub(in crate::parser) fn text_search_call(
+        &self,
+        args: &[syntax::TableFunctionArgumentSyntax],
+    ) -> Result<SqlTextSearch> {
+        const USAGE: &str = "text_search requires index and query arguments and top_k => k";
+        let [index, query, options @ ..] = args else {
+            return Err(semantic(USAGE));
+        };
+        if index.name.is_some() || query.name.is_some() {
+            return Err(semantic(USAGE));
+        }
+        let mut top_k = None;
+        for arg in options {
+            let Some(name) = &arg.name else {
+                return Err(semantic("text_search options must be named"));
+            };
+            let slot = match self.ident(name).as_str() {
+                "top_k" => &mut top_k,
+                _ => return Err(semantic("unknown text_search option")),
+            };
+            if slot.replace(self.literal(&arg.expression)?).is_some() {
+                return Err(semantic("duplicate text_search option"));
+            }
+        }
+        Ok(SqlTextSearch {
+            index: self.literal(&index.expression)?,
+            query: self.literal(&query.expression)?,
+            top_k: top_k.ok_or_else(|| semantic(USAGE))?,
+        })
+    }
+
     pub(in crate::parser) fn vector_call(
         &self,
         name: &syntax::QualifiedName,

@@ -31,6 +31,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 mod published;
 pub(crate) use published::skip_rehash as skip_published_rehash;
+pub(crate) use published::WrittenStamp as ObjectStamp;
 #[doc(hidden)]
 pub use published::{forget_published_object, published_object_skipped_rehashes};
 
