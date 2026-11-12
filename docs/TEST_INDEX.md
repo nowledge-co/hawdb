@@ -56,17 +56,19 @@ with `cargo test --locked -p hawdb --lib exact_candidate_tests` or
 
 Embedded out-of-core candidate working memory (`nowledge-co/hawdb#1722`) lives
 in `embedded_store::out_of_core_working_memory_tests` (same
-`//:hawdb_unit_general_tests` owner), reusing the #1692 fixture. With a 4 MiB
-`query_memory_bytes` admission, text and vector-only snapshot reads (default
-and exact) succeed within the charge, an unwindowed exact hybrid read is
-refused with a typed `MemoryBytes` budget error and the same hybrid with a rank
-window succeeds; at 256 MiB every mode succeeds with a nonzero
-`query_memory_peak_bytes` within admission, through both snapshot and handle.
-`out_of_core::tests::admitted_working` (`//crates/search:hawdb_search_tests`
-and the FTS+vector profiles) asserts with the live-allocation allocator, not
-RSS, that the charged peak covers the live working set (excluding the
-caller-owned result), that refused queries never allocate beyond their
-admission, and that exact hybrid is refused one byte below its charged peak.
+`//:hawdb_unit_general_tests` owner), reusing the #1692 fixture. At the
+smallest admission serving text, exact vector-only and windowed exact hybrid
+snapshot reads (measured at 256 MiB), those reads and default vector-only
+succeed within the charge while an unwindowed exact hybrid read is refused with
+a typed `MemoryBytes` budget error; at 256 MiB every mode succeeds with a
+nonzero `query_memory_peak_bytes` within admission, through both snapshot and
+handle. `out_of_core::tests::admitted_working`
+(`//crates/search:hawdb_search_tests` and the FTS+vector profiles) asserts with
+the live-allocation allocator, not RSS, that the charged peak covers the live
+working set (excluding the caller-owned result), that refused queries never
+allocate beyond their admission, that exact hybrid is refused one byte below
+its charged peak, and that at 20,000 eligible documents exact vector-only and
+unwindowed exact hybrid charge between 1x and 2x their live working bytes.
 Replay with `cargo test --locked -p hawdb --lib out_of_core_working_memory`
 and `cargo test --locked -p hawdb-search --lib admitted_working`. No new lane,
 profile or timeout.

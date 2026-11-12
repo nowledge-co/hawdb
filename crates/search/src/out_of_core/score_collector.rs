@@ -5,7 +5,8 @@
 
 use super::*;
 use crate::build_memory::{
-    checked_add as add, checked_mul as mul, reserve_capacity, MAP_ENTRY_BYTES,
+    checked_add as add, checked_mul as mul, reserve_capacity, SCORE_MAP_ENTRY_BYTES,
+    SCORE_MAP_ROOT_BYTES,
 };
 use crate::lexical_projection::QueryContext;
 use hawdb_executor::QueryMemoryLease;
@@ -71,8 +72,9 @@ impl BoundedScoreCollector {
                 "search rank window exceeds the admitted {max_entries} score entries"
             )));
         }
+        // The score map's root node is funded once; entries add their nodes.
         let mut memory = context
-            .map(|context| context.memory.reserve(0))
+            .map(|context| context.memory.reserve(SCORE_MAP_ROOT_BYTES))
             .transpose()?;
         let storage = match limit {
             Some(limit) => {
@@ -122,7 +124,7 @@ impl BoundedScoreCollector {
             memory.grow(add(
                 bytes,
                 if matches!(self.storage, Storage::Full(_)) {
-                    MAP_ENTRY_BYTES
+                    SCORE_MAP_ENTRY_BYTES
                 } else {
                     0
                 },
@@ -180,7 +182,7 @@ impl BoundedScoreCollector {
         if let Storage::TopK { heap, .. } = &self.storage
             && let Some(memory) = &mut self.memory
         {
-            memory.grow(mul(heap.len(), MAP_ENTRY_BYTES)?)?;
+            memory.grow(mul(heap.len(), SCORE_MAP_ENTRY_BYTES)?)?;
         }
         let storage = std::mem::replace(&mut self.storage, Storage::Full(BTreeMap::new()));
         let values = match storage {

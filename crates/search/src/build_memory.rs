@@ -33,6 +33,60 @@ pub(crate) const SET_ENTRY_BYTES: usize = 1024;
 pub(crate) const ACCOUNT_METADATA_BYTES: usize = 4096;
 pub(crate) const SPOOL_BUFFER_BYTES: usize = 8192;
 
+// Std B-tree layout: B = 6, so a node holds at most 11 entries and every
+// non-root node keeps at least 5 after any insert or removal; an internal node
+// adds 12 edge pointers and every non-root internal node has at least 6 edges.
+const BTREE_CAPACITY: usize = 11;
+const BTREE_MIN_ENTRIES: usize = 5;
+const BTREE_MIN_EDGES: usize = 6;
+
+const fn btree_leaf_bytes(key: usize, value: usize) -> usize {
+    // Parent pointer, parent index and length fit in 16 bytes; round the
+    // arrays up to the node's 8-byte alignment.
+    (16 + BTREE_CAPACITY * (key + value)).div_ceil(8) * 8
+}
+
+const fn btree_internal_bytes(key: usize, value: usize) -> usize {
+    btree_leaf_bytes(key, value) + (BTREE_CAPACITY + 1) * size_of::<usize>()
+}
+
+/// Worst-case node bytes one entry of a std `BTreeMap<K, V>` (or
+/// `BTreeSet<K>`, with `value == 0`) retains, excluding owned key/value heap
+/// payloads such as `String` capacity. Every leaf except the root holds at
+/// least 5 entries, and internal nodes number at most one per 30 entries plus
+/// the root (one per 25 is charged). With [`btree_root_bytes`] charged once
+/// per tree, this bounds the requested node capacity at minimum occupancy;
+/// sequentially built trees occupy about 6-11 entries per node, so typical
+/// charges are 1-2 times the live node bytes. Derived from the std layout, not
+/// measured: `out_of_core::tests::admitted_working` checks it against live
+/// allocations. `BTreeMap<String, f64>` charges 93 bytes and
+/// `BTreeSet<String>` 72 bytes per entry, against [`MAP_ENTRY_BYTES`] and
+/// [`SET_ENTRY_BYTES`] for unrelated build-time owners.
+pub(crate) const fn btree_entry_bytes(key: usize, value: usize) -> usize {
+    btree_leaf_bytes(key, value).div_ceil(BTREE_MIN_ENTRIES)
+        + btree_internal_bytes(key, value).div_ceil(BTREE_MIN_ENTRIES * BTREE_MIN_EDGES - 5)
+}
+
+/// One root node, which may hold fewer than the minimum entries (or none after
+/// removals). Charged once per tree alongside [`btree_entry_bytes`].
+pub(crate) const fn btree_root_bytes(key: usize, value: usize) -> usize {
+    btree_internal_bytes(key, value)
+}
+
+/// Query score maps (`BTreeMap<String, f64>`): node bytes per entry and root.
+pub(crate) const SCORE_MAP_ENTRY_BYTES: usize =
+    btree_entry_bytes(size_of::<String>(), size_of::<f64>());
+pub(crate) const SCORE_MAP_ROOT_BYTES: usize =
+    btree_root_bytes(size_of::<String>(), size_of::<f64>());
+/// Query ID sets (`BTreeSet<String>`): node bytes per entry and root.
+pub(crate) const ID_SET_ENTRY_BYTES: usize = btree_entry_bytes(size_of::<String>(), 0);
+pub(crate) const ID_SET_ROOT_BYTES: usize = btree_root_bytes(size_of::<String>(), 0);
+/// Query rankings (`BTreeMap<&str, usize>`): node bytes per entry and root.
+pub(crate) const RANK_MAP_ENTRY_BYTES: usize =
+    btree_entry_bytes(size_of::<&str>(), size_of::<usize>());
+pub(crate) const RANK_MAP_ROOT_BYTES: usize =
+    btree_root_bytes(size_of::<&str>(), size_of::<usize>());
+
 pub(crate) mod capacity;
 pub(crate) mod compression;
 pub(crate) mod decoder;

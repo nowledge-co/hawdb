@@ -21,7 +21,9 @@ use super::{BM25_B, BM25_K1};
 use crate::bounded_file::read_bounded_file;
 use crate::build_control::checkpoint;
 use crate::build_memory::reserved::{native_path, Grant};
-use crate::build_memory::{checked_add, BuildMemory, MAP_ENTRY_BYTES};
+use crate::build_memory::{
+    checked_add, BuildMemory, MAP_ENTRY_BYTES, SCORE_MAP_ENTRY_BYTES, SCORE_MAP_ROOT_BYTES,
+};
 use crate::build_term::Term;
 use crate::error::{HawDBError, Result};
 use hawdb_core::{
@@ -2514,6 +2516,7 @@ impl<'a> ScoreCollector<'a> {
                 let bytes = heap_capacity
                     .unwrap_or_default()
                     .checked_mul(std::mem::size_of::<ScoredDocument>())
+                    .and_then(|bytes| bytes.checked_add(SCORE_MAP_ROOT_BYTES))
                     .ok_or_else(|| {
                         HawDBError::Execution("lexical score heap capacity overflow".into())
                     })?;
@@ -2576,7 +2579,7 @@ impl<'a> ScoreCollector<'a> {
                     .into());
                 }
                 if let Some(memory) = memory {
-                    memory.grow(checked_add(id.len(), MAP_ENTRY_BYTES)?)?;
+                    memory.grow(checked_add(id.len(), SCORE_MAP_ENTRY_BYTES)?)?;
                 }
                 scores.insert(id.to_owned(), score);
             }
@@ -2596,7 +2599,7 @@ impl<'a> ScoreCollector<'a> {
                     return Ok(());
                 }
                 if let Some(memory) = memory {
-                    memory.grow(checked_add(id.len(), MAP_ENTRY_BYTES)?)?;
+                    memory.grow(checked_add(id.len(), SCORE_MAP_ENTRY_BYTES)?)?;
                 }
                 // Admission covers both IDs until the evicted owner drops.
                 let candidate = ScoredDocument {
@@ -2605,7 +2608,7 @@ impl<'a> ScoreCollector<'a> {
                 };
                 if full {
                     let Reverse(evicted) = heap.pop().expect("retained heap is full");
-                    let released = checked_add(evicted.id.capacity(), MAP_ENTRY_BYTES)?;
+                    let released = checked_add(evicted.id.capacity(), SCORE_MAP_ENTRY_BYTES)?;
                     drop(evicted);
                     if let Some(memory) = memory {
                         memory.shrink(released);

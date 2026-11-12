@@ -5,7 +5,9 @@
 //! separately; ordinary APIs and complete registered serving remain distinct.
 
 use super::*;
-use crate::build_memory::{checked_add, MAP_ENTRY_BYTES, SET_ENTRY_BYTES};
+use crate::build_memory::{
+    checked_add, SCORE_MAP_ENTRY_BYTES, SCORE_MAP_ROOT_BYTES, SET_ENTRY_BYTES,
+};
 use crate::lexical_projection::{
     retain_most_selective_terms, AccountedCorpusStatistics, QueryContext, QueryTermSelection,
     ScoringInputs,
@@ -312,8 +314,9 @@ impl SearchOutOfCoreReader {
             postings_visited: 0,
             bytes_read: statistics.bytes_read(),
             blocks_skipped: 0,
+            // The complete score map's root node; entries add their nodes.
             _memory: context
-                .map(|context| context.memory.reserve(0))
+                .map(|context| context.memory.reserve(SCORE_MAP_ROOT_BYTES))
                 .transpose()?,
         };
         let mut retained = retained_limit
@@ -393,7 +396,7 @@ impl SearchOutOfCoreReader {
                     )));
                 }
                 if let Some(memory) = &mut output._memory {
-                    memory.grow(checked_add(MAP_ENTRY_BYTES, id.capacity())?)?;
+                    memory.grow(checked_add(SCORE_MAP_ENTRY_BYTES, id.capacity())?)?;
                 }
                 output.values.insert(id, score);
             }

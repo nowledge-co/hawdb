@@ -294,6 +294,16 @@ set in both legs and is charged for both rankings; it is refused, never
 truncated, when they do not fit, while a rank window bounds them. The default
 RaBitQ stage sizes its scan to the account's remaining bytes.
 `SearchOutOfCoreMetrics::query_memory_peak_bytes` reports the peak charge.
+Query score maps, rankings and ID sets charge B-tree node bytes derived from
+the std layout (`build_memory::btree_entry_bytes`: at most 11 and at least 5
+entries per non-root node, internal nodes at least 6 edges, plus one root per
+tree) and their keys' heap capacity: 93 bytes per `BTreeMap<String, f64>`
+entry, 72 per `BTreeSet<String>` or `BTreeMap<&str, usize>` entry. Live
+allocation tests bound the charge between 1x and 2x the live working set.
+Exact vector-only therefore keeps its `working_bytes / 256` uniqueness cap
+(262,144 eligible documents at 64 MiB, about 23 MB charged there, independent
+of dimension), and an unwindowed exact hybrid read charges about 690 bytes
+per eligible document.
 `search_candidates_with_report[_context]` without a permit keep their previous
 unaccounted behavior.
 

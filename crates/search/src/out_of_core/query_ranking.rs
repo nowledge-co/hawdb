@@ -5,7 +5,8 @@
 
 use super::*;
 use crate::build_memory::{
-    checked_add as add, checked_mul as mul, reserve_capacity, MAP_ENTRY_BYTES, SET_ENTRY_BYTES,
+    checked_add as add, checked_mul as mul, reserve_capacity, ID_SET_ENTRY_BYTES,
+    ID_SET_ROOT_BYTES, RANK_MAP_ENTRY_BYTES, RANK_MAP_ROOT_BYTES,
 };
 use crate::lexical_projection::QueryContext;
 use hawdb_executor::QueryMemoryLease;
@@ -34,7 +35,12 @@ impl<'a> Ranks<'a> {
         let mut output = Self {
             values: BTreeMap::new(),
             _memory: context
-                .map(|context| context.memory.reserve(mul(scores.len(), MAP_ENTRY_BYTES)?))
+                .map(|context| {
+                    context.memory.reserve(add(
+                        mul(scores.len(), RANK_MAP_ENTRY_BYTES)?,
+                        RANK_MAP_ROOT_BYTES,
+                    )?)
+                })
                 .transpose()?,
         };
         let mut sort_memory = context
@@ -85,7 +91,11 @@ impl<'a> Ranks<'a> {
         let mut output = Self {
             values: BTreeMap::new(),
             _memory: context
-                .map(|context| context.memory.reserve(mul(count, MAP_ENTRY_BYTES)?))
+                .map(|context| {
+                    context
+                        .memory
+                        .reserve(add(mul(count, RANK_MAP_ENTRY_BYTES)?, RANK_MAP_ROOT_BYTES)?)
+                })
                 .transpose()?,
         };
         for (&id, rank) in &self.values {
@@ -133,8 +143,9 @@ impl Candidates {
         let mut output = Self {
             values: Vec::new(),
             ids: BTreeSet::new(),
+            // The ID set's root node is refunded with its entries below.
             memory: context
-                .map(|context| context.memory.reserve(0))
+                .map(|context| context.memory.reserve(ID_SET_ROOT_BYTES))
                 .transpose()?,
         };
         for id in inputs.vector_scores.keys().chain(inputs.text_scores.keys()) {
@@ -143,12 +154,15 @@ impl Candidates {
             }
             if !output.ids.contains(id) {
                 if let Some(memory) = &mut output.memory {
-                    memory.grow(add(SET_ENTRY_BYTES, id.len())?)?;
+                    memory.grow(add(ID_SET_ENTRY_BYTES, id.len())?)?;
                 }
                 output.ids.insert(copy_id(id)?);
             }
         }
-        let node_bytes = mul(output.ids.len(), SET_ENTRY_BYTES)?;
+        let node_bytes = add(
+            mul(output.ids.len(), ID_SET_ENTRY_BYTES)?,
+            ID_SET_ROOT_BYTES,
+        )?;
         while let Some(id) = output.ids.pop_first() {
             if let Some(context) = context {
                 context.checkpoint()?;

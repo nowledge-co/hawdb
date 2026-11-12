@@ -14,9 +14,6 @@ use hawdb_core::ResourceBudgetKind;
 use std::num::NonZeroUsize;
 
 const LIMIT: usize = 10;
-// Text and vector-only reads retain their page; an unwindowed exact hybrid
-// read retains both complete rankings and needs more than this.
-const SMALL_BUDGET: usize = 4 << 20;
 const LARGE_BUDGET: usize = 256 << 20;
 
 fn requests() -> Vec<(&'static str, SearchCandidateRequest)> {
@@ -71,20 +68,45 @@ fn snapshot_candidate_reads_charge_admitted_working_memory() {
         let output = handle.search_candidates_with_report(&request).unwrap();
         assert!(charged_bytes(&output) > 0, "{name}");
     }
-    // The unwindowed hybrid working set exceeds the small admission below.
-    assert!(hybrid_exact > SMALL_BUDGET as u64, "{hybrid_exact}");
+    // The unwindowed hybrid working set exceeds every page-bounded read's.
+    assert!(
+        hybrid_exact > page_bounded_admission(&handle) as u64,
+        "{hybrid_exact}"
+    );
+}
+
+/// The smallest admission serving text, exact vector-only and windowed exact
+/// hybrid reads. Default vector stages size themselves to the remaining bytes.
+fn page_bounded_admission(handle: &EmbeddedStoreHandle) -> usize {
+    requests()
+        .into_iter()
+        .filter(|(name, _)| matches!(*name, "text" | "vector exact" | "hybrid exact"))
+        .map(|(name, request)| {
+            let request = if name == "hybrid exact" {
+                request.with_rank_window(Some(LIMIT))
+            } else {
+                request
+            };
+            charged_bytes(&snapshot_search(handle, &request).unwrap()) as usize
+        })
+        .max()
+        .unwrap()
 }
 
 #[test]
 fn snapshot_hybrid_without_rank_window_is_refused_above_admitted_working_memory() {
-    let (_root, handle) = store("ooc-working-small", SMALL_BUDGET);
+    let small = {
+        let (_root, handle) = store("ooc-working-measure", LARGE_BUDGET);
+        page_bounded_admission(&handle)
+    };
+    let (_root, handle) = store("ooc-working-small", small);
     for (name, request) in requests() {
         let result = snapshot_search(&handle, &request);
         if name == "hybrid exact" {
             match result {
                 Err(HawDBError::ResourceBudgetExceeded(error)) => {
                     assert_eq!(error.resource, ResourceBudgetKind::MemoryBytes, "{error}");
-                    assert_eq!(error.budget, SMALL_BUDGET as u64, "{error}");
+                    assert_eq!(error.budget, small as u64, "{error}");
                 }
                 other => panic!("hybrid exact served above its admission: {other:?}"),
             }
@@ -92,15 +114,15 @@ fn snapshot_hybrid_without_rank_window_is_refused_above_admitted_working_memory(
             let windowed =
                 snapshot_search(&handle, &request.with_rank_window(Some(LIMIT))).unwrap();
             assert_eq!(windowed.result.hits.len(), LIMIT);
-            assert!(charged_bytes(&windowed) <= SMALL_BUDGET as u64);
+            assert!(charged_bytes(&windowed) <= small as u64);
         } else if name != "hybrid" {
             // Text and vector-only reads are unaffected at this admission.
             let output = result.unwrap_or_else(|error| panic!("{name}: {error}"));
             assert_eq!(output.result.hits.len(), LIMIT, "{name}");
-            assert!(charged_bytes(&output) <= SMALL_BUDGET as u64, "{name}");
+            assert!(charged_bytes(&output) <= small as u64, "{name}");
         } else if let Ok(output) = result {
             // Default hybrid retains only the bounded graph window in its vector leg.
-            assert!(charged_bytes(&output) <= SMALL_BUDGET as u64);
+            assert!(charged_bytes(&output) <= small as u64);
         }
     }
 }

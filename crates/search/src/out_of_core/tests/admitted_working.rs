@@ -14,11 +14,8 @@ use hawdb_qos::{
 };
 
 const DIMENSION: usize = 8;
-const DOCUMENTS: usize = 600;
+const DOCUMENTS: usize = 4_000;
 const LIMIT: usize = 10;
-// Text and vector-only reads retain only their page; hybrid without a rank
-// window charges both complete rankings over every eligible document.
-const SMALL_BUDGET: usize = 4 << 20;
 const LARGE_BUDGET: usize = 256 << 20;
 
 fn embedding(number: usize) -> Vec<f32> {
@@ -34,6 +31,10 @@ fn embedding(number: usize) -> Vec<f32> {
 }
 
 fn reader() -> SearchOutOfCoreReader {
+    reader_with(DOCUMENTS)
+}
+
+fn reader_with(documents: usize) -> SearchOutOfCoreReader {
     let path = test_dir("admitted-working");
     let mut writer = SearchOutOfCoreGenerationWriter::create(
         &path,
@@ -47,10 +48,10 @@ fn reader() -> SearchOutOfCoreReader {
         },
     )
     .unwrap();
-    for number in 0..DOCUMENTS {
+    for number in 0..documents {
         writer
             .push(SearchDocument {
-                id: format!("memory:{number:04}"),
+                id: format!("memory:{number:06}"),
                 title: format!("note {number}"),
                 content: "storage vectors".into(),
                 embedding: Some(embedding(number)),
@@ -156,34 +157,48 @@ fn assert_refused(measured: &Measured, budget: usize) {
 fn hybrid_without_rank_window_is_charged_and_refused_below_its_working_set() {
     let _serial = test_allocation::serial();
     let reader = reader();
+    let charged = |mode, exact, rank_window| {
+        let output = search(&reader, mode, exact, rank_window, LARGE_BUDGET)
+            .result
+            .unwrap_or_else(|error| panic!("{mode:?} exact={exact}: {error}"));
+        assert_eq!(output.result.hits.len(), LIMIT, "{mode:?} exact={exact}");
+        output.metrics.query_memory_peak_bytes as usize
+    };
+    // The smallest admission that serves every page-bounded exact read: text,
+    // vector-only, and hybrid with a rank window. Default vector stages size
+    // their working set to the account's remaining bytes, so they fit any
+    // admission that leaves room for the rest of the query.
+    let small = [
+        charged(SearchMode::Text, false, None),
+        charged(SearchMode::Vector, true, None),
+        charged(SearchMode::Hybrid, true, Some(LIMIT)),
+    ]
+    .into_iter()
+    .max()
+    .unwrap();
     for exact in [false, true] {
         // Text and vector-only reads fit the small admission.
         for mode in [SearchMode::Text, SearchMode::Vector] {
-            let measured = search(&reader, mode, exact, None, SMALL_BUDGET);
+            let measured = search(&reader, mode, exact, None, small);
             let output = measured
                 .result
                 .unwrap_or_else(|error| panic!("{mode:?} exact={exact}: {error}"));
             assert_eq!(output.result.hits.len(), LIMIT, "{mode:?} exact={exact}");
             let charged = output.metrics.query_memory_peak_bytes as usize;
-            assert!(
-                charged > 0 && charged <= SMALL_BUDGET,
-                "{mode:?}: {charged}"
-            );
+            assert!(charged > 0 && charged <= small, "{mode:?}: {charged}");
         }
 
-        // Hybrid without a rank window ranks every eligible document in both legs.
-        let refused = search(&reader, SearchMode::Hybrid, exact, None, SMALL_BUDGET);
-        assert_refused(&refused, SMALL_BUDGET);
+        // Exact hybrid without a rank window ranks every eligible document in
+        // both legs. (Default hybrid's vector leg is bounded by its graph
+        // window; only its text ranking scales with the eligible set.)
+        if exact {
+            let refused = search(&reader, SearchMode::Hybrid, exact, None, small);
+            assert_refused(&refused, small);
+        }
         // A rank window bounds both rankings, so the same admission serves it.
-        let windowed = search(
-            &reader,
-            SearchMode::Hybrid,
-            exact,
-            Some(LIMIT),
-            SMALL_BUDGET,
-        )
-        .result
-        .unwrap_or_else(|error| panic!("windowed hybrid exact={exact}: {error}"));
+        let windowed = search(&reader, SearchMode::Hybrid, exact, Some(LIMIT), small)
+            .result
+            .unwrap_or_else(|error| panic!("windowed hybrid exact={exact}: {error}"));
         assert_eq!(windowed.result.hits.len(), LIMIT);
 
         let served = search(&reader, SearchMode::Hybrid, exact, None, LARGE_BUDGET);
@@ -197,10 +212,7 @@ fn hybrid_without_rank_window_is_charged_and_refused_below_its_working_set() {
             charged >= working,
             "exact={exact}: charged {charged} bytes below {working} live working bytes"
         );
-        assert!(
-            charged > SMALL_BUDGET && charged <= LARGE_BUDGET,
-            "{charged}"
-        );
+        assert!(charged > small && charged <= LARGE_BUDGET, "{charged}");
 
         // Exact scoring has no adaptive stage: one byte below the charged
         // peak is refused, again within admission. (The default RaBitQ stage
@@ -211,5 +223,29 @@ fn hybrid_without_rank_window_is_charged_and_refused_below_its_working_set() {
                 charged - 1,
             );
         }
+    }
+}
+
+#[test]
+fn exact_vector_and_unwindowed_hybrid_charges_track_live_allocations() {
+    // Charges derive from the std B-tree layout at minimum occupancy, so they
+    // must cover live working bytes without exceeding them severalfold.
+    const ELIGIBLE_DOCUMENTS: usize = 20_000;
+    let _serial = test_allocation::serial();
+    let reader = reader_with(ELIGIBLE_DOCUMENTS * 4 / 3);
+    for mode in [SearchMode::Vector, SearchMode::Hybrid] {
+        let measured = search(&reader, mode, true, None, LARGE_BUDGET);
+        let working = measured.peak.saturating_sub(measured.retained_result);
+        let output = measured.result.unwrap();
+        assert_eq!(output.result.hits.len(), LIMIT);
+        let charged = output.metrics.query_memory_peak_bytes as usize;
+        assert!(
+            charged >= working,
+            "{mode:?}: charged {charged} < live {working}"
+        );
+        assert!(
+            charged <= 2 * working,
+            "{mode:?}: charged {charged} > 2x live {working}"
+        );
     }
 }
