@@ -1,7 +1,7 @@
 // Copyright 2026 Nowledge
 // SPDX-License-Identifier: Apache-2.0
 
-//! Physical layout of a search index relation (layout tag 2).
+//! Physical layout of a search index relation (layout tag 3).
 //!
 //! Every row has the primary key `(kind BIGINT, name BYTEA, slot BIGINT)` and
 //! one `data BYTEA` payload of unsigned LEB128 varints:
@@ -11,8 +11,9 @@
 //! | 0 statistics | empty | 0 | documents, tokens, next ordinal |
 //! | 1 document | encoded source primary key | 0 | ordinal |
 //! | 2 lengths | empty | ordinal / 64 | slot count, then per slot: length (0 = no document), key length, key |
-//! | 3 term dictionary | term | `i64::MAX` | df, sealed blocks, tail start, tail postings |
-//! | 3 sealed block | term | fence | bounds, postings, CRC32C |
+//! | 3 term dictionary | term | `i64::MAX` | df, sealed blocks, tail start, tail minimum length, tail postings |
+//! | 3 sealed block | term | fence | count, first - fence, last - first, maximum frequency, postings, CRC32C |
+//! | 4 block bounds | term | fence | last - fence, count, maximum frequency, minimum length, CRC32C |
 //!
 //! Documents get dense, never reused ordinals in commit order. A posting list
 //! is a count followed by `(ordinal delta, term frequency)` pairs; the first
@@ -24,6 +25,22 @@
 //! dictionary row, so a rare term is one row and an append rewrites one row;
 //! a full tail is flushed into the last sealed block (topped up to 128) and
 //! new blocks.
+//!
+//! Every sealed block has exactly one bounds row under the same fence. It is
+//! the block's skip entry: a ranked scan reads the bounds rows of a term in
+//! one range scan and decodes only the blocks whose BM25 upper bound can
+//! still reach the current top-k. The maximum frequency is exact (it is
+//! recomputed whenever the block is rewritten); the minimum length is a
+//! conservative lower bound on the lengths of the block's documents (it can
+//! only decrease while the block lives, so deletes never invalidate it, and
+//! a document that becomes shorter lowers it). The dictionary keeps the same
+//! conservative minimum for its tail.
+//!
+//! Sealed blocks and bounds rows both end in a CRC32C of their payload, so a
+//! bound is verified before a ranked scan trusts it to skip a block, and a
+//! block's own header (count, first and last ordinal, maximum frequency) is
+//! checked against its postings and against its bounds row whenever the
+//! block is read.
 
 use super::*;
 
@@ -31,6 +48,7 @@ pub(super) const KIND_STATISTICS: i64 = 0;
 pub(super) const KIND_DOCUMENT: i64 = 1;
 pub(super) const KIND_LENGTHS: i64 = 2;
 pub(super) const KIND_TERM: i64 = 3;
+pub(super) const KIND_BOUNDS: i64 = 4;
 /// The dictionary row sorts after every sealed block of its term.
 pub(super) const DICTIONARY_SLOT: i64 = i64::MAX;
 /// Sealed blocks are filled to this many postings.
@@ -271,25 +289,27 @@ fn decode_posting_pairs(
     Ok(())
 }
 
+/// The payload of a row that ends in a CRC32C of that payload.
+fn verify_checksum<'a>(data: &'a [u8], what: &'static str) -> Result<&'a [u8], RelationalError> {
+    let checksum_at = data
+        .len()
+        .checked_sub(std::mem::size_of::<u32>())
+        .ok_or_else(|| corrupt(what))?;
+    let (payload, checksum) = data.split_at(checksum_at);
+    let expected = u32::from_le_bytes(checksum.try_into().map_err(|_| corrupt(what))?);
+    if hawdb_integrity::crc32c(payload).get() != expected {
+        return Err(corrupt(what));
+    }
+    Ok(payload)
+}
+
 /// Verifies a sealed block and returns its safe skipping/scoring bounds without
 /// materializing any postings.
 pub fn decode_search_sealed_block_header(
     fence: u64,
     data: &[u8],
 ) -> Result<SearchPostingBlockHeader, RelationalError> {
-    let checksum_at = data
-        .len()
-        .checked_sub(std::mem::size_of::<u32>())
-        .ok_or_else(|| corrupt("sealed posting block"))?;
-    let (payload, checksum) = data.split_at(checksum_at);
-    let expected = u32::from_le_bytes(
-        checksum
-            .try_into()
-            .map_err(|_| corrupt("sealed posting block"))?,
-    );
-    if hawdb_integrity::crc32c(payload).get() != expected {
-        return Err(corrupt("sealed posting block checksum"));
-    }
+    let payload = verify_checksum(data, "sealed posting block")?;
     let mut reader = Reader::new(payload, "sealed posting block");
     let count = reader.varint()?;
     let count = usize::try_from(count).map_err(|_| corrupt("sealed posting block"))?;
@@ -332,6 +352,9 @@ pub struct SearchTermDictionary {
     pub document_frequency: u64,
     pub sealed_blocks: u64,
     pub tail_start: u64,
+    /// At most the length of every document in the tail; 0 exactly when the
+    /// tail is empty.
+    pub tail_min_length: u64,
     pub tail: Vec<SearchPosting>,
 }
 
@@ -344,16 +367,21 @@ impl SearchTermDictionary {
         if tail_start > MAX_ORDINAL + 1 || (sealed_blocks == 0) != (tail_start == 0) {
             return Err(corrupt("term dictionary"));
         }
+        let tail_min_length = reader.varint()?;
         let mut tail = Vec::new();
         decode_postings(&mut reader, tail_start, MAX_ORDINAL + 1, &mut tail)?;
         reader.finish()?;
-        if (tail.len() as u64) > document_frequency || tail.len() >= SEARCH_INDEX_TAIL_POSTINGS {
+        if (tail.len() as u64) > document_frequency
+            || tail.len() >= SEARCH_INDEX_TAIL_POSTINGS
+            || tail.is_empty() != (tail_min_length == 0)
+        {
             return Err(corrupt("term dictionary"));
         }
         Ok(Self {
             document_frequency,
             sealed_blocks,
             tail_start,
+            tail_min_length,
             tail,
         })
     }
@@ -363,8 +391,105 @@ impl SearchTermDictionary {
         put_varint(&mut out, self.document_frequency);
         put_varint(&mut out, self.sealed_blocks);
         put_varint(&mut out, self.tail_start);
+        put_varint(
+            &mut out,
+            if self.tail.is_empty() {
+                0
+            } else {
+                self.tail_min_length
+            },
+        );
         encode_postings(&mut out, self.tail_start, &self.tail);
         out
+    }
+}
+
+/// The skip entry of one sealed block: its last posting's ordinal, how many
+/// postings it holds, their exact maximum term frequency and a lower bound on
+/// the lengths of their documents. An empty block (only the retained fence-0
+/// block can be empty) is all zeros relative to its fence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SearchBlockBounds {
+    pub last: u64,
+    pub count: u64,
+    pub max_frequency: u64,
+    pub min_length: u64,
+}
+
+impl SearchBlockBounds {
+    /// Exact bounds of `postings` with a conservative minimum length.
+    pub(super) fn of(fence: u64, postings: &[SearchPosting], min_length: u64) -> Self {
+        match postings.last() {
+            None => Self {
+                last: fence,
+                ..Self::default()
+            },
+            Some(last) => Self {
+                last: last.ordinal,
+                count: postings.len() as u64,
+                max_frequency: postings
+                    .iter()
+                    .map(|posting| posting.frequency)
+                    .max()
+                    .unwrap_or(0),
+                min_length,
+            },
+        }
+    }
+
+    pub fn decode(fence: u64, data: &[u8]) -> Result<Self, RelationalError> {
+        let data = verify_checksum(data, "block bounds")?;
+        let mut reader = Reader::new(data, "block bounds");
+        let span = reader.varint()?;
+        let bounds = Self {
+            last: fence
+                .checked_add(span)
+                .filter(|last| *last <= MAX_ORDINAL)
+                .ok_or_else(|| corrupt("block bounds"))?,
+            count: reader.varint()?,
+            max_frequency: reader.varint()?,
+            min_length: reader.varint()?,
+        };
+        reader.finish()?;
+        let valid = if bounds.count == 0 {
+            span == 0 && bounds.max_frequency == 0 && bounds.min_length == 0
+        } else {
+            bounds.count <= SEARCH_INDEX_MAX_BLOCK_POSTINGS as u64
+                && bounds.count <= span.saturating_add(1)
+                && bounds.max_frequency > 0
+                && bounds.min_length > 0
+        };
+        valid
+            .then_some(bounds)
+            .ok_or_else(|| corrupt("block bounds"))
+    }
+
+    pub(super) fn encode(&self, fence: u64) -> Vec<u8> {
+        let mut out = Vec::with_capacity(12);
+        put_varint(&mut out, self.last - fence);
+        put_varint(&mut out, self.count);
+        put_varint(&mut out, self.max_frequency);
+        put_varint(&mut out, self.min_length);
+        out.extend_from_slice(&hawdb_integrity::crc32c(&out).get().to_le_bytes());
+        out
+    }
+
+    /// Whether a sealed block's verified header agrees with these bounds.
+    pub fn describes_header(&self, fence: u64, header: &SearchPostingBlockHeader) -> bool {
+        self.count == header.count as u64
+            && self.max_frequency == header.max_frequency
+            && match (header.first_ordinal, header.last_ordinal) {
+                (Some(first), Some(last)) => first >= fence && self.last == last,
+                _ => self.last == fence,
+            }
+    }
+
+    /// Whether `postings` decoded from the block at `fence` agree with these
+    /// bounds: the same count and last ordinal and the same maximum
+    /// frequency. Lengths are checked by the reader as documents are scored.
+    pub fn describes(&self, fence: u64, postings: &[SearchPosting]) -> bool {
+        let exact = Self::of(fence, postings, self.min_length);
+        exact == *self && postings.first().is_none_or(|first| first.ordinal >= fence)
     }
 }
 
@@ -567,6 +692,35 @@ pub(super) fn sealed_block_key(term: &str, fence: u64) -> RelationalKey {
     key(KIND_TERM, term.as_bytes().to_vec(), slot_value(fence))
 }
 
+pub(super) fn bounds_key(term: &str, fence: u64) -> RelationalKey {
+    key(KIND_BOUNDS, term.as_bytes().to_vec(), slot_value(fence))
+}
+
+/// Every block bounds row of `term`, in fence order.
+pub fn search_index_block_bounds_range(
+    term: &str,
+) -> Result<RelationalPrimaryKeyRange, RelationalError> {
+    let lower = RelationalValue::BigInt(0);
+    let upper = RelationalValue::BigInt(DICTIONARY_SLOT);
+    RelationalPrimaryKeyRange::from_prefix_bounds(
+        RelationalKey(vec![
+            RelationalValue::BigInt(KIND_BOUNDS),
+            RelationalValue::Bytea(term.as_bytes().to_vec()),
+        ]),
+        Some((&lower, true)),
+        Some((&upper, false)),
+    )
+}
+
+/// The sealed blocks of `term` with fences in `first..=last`, in fence order.
+pub fn search_index_sealed_block_window(
+    term: &str,
+    first: u64,
+    last: u64,
+) -> Result<RelationalPrimaryKeyRange, RelationalError> {
+    sealed_block_range(term, (first, true), Some((last, true)))
+}
+
 /// Sealed blocks of `term` with fences in `[lower, upper)`.
 pub(super) fn sealed_block_range(
     term: &str,
@@ -748,6 +902,7 @@ mod tests {
             document_frequency: 130,
             sealed_blocks: 1,
             tail_start: 128,
+            tail_min_length: 5,
             tail: vec![
                 SearchPosting {
                     ordinal: 128,
@@ -770,6 +925,35 @@ mod tests {
             ..dictionary.clone()
         };
         assert!(SearchTermDictionary::decode(&inconsistent.encode()).is_err());
+        // A tail without a length bound, or a bound without a tail, is refused.
+        let spelled = |tail_min_length: u64, tail: &[SearchPosting]| {
+            let mut out = Vec::new();
+            put_varint(&mut out, 130);
+            put_varint(&mut out, 1);
+            put_varint(&mut out, 128);
+            put_varint(&mut out, tail_min_length);
+            encode_postings(&mut out, 128, tail);
+            out
+        };
+        assert_eq!(spelled(5, &dictionary.tail), dictionary.encode());
+        assert!(SearchTermDictionary::decode(&spelled(0, &dictionary.tail)).is_err());
+        assert!(SearchTermDictionary::decode(&spelled(5, &[])).is_err());
+        let empty = SearchTermDictionary {
+            tail: Vec::new(),
+            ..dictionary.clone()
+        };
+        assert_eq!(
+            empty.encode(),
+            spelled(0, &[]),
+            "an empty tail encodes no bound"
+        );
+        assert_eq!(
+            SearchTermDictionary::decode(&empty.encode()).unwrap(),
+            SearchTermDictionary {
+                tail_min_length: 0,
+                ..empty
+            }
+        );
         let statistics = SearchIndexStatistics {
             documents: 3,
             tokens: 40,
@@ -802,5 +986,90 @@ mod tests {
             search_index_length_block_key(64),
             search_index_length_block_key(63)
         );
+    }
+
+    #[test]
+    fn block_bounds_round_trip_describe_their_block_and_refuse_bad_spellings() {
+        let postings = [
+            SearchPosting {
+                ordinal: 1_003,
+                frequency: 2,
+            },
+            SearchPosting {
+                ordinal: 1_010,
+                frequency: 7,
+            },
+            SearchPosting {
+                ordinal: 1_200,
+                frequency: 1,
+            },
+        ];
+        let bounds = SearchBlockBounds::of(1_000, &postings, 9);
+        assert_eq!(
+            bounds,
+            SearchBlockBounds {
+                last: 1_200,
+                count: 3,
+                max_frequency: 7,
+                min_length: 9,
+            }
+        );
+        let encoded = bounds.encode(1_000);
+        assert_eq!(SearchBlockBounds::decode(1_000, &encoded).unwrap(), bounds);
+        assert!(bounds.describes(1_000, &postings));
+        assert!(!bounds.describes(1_000, &postings[..2]));
+        let mut raised = postings;
+        raised[2].frequency = 8;
+        assert!(!bounds.describes(1_000, &raised), "max frequency is exact");
+        // The retained empty block is all zeros relative to its fence.
+        let empty = SearchBlockBounds::of(0, &[], 0);
+        assert_eq!(empty.encode(0), checksummed(vec![0, 0, 0, 0]));
+        assert_eq!(
+            SearchBlockBounds::decode(0, &checksummed(vec![0, 0, 0, 0])).unwrap(),
+            empty
+        );
+        // Every bounds row is checksummed: a flipped bit is refused.
+        for offset in 0..encoded.len() {
+            let mut bad = encoded.clone();
+            bad[offset] ^= 1;
+            assert!(SearchBlockBounds::decode(1_000, &bad).is_err());
+        }
+        assert!(SearchBlockBounds::decode(0, &[0, 0, 0, 0]).is_err());
+        // The bounds describe the block's own verified header.
+        let block = encode_sealed_block(1_000, &postings);
+        let header = decode_search_sealed_block_header(1_000, &block).unwrap();
+        assert!(bounds.describes_header(1_000, &header));
+        assert!(!SearchBlockBounds { count: 2, ..bounds }.describes_header(1_000, &header));
+        assert!(!SearchBlockBounds {
+            max_frequency: 8,
+            ..bounds
+        }
+        .describes_header(1_000, &header));
+        let empty_header =
+            decode_search_sealed_block_header(0, &encode_sealed_block(0, &[])).unwrap();
+        assert!(empty.describes_header(0, &empty_header));
+        assert!(!bounds.describes_header(1_000, &empty_header));
+        assert!(empty.describes(0, &[]));
+        for bad in [
+            vec![0, 0, 1, 0],               // empty block with a frequency
+            vec![0, 0, 0, 3],               // empty block with a length
+            vec![4, 0, 0, 0],               // empty block with a span
+            vec![1, 3, 1, 1],               // more postings than ordinals in the span
+            vec![9, 2, 0, 1],               // zero maximum frequency
+            vec![9, 2, 1, 0],               // zero minimum length
+            vec![9, 2, 1, 1, 0],            // trailing bytes
+            vec![0xff, 0x7f, 255, 3, 1, 1], // more than a block can hold
+        ] {
+            assert!(
+                SearchBlockBounds::decode(0, &checksummed(bad.clone())).is_err(),
+                "{bad:?}"
+            );
+        }
+        let mut past = Vec::new();
+        put_varint(&mut past, 2);
+        put_varint(&mut past, 1);
+        put_varint(&mut past, 1);
+        put_varint(&mut past, 1);
+        assert!(SearchBlockBounds::decode(MAX_ORDINAL, &checksummed(past)).is_err());
     }
 }

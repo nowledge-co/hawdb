@@ -38,6 +38,8 @@ pub struct RelationalSqlReadProfile {
     pub row_read: RelationalSqlRowReadProfile,
     /// Memory and spill evidence for blocking relational operators.
     pub blocking_operator_memory_reports: Vec<BlockingOperatorMemoryReport>,
+    /// Postings and blocks a `text_search` scan visited and skipped.
+    pub search_index_scan: Option<crate::query::text_search::SearchIndexScanEvidence>,
 }
 
 /// I/O counters for one relational index access path.

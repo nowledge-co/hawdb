@@ -1,24 +1,48 @@
 // Copyright 2026 Nowledge
 // SPDX-License-Identifier: Apache-2.0
 
-//! `text_search` retains only its admitted top-k score state.
+//! `text_search` admits its scan state before allocating it, and that state
+//! is bounded by `k` and the blocks it reads, not by the number of matches.
 
-use super::projection_admission::SizeProbe;
 use super::*;
 
 const DOCUMENTS: i64 = 4096;
 
 fn search_state() -> RelationalState {
+    search_state_of(DOCUMENTS)
+}
+
+fn search_state_of(documents: i64) -> RelationalState {
+    state_of_bodies((0..documents).map(|id| {
+        // Every document matches. The first twelve and every 331st repeat
+        // the term, so after the first block the top-10 floor lies above
+        // every block without a repeat.
+        let repeats = if id < 12 || id % 331 == 0 {
+            " common common"
+        } else {
+            ""
+        };
+        (id, format!("common d{id}{repeats}"))
+    }))
+}
+
+/// Ten short documents repeat `common` 32 times and carry their own term;
+/// every later document mentions `common` once among long filler.
+fn wand_state() -> RelationalState {
+    state_of_bodies((0..DOCUMENTS).map(|id| {
+        let body = if id < 10 {
+            format!("{} top{id}", "common ".repeat(32))
+        } else {
+            format!("common {} d{id}", "filler ".repeat(32))
+        };
+        (id, body)
+    }))
+}
+
+fn state_of_bodies(bodies: impl Iterator<Item = (i64, String)>) -> RelationalState {
     let mut state = RelationalState::default();
-    let values = (0..DOCUMENTS)
-        .map(|id| {
-            let body = if id < 10 {
-                format!("{} top{id}", "common ".repeat(32))
-            } else {
-                format!("common {} d{id}", "filler ".repeat(32))
-            };
-            format!("({id}, '{body}')")
-        })
+    let values = bodies
+        .map(|(id, body)| format!("({id}, '{body}')"))
         .collect::<Vec<_>>()
         .join(", ");
     for sql in [
@@ -37,10 +61,12 @@ fn search_state() -> RelationalState {
 fn search(
     state: &RelationalState,
     blocking_operator_bytes: usize,
-) -> (Result<RelationalQueryOutput>, usize) {
+    context: Option<&hawdb_core::RuntimeTaskContext>,
+) -> Result<RelationalQueryOutput> {
     search_sql(
         state,
         blocking_operator_bytes,
+        context,
         "SELECT id, score FROM text_search('docs_body', 'common', top_k => 10)",
     )
 }
@@ -48,15 +74,14 @@ fn search(
 fn search_sql(
     state: &RelationalState,
     blocking_operator_bytes: usize,
+    context: Option<&hawdb_core::RuntimeTaskContext>,
     sql: &str,
-) -> (Result<RelationalQueryOutput>, usize) {
+) -> Result<RelationalQueryOutput> {
     let memory = hawdb_executor::ExecutionMemoryConfig {
         blocking_operator_bytes: NonZeroUsize::new(blocking_operator_bytes).unwrap(),
         ..Default::default()
     };
-    // Count the allocations shaped like one leaf node of the score map.
-    let probe = SizeProbe::start(SizeProbe::score_leaf_bytes());
-    let result = execute_relational_query_sql_with_runtime(
+    execute_relational_query_sql_with_runtime(
         sql,
         &[],
         state,
@@ -72,22 +97,80 @@ fn search_sql(
             ..batched_index_join_limits()
         },
         &memory,
-        None,
+        context,
+    )
+}
+
+#[test]
+fn text_search_scan_state_is_bounded_by_k_not_by_matches() {
+    let state = search_state();
+    let control = search(&state, 64 * 1024 * 1024, None).unwrap();
+    assert_eq!(control.rows.len(), 10);
+    let evidence = control.search_index_scan.expect("scan evidence");
+    assert_eq!(evidence.postings_total, DOCUMENTS as u64);
+    assert!(
+        evidence.postings_visited * 2 < evidence.postings_total
+            && evidence.blocks_skipped * 2 > evidence.blocks_total,
+        "{evidence:?}"
     );
-    (result, probe.finish())
+    // Block-Max WAND retains a 10-entry heap, one decoded block per term,
+    // a bounded read-ahead and lengths window: one fixed budget serves four
+    // times as many matches. (The full-ranking scan needed more than 56
+    // bytes per match: about 229 KB here, 917 KB for the larger corpus.)
+    let budget = 320 * 1024;
+    let bounded = search(&state, budget, None).unwrap();
+    assert_eq!(bounded.rows, control.rows);
+    let larger = search_state_of(4 * DOCUMENTS);
+    let evidence = search(&larger, budget, None)
+        .unwrap()
+        .search_index_scan
+        .unwrap();
+    assert_eq!(evidence.postings_total, 4 * DOCUMENTS as u64);
+    // Below the scan's fixed state it is refused by its own account, before
+    // that state is allocated.
+    let error = search(&state, 512, None).unwrap_err().to_string();
+    assert!(error.contains("Bm25IndexScan"), "{error}");
+}
+
+#[test]
+fn text_search_observes_cancellation() {
+    let state = search_state();
+    let cancellation = hawdb_core::RuntimeCancellationToken::new();
+    let context = hawdb_core::RuntimeTaskContext::without_deadline(cancellation.clone());
+    cancellation.cancel();
+    let error = search(&state, 64 * 1024 * 1024, Some(&context)).unwrap_err();
+    assert!(error.to_string().contains("cancelled"), "{error}");
 }
 
 #[test]
 fn text_search_wand_matches_exhaustive_multi_term_scores_at_block_boundaries() {
-    let state = search_state();
+    let state = wand_state();
     let sql = "SELECT id, score FROM text_search('docs_body', 'common top0', top_k => 10)";
-    let (wand, _) = search_sql(&state, 64 * 1024 * 1024, sql);
-    // A residual predicate selects the exhaustive correctness path while
-    // preserving every row, making it an independent score-all oracle.
-    let (exhaustive, _) = search_sql(&state, 64 * 1024 * 1024, &format!("{sql} WHERE id >= 0"));
-    let wand = wand.unwrap();
-    let exhaustive = exhaustive.unwrap();
+    let wand = search_sql(&state, 64 * 1024 * 1024, None, sql).unwrap();
+    // A residual predicate that keeps every row still ranks through the
+    // index. Ranking the whole match set (top_k at least the postings, with
+    // an ORDER BY that is not the bare rank order, so LIMIT is not pushed
+    // into the scan) is the score-all oracle.
+    let kept = search_sql(
+        &state,
+        64 * 1024 * 1024,
+        None,
+        &format!("{sql} WHERE id >= 0"),
+    )
+    .unwrap();
+    let exhaustive = search_sql(
+        &state,
+        64 * 1024 * 1024,
+        None,
+        &format!(
+            "SELECT id, score FROM text_search('docs_body', 'common top0', top_k => {}) \
+             ORDER BY score DESC, id LIMIT 10",
+            2 * DOCUMENTS
+        ),
+    )
+    .unwrap();
     assert_eq!(wand.rows, exhaustive.rows);
+    assert_eq!(kept.rows, exhaustive.rows);
     assert!(
         wand.row_execution_evidence.postings_visited
             < exhaustive.row_execution_evidence.postings_visited,
@@ -100,9 +183,8 @@ fn text_search_wand_matches_exhaustive_multi_term_scores_at_block_boundaries() {
 
 #[test]
 fn text_search_bounds_broad_term_score_state_and_skips_losing_blocks() {
-    let state = search_state();
-    let (control, control_nodes) = search(&state, 64 * 1024 * 1024);
-    let control = control.unwrap();
+    let state = wand_state();
+    let control = search(&state, 64 * 1024 * 1024, None).unwrap();
     assert_eq!(control.rows.len(), 10);
     assert!(
         control.row_execution_evidence.posting_blocks_skipped > 0,
@@ -114,13 +196,9 @@ fn text_search_bounds_broad_term_score_state_and_skips_losing_blocks() {
         "{:#?}",
         control.row_execution_evidence
     );
-    // The old score-all path allocated one B-tree entry per matching document
-    // and refused this budget. WAND keeps only the stream workspace and top 10.
+    // A score-all ranking needed at least one 56-byte entry per matching
+    // document; the scan keeps only its stream workspace and the top 10.
     let budget = DOCUMENTS as usize * 56;
-    let (bounded, bounded_nodes) = search(&state, budget);
-    assert_eq!(bounded.unwrap().rows.len(), 10);
-    assert!(
-        bounded_nodes <= control_nodes.saturating_add(1),
-        "bounded query allocated {bounded_nodes} score-shaped nodes versus {control_nodes}"
-    );
+    let bounded = search(&state, budget, None).unwrap();
+    assert_eq!(bounded.rows, control.rows);
 }

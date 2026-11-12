@@ -28,6 +28,9 @@ pub enum RelationalAccessPathKind {
     /// shorter than the key, optionally bounded on the next key column. Rows
     /// are read in place, without a secondary locator fetch.
     PrimaryKeyRange,
+    /// A ranked BM25 search index scan (`Bm25IndexScan`): the index yields
+    /// primary keys in score order and rows are fetched by key.
+    SearchIndex,
 }
 
 /// Conservative row-work estimate for an index nested-loop join.

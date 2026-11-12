@@ -185,6 +185,7 @@ pub(super) fn execute_aggregate_select<'a>(
             join_access_paths,
             index_execution_evidence: index_runtime.evidence(),
             row_execution_evidence: row_runtime.evidence(),
+            search_index_scan: None,
             blocking_operator_memory_reports: vec![hawdb_executor::blocking::in_memory_report(
                 "RelationalAggregateExec",
                 &memory_tracker,
@@ -324,6 +325,7 @@ pub(super) fn execute_aggregate_select<'a>(
         join_access_paths,
         index_execution_evidence: index_runtime.evidence(),
         row_execution_evidence: row_runtime.evidence(),
+        search_index_scan: None,
         blocking_operator_memory_reports: vec![hawdb_executor::blocking::in_memory_report(
             "RelationalAggregateExec",
             &memory_tracker,
@@ -434,6 +436,7 @@ pub(super) fn execute_single_count_distinct<'a>(
         join_access_paths,
         index_execution_evidence: index_runtime.evidence(),
         row_execution_evidence: row_runtime.evidence(),
+        search_index_scan: None,
         blocking_operator_memory_reports: observer.reports.into_inner(),
     })
 }
@@ -626,6 +629,7 @@ pub(super) fn execute_grouped_aggregate<'a>(
         join_access_paths,
         index_execution_evidence: index_runtime.evidence(),
         row_execution_evidence: row_runtime.evidence(),
+        search_index_scan: None,
         blocking_operator_memory_reports: reports,
     })
 }

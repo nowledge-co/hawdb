@@ -64,7 +64,7 @@ fn access_oracle(path: &RelationalAccessPathDescriptor) -> [u64; 5] {
     let n = path.estimated_rows.max(1) as u128;
     let (cpu, random, sequential) = match path.kind {
         RelationalAccessPathKind::FullScan => (n + 4, 0, n),
-        RelationalAccessPathKind::PrimaryKey => (n, n, 0),
+        RelationalAccessPathKind::PrimaryKey | RelationalAccessPathKind::SearchIndex => (n, n, 0),
         RelationalAccessPathKind::PrimaryKeyRange => (n, 1, n),
         RelationalAccessPathKind::Index => (
             n * (1 + u128::from(path.requires_row_fetch)),
@@ -199,7 +199,7 @@ fn snapshot_access_oracle(
             0,
             n.max(u128::from(table_rows)),
         ),
-        RelationalAccessPathKind::PrimaryKey => (n, n, 0),
+        RelationalAccessPathKind::PrimaryKey | RelationalAccessPathKind::SearchIndex => (n, n, 0),
         RelationalAccessPathKind::PrimaryKeyRange => (n, 1, n),
         RelationalAccessPathKind::Index => (
             n * (1 + u128::from(path.requires_row_fetch)),
@@ -221,7 +221,7 @@ fn snapshot_access_oracle(
             cpu += visits * 3;
             sequential += visits * 3;
         }
-        RelationalAccessPathKind::PrimaryKey => {
+        RelationalAccessPathKind::PrimaryKey | RelationalAccessPathKind::SearchIndex => {
             cpu += n * (2 + search_steps);
             random += n * search_steps * 3;
         }

@@ -306,8 +306,8 @@ const SEARCH_RABITQ_PROJECTION_PREFIX: &str = "search_rabitq.";
 const SEARCH_RABITQ_PROJECTION_SUFFIX: &str = ".hawdb";
 pub const FULL_REINDEX_MARKER: &str = ".reindex_needed";
 pub const METADATA_REPAIR_MARKER: &str = ".projection_metadata_repair_needed";
-const BM25_K1: f64 = 1.2;
-const BM25_B: f64 = 0.75;
+/// The BM25 constants shared with the SQL search index access path.
+use hawdb_executor::bm25::{BM25_B, BM25_K1};
 const TITLE_TERM_FREQUENCY_WEIGHT: usize = 2;
 const RRF_K: f64 = 60.0;
 const SEARCH_COMPRESSION_HEADER: &str = "HAWDB_COMPRESSED_V1";

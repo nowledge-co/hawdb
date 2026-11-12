@@ -57,6 +57,8 @@ pub use system_schema::{SystemSchemaMigration, SystemSchemaRegistry, SystemSchem
 
 // These are internal ownership seams. Hosts continue to use the embedded facade.
 #[doc(hidden)]
+pub use query::text_search::SearchIndexScanEvidence;
+#[doc(hidden)]
 pub use read_profile::{
     ProfiledRelationalSqlQueryOutput, RelationalSqlIndexReadProfile, RelationalSqlReadProfile,
     RelationalSqlRowReadProfile,

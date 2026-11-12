@@ -50,6 +50,7 @@ pub(super) fn explain_select(
                 runtime_path: "not_executed",
                 ..RelationalRowExecutionEvidence::default()
             },
+            search_index_scan: None,
             blocking_operator_memory_reports: Vec::new(),
         },
         false,
@@ -210,6 +211,7 @@ pub(super) fn execute_select<'state>(
             join_access_paths,
             index_execution_evidence: index_runtime.evidence(),
             row_execution_evidence: row_runtime.evidence(),
+            search_index_scan: None,
             blocking_operator_memory_reports: output.blocking_operator_memory_reports,
         });
     }
@@ -245,6 +247,7 @@ pub(super) fn execute_select<'state>(
             join_access_paths,
             index_execution_evidence: index_runtime.evidence(),
             row_execution_evidence: row_runtime.evidence(),
+            search_index_scan: None,
             blocking_operator_memory_reports: output.blocking_operator_memory_reports,
         });
     }
@@ -308,6 +311,7 @@ pub(super) fn execute_select<'state>(
         join_access_paths,
         index_execution_evidence: index_runtime.evidence(),
         row_execution_evidence: row_runtime.evidence(),
+        search_index_scan: None,
         blocking_operator_memory_reports: output.blocking_operator_memory_reports,
     })
 }

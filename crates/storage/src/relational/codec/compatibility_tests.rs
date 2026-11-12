@@ -254,7 +254,10 @@ fn search_index_definitions_round_trip_and_refuse_unknown_analyzers_and_layouts(
         state.rows("events_text").collect::<Vec<_>>()
     );
     // The analyzer tag, then the physical layout tag, follow the column name.
-    for (position, feature) in [(0, "search index analyzer"), (1, "search index layout")] {
+    for (position, feature, tag) in [
+        (0, "search index analyzer", 1),
+        (1, "search index layout", 3),
+    ] {
         let expected = StorageFormatError::UnsupportedFeature {
             format: "relational schema",
             feature,
@@ -268,7 +271,7 @@ fn search_index_definitions_round_trip_and_refuse_unknown_analyzers_and_layouts(
                 .unwrap()
                 + name.len()
                 + position;
-            assert_eq!(encoded[offset], if position == 0 { 1 } else { 2 });
+            assert_eq!(encoded[offset], tag);
             encoded[offset] = 255;
             let digest = integrity_digest(&encoded[HEADER_BYTES..]);
             encoded[28..32].copy_from_slice(&digest.crc32c.get().to_le_bytes());

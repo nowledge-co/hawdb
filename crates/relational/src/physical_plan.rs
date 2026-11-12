@@ -1462,6 +1462,7 @@ pub fn planned_tree_operator_cardinality_profiles_with_cost_contexts(
             RelationalAccessPathKind::PrimaryKey => RelationalOperatorKind::TablePointGet,
             RelationalAccessPathKind::PrimaryKeyRange => RelationalOperatorKind::TableRangeScan,
             RelationalAccessPathKind::Index => RelationalOperatorKind::IndexRangeScan,
+            RelationalAccessPathKind::SearchIndex => RelationalOperatorKind::Bm25IndexScan,
         },
         table: base.table.clone(),
         access_path: base.access.descriptor().clone(),
