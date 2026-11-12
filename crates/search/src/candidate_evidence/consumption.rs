@@ -113,10 +113,7 @@ impl<'a> ExhaustiveSearchCandidates<'a> {
 }
 
 impl SearchCandidateOutput {
-    /// Package an engine-produced result and derive its matching report.
-    ///
-    /// This constructor does not certify host-created or modified evidence.
-    pub fn from_search_result(
+    pub(super) fn from_search_result(
         request: &SearchCandidateRequest,
         compression: CompressedVectorSearchMode,
         result: SearchResultSet,

@@ -17,10 +17,8 @@ use super::*;
 #[cfg(feature = "full-text-search")]
 mod retrieval {
     use super::*;
-    use crate::candidate_evidence::{
-        effective_search_candidate_mode, search_candidate_report, SearchCandidateRequest,
-    };
-    use crate::{AdaptiveVectorSearchOptions, SearchDocument, SearchIndex, SearchQueryOptions};
+    use crate::candidate_evidence::SearchCandidateRequest;
+    use crate::{SearchDocument, SearchIndex, VectorSearchExecutionOptions};
     use std::collections::BTreeMap;
 
     fn index() -> SearchIndex {
@@ -43,29 +41,7 @@ mod retrieval {
     }
 
     fn output(index: &SearchIndex, request: &SearchCandidateRequest) -> SearchCandidateOutput {
-        let mode = effective_search_candidate_mode(request);
-        let result = index
-            .search_with_options_adaptive_vector_projection(
-                &request.query_text,
-                request.query_embedding.as_deref(),
-                request.mode,
-                SearchQueryOptions {
-                    limit: request.limit,
-                    offset: request.offset,
-                    rank_window: request.rank_window,
-                    fusion_weights: request.fusion_weights,
-                    metadata_filters: request.metadata_filters.clone(),
-                    policy_epoch: None,
-                },
-                AdaptiveVectorSearchOptions::new(mode),
-            )
-            .unwrap();
-        let report = search_candidate_report(request, mode, &result);
-        SearchCandidateOutput {
-            result,
-            report,
-            out_of_core_metrics: None,
-        }
+        index.search_candidates_with_report(request).unwrap()
     }
 
     #[test]
@@ -183,32 +159,17 @@ mod retrieval {
             requests.push(SearchCandidateRequest::hybrid("graph", vec![1.0, 0.0], 16));
         }
         for request in requests {
-            let options = SearchQueryOptions {
-                limit: request.limit,
-                offset: request.offset,
-                rank_window: request.rank_window,
-                fusion_weights: request.fusion_weights,
-                metadata_filters: request.metadata_filters.clone(),
-                policy_epoch: None,
+            let exact_request = if request.mode == SearchMode::Text {
+                request.clone()
+            } else {
+                request.clone().with_exact_vector_search()
             };
-            let exact = reader
-                .search_with_options_exact(
-                    &request.query_text,
-                    request.query_embedding.as_deref(),
-                    request.mode,
-                    options.clone(),
+            let output = reader
+                .search_candidates_with_report_context(
+                    &exact_request,
+                    VectorSearchExecutionOptions::default(),
                 )
                 .unwrap();
-            let report = search_candidate_report(
-                &request,
-                request.compressed_vector_search_mode,
-                &exact.result,
-            );
-            let output = SearchCandidateOutput {
-                result: exact.result,
-                report,
-                out_of_core_metrics: Some(exact.metrics),
-            };
             if request.limit == 0 {
                 assert!(matches!(
                     output.require_exhaustive(),
@@ -220,15 +181,13 @@ mod retrieval {
             assert!(output.out_of_core_metrics.is_some());
 
             if request.mode != SearchMode::Text {
-                let approximate = reader
-                    .search_with_options(
-                        &request.query_text,
-                        request.query_embedding.as_deref(),
-                        request.mode,
-                        options,
+                let output = reader
+                    .search_candidates_with_report_context(
+                        &request,
+                        VectorSearchExecutionOptions::default(),
                     )
                     .unwrap();
-                let vector = approximate
+                let vector = output
                     .result
                     .retrievers
                     .iter()
@@ -236,16 +195,6 @@ mod retrieval {
                     .unwrap();
                 assert_eq!(vector.candidate_score_source, "graph_distance");
                 assert_eq!(vector.final_score_source, "raw_vector");
-                let report = search_candidate_report(
-                    &request,
-                    request.compressed_vector_search_mode,
-                    &approximate.result,
-                );
-                let output = SearchCandidateOutput {
-                    result: approximate.result,
-                    report,
-                    out_of_core_metrics: Some(approximate.metrics),
-                };
                 assert!(matches!(
                     output.require_exhaustive(),
                     Err(SearchCandidateExhaustionError::RetrieverCoverageUnproven {

@@ -14,10 +14,11 @@
 
 //! Candidate request, result qualification, and shadow evidence ownership.
 //!
-//! The embedded facade remains the host API; this module does not execute
-//! database queries or control production activation.
+//! The embedded facade remains the host API. Evidence is bound to existing
+//! retrieval execution here; this module does not control production activation.
 
 mod consumption;
+mod execution;
 mod probe;
 mod report;
 mod shadow;

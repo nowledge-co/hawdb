@@ -15,6 +15,11 @@ snapshots. Raw result fields are no longer public, and no `Deref` or implicit
 conversion extracts a `SearchResultSet`. Every caller must explicitly accept
 bounded coverage or request exhaustion.
 
+Construction is private to the retrieval owner. Candidate evidence is emitted
+by the resident index, its retained read generation or the out-of-core reader
+using the request that actually executed. A host cannot repackage a raw result
+with an unrelated request or report and obtain the checked view.
+
 `SearchCandidateOutput::require_exhaustive()` returns a borrowed
 `ExhaustiveSearchCandidates` view only when the existing execution evidence
 proves exhaustion of the query's matching candidates within the selected
@@ -84,7 +89,7 @@ contracts; they are not exhaustive-consumption APIs.
 ## Authority and freshness
 
 The proof applies to the engine-produced output, its projection generation,
-query and request filters. It does not validate host-modified evidence, prove
+query and request filters. It does not prove
 canonical-store completeness, certify projection freshness, or authorize an
 external graph/database to revalidate identities. Host predicates outside the
 request are not pushed into candidate generation by this check.

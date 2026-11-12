@@ -165,8 +165,8 @@ mod readiness_report_facade_tests {
 }
 
 use hawdb_search::candidate_evidence::{
-    advised_compressed_vector_search_mode, effective_search_candidate_mode,
-    retrieval_projection_advisor_blocker_codes, retrieval_projection_advisor_json,
+    advised_compressed_vector_search_mode, retrieval_projection_advisor_blocker_codes,
+    retrieval_projection_advisor_json,
 };
 pub use hawdb_search::candidate_evidence::{
     search_candidate_shadow_evidence_json, BoundedSearchCandidateOutput,
@@ -1439,32 +1439,8 @@ impl OutOfCoreSearchProjection {
         request: &SearchCandidateRequest,
         vector_execution_options: VectorSearchExecutionOptions<'_>,
     ) -> Result<OutOfCoreSearchCandidateOutput> {
-        let effective_compressed_vector_search_mode = effective_search_candidate_mode(request);
-        let vector_execution_options =
-            request.vector_execution_options(vector_execution_options)?;
-        let output = self
-            .reader
-            .search_with_options_compressed_vector_projection_execution_options(
-                &request.query_text,
-                request.query_embedding.as_deref(),
-                request.mode,
-                SearchQueryOptions {
-                    limit: request.limit,
-                    offset: request.offset,
-                    rank_window: request.rank_window,
-                    fusion_weights: request.fusion_weights,
-                    metadata_filters: request.metadata_filters.clone(),
-                    policy_epoch: None,
-                },
-                effective_compressed_vector_search_mode,
-                vector_execution_options,
-            )?;
-        SearchCandidateOutput::from_search_result(
-            request,
-            effective_compressed_vector_search_mode,
-            output.result,
-            Some(output.metrics),
-        )
+        self.reader
+            .search_candidates_with_report_context(request, vector_execution_options)
     }
 }
 
@@ -1571,36 +1547,7 @@ impl SearchProjection {
         &self,
         request: &SearchCandidateRequest,
     ) -> Result<SearchCandidateOutput> {
-        if request.exact_vector_search {
-            // Exact search needs explicit execution options; the default
-            // working budget matches the in-memory path below.
-            return self.try_search_candidates_with_report(request);
-        }
-        let effective_compressed_vector_search_mode = effective_search_candidate_mode(request);
-        let result = self.index.search_with_options_adaptive_vector_projection(
-            &request.query_text,
-            request.query_embedding.as_deref(),
-            request.mode,
-            SearchQueryOptions {
-                limit: request.limit,
-                offset: request.offset,
-                rank_window: request.rank_window,
-                fusion_weights: request.fusion_weights,
-                metadata_filters: request.metadata_filters.clone(),
-                policy_epoch: None,
-            },
-            AdaptiveVectorSearchOptions {
-                compression_mode: effective_compressed_vector_search_mode,
-                backend_policy: request.adaptive_vector_backend_policy,
-                recall_validation_probe: request.recall_validation_probe,
-            },
-        )?;
-        SearchCandidateOutput::from_search_result(
-            request,
-            effective_compressed_vector_search_mode,
-            result,
-            None,
-        )
+        self.index.search_candidates_with_report(request)
     }
 
     pub fn try_search_candidates_with_report(
@@ -1618,36 +1565,8 @@ impl SearchProjection {
         request: &SearchCandidateRequest,
         vector_execution_options: VectorSearchExecutionOptions<'_>,
     ) -> Result<SearchCandidateOutput> {
-        let effective_compressed_vector_search_mode = effective_search_candidate_mode(request);
-        let vector_execution_options =
-            request.vector_execution_options(vector_execution_options)?;
-        let result = self
-            .index
-            .try_search_with_options_adaptive_vector_projection_context(
-                &request.query_text,
-                request.query_embedding.as_deref(),
-                request.mode,
-                SearchQueryOptions {
-                    limit: request.limit,
-                    offset: request.offset,
-                    rank_window: request.rank_window,
-                    fusion_weights: request.fusion_weights,
-                    metadata_filters: request.metadata_filters.clone(),
-                    policy_epoch: None,
-                },
-                AdaptiveVectorSearchOptions {
-                    compression_mode: effective_compressed_vector_search_mode,
-                    backend_policy: request.adaptive_vector_backend_policy,
-                    recall_validation_probe: request.recall_validation_probe,
-                },
-                vector_execution_options,
-            )?;
-        SearchCandidateOutput::from_search_result(
-            request,
-            effective_compressed_vector_search_mode,
-            result,
-            None,
-        )
+        self.index
+            .try_search_candidates_with_report_context(request, vector_execution_options)
     }
 
     pub fn search_candidate_readiness(

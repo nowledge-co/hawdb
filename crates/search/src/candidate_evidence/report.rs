@@ -445,6 +445,18 @@ impl SearchCandidateReport {
 ///     let _hits = output.result.hits;
 /// }
 /// ```
+///
+/// Callers cannot attach an unrelated request to a raw result:
+///
+/// ```compile_fail
+/// use hawdb_search::{CompressedVectorSearchMode, SearchResultSet};
+/// use hawdb_search::candidate_evidence::{SearchCandidateOutput, SearchCandidateRequest};
+/// fn repackage(request: &SearchCandidateRequest, result: SearchResultSet) {
+///     let _ = SearchCandidateOutput::from_search_result(
+///         request, CompressedVectorSearchMode::Disabled, result, None,
+///     );
+/// }
+/// ```
 #[must_use = "choose exhaustive or explicitly bounded candidate consumption"]
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchCandidateOutput {

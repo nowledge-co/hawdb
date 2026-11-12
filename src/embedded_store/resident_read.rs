@@ -77,30 +77,9 @@ impl ResidentProjectionRef<'_> {
         request: &SearchCandidateRequest,
         execution: VectorSearchExecutionOptions<'_>,
     ) -> Result<SearchCandidateOutput> {
-        let compression = effective_search_candidate_mode(request);
-        let execution = request.vector_execution_options(execution)?;
-        let result = read_projection!(
+        read_projection!(
             self,
-            try_search_with_options_adaptive_vector_projection_context(
-                &request.query_text,
-                request.query_embedding.as_deref(),
-                request.mode,
-                SearchQueryOptions {
-                    limit: request.limit,
-                    offset: request.offset,
-                    rank_window: request.rank_window,
-                    fusion_weights: request.fusion_weights,
-                    metadata_filters: request.metadata_filters.clone(),
-                    policy_epoch: None,
-                },
-                AdaptiveVectorSearchOptions {
-                    compression_mode: compression,
-                    backend_policy: request.adaptive_vector_backend_policy,
-                    recall_validation_probe: request.recall_validation_probe,
-                },
-                execution,
-            )
-        )?;
-        SearchCandidateOutput::from_search_result(request, compression, result, None)
+            try_search_candidates_with_report_context(request, execution)
+        )
     }
 }

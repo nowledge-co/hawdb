@@ -19,7 +19,8 @@ facade assertions extend `//:hawdb_fallible_search_contract_tests` and
 Snapshot and exact-vector owners retain their existing assertions while
 explicitly choosing bounded coverage for top-k. Compile-fail documentation
 rejects direct hit-field access through the sealed output.
-The two compile-fail examples have manual ownership: replay with
+The compile-fail examples also reject host assembly of a result with an
+unrelated request. They have manual ownership: replay with
 `cargo test --locked -p hawdb-search --doc SearchCandidateOutput` and
 `cargo test --locked -p hawdb --doc SearchProjection::search_candidates`.
 Replay the Search family with `--test_arg=candidate_evidence::consumption::`.
