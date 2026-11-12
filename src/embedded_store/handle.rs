@@ -460,6 +460,22 @@ impl EmbeddedStoreHandle {
             .storage_residency_report()
     }
 
+    /// Returns storage debt through the admitted embedded facade, with the
+    /// same reader-epoch semantics as [`crate::Database::storage_pressure_snapshot`].
+    ///
+    /// Hosts read WAL/delta pressure and generation reclamation debt
+    /// (`generation_reclamation_pending_files` / `_bytes`) here instead of
+    /// listing the store directory. Every live reader pin, including this
+    /// handle's own read publication at the current epoch, contributes to
+    /// `oldest_reader_commit_epoch`; a held older reader therefore shows as
+    /// `oldest_reader_lag` and `obsolete_generation_bytes`.
+    pub fn storage_pressure_snapshot(&self) -> Result<crate::StoragePressureSnapshot> {
+        self.read_store()?
+            .graph
+            .database()
+            .storage_pressure_snapshot()
+    }
+
     /// Reports whether a fail-closed storage error poisoned this handle.
     pub fn storage_handle_poisoned(&self) -> Result<bool> {
         self.read_store()?
