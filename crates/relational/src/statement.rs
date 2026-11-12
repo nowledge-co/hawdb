@@ -94,6 +94,18 @@ pub fn compile_prepared_relational_statement_with_result(
             },
             returning: None,
         }),
+        SqlStatement::CreateSearchIndex(create) => Ok(CompiledRelationalStatement {
+            transaction: RelationalTransaction {
+                writes: crate::materialized_view::create_search_index(create, state)?,
+            },
+            returning: None,
+        }),
+        SqlStatement::DropSearchIndex(drop) => Ok(CompiledRelationalStatement {
+            transaction: RelationalTransaction {
+                writes: crate::materialized_view::drop_search_index(drop, state)?,
+            },
+            returning: None,
+        }),
         statement @ (SqlStatement::CreateTable(_)
         | SqlStatement::CreateIndex(_)
         | SqlStatement::AlterTableAddColumn(_)) => Ok(CompiledRelationalStatement {
@@ -374,6 +386,8 @@ fn compile_relational_mutation(
         SqlStatement::Select(_)
         | SqlStatement::CreateMaterializedView(_)
         | SqlStatement::DropMaterializedView(_)
+        | SqlStatement::CreateSearchIndex(_)
+        | SqlStatement::DropSearchIndex(_)
         | SqlStatement::Explain(_)
         | SqlStatement::CreateTable(_)
         | SqlStatement::CreateIndex(_)

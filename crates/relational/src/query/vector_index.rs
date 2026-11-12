@@ -34,6 +34,34 @@ pub struct VectorIndexInput<'a> {
     pub candidates: &'a dyn VectorIndexCandidates,
 }
 
+/// How a candidate table function exposes its per-row score.
+#[derive(Clone, Copy)]
+pub(super) struct CandidateScore {
+    /// Default qualifier when the call has no alias.
+    pub function: &'static str,
+    /// Subject of user-facing refusals.
+    pub context: &'static str,
+    /// Virtual DOUBLE PRECISION output column; a source column of the same
+    /// name is refused.
+    pub column: &'static str,
+    pub valid: fn(f64) -> bool,
+    pub invalid: &'static str,
+    /// Integrity refusal when a ranked identity has no row in the snapshot.
+    pub absent: &'static str,
+    /// Stop after this many candidates satisfy WHERE (filter before ranking).
+    pub max_accepted: Option<usize>,
+}
+
+const VECTOR_DISTANCE: CandidateScore = CandidateScore {
+    function: "vector_index_search",
+    context: "vector index SQL",
+    column: "distance",
+    valid: |distance| distance.is_finite() && (0.0..=2.0).contains(&distance),
+    invalid: "invalid vector index cosine distance",
+    absent: "vector candidate is absent from the bound SQL snapshot",
+    max_accepted: None,
+};
+
 pub struct VectorIndexSqlRows {
     rows: Vec<Row>,
     pub row_execution: RelationalRowExecutionEvidence,
@@ -44,6 +72,9 @@ pub struct VectorIndexSqlRows {
 impl VectorIndexSqlRows {
     pub fn row_count(&self) -> usize {
         self.rows.len()
+    }
+    pub(super) fn into_parts(self) -> (Vec<Row>, RelationalRowExecutionEvidence) {
+        (self.rows, self.row_execution)
     }
     pub fn deliver(self, mut consumer: impl FnMut(Row) -> Result<()>) -> Result<()> {
         for row in self.rows {
@@ -76,15 +107,23 @@ impl<'runtime, R: RelationalRowStoreReader> VectorIndexSqlExecution<'_, 'runtime
 }
 
 fn validate_vector_index_select(select: &SelectStatement) -> Result<()> {
-    if select.vector_index.is_none()
-        || !select.joins.is_empty()
+    if select.vector_index().is_none() {
+        return Err(HawDBError::Semantic("vector index SQL supports a single source with WHERE, projection, ORDER BY, LIMIT and OFFSET".into()));
+    }
+    validate_candidate_select(select, "vector index SQL")
+}
+
+pub(super) fn validate_candidate_select(select: &SelectStatement, context: &str) -> Result<()> {
+    if !select.joins.is_empty()
         || select.distinct
         || !select.group_by.is_empty()
         || select.having.is_some()
         || select.lock_strength.is_some()
         || select.projection.iter().any(projection_contains_aggregate)
     {
-        return Err(HawDBError::Semantic("vector index SQL supports a single source with WHERE, projection, ORDER BY, LIMIT and OFFSET".into()));
+        return Err(HawDBError::Semantic(format!(
+            "{context} supports a single source with WHERE, projection, ORDER BY, LIMIT and OFFSET"
+        )));
     }
     Ok(())
 }
@@ -137,11 +176,7 @@ pub fn collect_vector_eligible_domain<'query, R: RelationalRowStoreReader>(
         definition,
         identity,
         embedding,
-        select
-            .vector_index
-            .as_ref()
-            .expect("validated vector source")
-            .mode,
+        select.vector_index().expect("validated vector source").mode,
         max_work.min(resources.limits.max_candidate_work),
         &account,
         task,
@@ -253,8 +288,7 @@ pub fn collect_vector_eligible_domain<'query, R: RelationalRowStoreReader>(
 
 pub(super) fn residual_selection(select: &SelectStatement) -> Option<&SqlExpression> {
     if select
-        .vector_index
-        .as_ref()
+        .vector_index()
         .is_some_and(|search| search.mode.requires_eligible_domain())
     {
         None
@@ -269,10 +303,22 @@ pub fn execute_vector_index_select<R: RelationalRowStoreReader>(
     input: VectorIndexInput<'_>,
     execution: VectorIndexSqlExecution<'_, '_, R>,
 ) -> Result<VectorIndexSqlRows> {
+    validate_vector_index_select(select)?;
+    execute_candidate_select(select, parameters, input, execution, VECTOR_DISTANCE)
+}
+
+/// Hydrates ranked candidate identities through the canonical row snapshot,
+/// then applies WHERE, projection, ORDER BY, LIMIT and OFFSET.
+pub(super) fn execute_candidate_select<R: RelationalRowStoreReader>(
+    select: &SelectStatement,
+    parameters: &[Value],
+    input: VectorIndexInput<'_>,
+    execution: VectorIndexSqlExecution<'_, '_, R>,
+    score: CandidateScore,
+) -> Result<VectorIndexSqlRows> {
     let resources = execution.resources;
     let task = resources.task_context;
     hawdb_executor::pipeline::runtime_checkpoint(task)?;
-    validate_vector_index_select(select)?;
     if input.candidates.row_count() > resources.limits.max_candidate_work {
         return Err(HawDBError::read_budget_exceeded(
             hawdb_core::ReadBudgetResource::Rows,
@@ -283,10 +329,11 @@ pub fn execute_vector_index_select<R: RelationalRowStoreReader>(
     let canonical_schema = execution.state.table_schema(input.table).ok_or_else(|| {
         HawDBError::StorageIntegrity("vector index source table is absent".into())
     })?;
-    if canonical_schema.column_position("distance").is_some() {
-        return Err(HawDBError::Semantic(
-            "vector index SQL reserves the distance output column".into(),
-        ));
+    if canonical_schema.column_position(score.column).is_some() {
+        return Err(HawDBError::Semantic(format!(
+            "{} reserves the {} output column",
+            score.context, score.column
+        )));
     }
     let ledger = execution.admitted_ledger()?;
     let account = ledger.account(
@@ -326,15 +373,12 @@ pub fn execute_vector_index_select<R: RelationalRowStoreReader>(
     };
     let distance_ordinal = schema.columns.len();
     schema.columns.push(RelationalColumnSchema {
-        name: "distance".into(),
+        name: score.column.into(),
         scalar_type: RelationalScalarType::DoublePrecision,
         nullable: false,
         default: None,
     });
-    let qualifier = select
-        .from_alias
-        .as_deref()
-        .unwrap_or("vector_index_search");
+    let qualifier = select.from_alias.as_deref().unwrap_or(score.function);
     // Bind even when the candidate stream is empty; invalid names must not
     // become data-dependent successes.
     let empty = BoundRow {
@@ -389,6 +433,7 @@ pub fn execute_vector_index_select<R: RelationalRowStoreReader>(
         row_runtime: &row_runtime,
         resources,
         ledger,
+        score,
     };
     let offset = usize::try_from(bind_bound(select.offset, parameters, "OFFSET")?.unwrap_or(0))
         .map_err(|_| HawDBError::Semantic("SQL OFFSET is too large".into()))?;
@@ -462,6 +507,7 @@ struct CandidateRows<'a> {
     row_runtime: &'a RelationalRowRuntime<'a>,
     resources: RelationalQueryResourceContext<'a>,
     ledger: &'a QueryMemoryLedger,
+    score: CandidateScore,
 }
 
 impl BindingBatchSource<()> for CandidateRows<'_> {
@@ -484,7 +530,15 @@ impl BindingBatchSource<()> for CandidateRows<'_> {
             memory.batch_payload_bytes,
             self.ledger,
         );
+        let mut accepted = 0usize;
         for ordinal in 0..self.input.candidates.row_count() {
+            if self
+                .score
+                .max_accepted
+                .is_some_and(|maximum| accepted >= maximum)
+            {
+                break;
+            }
             hawdb_executor::pipeline::runtime_checkpoint(task)?;
             let (identity, distance) = self.input.candidates.row(ordinal)?;
             let hex = identity
@@ -513,19 +567,13 @@ impl BindingBatchSource<()> for CandidateRows<'_> {
                 .collect::<Result<Vec<_>>>()?;
             let key = decode_relational_primary_key(&bytes)
                 .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
-            if !distance.is_finite() || !(0.0..=2.0).contains(&distance) {
-                return Err(HawDBError::StorageIntegrity(
-                    "invalid vector index cosine distance".into(),
-                ));
+            if !(self.score.valid)(distance) {
+                return Err(HawDBError::StorageIntegrity(self.score.invalid.into()));
             }
             let (row, _point_allocation) = self
                 .row_runtime
                 .read_point_admitted(self.input.table, &key)?;
-            let row = row.ok_or_else(|| {
-                HawDBError::StorageIntegrity(
-                    "vector candidate is absent from the bound SQL snapshot".into(),
-                )
-            })?;
+            let row = row.ok_or_else(|| HawDBError::StorageIntegrity(self.score.absent.into()))?;
             // The decoded row remains admitted while adding the virtual column.
             // Projection and sort copies are admitted per expression below.
             let _row_memory =
@@ -547,6 +595,7 @@ impl BindingBatchSource<()> for CandidateRows<'_> {
             {
                 continue;
             }
+            accepted += 1;
             let mut projected =
                 project_bound_row(&binding, &self.select.projection, self.parameters)?;
             add_relational_order_keys(self.select, &binding, &mut projected)?;

@@ -45,6 +45,8 @@ pub(super) fn sql_statement_kind(statement: &SqlStatement) -> &'static str {
         SqlStatement::CreateIndex(_) => "create_index",
         SqlStatement::CreateMaterializedView(_) => "create_materialized_view",
         SqlStatement::DropMaterializedView(_) => "drop_materialized_view",
+        SqlStatement::CreateSearchIndex(_) => "create_search_index",
+        SqlStatement::DropSearchIndex(_) => "drop_search_index",
         SqlStatement::AlterTableAddColumn(_) => "alter_table_add_column",
         SqlStatement::Explain(_) => "explain",
         SqlStatement::Branch(_) => "branch",

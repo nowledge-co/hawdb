@@ -85,6 +85,7 @@ fn controlled_materialized_view_recovery_matches_wal_and_releases_admission() {
                 negated: false,
             },
         ))),
+        search: None,
     }
     .table_schema("stats".into(), previous.table_schema("documents").unwrap())
     .unwrap();

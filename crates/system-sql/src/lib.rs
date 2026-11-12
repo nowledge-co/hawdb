@@ -928,6 +928,8 @@ fn table_rows(catalog: &Catalog) -> Vec<Row> {
 fn information_schema_table_rows(state: &RelationalState) -> Vec<Row> {
     state
         .table_schemas()
+        // Search index postings are an index, not a relation.
+        .filter(|schema| schema.search_index().is_none())
         .map(|schema| {
             BTreeMap::from([
                 (
@@ -1306,6 +1308,8 @@ fn encode_hex(bytes: &[u8]) -> String {
 fn pg_table_rows(state: &RelationalState) -> Vec<Row> {
     state
         .table_schemas()
+        // Search index postings are an index, not a relation.
+        .filter(|schema| schema.search_index().is_none())
         .map(|schema| {
             BTreeMap::from([
                 (
@@ -1334,8 +1338,37 @@ fn pg_table_rows(state: &RelationalState) -> Vec<Row> {
 fn pg_index_rows(state: &RelationalState) -> Vec<Row> {
     state
         .table_schemas()
-        .flat_map(relational_schema_index_rows)
+        .flat_map(|schema| match schema.search_index() {
+            Some(spec) => search_index_rows(schema, spec),
+            None => relational_schema_index_rows(schema),
+        })
         .collect()
+}
+
+fn search_index_rows(
+    schema: &RelationalTableSchema,
+    spec: &hawdb_storage::relational::SearchIndexSpec,
+) -> Vec<Row> {
+    let Some(view) = schema.materialized_view.as_deref() else {
+        return Vec::new();
+    };
+    let index_definition = format!(
+        "CREATE SEARCH INDEX {} ON public.{} ({}) WITH (analyzer = '{}')",
+        quote_postgres_identifier(&schema.name),
+        quote_postgres_identifier(&view.source),
+        quote_postgres_identifier(&spec.column),
+        spec.analyzer.name(),
+    );
+    vec![BTreeMap::from([
+        (
+            "schemaname".to_string(),
+            Value::String("public".to_string()),
+        ),
+        ("tablename".to_string(), Value::String(view.source.clone())),
+        ("indexname".to_string(), Value::String(schema.name.clone())),
+        ("tablespace".to_string(), Value::Null),
+        ("indexdef".to_string(), Value::String(index_definition)),
+    ])]
 }
 
 fn relational_schema_index_rows(schema: &RelationalTableSchema) -> Vec<Row> {

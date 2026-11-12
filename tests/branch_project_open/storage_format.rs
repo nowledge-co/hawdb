@@ -45,6 +45,7 @@ fn view_transaction() -> RelationalTransaction {
         source: base.name.clone(),
         group_by: vec![],
         filter: None,
+        search: None,
         columns: vec![MaterializedViewColumn {
             name: "compatibility_count".into(),
             expression: MaterializedViewExpression::Count(None),

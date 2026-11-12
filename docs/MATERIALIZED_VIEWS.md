@@ -35,6 +35,9 @@ accepts an existing materialized view; it does not replace its definition or
 silently accept a base table with the same name. `DROP MATERIALIZED VIEW IF
 EXISTS` accepts an absent relation, but cannot drop a base table.
 
+[SQL search indexes](SQL_SEARCH_INDEXES.md) reuse this maintenance kernel for
+BM25 postings over one TEXT column.
+
 ## Supported definitions
 
 - One resident RowPage base table, with an optional alias.

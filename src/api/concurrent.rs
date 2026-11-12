@@ -1271,6 +1271,8 @@ pub(super) fn sql_statement_uses_snapshot(statement: &SqlStatement) -> bool {
         SqlStatement::Insert(_)
         | SqlStatement::CreateMaterializedView(_)
         | SqlStatement::DropMaterializedView(_)
+        | SqlStatement::CreateSearchIndex(_)
+        | SqlStatement::DropSearchIndex(_)
         | SqlStatement::Update(_)
         | SqlStatement::Delete(_)
         | SqlStatement::CreateTable(_)
@@ -1491,6 +1493,8 @@ fn sql_lock_requests(
         SqlStatement::CreateTable(_)
         | SqlStatement::CreateMaterializedView(_)
         | SqlStatement::DropMaterializedView(_)
+        | SqlStatement::CreateSearchIndex(_)
+        | SqlStatement::DropSearchIndex(_)
         | SqlStatement::CreateIndex(_)
         | SqlStatement::AlterTableAddColumn(_) => {
             Ok(vec![LockRequest::database(LockMode::Exclusive)])

@@ -56,6 +56,10 @@ pub(in crate::api) fn collect_transaction(
             .map_err(|error| HawDBError::Execution(error.to_string()))
     };
     match statement {
+        SqlStatement::Select(select) if select.text_search().is_some() => {
+            // BM25 statistics depend on every indexed document.
+            record(dependencies, VersionKey::Database)
+        }
         SqlStatement::Select(select) => {
             qualify_expressions(select)?;
             let table = select
@@ -142,6 +146,8 @@ pub(in crate::api) fn collect_transaction(
         SqlStatement::CreateTable(_)
         | SqlStatement::CreateMaterializedView(_)
         | SqlStatement::DropMaterializedView(_)
+        | SqlStatement::CreateSearchIndex(_)
+        | SqlStatement::DropSearchIndex(_)
         | SqlStatement::CreateIndex(_)
         | SqlStatement::AlterTableAddColumn(_) => record(dependencies, VersionKey::Database),
         SqlStatement::Explain(_) | SqlStatement::Branch(_) => {

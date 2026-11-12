@@ -39,7 +39,17 @@ pub(crate) use index_shadow::{
     IndexReadAdmission, IndexReadCharge, IndexReadObserver, IndexReadPreflightError,
 };
 pub use materialized_view::{
-    MaterializedViewColumn, MaterializedViewDefinition, MaterializedViewExpression,
+    decode_search_sealed_block, decode_search_sealed_block_header, search_index_block_fence,
+    search_index_dictionary_key, search_index_length_block_key, search_index_length_block_range,
+    search_index_length_block_start, search_index_sealed_block_after_range,
+    search_index_sealed_block_range, search_index_statistics_key, MaterializedViewColumn,
+    MaterializedViewDefinition, MaterializedViewExpression, SearchDocumentEntry,
+    SearchIndexAnalyzer, SearchIndexSpec, SearchIndexStatistics, SearchLengthBlock, SearchPosting,
+    SearchPostingBlockHeader, SearchTermDictionary, SEARCH_INDEX_BLOCK_POSTINGS,
+    SEARCH_INDEX_COLUMN_COUNT, SEARCH_INDEX_DATA_COLUMN, SEARCH_INDEX_KIND_COLUMN,
+    SEARCH_INDEX_LENGTH_BLOCK_DOCUMENTS, SEARCH_INDEX_MAX_BLOCK_POSTINGS,
+    SEARCH_INDEX_MAX_TOKEN_BYTES, SEARCH_INDEX_NAME_COLUMN, SEARCH_INDEX_SLOT_COLUMN,
+    SEARCH_INDEX_TAIL_POSTINGS,
 };
 pub use numeric_expression::{
     RelationalNumericExpression, MAX_NUMERIC_EXPRESSION_DEPTH, MAX_NUMERIC_EXPRESSION_NODES,

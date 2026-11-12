@@ -190,6 +190,7 @@ mod runtime_capabilities;
 mod scalar_math_reduce_endpoints;
 mod schema_indexes;
 mod schema_migrations;
+mod search_indexes;
 mod search_projection_delta_facade;
 mod search_projection_graph_delta;
 mod search_projection_rebuild_facade;

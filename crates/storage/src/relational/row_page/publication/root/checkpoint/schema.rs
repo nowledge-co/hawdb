@@ -166,6 +166,17 @@ fn same_materialized_view(
     {
         return Ok(false);
     }
+    match (&left.search, &right.search) {
+        (Some(left), Some(right)) => {
+            if !same_text(&left.column, &right.column, work)?
+                || !fixed(work, || left.analyzer == right.analyzer)?
+            {
+                return Ok(false);
+            }
+        }
+        (None, None) => {}
+        _ => return Ok(false),
+    }
     match (&left.filter, &right.filter) {
         (Some(left), Some(right)) => same_predicate(left, right, work),
         (None, None) => Ok(true),

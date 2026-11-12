@@ -26,6 +26,8 @@ mod full;
 mod numeric_tests;
 mod owned;
 #[cfg(test)]
+mod search_index_tests;
+#[cfg(test)]
 mod timestamp_tests;
 
 pub fn parse_postgres_sql(input: &str) -> Result<SqlStatement> {

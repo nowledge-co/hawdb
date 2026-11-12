@@ -173,6 +173,8 @@ impl Fold<'_> {
             Some("HawDelete") => self.delete(node),
             Some("HawCreateTable") => self.create_table(node),
             Some("HawCreateIndex") => self.create_index(node),
+            Some("HawCreateSearchIndex") => self.create_search_index(node),
+            Some("HawDropSearchIndex") => self.drop_search_index(node),
             Some("HawAlter") => self.alter(node),
             Some("HawCreateView") => self.create_view(node),
             Some("HawDrop") => self.drop_view(node),
@@ -942,6 +944,47 @@ impl Fold<'_> {
             columns: self.index_columns(self.child(node, "HawIndexColumns"))?,
             unique: self.has(node, "HawUnique"),
             if_not_exists: self.has(node, "HawIfNotExists"),
+        }))
+    }
+    fn create_search_index(&self, node: NodeId) -> Result<SqlStatement> {
+        let mut analyzer = None;
+        if let Some(options) = self.tree.child(node, "HawStorage") {
+            for option in self.tree.children(options) {
+                let name = self.ident(self.child(*option, "Identifier"));
+                let expr = self.expr(self.child(*option, "Or"));
+                let SqlValue::Literal(Value::String(value)) = self.lowerer.literal(&expr)? else {
+                    return Err(semantic(format!(
+                        "CREATE SEARCH INDEX {name} must be a string literal"
+                    )));
+                };
+                if name != "analyzer" {
+                    return Err(semantic(format!(
+                        "unsupported CREATE SEARCH INDEX option {name}"
+                    )));
+                }
+                if analyzer.replace(value).is_some() {
+                    return Err(semantic(
+                        "CREATE SEARCH INDEX analyzer is specified more than once",
+                    ));
+                }
+            }
+        }
+        let name = self.child(self.child(node, "HawSearchIndexName"), "Name");
+        Ok(SqlStatement::CreateSearchIndex(
+            CreateSearchIndexStatement {
+                name: self.table(name)?,
+                table: self.table(self.child(self.child(node, "HawSearchIndexTable"), "Name"))?,
+                column: self
+                    .ident(self.child(self.child(node, "HawSearchIndexColumn"), "Identifier")),
+                analyzer,
+                if_not_exists: self.has(node, "HawIfNotExists"),
+            },
+        ))
+    }
+    fn drop_search_index(&self, node: NodeId) -> Result<SqlStatement> {
+        Ok(SqlStatement::DropSearchIndex(DropSearchIndexStatement {
+            name: self.table(self.child(node, "Name"))?,
+            if_exists: self.has(node, "HawIfExists"),
         }))
     }
     fn alter(&self, node: NodeId) -> Result<SqlStatement> {
