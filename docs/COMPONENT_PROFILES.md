@@ -30,6 +30,13 @@ executable when platform checksum tools are available. Runtime checkout identity
 does not attest the compiled engine; retain the exact source/tree, build command
 and executable with the raw output.
 
+Every candidate or combined-ranking invocation, including each preflight,
+warmup and measured call, creates an independent task with a fresh 120-second
+deadline and 100,000,000 work units. Task construction and teardown are outside
+engine timing. Neither work usage nor cancellation carries into later calls;
+these are per-call bounds, not a campaign-wide budget. Fixed-ID hydration uses
+the existing ten-document/1-MiB bounds; its API has no task-context argument.
+
 RSS is observed before/after a call. The process lifetime high-water mark is
 not an isolated per-call peak, and allocator peak is unavailable. Page faults,
 query working bounds, vector admitted working bytes and process RSS are separate

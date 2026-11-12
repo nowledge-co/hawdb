@@ -17,10 +17,11 @@ use hawdb::{DurabilityPolicy, HawDBEmbeddedOpenOptions, RecoveryMode};
 use super::FfiError;
 
 /// Keys accepted by `hawdb_open`, in documentation order.
-pub(crate) const OPEN_OPTION_KEYS: [&str; 5] = [
+pub(crate) const OPEN_OPTION_KEYS: [&str; 6] = [
     "read_only",
     "durability",
     "max_read_result_rows",
+    "max_read_intermediate_rows",
     "max_read_result_payload_bytes",
     "relational_monotonic_append_fast_path",
 ];
@@ -69,6 +70,19 @@ pub(crate) fn apply_open_options(
             Some(usize_option(
                 value,
                 "max_read_result_rows",
+                "a non-negative integer or null",
+            )?)
+        };
+    }
+    if let Some(value) = object.get("max_read_intermediate_rows") {
+        // `null` inherits the result-row ceiling; 0 removes only the
+        // relational intermediate-row ceiling, as in DatabaseConfig.
+        options.config.max_read_intermediate_rows = if value.is_null() {
+            None
+        } else {
+            Some(usize_option(
+                value,
+                "max_read_intermediate_rows",
                 "a non-negative integer or null",
             )?)
         };

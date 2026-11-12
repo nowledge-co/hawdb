@@ -104,6 +104,18 @@ trusted-publisher setup are described in
   instead of returning partial results.
 - `database.query(cypher, parameters)` and `database.querySQL(sql, parameters)`
   return `QueryResult { columns, rows }`; `dicts()` converts rows to objects.
+- `database.transaction((tx) => { ... })` runs the body as one atomic
+  transaction: `tx.query`, `tx.querySQL` and `tx.exec` run inside it, it
+  commits when the body returns (returning the body's value) and rolls back
+  every statement when the body throws, rethrowing the error. The body must be
+  synchronous; returning a promise rolls back and throws. While it runs,
+  `database.query`/`querySQL`, a nested `database.transaction` and
+  `database.close()` throw `HawDBError` with kind `transaction_open`, and a
+  `tx` used after its body finished throws `no_transaction`. A commit is never
+  partial, but a crash or an error while it publishes leaves the outcome
+  unknown (the whole transaction may be committed after a reopen), so
+  reconcile or retry idempotently instead of rerunning it blindly; see the
+  [C ABI notes](../ffi/README.md#transactions).
 - `database.backup(destination)` writes a consistent backup directory of the
   open database (the destination must not exist) and returns
   `{ generation, checkpoint_commit_epoch, file_count, total_bytes,

@@ -69,6 +69,33 @@ const symbols = {
   },
   hawdb_format_version: { args: [], returns: "u32" },
   hawdb_dump_format_version: { args: [], returns: "u32" },
+  hawdb_begin_transaction: { args: ["ptr", "buffer"], returns: "bool" },
+  hawdb_transaction_query: {
+    args: [
+      "ptr",
+      "buffer",
+      "buffer_length",
+      "buffer",
+      "buffer_length",
+      "buffer",
+      "buffer",
+    ],
+    returns: "bool",
+  },
+  hawdb_transaction_query_sql: {
+    args: [
+      "ptr",
+      "buffer",
+      "buffer_length",
+      "buffer",
+      "buffer_length",
+      "buffer",
+      "buffer",
+    ],
+    returns: "bool",
+  },
+  hawdb_commit_transaction: { args: ["ptr", "buffer", "buffer"], returns: "bool" },
+  hawdb_rollback_transaction: { args: ["ptr", "buffer"], returns: "bool" },
   hawdb_backup: {
     args: ["ptr", "buffer", "buffer_length", "buffer", "buffer"],
     returns: "bool",
