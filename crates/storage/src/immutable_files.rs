@@ -86,12 +86,62 @@ pub(crate) struct ImmutableFileHandles {
     bindings: Mutex<BTreeMap<PathBuf, ImmutableFileBinding>>,
     /// Objects whose complete identity hash the most recent mount computed,
     /// with the stamp of the hashed descriptor. The next cold handle open of
-    /// that object consumes the entry; see [`Self::mount`].
-    mount_verified: Mutex<BTreeMap<ObjectReference, ObjectStamp>>,
+    /// that object consumes the entry; see [`Self::mount`]. Bounded by
+    /// [`MOUNT_VERIFICATION_RECORDS_PER_PROJECT`].
+    mount_verified: Mutex<MountVerificationRecords>,
     opening: Mutex<()>,
     // Private checkpoint validation keeps objects protected after releasing
     // the short cache-opening lock. Retirement can defer without waiting.
     checkpoint_validation: RwLock<()>,
+}
+
+/// Per-project cap on unconsumed mount-verification records. A record is
+/// optional performance state: evicting one only restores the full identity
+/// hash on that object's next cold open. One admission mounts each object of
+/// its checkpoint closure once (about 50 on LDBC SF0.1), so the cap leaves
+/// ample room for a whole admission while bounding a long-lived project that
+/// mounts objects which are already warm in the cache or never opened.
+pub(crate) const MOUNT_VERIFICATION_RECORDS_PER_PROJECT: usize = 4096;
+
+/// Unconsumed mount-verification records, evicted oldest-inserted first.
+#[derive(Debug, Default)]
+pub(crate) struct MountVerificationRecords {
+    records: BTreeMap<ObjectReference, (u64, ObjectStamp)>,
+    order: BTreeMap<u64, ObjectReference>,
+    next: u64,
+}
+
+impl MountVerificationRecords {
+    /// Inserts or replaces `reference`'s record. Returns whether an older
+    /// record was evicted to stay within `capacity`.
+    fn insert(&mut self, reference: ObjectReference, stamp: ObjectStamp, capacity: usize) -> bool {
+        self.remove(&reference);
+        let mut evicted = false;
+        while self.records.len() >= capacity.max(1) {
+            let Some((_, oldest)) = self.order.pop_first() else {
+                break;
+            };
+            self.records.remove(&oldest);
+            evicted = true;
+        }
+        let sequence = self.next;
+        self.next = self.next.wrapping_add(1);
+        self.order.insert(sequence, reference);
+        self.records.insert(reference, (sequence, stamp));
+        evicted
+    }
+
+    fn remove(&mut self, reference: &ObjectReference) -> Option<ObjectStamp> {
+        let (sequence, stamp) = self.records.remove(reference)?;
+        self.order.remove(&sequence);
+        Some(stamp)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        debug_assert_eq!(self.records.len(), self.order.len());
+        self.records.len()
+    }
 }
 
 impl ImmutableFileHandles {
@@ -101,7 +151,7 @@ impl ImmutableFileHandles {
             handles: Mutex::new(BTreeMap::new()),
             access_tick: AtomicU64::new(0),
             bindings: Mutex::new(BTreeMap::new()),
-            mount_verified: Mutex::new(BTreeMap::new()),
+            mount_verified: Mutex::new(MountVerificationRecords::default()),
             opening: Mutex::new(()),
             checkpoint_validation: RwLock::new(()),
         }
@@ -187,6 +237,14 @@ impl ImmutableFileHandles {
     /// cold open of the object skips the identity hash only when its
     /// descriptor still has the hashed descriptor's native identity, length
     /// and modification time. Later cold opens hash in full again.
+    #[cfg(test)]
+    pub(crate) fn mount_verification_record_count(&self) -> usize {
+        self.mount_verified
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .len()
+    }
+
     pub(crate) fn mount(
         &self,
         path: &Path,
@@ -239,9 +297,15 @@ impl ImmutableFileHandles {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         match verified_stamp.filter(|_| mounted.is_ok()) {
-            Some(stamp) => records.insert(reference, stamp),
-            None => records.remove(&reference),
-        };
+            Some(stamp) => {
+                if records.insert(reference, stamp, MOUNT_VERIFICATION_RECORDS_PER_PROJECT) {
+                    self.state.record_mount_verification_eviction();
+                }
+            }
+            None => {
+                records.remove(&reference);
+            }
+        }
         mounted
     }
 

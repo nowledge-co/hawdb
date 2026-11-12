@@ -80,6 +80,9 @@ pub struct FileDescriptorMetrics {
     /// Cold handle validations that skipped the identity hash because the
     /// preceding mount had just hashed the same unmodified inode.
     pub mount_verification_reuses: u64,
+    /// Unconsumed mount-verification records evicted to stay within the
+    /// per-project cap. Each eviction only restores one full identity hash.
+    pub mount_verification_evictions: u64,
 }
 
 #[derive(Debug, Default)]
@@ -95,6 +98,7 @@ struct Counts {
     cache_evictions: u64,
     identity_verified_bytes: u64,
     mount_verification_reuses: u64,
+    mount_verification_evictions: u64,
 }
 
 impl Counts {
@@ -227,6 +231,7 @@ impl BudgetState {
             cache_evictions: counts.cache_evictions,
             identity_verified_bytes: counts.identity_verified_bytes,
             mount_verification_reuses: counts.mount_verification_reuses,
+            mount_verification_evictions: counts.mount_verification_evictions,
         }
     }
 
@@ -271,6 +276,12 @@ impl BudgetState {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .mount_verification_reuses += 1;
+    }
+    pub(crate) fn record_mount_verification_eviction(&self) {
+        self.counts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .mount_verification_evictions += 1;
     }
     pub(crate) fn record_cache_evictions(&self, count: usize) {
         self.counts

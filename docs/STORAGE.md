@@ -359,7 +359,15 @@ the next cold open, however late, and the stamp alone then decides. It is
 consumed by that open whether or not it matches, cleared before every remount
 (so a refused remount leaves none) and dropped on reclamation; any later cold
 open of the object, for example after descriptor-cache eviction, hashes it in
-full again. The stamp's limits are those
+full again. Unconsumed records are optional performance state and are capped at
+4,096 per project (`MOUNT_VERIFICATION_RECORDS_PER_PROJECT`), evicting the
+oldest-inserted record first; an eviction only restores that object's full
+hash on its next cold open and is counted in
+`FileDescriptorMetrics::mount_verification_evictions`. Each record's payload is
+160 bytes on 64-bit targets (reference and stamp plus the insertion-order
+entry), so the cap bounds the payload at 640 KiB per project plus `BTreeMap`
+node overhead. One admission mounts each object of its checkpoint closure once
+(about 50 objects on LDBC SF0.1), well within the cap. The stamp's limits are those
 of the publication record above, and page/block checks on reads are unchanged.
 `FileDescriptorMetrics::identity_verified_bytes` and
 `mount_verification_reuses` report the whole-object identity bytes verified
