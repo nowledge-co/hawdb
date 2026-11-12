@@ -112,9 +112,26 @@ struct State {
     hits: Vec<Vec<Hit>>,
 }
 
+/// Search modes the crate was built with. Feature-reduced builds (the Bazel
+/// `minimal`, `vector_only` and `*_background` profiles) still compare epochs
+/// and documents, plus whichever retrievers they compile.
+fn compiled_modes() -> Vec<SearchMode> {
+    let mut modes = Vec::new();
+    if cfg!(feature = "full-text-search") {
+        modes.push(SearchMode::Text);
+    }
+    if cfg!(feature = "vector-search") {
+        modes.push(SearchMode::Vector);
+    }
+    if cfg!(all(feature = "full-text-search", feature = "vector-search")) {
+        modes.push(SearchMode::Hybrid);
+    }
+    modes
+}
+
 fn state(index: &SearchIndex) -> State {
     let mut hits = Vec::new();
-    for mode in [SearchMode::Text, SearchMode::Vector, SearchMode::Hybrid] {
+    for mode in compiled_modes() {
         for query in ["atomic checkpoint", "beta", "delta"] {
             hits.push(
                 index
