@@ -325,7 +325,7 @@ impl RowContext<'_> {
             ValueExpressionKind::Conversion { function, argument } => {
                 Ok(match self.value(argument)? {
                     BatchMutationValue::Static(value) => {
-                        BatchMutationValue::Static(function.apply(&value)?)
+                        BatchMutationValue::Static(function.apply_unaccounted(&value)?)
                     }
                     input => BatchMutationValue::Converted {
                         function: *function,

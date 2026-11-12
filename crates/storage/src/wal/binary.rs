@@ -77,6 +77,7 @@
 //! | 26   | Relational                                | 1 record:bytes                                                         |
 //! | 27   | RelationalSnapshot                        | 1 record:bytes                                                         |
 //! | 28   | Append                                    | 1 record:bytes                                                         |
+//! | 29   | CreatePropertyWithDefault                 | fields 1-5 as CreateProperty, 6 default_kind:varint (0 constant, 1 current_timestamp), 7 default_value:msg (constant only), 8 backfill_value:msg |
 //!
 //! Nested messages:
 //!
@@ -148,6 +149,12 @@ const OP_MARK_INITIAL_IMPORT_SOURCE: u64 = 25;
 const OP_RELATIONAL: u64 = 26;
 const OP_RELATIONAL_SNAPSHOT: u64 = 27;
 const OP_APPEND: u64 = 28;
+/// A defaulted `CreateProperty`. Undefaulted descriptors keep op code 5 and
+/// their exact pre-default bytes; a separate code makes older binaries fail
+/// closed ("unknown WAL op code") instead of skipping the default field.
+const OP_CREATE_PROPERTY_WITH_DEFAULT: u64 = 29;
+const PROPERTY_DEFAULT_KIND_CONSTANT: u64 = 0;
+const PROPERTY_DEFAULT_KIND_CURRENT_TIMESTAMP: u64 = 1;
 
 const VALUE_FIELD_NULL: u32 = 1;
 const VALUE_FIELD_BOOL: u32 = 2;
@@ -454,13 +461,37 @@ fn encode_op_body(op: &WalOp) -> Result<(u64, Vec<u8>)> {
             property,
             value_type,
             nullable,
+            default,
         } => {
             encode_varint_field(1, table_kind_code(*table_kind), &mut body);
             encode_string_field(2, table, &mut body);
             encode_string_field(3, property, &mut body);
             encode_varint_field(4, property_type_code(*value_type), &mut body);
             encode_varint_field(5, u64::from(*nullable), &mut body);
-            OP_CREATE_PROPERTY
+            match default {
+                None => OP_CREATE_PROPERTY,
+                Some(default) => {
+                    match &default.value {
+                        hawdb_core::PropertyDefault::CurrentTimestamp => {
+                            encode_varint_field(
+                                6,
+                                PROPERTY_DEFAULT_KIND_CURRENT_TIMESTAMP,
+                                &mut body,
+                            );
+                        }
+                        hawdb_core::PropertyDefault::Value(value) => {
+                            encode_varint_field(6, PROPERTY_DEFAULT_KIND_CONSTANT, &mut body);
+                            let mut value_body = Vec::new();
+                            encode_value_message(value, &mut value_body);
+                            encode_len_field(7, &value_body, &mut body);
+                        }
+                    }
+                    let mut backfill_body = Vec::new();
+                    encode_value_message(&default.backfill_value, &mut backfill_body);
+                    encode_len_field(8, &backfill_body, &mut body);
+                    OP_CREATE_PROPERTY_WITH_DEFAULT
+                }
+            }
         }
         WalOp::AlterTableState {
             table_kind,
@@ -1204,6 +1235,33 @@ mod tests {
                     property: "title".to_string(),
                     value_type,
                     nullable: value_type == PropertyType::Any,
+                    default: None,
+                });
+                samples.push(WalOp::CreateProperty {
+                    table_kind,
+                    table: "memories".to_string(),
+                    property: "defaulted".to_string(),
+                    value_type,
+                    nullable: true,
+                    default: Some(Box::new(hawdb_core::DeclaredPropertyDefault::declare(
+                        hawdb_core::PropertyDefault::Value(match value_type {
+                            PropertyType::Bool => Value::Bool(true),
+                            PropertyType::Int => Value::Int(-7),
+                            PropertyType::Float => Value::Float(0.0),
+                            PropertyType::List => Value::List(Vec::new()),
+                            _ => Value::String("{}".to_string()),
+                        }),
+                    ))),
+                });
+                samples.push(WalOp::CreateProperty {
+                    table_kind,
+                    table: "memories".to_string(),
+                    property: "created_at".to_string(),
+                    value_type: PropertyType::Any,
+                    nullable: true,
+                    default: Some(Box::new(hawdb_core::DeclaredPropertyDefault::declare(
+                        hawdb_core::PropertyDefault::CurrentTimestamp,
+                    ))),
                 });
             }
             for state in [
@@ -1362,6 +1420,67 @@ mod tests {
                 .unwrap();
                 assert_eq!(prepared.bind(lsn, epoch), ordinary);
             }
+        }
+    }
+
+    /// Undefaulted descriptors keep op code 5 and its exact field set, so
+    /// pre-#1683 WAL bytes are unchanged; defaulted descriptors use op code
+    /// 29, which older binaries reject as unknown instead of dropping it.
+    #[test]
+    fn property_defaults_use_a_separate_fail_closed_op_code() {
+        let plain = WalOp::CreateProperty {
+            table_kind: TableKind::Node,
+            table: "Memory".to_string(),
+            property: "score".to_string(),
+            value_type: PropertyType::Float,
+            nullable: true,
+            default: None,
+        };
+        let (code, body) = encode_op_body(&plain).unwrap();
+        assert_eq!(code, OP_CREATE_PROPERTY);
+        let mut legacy = Vec::new();
+        encode_varint_field(1, 0, &mut legacy);
+        encode_string_field(2, "Memory", &mut legacy);
+        encode_string_field(3, "score", &mut legacy);
+        encode_varint_field(4, 3, &mut legacy);
+        encode_varint_field(5, 1, &mut legacy);
+        assert_eq!(body, legacy);
+        for value in [
+            hawdb_core::PropertyDefault::Value(Value::List(Vec::new())),
+            hawdb_core::PropertyDefault::Value(Value::String("{}".to_string())),
+            hawdb_core::PropertyDefault::CurrentTimestamp,
+        ] {
+            let op = WalOp::CreateProperty {
+                table_kind: TableKind::Node,
+                table: "Memory".to_string(),
+                property: "score".to_string(),
+                value_type: PropertyType::Float,
+                nullable: true,
+                default: Some(Box::new(hawdb_core::DeclaredPropertyDefault::declare(
+                    value.clone(),
+                ))),
+            };
+            assert_eq!(
+                encode_op_body(&op).unwrap().0,
+                OP_CREATE_PROPERTY_WITH_DEFAULT
+            );
+            let entry = WalEntry { lsn: 3, op };
+            let (decoded, _) = round_trip(&entry, 1);
+            let WalOp::CreateProperty {
+                default: Some(decoded),
+                ..
+            } = decoded.op
+            else {
+                panic!("defaulted CreateProperty expected");
+            };
+            let WalOp::CreateProperty {
+                default: Some(expected),
+                ..
+            } = entry.op
+            else {
+                unreachable!();
+            };
+            assert_eq!(decoded, expected);
         }
     }
 

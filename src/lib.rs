@@ -541,9 +541,10 @@ pub use route_ownership::{
 };
 pub use schema::{
     AdvancedStatisticsFreshness, BasicGraphStatistics, CompositeIndexDescriptor,
-    ConstraintDescriptor, ConstraintId, ConstraintKind, ConstraintSubject, GraphStatistics,
-    IndexDescriptor, IndexId, IndexKind, IndexStatisticsSample, PropertyDescriptor, PropertyId,
-    PropertyType, SchemaObjectState, TableDescriptor, TableId, TableKind,
+    ConstraintDescriptor, ConstraintId, ConstraintKind, ConstraintSubject, DeclaredPropertyDefault,
+    GraphStatistics, IndexDescriptor, IndexId, IndexKind, IndexStatisticsSample, PropertyDefault,
+    PropertyDescriptor, PropertyId, PropertySchema, PropertyType, SchemaObjectState,
+    TableDescriptor, TableId, TableKind,
 };
 #[cfg(feature = "vector-search")]
 pub use search::rabitq_projection::{

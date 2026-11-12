@@ -442,6 +442,7 @@ fn nested_schema_and_depth_exhaustion_stage_a_gap_without_mutating_the_source() 
             property: "new_field".into(),
             value_type: PropertyType::String,
             nullable: true,
+            default: None,
         }]),
     ];
     assert!(

@@ -66,9 +66,14 @@ impl PhysicalPlan {
                 property,
                 value_type,
                 nullable,
+                default,
             } => {
+                let default = default
+                    .as_ref()
+                    .map(|default| format!(" default={default}"))
+                    .unwrap_or_default();
                 format!(
-                    "{pad}CreateProperty table_kind={table_kind:?} table={table} property={property} value_type={value_type:?} nullable={nullable}"
+                    "{pad}CreateProperty table_kind={table_kind:?} table={table} property={property} value_type={value_type:?} nullable={nullable}{default}"
                 )
             }
             PhysicalPlan::AlterTableState {

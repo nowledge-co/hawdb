@@ -84,6 +84,12 @@ to an anonymous target; named targets, labeled sources, multi-hop paths, type
 disjunctions and relationship properties are part of the pattern. No frozen
 case changes between rejection and acceptance.
 
+`migration_main_1683_property_defaults_peg_baseline_v1.jsonl` records the 30
+reviewed statement transitions introduced by issue #1683. Each case is an
+already accepted `CREATE PROPERTY` statement that stays accepted; its AST gains
+`default: None` (the new optional `DEFAULT <literal>` clause). No frozen case
+changes between rejection and acceptance.
+
 Run the default owner and complete local fuzz surface:
 
 ```sh

@@ -99,6 +99,8 @@ pub struct CreateProperty {
     pub property: String,
     pub value_type: SchemaPropertyType,
     pub nullable: bool,
+    /// `DEFAULT <literal>` or `DEFAULT current_timestamp()`.
+    pub default: Option<hawdb_core::PropertyDefault>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -452,7 +454,8 @@ pub enum ValueExpressionKind {
     },
     CurrentTimestamp,
     Timestamp(Box<ValueExpression>),
-    /// `toInteger`, `toFloat`, `toBoolean` or `toString` of a value.
+    /// `toInteger`, `toFloat`, `toBoolean`, `toString` or Kùzu `string`
+    /// (`to_string`) of a value.
     Conversion {
         function: hawdb_core::ConversionFunction,
         argument: Box<ValueExpression>,
@@ -637,7 +640,8 @@ pub enum ScalarExpressionKind {
     },
     /// `{key: expression, ...}` in source order (keys are unique).
     MapLiteral(Vec<(String, ScalarExpression)>),
-    /// `toInteger`, `toFloat`, `toBoolean` or `toString`.
+    /// `toInteger`, `toFloat`, `toBoolean`, `toString` or Kùzu `string`
+    /// (`to_string`).
     Conversion {
         function: hawdb_core::ConversionFunction,
         argument: Box<ScalarExpression>,

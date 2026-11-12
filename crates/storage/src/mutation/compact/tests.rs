@@ -248,6 +248,7 @@ fn opaque_ops() -> Vec<WalOp> {
             property: "value".into(),
             value_type: PropertyType::String,
             nullable: true,
+            default: None,
         },
         WalOp::AlterTableState {
             table_kind: TableKind::Node,

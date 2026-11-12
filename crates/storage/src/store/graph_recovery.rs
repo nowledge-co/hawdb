@@ -155,6 +155,9 @@ impl GraphStore {
                     },
                 ),
         );
+        // Import rows lacking a defaulted property get the default; rows that
+        // carry the key (even as an explicit NULL) keep their value.
+        fill_creation_defaults(&working_catalog, &mut ops, &mut lazy_creation_clock(None));
         self.validate_constraints_for_ops(&working_catalog, &ops)?;
         self.append_graph_wal_and_capture(&working_catalog, &ops, false)?;
         for op in ops {

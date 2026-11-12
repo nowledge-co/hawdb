@@ -144,6 +144,16 @@ pub(crate) fn encode_checkpoint_body_with_work_context<'a>(
             encode_schema_object_state(property.state)
         ))?;
     }
+    for property in image.catalog.property_descriptors() {
+        if let Some(default) = &property.default {
+            body.write(format_args!(
+                "property_default\t{}\t{}\t{}\n",
+                property.id.0,
+                encode_string(&crate::text::encode_property_default(&default.value))?,
+                encode_string(&crate::text::encode_value(&default.backfill_value))?
+            ))?;
+        }
+    }
     for constraint in image.catalog.unique_constraints() {
         let ConstraintSubject::Node(label_id) = constraint.subject else {
             continue;
