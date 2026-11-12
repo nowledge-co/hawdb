@@ -1032,7 +1032,12 @@ store an explicit NULL entry that survives WAL replay and checkpoints. A
 row-sourced CREATE or MERGE create branch whose row map lacks the referenced key
 (`row.p` with no `p` in `row`) now leaves the property out instead of storing
 NULL, so it receives the default; `UNWIND ... MATCH ... CREATE` relationships
-keep an explicit NULL row value instead of dropping it.
+keep an explicit NULL row value instead of dropping it. This differs from
+openCypher, where a missing map key reads as NULL, and from Kùzu/Ladybug, which
+type a `$rows` list of maps as a fixed-field STRUCT list and refuse the whole
+statement when a row lacks a key (measured on Kùzu 0.11.3 and Ladybug 0.15.3).
+Statements accepted by those engines therefore store the same values here; only
+rows lacking a key, which they refuse, receive the default in HawDB.
 `current_timestamp()` defaults use exactly the representation of HawDB's own
 Cypher `current_timestamp()`, `timestamp('...')` and `CAST(... AS TIMESTAMP)`:
 an `INT` of epoch nanoseconds, so defaulted and explicitly written timestamps
