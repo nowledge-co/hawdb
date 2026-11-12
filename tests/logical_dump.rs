@@ -28,8 +28,8 @@ use std::path::{Path, PathBuf};
 
 use hawdb::{
     confirm_logical_dump_publication, verify_logical_dump, Database, HawDBEmbedded, HawDBError,
-    LogicalDumpOptions, StorageFormatError, Value, LOGICAL_DUMP_FORMAT_VERSION,
-    PERSISTENT_FORMAT_VERSION,
+    LogicalDumpOptions, PropertyDefault, SchemaObjectState, StorageFormatError, Value,
+    LOGICAL_DUMP_FORMAT_VERSION, PERSISTENT_FORMAT_VERSION,
 };
 use logical_dump_support::{golden_v1_files, TempDir};
 
@@ -960,6 +960,376 @@ fn search_index_definitions_are_validated_and_never_dropped() {
         "{error:?}"
     );
     assert_not_published(&destination);
+}
+
+fn graph(database: &mut HawDBEmbedded, text: &str) {
+    database
+        .query_admitted(text)
+        .unwrap_or_else(|error| panic!("{text}: {error}"));
+}
+
+/// The single value a graph query returns.
+fn graph_value(database: &mut HawDBEmbedded, text: &str) -> Value {
+    let output = database
+        .query_admitted(text)
+        .unwrap_or_else(|error| panic!("{text}: {error}"));
+    let rows = output
+        .value_rows()
+        .map(|row| row.to_vec())
+        .collect::<Vec<_>>();
+    assert_eq!(rows.len(), 1, "{text}: {rows:?}");
+    rows[0][0].clone()
+}
+
+/// The stored property keys of one node, which tells an absent property
+/// from an explicit NULL.
+fn node_keys(database: &mut HawDBEmbedded, label: &str, id: &str) -> Vec<String> {
+    match graph_value(
+        database,
+        &format!("MATCH (n:{label} {{id: '{id}'}}) RETURN n"),
+    ) {
+        Value::Map(map) => map
+            .keys()
+            .filter(|key| !key.starts_with('_'))
+            .cloned()
+            .collect(),
+        other => panic!("node map expected, got {other:?}"),
+    }
+}
+
+fn epoch_millis_now() -> i64 {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    millis * 1_000_000
+}
+
+/// Declared defaults without their backfill instant, which import resolves
+/// again (it is only used while a descriptor is in BACKFILL).
+fn declared_defaults(
+    database: &mut HawDBEmbedded,
+) -> Vec<(String, String, SchemaObjectState, Option<PropertyDefault>)> {
+    database
+        .database_mut()
+        .property_schemas()
+        .unwrap()
+        .into_iter()
+        .map(|schema| {
+            (
+                schema.table,
+                schema.property,
+                schema.state,
+                schema.default.map(|default| default.value),
+            )
+        })
+        .collect()
+}
+
+/// Graph property DEFAULT metadata (#1683) is part of format 1: literal and
+/// `current_timestamp()` defaults on node and relationship properties are
+/// re-declared on import, restored records keep exactly the values they had
+/// (an explicit NULL is not replaced by the default), and a record created
+/// after import without the property gets the default.
+#[test]
+fn graph_property_defaults_round_trip_and_apply_after_import() {
+    let temp = TempDir::new("property-defaults");
+    let mut source = HawDBEmbedded::open(temp.path().join("source")).unwrap();
+    for statement in [
+        "CREATE NODE TABLE Memory",
+        "CREATE PROPERTY ON NODE TABLE Memory(rank) TYPE INT DEFAULT 0",
+        "CREATE PROPERTY ON NODE TABLE Memory(tags) TYPE LIST DEFAULT ['new', 'unread']",
+        "CREATE PROPERTY ON NODE TABLE Memory(created_at) TYPE INT DEFAULT current_timestamp()",
+        "CREATE RELATIONSHIP TABLE CITES",
+        "CREATE PROPERTY ON RELATIONSHIP TABLE CITES(weight) TYPE FLOAT DEFAULT 0.5",
+        "CREATE PROPERTY ON RELATIONSHIP TABLE CITES(at) TYPE ANY DEFAULT current_timestamp()",
+        "CREATE (:Memory {id: 'absent'})",
+        "CREATE (:Memory {id: 'explicit', rank: 5, tags: NULL, created_at: 42})",
+        "MATCH (a:Memory {id: 'absent'}), (b:Memory {id: 'explicit'}) CREATE (a)-[:CITES {k: 1}]->(b)",
+        "MATCH (a:Memory {id: 'explicit'}), (b:Memory {id: 'absent'}) CREATE (a)-[:CITES {k: 2, weight: 2.0}]->(b)",
+    ] {
+        graph(&mut source, statement);
+    }
+    let created_at = graph_value(
+        &mut source,
+        "MATCH (n:Memory {id: 'absent'}) RETURN n.created_at",
+    );
+    assert!(
+        matches!(created_at, Value::Int(at) if at > 0),
+        "{created_at:?}"
+    );
+    let first = temp.path().join("dump-1");
+    source.export_logical_dump(&first).unwrap();
+    let schema: serde_json::Value =
+        serde_json::from_slice(&fs::read(first.join("schema.json")).unwrap()).unwrap();
+    let defaults = schema["graph"]["properties"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|property| property.get("default").is_some())
+        .map(|property| {
+            (
+                property["name"].as_str().unwrap().to_string(),
+                property["default"].clone(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        defaults,
+        BTreeMap::from([
+            ("at".to_string(), serde_json::json!("current_timestamp")),
+            (
+                "created_at".to_string(),
+                serde_json::json!("current_timestamp")
+            ),
+            ("rank".to_string(), serde_json::json!({"literal": 0})),
+            (
+                "tags".to_string(),
+                serde_json::json!({"literal": ["new", "unread"]})
+            ),
+            (
+                "weight".to_string(),
+                serde_json::json!({"literal": {"$float": 0.5}})
+            ),
+        ])
+    );
+    verify_logical_dump(&first).unwrap();
+
+    let imported_path = temp.path().join("imported");
+    Database::import_logical_dump(&first, &imported_path).unwrap();
+    let mut imported = HawDBEmbedded::open(&imported_path).unwrap();
+    assert_eq!(
+        declared_defaults(&mut imported),
+        declared_defaults(&mut source)
+    );
+    // Restored records keep their stored values: an explicit NULL is not
+    // replaced by the default (absent keys are covered by the backfill test).
+    assert_eq!(
+        node_keys(&mut imported, "Memory", "explicit"),
+        node_keys(&mut source, "Memory", "explicit")
+    );
+    assert_eq!(
+        graph_value(
+            &mut imported,
+            "MATCH (n:Memory {id: 'explicit'}) RETURN [n.rank, n.tags, n.created_at]"
+        ),
+        Value::List(vec![Value::Int(5), Value::Null, Value::Int(42)])
+    );
+    assert_eq!(
+        graph_value(
+            &mut imported,
+            "MATCH (n:Memory {id: 'absent'}) RETURN n.created_at"
+        ),
+        created_at
+    );
+    drop(imported);
+
+    // dump(import(dump(db))) == dump(db), defaults included.
+    let mut imported = HawDBEmbedded::open(&imported_path).unwrap();
+    let second = temp.path().join("dump-2");
+    imported.export_logical_dump(&second).unwrap();
+    assert_eq!(dump_content(&first), dump_content(&second));
+
+    // A record created after import without the property gets the same
+    // creation-time default as in the source.
+    let before = epoch_millis_now();
+    graph(&mut imported, "CREATE (:Memory {id: 'after'})");
+    graph(
+        &mut imported,
+        "MATCH (a:Memory {id: 'after'}), (b:Memory {id: 'absent'}) CREATE (a)-[:CITES {k: 3}]->(b)",
+    );
+    let after = epoch_millis_now();
+    assert_eq!(
+        graph_value(
+            &mut imported,
+            "MATCH (n:Memory {id: 'after'}) RETURN [n.rank, n.tags]"
+        ),
+        Value::List(vec![
+            Value::Int(0),
+            Value::List(vec![
+                Value::String("new".to_string()),
+                Value::String("unread".to_string())
+            ])
+        ])
+    );
+    for query in [
+        "MATCH (n:Memory {id: 'after'}) RETURN n.created_at",
+        "MATCH ()-[r:CITES {k: 3}]->() RETURN r.at",
+    ] {
+        let at = graph_value(&mut imported, query);
+        assert!(
+            matches!(at, Value::Int(at) if before <= at && at <= after),
+            "{query}: {at:?} not in [{before}, {after}]"
+        );
+    }
+    assert_eq!(
+        graph_value(
+            &mut imported,
+            "MATCH ()-[r:CITES {k: 3}]->() RETURN r.weight"
+        ),
+        Value::Float(0.5)
+    );
+}
+
+/// A defaulted property still in BACKFILL: a literal default round-trips
+/// with its state, and the imported database finishes the backfill with the
+/// same value. A `current_timestamp()` backfill instant cannot be re-declared
+/// on import, so export refuses it until schema maintenance has finished.
+#[test]
+fn backfilling_property_defaults_restore_or_refuse_explicitly() {
+    let temp = TempDir::new("property-default-backfill");
+    let mut source = HawDBEmbedded::open(temp.path().join("source")).unwrap();
+    graph(&mut source, "CREATE NODE TABLE B");
+    for id in ["old1", "old2", "old3"] {
+        graph(&mut source, &format!("CREATE (:B {{id: '{id}'}})"));
+    }
+    graph(
+        &mut source,
+        "CREATE PROPERTY ON NODE TABLE B(q) TYPE DOUBLE DEFAULT 1.0",
+    );
+    let state = |database: &mut HawDBEmbedded, property: &str| {
+        database
+            .database_mut()
+            .property_schemas()
+            .unwrap()
+            .into_iter()
+            .find(|schema| schema.table == "B" && schema.property == property)
+            .unwrap()
+            .state
+    };
+    assert_eq!(state(&mut source, "q"), SchemaObjectState::Backfill);
+    let dump = temp.path().join("literal-dump");
+    source.export_logical_dump(&dump).unwrap();
+    let imported_path = temp.path().join("literal-imported");
+    Database::import_logical_dump(&dump, &imported_path).unwrap();
+    let mut imported = HawDBEmbedded::open(&imported_path).unwrap();
+    assert_eq!(state(&mut imported, "q"), SchemaObjectState::Backfill);
+    assert!(!node_keys(&mut imported, "B", "old1").contains(&"q".to_string()));
+    graph(&mut imported, "CREATE (:B {id: 'during'})");
+    imported.database_mut().run_schema_maintenance().unwrap();
+    imported.database_mut().run_schema_maintenance().unwrap();
+    assert_eq!(state(&mut imported, "q"), SchemaObjectState::Public);
+    assert_eq!(
+        graph_value(&mut imported, "MATCH (n:B) RETURN collect(DISTINCT n.q)"),
+        Value::List(vec![Value::Float(1.0)])
+    );
+    drop(imported);
+
+    graph(
+        &mut source,
+        "CREATE PROPERTY ON NODE TABLE B(seen_at) TYPE ANY DEFAULT current_timestamp()",
+    );
+    assert_eq!(state(&mut source, "seen_at"), SchemaObjectState::Backfill);
+    let refused = temp.path().join("timestamp-dump");
+    let error = source.export_logical_dump(&refused).unwrap_err();
+    assert!(
+        matches!(&error, HawDBError::Semantic(message)
+            if message.contains("current_timestamp()") && message.contains("B.seen_at")),
+        "{error:?}"
+    );
+    assert_not_published(&refused);
+    // Once maintenance has written the declaration instant, the records hold
+    // it as data and the default exports.
+    source.database_mut().run_schema_maintenance().unwrap();
+    source.database_mut().run_schema_maintenance().unwrap();
+    assert_eq!(state(&mut source, "seen_at"), SchemaObjectState::Public);
+    let seen_at = graph_value(&mut source, "MATCH (n:B {id: 'old1'}) RETURN n.seen_at");
+    source.export_logical_dump(&refused).unwrap();
+    let imported_path = temp.path().join("timestamp-imported");
+    Database::import_logical_dump(&refused, &imported_path).unwrap();
+    let mut imported = HawDBEmbedded::open(&imported_path).unwrap();
+    assert_eq!(
+        graph_value(&mut imported, "MATCH (n:B {id: 'old1'}) RETURN n.seen_at"),
+        seen_at
+    );
+    assert_eq!(
+        declared_defaults(&mut imported),
+        declared_defaults(&mut source)
+    );
+}
+
+/// `verify_logical_dump` and import check every graph property default
+/// against its descriptor and refuse an unsupported one before any write.
+#[test]
+fn graph_property_defaults_are_validated_and_fail_closed() {
+    let temp = TempDir::new("property-default-verify");
+    let mut database = HawDBEmbedded::open(temp.path().join("db")).unwrap();
+    for statement in [
+        "CREATE NODE TABLE Memory",
+        "CREATE PROPERTY ON NODE TABLE Memory(rank) TYPE INT DEFAULT 0",
+        "CREATE PROPERTY ON NODE TABLE Memory(title) TYPE STRING",
+        "CREATE (:Memory {id: 'm1'})",
+    ] {
+        graph(&mut database, statement);
+    }
+    let dump = temp.path().join("dump");
+    database.export_logical_dump(&dump).unwrap();
+    let cases: &[(&str, &str, serde_json::Value, Option<&str>)] = &[
+        ("null", "rank", serde_json::json!({"literal": null}), None),
+        (
+            "wrong-type",
+            "rank",
+            serde_json::json!({"literal": "zero"}),
+            None,
+        ),
+        (
+            "timestamp-on-string",
+            "title",
+            serde_json::json!("current_timestamp"),
+            None,
+        ),
+        (
+            "timestamp-backfill",
+            "rank",
+            serde_json::json!("current_timestamp"),
+            Some("backfill"),
+        ),
+        (
+            "unknown-kind",
+            "rank",
+            serde_json::json!({"expression": "rand()"}),
+            None,
+        ),
+        (
+            "bad-literal",
+            "rank",
+            serde_json::json!({"literal": {"$nope": 1}}),
+            None,
+        ),
+    ];
+    for (name, property, default, state) in cases {
+        let copy = temp.path().join(format!("{name}-dump"));
+        copy_dump(&dump, &copy);
+        rewrite_schema(&copy, |schema| {
+            let entry = schema["graph"]["properties"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|entry| entry["name"] == *property)
+                .unwrap();
+            entry["default"] = default.clone();
+            if let Some(state) = state {
+                entry["state"] = serde_json::json!(state);
+            }
+        });
+        assert!(
+            matches!(
+                verify_logical_dump(&copy),
+                Err(HawDBError::StorageIntegrity(_))
+            ),
+            "{name}: {:?}",
+            verify_logical_dump(&copy)
+        );
+        let destination = temp.path().join(format!("{name}-db"));
+        assert!(
+            matches!(
+                Database::import_logical_dump(&copy, &destination),
+                Err(HawDBError::StorageIntegrity(_))
+            ),
+            "{name}"
+        );
+        assert_not_published(&destination);
+    }
 }
 
 /// A dump written by format 1, checked in. Every later release must import it

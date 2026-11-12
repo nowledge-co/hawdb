@@ -17,16 +17,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use hawdb_core::{PropertyType, SchemaObjectState, TableKind, VectorDimension};
+use hawdb_core::{PropertyDefault, PropertyType, SchemaObjectState, TableKind, VectorDimension};
 use hawdb_storage::mutation::GraphMutation;
 use serde_json::Value as Json;
 
 use super::export::{quote_identifier, SYSTEM_SCHEMA_REGISTRY_TABLE};
 use super::files::{read_metadata, resolve_entry_path, verify_bytes, RecordReader, Stage};
 use super::model::{
-    Column, ColumnDefault, FileEntry, FileKind, GraphConstraintKind, GraphIndexKind, GraphSchema,
-    GraphTableKind, Manifest, ReferentialAction, Schema, SchemaState, Table, FORMAT_NAME,
-    MANIFEST_FILE,
+    Column, ColumnDefault, FileEntry, FileKind, GraphConstraintKind, GraphIndexKind, GraphProperty,
+    GraphPropertyDefault, GraphSchema, GraphTableKind, Manifest, ReferentialAction, Schema,
+    SchemaState, Table, FORMAT_NAME, MANIFEST_FILE,
 };
 use super::value::{self, malformed};
 use super::{
@@ -246,6 +246,7 @@ impl<'a> Plan<'a> {
             return Err(malformed("schema.json lists a table twice"));
         }
         validate_search_indexes(schema, &names)?;
+        validate_graph_property_defaults(&schema.graph)?;
         let mut paths = BTreeSet::from([manifest.schema.path.as_str()]);
         let mut plan = Self {
             tables: BTreeMap::new(),
@@ -465,6 +466,54 @@ fn property_type(text: &str) -> Result<PropertyType> {
             PropertyType::Vector(dimension)
         }
     })
+}
+
+/// A graph property default from the dump, checked against its descriptor
+/// so a damaged schema is refused by `verify_logical_dump` before any write.
+fn property_default(property: &GraphProperty) -> Result<Option<PropertyDefault>> {
+    let Some(default) = &property.default else {
+        return Ok(None);
+    };
+    let name = || format!("{}.{}", property.table, property.name);
+    let value_type = property_type(&property.property_type)?;
+    let (default, sample) = match default {
+        GraphPropertyDefault::Literal(literal) => {
+            let literal = value::decode(literal)?;
+            if literal == Value::Null {
+                return Err(malformed(format!(
+                    "graph property {} declares a null default",
+                    name()
+                )));
+            }
+            (PropertyDefault::Value(literal.clone()), literal)
+        }
+        GraphPropertyDefault::CurrentTimestamp => {
+            // Export refuses this state: import would resolve a different
+            // backfill instant than the source declared.
+            if property.state == SchemaState::Backfill {
+                return Err(malformed(format!(
+                    "graph property {} has a current_timestamp() default in backfill",
+                    name()
+                )));
+            }
+            (PropertyDefault::CurrentTimestamp, Value::Int(0))
+        }
+    };
+    if !value_type.logical_type().accepts(sample.as_ref()) {
+        return Err(malformed(format!(
+            "graph property {} has a default its type {} does not accept",
+            name(),
+            property.property_type
+        )));
+    }
+    Ok(Some(default))
+}
+
+fn validate_graph_property_defaults(graph: &GraphSchema) -> Result<()> {
+    for property in &graph.properties {
+        property_default(property)?;
+    }
+    Ok(())
 }
 
 fn graph_table_kind(kind: GraphTableKind) -> TableKind {
@@ -879,6 +928,7 @@ impl Target {
                 property: property.name.clone(),
                 value_type: property_type(&property.property_type)?,
                 nullable: property.nullable,
+                default: property_default(property)?,
             });
         }
         self.commit_graph(mutations)

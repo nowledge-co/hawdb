@@ -19,7 +19,8 @@ use std::fs;
 use std::path::Path;
 
 use hawdb_core::{
-    ConstraintKind, ConstraintSubject, IndexKind, PropertyType, SchemaObjectState, TableKind,
+    ConstraintKind, ConstraintSubject, IndexKind, PropertyDefault, PropertyDescriptor,
+    PropertyType, SchemaObjectState, TableKind,
 };
 use hawdb_executor::QueryStreamOptions;
 use hawdb_storage::relational::{
@@ -31,9 +32,9 @@ use serde_json::{json, Value as Json};
 use super::files::{io_error, HashedWriter, Stage};
 use super::model::{
     Column, ColumnDefault, Counts, CreatedBy, FileEntry, FileKind, ForeignKey, GraphConstraint,
-    GraphConstraintKind, GraphIndex, GraphIndexKind, GraphProperty, GraphSchema, GraphTable,
-    GraphTableKind, Index, Manifest, ReferentialAction, SchemaState, Source, Table, DATA_DIR,
-    FORMAT_NAME, MANIFEST_FILE, SCHEMA_FILE,
+    GraphConstraintKind, GraphIndex, GraphIndexKind, GraphProperty, GraphPropertyDefault,
+    GraphSchema, GraphTable, GraphTableKind, Index, Manifest, ReferentialAction, SchemaState,
+    Source, Table, DATA_DIR, FORMAT_NAME, MANIFEST_FILE, SCHEMA_FILE,
 };
 use super::{value, LogicalDumpExportReport, LogicalDumpOptions, LOGICAL_DUMP_FORMAT_VERSION};
 use crate::api::DatabaseReadTransaction;
@@ -581,6 +582,53 @@ pub(super) fn property_type_name(property_type: PropertyType) -> String {
     }
 }
 
+/// A declared graph property default in the dump encoding.
+///
+/// Only a `BACKFILL` descriptor still uses the backfill value resolved at
+/// declaration time (schema maintenance writes it into records that lacked
+/// the property). Import re-declares the default, which resolves that value
+/// again: identical for a literal, a different instant for
+/// `current_timestamp()`. That one case is refused rather than restored with
+/// a different value.
+fn property_default(
+    table: &str,
+    property: &PropertyDescriptor,
+) -> Result<Option<GraphPropertyDefault>> {
+    let Some(declared) = &property.default else {
+        return Ok(None);
+    };
+    let backfilling = property.state == SchemaObjectState::Backfill;
+    Ok(Some(match &declared.value {
+        PropertyDefault::Value(Value::Null) => {
+            return Err(HawDBError::StorageIntegrity(format!(
+                "logical dump: property {table}.{} declares DEFAULT NULL",
+                property.name
+            )));
+        }
+        PropertyDefault::Value(literal) => {
+            if backfilling && declared.backfill_value != *literal {
+                return Err(HawDBError::StorageIntegrity(format!(
+                    "logical dump: property {table}.{} backfills a value other than its literal default",
+                    property.name
+                )));
+            }
+            GraphPropertyDefault::Literal(value::encode(literal))
+        }
+        PropertyDefault::CurrentTimestamp => {
+            if backfilling {
+                return Err(unsupported(
+                    "a current_timestamp() property default whose backfill has not finished",
+                    format!(
+                        "{table}.{} is in BACKFILL; run schema maintenance until it is PUBLIC, then export",
+                        property.name
+                    ),
+                ));
+            }
+            GraphPropertyDefault::CurrentTimestamp
+        }
+    }))
+}
+
 fn graph_schema(catalog: &Catalog) -> Result<GraphSchema> {
     let label = |id| {
         catalog.label_name(id).map(str::to_string).ok_or_else(|| {
@@ -623,6 +671,7 @@ fn graph_schema(catalog: &Catalog) -> Result<GraphSchema> {
                 property_type: property_type_name(property.value_type),
                 nullable: property.nullable,
                 state: schema_state(property.state),
+                default: property_default(table, property)?,
             })
         })
         .collect::<Result<Vec<_>>>()?;

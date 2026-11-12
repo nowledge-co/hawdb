@@ -170,6 +170,21 @@ take file names from the manifest, never by listing the directory.
 - Index and constraint *definitions* are dumped, never their physical state.
   Import rebuilds them over the imported data, which also re-validates every
   constraint.
+- A graph property may carry a `default`, the creation-time default declared
+  by `CREATE PROPERTY ... DEFAULT ...`: `{"literal": <value>}` (a non-null
+  value in the encoding below that the property `type` accepts) or
+  `"current_timestamp"` (`DEFAULT current_timestamp()`, allowed on `int` and
+  `any` properties). The field is omitted when a property has none.
+  Import re-declares the default, so a node or relationship created
+  afterwards without the property gets it, exactly as in the source.
+  Restored records are not new records: they keep exactly the properties
+  they had, so a record that lacked a defaulted property still lacks it and
+  an explicit NULL stays NULL. A property in `backfill` resumes its backfill
+  in the imported database with the same literal value. A
+  `current_timestamp()` default still in `backfill` would be re-resolved to
+  a different instant, so export refuses it (see Coverage) and `verify`
+  refuses a dump declaring one; `verify` also refuses a null default, a
+  literal the property type rejects, and an unknown default kind.
 - A table may list `search_indexes`, the definitions of BM25 SQL search
   indexes over its `text` columns:
   `[{"name": "events_text", "column": "text", "analyzer": "cjk_ngram"}]`.
@@ -319,7 +334,8 @@ Format version 1 covers the selected branch's:
   unique constraints, foreign keys including self-references, secondary
   indexes, and rows;
 - the property graph: labels, relationship types, typed node and
-  relationship tables and properties with their schema states, nodes,
+  relationship tables and properties with their schema states and
+  creation-time defaults, nodes,
   relationships, properties, and the definitions of equality, range,
   full-text and composite property indexes and of unique/exists constraints.
 
@@ -331,6 +347,9 @@ case:
 - materialized views;
 - persisted projected-graph definitions;
 - nodes with zero or several labels;
+- a `current_timestamp()` graph property default whose backfill has not
+  finished (run schema maintenance until the property is `public`, then
+  export);
 - foreign-key cycles between different tables.
 
 Not exported:

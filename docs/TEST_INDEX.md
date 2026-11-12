@@ -3532,6 +3532,24 @@ Specification: [LOGICAL_DUMP.md](LOGICAL_DUMP.md).
     or search index name, fails `verify_logical_dump` and import with
     `StorageIntegrity`; a well-formed entry verifies, and a build without SQL
     search indexes refuses its import with `Semantic`. Nothing is published.
+  - graph property DEFAULT metadata (#1683) in format 1:
+    `graph_property_defaults_round_trip_and_apply_after_import` round-trips
+    literal (`INT`, `LIST`, `FLOAT`) and `current_timestamp()` defaults on
+    node and relationship properties, checks the `schema.json` spellings, that
+    restored records keep their stored values (an explicit NULL is not
+    replaced), that `dump(import(dump(db)))` stays byte-identical, and that a
+    node and a relationship created after import without the property get
+    the default (a fresh `current_timestamp()` instant).
+    `backfilling_property_defaults_restore_or_refuse_explicitly` restores a
+    literal default in `BACKFILL` with records lacking it, finishes that
+    backfill by maintenance in the imported database, refuses with
+    `Semantic` to export a `current_timestamp()` default still in `BACKFILL`
+    (nothing published), and exports it once maintenance has made it public.
+    `graph_property_defaults_are_validated_and_fail_closed` makes
+    `verify_logical_dump` and import refuse, with `StorageIntegrity` and
+    nothing published, a null default, a literal the type rejects,
+    `current_timestamp()` on a `STRING` property or in `backfill`, an unknown
+    default kind and an unknown value tag.
   - a newer `dump_format_version` is a typed `UnsupportedStorageFormat`
     refusal before any write (from `verify_logical_dump` too), and unknown
     manifest fields are ignored.

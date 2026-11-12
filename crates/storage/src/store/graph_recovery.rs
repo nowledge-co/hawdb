@@ -64,7 +64,7 @@ impl GraphStore {
                 "HawDB Lightning initial import requires an empty target graph".to_string(),
             ));
         }
-        self.import_graph_rows_batch(catalog, nodes, relationships)
+        self.import_graph_rows(catalog, nodes, relationships, true)
     }
 
     /// Imports one bounded batch of graph rows with their original ids as a
@@ -75,11 +75,26 @@ impl GraphStore {
     /// a caller can stream nodes first and relationships afterwards in
     /// bounded batches. The batch is validated completely before its WAL
     /// record is appended; a refused batch changes nothing.
+    ///
+    /// Rows are restored exactly as given: declared property defaults are
+    /// not applied, so a restored record that lacked a defaulted property
+    /// keeps lacking it (a logical dump restores state, it does not create
+    /// new records).
     pub fn import_graph_rows_batch(
         &mut self,
         catalog: &mut Catalog,
         nodes: Vec<GraphSnapshotNodeImport>,
         relationships: Vec<GraphSnapshotRelationshipImport>,
+    ) -> Result<()> {
+        self.import_graph_rows(catalog, nodes, relationships, false)
+    }
+
+    fn import_graph_rows(
+        &mut self,
+        catalog: &mut Catalog,
+        nodes: Vec<GraphSnapshotNodeImport>,
+        relationships: Vec<GraphSnapshotRelationshipImport>,
+        apply_creation_defaults: bool,
     ) -> Result<()> {
         let mut node_ids = BTreeSet::new();
         for (id, label, _) in &nodes {
@@ -155,9 +170,11 @@ impl GraphStore {
                     },
                 ),
         );
-        // Import rows lacking a defaulted property get the default; rows that
-        // carry the key (even as an explicit NULL) keep their value.
-        fill_creation_defaults(&working_catalog, &mut ops, &mut lazy_creation_clock(None));
+        // Initial-import rows lacking a defaulted property get the default;
+        // rows that carry the key (even as an explicit NULL) keep their value.
+        if apply_creation_defaults {
+            fill_creation_defaults(&working_catalog, &mut ops, &mut lazy_creation_clock(None));
+        }
         self.validate_constraints_for_ops(&working_catalog, &ops)?;
         self.append_graph_wal_and_capture(&working_catalog, &ops, false)?;
         for op in ops {

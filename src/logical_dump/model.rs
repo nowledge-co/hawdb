@@ -220,6 +220,23 @@ pub(super) struct GraphProperty {
     pub property_type: String,
     pub nullable: bool,
     pub state: SchemaState,
+    /// The creation-time default (`CREATE PROPERTY ... DEFAULT ...`). Import
+    /// re-declares it, so a record created after import without the property
+    /// gets it; restored records keep exactly the properties they had.
+    /// Omitted when absent, so a dump without defaults is byte-identical to
+    /// one written before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<GraphPropertyDefault>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum GraphPropertyDefault {
+    /// A constant in the dump value encoding (never `null`).
+    Literal(serde_json::Value),
+    /// `current_timestamp()`: one millisecond-truncated `INT` epoch
+    /// nanosecond value per writing transaction.
+    CurrentTimestamp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
