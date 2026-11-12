@@ -99,6 +99,7 @@ pub enum PhysicalPlan {
         property: String,
         value_type: SchemaPropertyType,
         nullable: bool,
+        default: Option<hawdb_core::PropertyDefault>,
     },
     AlterTableState {
         table_kind: SchemaTableKind,

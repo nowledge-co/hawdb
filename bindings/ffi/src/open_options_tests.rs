@@ -122,6 +122,7 @@ fn absent_options_keep_power_loss_safe_defaults() {
     assert_eq!(open.config, defaults.config);
     assert!(!open.config.relational_monotonic_append_fast_path);
     assert_eq!(open.config.max_read_result_rows, None);
+    assert_eq!(open.config.max_read_intermediate_rows, None);
     assert_eq!(
         open.config.max_read_result_payload_bytes,
         Some(hawdb::DEFAULT_MAX_READ_RESULT_PAYLOAD_BYTES)
@@ -134,6 +135,7 @@ fn every_option_maps_to_its_typed_field() {
         "read_only": false,
         "durability": "sync_on_checkpoint",
         "max_read_result_rows": 10_000,
+        "max_read_intermediate_rows": 250_000,
         "max_read_result_payload_bytes": 8_388_608,
         "relational_monotonic_append_fast_path": true,
     }))
@@ -141,6 +143,8 @@ fn every_option_maps_to_its_typed_field() {
     assert_eq!(open.durability, DurabilityPolicy::SyncOnCheckpoint);
     assert!(!open.config.read_only);
     assert_eq!(open.config.max_read_result_rows, Some(10_000));
+    assert_eq!(open.config.max_read_intermediate_rows, Some(250_000));
+    assert_eq!(open.config.read_intermediate_row_limit(), Some(250_000));
     assert_eq!(open.config.max_read_result_payload_bytes, Some(8_388_608));
     assert!(open.config.relational_monotonic_append_fast_path);
 
@@ -158,6 +162,19 @@ fn every_option_maps_to_its_typed_field() {
         let open = applied(json!({"max_read_result_rows": unlimited})).unwrap();
         assert_eq!(open.config.read_result_row_limit(), None, "{unlimited}");
     }
+    let inherited = applied(json!({
+        "max_read_result_rows": 100,
+        "max_read_intermediate_rows": null,
+    }))
+    .unwrap();
+    assert_eq!(inherited.config.read_intermediate_row_limit(), Some(100));
+    let unbounded = applied(json!({
+        "max_read_result_rows": 100,
+        "max_read_intermediate_rows": 0,
+    }))
+    .unwrap();
+    assert_eq!(unbounded.config.read_result_row_limit(), Some(100));
+    assert_eq!(unbounded.config.read_intermediate_row_limit(), None);
 }
 
 #[test]
@@ -185,6 +202,14 @@ fn unknown_keys_and_invalid_values_are_rejected() {
         (
             json!({"max_read_result_rows": "10"}),
             "\"max_read_result_rows\" must be",
+        ),
+        (
+            json!({"max_read_intermediate_rows": -1}),
+            "\"max_read_intermediate_rows\" must be",
+        ),
+        (
+            json!({"max_read_intermediate_rows": "10"}),
+            "\"max_read_intermediate_rows\" must be",
         ),
         (
             json!({"max_read_result_payload_bytes": 0}),

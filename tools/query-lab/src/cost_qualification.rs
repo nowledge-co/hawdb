@@ -42,7 +42,7 @@ pub enum CandidateKind {
 }
 
 impl CandidateKind {
-    fn engine(self) -> OptimizerQualificationCandidateKind {
+    pub(crate) fn engine(self) -> OptimizerQualificationCandidateKind {
         match self {
             Self::Ordinary => OptimizerQualificationCandidateKind::Ordinary,
             Self::TopN => OptimizerQualificationCandidateKind::BoundedOrder(
@@ -247,7 +247,7 @@ fn fixture() -> Result<Database, String> {
     Ok(db)
 }
 
-fn full_result(output: &hawdb::BoundedReadQueryOutput) -> Json {
+pub(crate) fn full_result(output: &hawdb::BoundedReadQueryOutput) -> Json {
     let rows = output
         .output
         .rows

@@ -114,6 +114,7 @@ impl PhysicalPlan {
                 property,
                 value_type,
                 nullable,
+                default,
             } => {
                 output.push_str("CreateProperty(");
                 output.push_str(table_kind.as_str());
@@ -123,6 +124,10 @@ impl PhysicalPlan {
                 write_identifier(output, property);
                 output.push_str(&value_type.fingerprint_suffix());
                 output.push_str(if *nullable { ":nullable" } else { ":not_null" });
+                if let Some(default) = default {
+                    output.push_str(":default=");
+                    write_identifier(output, &default.to_string());
+                }
                 output.push(')');
             }
             PhysicalPlan::AlterTableState {

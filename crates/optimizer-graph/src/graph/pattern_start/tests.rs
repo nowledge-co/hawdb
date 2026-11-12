@@ -122,6 +122,132 @@ fn prefix_statistics_scaling_measurement() {
     }
 }
 
+fn correlated_catalog(indexed_rows: u64, joint_ndv: u64) -> OptimizerCatalog {
+    OptimizerCatalog::new(
+        OptimizerCatalogIndexes::new(
+            [("Item".into(), "a".into())],
+            [("Item".into(), vec!["a".into(), "b".into()])],
+            [],
+            [],
+        ),
+        OptimizerCatalogStatistics {
+            label_counts: [("Item".into(), 1000)].into(),
+            property_distinct_counts: [
+                (("Item".into(), "a".into()), 10),
+                (("Item".into(), "b".into()), 10),
+            ]
+            .into(),
+            property_index_statistics: [(
+                ("Item".into(), "a".into()),
+                crate::graph::OptimizerIndexStatistics {
+                    index_size: 1000,
+                    distinct_count: 10,
+                },
+            )]
+            .into(),
+            ..Default::default()
+        }
+        .with_composite_index_statistics([(
+            ("Item".into(), vec!["a".into(), "b".into()]),
+            crate::graph::OptimizerIndexStatistics {
+                index_size: indexed_rows,
+                distinct_count: joint_ndv,
+            },
+        )]),
+    )
+}
+
+#[test]
+fn match_seeds_and_expansion_filters_reuse_the_joint_domain() {
+    let catalog = correlated_catalog(1000, 10);
+    let node = node("n", "Item", &["a", "b"]);
+    assert_eq!(
+        node_work(&catalog, &node),
+        Some(WalkEstimate {
+            work: 101.0,
+            rows: 100.0
+        })
+    );
+    assert_eq!(node_selectivity(&catalog, &node), 0.1);
+    assert_eq!(
+        catalog
+            .estimate_joint_equality_rows("Item", &["a", "b"], &["a"], 100)
+            .unwrap()
+            .rows,
+        100
+    );
+    let independent = correlated_catalog(1000, 100);
+    assert_eq!(node_work(&independent, &node).unwrap().rows, 10.0);
+    let sparse = correlated_catalog(500, 10);
+    assert_eq!(
+        node_work(&sparse, &node).unwrap().rows,
+        10.0,
+        "sparse samples cannot condition on a marginal domain"
+    );
+    assert_eq!(node_selectivity(&sparse, &node), 0.05);
+    let invalid = correlated_catalog(1000, 5);
+    assert_eq!(node_work(&invalid, &node).unwrap().rows, 10.0);
+}
+
+#[test]
+fn reused_prefix_scratch_preserves_joint_seed_and_target_rows() {
+    let mut catalog = correlated_catalog(1000, 10);
+    catalog.path_counts = [(("Item".into(), "R".into(), "Item".into()), 2000)].into();
+    let nodes = [
+        node("seed", "Item", &["a", "b"]),
+        node("middle", "Item", &["a", "b"]),
+        node("target", "Item", &["a", "b"]),
+    ];
+    let edges = [edge("R", Outgoing), edge("R", Outgoing)];
+    let mut context = WalkContext::new(&catalog);
+    for _ in 0..3 {
+        assert_eq!(
+            walk_with_context(&mut context, &nodes, &edges, 0),
+            Some(WalkEstimate {
+                work: 461.0,
+                rows: 4.0,
+            })
+        );
+    }
+    assert_eq!(context.scans, 1);
+    assert_eq!(context.len, 1);
+}
+
+#[test]
+fn value_frequency_and_exact_point_evidence_keep_precedence_over_joint_averages() {
+    let hot = hawdb_core::Value::Int(0);
+    let mut catalog = correlated_catalog(1000, 10);
+    catalog.property_distributions = std::sync::Arc::new(
+        [(
+            ("Item".into(), "a".into()),
+            hawdb_core::CompressedHistogram::from_sample(
+                1000,
+                1000,
+                0,
+                0,
+                std::iter::repeat_n(hot.clone(), 90)
+                    .chain(std::iter::repeat_n(hawdb_core::Value::Int(1), 10))
+                    .collect(),
+            )
+            .unwrap(),
+        )]
+        .into(),
+    );
+    let mut node = node("n", "Item", &["a", "b"]);
+    node.values.insert("a", &hot);
+    assert!(joint_node_rows(&catalog, &node, Some("a"), 900).is_none());
+    assert_eq!(node_work(&catalog, &node).unwrap().rows, 90.0);
+    let local = correlated_catalog(1000, 10).with_property_equality_row_count(
+        "Item".into(),
+        "a".into(),
+        900,
+    );
+    assert_eq!(node_work(&local, &node).unwrap().rows, 90.0);
+    let null = hawdb_core::Value::Null;
+    node.values.insert("a", &null);
+    assert!(joint_node_rows(&catalog, &node, None, 1000).is_none());
+}
+
 /// 3,000 persons, 7,500 organisations and 1,100 places; `Place.name` is
 /// unique and indexed, `Person.id` too.
 pub(in crate::graph) fn catalog() -> OptimizerCatalog {

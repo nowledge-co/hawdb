@@ -43,6 +43,7 @@ impl GraphStore {
             ops: Vec::new(),
             rows: Vec::new(),
             persistent_commit: self.durable.is_some(),
+            creation_clock: hawdb_core::PropertyDefault::creation_clock(),
         }
     }
 
@@ -408,6 +409,10 @@ impl GraphStore {
         let mut limit_tracker = crate::mutation::MutationCommitLimitTracker::default();
         let mut pending_nodes = PendingNodes::default();
         let mut pending_relationships = Vec::new();
+        let mut creation_clock = lazy_creation_clock(options.creation_clock);
+        // Per-record default filling stays off the hot path until a default
+        // is declared (before or within this batch).
+        let mut defaults_declared = working_catalog.has_property_defaults();
         // A uniform MERGE batch only appends pending edges, so their positions
         // stay stable. Mixed writes may update/delete them and keep the scan.
         let index_pending_merges = mutations
@@ -493,6 +498,7 @@ impl GraphStore {
                     property,
                     value_type,
                     nullable,
+                    default,
                 } => {
                     let table_id =
                         ensure_table_descriptor(&mut working_catalog, table_kind, &table);
@@ -502,23 +508,24 @@ impl GraphStore {
                             ("created".to_string(), Value::Bool(false)),
                         ]));
                     } else {
-                        validate_property_descriptor(
+                        let (declaration, declared, state) = property_declaration_ops(
                             &working_catalog,
                             self,
-                            table_id,
-                            &property,
-                            value_type,
-                            nullable,
+                            &PropertyDeclaration {
+                                table_kind,
+                                table: &table,
+                                table_id,
+                                property: &property,
+                                value_type,
+                                nullable,
+                                default,
+                            },
                         )?;
-                        ops.push(WalOp::CreateProperty {
-                            table_kind,
-                            table: table.clone(),
-                            property: property.clone(),
-                            value_type,
-                            nullable,
-                        });
-                        let id = working_catalog
-                            .get_or_create_property(table_id, &property, value_type, nullable);
+                        defaults_declared |= declared.is_some();
+                        ops.extend(declaration);
+                        let id = working_catalog.get_or_create_property_with_default(
+                            table_id, &property, value_type, nullable, declared, state,
+                        );
                         rows.push(BTreeMap::from([
                             ("property_id".to_string(), Value::Int(id.0 as i64)),
                             ("created".to_string(), Value::Bool(true)),
@@ -804,7 +811,18 @@ impl GraphStore {
                         ]));
                     }
                 }
-                GraphMutation::CreateNode { label, properties } => {
+                GraphMutation::CreateNode {
+                    label,
+                    mut properties,
+                } => {
+                    if defaults_declared {
+                        working_catalog.fill_creation_defaults(
+                            TableKind::Node,
+                            &label,
+                            &mut properties,
+                            &mut creation_clock,
+                        );
+                    }
                     let id = NodeId(next_node_id);
                     next_node_id += 1;
                     let label_id = working_catalog.get_or_create_label(&label);
@@ -873,6 +891,17 @@ impl GraphStore {
                         let mut properties = match_properties;
                         for (property, value) in on_create_properties {
                             properties.insert(property, value);
+                        }
+                        // Defaults fill first; ON CREATE SET (already merged)
+                        // and post-merge SET override them, so an explicit
+                        // `ON CREATE SET p = NULL` stays NULL.
+                        if defaults_declared {
+                            working_catalog.fill_creation_defaults(
+                                TableKind::Node,
+                                &label,
+                                &mut properties,
+                                &mut creation_clock,
+                            );
                         }
                         apply_node_assignments_to_properties(
                             &mut properties,
@@ -2037,6 +2066,10 @@ impl GraphStore {
             limit_tracker.check_appended(&ops, &rows, limits)?;
         }
 
+        // Statement writes become final WAL ops here, so creation defaults are
+        // materialized before validation, capture and WAL encoding. Prepared
+        // transaction commits replay these already-filled ops unchanged.
+        fill_creation_defaults(&working_catalog, &mut ops, &mut creation_clock);
         self.commit_prepared_mutation_ops(catalog, working_catalog, ops, rows, limits, options)
     }
 
@@ -2057,6 +2090,7 @@ impl GraphStore {
             captured_graph_ops,
             prepared_wal,
             retain_on_live_headroom,
+            creation_clock: _,
         } = options;
         self.ensure_usable()?;
         ensure_mutation_commit_limits(&ops, &rows, limits)?;

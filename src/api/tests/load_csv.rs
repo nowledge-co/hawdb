@@ -1030,3 +1030,28 @@ fn fifo_sources_fail_without_blocking() {
         assert!(error.to_string().contains("not a regular file"), "{error}");
     }
 }
+
+#[test]
+fn created_rows_without_a_value_receive_declared_property_defaults() {
+    let dir = ImportDir::new("defaults");
+    let mut db = dir.database();
+    db.query("CREATE NODE TABLE P").unwrap();
+    db.query("CREATE PROPERTY ON NODE TABLE P(name) TYPE STRING DEFAULT 'anon'")
+        .unwrap();
+    db.query("CREATE PROPERTY ON NODE TABLE P(rank) TYPE INT DEFAULT 0")
+        .unwrap();
+    let path = dir.write("people.csv", "id,name\n1,\n2,Bo\n");
+    // An empty field is NULL and CREATE omits NULL properties (openCypher),
+    // so it gets the default; `row.rank` names a column the file lacks.
+    db.query_with_params(
+        "LOAD CSV WITH HEADERS FROM $f AS row \
+         CREATE (:P {id: toInteger(row.id), name: row.name, rank: row.rank})",
+        &file(&path),
+    )
+    .unwrap();
+    let output = db
+        .query("MATCH (p:P) RETURN p.name AS name, p.rank AS rank ORDER BY p.id")
+        .unwrap();
+    assert_eq!(column(&output, "name"), [string("anon"), string("Bo")]);
+    assert_eq!(column(&output, "rank"), [Value::Int(0), Value::Int(0)]);
+}

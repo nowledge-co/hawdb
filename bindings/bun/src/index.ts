@@ -16,6 +16,16 @@
 
 import { CString, openNativeLibrary, type NativeLibrary, type NativePointer } from "./native.ts";
 import { parseLosslessJson, stringifyParameters } from "./json.ts";
+import { resolvePrebuiltLibrary } from "./platform.ts";
+
+export {
+  PLATFORM_PACKAGES,
+  UnsupportedPlatformError,
+  platformPackageName,
+  resolvePrebuiltLibrary,
+  selectPlatformPackage,
+  type PlatformPackage,
+} from "./platform.ts";
 
 const encoder = new TextEncoder();
 const databaseConstructorToken = Symbol("HawDB Database constructor");
@@ -89,6 +99,62 @@ function nativeOpenOptions(options: OpenOptions): Record<string, HawDBParameter>
   }
   return native;
 }
+
+/** An unsigned 64-bit count: `number` when safe, otherwise `bigint`. */
+export type Count = number | bigint;
+
+/** `database.backup` result; `library.restore` returns the same fields. */
+export interface BackupReport {
+  generation: Count;
+  checkpoint_commit_epoch: Count;
+  file_count: Count;
+  total_bytes: Count;
+  manifest_checksum: Count;
+}
+
+export type RestoreReport = BackupReport;
+
+/** `database.scrub` result. */
+export interface ScrubReport {
+  generation: Count;
+  checked_file_count: Count;
+  checked_bytes: Count;
+  sha256_verified_file_count: Count;
+  wal_record_count: Count;
+  wal_bytes: Count;
+}
+
+function parseReport<T>(text: string | null, fields: readonly string[]): T {
+  if (text === null) {
+    throw new HawDBError("ffi", "HawDB maintenance call returned no report");
+  }
+  const report = parseLosslessJson(text);
+  if (
+    report === null ||
+    Array.isArray(report) ||
+    typeof report !== "object" ||
+    !fields.every((field) => typeof report[field] === "number" || typeof report[field] === "bigint")
+  ) {
+    throw new TypeError("HawDB returned a malformed maintenance report");
+  }
+  return report as T;
+}
+
+const backupReportFields = [
+  "generation",
+  "checkpoint_commit_epoch",
+  "file_count",
+  "total_bytes",
+  "manifest_checksum",
+] as const;
+const scrubReportFields = [
+  "generation",
+  "checked_file_count",
+  "checked_bytes",
+  "sha256_verified_file_count",
+  "wal_record_count",
+  "wal_bytes",
+] as const;
 
 export class QueryResult {
   constructor(
@@ -310,6 +376,7 @@ export class HawDBLibrary {
     sql: boolean,
     statement: string,
     parameters: Record<string, HawDBParameter> | HawDBParameter[],
+    transaction = false,
   ): QueryResult {
     this.assertOpen();
     const lifetime = this.handles.get(handle);
@@ -323,7 +390,14 @@ export class HawDBLibrary {
     const parameterBytes = encoder.encode(stringifyParameters(parameters));
     const result = outputBuffer();
     const error = outputBuffer();
-    const call = sql ? this.native.symbols.hawdb_query_sql : this.native.symbols.hawdb_query;
+    const symbols = this.native.symbols;
+    const call = transaction
+      ? sql
+        ? symbols.hawdb_transaction_query_sql
+        : symbols.hawdb_transaction_query
+      : sql
+        ? symbols.hawdb_query_sql
+        : symbols.hawdb_query;
     // Getters may close this database and open another at the same address.
     this.assertOpen();
     if (this.handles.get(handle) !== lifetime) {
@@ -353,6 +427,117 @@ export class HawDBLibrary {
     return parseResult(text);
   }
 
+  /** Begin, commit or roll back the handle's transaction. */
+  transactionControl(handle: NativePointer, action: "begin" | "commit" | "rollback"): void {
+    this.assertOpen();
+    if (!this.handles.has(handle)) {
+      throw new HawDBError("invalid_handle", "HawDB database handle is not live");
+    }
+    const result = outputBuffer();
+    const error = outputBuffer();
+    const symbols = this.native.symbols;
+    const ok =
+      action === "begin"
+        ? symbols.hawdb_begin_transaction(handle, error)
+        : action === "commit"
+          ? symbols.hawdb_commit_transaction(handle, result, error)
+          : symbols.hawdb_rollback_transaction(handle, error);
+    // The commit envelope carries no rows a caller needs; release it.
+    this.takeBuffer(result);
+    if (!ok) {
+      throw this.errorFrom(error, `HawDB transaction ${action} failed`);
+    }
+    const unexpected = this.takeBuffer(error);
+    if (unexpected !== null) {
+      throw new HawDBError("ffi", `HawDB transaction ${action} succeeded with an error payload: ${unexpected}`);
+    }
+  }
+
+  private report<T>(
+    fields: readonly string[],
+    action: string,
+    call: (report: BigUint64Array, error: BigUint64Array) => boolean,
+  ): T {
+    const report = outputBuffer();
+    const error = outputBuffer();
+    const ok = call(report, error);
+    if (!ok) {
+      this.takeBuffer(report);
+      throw this.errorFrom(error, `HawDB ${action} failed`);
+    }
+    const unexpected = this.takeBuffer(error);
+    const text = this.takeBuffer(report);
+    if (unexpected !== null) {
+      throw new HawDBError("ffi", `HawDB ${action} succeeded with an error payload: ${unexpected}`);
+    }
+    return parseReport<T>(text, fields);
+  }
+
+  private liveLifetime(handle: NativePointer): symbol {
+    this.assertOpen();
+    const lifetime = this.handles.get(handle);
+    if (lifetime === undefined) {
+      throw new HawDBError("invalid_handle", "HawDB database handle is not live");
+    }
+    return lifetime;
+  }
+
+  // Converting a path can run its toString/Symbol.toPrimitive, which may close
+  // this database, open another at the same address, or unload the library.
+  // Recheck the library and the lifetime token, not only the address, after
+  // every argument has been converted and immediately before native dispatch.
+  private assertStillLive(handle: NativePointer, lifetime: symbol): void {
+    this.assertOpen();
+    if (this.handles.get(handle) !== lifetime) {
+      throw new HawDBError("invalid_handle", "HawDB database handle is not live");
+    }
+  }
+
+  backup(handle: NativePointer, destination: string): BackupReport {
+    const lifetime = this.liveLifetime(handle);
+    const destinationBytes = encoder.encode(destination);
+    if (destinationBytes.length === 0) {
+      throw new TypeError("HawDB backup destination must not be empty");
+    }
+    this.assertStillLive(handle, lifetime);
+    return this.report(backupReportFields, "backup", (report, error) =>
+      this.native.symbols.hawdb_backup(handle, destinationBytes, destinationBytes, report, error),
+    );
+  }
+
+  scrub(handle: NativePointer): ScrubReport {
+    this.liveLifetime(handle);
+    return this.report(scrubReportFields, "scrub", (report, error) =>
+      this.native.symbols.hawdb_scrub(handle, report, error),
+    );
+  }
+
+  /**
+   * Restore the backup directory `backup` into `destination`, a directory
+   * that must not exist yet. The backup is verified before anything is
+   * written; open the result with `open`. Needs no open database.
+   */
+  restore(backup: string, destination: string): RestoreReport {
+    this.assertOpen();
+    const backupBytes = encoder.encode(backup);
+    const destinationBytes = encoder.encode(destination);
+    if (backupBytes.length === 0 || destinationBytes.length === 0) {
+      throw new TypeError("HawDB restore paths must not be empty");
+    }
+    // Path conversion may have unloaded the library.
+    this.assertOpen();
+    return this.report(backupReportFields, "restore", (report, error) =>
+      this.native.symbols.hawdb_restore(
+        backupBytes,
+        backupBytes,
+        destinationBytes,
+        destinationBytes,
+        report,
+        error,
+      ),
+    );
+  }
+
   closeDatabase(database: Database, handle: NativePointer): void {
     this.finalizer.unregister(database);
     if (!this.closed && this.handles.delete(handle)) {
@@ -377,8 +562,64 @@ export class HawDBLibrary {
   }
 }
 
+/**
+ * Statements of one `Database.transaction` callback. Valid only while the
+ * callback runs; afterwards every call throws `no_transaction`.
+ */
+export class Transaction {
+  private active = true;
+
+  constructor(
+    private readonly library: HawDBLibrary,
+    private readonly handle: () => NativePointer,
+    token: typeof databaseConstructorToken,
+  ) {
+    if (token !== databaseConstructorToken) {
+      throw new TypeError("Transactions must be created by Database.transaction");
+    }
+  }
+
+  private liveHandle(): NativePointer {
+    if (!this.active) {
+      throw new HawDBError("no_transaction", "HawDB transaction has already finished");
+    }
+    return this.handle();
+  }
+
+  finish(): void {
+    this.active = false;
+  }
+
+  query(cypher: string, parameters: Record<string, HawDBParameter> = {}): QueryResult {
+    if (Array.isArray(parameters) || parameters === null || typeof parameters !== "object") {
+      throw new TypeError("Cypher parameters must be an object");
+    }
+    return this.library.query(this.liveHandle(), false, cypher, parameters, true);
+  }
+
+  querySQL(sql: string, parameters: HawDBParameter[] = []): QueryResult {
+    if (!Array.isArray(parameters)) {
+      throw new TypeError("SQL parameters must be an array");
+    }
+    return this.library.query(this.liveHandle(), true, sql, parameters, true);
+  }
+
+  exec(cypher: string, parameters: Record<string, HawDBParameter> = {}): void {
+    this.query(cypher, parameters);
+  }
+}
+
+function isThenable(value: unknown): boolean {
+  return (
+    value !== null &&
+    (typeof value === "object" || typeof value === "function") &&
+    typeof (value as { then?: unknown }).then === "function"
+  );
+}
+
 export class Database {
   private handle: NativePointer | null;
+  private transactionOpen = false;
 
   constructor(
     private readonly library: HawDBLibrary,
@@ -419,9 +660,79 @@ export class Database {
     this.query(cypher, parameters);
   }
 
+  /**
+   * Run `body` as one atomic transaction. Its statements run through the
+   * `Transaction` argument and commit together when `body` returns; if
+   * `body` throws, every statement is rolled back and the error is
+   * rethrown. `body` must be synchronous: a returned promise rolls the
+   * transaction back and throws. Returns `body`'s result.
+   *
+   * The commit is all or nothing, never partial. A commit refused before
+   * publication (for example a write conflict) publishes nothing, but an
+   * error raised while publishing, or a crash before `transaction` returns,
+   * leaves the outcome unknown: after a reopen the whole transaction may be
+   * committed. Reconcile or retry idempotently rather than rerunning blindly.
+   */
+  transaction<T>(body: (transaction: Transaction) => T): T {
+    if (typeof body !== "function") {
+      throw new TypeError("HawDB transaction body must be a function");
+    }
+    const handle = this.liveHandle();
+    if (this.transactionOpen) {
+      throw new HawDBError("transaction_open", "a HawDB transaction is already open on this database");
+    }
+    this.library.transactionControl(handle, "begin");
+    this.transactionOpen = true;
+    const transaction = new Transaction(this.library, () => this.liveHandle(), databaseConstructorToken);
+    let result: T;
+    try {
+      result = body(transaction);
+      if (isThenable(result)) {
+        throw new TypeError("HawDB transaction bodies must be synchronous; the transaction was rolled back");
+      }
+    } catch (error) {
+      transaction.finish();
+      this.transactionOpen = false;
+      try {
+        this.library.transactionControl(handle, "rollback");
+      } catch {
+        // The original error explains the failure; the transaction is closed either way.
+      }
+      throw error;
+    }
+    transaction.finish();
+    this.transactionOpen = false;
+    this.library.transactionControl(handle, "commit");
+    return result;
+  }
+
+  /**
+   * Write a consistent, self-verifying backup of this open database to
+   * `destination`, a directory that must not exist yet. The database stays
+   * open; the backup holds everything committed before the call.
+   */
+  backup(destination: string): BackupReport {
+    return this.library.backup(this.liveHandle(), destination);
+  }
+
+  /**
+   * Verify every durable file and the WAL against their checksums. Damage
+   * throws a `HawDBError`, after which this handle refuses statements until
+   * it is closed and the database reopened or restored.
+   */
+  scrub(): ScrubReport {
+    return this.library.scrub(this.liveHandle());
+  }
+
   close(): void {
     const handle = this.handle;
     if (handle === null) return;
+    if (this.transactionOpen) {
+      throw new HawDBError(
+        "transaction_open",
+        "cannot close a HawDB database inside its transaction; return or throw from the transaction body first",
+      );
+    }
     this.handle = null;
     this.library.closeDatabase(this, handle);
   }
@@ -431,6 +742,11 @@ export class Database {
   }
 }
 
-export function loadHawDB(path: string): HawDBLibrary {
-  return HawDBLibrary.load(path);
+/**
+ * Load the HawDB C ABI. With a path, map exactly that library. Without one,
+ * map the library from the installed `@nowledge/hawdb-ffi-<platform>` package
+ * selected for this host.
+ */
+export function loadHawDB(path?: string): HawDBLibrary {
+  return HawDBLibrary.load(path === undefined ? resolvePrebuiltLibrary() : path);
 }
