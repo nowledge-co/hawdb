@@ -1,0 +1,134 @@
+{
+  "tables": [
+    {
+      "name": "docs",
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "nullable": false
+        },
+        {
+          "name": "title",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "body",
+          "type": "text",
+          "nullable": true
+        },
+        {
+          "name": "amount",
+          "type": "numeric(20,4)",
+          "nullable": true
+        },
+        {
+          "name": "score",
+          "type": "double precision",
+          "nullable": true
+        },
+        {
+          "name": "payload",
+          "type": "bytea",
+          "nullable": true
+        },
+        {
+          "name": "embedding",
+          "type": "vector(2)",
+          "nullable": true
+        },
+        {
+          "name": "at",
+          "type": "timestamptz(6)",
+          "nullable": true
+        },
+        {
+          "name": "made",
+          "type": "timestamp(3)",
+          "nullable": false,
+          "default": {
+            "literal": {
+              "$localdatetime": "2024-01-02T03:04:05.123"
+            }
+          }
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "unique": [],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "name": "docs_title",
+          "columns": [
+            "title"
+          ],
+          "unique": false
+        }
+      ]
+    },
+    {
+      "name": "hawdb_schema_migrations",
+      "columns": [
+        {
+          "name": "migration_id",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "owner",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "version",
+          "type": "bigint",
+          "nullable": false
+        },
+        {
+          "name": "name",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "checksum",
+          "type": "text",
+          "nullable": false
+        }
+      ],
+      "primary_key": [
+        "migration_id"
+      ],
+      "unique": [
+        [
+          "owner",
+          "version"
+        ]
+      ],
+      "foreign_keys": [],
+      "indexes": []
+    }
+  ],
+  "graph": {
+    "node_labels": [
+      "Doc"
+    ],
+    "relationship_types": [
+      "CITES"
+    ],
+    "tables": [],
+    "properties": [],
+    "indexes": [
+      {
+        "label": "Doc",
+        "properties": [
+          "title"
+        ],
+        "kind": "equality"
+      }
+    ],
+    "constraints": []
+  }
+}

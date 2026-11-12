@@ -164,9 +164,16 @@ candidate-work limit as it is read (a block counts its postings, every other
 row one), and so does every hydrated candidate. The scan's memory is charged
 to its own `Bm25IndexScan` account before each allocation: the query terms,
 the skip entries, one decoded block per term, the read-ahead buffers, a
-small window of lengths rows and the k-entry heap. None of it grows with the
-number of matching documents. Exceeding a limit fails the query; it never
-returns a truncated ranking.
+128-row lengths window and the current round's heap/ranked prefix. The
+lengths window charges its fixed directory, all decoded entry slots (including
+deleted slots), and key bytes rather than a multiple of encoded payload size.
+All skip entries of the queried terms remain resident, so metadata grows with
+their total block count even for a one-row top-k. A selective residual filter
+can also grow the ranked prefix to the whole match set; the previous prefix
+remains resident until the next round has been checked. Memory is therefore
+bounded by admission, not solely by the requested `top_k` or independently of
+match count. Exceeding a limit fails the query; it never returns a truncated
+ranking.
 
 ## Analyzer `cjk_ngram`
 
@@ -195,7 +202,7 @@ Its postings are stored as rows of a private RowPage relation under that
 name, which only the search index access method reads: SQL cannot select
 from, write, alter or index it, and `information_schema.tables` and
 `pg_tables` omit it. The physical layout is versioned behind that access
-method (layout tag `2` below), so it can change without changing the SQL
+method (layout tag `3` below), so it can change without changing the SQL
 surface. The in-memory definition reuses the commit-time maintenance hook
 that materialized views also use (one point where derived rows are written
 inside the base transaction); it does not inherit materialized view
@@ -221,6 +228,11 @@ of the corpus.
   plus WAL replay. Read-only opens search the same way.
 - **Branches.** Postings are branch data. A new branch starts with its
   source's index and diverges with its own writes; `USE BRANCH` switches both.
+- **Logical dump.** [Export](LOGICAL_DUMP.md) records each index's
+  definition (name, column, analyzer) with its table and never its postings.
+  Import creates the index on the empty table and rebuilds the postings as
+  it loads the rows, so `text_search` ranks the imported rows exactly as the
+  source did.
 - **Concurrency.** Postings are derived at commit from the latest committed
   state, and nothing but `text_search` reads them, so a transaction writing a
   source with a search index keeps the ordinary per-row writer footprint of
@@ -498,15 +510,19 @@ What the numbers say:
 The relational schema encoding tags the derived-relation definition: `0` none,
 `1` materialized view (unchanged layout), `2` search index (source table,
 column, analyzer tag, physical layout tag; `cjk_ngram` is analyzer `1`, the
-layout above is layout `3`). Existing databases read unchanged. Older binaries
-refuse a schema with tag `2`, and current binaries refuse unknown tags,
-analyzer tags or layout tags as an unsupported format rather than guessing.
-Layouts `1` (the same rows without block headers, bounds rows, tail minimum
-lengths or checksums) and `2` (checksummed block headers without bounds rows)
-were never released; a development database that holds either is refused as
-an unsupported layout, and dropping and re-creating the index rebuilds it. No
-codec version changes, following the materialized view MIN/MAX precedent and
-HawDB's development-phase format policy.
+layout above is layout `3`). The engine-wide `PERSISTENT_FORMAT_VERSION`
+advances from `1` to `2` because layout `3` refuses search indexes created with
+layouts `1` or `2`. Databases without those older search indexes remain
+readable. Individual codec versions and their strict unsupported-format
+refusals remain authoritative.
+
+Before upgrading a database with an older search index, export a
+[logical dump](LOGICAL_DUMP.md) with the library that can still open it, then
+import with the new library. The dump carries the index definition rather
+than postings, so import rebuilds layout `3`. An older database cannot first
+be opened by the new library merely to drop its unsupported index. Disposable
+development databases may instead be recreated under the development-phase
+format policy; no in-place compatibility migration is added.
 
 ## Out of scope
 
@@ -561,10 +577,11 @@ random corpora (random block sizes, conservative length bounds, unique keys
 unrelated to ordinals), ties among identical documents ordered by key, and a
 100,000-document corpus where a one-row top-k decodes under 5% of the
 postings. `hawdb-relational` units check that the scan's memory is admitted
-to its own account and stays bounded independently of the match count (one
-320 KiB budget serves a top-10 over 4,096 and over 16,384 matches; the
-full-ranking scan needed 56 bytes per match, 917 KB for the larger), that
-the scan honours cancellation, and that skipped blocks are never read.
+to its own account (one 512 KiB budget serves the named top-10 fixtures with
+4,096 and 16,384 matches; the full-ranking scan needed 56 bytes per match,
+917 KB for the larger). A sparse-after-deletion case verifies low-budget
+refusal before the decoded lengths arrays are allocated. The units also check
+cancellation and that skipped blocks are never read.
 Storage and SQL units cover the analyzer (streamed document terms equal to
 the materialized tokens, and an allocation-observed refusal of a
 1,000,000-ideograph value before expansion), the layout codec (varint widths

@@ -77,6 +77,76 @@ fn request_builders_and_advisor_preserve_compression_admission() {
 }
 
 #[test]
+fn exact_vector_search_request_admission_refuses_compression() {
+    for request in [
+        SearchCandidateRequest::text("query", 4),
+        SearchCandidateRequest::vector(vec![1.0, 0.0], 4),
+        SearchCandidateRequest::hybrid("query", vec![1.0, 0.0], 4),
+    ] {
+        assert!(!request.exact_vector_search);
+        let base = crate::VectorSearchExecutionOptions::default();
+        assert_eq!(
+            format!("{:?}", request.vector_execution_options(base).unwrap()),
+            format!("{base:?}")
+        );
+        let exact = request.clone().with_exact_vector_search();
+        assert!(exact.exact_vector_search);
+        assert_eq!(
+            format!("{:?}", exact.vector_execution_options(base).unwrap()),
+            format!("{:?}", base.with_exact_search())
+        );
+        let ready = RetrievalProjectionAdvisor {
+            recall_evidence_ready: true,
+            recall_evidence_protocol: Some(VECTOR_RECALL_VALIDATION_PROTOCOL.to_string()),
+            recall_sample_count: 1,
+            recall_at_k_per_million: Some(1_000_000),
+            parity_evidence_ready: true,
+            cold_or_constrained_local_segment: true,
+        };
+        for mode in [
+            CompressedVectorSearchMode::Preferred,
+            CompressedVectorSearchMode::Required,
+        ] {
+            let compressed = exact
+                .clone()
+                .with_compressed_vector_search_mode(mode)
+                .with_retrieval_projection_advisor(ready.clone());
+            let error = compressed.vector_execution_options(base).unwrap_err();
+            assert!(
+                error.to_string().contains("exact vector search cannot use"),
+                "{error}"
+            );
+            // An advisor that downgrades compression leaves exact admissible.
+            let downgraded = exact.clone().with_compressed_vector_search_mode(mode);
+            assert!(downgraded.vector_execution_options(base).is_ok());
+        }
+    }
+}
+
+#[test]
+fn requested_exact_vector_search_refuses_approximate_vector_leg() {
+    let mut report = ready_report();
+    report.ensure_requested_exact_vector_search().unwrap();
+    report.exact_vector_search_requested = true;
+    report
+        .retriever_available
+        .insert("vector".to_string(), false);
+    report.ensure_requested_exact_vector_search().unwrap();
+    report
+        .retriever_available
+        .insert("vector".to_string(), true);
+    report
+        .retriever_candidate_score_sources
+        .insert("vector".to_string(), "ann_approximate".to_string());
+    let error = report.ensure_requested_exact_vector_search().unwrap_err();
+    assert!(error.to_string().contains("ann_approximate"), "{error}");
+    report.exact_vector_search = true;
+    report.ensure_requested_exact_vector_search().unwrap();
+    assert_eq!(report.json()["exact_vector_search"], true);
+    assert_eq!(report.json()["exact_vector_search_requested"], true);
+}
+
+#[test]
 fn report_json_preserves_complete_field_set_and_provenance() {
     let report = ready_report();
     let json = report.json();
@@ -90,6 +160,8 @@ fn report_json_preserves_complete_field_set_and_provenance() {
         "protocol",
         "compressed_vector_search_mode",
         "requested_compressed_vector_search_mode",
+        "exact_vector_search_requested",
+        "exact_vector_search",
         "retrieval_projection_advisor",
         "retrieval_projection_advisor_blocker_codes",
         "mode",

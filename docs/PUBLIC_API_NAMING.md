@@ -65,6 +65,11 @@ fn search(handle: &EmbeddedStoreHandle, query: &str) -> Result<SearchResultSet> 
 
 The request still selects text, vector or hybrid candidate retrieval. It does
 not generate embeddings or replace the canonical graph retrieval boundary.
+Vector and hybrid requests may add `.with_exact_vector_search()` to score the
+complete filtered eligible set with raw vectors instead of approximate graph
+candidates; `SearchCandidateReport::exact_vector_search` reports whether the
+executed vector leg was exact. See the
+[filtered DiskANN spec](specs/FILTERED_DISKANN_SPEC.md) for its memory bound.
 
 ## Compatibility scope
 

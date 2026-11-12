@@ -353,7 +353,17 @@ fn compatibility_defaults_and_checksum_guards_remain_exact() {
     assert!(DurableManifest::decode(PUBLISHED.trim_end()).is_ok());
     let mut unsupported = fields(PUBLISHED);
     replace(&mut unsupported, "version", "hawdb-storage-v0");
-    assert!(rejected(&frame(&unsupported)).contains("unsupported storage version"));
+    assert_eq!(
+        DurableManifest::decode(&frame(&unsupported)).unwrap_err(),
+        HawDBError::UnsupportedStorageFormat(hawdb_core::StorageFormatError::UnsupportedVersion {
+            format: "storage manifest",
+            found: 0,
+            supported: 1,
+        })
+    );
+    let mut malformed = fields(PUBLISHED);
+    replace(&mut malformed, "version", "hawdb-storage-next");
+    assert!(rejected(&frame(&malformed)).contains("unsupported storage version"));
 }
 
 #[test]

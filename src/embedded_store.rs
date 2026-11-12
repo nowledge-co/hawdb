@@ -36,8 +36,8 @@ use crate::{
     HawDBLightningInitialImportRecoveryReadinessReport, KnowledgeRetrievalOutput,
     KnowledgeRetrievalRequest, LocalQosPolicy, LocalQosState, NowledgeGraphStatement,
     PlanCacheLookup, QueryOutput, QueryStreamOptions, QueryStreamReport, ReadBudgetResource,
-    ReadExecutionProfile, Result, ScheduledSearchProjectionCatchUpReport, SearchDocument,
-    SearchIndex, SearchProjectionCatchUpReport, SearchProjectionChangeBatch,
+    ReadExecutionProfile, Result, ScheduledSearchProjectionCatchUpReport, SearchCheckpointReport,
+    SearchDocument, SearchIndex, SearchProjectionCatchUpReport, SearchProjectionChangeBatch,
     SearchProjectionChangefeedReadiness, SearchProjectionDelta, SearchProjectionDeltaReport,
     SearchProjectionFreshness, SearchProjectionGraphDeltaRequest, SearchProjectionProbeOptions,
     SearchProjectionRelationalDelta, SearchResultSet, StorageResourceProfileLimits,
@@ -192,6 +192,8 @@ use std::time::Instant;
 mod app_read_snapshot_tests;
 #[cfg(test)]
 mod candidate_facade_tests;
+#[cfg(test)]
+mod exact_candidate_tests;
 
 #[cfg(test)]
 mod runtime_status_facade_tests {
@@ -1296,9 +1298,28 @@ impl EmbeddedGraph {
     }
 }
 
+/// Initial-import pages applied to the resident search projection since the
+/// last [`EmbeddedStore::checkpoint_initial_import_projection`]. These pages
+/// are lost on crash and must be replayed by the host.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct InitialImportProjectionPending {
+    /// Number of `apply_initial_import_projection_delta` calls not yet
+    /// checkpointed.
+    pub uncheckpointed_deltas: u64,
+    /// Estimated input bytes (row text, metadata, embeddings, ids) of those
+    /// deltas, using the same estimate as the maintenance admission.
+    pub uncheckpointed_input_bytes: u64,
+}
+
 #[derive(Debug)]
 pub struct SearchProjection {
     index: SearchIndex,
+    /// Estimated input bytes applied through
+    /// [`EmbeddedStore::apply_initial_import_projection_delta`] since the last
+    /// [`EmbeddedStore::checkpoint_initial_import_projection`]. Process memory
+    /// only; never persisted.
+    uncheckpointed_initial_import_bytes: u64,
+    uncheckpointed_initial_import_deltas: u64,
 }
 
 #[derive(Debug)]
@@ -1430,6 +1451,8 @@ impl OutOfCoreSearchProjection {
         vector_execution_options: VectorSearchExecutionOptions<'_>,
     ) -> Result<OutOfCoreSearchCandidateOutput> {
         let effective_compressed_vector_search_mode = effective_search_candidate_mode(request);
+        let vector_execution_options =
+            request.vector_execution_options(vector_execution_options)?;
         let output = self
             .reader
             .search_with_options_compressed_vector_projection_execution_options(
@@ -1452,6 +1475,7 @@ impl OutOfCoreSearchProjection {
             effective_compressed_vector_search_mode,
             &output.result,
         );
+        report.ensure_requested_exact_vector_search()?;
         Ok(OutOfCoreSearchCandidateOutput {
             result: output.result,
             report,
@@ -1462,13 +1486,15 @@ impl OutOfCoreSearchProjection {
 
 impl SearchProjection {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        Ok(Self {
-            index: SearchIndex::open(path)?,
-        })
+        Ok(Self::from_index(SearchIndex::open(path)?))
     }
 
     pub fn from_index(index: SearchIndex) -> Self {
-        Self { index }
+        Self {
+            index,
+            uncheckpointed_initial_import_bytes: 0,
+            uncheckpointed_initial_import_deltas: 0,
+        }
     }
 
     pub fn set_range_read_config(&mut self, config: SearchRangeReadConfig) {
@@ -1547,6 +1573,11 @@ impl SearchProjection {
         &self,
         request: &SearchCandidateRequest,
     ) -> Result<SearchCandidateOutput> {
+        if request.exact_vector_search {
+            // Exact search needs explicit execution options; the default
+            // working budget matches the in-memory path below.
+            return self.try_search_candidates_with_report(request);
+        }
         let effective_compressed_vector_search_mode = effective_search_candidate_mode(request);
         let result = self.index.search_with_options_adaptive_vector_projection(
             &request.query_text,
@@ -1591,6 +1622,8 @@ impl SearchProjection {
         vector_execution_options: VectorSearchExecutionOptions<'_>,
     ) -> Result<SearchCandidateOutput> {
         let effective_compressed_vector_search_mode = effective_search_candidate_mode(request);
+        let vector_execution_options =
+            request.vector_execution_options(vector_execution_options)?;
         let result = self
             .index
             .try_search_with_options_adaptive_vector_projection_context(
@@ -1614,6 +1647,7 @@ impl SearchProjection {
             )?;
         let report =
             search_candidate_report(request, effective_compressed_vector_search_mode, &result);
+        report.ensure_requested_exact_vector_search()?;
         Ok(SearchCandidateOutput {
             result,
             report,
@@ -2256,11 +2290,32 @@ impl EmbeddedStore {
         Ok(report)
     }
 
-    pub fn apply_initial_import_projection_delta_and_checkpoint(
+    /// Applies one externally materialized initial-import page to the
+    /// resident search projection and records its immutable legacy source
+    /// provenance, **without** making either durable.
+    ///
+    /// The resident projection has no write-ahead log: the page lives only in
+    /// process memory until [`Self::checkpoint_initial_import_projection`]
+    /// returns `Ok`. A crash, or dropping the store, before that point reopens
+    /// the projection at exactly the last checkpointed generation, including
+    /// its `import_source_graph_commit_epoch` (which is `None` if no
+    /// checkpoint has happened yet). Hosts therefore persist their own import
+    /// page cursor only after the checkpoint succeeds and, on restart, replay
+    /// every page after that cursor; replaying an already-durable page is
+    /// idempotent because upserts and deletes are keyed by projection id.
+    ///
+    /// Every checkpoint rewrites the whole resident projection, so hosts
+    /// should checkpoint on a geometric schedule (for example, whenever
+    /// [`Self::initial_import_projection_pending`] reports that the
+    /// un-checkpointed input bytes have reached the size already checkpointed)
+    /// plus once at the end, instead of once per page. See
+    /// `docs/SEARCH_INITIAL_IMPORT_CHECKPOINT.md`.
+    pub fn apply_initial_import_projection_delta(
         &mut self,
         delta: SearchProjectionDelta,
         import_source_graph_commit_epoch: u64,
     ) -> Result<SearchProjectionDeltaReport> {
+        let delta_bytes = u64::try_from(search_projection_delta_bytes(&delta)).unwrap_or(u64::MAX);
         // The frozen legacy source epoch is provenance only. The database import
         // created a new local WAL history, so the projection cursor must be
         // stamped from that local history before it is made durable.
@@ -2278,7 +2333,59 @@ impl EmbeddedStore {
         projection
             .index_mut()
             .record_import_source_graph_commit_epoch(import_source_graph_commit_epoch)?;
-        projection.index().checkpoint()?;
+        projection.uncheckpointed_initial_import_bytes = projection
+            .uncheckpointed_initial_import_bytes
+            .saturating_add(delta_bytes);
+        projection.uncheckpointed_initial_import_deltas = projection
+            .uncheckpointed_initial_import_deltas
+            .saturating_add(1);
+        Ok(report)
+    }
+
+    /// Makes every initial-import page applied so far durable, together with
+    /// the recorded `import_source_graph_commit_epoch`, by publishing one new
+    /// resident projection generation. On `Ok` the host may advance its
+    /// durable import cursor past every page applied before this call. On
+    /// `Err` the host must not advance its cursor: a reopen may observe the
+    /// previous checkpoint or this one, and both are safe to replay onto
+    /// because initial-import replay is idempotent. The applied pages remain
+    /// resident, so the host may also retry the checkpoint.
+    ///
+    /// The cost is a full rewrite of the projection (lexical index, segment,
+    /// metadata, and vector payload files), proportional to the corpus size,
+    /// not to the pages applied since the previous checkpoint.
+    pub fn checkpoint_initial_import_projection(&mut self) -> Result<SearchCheckpointReport> {
+        let projection = require_search_projection_mut(&mut self.search_projection)?;
+        let report = projection.index().checkpoint_with_report()?;
+        projection.uncheckpointed_initial_import_bytes = 0;
+        projection.uncheckpointed_initial_import_deltas = 0;
+        Ok(report)
+    }
+
+    /// Reports initial-import work that is resident but not yet durable.
+    /// Returns `None` when no resident search projection is open.
+    pub fn initial_import_projection_pending(&self) -> Option<InitialImportProjectionPending> {
+        self.search_projection
+            .as_ref()
+            .map(|projection| InitialImportProjectionPending {
+                uncheckpointed_deltas: projection.uncheckpointed_initial_import_deltas,
+                uncheckpointed_input_bytes: projection.uncheckpointed_initial_import_bytes,
+            })
+    }
+
+    /// Applies one initial-import page and checkpoints it before returning.
+    /// Equivalent to [`Self::apply_initial_import_projection_delta`] followed
+    /// by [`Self::checkpoint_initial_import_projection`]. Calling this once per
+    /// page rewrites the whole projection per page; prefer the split API with
+    /// a geometric checkpoint schedule for multi-page imports.
+    pub fn apply_initial_import_projection_delta_and_checkpoint(
+        &mut self,
+        delta: SearchProjectionDelta,
+        import_source_graph_commit_epoch: u64,
+    ) -> Result<SearchProjectionDeltaReport> {
+        let report =
+            self.apply_initial_import_projection_delta(delta, import_source_graph_commit_epoch)?;
+        self.checkpoint_initial_import_projection()?;
         Ok(report)
     }
 
