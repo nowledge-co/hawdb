@@ -1513,6 +1513,16 @@ the QoS ranker prioritize stale graph-derived projection maintenance by expected
 value. This keeps FTS/vector projection maintenance incremental without writing
 search state into the graph WAL.
 
+An initial import of an existing search corpus applies pages with
+`apply_initial_import_projection_delta`, which changes only the resident
+projection. It makes them durable with `checkpoint_initial_import_projection`,
+which publishes one complete generation. A crash discards un-checkpointed pages
+and reopens at the last checkpoint. The host advances its page cursor only after
+a checkpoint succeeds and replays idempotently from there. Because each
+checkpoint rewrites the whole projection, hosts checkpoint on a doubling
+schedule, optionally capped, instead of once per page. See
+[initial import checkpoints](SEARCH_INITIAL_IMPORT_CHECKPOINT.md).
+
 HawDB Lightning bootstrap export follows the same resource boundary for
 embedded deployments. One export pins a shared database commit epoch and emits
 two authoritative logical streams: canonical graph rows and the complete

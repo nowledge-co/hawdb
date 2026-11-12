@@ -817,8 +817,44 @@ impl EmbeddedStoreHandle {
         }
     }
 
+    /// Applies one externally materialized initial-import page and records its
+    /// immutable source provenance without making either durable. See
+    /// [`EmbeddedStore::apply_initial_import_projection_delta`] for the
+    /// crash/resume contract: nothing applied here survives a crash until
+    /// [`Self::checkpoint_initial_import_projection`] returns `Ok`.
+    pub fn apply_initial_import_projection_delta(
+        &self,
+        delta: SearchProjectionDelta,
+        import_source_graph_commit_epoch: u64,
+    ) -> Result<SearchProjectionDeltaReport> {
+        let _permit = self.admit_typed_maintenance(
+            RuntimeWorkPriority::Background,
+            search_projection_delta_bytes(&delta),
+            1,
+        )?;
+        self.write_store()?
+            .apply_initial_import_projection_delta(delta, import_source_graph_commit_epoch)
+    }
+
+    /// Makes every initial-import page applied so far durable by publishing
+    /// one new resident projection generation. Each call rewrites the whole
+    /// projection; schedule calls geometrically rather than per page.
+    pub fn checkpoint_initial_import_projection(&self) -> Result<SearchCheckpointReport> {
+        let _permit = self.admit_typed_maintenance(RuntimeWorkPriority::Background, 0, 1)?;
+        self.write_store()?.checkpoint_initial_import_projection()
+    }
+
+    /// Reports initial-import pages that are resident but not yet durable.
+    pub fn initial_import_projection_pending(
+        &self,
+    ) -> Result<Option<InitialImportProjectionPending>> {
+        Ok(self.read_store()?.initial_import_projection_pending())
+    }
+
     /// Applies one externally materialized import batch, records its immutable
     /// source provenance, and checkpoints both before acknowledging success.
+    /// Equivalent to [`Self::apply_initial_import_projection_delta`] followed
+    /// by [`Self::checkpoint_initial_import_projection`] under one admission.
     pub fn apply_initial_import_projection_delta_and_checkpoint(
         &self,
         delta: SearchProjectionDelta,
