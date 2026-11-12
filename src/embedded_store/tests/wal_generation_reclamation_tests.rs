@@ -58,46 +58,55 @@ struct VariantRun {
     pending_bytes: u64,
 }
 
+fn open_options(
+    variant: Variant,
+    graph: &std::path::Path,
+    search: &std::path::Path,
+    background_maintenance: bool,
+) -> EmbeddedStoreOpenOptions {
+    let mut config = DatabaseConfig::default();
+    config.runtime_capabilities.background_maintenance = background_maintenance;
+    match variant {
+        Variant::GraphOnly => {
+            EmbeddedStoreOpenOptions::graph_only(graph, GraphMode::WritableCutover)
+        }
+        Variant::Resident => EmbeddedStoreOpenOptions::with_search_projection(
+            graph,
+            search,
+            GraphMode::WritableCutover,
+        ),
+        Variant::Incremental => EmbeddedStoreOpenOptions::with_search_projection(
+            graph,
+            search,
+            GraphMode::WritableCutover,
+        )
+        .with_incremental_search_maintenance(Default::default()),
+    }
+    .with_database_config(config)
+}
+
 fn run_variant(variant: Variant, background_maintenance: bool) -> VariantRun {
     let name = format!("wal_reclaim_{variant:?}_{background_maintenance}");
     let root = unique_embedded_store_test_dir(&name);
     let graph = root.join("graph");
     let search = root.join("search");
-    let mut config = DatabaseConfig::default();
-    config.runtime_capabilities.background_maintenance = background_maintenance;
-    let options = match variant {
-        Variant::GraphOnly => {
-            EmbeddedStoreOpenOptions::graph_only(&graph, GraphMode::WritableCutover)
-        }
-        Variant::Resident => EmbeddedStoreOpenOptions::with_search_projection(
-            &graph,
-            &search,
-            GraphMode::WritableCutover,
-        ),
-        Variant::Incremental => {
-            let mut index = SearchIndex::open(&search).unwrap();
-            index
-                .upsert_projection_row(SearchProjectionRow {
-                    kind: SearchProjectionKind::Memory,
-                    external_id: "bootstrap".into(),
-                    title: "bootstrap".into(),
-                    body: "bootstrap".into(),
-                    embedding: None,
-                    source_id: None,
-                    metadata: BTreeMap::new(),
-                })
-                .unwrap();
-            index.checkpoint().unwrap();
-            drop(index);
-            EmbeddedStoreOpenOptions::with_search_projection(
-                &graph,
-                &search,
-                GraphMode::WritableCutover,
-            )
-            .with_incremental_search_maintenance(Default::default())
-        }
+    if matches!(variant, Variant::Incremental) {
+        let mut index = SearchIndex::open(&search).unwrap();
+        index
+            .upsert_projection_row(SearchProjectionRow {
+                kind: SearchProjectionKind::Memory,
+                external_id: "bootstrap".into(),
+                title: "bootstrap".into(),
+                body: "bootstrap".into(),
+                embedding: None,
+                source_id: None,
+                metadata: BTreeMap::new(),
+            })
+            .unwrap();
+        index.checkpoint().unwrap();
+        drop(index);
     }
-    .with_database_config(config);
+    let options = open_options(variant, &graph, &search, background_maintenance);
     let (handle, _) = EmbeddedStoreHandle::open_with_options(options).unwrap();
     let mut history = Vec::new();
     for round in 0..8 {
@@ -124,6 +133,29 @@ fn run_variant(variant: Variant, background_maintenance: bool) -> VariantRun {
         .storage_pressure_snapshot()
         .unwrap();
     drop(handle);
+
+    // Reclamation must not cost data: reopen and read back every write.
+    let (reopened, _) = EmbeddedStoreHandle::open_with_options(open_options(
+        variant,
+        &graph,
+        &search,
+        background_maintenance,
+    ))
+    .unwrap();
+    let ids = reopened
+        .query_with_report("MATCH (m:Memory) RETURN m.id AS id ORDER BY id")
+        .unwrap()
+        .output
+        .rows
+        .into_iter()
+        .map(|row| row["id"].clone())
+        .collect::<Vec<_>>();
+    // Single-digit rounds and items: lexical `ORDER BY id` is this order.
+    let expected = (0..8)
+        .flat_map(|round| (0..4).map(move |item| Value::String(format!("m{round}_{item}"))))
+        .collect::<Vec<_>>();
+    assert_eq!(ids, expected, "{variant:?} bg={background_maintenance}");
+    drop(reopened);
     let _ = std::fs::remove_dir_all(root);
     VariantRun {
         history,

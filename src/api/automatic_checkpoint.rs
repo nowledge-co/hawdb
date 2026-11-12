@@ -2213,6 +2213,7 @@ fn release_retired_state(retired: Retired) {
 
 #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
 mod tests {
+    mod branch_wal_reclamation;
     mod coalesced_capture;
     mod discard;
     mod execution_progress;

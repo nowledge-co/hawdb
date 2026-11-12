@@ -139,3 +139,120 @@ fn superseded_branch_wal_removal_cuts_recover_and_reclaim_leftovers() {
     }
     println!("superseded branch WAL removal qualification: {images} physical crash images");
 }
+
+/// A process crash after the head rename but before its directory barrier
+/// leaves a selecting head that is visible yet not durable. The restarted
+/// process adopts it and reclaims the WAL it superseded. The sweep's own
+/// head publication and pre-removal directory barrier must make that rename
+/// durable first, so no later power loss can resurrect the old head without
+/// the WAL it needs.
+#[test]
+fn unsynchronized_head_rename_survives_restart_sweep_and_power_loss() {
+    let mut images = 0;
+    for durability in [
+        DurabilityPolicy::SyncOnEveryWrite,
+        DurabilityPolicy::SyncOnCheckpoint,
+    ] {
+        let mut fixture = Fixture::new();
+        let mut database = open(&fixture.root, durability);
+        let main = database
+            .describe_branch(BranchSelector::Name("main".into()))
+            .unwrap()
+            .id;
+        commit_mixed(&mut database);
+        database.checkpoint().unwrap();
+        database
+            .query("CREATE (:Memory {id: 'uncertain-head'})")
+            .unwrap();
+        let before_restart = database.commit_epoch().unwrap();
+        let superseded = selected_generation(&fixture.root, main);
+        let directory = PathBuf::from("branches").join(main.to_string());
+        fixture
+            .model
+            .observe(ObservationPoint {
+                event: IoEvent::Rename,
+                relative_path: directory.join("branch.head"),
+                boundary: ObservationBoundary::After,
+                skip_matches: 0,
+                include_descendants: false,
+                keep_last: false,
+            })
+            .unwrap();
+        database.checkpoint().unwrap();
+        fixture.model.capture().unwrap();
+        let renamed = fixture
+            .model
+            .take_observation()
+            .unwrap()
+            .expect("checkpoint head rename must be observed");
+        drop(database);
+
+        // Restart on exactly what the crashed process left visible. The
+        // rename and every other unsynchronized operation stay pending.
+        let restarted = fixture.image(&renamed, &renamed.persist_all_plan());
+        let project =
+            ProjectFileDescriptors::acquire_with_capacity_limit(&restarted, 32, true).unwrap();
+        let model = PowerLossModel::resume_after_process_crash(&project, &renamed).unwrap();
+        drop(project);
+        assert!(selected_generation(&restarted, main) > superseded);
+        assert!(branch_wal_generations(&restarted, main).contains(&superseded));
+        let mut database = open(&restarted, durability);
+        assert_eq!(database.commit_epoch().unwrap(), before_restart);
+        database
+            .query("CREATE (:Memory {id: 'after-restart'})")
+            .unwrap();
+        let epoch = database.commit_epoch().unwrap();
+        model
+            .observe(ObservationPoint {
+                event: IoEvent::Remove,
+                relative_path: directory.join(wal_generation_file(superseded)),
+                boundary: ObservationBoundary::After,
+                skip_matches: 0,
+                include_descendants: false,
+                keep_last: false,
+            })
+            .unwrap();
+        database.checkpoint().unwrap();
+        model.capture().unwrap();
+        let removed = model
+            .take_observation()
+            .unwrap()
+            .expect("restart sweep must remove the WAL the adopted head superseded");
+        assert!(!branch_wal_generations(&restarted, main).contains(&superseded));
+        let pressure = database.storage_pressure_snapshot().unwrap();
+        assert!(!pressure.generation_reclamation_retry_required);
+        drop(database);
+        drop(model);
+
+        for plan in publication_fault_plans(&removed) {
+            let root = fixture.image(&removed, &plan);
+            assert!(
+                selected_generation(&root, main) > superseded,
+                "{durability:?} {plan:?}: the old head returned after its WAL was removed"
+            );
+            let mut recovered = open(&root, durability);
+            assert_eq!(
+                recovered.commit_epoch().unwrap(),
+                epoch,
+                "{durability:?} {plan:?}"
+            );
+            assert!(assert_atomic(&mut recovered, main));
+            for id in ["uncertain-head", "after-restart"] {
+                assert_eq!(
+                    recovered
+                        .query(&format!(
+                            "MATCH (m:Memory {{id: '{id}'}}) RETURN m.id AS id"
+                        ))
+                        .unwrap()
+                        .rows
+                        .len(),
+                    1,
+                    "{durability:?} {plan:?} {id}"
+                );
+            }
+            images += 1;
+        }
+        drop(restarted);
+    }
+    println!("unsynchronized head restart sweep qualification: {images} physical crash images");
+}

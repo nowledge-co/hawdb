@@ -116,9 +116,35 @@ impl PowerLossModel {
         Self::attach_with_image(project, limits, Some(image))
     }
 
+    /// Continue recording after a process crash, not a power loss, at
+    /// `snapshot`. The project must be an exact materialization of
+    /// `snapshot.persist_all_plan()`: what a restarted process observes. Every
+    /// operation the snapshot had not yet made durable stays pending, so a
+    /// later capture can still lose, tear or reorder it together with the
+    /// restarted process's own IO. No runtime may already be open.
+    pub fn resume_after_process_crash(
+        project: &ProjectFileDescriptors,
+        snapshot: &PowerLossSnapshot,
+    ) -> io::Result<Self> {
+        let visible = snapshot.crash(&snapshot.persist_all_plan())?;
+        Self::attach_with_engine(project, snapshot.engine.clone(), Some(&visible))
+    }
+
     fn attach_with_image(
         project: &ProjectFileDescriptors,
         limits: ImageLimits,
+        baseline: Option<&CrashImage>,
+    ) -> io::Result<Self> {
+        let engine = match baseline {
+            Some(image) => ImageEngine::from_crash_image(image, limits)?,
+            None => ImageEngine::new(limits)?,
+        };
+        Self::attach_with_engine(project, engine, baseline)
+    }
+
+    fn attach_with_engine(
+        project: &ProjectFileDescriptors,
+        engine: ImageEngine,
         baseline: Option<&CrashImage>,
     ) -> io::Result<Self> {
         if !cfg!(any(unix, windows)) {
@@ -127,10 +153,6 @@ impl PowerLossModel {
                 "power-loss capture requires Unix or Windows native IO",
             ));
         }
-        let engine = match baseline {
-            Some(image) => ImageEngine::from_crash_image(image, limits)?,
-            None => ImageEngine::new(limits)?,
-        };
         let mut slot = project.state.power_loss.lock().map_err(|_| poisoned())?;
         let metrics = project.metrics();
         if slot.upgrade().is_some() || metrics.open != 0 || metrics.reserved != 0 {

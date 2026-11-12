@@ -27,8 +27,9 @@ use crate::error::{HawDBError, Result};
 use crate::file_io as fs;
 use crate::store::{
     parse_append_segment_generation_file, parse_relational_overflow_extent_generation_file,
-    parse_relational_row_page_artifact_generation_file, remove_generation_reclamation_candidate,
-    storage_generation_for_file, sync_parent_dir,
+    parse_relational_row_page_artifact_generation_file, read_branch_head_for_wal_sweep,
+    remove_generation_reclamation_candidate, storage_generation_for_file,
+    sync_branch_directory_for_wal_sweep, sync_parent_dir,
 };
 use hawdb_storage::append_table::{
     append_generation_manifest_file, AppendGenerationManifest, AppendPublicationConfig,
@@ -161,7 +162,7 @@ impl DurableStore {
         if sync_parent_dir(&self.manifest_path).is_err() {
             debt.retry_required = true;
         }
-        self.reclaim_superseded_branch_wals(&retained_generations, &mut debt);
+        self.reclaim_superseded_branch_wals(pinned_reader_generations, &mut debt);
         debt
     }
 
@@ -189,9 +190,15 @@ impl DurableStore {
     /// data-root generation below the selected checkpoint. A failure leaves
     /// the file in place and is recorded as retryable debt; the next
     /// reclamation pass retries it.
+    ///
+    /// Retention is deliberately separate from the data-root set: the current
+    /// and previous checkpoint generations number data-root artifacts, not
+    /// branch WALs, so they are not consulted here. Reader pins are physical
+    /// generations in the shared namespace. Readers never open a branch WAL,
+    /// so a pin that matches a branch WAL number only delays its removal.
     fn reclaim_superseded_branch_wals(
         &self,
-        retained_generations: &BTreeSet<u64>,
+        pinned_reader_generations: Option<&BTreeSet<u64>>,
         debt: &mut GenerationReclamationDebt,
     ) {
         if self.read_only {
@@ -228,7 +235,9 @@ impl DurableStore {
             else {
                 continue;
             };
-            if generation >= selected_generation || retained_generations.contains(&generation) {
+            if generation >= selected_generation
+                || pinned_reader_generations.is_some_and(|pins| pins.contains(&generation))
+            {
                 continue;
             }
             let Ok(metadata) = entry.metadata() else {
@@ -247,9 +256,9 @@ impl DurableStore {
             debt.pending_file_count = debt.pending_file_count.saturating_add(1);
             debt.pending_bytes = debt.pending_bytes.saturating_add(bytes);
         };
-        let selected = crate::branch_head::read_branch_head(branch.head_path())
+        let selected = read_branch_head_for_wal_sweep(branch.head_path())
             .is_ok_and(|head| head == branch.head);
-        if !selected || crate::durability::sync_directory(directory).is_err() {
+        if !selected || sync_branch_directory_for_wal_sweep(directory).is_err() {
             for (_, bytes) in superseded {
                 record_pending(debt, bytes);
             }

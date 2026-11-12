@@ -16,7 +16,8 @@
 
 use super::*;
 use crate::store::{
-    set_checkpoint_failpoint, set_generation_reclamation_remove_failpoint, CheckpointPublishStage,
+    set_branch_wal_sweep_failpoint, set_checkpoint_failpoint,
+    set_generation_reclamation_remove_failpoint, BranchWalSweepFailpoint, CheckpointPublishStage,
 };
 
 /// Generations of every `wal.<generation>.hawdb` directly beside a head.
@@ -153,6 +154,57 @@ fn failed_branch_wal_removal_is_retryable_reclamation_debt() {
     drop(main);
     let main = fixture.admit(fixture.main, DurabilityPolicy::SyncOnEveryWrite);
     assert_eq!(message_rows(&main), 3);
+}
+
+#[test]
+fn failed_head_reread_or_directory_sync_deletes_nothing_and_is_retryable_debt() {
+    for failpoint in [
+        BranchWalSweepFailpoint::HeadRead,
+        BranchWalSweepFailpoint::DirectorySync,
+    ] {
+        let fixture = BranchFixture::new();
+        let directory = branch_directory(&fixture, fixture.main);
+        let mut main = fixture.admit(fixture.main, DurabilityPolicy::SyncOnEveryWrite);
+        write_schema_and_graph(&mut main);
+        checkpoint(&mut main).unwrap();
+        write_row(&mut main, &"barrier".repeat(4096));
+        let superseded = main.head().active_wal.generation;
+        let superseded_path =
+            directory.join(crate::artifact_files::wal_generation_file(superseded));
+        let superseded_bytes = fs::metadata(&superseded_path).unwrap().len();
+
+        // The sweep cannot confirm or make durable the selecting head, so it
+        // must not remove anything that head superseded.
+        set_branch_wal_sweep_failpoint(Some(failpoint));
+        let result = checkpoint(&mut main);
+        set_branch_wal_sweep_failpoint(None);
+        result.unwrap();
+        assert!(superseded_path.exists(), "{failpoint:?}");
+        assert_eq!(
+            branch_wal_generations(&directory),
+            vec![superseded, main.head().active_wal.generation],
+            "{failpoint:?}"
+        );
+        let pressure = main.store().storage_pressure_snapshot(None);
+        assert!(pressure.generation_reclamation_retry_required);
+        assert_eq!(pressure.generation_reclamation_pending_files, 1);
+        assert_eq!(
+            pressure.generation_reclamation_pending_bytes,
+            superseded_bytes
+        );
+
+        write_row(&mut main, "retry");
+        checkpoint(&mut main).unwrap();
+        assert!(!superseded_path.exists(), "{failpoint:?}");
+        assert_eq!(
+            branch_wal_generations(&directory),
+            vec![main.head().active_wal.generation]
+        );
+        assert_no_reclamation_debt(&main);
+        drop(main);
+        let main = fixture.admit(fixture.main, DurabilityPolicy::SyncOnEveryWrite);
+        assert_eq!(message_rows(&main), 3);
+    }
 }
 
 #[test]

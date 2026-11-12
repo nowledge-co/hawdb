@@ -454,7 +454,10 @@ match the runtime's head and synchronizes the branch directory before the
 first removal, so a head adopted after a crash with an unsynchronized rename
 becomes durable first. Names at or above the selected generation (prepared
 successors, in-flight checkpoint candidates, interrupted-publication evidence)
-and reader-pinned generations are kept. An interrupted-publication name below
+and reader-pinned generations are kept. The branch sweep does not use the
+data-root retention of the current and previous checkpoint generations, which
+number data-root artifacts; readers never open a branch WAL, so a reader pin
+that matches a branch WAL number only delays its removal. An interrupted-publication name below
 the selected generation is reclaimed like a data-root generation below the
 selected checkpoint: the durable head selecting a newer generation resolves its
 uncertainty. The writer's exclusive branch-directory
