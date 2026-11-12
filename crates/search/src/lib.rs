@@ -87,6 +87,8 @@ mod identifier;
 #[doc(hidden)]
 pub mod knowledge_retrieval_pipeline;
 mod lexical_projection;
+#[cfg(test)]
+mod resident_checkpoint_atomicity_tests;
 pub use lexical_projection::LexicalQueryTermPolicy;
 mod lexical_readiness;
 #[cfg(all(test, feature = "full-text-search"))]
@@ -282,6 +284,14 @@ const SEARCH_SNAPSHOT_FILE: &str = "search_projection.hawdb";
 const SEARCH_SEGMENT_DESCRIPTOR_FILE: &str = "search_projection_segments.hawdb";
 const SEARCH_SEGMENT_PAYLOAD_FILE: &str = "search_projection_segment_payloads.hawdb";
 const SEARCH_SEGMENT_PAYLOAD_ARTIFACT_ID: u64 = 1;
+
+/// Generation-named resident snapshot. An unregistered resident checkpoint
+/// writes this before its selector; `search_projection.hawdb` is then a hard
+/// link to the generation the out-of-core manifest selects.
+fn resident_snapshot_file(generation: u64) -> String {
+    format!("search_projection.{generation}.hawdb")
+}
+
 const RABITQ_CANDIDATE_BACKEND: &str = "hawdb_rabitq_candidate_projection";
 const DISKANN_CANDIDATE_BACKEND: &str = "hawdb_diskann_candidate_projection";
 
@@ -1705,7 +1715,7 @@ impl SearchIndex {
         let loaded = if registered {
             index.load_snapshot_from_publication(publication)
         } else {
-            index.load_snapshot()
+            out_of_core::recover_resident_aliases(path).and_then(|()| index.load_snapshot())
         };
         loaded.map_err(|error| {
             if registered && !matches!(error, HawDBError::FileDescriptors(_)) {
@@ -2962,25 +2972,41 @@ impl SearchIndex {
             let publication_lease = publication
                 .or(owned_publication.as_ref())
                 .expect("checkpoint retains publication authority");
-            let snapshot_path = path.join(SEARCH_SNAPSHOT_FILE);
-            let snapshot = snapshot_writer::write_search_snapshot_with_context(
-                &snapshot_path,
-                snapshot_writer::SearchSnapshotMetadata {
-                    source_graph_commit_epoch: self.source_graph_commit_epoch,
-                    import_source_graph_commit_epoch: self.import_source_graph_commit_epoch,
-                    embedding_manifest: self.embedding_manifest.as_ref(),
-                    embedding_dimension: self.embedding_dimension,
-                    consumer_binding: self.consumer_binding.as_ref(),
-                    vector_index_descriptor: self.vector_index_descriptor.as_ref(),
-                    vector_scoring: self.vector_scoring,
-                    vector_document_summary: None,
-                    canonical_vector_source_epoch: None,
-                    rabitq_checkpoint: self.rabitq_checkpoint,
-                },
-                self.documents.values(),
-                &memory,
-                task,
-            )?;
+            // Unregistered resident checkpoints write every artifact under a
+            // generation name and commit with the manifest rename. Registered
+            // Consumers keep their legacy order; their own publication record
+            // selects the producer closure.
+            let deferred_aliases = self.consumer_binding.is_none();
+            if deferred_aliases {
+                // `open` may have created this directory without persisting
+                // its entry; a durable selector inside it must not vanish.
+                hawdb_storage::durability::sync_directory_ancestors(path)?;
+            }
+            let write_snapshot = |target: &Path| {
+                snapshot_writer::write_search_snapshot_with_context(
+                    target,
+                    snapshot_writer::SearchSnapshotMetadata {
+                        source_graph_commit_epoch: self.source_graph_commit_epoch,
+                        import_source_graph_commit_epoch: self.import_source_graph_commit_epoch,
+                        embedding_manifest: self.embedding_manifest.as_ref(),
+                        embedding_dimension: self.embedding_dimension,
+                        consumer_binding: self.consumer_binding.as_ref(),
+                        vector_index_descriptor: self.vector_index_descriptor.as_ref(),
+                        vector_scoring: self.vector_scoring,
+                        vector_document_summary: None,
+                        canonical_vector_source_epoch: None,
+                        rabitq_checkpoint: self.rabitq_checkpoint,
+                    },
+                    self.documents.values(),
+                    &memory,
+                    task,
+                )
+            };
+            let legacy_snapshot = if deferred_aliases {
+                None
+            } else {
+                Some(write_snapshot(&path.join(SEARCH_SNAPSHOT_FILE))?)
+            };
             let generation =
                 out_of_core::next_generation(path, self.lexical_config.max_manifest_bytes.get())?;
             #[cfg(feature = "vector-search")]
@@ -2988,12 +3014,21 @@ impl SearchIndex {
                 self.write_rabitq_projection(path, generation, task, publication_lease)?;
             #[cfg(not(feature = "vector-search"))]
             let rabitq_bytes_written = 0;
+            #[cfg(test)]
+            out_of_core::resident_checkpoint_fault(out_of_core::ResidentCheckpointStep::RaBitQ)?;
+            let snapshot = match legacy_snapshot {
+                Some(snapshot) => snapshot,
+                None => write_snapshot(&path.join(resident_snapshot_file(generation)))?,
+            };
+            #[cfg(test)]
+            out_of_core::resident_checkpoint_fault(out_of_core::ResidentCheckpointStep::Snapshot)?;
             let publication = out_of_core::write_resident_artifacts(
                 self,
                 path,
                 &snapshot,
                 out_of_core::ResidentPublicationPlan {
                     generation,
+                    deferred_aliases,
                     #[cfg(feature = "vector-search")]
                     rabitq,
                 },
@@ -3006,6 +3041,8 @@ impl SearchIndex {
                 .durable_source_graph_commit_epoch
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.source_graph_commit_epoch;
+            #[cfg(test)]
+            out_of_core::resident_checkpoint_fault(out_of_core::ResidentCheckpointStep::Cleanup)?;
             self.retry_projection_cleanup_under_publication(
                 SearchProjectionCleanupOptions::default(),
                 publication_lease,
@@ -8318,11 +8355,12 @@ fn decode_search_document_line(line: &str) -> Result<SearchDocument> {
 
 fn write_search_segment_payloads<T>(
     path: &Path,
+    file_name: &str,
     documents: &impl DocumentView,
     descriptor: &mut SearchSegmentDescriptor,
     finish: impl FnOnce(&mut File) -> Result<T>,
 ) -> Result<T> {
-    let artifact_path = path.join(SEARCH_SEGMENT_PAYLOAD_FILE);
+    let artifact_path = path.join(file_name);
     let tmp_path = artifact_path.with_extension("hawdb.tmp");
     let mut offset = 0u64;
     let reference;
@@ -8378,18 +8416,25 @@ fn write_search_segment_descriptor_bounded(
     descriptor: &SearchSegmentDescriptor,
     max_bytes: u64,
 ) -> Result<u64> {
-    write_search_segment_descriptor_output(path, descriptor, max_bytes, |_| Ok(()))
-        .map(|(length, ())| length)
+    write_search_segment_descriptor_output(
+        path,
+        SEARCH_SEGMENT_DESCRIPTOR_FILE,
+        descriptor,
+        max_bytes,
+        |_| Ok(()),
+    )
+    .map(|(length, ())| length)
 }
 
 fn write_search_segment_descriptor_output<T>(
     path: &Path,
+    file_name: &str,
     descriptor: &SearchSegmentDescriptor,
     max_bytes: u64,
     finish: impl FnOnce(&mut File) -> Result<T>,
 ) -> Result<(u64, T)> {
     let encoding = document_encoding::DescriptorEncoding::new(descriptor, max_bytes)?;
-    let descriptor_path = path.join(SEARCH_SEGMENT_DESCRIPTOR_FILE);
+    let descriptor_path = path.join(file_name);
     let tmp_path = descriptor_path.with_extension("hawdb.tmp");
     let reference;
     {
