@@ -716,6 +716,7 @@ fn parses_schema_ddl() {
             property: "id".to_string(),
             value_type: SchemaPropertyType::Int,
             nullable: false,
+            default: None,
         })
     );
     assert_eq!(
@@ -726,6 +727,7 @@ fn parses_schema_ddl() {
             property: "weight".to_string(),
             value_type: SchemaPropertyType::Int,
             nullable: true,
+            default: None,
         })
     );
     assert_eq!(
@@ -736,6 +738,7 @@ fn parses_schema_ddl() {
             property: "title".to_string(),
             value_type: SchemaPropertyType::String,
             nullable: true,
+            default: None,
         })
     );
     assert_eq!(
@@ -746,8 +749,73 @@ fn parses_schema_ddl() {
             property: "body".to_string(),
             value_type: SchemaPropertyType::Text,
             nullable: true,
+            default: None,
         })
     );
+    for (input, value_type, nullable, default) in [
+        (
+            "CREATE PROPERTY ON NODE TABLE Memory(score) TYPE DOUBLE DEFAULT 0.0",
+            SchemaPropertyType::Float,
+            true,
+            hawdb_core::PropertyDefault::Value(Value::Float(0.0)),
+        ),
+        (
+            "CREATE PROPERTY ON NODE TABLE Memory(score) TYPE INT NOT NULL DEFAULT -1",
+            SchemaPropertyType::Int,
+            false,
+            hawdb_core::PropertyDefault::Value(Value::Int(-1)),
+        ),
+        (
+            "CREATE PROPERTY ON NODE TABLE Memory(score) TYPE ANY default '{}'",
+            SchemaPropertyType::Any,
+            true,
+            hawdb_core::PropertyDefault::Value(Value::String("{}".to_string())),
+        ),
+        (
+            "CREATE PROPERTY ON NODE TABLE Memory(score) TYPE LIST DEFAULT []",
+            SchemaPropertyType::List,
+            true,
+            hawdb_core::PropertyDefault::Value(Value::List(Vec::new())),
+        ),
+        (
+            "CREATE PROPERTY ON NODE TABLE Memory(score) TYPE ANY DEFAULT [true, 'a', [1]]",
+            SchemaPropertyType::Any,
+            true,
+            hawdb_core::PropertyDefault::Value(Value::List(vec![
+                Value::Bool(true),
+                Value::String("a".to_string()),
+                Value::List(vec![Value::Int(1)]),
+            ])),
+        ),
+        (
+            "CREATE PROPERTY ON NODE TABLE Memory(score) TYPE ANY DEFAULT current_timestamp()",
+            SchemaPropertyType::Any,
+            true,
+            hawdb_core::PropertyDefault::CurrentTimestamp,
+        ),
+    ] {
+        assert_eq!(
+            parse(input).unwrap(),
+            Statement::CreateProperty(CreateProperty {
+                table_kind: SchemaTableKind::Node,
+                table: "Memory".to_string(),
+                property: "score".to_string(),
+                value_type,
+                nullable,
+                default: Some(default),
+            }),
+            "{input}"
+        );
+    }
+    for input in [
+        "CREATE PROPERTY ON NODE TABLE Memory(score) TYPE ANY DEFAULT NULL",
+        "CREATE PROPERTY ON NODE TABLE Memory(score) TYPE ANY DEFAULT $value",
+        "CREATE PROPERTY ON NODE TABLE Memory(score) TYPE ANY DEFAULT m.score",
+        "CREATE PROPERTY ON NODE TABLE Memory(score) TYPE ANY DEFAULT date('2026-01-01')",
+        "CREATE PROPERTY ON NODE TABLE Memory(score) TYPE ANY DEFAULT",
+    ] {
+        assert!(parse(input).is_err(), "{input}");
+    }
     assert_eq!(
         parse("CREATE INDEX ON :Memory(id)").unwrap(),
         Statement::CreateIndex(CreateIndex {

@@ -30,7 +30,37 @@ impl Transformer<'_> {
             SchemaTableKind::Relationship
         }
     }
-    pub(super) fn schema_statement(&self, root: NodeId) -> Result<Statement> {
+    /// A property default: a constant literal (bool, number, string, or a
+    /// list of those) or `current_timestamp()`. Everything else, including
+    /// NULL, parameters and other functions, is rejected here.
+    fn schema_default(&mut self, value_node: NodeId) -> Result<hawdb_core::PropertyDefault> {
+        let value = self.value(value_node, 1)?;
+        if let ValueExpressionKind::CurrentTimestamp = value.kind {
+            return Ok(hawdb_core::PropertyDefault::CurrentTimestamp);
+        }
+        fn constant(value: &ValueExpression) -> Option<hawdb_core::Value> {
+            match &value.kind {
+                ValueExpressionKind::Literal(hawdb_core::Value::Null) => None,
+                ValueExpressionKind::Literal(value) => Some(value.clone()),
+                ValueExpressionKind::List(values) => values
+                    .iter()
+                    .map(constant)
+                    .collect::<Option<Vec<_>>>()
+                    .map(hawdb_core::Value::List),
+                _ => None,
+            }
+        }
+        constant(&value)
+            .map(hawdb_core::PropertyDefault::Value)
+            .ok_or_else(|| {
+                self.error(
+                    value_node,
+                    "property DEFAULT must be a non-NULL literal (bool, number, string, or list of those) or current_timestamp()",
+                )
+            })
+    }
+
+    pub(super) fn schema_statement(&mut self, root: NodeId) -> Result<Statement> {
         let node = self.tree.children(root)[0];
         let child = |name| self.tree.required(node, name);
         Ok(match self.tree.node(node).name.expect("schema rule") {
@@ -145,12 +175,17 @@ impl Transformer<'_> {
                     }
                     _ => unreachable!("matched property type"),
                 };
+                let default = match self.tree.child(node, rule_id!("v_value")) {
+                    Some(default) => Some(self.schema_default(default)?),
+                    None => None,
+                };
                 Statement::CreateProperty(CreateProperty {
                     table_kind: self.schema_kind(path),
                     table: ids[0].clone(),
                     property: ids[1].clone(),
                     value_type,
                     nullable: self.tree.child(node, rule_id!("schema_not_null")).is_none(),
+                    default,
                 })
             }
             "schema_alter_property" | "schema_alter_table" => {

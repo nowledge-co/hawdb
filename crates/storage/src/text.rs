@@ -457,3 +457,24 @@ pub fn decode_schema_object_state(input: &str) -> Result<SchemaObjectState> {
 
 #[cfg(test)]
 mod tests;
+
+/// Text form of a declared property default: `ts` for `current_timestamp()`,
+/// otherwise `v` followed by the encoded constant value.
+pub fn encode_property_default(default: &hawdb_core::PropertyDefault) -> String {
+    match default {
+        hawdb_core::PropertyDefault::CurrentTimestamp => "ts".to_string(),
+        hawdb_core::PropertyDefault::Value(value) => format!("v{}", encode_value(value)),
+    }
+}
+
+pub fn decode_property_default(input: &str) -> Result<hawdb_core::PropertyDefault> {
+    if input == "ts" {
+        return Ok(hawdb_core::PropertyDefault::CurrentTimestamp);
+    }
+    match input.strip_prefix('v') {
+        Some(value) => Ok(hawdb_core::PropertyDefault::Value(decode_value(value)?)),
+        None => Err(HawDBError::Storage(format!(
+            "invalid property default encoding: {input}"
+        ))),
+    }
+}

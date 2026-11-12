@@ -1021,7 +1021,16 @@ table schema DDL is implemented through
 `CREATE PROPERTY ON RELATIONSHIP TABLE Name(property) TYPE Type`, supports
 optional `NOT NULL`, persists through WAL replay and checkpoint, validates
 existing records before descriptor creation, and checks later writes before a
-WAL batch is appended. `Database::run_schema_maintenance` advances
+WAL batch is appended. An optional `DEFAULT <literal>` or
+`DEFAULT current_timestamp()` (#1683) is applied only to records created
+without the property (CREATE, MERGE create branch, explicit transactions,
+direct store creation APIs and graph snapshot import); explicit NULLs stay
+NULL, nothing is filled at read time, and declaring a defaulted property on a
+table with records lacking it enters `BACKFILL` so schema maintenance fills
+those records in bounded, crash-resumable WAL batches before validation.
+`Database::property_schemas` reports declared defaults; see
+[STORAGE.md](STORAGE.md) for the semantics table and format compatibility.
+`Database::run_schema_maintenance` advances
 `BACKFILL` descriptors to `VALIDATING`, validates `VALIDATING` descriptors
 before advancing them to `PUBLIC`, and removes `GC` descriptors through a single
 grouped WAL batch. `Database::plan_schema_maintenance` exposes a read-only

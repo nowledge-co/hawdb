@@ -3472,3 +3472,29 @@ both preflight and measured-call helper ownership. Replay with
 Ordinary CI compiles the example but does not run performance campaigns. Replay and
 measurement limits are in [component profiles](COMPONENT_PROFILES.md). No new
 test lane, feature, target-local profile, timeout or production dependency.
+
+### Property DEFAULT values (#1683)
+
+`api::tests::property_defaults` in the existing `cargo test --locked -p hawdb
+--lib` owner covers the Kùzu semantics table end to end for node and
+relationship tables (absent → default; literal NULL, NULL parameter,
+`MERGE ... ON CREATE SET p = NULL` and a later `SET p = NULL` → NULL), with the
+stored explicit NULL checked in the node map and re-read after WAL replay and
+after a checkpoint. It also covers explicit transactions, `UNWIND ... CREATE`,
+`GraphStore::import_graph_snapshot_rows` rows with and without the key,
+literal round trips (`[]`, `'{}'`, negative integers, nested lists) through
+reopen and checkpoint, `TYPE ANY DEFAULT` with later writes of other types,
+DDL-time rejection (type/NOT NULL mismatch, NULL, parameters, temporal
+constructors, `current_timestamp()` on a `STRING` column),
+`current_timestamp()` as one millisecond-truncated `INT` epoch-nanosecond
+value per transaction that compares and sorts with an explicit
+`current_timestamp()` written in the same transaction,
+backfill of a non-empty table through bounded maintenance with records created
+during `BACKFILL`, a reopen between bounded batches, a torn final backfill
+batch that reopens resumable, one backfill instant for a `current_timestamp()`
+default across bounded runs, `Database::property_schemas` across reopen, and
+`tests/fixtures/pre_1683_property_descriptors` (written by main `d5ebd79b8`,
+descriptors in a checkpoint and the WAL tail) reopening with no defaults and
+accepting a defaulted declaration. The binary WAL codec sample set adds
+defaulted `CreateProperty` ops (op code 29). No new lane, feature or fixture
+format; replay with `cargo test --locked -p hawdb --lib property_defaults`.
