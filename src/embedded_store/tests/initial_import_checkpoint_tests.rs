@@ -336,7 +336,11 @@ fn initial_import_1707_crash_resumes_from_last_checkpoint_without_skips_or_dupli
     ] {
         let fixture = ImportFixture::new(&format!("initial_import_1707_crash_{label}"));
         let handle = EmbeddedStoreHandle::new(fixture.open()).unwrap();
+        // Host-persisted resume state, written only after a checkpoint
+        // returned `Ok`: the page cursor and the checkpointed input bytes
+        // that seed the doubling schedule.
         let mut durable_cursor = 0usize;
+        let mut persisted_checkpointed_bytes = 0u64;
         let mut durable_state = None;
         let mut checkpointed = 0u64;
         let mut pending_at_crash = 0;
@@ -356,6 +360,7 @@ fn initial_import_1707_crash_resumes_from_last_checkpoint_without_skips_or_dupli
                 // The host advances its durable cursor only after the
                 // checkpoint acknowledged success.
                 durable_cursor = page + 1;
+                persisted_checkpointed_bytes = checkpointed;
                 let store = handle.read_store().unwrap();
                 durable_state = Some(projection_state(&store, max_documents));
             }
@@ -401,6 +406,8 @@ fn initial_import_1707_crash_resumes_from_last_checkpoint_without_skips_or_dupli
         // persisted its cursor; replay is idempotent.
         let replay_from = durable_cursor.saturating_sub(1);
         let mut run = ImportRun::default();
+        // Seed the doubling schedule from the persisted count, not from 0.
+        let mut checkpointed = persisted_checkpointed_bytes;
         import_pages(
             &mut store,
             replay_from..PAGES,
@@ -425,7 +432,114 @@ fn initial_import_1707_crash_resumes_from_last_checkpoint_without_skips_or_dupli
             final_state,
             "{label} after reopen"
         );
+
+        // A seeded resume needs at most one more full rewrite than the
+        // uninterrupted schedule still had left; restarting the count at 0
+        // instead re-checkpoints after 1, 2, 4, ... replayed pages.
+        let remaining_reference = reference_run
+            .checkpoint_cursors
+            .iter()
+            .filter(|cursor| **cursor > durable_cursor)
+            .count();
+        assert_eq!(
+            run.checkpoints.len(),
+            scheduled_checkpoints(replay_from..PAGES, ROWS, persisted_checkpointed_bytes),
+            "{label}"
+        );
+        assert!(
+            run.checkpoints.len() <= remaining_reference + 1,
+            "{label}: {} resumed checkpoints, {remaining_reference} remaining in the reference",
+            run.checkpoints.len()
+        );
+        if label == "last_gap" {
+            let unseeded = scheduled_checkpoints(replay_from..PAGES, ROWS, 0);
+            assert!(
+                unseeded >= run.checkpoints.len() + 2,
+                "unseeded resume {unseeded} vs seeded {}",
+                run.checkpoints.len()
+            );
+        }
     }
+}
+
+/// Checkpoints the doubling schedule takes over `pages` (plus the final one)
+/// when seeded with `checkpointed` input bytes. Mirrors `import_pages`.
+fn scheduled_checkpoints(
+    pages: std::ops::Range<usize>,
+    rows: usize,
+    mut checkpointed: u64,
+) -> usize {
+    let end = pages.end;
+    let mut pending = 0u64;
+    let mut checkpoints = 0;
+    for page in pages {
+        pending +=
+            crate::embedded_store::search_projection_delta_bytes(&import_page(page, rows)) as u64;
+        if geometric_checkpoint_due(pending, checkpointed, None) || page + 1 == end {
+            checkpoints += 1;
+            checkpointed += pending;
+            pending = 0;
+        }
+    }
+    checkpoints
+}
+
+#[test]
+fn initial_import_1707_crash_inside_checkpoint_fails_closed_and_reimports() {
+    // The resident checkpoint durably replaces the snapshot before it
+    // publishes the generation manifest. Model a crash in that window by
+    // pairing the next checkpoint's snapshot with the previous generation.
+    const ROWS: usize = 10;
+    let fixture = ImportFixture::new("initial_import_1707_crash_inside_checkpoint");
+    let search = fixture.root.join("search");
+    let torn = fixture.root.join("search_torn");
+    let mut store = fixture.open();
+    store
+        .apply_initial_import_projection_delta(import_page(0, ROWS), IMPORT_SOURCE_EPOCH)
+        .unwrap();
+    store.checkpoint_initial_import_projection().unwrap();
+    drop(store);
+    std::fs::create_dir_all(&torn).unwrap();
+    for entry in std::fs::read_dir(&search).unwrap() {
+        let entry = entry.unwrap();
+        assert!(entry.file_type().unwrap().is_file(), "{entry:?}");
+        std::fs::copy(entry.path(), torn.join(entry.file_name())).unwrap();
+    }
+    let mut store = fixture.open();
+    store
+        .apply_initial_import_projection_delta(import_page(1, ROWS), IMPORT_SOURCE_EPOCH)
+        .unwrap();
+    store.checkpoint_initial_import_projection().unwrap();
+    let expected = projection_state(&store, 2 * ROWS);
+    drop(store);
+    std::fs::copy(
+        search.join("search_projection.hawdb"),
+        torn.join("search_projection.hawdb"),
+    )
+    .unwrap();
+
+    // Reopen refuses the mixed state instead of serving either generation.
+    let mut options = fixture.options.clone();
+    options.search_projection_path = Some(torn.clone());
+    let error = EmbeddedStore::open_with_options(options.clone()).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("does not match the published immutable projection"),
+        "{error}"
+    );
+
+    // Recovery for an initial import: discard the projection and re-import
+    // from page 0 with the host cursor and checkpointed count reset.
+    std::fs::remove_dir_all(&torn).unwrap();
+    let (mut store, _) = EmbeddedStore::open_with_options(options).unwrap();
+    for page in 0..2 {
+        store
+            .apply_initial_import_projection_delta(import_page(page, ROWS), IMPORT_SOURCE_EPOCH)
+            .unwrap();
+    }
+    store.checkpoint_initial_import_projection().unwrap();
+    assert_eq!(projection_state(&store, 2 * ROWS), expected);
 }
 
 fn run_schedule(

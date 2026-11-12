@@ -258,7 +258,10 @@ hits (exact score bits), before and after reopen. A dropped store reopens at
 exactly the last checkpointed generation and import epoch, including a crash
 before any checkpoint and one in the last, largest gap of a doubling schedule.
 Replay from the host's durable cursor (plus one already-durable page) matches an
-uninterrupted run. For 8 and 32 pages, a doubling schedule writes at most 3x
+uninterrupted run. A resume seeded from the persisted checkpointed input bytes
+takes at most one more checkpoint than the uninterrupted run had left. A crash
+between the resident snapshot replace and the generation manifest publish
+reopens fail-closed, and a fresh re-import recovers. For 8 and 32 pages, a doubling schedule writes at most 3x
 the final checkpoint in at most `log2(P) + 2` generations, while per-page
 checkpointing writes at least `P / 4` final-size rewrites. The fixtures are
 small temporary persistent projections (at most 640 documents, 8-dimensional
