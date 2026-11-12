@@ -172,8 +172,9 @@ fn district_sized_commits_above_the_free_headroom_drain_first_and_succeed() {
 
 /// A district commit above the free headroom whose drain keeps failing is
 /// rejected with the retryable `BranchBusy`, never the live-view admission
-/// error, and its retries re-arm the stopped circuit (#1618). On main the
-/// first retry after one failed drain returns the non-retryable error.
+/// error, and its retries re-arm the stopped circuit (#1618). Without the
+/// re-arm, the retry after the third failure returns the non-retryable
+/// live-view rejection, and no later retry can clear it on this handle.
 #[test]
 fn a_district_commit_retries_while_its_drain_fails_and_succeeds_once_the_fault_clears() {
     let fixture = Fixture::new();
@@ -220,6 +221,213 @@ fn a_district_commit_retries_while_its_drain_fails_and_succeeds_once_the_fault_c
     assert_order_lines(&mut reopened, lines);
     reopened.checkpoint().unwrap();
     assert_order_line_totals(&mut reopened, lines);
+}
+
+/// Asserts that the live admission envelope holds.
+fn assert_within_envelope(db: &Database) {
+    for (retained, limit) in debt(db).relational_live.admission_pairs() {
+        assert!(limit.is_none_or(|limit| retained <= limit));
+    }
+}
+
+/// The owner can drain but its attempt is deferred (a background admission
+/// denial, as under memory pressure): the commit that needs that drain gets
+/// the retryable `BranchBusy`, not the live-view admission error, applies
+/// nothing, and commits once the owner can drain again (#1637).
+#[test]
+fn a_deferred_drain_returns_retryable_busy_and_applies_nothing() {
+    let fixture = Fixture::new();
+    let mut db = Database::open_with_config(&fixture.0, config()).unwrap();
+    let lines = fill_below_trigger(&mut db);
+    let (epoch, checkpoints) = (db.commit_epoch().unwrap(), completed(&db));
+    db.set_runtime_governor(governor(1));
+    let error = insert_line_range(&mut db, lines..lines + LARGE_DISTRICT_LINES).unwrap_err();
+    let report = db.automatic_checkpoint_report().unwrap().unwrap();
+    assert!(
+        matches!(
+            error,
+            HawDBError::BranchBusy {
+                resource: "automatic checkpoint capacity"
+            }
+        ),
+        "{error}; {report:?}"
+    );
+    assert!(report.deferred_attempts >= 1, "{report:?}");
+    assert!(!report.operation_retry_exhausted, "{report:?}");
+    assert!(!db.storage_handle_poisoned().unwrap());
+    assert_eq!(db.commit_epoch().unwrap(), epoch);
+    assert_eq!(completed(&db), checkpoints);
+    assert_within_envelope(&db);
+    assert_order_lines(&mut db, lines);
+    db.set_runtime_governor(governor(8 * 1024 * 1024 * 1024));
+    let mut busy_retries = 0;
+    commit_with_busy_retries(
+        &mut db,
+        lines..lines + LARGE_DISTRICT_LINES,
+        &mut busy_retries,
+    )
+    .unwrap();
+    assert!(completed(&db) > checkpoints);
+    assert_within_envelope(&db);
+    assert_order_lines(&mut db, lines + LARGE_DISTRICT_LINES);
+}
+
+/// Holds the owner just before the drain a large commit requested, makes it
+/// unable to drain with `disable`, and asserts that the commit keeps the
+/// non-retryable pre-WAL live-view rejection rather than `BranchBusy`:
+/// waiting cannot help, and the synchronous manual checkpoint then drains
+/// the overlay so the same commit succeeds (#1637). `disable` returns a guard
+/// that is dropped before that manual checkpoint.
+fn assert_unable_owner_keeps_the_rejection<G>(disable: impl FnOnce(&Arc<Control>) -> G) {
+    let fixture = Fixture::new();
+    let mut db = Database::open_with_config(&fixture.0, config()).unwrap();
+    let lines = fill_below_trigger(&mut db);
+    let (epoch, checkpoints) = (db.commit_epoch().unwrap(), completed(&db));
+    let pause = RequestedDrainPause::install(&db);
+    let control = Arc::clone(&pause.control);
+    let (error, guard) = std::thread::scope(|scope| {
+        let writer =
+            scope.spawn(|| insert_line_range(&mut db, lines..lines + LARGE_DISTRICT_LINES));
+        pause.wait_until_drain_is_held();
+        // The owner re-evaluates its state when released, so it starts no
+        // drain; the waiting commit wakes, fails to fit again and returns.
+        let guard = disable(&control);
+        control.notify_all();
+        pause.release();
+        (writer.join().unwrap().unwrap_err(), guard)
+    });
+    let report = db.automatic_checkpoint_report().unwrap().unwrap();
+    let message = error.to_string();
+    assert!(
+        !matches!(error, HawDBError::BranchBusy { .. })
+            && message.contains("before WAL append")
+            && message.contains("a checkpoint must drain the overlay first"),
+        "{message}; {report:?}"
+    );
+    assert!(!db.storage_handle_poisoned().unwrap());
+    assert_eq!(db.commit_epoch().unwrap(), epoch);
+    assert_eq!(completed(&db), checkpoints);
+    assert_within_envelope(&db);
+    assert_order_lines(&mut db, lines);
+    drop(guard);
+    db.checkpoint().unwrap();
+    insert_line_range(&mut db, lines..lines + LARGE_DISTRICT_LINES).unwrap();
+    assert_within_envelope(&db);
+    assert_order_lines(&mut db, lines + LARGE_DISTRICT_LINES);
+}
+
+/// A suspended owner starts no drain, so the waiting commit keeps the
+/// live-view rejection.
+#[test]
+fn a_commit_waiting_on_a_suspended_owner_keeps_the_live_view_rejection() {
+    assert_unable_owner_keeps_the_rejection(|control| control.suspend().unwrap());
+}
+
+/// A stopped owner (as at shutdown) starts no drain, so the waiting commit
+/// keeps the live-view rejection.
+#[test]
+fn a_commit_waiting_on_a_stopped_owner_keeps_the_live_view_rejection() {
+    assert_unable_owner_keeps_the_rejection(|control| {
+        control.lock().unwrap().stopping = true;
+    });
+}
+
+/// A failed owner (an integrity failure while adopting a generation) is
+/// terminal for this handle: the waiting commit fails closed with the
+/// integrity error, never with the retryable `BranchBusy` and never by
+/// re-arming anything, and applies nothing. Reopening recovers exactly the
+/// committed rows at the same epoch.
+#[test]
+fn a_commit_waiting_on_a_failed_owner_fails_closed_and_applies_nothing() {
+    let fixture = Fixture::new();
+    let mut db = Database::open_with_config(&fixture.0, config()).unwrap();
+    let lines = fill_below_trigger(&mut db);
+    let (epoch, checkpoints) = (db.commit_epoch().unwrap(), completed(&db));
+    let pause = RequestedDrainPause::install(&db);
+    let control = Arc::clone(&pause.control);
+    let error = std::thread::scope(|scope| {
+        let writer =
+            scope.spawn(|| insert_line_range(&mut db, lines..lines + LARGE_DISTRICT_LINES));
+        pause.wait_until_drain_is_held();
+        // As a failed generation adoption leaves it: stopped and failed.
+        control.lock().unwrap().stopping = true;
+        control.failed.store(true, Ordering::Release);
+        control.notify_all();
+        pause.release();
+        writer.join().unwrap().unwrap_err()
+    });
+    // The handle refuses every later operation with the integrity error
+    // (`ensure_healthy`), so the owner's own report is read directly.
+    let report = control.lock().unwrap().report.clone();
+    assert!(
+        matches!(error, HawDBError::StorageIntegrity(_)),
+        "{error}; {report:?}"
+    );
+    assert_eq!(report.operation_retry_rearms, 0, "{report:?}");
+    assert_eq!(report.completed_checkpoints, checkpoints, "{report:?}");
+    assert_within_envelope(&db);
+    drop(db);
+    let mut reopened = Database::open_with_config(&fixture.0, config()).unwrap();
+    assert_eq!(reopened.commit_epoch().unwrap(), epoch);
+    assert_order_lines(&mut reopened, lines);
+}
+
+/// An owner whose operation retries are exhausted starts no drain by itself,
+/// but a commit that needs headroom re-arms one attempt once the circuit's
+/// backoff expires (#1618). Meanwhile the commit gets at most the retryable
+/// `BranchBusy` with nothing applied, and it commits without a manual
+/// checkpoint once the re-armed attempt drains. This replaces the
+/// live-view rejection #1637 kept for an exhausted owner.
+#[test]
+fn a_commit_waiting_on_an_exhausted_owner_re_arms_it_and_commits() {
+    let fixture = Fixture::new();
+    let mut db = Database::open_with_config(&fixture.0, config()).unwrap();
+    let lines = fill_below_trigger(&mut db);
+    let (epoch, checkpoints) = (db.commit_epoch().unwrap(), completed(&db));
+    let pause = RequestedDrainPause::install(&db);
+    let control = Arc::clone(&pause.control);
+    let result = std::thread::scope(|scope| {
+        let writer =
+            scope.spawn(|| insert_line_range(&mut db, lines..lines + LARGE_DISTRICT_LINES));
+        pause.wait_until_drain_is_held();
+        {
+            let now = control.frontend_now();
+            let fault = HawDBError::Storage("injected operation failure".into());
+            let mut state = control.lock().unwrap();
+            for _ in 0..MAX_OPERATION_FAILURES {
+                record_operation_failure(&mut state, &fault, now);
+            }
+            assert!(state.report.operation_retry_exhausted);
+        }
+        control.notify_all();
+        pause.release();
+        writer.join().unwrap()
+    });
+    match result {
+        Ok(()) => {}
+        Err(HawDBError::BranchBusy {
+            resource: "automatic checkpoint capacity",
+        }) => {
+            // Rejected before WAL append: nothing applied, retry is safe.
+            assert_eq!(db.commit_epoch().unwrap(), epoch);
+            assert_order_lines(&mut db, lines);
+            let mut busy_retries = 0;
+            commit_with_busy_retries(
+                &mut db,
+                lines..lines + LARGE_DISTRICT_LINES,
+                &mut busy_retries,
+            )
+            .unwrap();
+        }
+        Err(error) => panic!("{error}; {:?}", db.automatic_checkpoint_report()),
+    }
+    let report = db.automatic_checkpoint_report().unwrap().unwrap();
+    assert!(report.operation_retry_rearms >= 1, "{report:?}");
+    assert!(!report.operation_retry_exhausted, "{report:?}");
+    assert!(report.completed_checkpoints > checkpoints, "{report:?}");
+    assert_eq!(db.commit_epoch().unwrap(), epoch + 1);
+    assert_within_envelope(&db);
+    assert_order_lines(&mut db, lines + LARGE_DISTRICT_LINES);
 }
 
 const WIDE_COLUMNS: usize = 40;
@@ -440,6 +648,9 @@ impl RequestedDrainPause {
         self.resume_owner.send(()).unwrap();
         self.control.lock().unwrap().frontend_wait_probe = None;
         *self.control.frontend_clock.lock().unwrap() = None;
+        // A writer that re-evaluated under the frozen clock waits without a
+        // timeout; wake it so it sees the real clock (and any backoff).
+        self.control.notify_all();
     }
 }
 

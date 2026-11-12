@@ -592,3 +592,119 @@ fn descriptor_corruption_fails_closed_inside_a_scope() {
     assert!(reader.is_poisoned());
     assert_eq!(retained_segments(), 0);
 }
+
+#[test]
+fn single_walk_projection_equals_the_two_walk_reference() {
+    let (path, manifest) = write("scope_single_walk", 4, LARGE_SEGMENT);
+    let reader = open(path.as_ref(), &manifest, &cache());
+    let keys = node(FIRST_ID, 4).properties.into_keys().collect::<Vec<_>>();
+    assert!(keys.len() > LOCATED_SELECTION_CAPACITY);
+    // A bounded table of named selections: no key, each key alone (one per
+    // encoded value type of the fixture), exactly the located capacity, one
+    // past it (the two-walk fallback), every key, and keys a record does not
+    // hold. Selection capacity and admission do not depend on which record
+    // is read, so a few representative records suffice (#1662 review).
+    let capacity = LOCATED_SELECTION_CAPACITY;
+    let mut selections: Vec<(String, BTreeSet<String>)> =
+        vec![("empty".to_string(), BTreeSet::new())];
+    for key in &keys {
+        selections.push((format!("only {key}"), BTreeSet::from([key.clone()])));
+    }
+    selections.push((
+        format!("exactly {capacity}"),
+        keys[..capacity].iter().cloned().collect(),
+    ));
+    selections.push((
+        format!("{} (fallback)", capacity + 1),
+        keys[..capacity + 1].iter().cloned().collect(),
+    ));
+    selections.push(("all".to_string(), keys.iter().cloned().collect()));
+    selections.push((
+        "absent and present".to_string(),
+        BTreeSet::from(["missing".to_string(), "content".to_string()]),
+    ));
+    const RECORDS: usize = 3;
+    let expected = nodes(4);
+    let (mut located, mut fallback) = (0, 0);
+    // Only payloads of directory-validated segments take the single walk.
+    let segment = collect_descriptors(&reader, CanonicalSegmentKind::Nodes)
+        .into_iter()
+        .find(|segment| segment.record_count > point_directory::POINT_DIRECTORY_STRIDE)
+        .expect("a directory-backed node segment");
+    let bytes = reader.read_segment(&segment).unwrap();
+    let mut records = 0;
+    decode_segment_records(&bytes, manifest.generation, &segment, |id, payload| {
+        if records == RECORDS {
+            return Ok(());
+        }
+        records += 1;
+        {
+            let node = expected.iter().find(|node| node.id.0 == id).unwrap();
+            let keys = reader.property_keys();
+            for (case, properties) in &selections {
+                let reference_bytes =
+                    node_payload_allocation_bytes(payload, keys, None, Some(properties), true)
+                        .unwrap();
+                let reference = decode_projected_node_with_property_spills(
+                    id,
+                    payload,
+                    None,
+                    Some(keys),
+                    properties,
+                    true,
+                )
+                .unwrap();
+                assert_eq!(reference, project(node, properties));
+                match SelectedNodeValues::locate(payload, keys, None, properties).unwrap() {
+                    Some(selection) => {
+                        located += 1;
+                        assert_eq!(selection.allocation_bytes, reference_bytes);
+                        assert_eq!(
+                            selection.decode(NodeId(id), payload, None).unwrap(),
+                            reference
+                        );
+                    }
+                    None => {
+                        fallback += 1;
+                        assert!(properties.len() > LOCATED_SELECTION_CAPACITY, "{case}");
+                    }
+                }
+                // As the store reads: admission sees exactly the reference
+                // bytes before decoding, and a refusal decodes nothing.
+                let input = CanonicalNodeInput {
+                    id: NodeId(id),
+                    payload,
+                    property_keys: keys,
+                    property_spills: None,
+                    values_validated: true,
+                };
+                let mut admitted = None;
+                let (read, ()) = input
+                    .decode_selected(properties, |bytes| {
+                        admitted = Some(bytes);
+                        Ok(())
+                    })
+                    .unwrap();
+                assert_eq!(admitted, Some(reference_bytes), "{case}");
+                assert_eq!(read, reference);
+                let refused = input.decode_selected(properties, |_| {
+                    Err::<(), _>(CanonicalSegmentError::Source("refused".into()))
+                });
+                assert!(
+                    matches!(refused, Err(CanonicalSegmentError::Source(_))),
+                    "{case}"
+                );
+            }
+        }
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(records, RECORDS);
+    // Exactly the capacity is located; one past it and every key fall back.
+    assert_eq!(
+        fallback,
+        2 * RECORDS,
+        "{located} located, {fallback} fallback"
+    );
+    assert_eq!(located, (selections.len() - 2) * RECORDS);
+}

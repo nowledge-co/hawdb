@@ -52,13 +52,24 @@ use hawdb::{
 };
 use serde_json::json;
 
+mod maintenance;
+mod open_options;
 mod retained;
+mod transaction;
+pub use maintenance::*;
 pub use retained::*;
+pub use transaction::*;
 
 #[cfg(test)]
 mod error_tests;
 #[cfg(test)]
+mod maintenance_tests;
+#[cfg(test)]
+mod open_options_tests;
+#[cfg(test)]
 mod temporal_tests;
+#[cfg(test)]
+mod transaction_tests;
 #[cfg(test)]
 mod vector_tests;
 
@@ -83,6 +94,14 @@ pub struct HawdbDatabase {
     inner: Mutex<HawDBEmbedded>,
 }
 
+impl HawdbDatabase {
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, HawDBEmbedded>, FfiError> {
+        self.inner
+            .lock()
+            .map_err(|_| FfiError::invalid("hawdb: database mutex poisoned"))
+    }
+}
+
 /// A byte buffer the library hands to the caller.
 ///
 /// `ptr` is `len` bytes of UTF-8 text; it is NUL-terminated as a courtesy
@@ -98,6 +117,7 @@ pub struct HawdbBuffer {
 
 /// An error reported by this crate: an engine or contract `kind` plus a
 /// human-readable `message`.
+#[derive(Debug)]
 struct FfiError {
     kind: String,
     message: String,
@@ -110,6 +130,24 @@ impl FfiError {
     fn invalid(message: impl Into<String>) -> Self {
         Self {
             kind: "invalid_argument".to_string(),
+            message: message.into(),
+            resource_budget: None,
+        }
+    }
+
+    /// A call that needs an open transaction on a handle that has none.
+    fn no_transaction(message: impl Into<String>) -> Self {
+        Self {
+            kind: "no_transaction".to_string(),
+            message: message.into(),
+            resource_budget: None,
+        }
+    }
+
+    /// A call that is refused because a transaction is open on the handle.
+    fn transaction_open(message: impl Into<String>) -> Self {
+        Self {
+            kind: "transaction_open".to_string(),
             message: message.into(),
             resource_budget: None,
         }
@@ -404,8 +442,34 @@ fn output_to_json(output: &QueryOutput) -> serde_json::Value {
 /// Open a HawDB database at `path`, creating it if needed.
 ///
 /// `path` is `path_len` UTF-8 bytes and must not be NULL. `options_json`
-/// may be NULL or a JSON object; currently supported keys:
-/// `{"read_only": bool}`.
+/// may be NULL or a JSON object. Every key is optional and names the typed
+/// Rust configuration field it sets; an absent key keeps the embedded
+/// default. Unknown keys and ill-typed values fail with `invalid_argument`.
+///
+/// - `"read_only": bool` (default false). A read-only open uses strict
+///   recovery and never repairs a torn WAL tail.
+/// - `"durability": "sync_on_every_write" | "sync_on_checkpoint"` (default
+///   `"sync_on_every_write"`, power-loss safe). `"sync_on_checkpoint"`
+///   flushes each committed transaction's WAL to the OS before acknowledging
+///   it but synchronizes storage only at checkpoint boundaries, so a power
+///   failure may lose recently acknowledged transactions (never part of one).
+///   Branch creation, deletion and head publication stay power-loss safe.
+/// - `"max_read_result_rows": integer >= 0 | null` (default null). Host-wide
+///   read row ceiling; 0 and null mean no row ceiling.
+/// - `"max_read_intermediate_rows": integer >= 0 | null` (default null).
+///   Host-wide ceiling on the rows one relational SQL statement may scan,
+///   join or aggregate, independent of the rows it returns. null inherits
+///   `max_read_result_rows`; 0 means no intermediate row ceiling.
+/// - `"max_read_result_payload_bytes": integer > 0` (default 67108864).
+///   Host-wide read result payload budget; it can be tuned but not removed.
+/// - `"relational_monotonic_append_fast_path": bool` (default false). Opt-in
+///   metadata-only INSERT path for RowPage tables whose primary keys arrive
+///   in increasing order; other inserts fall back to the ordinary path.
+///
+/// A read that exceeds a budget fails (`read_budget_exceeded`, or
+/// `resource_budget_exceeded` with a `resource_budget` object) rather than
+/// returning a partial result. Calls on one handle are serialized, so the
+/// handle has no group commit to configure.
 ///
 /// Returns a handle to pass to the other functions, or NULL on failure
 /// with `err_out` filled. Close the handle with [`hawdb_close`].
@@ -462,15 +526,7 @@ unsafe fn hawdb_open_inner(
         let object = parsed
             .as_object()
             .ok_or_else(|| FfiError::invalid("hawdb: options_json must be a JSON object"))?;
-        if let Some(read_only) = object.get("read_only") {
-            let read_only = read_only
-                .as_bool()
-                .ok_or_else(|| FfiError::invalid("hawdb: \"read_only\" must be a bool"))?;
-            options.config.read_only = read_only;
-            if read_only {
-                options.config.recovery_mode = hawdb::RecoveryMode::Strict;
-            }
-        }
+        open_options::apply_open_options(&mut options, object)?;
     }
     let database =
         HawDBEmbedded::open_with_options(options).map_err(|error| FfiError::open(&error))?;
@@ -500,6 +556,10 @@ pub unsafe extern "C" fn hawdb_open_in_memory(err_out: *mut HawdbBuffer) -> *mut
 }
 
 /// Close a database handle and release its resources.
+///
+/// A transaction still open on the handle (see
+/// [`hawdb_begin_transaction`]) is rolled back: none of its statements are
+/// committed or visible after a reopen.
 ///
 /// # Safety
 /// `db` must be a handle returned by [`hawdb_open`] and not already
@@ -550,6 +610,7 @@ pub unsafe extern "C" fn hawdb_query(
                 len: params_len,
             },
             false,
+            false,
             result_out,
             err_out,
         )
@@ -586,17 +647,22 @@ pub unsafe extern "C" fn hawdb_query_sql(
                 len: params_len,
             },
             true,
+            false,
             result_out,
             err_out,
         )
     }
 }
 
+/// Run one statement: autocommit when `transaction` is false, otherwise
+/// inside the handle's open transaction. Each mode refuses the other's
+/// state so a statement never silently runs outside the caller's intent.
 unsafe fn query_impl(
     db: *mut HawdbDatabase,
     text: FfiStr,
     params_json: FfiStr,
     sql: bool,
+    transaction: bool,
     result_out: *mut HawdbBuffer,
     err_out: *mut HawdbBuffer,
 ) -> bool {
@@ -615,23 +681,31 @@ unsafe fn query_impl(
             let params = parse_sql_params(params_json)?;
             #[cfg(feature = "boundary-profiling")]
             let _engine = boundary_profile::PhaseTimer::start(boundary_profile::Phase::Engine);
-            database
-                .inner
-                .lock()
-                .map_err(|_| FfiError::invalid("hawdb: database mutex poisoned"))?
-                .database_mut()
-                .query_sql_with_params(text, &params)
-                .map_err(|error| FfiError::open(&error))
+            let mut inner = database.lock()?;
+            if transaction {
+                transaction::ensure_open(&inner)?;
+                inner.transaction_query_sql_with_params(text, &params)
+            } else {
+                transaction::ensure_none(&inner)?;
+                inner.database_mut().query_sql_with_params(text, &params)
+            }
+            .map_err(|error| FfiError::open(&error))
         } else {
             let params = parse_cypher_params(params_json)?;
             #[cfg(feature = "boundary-profiling")]
             let _engine = boundary_profile::PhaseTimer::start(boundary_profile::Phase::Engine);
-            database
-                .inner
-                .lock()
-                .map_err(|_| FfiError::invalid("hawdb: database mutex poisoned"))?
-                .query_with_params_admitted(text, &params)
-                .map_err(|error| FfiError::query(&error))
+            let mut inner = database.lock()?;
+            if transaction {
+                transaction::ensure_open(&inner)?;
+                inner
+                    .transaction_query_with_params(text, &params)
+                    .map_err(|error| FfiError::open(&error))
+            } else {
+                transaction::ensure_none(&inner)?;
+                inner
+                    .query_with_params_admitted(text, &params)
+                    .map_err(|error| FfiError::query(&error))
+            }
         }
     }));
     match result {

@@ -24,8 +24,12 @@ let queryCalls = 0;
 let openCalls = 0;
 let closeCalls = 0;
 let freeCalls = 0;
+let maintenanceCalls = 0;
 const address = 100;
-const payload = '{"columns":["value"],"rows":[[1]]}';
+const queryPayload = '{"columns":["value"],"rows":[[1]]}';
+const reportPayload =
+  '{"generation":1,"checkpoint_commit_epoch":1,"file_count":1,"total_bytes":1,"manifest_checksum":1}';
+let payload = queryPayload;
 
 function open() {
   openCalls += 1;
@@ -47,9 +51,37 @@ function query(
   assert.equal(unloaded, false, "queried an unloaded library");
   assert.equal(live, true, "queried a closed database");
   assert.equal(handle, address);
+  payload = queryPayload;
   result[0] = 1n;
   result[1] = BigInt(payload.length);
   return true;
+}
+
+function report(output: BigUint64Array) {
+  payload = reportPayload;
+  output[0] = 1n;
+  output[1] = BigInt(payload.length);
+  return true;
+}
+
+function backup(handle: number, _path: Uint8Array, _pathLength: Uint8Array, output: BigUint64Array) {
+  maintenanceCalls += 1;
+  assert.equal(unloaded, false, "backed up through an unloaded library");
+  assert.equal(live, true, "backed up a closed database");
+  assert.equal(handle, address);
+  return report(output);
+}
+
+function restore(
+  _backup: Uint8Array,
+  _backupLength: Uint8Array,
+  _destination: Uint8Array,
+  _destinationLength: Uint8Array,
+  output: BigUint64Array,
+) {
+  maintenanceCalls += 1;
+  assert.equal(unloaded, false, "restored through an unloaded library");
+  return report(output);
 }
 
 mock.module("../../src/native.ts", () => ({
@@ -70,6 +102,8 @@ mock.module("../../src/native.ts", () => ({
       },
       hawdb_query: query,
       hawdb_query_sql: query,
+      hawdb_backup: backup,
+      hawdb_restore: restore,
       hawdb_buffer_free: (buffer: BigUint64Array) => {
         assert.equal(buffer[0], 1n);
         buffer.fill(0n);
@@ -99,6 +133,53 @@ if (scenario === "open-library-close") {
     (error) => error instanceof HawDBError && error.kind === "closed",
   );
   assert.equal(openCalls, 0);
+} else if (scenario === "restore-backup-library-close" || scenario === "restore-destination-library-close") {
+  // A boxed path's conversion runs after the entry check; it must not reach native code.
+  const path = Object.assign(new String("path"), {
+    [Symbol.toPrimitive]() {
+      library.close();
+      return "path";
+    },
+  }) as unknown as string;
+  assert.throws(
+    () =>
+      scenario === "restore-backup-library-close"
+        ? library.restore(path, "restored")
+        : library.restore("backup", path),
+    (error) => error instanceof HawDBError && error.kind === "closed",
+  );
+  assert.equal(maintenanceCalls, 0);
+} else if (scenario === "maintenance-healthy") {
+  const database = library.openInMemory();
+  const path = Object.assign(new String("backup"), {
+    [Symbol.toPrimitive]: () => "backup",
+  });
+  assert.equal(database.backup(path as unknown as string).file_count, 1);
+  assert.equal(library.restore("backup", path as unknown as string).generation, 1);
+  assert.equal(maintenanceCalls, 2);
+  database.close();
+} else if (scenario === "backup-close" || scenario === "backup-reuse") {
+  const database = library.openInMemory();
+  let replacement: Database | undefined;
+  const path = Object.assign(new String("backup"), {
+    [Symbol.toPrimitive]() {
+      database.close();
+      if (scenario === "backup-reuse") replacement = library.openInMemory();
+      return "backup";
+    },
+  });
+  try {
+    assert.throws(
+      () => database.backup(path as unknown as string),
+      (error) => error instanceof HawDBError && error.kind === "invalid_handle",
+    );
+    assert.equal(maintenanceCalls, 0);
+    // The replacement shares the freed address but is a different lifetime.
+    if (scenario === "backup-reuse") assert.equal(live, true);
+  } finally {
+    database.close();
+    replacement?.close();
+  }
 } else {
   const database = library.openInMemory();
   let replacement: Database | undefined;

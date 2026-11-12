@@ -519,6 +519,37 @@ py_test(
     deps = [requirement("packaging")],
 )
 
+py_test(
+    name = "native_release_package_script_test",
+    size = "small",
+    srcs = [
+        "scripts/package-ffi-release.py",
+        "scripts/package-ffi-release.test.py",
+    ],
+    data = [
+        "Cargo.toml",
+        "LICENSE",
+        "//bindings/ffi:include/hawdb_ffi.h",
+    ],
+    legacy_create_init = False,
+    main = "scripts/package-ffi-release.test.py",
+)
+
+py_test(
+    name = "native_release_mode_script_test",
+    size = "small",
+    srcs = [
+        "scripts/native-release-mode.py",
+        "scripts/native-release-mode.test.py",
+    ],
+    data = [
+        ".github/workflows/native-release.yml",
+        "scripts/npm/publish-assembled.sh",
+    ],
+    legacy_create_init = False,
+    main = "scripts/native-release-mode.test.py",
+)
+
 sh_test(
     name = "root_unit_partition_script_test",
     size = "small",
@@ -770,6 +801,8 @@ test_suite(
         ":hawdb_wasm_playground_bridge_tests",
         ":hawdb_unit_fast_tests",
         ":root_unit_partition_script_test",
+        ":native_release_package_script_test",
+        ":native_release_mode_script_test",
         ":pypi_publish_script_test",
         ":storage_tla_evidence_script_test",
         ":power_loss_partition_script_test",

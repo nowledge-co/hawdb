@@ -51,10 +51,11 @@ const SCOPE_SLOTS: usize = 4;
 /// Retained pins never exceed this fraction of the reader's cache capacity.
 const SCOPE_CAPACITY_DIVISOR: u64 = 4;
 
-/// A selected segment and the leases one point read needs from it.
-#[derive(Clone)]
+/// A selected segment and the leases one point read needs from it. Reads
+/// share a retained segment through an `Rc`, so a hit costs one non-atomic
+/// count instead of cloning and dropping both pinned cache leases.
 pub(super) struct PointSegment {
-    pub(super) descriptor: Rc<CanonicalSegmentDescriptor>,
+    pub(super) descriptor: CanonicalSegmentDescriptor,
     pub(super) bytes: SegmentBytes,
     /// Present for segments of more than one directory stride. A directory is
     /// only built after every record of the segment passed validation.
@@ -79,7 +80,7 @@ impl PointSegment {
 
 struct ScopeSlot {
     reader: u64,
-    segment: PointSegment,
+    segment: Rc<PointSegment>,
 }
 
 struct ScopeState {
@@ -156,7 +157,7 @@ pub(super) fn retained_segment(
     reader: u64,
     kind: CanonicalSegmentKind,
     id: u64,
-) -> Option<PointSegment> {
+) -> Option<Rc<PointSegment>> {
     SCOPE
         .try_with(|scope| {
             let mut scope = scope.borrow_mut();
@@ -171,7 +172,7 @@ pub(super) fn retained_segment(
             if index != last {
                 scope.slots[index..].rotate_left(1);
             }
-            Some(scope.slots[last].segment.clone())
+            Some(Rc::clone(&scope.slots[last].segment))
         })
         .ok()
         .flatten()
@@ -179,7 +180,7 @@ pub(super) fn retained_segment(
 
 /// Retains `segment` for later reads of `reader` when a scope is open, every
 /// lease is cache-resident and the pins stay within budget.
-pub(super) fn retain_segment(reader: u64, segment: &PointSegment, cache_capacity_bytes: u64) {
+pub(super) fn retain_segment(reader: u64, segment: &Rc<PointSegment>, cache_capacity_bytes: u64) {
     if !segment.bytes.is_cache_resident()
         || segment
             .directory
@@ -217,7 +218,7 @@ pub(super) fn retain_segment(reader: u64, segment: &PointSegment, cache_capacity
             }
             scope.slots.push(ScopeSlot {
                 reader,
-                segment: segment.clone(),
+                segment: Rc::clone(segment),
             });
             evicted
         })
