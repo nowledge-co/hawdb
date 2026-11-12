@@ -1249,3 +1249,256 @@ fn published_object_mount_and_cold_handle_skip_rehash_until_forgotten() {
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
     assert_eq!(skipped(), None);
 }
+
+/// Rewrites one byte of `path` in place: same inode and length. The
+/// modification time is restored unless `later` is set.
+fn flip_byte_in_place(path: &std::path::Path, offset: u64, later: bool) {
+    let modified = std::fs::metadata(path).unwrap().modified().unwrap();
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .unwrap();
+    let mut byte = [0_u8];
+    file.seek(SeekFrom::Start(offset)).unwrap();
+    file.read_exact(&mut byte).unwrap();
+    byte[0] ^= 0x5a;
+    file.seek(SeekFrom::Start(offset)).unwrap();
+    file.write_all(&byte).unwrap();
+    let modified = if later {
+        modified + std::time::Duration::from_secs(2)
+    } else {
+        modified
+    };
+    file.set_times(std::fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+}
+
+/// #1440: an object found on disk (no publication record, as in a new
+/// process) is hashed in full by every mount. The first cold handle open after
+/// that mount reuses the verification instead of hashing the same inode
+/// again, but only once and only while native identity, length and
+/// modification time still match.
+#[test]
+fn mount_verification_is_reused_once_by_the_next_cold_open() {
+    use crate::file_descriptors::DescriptorCache;
+
+    let fixture = Fixture::new(8);
+    let context = context_for_path(&fixture.root).unwrap();
+    let payload = b"mounted from disk, never published by this process";
+    let length = payload.len() as u64;
+    let binding = fixture.binding("disk-object", payload);
+    let handles = &fixture.project.immutable_handles;
+    let metrics = || fixture.project.metrics();
+    let alias = fixture.root.join("disk-object.alias");
+
+    // The mount hashes every byte once.
+    handles.mount(&alias, binding.clone(), &context).unwrap();
+    assert_eq!(metrics().identity_verified_bytes, length);
+    assert_eq!(metrics().mount_verification_reuses, 0);
+
+    // The next cold open neither charges nor hashes: the mount just did.
+    let (file, validated) = handles
+        .get_admitted(&binding, &context, |_| {
+            panic!("the mount verification must be reused")
+        })
+        .unwrap();
+    assert_eq!(validated, 0);
+    assert_eq!(metrics().identity_verified_bytes, length);
+    assert_eq!(metrics().mount_verification_reuses, 1);
+    let mut value = vec![0; payload.len()];
+    crate::io::read_exact_at(&file, &mut value, 0).unwrap();
+    assert_eq!(value, payload);
+    drop(file);
+
+    // The record was consumed: a later cold open hashes in full again and so
+    // refuses even modification-time-preserving damage.
+    handles.evict_idle(usize::MAX);
+    flip_byte_in_place(&binding.object_path, 4, false);
+    let error = handles
+        .get_admitted(&binding, &context, |_| Ok(()))
+        .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(metrics().identity_verified_bytes, length);
+    assert_eq!(metrics().mount_verification_reuses, 1);
+
+    // Every mount still hashes, so a remount refuses the same damage, and a
+    // refused remount discards an earlier mount's unconsumed record.
+    flip_byte_in_place(&binding.object_path, 4, false);
+    handles.mount(&alias, binding.clone(), &context).unwrap();
+    flip_byte_in_place(&binding.object_path, 4, false);
+    let error = handles
+        .mount(&alias, binding.clone(), &context)
+        .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    let error = handles
+        .get_admitted(&binding, &context, |_| Ok(()))
+        .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(metrics().mount_verification_reuses, 1);
+    flip_byte_in_place(&binding.object_path, 4, false);
+
+    // Damage after the mount that changes the modification time disqualifies
+    // the record, so the cold open hashes and refuses it.
+    handles.mount(&alias, binding.clone(), &context).unwrap();
+    flip_byte_in_place(&binding.object_path, 7, true);
+    let error = handles
+        .get_admitted(&binding, &context, |_| Ok(()))
+        .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(metrics().mount_verification_reuses, 1);
+    flip_byte_in_place(&binding.object_path, 7, true);
+
+    // A replaced inode with identical bytes is not the one the mount hashed.
+    handles.mount(&alias, binding.clone(), &context).unwrap();
+    let replacement = fixture.root.join("disk-object.replacement");
+    std::fs::write(&replacement, payload).unwrap();
+    std::fs::rename(&replacement, &binding.object_path).unwrap();
+    let hashed = metrics().identity_verified_bytes;
+    let (_file, validated) = handles
+        .get_admitted(&binding, &context, |_| Ok(()))
+        .unwrap();
+    assert_eq!(validated, length);
+    assert_eq!(metrics().identity_verified_bytes, hashed + length);
+    assert_eq!(metrics().mount_verification_reuses, 1);
+}
+
+/// #1440: the mount stamps the descriptor before reading the first payload
+/// byte and records it only if the stamp is unchanged after the hash. A write
+/// that lands while the mount is hashing therefore leaves no record, and the
+/// next cold open hashes in full.
+#[test]
+fn a_write_racing_the_mount_hash_leaves_no_reusable_record() {
+    struct TouchDuringHash {
+        object: PathBuf,
+        admitted: bool,
+        touched: bool,
+    }
+    impl crate::file_io::ReadAdmissionControl for TouchDuringHash {
+        fn admit_validation(&mut self, _bytes: u64) -> std::io::Result<()> {
+            self.admitted = true;
+            Ok(())
+        }
+        fn checkpoint(&mut self) -> std::io::Result<()> {
+            if self.admitted && !self.touched {
+                self.touched = true;
+                // Windows needs write-attribute access to set times, so
+                // open for writing like `flip_byte_in_place`.
+                let file = std::fs::OpenOptions::new().write(true).open(&self.object)?;
+                let modified = file.metadata()?.modified()? + std::time::Duration::from_secs(5);
+                file.set_times(std::fs::FileTimes::new().set_modified(modified))?;
+            }
+            Ok(())
+        }
+    }
+
+    let fixture = Fixture::new(8);
+    let context = context_for_path(&fixture.root).unwrap();
+    let payload = b"mounted while a writer touches the object";
+    let length = payload.len() as u64;
+    let binding = fixture.binding("raced-object", payload);
+    let handles = &fixture.project.immutable_handles;
+    let alias = fixture.root.join("raced-object.alias");
+    let mut control = TouchDuringHash {
+        object: binding.object_path.clone(),
+        admitted: false,
+        touched: false,
+    };
+
+    handles
+        .mount_controlled(&alias, binding.clone(), &context, &mut control)
+        .unwrap();
+    assert!(control.touched, "the write must land inside the mount hash");
+    assert_eq!(fixture.project.metrics().identity_verified_bytes, length);
+
+    let (_file, validated) = handles
+        .get_admitted(&binding, &context, |_| Ok(()))
+        .unwrap();
+    assert_eq!(validated, length);
+    assert_eq!(
+        fixture.project.metrics().identity_verified_bytes,
+        2 * length
+    );
+    assert_eq!(fixture.project.metrics().mount_verification_reuses, 0);
+}
+
+/// #1440 review: mount-verification records are optional performance state
+/// bounded per project. Mounting more objects than the cap without opening
+/// them evicts the oldest record (counted in `mount_verification_evictions`);
+/// the evicted object's next cold open hashes in full, while the newest
+/// mount's record is still reused.
+#[test]
+fn mount_verification_records_are_bounded_per_project() {
+    use crate::immutable_files::MOUNT_VERIFICATION_RECORDS_PER_PROJECT as CAP;
+
+    let fixture = Fixture::new(8);
+    let context = context_for_path(&fixture.root).unwrap();
+    let handles = &fixture.project.immutable_handles;
+    let metrics = || fixture.project.metrics();
+    let bindings = (0..=CAP)
+        .map(|index| {
+            let binding = fixture.binding(
+                &format!("bounded-{index}"),
+                format!("bounded mount record {index}").as_bytes(),
+            );
+            handles
+                .mount(
+                    &fixture.root.join(format!("bounded-{index}.alias")),
+                    binding.clone(),
+                    &context,
+                )
+                .unwrap();
+            binding
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(handles.mount_verification_record_count(), CAP);
+    assert_eq!(metrics().mount_verification_evictions, 1);
+
+    // The oldest record was evicted, so its cold open hashes in full.
+    let oldest = &bindings[0];
+    let hashed = metrics().identity_verified_bytes;
+    let (_file, validated) = handles.get_admitted(oldest, &context, |_| Ok(())).unwrap();
+    assert_eq!(validated, oldest.reference.byte_length);
+    assert_eq!(
+        metrics().identity_verified_bytes,
+        hashed + oldest.reference.byte_length
+    );
+    assert_eq!(metrics().mount_verification_reuses, 0);
+
+    // The newest record survived and is reused once.
+    let newest = &bindings[CAP];
+    let (_file, validated) = handles
+        .get_admitted(newest, &context, |_| {
+            panic!("the newest mount verification must be reused")
+        })
+        .unwrap();
+    assert_eq!(validated, 0);
+    assert_eq!(metrics().mount_verification_reuses, 1);
+    assert_eq!(handles.mount_verification_record_count(), CAP - 1);
+
+    // Remounting an object that still has a record replaces it in place
+    // instead of evicting another one.
+    handles
+        .mount(
+            &fixture.root.join("bounded-1.alias"),
+            bindings[1].clone(),
+            &context,
+        )
+        .unwrap();
+    assert_eq!(handles.mount_verification_record_count(), CAP - 1);
+    assert_eq!(metrics().mount_verification_evictions, 1);
+}
+
+/// Worst-case payload of the bounded mount-verification records, documented
+/// in STORAGE.md: each record stores its reference and stamp in the record
+/// map and its reference again in the insertion-order map.
+#[test]
+fn mount_verification_record_payload_is_bounded() {
+    use crate::immutable_files::MOUNT_VERIFICATION_RECORDS_PER_PROJECT as CAP;
+    use crate::immutable_object::{ObjectReference, ObjectStamp};
+    let per_record = 2 * std::mem::size_of::<ObjectReference>()
+        + 2 * std::mem::size_of::<u64>()
+        + std::mem::size_of::<ObjectStamp>();
+    eprintln!("mount-verification record payload: {per_record} B, cap {CAP}");
+    assert!(per_record * CAP <= 1024 * 1024, "{per_record} B x {CAP}");
+}
