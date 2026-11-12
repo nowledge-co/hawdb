@@ -265,6 +265,26 @@ admission counters are not assumed stable while that worker can run. Local repla
 `cargo test --locked -p hawdb --lib catch_up_admission_tests -- --test-threads=1`.
 See [caller-priority catch-up](https://github.com/nowledge-co/hawdb/issues/1306).
 
+`embedded_store::tests::storage_pressure_tests` (`nowledge-co/hawdb#1725`)
+belongs to the existing root `//:hawdb_unit_general_tests` owner. It opens a
+durable handle with explicit checkpoints only and pins
+`EmbeddedStoreHandle::storage_pressure_snapshot` to the `Database` snapshot
+(ignoring only the wall-clock WAL age and filesystem free-space samples), both
+with WAL debt and after a checkpoint. Under the root `test-support` feature,
+like the other storage failpoint tests, the failpoint
+`set_generation_reclamation_remove_failpoint` fails one obsolete checkpoint
+deletion; the handle must report it as pending reclamation files/bytes and
+`GenerationReclamationDebt` until the next checkpoint clears it. Default-feature
+Bazel builds compile that case out. A reader held
+across three checkpoints must report reader lag, obsolete bytes and retained
+WAL generations without pending debt; after release and one more checkpoint,
+reader lag and pending debt are zero and the main branch data directory holds
+at most two `wal.*.hawdb` files.
+Replay with `cargo test --locked -p hawdb --features test-support --lib
+storage_pressure_tests -- --test-threads=1` or the owning Bazel target with
+`--test_arg=storage_pressure_tests`. No new lane, profile, fixture
+amplification or timeout is introduced.
+
 `embedded_store::tests::initial_import_checkpoint_tests` (`nowledge-co/hawdb#1707`)
 belongs to the existing root `//:hawdb_unit_general_tests` owner. It pins the
 split between resident-only `apply_initial_import_projection_delta` and the

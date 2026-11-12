@@ -314,6 +314,21 @@ namespace with WAL rotation and uses `max(checkpoint_generation, wal_generation)
 contiguous. Reclamation must preserve the actual previous checkpoint, rather
 than assuming it has ID `current - 1`.
 
+`EmbeddedStoreHandle::storage_pressure_snapshot` returns the same
+`StoragePressureSnapshot` as `Database::storage_pressure_snapshot` for the
+handle's database, under the store read guard used by
+`storage_residency_report`; it takes no runtime-governor admission and adds no
+new semantics. Failed obsolete-generation deletions appear as
+`generation_reclamation_retry_required` and
+`generation_reclamation_pending_files`/`_bytes` until a later checkpoint
+retries them. Every live reader pin contributes to
+`oldest_reader_commit_epoch`, including the handle's standing read
+publication, which reports the current epoch with zero lag. A held older reader
+therefore reports positive `oldest_reader_lag` and `obsolete_generation_bytes`
+rather than pending reclamation debt. Hosts that disable background
+maintenance can assert, after their final explicit checkpoint, that no
+reclamation debt or reader lag remains.
+
 Allocating beyond the active WAL prevents checkpoint preparation from replacing
 acknowledged recovery bytes. A torn unpublished candidate is not an active WAL
 dependency, and successful publication retains its normal file/selector barriers.
