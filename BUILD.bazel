@@ -509,7 +509,10 @@ test_suite(
 py_test(
     name = "pypi_publish_script_test",
     size = "small",
-    srcs = ["scripts/pypi-publish.test.py"],
+    srcs = [
+        "scripts/pypi-publish.test.py",
+        "scripts/pypi-release-mode.py",
+    ],
     data = [
         ".github/workflows/pypi.yaml",
         "rust-toolchain.toml",

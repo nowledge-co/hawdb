@@ -1,12 +1,18 @@
 name: Publish Python to PyPI
 
+# Builds the hawdb sdist and wheels and uploads them to PyPI. AGENTS.md keeps
+# HawDB out of stable and GA releases, so only a development prerelease
+# publishes: a stable release starts no job, and scripts/pypi-release-mode.py
+# refuses anything but a non-draft GitHub prerelease whose Cargo version is
+# <x.y.z>-dev.<n> (PEP 440 <x.y.z>.dev<n>). See bindings/python/README.md.
+
 on:
   release:
     types: [published]
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag to publish or retry
+        description: Existing development prerelease tag (v<x.y.z>-dev.<n>) to publish or retry
         required: true
         type: string
 
@@ -25,8 +31,12 @@ env:
 jobs:
   sdist:
     name: Prepare released source
+    # Stable releases start no job; every other job needs this one and its
+    # development mode.
+    if: github.event_name != 'release' || github.event.release.prerelease
     runs-on: ubuntu-24.04
     outputs:
+      mode: ${{ steps.release.outputs.mode }}
       version: ${{ steps.release.outputs.version }}
       sha: ${{ steps.release.outputs.sha }}
       lock_hash: ${{ steps.archive.outputs.lock_hash }}
@@ -50,10 +60,17 @@ jobs:
       - name: Validate the release tag and source
         id: release
         env:
+          EVENT: ${{ github.event_name }}
           RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "$RELEASE_TAG" --json isDraft --jq 'if .isDraft then error("draft release") else . end'
+          gh release view "$RELEASE_TAG" --json tagName,isDraft,isPrerelease > "$RUNNER_TEMP/release.json"
+          version="$(python -c 'import tomllib; print(tomllib.load(open("bindings/python/Cargo.toml", "rb"))["package"]["version"])')"
+          # The gate comes from the workflow revision, not the released tag.
+          # It refuses stable releases, drafts and non-development versions.
+          python ../scripts/pypi-release-mode.py --event "$EVENT" --tag "$RELEASE_TAG" \
+            --version "$version" --release "$RUNNER_TEMP/release.json" > "$RUNNER_TEMP/mode"
+          cat "$RUNNER_TEMP/mode" >> "$GITHUB_OUTPUT"
           git merge-base --is-ancestor HEAD origin/main
           python - <<'PY'
           import os
@@ -120,6 +137,7 @@ jobs:
   wheels:
     name: Wheel (${{ matrix.target }})
     needs: sdist
+    if: needs.sdist.outputs.mode == 'development'
     strategy:
       fail-fast: false
       matrix:
@@ -229,6 +247,7 @@ jobs:
   publish:
     name: Upload the verified distributions
     needs: [sdist, wheels]
+    if: needs.sdist.outputs.mode == 'development'
     runs-on: ubuntu-24.04
     environment:
       name: pypi

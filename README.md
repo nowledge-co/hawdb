@@ -291,10 +291,12 @@ make fuzz-test
 
 ## Python
 
-The Python package is a thin binding over the same embedded engine. Install a
-published release with `python -m pip install hawdb` (CPython 3.11+), then import
-`hawdb`. Native wheels and a source distribution are built from each published
-GitHub Release; see the [Python release workflow](bindings/python/README.md#publishing).
+The Python package is a thin binding over the same embedded engine. Install the
+latest development prerelease with `python -m pip install --pre hawdb` (CPython
+3.11+), then import `hawdb`. Native wheels and a source distribution are built
+from each development GitHub prerelease (`v<x.y.z>-dev.<n>`, published as
+`<x.y.z>.dev<n>`); stable releases do not publish to PyPI. See the
+[Python release workflow](bindings/python/README.md#publishing).
 
 ```python
 import hawdb

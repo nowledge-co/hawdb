@@ -11,11 +11,14 @@ Development phase. The binding exposes the embedded engine directly while it
 proves out against real host workloads. The PyPI distribution and Python import
 are both named `hawdb`.
 
-## Install a published release
+## Install a published development release
 
 ```bash
-python -m pip install hawdb
+python -m pip install --pre hawdb
 ```
+
+Only development prereleases (`<x.y.z>.dev<n>`) are published while HawDB is
+kept out of stable releases; see [Publishing](#publishing).
 
 Requires CPython 3.11 or newer. Native wheels cover Linux x86-64/AArch64
 (manylinux 2.28), macOS x86-64/AArch64, and Windows x86-64. Other environments
@@ -25,8 +28,17 @@ explicit source build. Pydantic stays optional: `pip install 'hawdb[pydantic]'`.
 
 ## Publishing
 
-[Publish Python to PyPI](../../.github/workflows/pypi.yaml) runs whenever a
-GitHub Release is published, including prereleases. Drafts do not publish.
+[Publish Python to PyPI](../../.github/workflows/pypi.yaml) publishes only
+development prereleases. During the current development phase HawDB must not
+appear in a stable or GA release (see "Mem Release Modes" in
+[AGENTS.md](../../AGENTS.md)), so a stable GitHub Release starts no job, and
+[`scripts/pypi-release-mode.py`](../../scripts/pypi-release-mode.py) refuses
+any release that is not a non-draft GitHub prerelease whose Cargo version is
+`<x.y.z>-dev.<n>`. maturin publishes that version as the PEP 440 development
+release `<x.y.z>.dev<n>`, which pip installs only with `--pre` or an exact pin
+(`pip install hawdb==0.31.0.dev1`). `-nightly.<n>` has no PEP 440 form and is
+refused. A `workflow_dispatch` replay goes through the same gate.
+
 The release must use `v<Cargo version>` and point to a commit in `main` history;
 the facade and binding package versions must agree. Version changes still
 follow the ordinary issue, review, CI and merge workflow.
