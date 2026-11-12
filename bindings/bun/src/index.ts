@@ -16,6 +16,16 @@
 
 import { CString, openNativeLibrary, type NativeLibrary, type NativePointer } from "./native.ts";
 import { parseLosslessJson, stringifyParameters } from "./json.ts";
+import { resolvePrebuiltLibrary } from "./platform.ts";
+
+export {
+  PLATFORM_PACKAGES,
+  UnsupportedPlatformError,
+  platformPackageName,
+  resolvePrebuiltLibrary,
+  selectPlatformPackage,
+  type PlatformPackage,
+} from "./platform.ts";
 
 const encoder = new TextEncoder();
 const databaseConstructorToken = Symbol("HawDB Database constructor");
@@ -590,6 +600,11 @@ export class Database {
   }
 }
 
-export function loadHawDB(path: string): HawDBLibrary {
-  return HawDBLibrary.load(path);
+/**
+ * Load the HawDB C ABI. With a path, map exactly that library. Without one,
+ * map the library from the installed `@nowledge/hawdb-ffi-<platform>` package
+ * selected for this host.
+ */
+export function loadHawDB(path?: string): HawDBLibrary {
+  return HawDBLibrary.load(path === undefined ? resolvePrebuiltLibrary() : path);
 }
