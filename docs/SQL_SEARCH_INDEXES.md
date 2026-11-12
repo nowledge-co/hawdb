@@ -205,7 +205,7 @@ Its postings are stored as rows of a private RowPage relation under that
 name, which only the search index access method reads: SQL cannot select
 from, write, alter or index it, and `information_schema.tables` and
 `pg_tables` omit it. The physical layout is versioned behind that access
-method (layout tag `2` below), so it can change without changing the SQL
+method (layout tag `3` below), so it can change without changing the SQL
 surface. The in-memory definition reuses the commit-time maintenance hook
 that materialized views also use (one point where derived rows are written
 inside the base transaction); it does not inherit materialized view
@@ -513,15 +513,19 @@ What the numbers say:
 The relational schema encoding tags the derived-relation definition: `0` none,
 `1` materialized view (unchanged layout), `2` search index (source table,
 column, analyzer tag, physical layout tag; `cjk_ngram` is analyzer `1`, the
-layout above is layout `3`). Existing databases read unchanged. Older binaries
-refuse a schema with tag `2`, and current binaries refuse unknown tags,
-analyzer tags or layout tags as an unsupported format rather than guessing.
-Layouts `1` (the same rows without block headers, bounds rows, tail minimum
-lengths or checksums) and `2` (checksummed block headers without bounds rows)
-were never released; a development database that holds either is refused as
-an unsupported layout, and dropping and re-creating the index rebuilds it. No
-codec version changes, following the materialized view MIN/MAX precedent and
-HawDB's development-phase format policy.
+layout above is layout `3`). The engine-wide `PERSISTENT_FORMAT_VERSION`
+advances from `1` to `2` because layout `3` refuses search indexes created with
+layouts `1` or `2`. Databases without those older search indexes remain
+readable. Individual codec versions and their strict unsupported-format
+refusals remain authoritative.
+
+Before upgrading a database with an older search index, export a
+[logical dump](LOGICAL_DUMP.md) with the library that can still open it, then
+import with the new library. The dump carries the index definition rather
+than postings, so import rebuilds layout `3`. An older database cannot first
+be opened by the new library merely to drop its unsupported index. Disposable
+development databases may instead be recreated under the development-phase
+format policy; no in-place compatibility migration is added.
 
 ## Out of scope
 
