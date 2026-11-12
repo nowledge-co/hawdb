@@ -227,3 +227,40 @@ fn private_wal_io_failure_releases_a_parked_candidate_without_poisoning_the_writ
     let recovered = GraphStore::open(&fixture.0, &mut recovered_catalog).unwrap();
     assert_eq!(recovered.scan_nodes(None).count(), 3);
 }
+
+#[test]
+fn an_exhausted_circuit_records_its_cause_and_backs_off_each_re_arm() {
+    let mut state = State::default();
+    let start = Instant::now();
+    let error = HawDBError::Storage("No space left on device (os error 28)".into());
+    for _ in 0..MAX_OPERATION_FAILURES - 1 {
+        record_operation_failure(&mut state, &error, start);
+        assert!(!state.report.operation_retry_exhausted);
+        assert_eq!(state.operation_rearm_at, None);
+    }
+    record_operation_failure(&mut state, &error, start);
+    assert!(state.report.operation_retry_exhausted);
+    assert_eq!(
+        state.report.last_operation_error.as_deref(),
+        Some(error.to_string().as_str())
+    );
+    // Each stop in one generation doubles the backoff, up to its cap; each
+    // re-arm grants exactly one attempt.
+    let mut now = start;
+    let mut expected = OPERATION_REARM_BASE_DELAY;
+    for rearm in 1..=8 {
+        assert_eq!(state.operation_rearm_at, Some(now + expected));
+        now += expected;
+        rearm_operation_retry(&mut state);
+        assert!(!state.report.operation_retry_exhausted);
+        assert_eq!(state.report.operation_retry_rearms, rearm);
+        record_operation_failure(&mut state, &error, now);
+        assert!(state.report.operation_retry_exhausted);
+        expected = (expected * 2).min(OPERATION_REARM_MAX_DELAY);
+    }
+    assert_eq!(expected, OPERATION_REARM_MAX_DELAY);
+    assert_eq!(
+        state.report.operation_failures,
+        u64::from(MAX_OPERATION_FAILURES) + 8
+    );
+}

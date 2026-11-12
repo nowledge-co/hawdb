@@ -273,10 +273,11 @@ impl BranchRuntimeCell {
     ///
     /// The wait reuses the bounded live-overlay capacity waits. It ends with
     /// the original rejection when no owner can drain (no background
-    /// maintenance, a suspended, stopped or exhausted owner), and with the
+    /// maintenance, a suspended, stopped or failed owner), and with the
     /// retryable `BranchBusy` when the drain stops progressing or a wait
     /// completed no checkpoint while the owner can still drain (a deferred or
-    /// failed attempt).
+    /// failed attempt). An exhausted operation circuit can still drain: a
+    /// later commit that needs headroom re-arms it (#1618).
     /// `task_context` is checked before the wait and again after it, once the
     /// drained generation is adopted and immediately before the retry, so a
     /// task cancelled or past its deadline while waiting applies nothing.

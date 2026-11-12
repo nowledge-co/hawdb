@@ -46,6 +46,12 @@ const PREPARATION_CAPACITY_WAIT_LIMIT: Duration = Duration::from_secs(5);
 const PLANNING_MEMORY_BYTES: u64 = 64 * 1024;
 const OWNER_MEMORY_BYTES: u64 = 64 * 1024;
 const MAX_OPERATION_FAILURES: u8 = 3;
+// An exhausted circuit stays stopped while nothing presses on capacity. A
+// writer that would wait for checkpoint headroom grants the owner one more
+// attempt, no sooner than this backoff after the circuit stopped. The backoff
+// doubles while those attempts keep failing in one WAL generation (#1618).
+const OPERATION_REARM_BASE_DELAY: Duration = Duration::from_secs(1);
+const OPERATION_REARM_MAX_DELAY: Duration = Duration::from_secs(30);
 // Cap the serialized suffix admitted while new writers yield to publication.
 // This is not a bound on schema replay, allocation or physical synchronization.
 const MAX_FINAL_DRAIN_BYTES: u64 = 32 * 1024;
@@ -61,10 +67,19 @@ pub struct AutomaticCheckpointReport {
     pub failed_attempts: u64,
     /// Non-admission preparation, replay or publication failures.
     pub operation_failures: u64,
+    /// The diagnostic of the latest operation failure, kept after later
+    /// successes so a stopped circuit can be explained (#1618).
+    pub last_operation_error: Option<String>,
     /// The owner released its private candidate after three operation failures
-    /// in one durable WAL generation. A successful manual checkpoint resets
-    /// this circuit. Foreground integrity checks continue to apply.
+    /// in one durable WAL generation. A completed checkpoint, automatic or
+    /// manual, resets this circuit. While it is set, background work stops
+    /// until a writer needs checkpoint headroom; that writer re-arms one
+    /// attempt after a bounded backoff (#1618). Foreground integrity checks
+    /// continue to apply.
     pub operation_retry_exhausted: bool,
+    /// Attempts granted to an exhausted circuit by writers that needed
+    /// checkpoint headroom.
+    pub operation_retry_rearms: u64,
     /// Source-size traversals started, excluding scalar-only admission retries.
     pub planning_scans: u64,
     pub planning_cache_hits: u64,
@@ -270,6 +285,10 @@ pub(super) struct State {
     attempts_started: u64,
     operation_failures_in_generation: u8,
     operation_generation: Option<u64>,
+    /// Earliest frontend time at which a writer that needs headroom may
+    /// re-arm the exhausted circuit, and the backoff of the next stop.
+    operation_rearm_at: Option<Instant>,
+    operation_rearm_delay: Duration,
     retirement_deferrals: u64,
     debt: Option<CheckpointDebtSnapshot>,
     /// What the waiting frontend writer's next commit adds to a relational
@@ -439,18 +458,16 @@ impl Control {
     }
 
     /// Whether a live-overlay headroom shortfall can be resolved by waiting:
-    /// a healthy automatic owner can start a drain. Builds and handles
-    /// without background maintenance fail closed instead.
+    /// a healthy automatic owner can start a drain. An exhausted operation
+    /// circuit still can: the waiting writer re-arms it (#1618). Builds and
+    /// handles without background maintenance, and stopped, suspended or
+    /// failed owners, fail closed instead.
     pub(super) fn can_drain_for_headroom(&self) -> bool {
         if self.failed.load(Ordering::Acquire) {
             return false;
         }
-        self.lock().is_ok_and(|state| {
-            state.enabled
-                && !state.stopping
-                && state.suspensions == 0
-                && !state.report.operation_retry_exhausted
-        })
+        self.lock()
+            .is_ok_and(|state| state.enabled && !state.stopping && state.suspensions == 0)
     }
 
     pub(super) fn completed_checkpoints(&self) -> u64 {
@@ -462,7 +479,7 @@ impl Control {
         &'a self,
         mut state: MutexGuard<'a, State>,
     ) -> Result<MutexGuard<'a, State>> {
-        let observed_attempts = state.attempts_started;
+        let mut observed_attempts = state.attempts_started;
         let observed_retirement_deferrals = state.retirement_deferrals;
         let mut notified_owner = false;
         let mut preparation_deadline = None;
@@ -486,11 +503,16 @@ impl Control {
             // Handoff lets the frontend adopt the published generation before
             // mutation. Retiring has its own pressure gate below, including
             // the denial escape for callers holding admission needed by cleanup.
+            // After the circuit stopped in this WAL generation, a re-armed
+            // attempt may fail again. Until a checkpoint completes, writers
+            // near the base-relative limit wait for it instead of growing
+            // the debt its retry must capture (#1618).
             let waits_for_capacity = matches!(
                 state.phase,
                 Phase::Preparing | Phase::Discarding | Phase::Releasing
             ) && !state.sync_group_active
-                && preparation_needs_capacity(&state);
+                && (preparation_needs_capacity(&state)
+                    || (state.operation_rearm_at.is_some() && needs_headroom(&state)));
             let capacity_remaining = if waits_for_capacity {
                 let deadline = capacity_deadline
                     .get_or_insert_with(|| self.frontend_now() + PREPARATION_CAPACITY_WAIT_LIMIT);
@@ -505,6 +527,45 @@ impl Control {
             } else {
                 None
             };
+            // An exhausted circuit starts no drain by itself. A writer that
+            // would fence for headroom re-arms it once its backoff expires,
+            // and meanwhile waits within the same capacity deadline. It never
+            // grows the debt past what one drain can capture (#1618).
+            let rearm_remaining = if state.phase == Phase::Idle
+                && state.enabled
+                && !state.stopping
+                && state.suspensions == 0
+                && !state.sync_group_active
+                && state.report.operation_retry_exhausted
+                && pressure_pending(&state)
+                && needs_headroom(&state)
+            {
+                let now = self.frontend_now();
+                match state.operation_rearm_at {
+                    Some(at) if at > now => {
+                        let deadline = capacity_deadline
+                            .get_or_insert_with(|| now + PREPARATION_CAPACITY_WAIT_LIMIT);
+                        let remaining = deadline.saturating_duration_since(now);
+                        if remaining.is_zero() {
+                            self.ensure_healthy()?;
+                            return Err(HawDBError::BranchBusy {
+                                resource: "automatic checkpoint capacity",
+                            });
+                        }
+                        Some(remaining.min(at - now))
+                    }
+                    _ => {
+                        rearm_operation_retry(&mut state);
+                        self.notify_all();
+                        // Wait for the attempt this re-arm grants, not one
+                        // that failed before it.
+                        observed_attempts = state.attempts_started;
+                        None
+                    }
+                }
+            } else {
+                None
+            };
             let preparation_remaining = if state.phase == Phase::Preparing
                 && !state.sync_group_active
                 && needs_headroom(&state)
@@ -516,6 +577,7 @@ impl Control {
                 None
             };
             let must_fence = state.phase == Phase::Finalizing
+                || rearm_remaining.is_some()
                 || (self.publication_requested.load(Ordering::Acquire) && !state.sync_group_active)
                 || (state.phase == Phase::Draining && !state.sync_group_active)
                 || waits_for_capacity
@@ -555,7 +617,7 @@ impl Control {
                 let _ = probe.send(state.phase);
             }
             let timeout = if must_fence {
-                capacity_remaining
+                capacity_remaining.or(rearm_remaining)
             } else {
                 preparation_remaining
             };
@@ -622,6 +684,8 @@ impl Control {
             state.operation_generation = generation;
             state.operation_failures_in_generation = 0;
             state.report.operation_retry_exhausted = false;
+            state.operation_rearm_at = None;
+            state.operation_rearm_delay = Duration::ZERO;
         }
         let identity = store.checkpoint_source_identity();
         let changed = identity != state.last_identity;
@@ -1372,8 +1436,9 @@ fn run(
                     .lock()
                     .unwrap_or_else(|error| error.into_inner());
                 if result.is_err() {
-                    if preparation_report.operation_failed {
-                        record_operation_failure(&mut state);
+                    if let (true, Err(error)) = (preparation_report.operation_failed, &result) {
+                        let now = control.frontend_now();
+                        record_operation_failure(&mut state, error, now);
                         state.report.failed_attempts += 1;
                     } else {
                         state.report.deferred_attempts += 1;
@@ -1685,8 +1750,9 @@ fn run(
                     .state
                     .lock()
                     .unwrap_or_else(|error| error.into_inner());
-                if matches!(result, Err(CheckpointOperationError::Operation(_))) {
-                    record_operation_failure(&mut state);
+                if let Err(CheckpointOperationError::Operation(error)) = &result {
+                    let now = control.frontend_now();
+                    record_operation_failure(&mut state, error, now);
                 }
                 state.report.operation_retry_exhausted
             };
@@ -2056,12 +2122,30 @@ fn preparation_result<T>(
     })
 }
 
-fn record_operation_failure(state: &mut State) {
+fn record_operation_failure(state: &mut State, error: &HawDBError, now: Instant) {
     state.report.operation_failures += 1;
+    state.report.last_operation_error = Some(error.to_string());
     state.operation_failures_in_generation =
         state.operation_failures_in_generation.saturating_add(1);
-    state.report.operation_retry_exhausted =
-        state.operation_failures_in_generation >= MAX_OPERATION_FAILURES;
+    let exhausted = state.operation_failures_in_generation >= MAX_OPERATION_FAILURES;
+    if exhausted && !state.report.operation_retry_exhausted {
+        // Each stop in one WAL generation doubles the wait before a writer
+        // may re-arm it; a completed checkpoint resets the schedule.
+        let delay = state.operation_rearm_delay.max(OPERATION_REARM_BASE_DELAY);
+        state.operation_rearm_at = Some(now + delay);
+        state.operation_rearm_delay = delay.saturating_mul(2).min(OPERATION_REARM_MAX_DELAY);
+    }
+    state.report.operation_retry_exhausted = exhausted;
+}
+
+/// Grants an exhausted circuit exactly one more attempt. Only a writer that
+/// needs checkpoint headroom calls this, after the backoff has expired, so a
+/// persistent fault costs at most one attempt per backoff while writers wait,
+/// and none while the database is idle.
+fn rearm_operation_retry(state: &mut State) {
+    state.operation_failures_in_generation = MAX_OPERATION_FAILURES - 1;
+    state.report.operation_retry_exhausted = false;
+    state.report.operation_retry_rearms += 1;
 }
 
 #[derive(Clone, Copy)]

@@ -55,11 +55,15 @@ owner can still drain (its attempt was deferred, for example by memory
 pressure, or failed below the retry limit), the commit returns the retryable
 `HawDBError::BranchBusy { resource: "automatic checkpoint capacity" }` with
 nothing applied ([#1637](https://github.com/nowledge-co/hawdb/issues/1637)).
-A suspended, stopped or exhausted owner, or a build or handle without background
-maintenance, fails closed with the same pre-WAL rejection, which states the
-commit size and that a checkpoint must drain the overlay first; the synchronous
-manual checkpoint then drains it. Waiting cannot help there: an exhausted owner
-starts no drain until a manual checkpoint or a new WAL generation resets it.
+An owner whose operation circuit is exhausted still counts as able to drain,
+because a writer that needs headroom re-arms it after a bounded backoff (below,
+[#1618](https://github.com/nowledge-co/hawdb/issues/1618)); its commit gets the
+same retryable `BranchBusy` until that attempt completes a checkpoint.
+A suspended or stopped owner, an owner that failed on integrity, or a build or
+handle without background maintenance, fails closed with the same pre-WAL
+rejection, which states the commit size and that a checkpoint must drain the
+overlay first; the synchronous manual checkpoint then drains it. Waiting cannot
+help there.
 A transaction-private row view charges only the
 transaction's own changes, so the commit, not a statement, decides headroom.
 Explicit transaction commits (on a database or a concurrent handle) and
@@ -200,11 +204,28 @@ Non-admission preparation, replay or publication failures consume a budget of
 three attempts per durable WAL generation. Exhaustion releases the unselected
 candidate and its admission, parks automatic scheduling, and sets
 `AutomaticCheckpointReport::operation_retry_exhausted`; the cumulative
-`operation_failures` counter remains observable. Additional foreground commits
-do not reset this circuit. A successful caller-triggered `checkpoint()` advances
-the durable generation and permits automatic work again. The synchronous manual
-APIs remain available while automatic scheduling is parked. Publication
-uncertainty still retains recovery evidence and fails closed.
+`operation_failures` counter and the latest failure's diagnostic,
+`last_operation_error`, remain observable. Additional foreground commits do not
+reset this circuit, and an idle database never retries it. A writer that would
+wait for checkpoint headroom does
+([#1618](https://github.com/nowledge-co/hawdb/issues/1618)): when WAL, delta or
+base-relative live-overlay debt reaches the writer fence, or a commit does not
+fit the live headroom, the writer waits within the same 5 s capacity deadline
+until the circuit's backoff expires, then re-arms exactly one attempt
+(`operation_retry_rearms`). The backoff is 1 s after the first stop and doubles
+with each later stop in the same WAL generation, up to 30 s, so a persistent
+fault costs at most one attempt per backoff and only while writers press on
+capacity. Until a checkpoint completes, writers near the base-relative limit
+also wait while that attempt prepares, so the debt never grows past what one
+drain can capture; a writer whose deadline expires gets the retryable
+`BranchBusy` with nothing applied. Without this, one transient I/O fault on a
+long-lived handle (for example ENOSPC from another process filling a shared
+temporary filesystem) stopped draining for good, and steady inserts then failed
+with the non-retryable live-view admission error. Any completed checkpoint,
+automatic or caller-triggered, advances the durable generation and resets the
+circuit and its backoff. The synchronous manual APIs remain available while
+automatic scheduling is parked. Publication uncertainty still retains recovery
+evidence and fails closed.
 
 Preparation owns its original source/catalog and completed projected-graph and
 source-row plans across safe resource/cancellation deferrals. Submitting a later
