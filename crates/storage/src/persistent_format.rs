@@ -29,4 +29,4 @@
 
 /// Engine-wide persistent format version (docs/STORAGE.md, "Persistent
 /// format version").
-pub const PERSISTENT_FORMAT_VERSION: u32 = 1;
+pub const PERSISTENT_FORMAT_VERSION: u32 = 2;

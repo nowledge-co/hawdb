@@ -20,6 +20,7 @@ pub mod batch;
 pub mod binding;
 #[doc(hidden)]
 pub mod blocking;
+pub mod bm25;
 pub mod columnar;
 pub mod concurrent;
 #[doc(hidden)]

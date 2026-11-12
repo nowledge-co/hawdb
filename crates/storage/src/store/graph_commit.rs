@@ -3118,11 +3118,16 @@ fn collect_relational_version_writes(
         let Some(schema) = state.table_schema(table) else {
             return record_live_version(writes, VersionKey::Database);
         };
+        // Materialized views are read like tables, so their maintained rows
+        // need the database barrier. A search index is read only by
+        // `text_search`, which records the source table's domain, and its
+        // postings are derived at commit from the latest committed state, so
+        // the source rows' own keys are the complete writer footprint.
         if state.table_schemas().any(|schema| {
             schema
                 .materialized_view
                 .as_ref()
-                .is_some_and(|view| view.source == *table)
+                .is_some_and(|view| view.source == *table && view.search.is_none())
         }) {
             return record_live_version(writes, VersionKey::Database);
         }

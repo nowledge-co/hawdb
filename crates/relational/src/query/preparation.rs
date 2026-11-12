@@ -136,8 +136,8 @@ pub(super) fn prepare_relational_select_with_snapshot(
     }
     if select.text_search().is_some() {
         return Err(HawDBError::Semantic(
-            "text_search supports SELECT through the relational query entrypoint; EXPLAIN and \
-             prepared plan reuse are not supported"
+            "text_search supports SELECT and EXPLAIN through the relational query entrypoint; \
+             prepared plan reuse is not supported"
                 .into(),
         ));
     }

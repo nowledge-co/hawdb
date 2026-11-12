@@ -445,6 +445,7 @@ fn execute_fromless_select(
             runtime_path: "no_from_clause",
             ..RelationalRowExecutionEvidence::default()
         },
+        search_index_scan: None,
         blocking_operator_memory_reports: Vec::new(),
     })
 }
@@ -513,6 +514,25 @@ pub fn execute_prepared_relational_query_with_resources<'a, R: RelationalQuerySt
                     "EXPLAIN only supports relational SELECT".to_string(),
                 ));
             };
+            if select.text_search().is_some() {
+                crate::literal_coercion::coerce_select(&mut select, state, parameters)?;
+                return text_search::explain_text_search_select(
+                    &select,
+                    parameters,
+                    state,
+                    read_modes,
+                    if explain.analyze {
+                        resources
+                    } else {
+                        RelationalQueryResourceContext {
+                            task_context: None,
+                            ..resources
+                        }
+                    },
+                    initial_stage_timings,
+                    explain.analyze,
+                );
+            }
             if select.from.is_none() {
                 return Err(HawDBError::Semantic(
                     "EXPLAIN does not support a FROM-less SELECT".to_string(),
@@ -528,18 +548,6 @@ pub fn execute_prepared_relational_query_with_resources<'a, R: RelationalQuerySt
                 },
                 ..resources
             };
-            if select.text_search().is_some() {
-                crate::literal_coercion::coerce_select(&mut select, state, parameters)?;
-                return text_search::execute_text_search_explain(
-                    &select,
-                    parameters,
-                    state,
-                    read_modes,
-                    planning_resources,
-                    initial_stage_timings,
-                    explain.analyze,
-                );
-            }
             let (prepared, snapshot) = prepare_relational_select_with_snapshot(
                 select,
                 parameters,

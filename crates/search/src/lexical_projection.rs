@@ -14,9 +14,10 @@
 
 use super::cjk_tokenizer::ANALYZER_FORMAT_VERSION;
 use super::{
-    document_token_fields, visit_token_list, SearchAnalyzerLexicon, SearchDocument,
-    TokenOccurrence, BM25_B, BM25_K1,
+    document_token_fields, visit_token_list, SearchAnalyzerLexicon, SearchDocument, TokenOccurrence,
 };
+#[cfg(test)]
+use super::{BM25_B, BM25_K1};
 use crate::bounded_file::read_bounded_file;
 use crate::build_control::checkpoint;
 use crate::build_memory::reserved::{native_path, Grant};
@@ -2650,17 +2651,19 @@ fn query_term<T: Borrow<str>>(term: &T) -> &str {
     term.borrow()
 }
 
+/// The scorer shared with the SQL search index access path
+/// (`hawdb_executor::bm25`): the same operations in the same order.
 fn idf(document_count: usize, document_frequency: usize) -> f64 {
-    (1.0 + (document_count as f64 - document_frequency as f64 + 0.5)
-        / (document_frequency as f64 + 0.5))
-        .ln()
+    hawdb_executor::bm25::idf(document_count as u64, document_frequency as u64)
 }
 
 fn bm25_term_score(idf: f64, frequency: u32, document_len: u32, average_len: f64) -> f64 {
-    let frequency = f64::from(frequency);
-    let denominator = frequency
-        + BM25_K1 * (1.0 - BM25_B + BM25_B * f64::from(document_len) / average_len.max(1.0));
-    idf * (frequency * (BM25_K1 + 1.0)) / denominator
+    hawdb_executor::bm25::term_score(
+        idf,
+        f64::from(frequency),
+        f64::from(document_len),
+        average_len,
+    )
 }
 
 /// Candidate postings below this bound fall back to exhaustive scoring: block
@@ -2669,9 +2672,9 @@ const BLOCK_MAX_PRUNING_MIN_POSTINGS: u64 = 4_096;
 
 /// Largest contribution one posting block can add to a document. BM25 falls with
 /// document length, so the shortest possible document bounds the block's maximum
-/// term frequency from above.
+/// term frequency from above. The shared bound carries a rounding margin.
 fn bm25_term_upper_bound(idf: f64, max_frequency: u32, average_len: f64) -> f64 {
-    bm25_term_score(idf, max_frequency, 0, average_len)
+    hawdb_executor::bm25::term_upper_bound(idf, u64::from(max_frequency), 0, average_len)
 }
 
 /// Scores one document from the postings every stream holds for it.

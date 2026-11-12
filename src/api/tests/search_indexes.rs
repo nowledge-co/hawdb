@@ -49,8 +49,17 @@ fn ids(results: &[(i64, f64)]) -> Vec<i64> {
 /// Brute-force BM25 over `SELECT * FROM events` with the same analyzer and
 /// constants. Documents with no tokens are not part of the corpus.
 fn oracle(db: &mut Database, query: &str, top_k: usize) -> Vec<(i64, f64)> {
+    let mut ranked = ranked_oracle(db, query, None);
+    ranked.truncate(top_k);
+    ranked
+}
+
+/// Every matching document in rank order (score descending, then id), scored
+/// with the whole corpus's statistics, keeping only rows of `stream` if set.
+fn ranked_oracle(db: &mut Database, query: &str, stream: Option<&str>) -> Vec<(i64, f64)> {
     let analyzer = SearchIndexAnalyzer::CjkNgram;
-    let rows = db.query_sql("SELECT id, text FROM events").unwrap();
+    let rows = db.query_sql("SELECT id, stream, text FROM events").unwrap();
+    let mut streams = BTreeMap::new();
     let documents = rows
         .rows
         .iter()
@@ -62,6 +71,7 @@ fn oracle(db: &mut Database, query: &str, top_k: usize) -> Vec<(i64, f64)> {
             let Value::Int(id) = row["id"] else {
                 unreachable!()
             };
+            streams.insert(id, row["stream"].clone());
             (!tokens.is_empty()).then_some((id, tokens))
         })
         .collect::<Vec<_>>();
@@ -88,15 +98,17 @@ fn oracle(db: &mut Database, query: &str, top_k: usize) -> Vec<(i64, f64)> {
         for (id, tokens) in &documents {
             let tf = tokens.iter().filter(|token| *token == term).count() as f64;
             if tf > 0.0 {
+                // The shared scorer's operations, in the same order.
                 let norm = 1.2 * (1.0 - 0.75 + 0.75 * tokens.len() as f64 / average);
-                *scores.entry(*id).or_insert(0.0) += idf * tf * 2.2 / (tf + norm);
+                *scores.entry(*id).or_insert(0.0) += idf * (tf * (1.2 + 1.0)) / (tf + norm);
             }
         }
     }
-    let mut ranked = scores.into_iter().collect::<Vec<_>>();
+    let mut ranked = scores
+        .into_iter()
+        .filter(|(id, _)| stream.is_none_or(|stream| streams[id] == Value::String(stream.into())))
+        .collect::<Vec<_>>();
     // Single-column BIGINT keys encode in numeric order for the ids used here.
-    ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-    ranked.truncate(top_k);
     ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
     ranked
 }
@@ -311,7 +323,8 @@ fn search_results_filter_before_top_k_and_compose_with_sql() {
         .unwrap();
     assert!(plan.rows.iter().any(|row| {
         matches!(row.get("access object"), Some(Value::String(object)) if object.contains("events_text"))
-            && matches!(row.get("operator info"), Some(Value::String(info)) if info.contains("row_runtime_path=not_executed"))
+            && matches!(row.get("operator info"), Some(Value::String(info)) if info.contains("algorithm=block_max_wand"))
+            && matches!(row.get("execution info"), None | Some(Value::Null))
     }));
     let error = db
         .query_sql("EXPLAIN SELECT absent FROM text_search('events_text', 'deploy', top_k => 3)")
@@ -324,7 +337,7 @@ fn search_results_filter_before_top_k_and_compose_with_sql() {
         )
         .unwrap();
     assert!(profile.rows.iter().any(|row| {
-        matches!(row.get("operator info"), Some(Value::String(info)) if info.contains("postings_visited="))
+        matches!(row.get("execution info"), Some(Value::String(info)) if info.contains("postings_visited="))
     }));
 }
 
@@ -791,9 +804,11 @@ fn search_index_analyzes_overflowed_text_and_survives_schema_extension() {
 }
 
 /// Hidden index rows by kind: statistics, documents, lengths, term
-/// dictionaries and sealed posting blocks.
+/// dictionaries and sealed posting blocks. Every sealed block's bounds row
+/// is checked against the block and the lengths of its documents.
 fn layout_rows(db: &Database) -> [usize; 5] {
     use hawdb_storage::relational::RelationalValue;
+    let bounds = check_block_bounds(db);
     let runtime = db.runtime.get().unwrap();
     let state = runtime.store.relational_state();
     let mut counts = [0; 5];
@@ -805,11 +820,87 @@ fn layout_rows(db: &Database) -> [usize; 5] {
         let kind = match (*kind, *slot) {
             (3, i64::MAX) => 3,
             (3, _) => 4,
+            (4, _) => continue,
             (kind, _) => usize::try_from(kind).unwrap(),
         };
         counts[kind] += 1;
     }
+    assert_eq!(bounds, counts[4], "one bounds row per sealed block");
     counts
+}
+
+/// Checks every block-max skip entry: one bounds row per sealed block, with
+/// the block's exact count, last ordinal and maximum frequency, and a minimum
+/// length no greater than any of its documents' lengths (likewise for each
+/// dictionary's tail). Returns the number of bounds rows.
+fn check_block_bounds(db: &Database) -> usize {
+    use hawdb_storage::relational::{
+        decode_search_sealed_block, search_index_block_fence, search_index_length_block_key,
+        RelationalValue, SearchBlockBounds, SearchLengthBlock, SearchTermDictionary,
+    };
+    let runtime = db.runtime.get().unwrap();
+    let state = runtime.store.relational_state();
+    let length = |ordinal: u64| {
+        let row = state
+            .row("events_text", &search_index_length_block_key(ordinal))
+            .expect("lengths row");
+        let RelationalValue::Bytea(data) = &row.values()[3] else {
+            panic!("unexpected lengths payload");
+        };
+        SearchLengthBlock::decode(data)
+            .unwrap()
+            .get(ordinal)
+            .expect("posting names a live document")
+            .length
+    };
+    let mut blocks = BTreeMap::new();
+    let mut bounds = BTreeMap::new();
+    for (key, row) in state.rows("events_text") {
+        let RelationalValue::Bytea(data) = &row.values()[3] else {
+            panic!("unexpected search index payload");
+        };
+        let RelationalValue::Bytea(term) = &key.0[1] else {
+            panic!("unexpected search index key {key:?}");
+        };
+        match (&key.0[0], &key.0[2]) {
+            (RelationalValue::BigInt(3), RelationalValue::BigInt(i64::MAX)) => {
+                let dictionary = SearchTermDictionary::decode(data).unwrap();
+                for posting in &dictionary.tail {
+                    assert!(dictionary.tail_min_length <= length(posting.ordinal));
+                }
+            }
+            (RelationalValue::BigInt(3), slot) => {
+                let fence = search_index_block_fence(slot).unwrap();
+                let mut postings = Vec::new();
+                decode_search_sealed_block(fence, data, &mut postings).unwrap();
+                blocks.insert((term.clone(), fence), postings);
+            }
+            (RelationalValue::BigInt(4), slot) => {
+                let fence = search_index_block_fence(slot).unwrap();
+                bounds.insert(
+                    (term.clone(), fence),
+                    SearchBlockBounds::decode(fence, data).unwrap(),
+                );
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        blocks.keys().collect::<Vec<_>>(),
+        bounds.keys().collect::<Vec<_>>()
+    );
+    for (key, postings) in &blocks {
+        let bound = bounds[key];
+        assert!(bound.describes(key.1, postings), "{key:?}: {bound:?}");
+        for posting in postings {
+            assert!(
+                bound.min_length <= length(posting.ordinal),
+                "{key:?}: {bound:?} above the length of {}",
+                posting.ordinal
+            );
+        }
+    }
+    bounds.len()
 }
 
 fn row_data(db: &Database, key: &hawdb_storage::relational::RelationalKey) -> Option<Vec<u8>> {
@@ -1028,3 +1119,45 @@ fn search_index_delete_churn_compacts_blocks_and_empties_the_relation() {
     assert_eq!(next_ordinal(&db), 1);
     assert_matches_oracle(&mut db, "fresh");
 }
+
+#[test]
+fn search_index_compacts_a_populated_block_into_an_empty_first_block() {
+    let mut db = Database::new();
+    db.query_sql(SCHEMA).unwrap();
+    db.query_sql(INDEX).unwrap();
+    let values = (0..320)
+        .map(|id| {
+            let text = if (192..256).contains(&id) {
+                "bar"
+            } else {
+                "foo"
+            };
+            format!("({id}, 's', {id}, '{text}')")
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    db.query_sql(&format!(
+        "INSERT INTO events (id, stream, seq, text) VALUES {values}"
+    ))
+    .unwrap();
+    assert_eq!(term_blocks(&db, "foo"), (vec![128, 128], 0));
+    db.query_sql("UPDATE events SET text = 'foo' WHERE id >= 192 AND id < 256")
+        .unwrap();
+    assert_eq!(term_blocks(&db, "foo"), (vec![128, 192], 0));
+    // The empty first block cannot absorb its oversized successor yet.
+    db.query_sql("DELETE FROM events WHERE id < 128").unwrap();
+    assert_eq!(term_blocks(&db, "foo"), (vec![0, 192], 0));
+    // Once the successor shrinks, its positive length bound must survive
+    // merging into the retained empty block's fence.
+    db.query_sql("DELETE FROM events WHERE id >= 128 AND id <= 300")
+        .unwrap();
+    assert_eq!(term_blocks(&db, "foo"), (vec![19], 0));
+    layout_rows(&db);
+    assert_eq!(
+        ids(&search(&mut db, "foo", 100)),
+        (301..320).collect::<Vec<_>>()
+    );
+    assert_matches_oracle(&mut db, "foo");
+}
+
+mod scan;

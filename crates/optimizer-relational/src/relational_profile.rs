@@ -37,6 +37,8 @@ pub enum RelationalOperatorKind {
     TablePointGet,
     TableRangeScan,
     IndexRangeScan,
+    /// Ranked BM25 retrieval over a search index.
+    Bm25IndexScan,
     NestedLoopJoin,
     NestedLoopLeftJoin,
     IndexNestedLoopJoin,
@@ -53,6 +55,7 @@ impl RelationalOperatorKind {
             Self::TableFullScan => "TableFullScanExec",
             Self::TablePointGet => "TablePointGetExec",
             Self::TableRangeScan => "TableRangeScanExec",
+            Self::Bm25IndexScan => "Bm25IndexScan",
             Self::IndexRangeScan => "IndexRangeScanExec",
             Self::NestedLoopJoin => "NestedLoopJoinExec",
             Self::NestedLoopLeftJoin => "NestedLoopLeftJoinExec",
