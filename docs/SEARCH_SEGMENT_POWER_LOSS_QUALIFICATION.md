@@ -69,9 +69,11 @@ checkpoint now has one commit point:
    the lexical artifact and `search_lexical.manifest.<g>.hawdb`, and the
    metadata/vector sidecars and layout. Each file is synced and renamed with a
    directory sync. No current name and no selector changes.
-2. Verify each generation file against its object reference, then sync and
-   rename `search_projection.out_of_core.manifest.hawdb`. Its resident receipt
-   binds the snapshot's object reference. This rename is the commit point.
+2. Re-read and verify each installed generation file against the object
+   reference the selector will record, including `search_projection.<g>.hawdb`
+   against the snapshot receipt. Then sync and rename
+   `search_projection.out_of_core.manifest.hawdb`. This rename is the commit
+   point.
 3. Replace `search_projection.hawdb`, `search_projection_segment_payloads.hawdb`,
    `search_projection_segments.hawdb` and `search_lexical.manifest.hawdb`, in
    that order, by hard links (or synced copies) to the selected generation.
@@ -87,6 +89,21 @@ against that reference and re-links it. Otherwise it leaves the name unchanged, 
 validation reports the failure. Older layouts without generation snapshots
 therefore keep their existing behavior. Registered Consumer checkpoints keep
 their legacy order.
+
+Before the repair, the same open removes scratch that only an interrupted
+resident checkpoint can leave. That is alias link temporaries
+(`<stem>.tmp.<pid>.<sequence>`) and generation write temporaries
+(`<stem>.<g>.hawdb.tmp` / `.hawdb.zstd.tmp`) for the snapshot, payload,
+descriptor and lexical-manifest families. The open holds the publication lease,
+so no live checkpoint owns them. Other pre-existing temporary names are out of
+scope here.
+
+Reopen cost: on Unix (including macOS) a linked current name is recognized by
+its device and inode, so a completed checkpoint costs a few `metadata` calls.
+Stable Rust exposes no file identity on Windows. There, while the selected
+generation snapshot exists, every reopen hashes each of the four current files
+once to compare it with the selector. The snapshot is therefore read twice per
+open.
 
 Two owners qualify the protocol:
 

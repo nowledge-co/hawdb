@@ -4800,6 +4800,7 @@ fn publish_out_of_core_projection(
     #[cfg(test)]
     AFTER_RESIDENT_SIDECARS.with(|hook| {
         if let Some(index) = hook.take() {
+            let snapshot_file = crate::resident_snapshot_file(generation);
             let name = [
                 &metadata_payload_file,
                 &vector_payload_file,
@@ -4808,6 +4809,7 @@ fn publish_out_of_core_projection(
                 &payload_file,
                 &lexical_manifest_file,
                 &lexical_payload_file,
+                &snapshot_file,
             ][index];
             let path = root.join(name);
             let mut bytes = fs::read(&path).unwrap();
@@ -4825,6 +4827,14 @@ fn publish_out_of_core_projection(
         (&lexical_payload_file, lexical_payload_object),
     ] {
         io.verify_object(&root.join(name), object)?;
+    }
+    if plan.deferred_aliases {
+        // The selector's receipt is the writer's in-memory reference. Bind it
+        // to the installed generation snapshot before the selector names it.
+        io.verify_object(
+            &root.join(crate::resident_snapshot_file(generation)),
+            ArtifactObject::from_reference(snapshot.encoded_object)?,
+        )?;
     }
     #[cfg(feature = "vector-search")]
     if let Some(artifact) = rabitq.as_ref() {
@@ -5060,6 +5070,7 @@ pub(crate) fn resident_checkpoint_fault(step: ResidentCheckpointStep) -> Result<
 /// and matches the manifest receipt. Older layouts (no generation snapshot)
 /// and generations published by other writers keep their existing behavior.
 pub(super) fn recover_resident_aliases(root: &Path) -> Result<()> {
+    sweep_resident_scratch(root);
     let manifest_path = root.join(OUT_OF_CORE_MANIFEST_FILE);
     if !fs::try_exists(&manifest_path)? {
         return Ok(());
@@ -5121,6 +5132,55 @@ pub(super) fn recover_resident_aliases(root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Families a resident checkpoint writes under generation names and then
+/// aliases. Their scratch names are private to that checkpoint.
+const RESIDENT_ALIAS_STEMS: [&str; 4] = [
+    "search_projection",
+    "search_projection_segment_payloads",
+    "search_projection_segments",
+    "search_lexical.manifest",
+];
+
+/// Scratch a resident checkpoint can leave after a crash: an alias link
+/// temporary (`<stem>.tmp.<pid>.<sequence>`) or a generation file's write
+/// temporary (`<stem>.<generation>.hawdb.tmp` / `.hawdb.zstd.tmp`). Neither
+/// is ever selected; a snapshot-sized one would otherwise persist forever.
+fn is_resident_scratch(name: &str) -> bool {
+    let digits = |value: &str| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit());
+    RESIDENT_ALIAS_STEMS.iter().any(|stem| {
+        let Some(rest) = name.strip_prefix(stem) else {
+            return false;
+        };
+        if let Some(sequence) = rest.strip_prefix(".tmp.") {
+            return sequence
+                .split_once('.')
+                .is_some_and(|(pid, sequence)| digits(pid) && digits(sequence));
+        }
+        rest.strip_prefix('.')
+            .and_then(|rest| {
+                rest.strip_suffix(".hawdb.zstd.tmp")
+                    .or_else(|| rest.strip_suffix(".hawdb.tmp"))
+            })
+            .is_some_and(digits)
+    })
+}
+
+/// Runs only while the caller holds the root's publication lease, so no live
+/// checkpoint owns any of these names. Best effort, like generation cleanup:
+/// a name that cannot be removed now is retried on the next open.
+fn sweep_resident_scratch(root: &Path) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if let Some(name) = entry.file_name().to_str()
+            && is_resident_scratch(name)
+        {
+            let _ = fs::remove_file(root.join(name));
+        }
+    }
+}
+
 #[cfg(unix)]
 fn same_file(left: &Path, right: &Path) -> Result<bool> {
     use std::os::unix::fs::MetadataExt;
@@ -5135,7 +5195,8 @@ fn same_file(left: &Path, right: &Path) -> Result<bool> {
 
 #[cfg(not(unix))]
 fn same_file(_source: &Path, _target: &Path) -> Result<bool> {
-    // No portable inode identity: the caller compares content references.
+    // Stable std exposes no file identity on Windows (`file_index` is
+    // unstable). The caller then hashes each current name once per reopen.
     Ok(false)
 }
 
@@ -5815,6 +5876,11 @@ mod tests {
     #[test]
     fn resident_segment_and_lexical_producer_references_reject_installed_same_length_changes() {
         check_resident_producer_changes(3..7);
+    }
+
+    #[test]
+    fn resident_generation_snapshot_reference_rejects_installed_same_length_changes() {
+        check_resident_producer_changes(7..8);
     }
 
     fn check_resident_producer_changes(artifacts: std::ops::Range<usize>) {

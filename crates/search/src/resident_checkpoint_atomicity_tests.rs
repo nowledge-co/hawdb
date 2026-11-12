@@ -401,3 +401,56 @@ fn damaged_generation_snapshot_is_never_linked() {
         "{error}"
     );
 }
+
+#[test]
+fn reopen_sweeps_only_resident_checkpoint_scratch() {
+    let root = Dir::new("scratch");
+    let path = root.0.join("search");
+    base(&path);
+    let expected = reopened_state(&path);
+    let snapshot = std::fs::read(path.join(SEARCH_SNAPSHOT_FILE)).unwrap();
+    // A crash while installing an alias or writing a generation file.
+    let scratch = [
+        "search_projection.tmp.4242.7",
+        "search_projection_segment_payloads.tmp.1.0",
+        "search_projection_segments.tmp.1.1",
+        "search_lexical.manifest.tmp.1.2",
+        "search_projection.77.hawdb.zstd.tmp",
+        "search_projection.77.hawdb.tmp",
+        "search_projection_segments.77.hawdb.tmp",
+        "search_lexical.manifest.77.hawdb.tmp",
+    ];
+    // Names this sweep does not own, including current and selected files.
+    let mut kept = vec![
+        "search_projection.tmp.x.7".to_owned(),
+        "search_projection.out_of_core.manifest.tmp.3".to_owned(),
+        "search_lexical.77.hawdb.tmp".to_owned(),
+        "search_projection_out_of_core_layout.77.tmp.1.2".to_owned(),
+        "unrelated.tmp.1.2".to_owned(),
+    ];
+    for name in scratch
+        .iter()
+        .copied()
+        .chain(kept.iter().map(String::as_str))
+    {
+        std::fs::write(path.join(name), &snapshot).unwrap();
+    }
+    for entry in std::fs::read_dir(&path).unwrap() {
+        let name = entry.unwrap().file_name().into_string().unwrap();
+        if !scratch.contains(&name.as_str()) && !kept.contains(&name) {
+            kept.push(name);
+        }
+    }
+    let current = |name: &str| std::fs::read(path.join(name)).unwrap();
+    let before = kept
+        .iter()
+        .map(|name| (name.clone(), current(name)))
+        .collect::<Vec<_>>();
+    assert_eq!(reopened_state(&path), expected);
+    for name in scratch {
+        assert!(!path.join(name).exists(), "{name} survived reopen");
+    }
+    for (name, bytes) in before {
+        assert_eq!(current(&name), bytes, "{name} changed");
+    }
+}

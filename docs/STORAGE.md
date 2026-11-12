@@ -172,8 +172,13 @@ checkpoint. After it, `SearchIndex::open` re-links any current name that differs
 from the selected generation, but only from a generation file whose bytes match
 the selector's object reference. The repair runs only when the selected
 generation snapshot exists and matches its receipt. Older layouts and selectors
-from other writers keep the existing validation. The current and previous
-generation snapshots stay under the ordinary content-generation retention. See
+from other writers keep the existing validation. Before the selector, every
+installed generation file, including the snapshot, is re-read and checked
+against the reference the selector records. Reopen also removes alias-link and
+generation-write temporaries left by an interrupted checkpoint. On Windows,
+which has no stable file identity in std, each reopen hashes the four current
+files once. The current and previous generation snapshots stay under the
+ordinary content-generation retention. See
 [resident checkpoint qualification](SEARCH_SEGMENT_POWER_LOSS_QUALIFICATION.md#resident-checkpoint).
 
 Compatibility: a projection written before #1711 has no generation snapshot
