@@ -339,9 +339,10 @@ fn evaluate_scoped<'a>(
                 _allocation: allocation,
             })
         }
-        ProjectionExpression::Conversion { function, argument } => function
-            .apply(evaluate(argument)?.as_ref())
-            .map(ProjectedValue::scalar),
+        ProjectionExpression::Conversion { function, argument } => {
+            let value = function.apply(evaluate(argument)?.as_ref())?;
+            owned_text(value, account, work)
+        }
         ProjectionExpression::ListComprehension(comprehension) => {
             let list = evaluate(&comprehension.list)?;
             let values = match list.as_ref() {
@@ -1144,6 +1145,31 @@ fn column<'a>(binding: &'a Binding, name: &str) -> Result<&'a Value> {
         .values
         .get(name)
         .ok_or_else(|| HawDBError::Execution(format!("missing column '{name}' during projection")))
+}
+
+/// Charges a string produced by a conversion such as `string(list)` to the
+/// evaluation's work and memory budgets.
+fn owned_text<'a>(
+    value: Value,
+    account: Option<&QueryMemoryAccount>,
+    work: &ListWork,
+) -> Result<ProjectedValue<'a>> {
+    let Value::String(text) = &value else {
+        return Ok(ProjectedValue::scalar(value));
+    };
+    let bytes = text.len();
+    work.charge(bytes.saturating_add(1))?;
+    let allocation = match account {
+        Some(account) => Some(account.reserve(std::mem::size_of::<Value>().saturating_add(bytes))?),
+        None => {
+            work.charge_unaccounted(bytes)?;
+            None
+        }
+    };
+    Ok(ProjectedValue {
+        value: Cow::Owned(value),
+        _allocation: allocation,
+    })
 }
 
 fn binary<'a>(

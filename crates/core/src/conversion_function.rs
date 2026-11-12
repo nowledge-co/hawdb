@@ -17,6 +17,11 @@
 //! The functions follow Neo4j 5 semantics for the value types HawDB stores:
 //! `NULL` converts to `NULL`, an unparseable string converts to `NULL`, and an
 //! argument type the function does not accept is an error rather than `NULL`.
+//! `string(x)` (alias `to_string`) is the Kùzu cast instead: it renders the
+//! text Kùzu 0.11 produces, which differs from `toString` for floats,
+//! booleans, timestamps and composite values.
+
+mod kuzu_text;
 
 use crate::{HawDBError, Result, Value, ValueRef};
 
@@ -33,17 +38,28 @@ pub enum ConversionFunction {
     /// `toString(value)`: strings, numbers, booleans, UUIDs and temporal
     /// values (rendered in ISO 8601, as Neo4j does).
     ToString,
+    /// Kùzu `string(value)`, also spelled `to_string(value)`: the exact text
+    /// Kùzu 0.11 renders for the value, e.g. `2024-01-02 03:04:05.12` for a
+    /// timestamp, `1.000000` for a float and `True` for a boolean.
+    KuzuString,
 }
 
 impl ConversionFunction {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::ToInteger,
         Self::ToFloat,
         Self::ToBoolean,
         Self::ToString,
+        Self::KuzuString,
     ];
 
+    /// The Kùzu spelling `to_string` of [`Self::KuzuString`].
+    pub const KUZU_STRING_ALIAS: &'static str = "to_string";
+
     pub fn from_function_name(name: &str) -> Option<Self> {
+        if name.eq_ignore_ascii_case(Self::KUZU_STRING_ALIAS) {
+            return Some(Self::KuzuString);
+        }
         Self::ALL
             .into_iter()
             .find(|function| name.eq_ignore_ascii_case(function.function_name()))
@@ -55,6 +71,7 @@ impl ConversionFunction {
             Self::ToFloat => "toFloat",
             Self::ToBoolean => "toBoolean",
             Self::ToString => "toString",
+            Self::KuzuString => "string",
         }
     }
 
@@ -108,6 +125,7 @@ impl ConversionFunction {
                 Some(Value::String(crate::temporal::format_datetime(value)))
             }
             (Self::ToString, ValueRef::Duration(value)) => Some(Value::String(value.to_string())),
+            (Self::KuzuString, value) => return kuzu_text::render(value).map(Value::String),
             _ => None,
         };
         // A float outside the i64 range has no integer value; Neo4j reports
@@ -324,6 +342,218 @@ mod tests {
         for function in [ToInteger, ToFloat, ToBoolean] {
             let error = function.apply(&Value::Date(date)).unwrap_err().to_string();
             assert!(error.contains("cannot convert a DATE value"), "{error}");
+        }
+    }
+
+    fn timestamp(text: &str) -> Value {
+        Value::LocalDateTime(
+            crate::temporal::NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S%.f").unwrap(),
+        )
+    }
+
+    fn interval(months: i64, days: i64, micros: i128) -> Value {
+        Value::duration(
+            crate::temporal::Duration::from_parts(months, days, micros * 1_000).unwrap(),
+        )
+    }
+
+    /// Every expected string was measured with Kùzu 0.11.3 `RETURN string(x)`
+    /// (issue #1682 table plus the edge cases listed in its PR).
+    #[test]
+    fn kuzu_string_matches_kuzu_0_11_text() {
+        use crate::temporal::{FixedOffset, NaiveDate};
+        let date = |y, m, d| NaiveDate::from_ymd_opt(y, m, d).unwrap();
+        let zoned = |text: &str| {
+            Value::DateTime(
+                crate::temporal::DateTime::<FixedOffset>::parse_from_rfc3339(text).unwrap(),
+            )
+        };
+        let map = |entries: &[(&str, Value)]| {
+            Value::Map(
+                entries
+                    .iter()
+                    .map(|(key, value)| ((*key).to_owned(), value.clone()))
+                    .collect(),
+            )
+        };
+        let cases: Vec<(Value, &str)> = vec![
+            // Timestamps: space separator, no zone, trimmed microseconds.
+            (timestamp("2024-01-02 03:04:05"), "2024-01-02 03:04:05"),
+            (
+                timestamp("2024-01-02 03:04:05.120"),
+                "2024-01-02 03:04:05.12",
+            ),
+            (
+                timestamp("2024-01-02 03:04:05.123456"),
+                "2024-01-02 03:04:05.123456",
+            ),
+            (
+                timestamp("2024-01-02 03:04:05.000001"),
+                "2024-01-02 03:04:05.000001",
+            ),
+            (
+                timestamp("2024-01-02 03:04:05.1234567"),
+                "2024-01-02 03:04:05.123456",
+            ),
+            (timestamp("0099-01-02 03:04:05"), "0099-01-02 03:04:05"),
+            (
+                Value::LocalDateTime(date(10_000, 1, 2).and_hms_opt(3, 4, 5).unwrap()),
+                "10000-01-02 03:04:05",
+            ),
+            (zoned("2024-01-02T03:04:05Z"), "2024-01-02 03:04:05"),
+            (zoned("2024-01-02T03:04:05+02:00"), "2024-01-02 01:04:05"),
+            (
+                Value::LocalDateTime(date(0, 12, 31).and_hms_opt(0, 0, 0).unwrap()),
+                "0001-12-31 (BC) 00:00:00",
+            ),
+            // Dates.
+            (Value::Date(date(2024, 1, 2)), "2024-01-02"),
+            (Value::Date(date(99, 1, 2)), "0099-01-02"),
+            (Value::Date(date(10_000, 1, 2)), "10000-01-02"),
+            (Value::Date(date(0, 12, 31)), "0001-12-31 (BC)"),
+            // Integers, floats (`%f`), booleans, strings.
+            (Value::Int(42), "42"),
+            (Value::Int(-7), "-7"),
+            (Value::Int(i64::MAX), "9223372036854775807"),
+            (Value::Int(i64::MIN), "-9223372036854775808"),
+            (Value::Float(-0.5), "-0.500000"),
+            (Value::Float(1.0), "1.000000"),
+            (Value::Float(-0.0), "-0.000000"),
+            (Value::Float(1e20), "100000000000000000000.000000"),
+            (Value::Float(1.5e-5), "0.000015"),
+            (Value::Float(0.123_456_7), "0.123457"),
+            (Value::Float(5e-7), "0.000000"),
+            (Value::Float(2.5e-6), "0.000003"),
+            (Value::Float(123_456_789.125), "123456789.125000"),
+            (Value::Float(f64::INFINITY), "inf"),
+            (Value::Float(f64::NEG_INFINITY), "-inf"),
+            (Value::Float(f64::NAN), "nan"),
+            (Value::Float(-f64::NAN), "-nan"),
+            (Value::Bool(true), "True"),
+            (Value::Bool(false), "False"),
+            (string("abc"), "abc"),
+            // Lists and structs: unquoted members, NULL members empty.
+            (Value::List(vec![Value::Int(1), Value::Int(2)]), "[1,2]"),
+            (Value::List(vec![string("a"), string("b")]), "[a,b]"),
+            (Value::List(vec![string("a b"), string("c,d")]), "[a b,c,d]"),
+            (Value::List(vec![Value::Int(1), Value::Null]), "[1,]"),
+            (Value::List(Vec::new()), "[]"),
+            (
+                Value::List(vec![
+                    Value::List(vec![Value::Int(1)]),
+                    Value::List(vec![Value::Int(2), Value::Int(3)]),
+                ]),
+                "[[1],[2,3]]",
+            ),
+            (Value::List(vec![Value::Float(1.5)]), "[1.500000]"),
+            (Value::List(vec![Value::Bool(true)]), "[True]"),
+            (
+                Value::List(vec![Value::Date(date(2024, 1, 2))]),
+                "[2024-01-02]",
+            ),
+            (
+                Value::List(vec![timestamp("2024-01-02 03:04:05.5")]),
+                "[2024-01-02 03:04:05.5]",
+            ),
+            (map(&[("a", Value::Int(1))]), "{a: 1}"),
+            (
+                map(&[("a", Value::Int(1)), ("b", string("x"))]),
+                "{a: 1, b: x}",
+            ),
+            (map(&[("a", map(&[("b", Value::Int(2))]))]), "{a: {b: 2}}"),
+            (
+                map(&[
+                    ("a", Value::Float(1.5)),
+                    ("b", Value::Bool(true)),
+                    ("c", Value::List(vec![Value::Int(1), Value::Null])),
+                    ("d", map(&[("e", Value::Null)])),
+                ]),
+                "{a: 1.500000, b: True, c: [1,], d: {e: }}",
+            ),
+            (Value::List(vec![map(&[("a", Value::Int(1))])]), "[{a: 1}]"),
+            (
+                map(&[("t", timestamp("2024-01-02 03:04:05"))]),
+                "{t: 2024-01-02 03:04:05}",
+            ),
+            // Intervals.
+            (interval(0, 1, 2 * 3_600_000_000), "1 day 02:00:00"),
+            (interval(0, 0, 3 * 3_600_000_000), "03:00:00"),
+            (interval(14, 3, 0), "1 year 2 months 3 days"),
+            (interval(0, 0, 1_500_000), "00:00:01.5"),
+            (interval(0, 0, 0), "00:00:00"),
+            (interval(0, 2, 0), "2 days"),
+            (interval(0, 0, 1), "00:00:00.000001"),
+            (interval(0, 0, 1_000), "00:00:00.001"),
+            (interval(1, 0, 0), "1 month"),
+            (interval(13, 0, 0), "1 year 1 month"),
+            (interval(12, 0, 0), "1 year"),
+            (interval(24, 1, 180_000_000), "2 years 1 day 00:03:00"),
+            (interval(0, 0, 100 * 3_600_000_000), "100:00:00"),
+            (interval(0, 1, 11_045_000_000), "1 day 03:04:05"),
+            (interval(0, -1, -11_045_000_000), "-1 days -03:04:05"),
+            (interval(0, 0, -11_045_500_000), "-03:04:05.5"),
+            (interval(0, -1, 0), "-1 days"),
+            (interval(0, -2, 3_600_000_000), "-2 days 01:00:00"),
+            (interval(-1, 0, 0), "-1 months"),
+            (interval(-1, 0, -3_600_000_000), "-1 months -01:00:00"),
+            (interval(-25, 0, 0), "-2 years -1 months"),
+            (interval(0, -1, 86_399_000_000), "-1 days 23:59:59"),
+            (interval(0, 1, 7_384_250_000), "1 day 02:03:04.25"),
+            // UUIDs and blobs.
+            (
+                Value::Uuid("0F5C7B3A-0A43-4FA8-9C4B-6E9A2A0D1E7C".parse().unwrap()),
+                "0f5c7b3a-0a43-4fa8-9c4b-6e9a2a0d1e7c",
+            ),
+            (Value::Binary(b"abc".to_vec()), "abc"),
+            (
+                Value::Binary(vec![
+                    0x00, 0x1f, b' ', b'A', b'~', 0x7f, 0x80, b'\\', b'\'', b'"', 0xff,
+                ]),
+                r#"\x00\x1F A~\x7F\x80\x5C\x27\x22\xFF"#,
+            ),
+            (
+                Value::Vector(crate::Vector::new(&[0.1, 0.25]).unwrap()),
+                "[0.100000,0.250000]",
+            ),
+        ];
+        for (value, expected) in cases {
+            assert_eq!(
+                apply(KuzuString, value.clone()),
+                string(expected),
+                "{value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn kuzu_string_alias_null_and_unsupported_types() {
+        assert_eq!(
+            ConversionFunction::from_function_name("to_string"),
+            Some(KuzuString)
+        );
+        assert_eq!(
+            ConversionFunction::from_function_name("TO_STRING"),
+            Some(KuzuString)
+        );
+        assert_eq!(
+            ConversionFunction::from_function_name("String"),
+            Some(KuzuString)
+        );
+        assert_eq!(apply(KuzuString, Value::Null), Value::Null);
+        // toString keeps its Neo4j text.
+        assert_eq!(apply(ToString, Value::Float(1.0)), string("1.0"));
+        assert_eq!(apply(ToString, Value::Bool(true)), string("true"));
+        let time = crate::temporal::NaiveTime::from_hms_opt(1, 2, 3).unwrap();
+        for value in [
+            Value::LocalTime(time),
+            Value::Decimal("1.50".parse().unwrap()),
+            Value::List(vec![Value::LocalTime(time)]),
+        ] {
+            let error = KuzuString.apply(&value).unwrap_err().to_string();
+            assert!(
+                error.contains("string() has no Kùzu-compatible text"),
+                "{error}"
+            );
         }
     }
 }
