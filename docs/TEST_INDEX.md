@@ -249,6 +249,23 @@ admission counters are not assumed stable while that worker can run. Local repla
 `cargo test --locked -p hawdb --lib catch_up_admission_tests -- --test-threads=1`.
 See [caller-priority catch-up](https://github.com/nowledge-co/hawdb/issues/1306).
 
+`embedded_store::tests::initial_import_checkpoint_tests` (`nowledge-co/hawdb#1707`)
+belongs to the existing root `//:hawdb_unit_general_tests` owner. It pins the
+split between resident-only `apply_initial_import_projection_delta` and the
+full-rewrite `checkpoint_initial_import_projection`. Deferred and per-page
+checkpointing yield identical documents, delta reports, and text and hybrid
+hits (exact score bits), before and after reopen. A dropped store reopens at
+exactly the last checkpointed generation and import epoch, including a crash
+before any checkpoint and one in the last, largest gap of a doubling schedule.
+Replay from the host's durable cursor (plus one already-durable page) matches an
+uninterrupted run. For 8 and 32 pages, a doubling schedule writes at most 3x
+the final checkpoint in at most `log2(P) + 2` generations, while per-page
+checkpointing writes at least `P / 4` final-size rewrites. The fixtures are
+small temporary persistent projections (at most 640 documents, 8-dimensional
+embeddings), take a few seconds, and add no lane, profile or timeout. Local
+replay: `cargo test --locked -p hawdb --lib initial_import_1707 -- --test-threads=1`.
+See [the contract](SEARCH_INITIAL_IMPORT_CHECKPOINT.md).
+
 The experimental [Windows directory-custody first packet](../scripts/windows-directory-custody-probe.ps1)
 is owned by the narrowly path-filtered, same-repository
 [Directory Custody Primitive Probe](../.github/workflows/directory-custody-probe.yml)
