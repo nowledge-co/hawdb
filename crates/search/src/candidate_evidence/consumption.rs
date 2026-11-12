@@ -16,8 +16,13 @@
 
 use std::fmt;
 
-use super::{SearchCandidateOutput, SearchCandidateReport};
-use crate::{SearchHit, SearchMode, SearchRetrieverReport};
+use super::{
+    search_candidate_report, SearchCandidateOutput, SearchCandidateReport, SearchCandidateRequest,
+};
+use crate::{
+    CompressedVectorSearchMode, SearchHit, SearchMode, SearchOutOfCoreMetrics, SearchResultSet,
+    SearchRetrieverReport,
+};
 
 /// Why an otherwise valid bounded result cannot certify source exhaustion.
 ///
@@ -32,6 +37,17 @@ pub enum SearchCandidateExhaustionError {
     RankingWindowLimited,
     RetrieverUnavailable { retriever: &'static str },
     RetrieverCoverageUnproven { retriever: &'static str },
+}
+
+/// An explicitly accepted bounded result together with its original evidence.
+///
+/// This type is not an exhaustion proof. Use the private checked view for
+/// completeness-dependent decisions before transferring a bounded result.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoundedSearchCandidateOutput {
+    pub result: SearchResultSet,
+    pub report: SearchCandidateReport,
+    pub out_of_core_metrics: Option<SearchOutOfCoreMetrics>,
 }
 
 impl fmt::Display for SearchCandidateExhaustionError {
@@ -97,10 +113,53 @@ impl<'a> ExhaustiveSearchCandidates<'a> {
 }
 
 impl SearchCandidateOutput {
+    /// Package an engine-produced result and derive its matching report.
+    ///
+    /// This constructor does not certify host-created or modified evidence.
+    pub fn from_search_result(
+        request: &SearchCandidateRequest,
+        compression: CompressedVectorSearchMode,
+        result: SearchResultSet,
+        out_of_core_metrics: Option<SearchOutOfCoreMetrics>,
+    ) -> crate::Result<Self> {
+        let report = search_candidate_report(request, compression, &result);
+        report.ensure_requested_exact_vector_search()?;
+        Ok(Self {
+            result,
+            report,
+            out_of_core_metrics,
+        })
+    }
+
+    pub fn report(&self) -> &SearchCandidateReport {
+        &self.report
+    }
+
+    pub fn out_of_core_metrics(&self) -> Option<&SearchOutOfCoreMetrics> {
+        self.out_of_core_metrics.as_ref()
+    }
+
+    /// Explicitly accept incomplete candidate coverage for bounded top-k use.
+    ///
+    /// An empty post-filtered slice is not an exhaustive empty result. Keep
+    /// `require_exhaustive` at boundaries that depend on that distinction.
+    pub fn accept_bounded(&self) -> &SearchResultSet {
+        &self.result
+    }
+
+    /// Transfer a bounded result after explicitly accepting incomplete coverage.
+    pub fn into_bounded(self) -> BoundedSearchCandidateOutput {
+        BoundedSearchCandidateOutput {
+            result: self.result,
+            report: self.report,
+            out_of_core_metrics: self.out_of_core_metrics,
+        }
+    }
+
     /// Require an exhaustion proof before interpreting a candidate window as
     /// the complete query result, including after additional host filtering.
     ///
-    /// Ordinary bounded top-k remains available through `result`; a refusal
+    /// Ordinary bounded top-k remains available through `accept_bounded`; a refusal
     /// here neither reruns retrieval nor discards that result. An exact
     /// metadata candidate set alone is insufficient: ANN candidate generation
     /// remains incomplete even when its final scores use raw vectors.

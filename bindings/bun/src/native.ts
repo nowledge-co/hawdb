@@ -51,6 +51,24 @@ const symbols = {
     ],
     returns: "bool",
   },
+  hawdb_export: {
+    args: ["ptr", "buffer", "buffer_length", "buffer", "buffer"],
+    returns: "bool",
+  },
+  hawdb_import: {
+    args: ["buffer", "buffer_length", "buffer", "buffer_length", "buffer", "buffer"],
+    returns: "bool",
+  },
+  hawdb_verify_dump: {
+    args: ["buffer", "buffer_length", "buffer", "buffer"],
+    returns: "bool",
+  },
+  hawdb_confirm_dump_publication: {
+    args: ["buffer", "buffer_length", "buffer"],
+    returns: "bool",
+  },
+  hawdb_format_version: { args: [], returns: "u32" },
+  hawdb_dump_format_version: { args: [], returns: "u32" },
   hawdb_begin_transaction: { args: ["ptr", "buffer"], returns: "bool" },
   hawdb_transaction_query: {
     args: [

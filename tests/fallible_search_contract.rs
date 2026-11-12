@@ -232,12 +232,9 @@ fn enabled_facades_preserve_complete_results_and_reports() {
         expected
     );
     let checked: ExhaustiveSearchCandidates<'_> = expected.require_exhaustive().unwrap();
-    assert_eq!(checked.hits(), expected.result.hits.as_slice());
-    assert_eq!(checked.report(), &expected.report);
-    assert_eq!(
-        projection.search_candidates(&request).unwrap(),
-        expected.result
-    );
+    assert_eq!(checked.hits(), expected.accept_bounded().hits.as_slice());
+    assert_eq!(checked.report(), expected.report());
+    assert_eq!(projection.search_candidates(&request).unwrap(), expected);
     assert_eq!(
         projection
             .search_candidate_readiness(&request, &readiness)
@@ -245,7 +242,7 @@ fn enabled_facades_preserve_complete_results_and_reports() {
         expected.readiness_report(&readiness)
     );
     let ids: Vec<_> = expected
-        .result
+        .accept_bounded()
         .hits
         .iter()
         .map(|hit| hit.id.as_str())
@@ -275,13 +272,21 @@ fn checked_candidate_consumption_is_available_through_the_public_facade() {
     let bounded = projection
         .search_candidates_with_report(&SearchCandidateRequest::text("graph", 0))
         .unwrap();
-    assert_eq!(bounded.result.hits.len(), 0);
+    assert_eq!(bounded.accept_bounded().hits.len(), 0);
     assert!(matches!(
         bounded.require_exhaustive(),
         Err(SearchCandidateExhaustionError::ResultWindowLimited)
     ));
+    let accepted: BoundedSearchCandidateOutput = bounded.into_bounded();
+    assert_eq!(accepted.result.hits.len(), 0);
+    assert!(accepted.report.truncated);
+    assert_eq!(accepted.report.returned_hit_count, 0);
     let absent = projection
         .search_candidates_with_report(&SearchCandidateRequest::text("unmatchedzz", 16))
         .unwrap();
     assert!(absent.require_exhaustive().unwrap().hits().is_empty());
+    let ordinary = projection
+        .search_candidates(&SearchCandidateRequest::text("graph", 16))
+        .unwrap();
+    assert_eq!(ordinary.require_exhaustive().unwrap().hits().len(), 1);
 }

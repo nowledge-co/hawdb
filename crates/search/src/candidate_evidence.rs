@@ -22,7 +22,9 @@ mod probe;
 mod report;
 mod shadow;
 
-pub use consumption::{ExhaustiveSearchCandidates, SearchCandidateExhaustionError};
+pub use consumption::{
+    BoundedSearchCandidateOutput, ExhaustiveSearchCandidates, SearchCandidateExhaustionError,
+};
 pub use probe::parse_search_candidate_shadow_probe;
 pub use report::{
     advised_compressed_vector_search_mode, effective_search_candidate_mode,

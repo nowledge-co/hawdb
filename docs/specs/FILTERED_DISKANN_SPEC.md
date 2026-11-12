@@ -241,6 +241,41 @@ Waiting for initial construction checks the caller's cancellation/deadline.
 Focused concurrency cases block execution
 admission while a second query completes, and verify a waiting deadline.
 
+Host candidate reads request exact scoring with
+`SearchCandidateRequest::with_exact_vector_search()` (field
+`exact_vector_search`, default `false`). `EmbeddedReadSnapshot` and
+`EmbeddedStoreHandle` candidate reads, the resident `SearchProjection`
+`search_candidates_with_report`/`try_search_candidates_with_report[_context]`
+entry points and the out-of-core
+`search_candidates_with_report[_context]` entry points apply it as
+`with_exact_search()` on the caller's admitted execution options, so vector
+and hybrid vector legs score the complete metadata-filtered eligible set with
+raw vectors under the same working-memory budget and task context. Exact
+scoring is refused, not downgraded, when combined with an effective compressed
+mode, and an exact request whose executed vector leg did not report
+`raw_vector` candidates fails instead of returning approximate results.
+`SearchCandidateReport` records `exact_vector_search_requested` and
+`exact_vector_search`; the latter is derived from the executed vector
+retriever (available, `raw_vector` candidate and final scores), so it is also
+true when default execution chose a full scalar scan. Resident candidate reads with
+compression disabled already select the adaptive scalar scan
+(`compression_disabled`), so they report exact even without the flag; the flag
+changes out-of-core reads, whose default is DiskANN graph candidates.
+
+Exact memory is bounded but not constant in the eligible-set size. The
+resident scalar scan keeps one score entry per scored eligible document (the
+fused hybrid ranking needs the complete vector ranking) and refuses with
+`scalar vector candidates require N bytes, exceeding admitted working memory M`
+once those entries exceed the admitted bytes; the raw rerank step repeats the
+check for its lookup. The out-of-core scan streams segments into a top-k score
+collector but tracks scored document IDs for duplicate detection, capped at
+`min(max_score_entries, working_bytes / 128) / 2` IDs. It refuses up front
+(`search rank window exceeds the admitted N score entries`) when the requested
+window exceeds that cap, and with
+`search vector uniqueness check requires more than N document ids` once the
+eligible set does.
+Neither path falls back to approximate candidates.
+
 Resident checkpoints now write native DiskANN graphs into the existing candidate
 slot and seal their full source digest in the same manifest. The disk reader
 executes that graph after checkpoint; old readers retain their original graph

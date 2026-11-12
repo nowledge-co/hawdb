@@ -102,6 +102,7 @@ fn statistical_walk(
     let mut output = 1.0;
     let mut work = 1.0;
     let filter_points = graph_match_filter_points(program);
+    let mut walk_context = pattern_start::WalkContext::new(catalog);
     for (index, step) in program.steps.iter().enumerate() {
         if filter_points.contains(&index) {
             rows /= crate::cardinality_defaults::FILTER_SELECTIVITY_DIVISOR as f64;
@@ -154,12 +155,17 @@ fn statistical_walk(
                     max_hops: *max_hops,
                     reversible: true,
                 };
-                let expansion =
-                    pattern_start::expand_work(catalog, &from, &target_node, &edge, *direction)
-                        .unwrap_or_else(|| {
-                            let rows = catalog.label_count(target_node.label) as f64;
-                            WalkEstimate { rows, work: rows }
-                        });
+                let expansion = pattern_start::expand_work(
+                    &mut walk_context,
+                    &from,
+                    &target_node,
+                    &edge,
+                    *direction,
+                )
+                .unwrap_or_else(|| {
+                    let rows = catalog.label_count(target_node.label) as f64;
+                    WalkEstimate { rows, work: rows }
+                });
                 let surviving = if target_node.bound {
                     expansion.rows / catalog.label_count(target_node.label) as f64
                 } else {

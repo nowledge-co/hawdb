@@ -59,14 +59,22 @@ use hawdb::{EmbeddedStoreHandle, Result, SearchCandidateRequest, SearchResultSet
 
 fn search(handle: &EmbeddedStoreHandle, query: &str) -> Result<SearchResultSet> {
     let request = SearchCandidateRequest::text(query, 20).with_offset(0);
-    handle.search_candidates(&request)
+    Ok(handle.search_candidates(&request)?.into_bounded().result)
 }
 ```
 
 The request still selects text, vector or hybrid candidate retrieval. It does
 not generate embeddings or replace the canonical graph retrieval boundary.
+Vector and hybrid requests may add `.with_exact_vector_search()` to score the
+complete filtered eligible set with raw vectors instead of approximate graph
+candidates; `SearchCandidateReport::exact_vector_search` reports whether the
+executed vector leg was exact. See the
+[filtered DiskANN spec](specs/FILTERED_DISKANN_SPEC.md) for its memory bound.
 
-The result above is bounded top-k. Consumers that must establish candidate
+All high-level candidate entrypoints now return sealed `SearchCandidateOutput`,
+including `search_candidates`. This intentional Rust source break requires old
+callers to choose coverage semantics. The example explicitly accepts bounded
+top-k; borrowed access uses `accept_bounded()`. Consumers that must establish candidate
 exhaustion, including before returning an exhaustive post-filtered empty
 result, should call `search_candidates_with_report` followed by
 `SearchCandidateOutput::require_exhaustive()`. Only a successful

@@ -141,9 +141,9 @@ impl AdmittedSearchRead {
         match (&self.resident, &self.out_of_core) {
             (Some(lease), None) => ResidentProjectionRef::Snapshot(lease.snapshot())
                 .try_search_candidates_with_report_context(request, self.execution()),
-            (None, Some(projection)) => Ok(projection
-                .search_candidates_with_report_context(request, self.execution())?
-                .into()),
+            (None, Some(projection)) => {
+                projection.search_candidates_with_report_context(request, self.execution())
+            }
             (None, None) => Err(missing_search_projection_error()),
             (Some(_), Some(_)) => Err(ambiguous_search_projection_error()),
         }
@@ -216,11 +216,17 @@ impl AdmittedSearchRead {
                     (search, snapshot.projection_freshness().clone(), None)
                 }
                 (None, Some(projection)) => {
-                    let output = projection.search_candidates_with_report_context(
-                        &retrieval_request(config, &self.advisor, request),
-                        self.execution(),
-                    )?;
-                    (output.result, projection.freshness(), Some(output.metrics))
+                    let output = projection
+                        .search_candidates_with_report_context(
+                            &retrieval_request(config, &self.advisor, request),
+                            self.execution(),
+                        )?
+                        .into_bounded();
+                    (
+                        output.result,
+                        projection.freshness(),
+                        output.out_of_core_metrics,
+                    )
                 }
                 (None, None) => return Err(missing_search_projection_error()),
                 (Some(_), Some(_)) => return Err(ambiguous_search_projection_error()),
@@ -256,6 +262,7 @@ pub(super) fn retrieval_request(
         adaptive_vector_backend_policy: config.adaptive_vector_backend_policy,
         recall_validation_probe: false,
         retrieval_projection_advisor: advisor.clone(),
+        exact_vector_search: false,
     }
 }
 

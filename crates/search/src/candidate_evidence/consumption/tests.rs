@@ -302,6 +302,28 @@ mod retrieval {
 
     #[cfg(feature = "vector-search")]
     #[test]
+    fn hybrid_requires_both_requested_legs_to_complete() {
+        let index = index();
+        let complete = output(
+            &index,
+            &SearchCandidateRequest::hybrid("graph", vec![1.0, 0.0], 16),
+        );
+        assert_eq!(complete.require_exhaustive().unwrap().hits().len(), 2);
+        let fallback = output(
+            &index,
+            &SearchCandidateRequest::hybrid("graph", vec![1.0, 0.0, 0.0], 16),
+        );
+        assert_eq!(fallback.accept_bounded().hits.len(), 2);
+        assert_eq!(
+            fallback.require_exhaustive().unwrap_err(),
+            SearchCandidateExhaustionError::RetrieverUnavailable {
+                retriever: "vector"
+            }
+        );
+    }
+
+    #[cfg(feature = "vector-search")]
+    #[test]
     fn exact_metadata_and_raw_rescoring_do_not_certify_ann_candidate_coverage() {
         let index = index();
         let mut native = output(&index, &SearchCandidateRequest::vector(vec![1.0, 0.0], 16));

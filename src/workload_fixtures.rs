@@ -704,6 +704,7 @@ fn error_class(error: &crate::HawDBError) -> String {
         | crate::HawDBError::FileDescriptors(_)
         | crate::HawDBError::StorageIntegrity(_)
         | crate::HawDBError::WalRecoveryIo { .. }
+        | crate::HawDBError::PublishOutcomeUnknown { .. }
         | crate::HawDBError::ProjectionBusy
         | crate::HawDBError::AppendSequenceExhausted { .. }
         | crate::HawDBError::BranchBusy { .. }

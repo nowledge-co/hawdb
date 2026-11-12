@@ -159,8 +159,21 @@ fn search_helpers_preserve_their_pair_while_writers_and_fresh_helpers_advance() 
             );
             let candidates = super::SearchCandidateRequest::text("App", 1)
                 .with_metadata_filters(BTreeMap::from([("space_id".into(), "default".into())]));
-            assert_eq!(handle.search_candidates(&candidates)?.hits.len(), 1);
-            assert_eq!(old.search_candidates(&candidates)?.result.hits.len(), 1,);
+            assert_eq!(
+                handle
+                    .search_candidates(&candidates)?
+                    .accept_bounded()
+                    .hits
+                    .len(),
+                1
+            );
+            assert_eq!(
+                old.search_candidates(&candidates)?
+                    .accept_bounded()
+                    .hits
+                    .len(),
+                1,
+            );
             Ok(())
         });
         drop(start);
@@ -555,7 +568,9 @@ fn typed_snapshot_candidates_filter_projection_kind_before_vector_top_k() {
                     max_payload_bytes: 4096,
                 },
                 |snapshot| {
-                    let candidates = snapshot.search_candidates_with_report(&request)?;
+                    let candidates = snapshot
+                        .search_candidates_with_report(&request)?
+                        .into_bounded();
                     assert_eq!(candidates.result.hits.len(), 1);
                     let hit = &candidates.result.hits[0];
                     assert_eq!(hit.id, "memory:target");
@@ -619,7 +634,7 @@ fn typed_snapshot_candidates_share_cumulative_row_and_payload_budgets() {
                 max_payload_bytes: 4096,
             },
             |snapshot| {
-                snapshot.search_candidates(&request)?;
+                snapshot.search_candidates(&request)?.into_bounded();
                 snapshot.query_cypher(graph_query, &BTreeMap::new(), 1)?;
                 Ok(())
             },
@@ -637,7 +652,7 @@ fn typed_snapshot_candidates_share_cumulative_row_and_payload_budgets() {
                 max_payload_bytes: 4096,
             },
             |snapshot| {
-                snapshot.search_candidates(&request)?;
+                snapshot.search_candidates(&request)?.into_bounded();
                 Ok(snapshot.report().output_payload_bytes)
             },
         )
@@ -650,7 +665,7 @@ fn typed_snapshot_candidates_share_cumulative_row_and_payload_budgets() {
                 max_payload_bytes: candidate_bytes,
             },
             |snapshot| {
-                snapshot.search_candidates(&request)?;
+                snapshot.search_candidates(&request)?.into_bounded();
                 snapshot.query_cypher(graph_query, &BTreeMap::new(), 1)?;
                 Ok(())
             },
@@ -835,7 +850,9 @@ fn bounded_read_snapshot_filters_text_seeds_before_top_k() {
         .unwrap();
     let unfiltered = handle
         .search_candidates(&super::SearchCandidateRequest::text("candidate", 1))
-        .unwrap();
+        .unwrap()
+        .into_bounded()
+        .result;
     let excluded_space = if unfiltered.hits[0].external_id.as_deref() == Some("nearest") {
         "other"
     } else {
@@ -847,7 +864,9 @@ fn bounded_read_snapshot_filters_text_seeds_before_top_k() {
                 BTreeMap::from([("space_id".into(), excluded_space.into())]),
             ),
         )
-        .unwrap();
+        .unwrap()
+        .into_bounded()
+        .result;
     assert_eq!(expected.hits.len(), 1);
     assert_ne!(expected.hits[0].id, unfiltered.hits[0].id);
     let parameters = BTreeMap::from([

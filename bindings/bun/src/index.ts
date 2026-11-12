@@ -124,18 +124,71 @@ export interface ScrubReport {
   wal_bytes: Count;
 }
 
-function parseReport<T>(text: string | null, fields: readonly string[]): T {
+/** `database.export` result; see docs/LOGICAL_DUMP.md. */
+export interface ExportReport {
+  dump_format_version: number;
+  persistent_format_version: number;
+  hawdb_version: string;
+  branch: string | null;
+  commit_epoch: Count;
+  table_count: Count;
+  table_row_count: Count;
+  node_count: Count;
+  relationship_count: Count;
+  file_count: Count;
+  total_bytes: Count;
+  manifest_sha256: string;
+}
+
+/** `library.import` result; see docs/LOGICAL_DUMP.md. */
+export interface ImportReport {
+  dump_format_version: number;
+  source_hawdb_version: string;
+  source_persistent_format_version: number;
+  persistent_format_version: number;
+  table_count: Count;
+  table_row_count: Count;
+  node_count: Count;
+  relationship_count: Count;
+  file_count: Count;
+  total_bytes: Count;
+  manifest_sha256: string;
+}
+
+/** `library.verifyDump` result; see docs/LOGICAL_DUMP.md. */
+export interface VerifyReport {
+  dump_format_version: number;
+  source_hawdb_version: string;
+  source_persistent_format_version: number;
+  branch: string | null;
+  commit_epoch: Count;
+  table_count: Count;
+  table_row_count: Count;
+  node_count: Count;
+  relationship_count: Count;
+  file_count: Count;
+  total_bytes: Count;
+  manifest_sha256: string;
+}
+
+/** The fields a report must carry: unsigned counts, and optionally strings. */
+type ReportFields = readonly string[] | { counts: readonly string[]; strings: readonly string[] };
+
+function parseReport<T>(text: string | null, fields: ReportFields): T {
   if (text === null) {
-    throw new HawDBError("ffi", "HawDB maintenance call returned no report");
+    throw new HawDBError("ffi", "HawDB call returned no report");
   }
+  const counts = Array.isArray(fields) ? fields : (fields as { counts: readonly string[] }).counts;
+  const strings = Array.isArray(fields) ? [] : (fields as { strings: readonly string[] }).strings;
   const report = parseLosslessJson(text);
   if (
     report === null ||
     Array.isArray(report) ||
     typeof report !== "object" ||
-    !fields.every((field) => typeof report[field] === "number" || typeof report[field] === "bigint")
+    !counts.every((field) => typeof report[field] === "number" || typeof report[field] === "bigint") ||
+    !strings.every((field) => typeof report[field] === "string")
   ) {
-    throw new TypeError("HawDB returned a malformed maintenance report");
+    throw new TypeError("HawDB returned a malformed report");
   }
   return report as T;
 }
@@ -155,6 +208,48 @@ const scrubReportFields = [
   "wal_record_count",
   "wal_bytes",
 ] as const;
+const exportReportFields = {
+  counts: [
+    "dump_format_version",
+    "persistent_format_version",
+    "commit_epoch",
+    "table_count",
+    "table_row_count",
+    "node_count",
+    "relationship_count",
+    "file_count",
+    "total_bytes",
+  ],
+  strings: ["hawdb_version", "manifest_sha256"],
+} as const;
+const verifyReportFields = {
+  counts: [
+    "dump_format_version",
+    "source_persistent_format_version",
+    "commit_epoch",
+    "table_count",
+    "table_row_count",
+    "node_count",
+    "relationship_count",
+    "file_count",
+    "total_bytes",
+  ],
+  strings: ["source_hawdb_version", "manifest_sha256"],
+} as const;
+const importReportFields = {
+  counts: [
+    "dump_format_version",
+    "source_persistent_format_version",
+    "persistent_format_version",
+    "table_count",
+    "table_row_count",
+    "node_count",
+    "relationship_count",
+    "file_count",
+    "total_bytes",
+  ],
+  strings: ["source_hawdb_version", "manifest_sha256"],
+} as const;
 
 export class QueryResult {
   constructor(
@@ -427,6 +522,18 @@ export class HawDBLibrary {
     return parseResult(text);
   }
 
+  /** The engine-wide persistent format version of the loaded library. */
+  formatVersion(): number {
+    this.assertOpen();
+    return this.native.symbols.hawdb_format_version();
+  }
+
+  /** The newest logical dump format version the loaded library reads. */
+  dumpFormatVersion(): number {
+    this.assertOpen();
+    return this.native.symbols.hawdb_dump_format_version();
+  }
+
   /** Begin, commit or roll back the handle's transaction. */
   transactionControl(handle: NativePointer, action: "begin" | "commit" | "rollback"): void {
     this.assertOpen();
@@ -454,7 +561,7 @@ export class HawDBLibrary {
   }
 
   private report<T>(
-    fields: readonly string[],
+    fields: ReportFields,
     action: string,
     call: (report: BigUint64Array, error: BigUint64Array) => boolean,
   ): T {
@@ -536,6 +643,94 @@ export class HawDBLibrary {
         error,
       ),
     );
+  }
+
+  exportDatabase(handle: NativePointer, destination: string): ExportReport {
+    const lifetime = this.liveLifetime(handle);
+    const destinationBytes = encoder.encode(destination);
+    if (destinationBytes.length === 0) {
+      throw new TypeError("HawDB export destination must not be empty");
+    }
+    this.assertStillLive(handle, lifetime);
+    return this.report<ExportReport>(exportReportFields, "export", (report, error) =>
+      this.native.symbols.hawdb_export(handle, destinationBytes, destinationBytes, report, error),
+    );
+  }
+
+  /**
+   * Build a new database at `destination`, which must not exist yet, from the
+   * logical dump at `source`. Nothing is published unless every file
+   * verifies; open the result with `open`. Needs no open database.
+   */
+  import(source: string, destination: string): ImportReport {
+    this.assertOpen();
+    const sourceBytes = encoder.encode(source);
+    const destinationBytes = encoder.encode(destination);
+    if (sourceBytes.length === 0 || destinationBytes.length === 0) {
+      throw new TypeError("HawDB import paths must not be empty");
+    }
+    // Path conversion may have unloaded the library.
+    this.assertOpen();
+    return this.report<ImportReport>(importReportFields, "import", (report, error) =>
+      this.native.symbols.hawdb_import(
+        sourceBytes,
+        sourceBytes,
+        destinationBytes,
+        destinationBytes,
+        report,
+        error,
+      ),
+    );
+  }
+
+  /**
+   * Verify the logical dump at `path` against its manifest without writing
+   * anything. Damage throws a `storage_integrity` `HawDBError`.
+   */
+  verifyDump(path: string): VerifyReport {
+    this.assertOpen();
+    const pathBytes = encoder.encode(path);
+    if (pathBytes.length === 0) {
+      throw new TypeError("HawDB dump path must not be empty");
+    }
+    // Path conversion may have unloaded the library.
+    this.assertOpen();
+    return this.report<VerifyReport>(verifyReportFields, "verify", (report, error) =>
+      this.native.symbols.hawdb_verify_dump(pathBytes, pathBytes, report, error),
+    );
+  }
+
+  /**
+   * Reconcile an `export` or `import` that threw `publish_outcome_unknown`:
+   * the complete result may already be at `destination`, so keep it. This
+   * makes its name durable and is safe to repeat; then check an export with
+   * `verifyDump` or open an import. A missing destination means the
+   * publication did not survive and the call can be run again.
+   */
+  confirmDumpPublication(destination: string): void {
+    this.assertOpen();
+    const destinationBytes = encoder.encode(destination);
+    if (destinationBytes.length === 0) {
+      throw new TypeError("HawDB dump destination must not be empty");
+    }
+    this.assertOpen();
+    const error = outputBuffer();
+    if (
+      !this.native.symbols.hawdb_confirm_dump_publication(
+        destinationBytes,
+        destinationBytes,
+        error,
+      )
+    ) {
+      throw this.errorFrom(error, "HawDB confirm dump publication failed");
+    }
+    const unexpected = this.takeBuffer(error);
+    if (unexpected !== null) {
+      throw new HawDBError(
+        "ffi",
+        `HawDB confirm dump publication succeeded with an error payload: ${unexpected}`,
+      );
+    }
   }
 
   closeDatabase(database: Database, handle: NativePointer): void {
@@ -722,6 +917,15 @@ export class Database {
    */
   scrub(): ScrubReport {
     return this.library.scrub(this.liveHandle());
+  }
+
+  /**
+   * Write this database's current snapshot as a logical dump directory at
+   * `destination`, which must not exist yet. The dump outlives the storage
+   * format: a later library imports it with `library.import`.
+   */
+  export(destination: string): ExportReport {
+    return this.library.exportDatabase(this.liveHandle(), destination);
   }
 
   close(): void {

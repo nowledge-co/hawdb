@@ -35,6 +35,7 @@ pub mod embedded_store;
 pub mod embedded_tokio;
 pub mod executor;
 pub mod graph_route_evidence;
+pub mod logical_dump;
 pub mod mem_library_readiness;
 pub mod nowledge_fuzz;
 pub mod nowledge_inventory;
@@ -291,9 +292,9 @@ pub use embedded_store::{
     graph_read_route_specs_json, required_query_families_for_route,
     search_candidate_shadow_evidence_json, source_mutation_dual_write_evidence_all_ready,
     source_mutation_dual_write_readiness, source_mutation_family_requirements,
-    BackgroundMaintenanceReport, CutoverControls, CutoverControlsReport,
-    DefinedSearchProjectionConsumer, EmbeddedGraph, EmbeddedProductionStatus,
-    EmbeddedQueryExecutionPath, EmbeddedQueryOutput, EmbeddedQueryReport,
+    BackgroundMaintenanceReport, BoundedSearchCandidateOutput, CutoverControls,
+    CutoverControlsReport, DefinedSearchProjectionConsumer, EmbeddedGraph,
+    EmbeddedProductionStatus, EmbeddedQueryExecutionPath, EmbeddedQueryOutput, EmbeddedQueryReport,
     EmbeddedQueryReportOptions, EmbeddedReadOptions, EmbeddedReadOutput, EmbeddedReadReport,
     EmbeddedReadSnapshot, EmbeddedReadSnapshotBudget, EmbeddedReadSnapshotReport,
     EmbeddedRuntimeStatus, EmbeddedServingEntrypoint, EmbeddedServingPathReadiness,
@@ -456,6 +457,11 @@ pub use hawdb_vector_projection::{
     ProjectionBuildReport as RaBitQCandidateProjectionBuildReport,
     ProjectionManifest as RaBitQCandidateProjectionManifest,
     ProjectionSearchReport as RaBitQCandidateScanReport, ScanKernel as RaBitQScanKernel,
+};
+pub use logical_dump::{
+    confirm_logical_dump_publication, persistent_format_version, verify_logical_dump,
+    LogicalDumpExportReport, LogicalDumpImportReport, LogicalDumpOptions, LogicalDumpVerifyReport,
+    LOGICAL_DUMP_FORMAT_VERSION, PERSISTENT_FORMAT_VERSION,
 };
 pub use mem_integration_bundle::{integration_bundle_json, IntegrationBundleInputs};
 pub use mem_integration_readiness::{

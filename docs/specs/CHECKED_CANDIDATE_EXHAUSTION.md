@@ -9,6 +9,12 @@ does not prove that the projection contains no other query matches. In
 particular, a host may reject every returned candidate while an eligible
 candidate remains outside the returned window.
 
+All high-level candidate entrypoints return sealed `SearchCandidateOutput`,
+including resident/out-of-core projections, store handles and bounded read
+snapshots. Raw result fields are no longer public, and no `Deref` or implicit
+conversion extracts a `SearchResultSet`. Every caller must explicitly accept
+bounded coverage or request exhaustion.
+
 `SearchCandidateOutput::require_exhaustive()` returns a borrowed
 `ExhaustiveSearchCandidates` view only when the existing execution evidence
 proves exhaustion of the query's matching candidates within the selected
@@ -59,15 +65,21 @@ fn no_matching_candidates(
 }
 ```
 
-For bounded top-k, use the existing result directly under its bounded contract.
+For bounded top-k, explicitly call `accept_bounded()` for an immutable result
+borrow or `into_bounded()` for owned result/report/metrics. The bounded
+choice provides no proof of completeness. Reports and metrics remain independently
+inspectable without exposing hits. These choices allocate no extra hit list.
 If exhaustive consumption refuses, retain the bounded result as partial
 evidence, widen/retry only within the host's explicit budget, or propagate the
 refusal. Do not convert it into a successful exhaustive empty response.
 
-This additive API preserves existing fields, signatures, report JSON and
-on-disk formats. Existing callers can still discard the report, so they must
-adopt the checked view at boundaries requiring exhaustion. A future removal of
-unchecked access is a separate source-compatibility decision.
+This intentionally changes the public Rust source API.
+Old direct field access and entrypoints that implicitly returned raw candidate
+hits must migrate. `OutOfCoreSearchCandidateOutput` is now an alias of the same
+sealed output; out-of-core metrics use the common optional metric accessor.
+Report JSON, retrieval behavior, resource budgets and on-disk formats are
+unchanged. Low-level `SearchIndex`/reader query primitives retain their bounded
+contracts; they are not exhaustive-consumption APIs.
 
 ## Authority and freshness
 
@@ -93,7 +105,8 @@ fixture executes out-of-core exact text/vector/hybrid queries and the default
 graph candidate path; it also retains the original metrics.
 
 The existing root `fallible_search_contract` default/minimal owners verify the
-public facade export and preserve unchecked result/report behavior. These
+public facade export and explicit bounded result/report behavior. Compile-fail
+documentation guards refuse direct result access. These
 cases establish consumption correctness; they make no recall, performance,
 cross-store hydration or runtime-activation claim. See
 [the test index](../TEST_INDEX.md).
