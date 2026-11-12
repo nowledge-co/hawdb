@@ -231,6 +231,9 @@ fn enabled_facades_preserve_complete_results_and_reports() {
         projection.search_candidates_with_report(&request).unwrap(),
         expected
     );
+    let checked: ExhaustiveSearchCandidates<'_> = expected.require_exhaustive().unwrap();
+    assert_eq!(checked.hits(), expected.result.hits.as_slice());
+    assert_eq!(checked.report(), &expected.report);
     assert_eq!(
         projection.search_candidates(&request).unwrap(),
         expected.result
@@ -262,4 +265,23 @@ fn enabled_facades_preserve_complete_results_and_reports() {
             .unwrap(),
         evidence.json()
     );
+}
+
+#[cfg(feature = "full-text-search")]
+#[test]
+fn checked_candidate_consumption_is_available_through_the_public_facade() {
+    let (_, index) = fixture(DatabaseConfig::default());
+    let projection = SearchProjection::from_index(index);
+    let bounded = projection
+        .search_candidates_with_report(&SearchCandidateRequest::text("graph", 0))
+        .unwrap();
+    assert_eq!(bounded.result.hits.len(), 0);
+    assert!(matches!(
+        bounded.require_exhaustive(),
+        Err(SearchCandidateExhaustionError::ResultWindowLimited)
+    ));
+    let absent = projection
+        .search_candidates_with_report(&SearchCandidateRequest::text("unmatchedzz", 16))
+        .unwrap();
+    assert!(absent.require_exhaustive().unwrap().hits().is_empty());
 }

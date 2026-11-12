@@ -170,7 +170,8 @@ use hawdb_search::candidate_evidence::{
     search_candidate_report,
 };
 pub use hawdb_search::candidate_evidence::{
-    search_candidate_shadow_evidence_json, RetrievalProjectionAdvisor, SearchCandidateFieldSummary,
+    search_candidate_shadow_evidence_json, ExhaustiveSearchCandidates, RetrievalProjectionAdvisor,
+    SearchCandidateExhaustionError, SearchCandidateFieldSummary,
     SearchCandidateFilterPushdownEvidence, SearchCandidateOutput, SearchCandidateReadinessOptions,
     SearchCandidateReadinessReport, SearchCandidateReport, SearchCandidateRequest,
     SearchCandidateShadowAccumulator, SearchCandidateShadowEvidence,

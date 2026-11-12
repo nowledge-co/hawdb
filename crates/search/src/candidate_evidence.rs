@@ -17,10 +17,12 @@
 //! The embedded facade remains the host API; this module does not execute
 //! database queries or control production activation.
 
+mod consumption;
 mod probe;
 mod report;
 mod shadow;
 
+pub use consumption::{ExhaustiveSearchCandidates, SearchCandidateExhaustionError};
 pub use probe::parse_search_candidate_shadow_probe;
 pub use report::{
     advised_compressed_vector_search_mode, effective_search_candidate_mode,

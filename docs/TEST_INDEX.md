@@ -6,6 +6,20 @@ authoritative; this is a map of test families, not an exhaustive list of every
 Rust test function. Update it when changing a family's scope, build profile,
 execution lane, fixture size, isolation or known failure mode.
 
+Checked candidate exhaustion ([#1713](https://github.com/nowledge-co/hawdb/issues/1713))
+is owned by `candidate_evidence::consumption::tests` in the existing Search unit
+feature matrix, including `//crates/search:hawdb_search_tests`. Text cases
+require `full-text-search`; vector/hybrid cases additionally require
+`vector-search`; typed refusal diagnostics run in every profile. Two-document
+resident and persisted out-of-core fixtures distinguish completed empty queries
+from bounded windows, offsets, restricted ranking, unavailable/unknown
+retrievers and ANN candidate generation followed by raw reranking. The public
+facade assertions extend `//:hawdb_fallible_search_contract_tests` and
+`//:hawdb_fallible_search_contract_minimal_tests` in their existing CI owners.
+Replay the Search family with `--test_arg=candidate_evidence::consumption::`.
+No lane, profile, timeout or performance gate changes. See the
+[checked consumption contract](specs/CHECKED_CANDIDATE_EXHAUSTION.md).
+
 Mem query-shaped compatibility (`nowledge-co/mem#9338`) is owned by
 `api::tests::mem_query_contract` in `//:hawdb_unit_general_tests` (the existing
 required native general lane). The finite fixtures cover C1-C5 execution,

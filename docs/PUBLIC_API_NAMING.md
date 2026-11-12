@@ -66,6 +66,17 @@ fn search(handle: &EmbeddedStoreHandle, query: &str) -> Result<SearchResultSet> 
 The request still selects text, vector or hybrid candidate retrieval. It does
 not generate embeddings or replace the canonical graph retrieval boundary.
 
+The result above is bounded top-k. Consumers that must establish candidate
+exhaustion, including before returning an exhaustive post-filtered empty
+result, should call `search_candidates_with_report` followed by
+`SearchCandidateOutput::require_exhaustive()`. Only a successful
+`ExhaustiveSearchCandidates` view certifies query-candidate exhaustion within
+that projection and request filters. A short ANN result or raw vector
+reranking does not establish exhaustion. See the
+[checked consumption contract](specs/CHECKED_CANDIDATE_EXHAUSTION.md) for typed
+refusals, conservative ranking-window checks and the independent
+freshness/canonical-authority requirements.
+
 ## Compatibility scope
 
 This rename does not change query execution, persistence formats, protocol
