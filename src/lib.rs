@@ -337,9 +337,9 @@ pub use embedded_tokio::{
     HawDBTokioEmbedded, HawDBTokioEmbeddedError, TokioQueryBatchStream, TokioQueryStreamOptions,
 };
 pub use error::{
-    FileDescriptorError, HawDBError, ReadBudgetError, ReadBudgetResource, ResourceBudgetError,
-    ResourceBudgetKind, ResourceBudgetScope, Result, StorageFormatError, TransactionRetryError,
-    TransactionRetryReason,
+    FileDescriptorError, HawDBError, ReadBudgetError, ReadBudgetResource, RelationalErrorKind,
+    RelationalErrorSurface, ResourceBudgetError, ResourceBudgetKind, ResourceBudgetScope, Result,
+    StorageFormatError, TransactionRetryError, TransactionRetryReason,
 };
 pub use executor::{
     ProjectedRowRef, QueryRow, QueryRowRef, QueryRows, QuerySchema, ReadExecutionProfile, Row,

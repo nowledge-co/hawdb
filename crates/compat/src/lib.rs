@@ -18,7 +18,7 @@
 //! supplied by the facade; this crate cannot open or activate a database.
 
 use hawdb_analytics::ProjectedGraph;
-use hawdb_core::{HawDBError, Result, Value};
+use hawdb_core::{HawDBError, RelationalErrorSurface, Result, Value};
 use hawdb_executor::{QueryOutput, Row};
 use std::collections::BTreeMap;
 
@@ -425,6 +425,14 @@ impl ExpectedErrorClass {
             HawDBError::FileDescriptors(_) => Self::FileDescriptors,
             HawDBError::UnsupportedStorageFormat(_)
             | HawDBError::Storage(_)
+            | HawDBError::Constraint {
+                surface: RelationalErrorSurface::Storage,
+                ..
+            }
+            | HawDBError::Schema {
+                surface: RelationalErrorSurface::Storage,
+                ..
+            }
             | HawDBError::StorageIntegrity(_)
             | HawDBError::WalRecoveryIo { .. }
             | HawDBError::PublishOutcomeUnknown { .. }
@@ -433,6 +441,14 @@ impl ExpectedErrorClass {
             | HawDBError::BranchBusy { .. }
             | HawDBError::BranchReclamationBlocked { .. } => Self::Storage,
             HawDBError::Execution(_)
+            | HawDBError::Constraint {
+                surface: RelationalErrorSurface::Execution,
+                ..
+            }
+            | HawDBError::Schema {
+                surface: RelationalErrorSurface::Execution,
+                ..
+            }
             | HawDBError::BranchEvidenceBudgetExceeded { .. }
             | HawDBError::ReadBudgetExceeded(_)
             | HawDBError::ResourceBudgetExceeded(_)

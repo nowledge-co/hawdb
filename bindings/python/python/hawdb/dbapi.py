@@ -99,18 +99,25 @@ attributes, so ``except hawdb.exceptions.ParseError`` and
   ``TaskStoppedError``, ``DescriptorError``, ``ResourceBudgetError``,
   ``BackpressureError``, and an ``ExecutionError`` that is ``retryable``.
 - ``NotSupportedError``: ``CapabilityError``.
+- ``IntegrityError``: a ``StorageError`` or ``ExecutionError`` whose ``kind``
+  is ``"constraint"``, such as a duplicate primary key or a NULL in a NOT NULL
+  column.
+- ``DataError``: a ``StorageError`` or ``ExecutionError`` whose ``kind`` is
+  ``"schema"``, such as a value of the wrong type for its column.
 - ``InternalError``: ``hawdb.exceptions.IntegrityError``, which reports
   damaged storage rather than a violated constraint.
-- ``DatabaseError``: every other engine error, including ``StorageError``
-  and the remaining ``ExecutionError``.
+- ``DatabaseError``: every other engine error, including the remaining
+  ``StorageError`` and ``ExecutionError``.
 
-The engine does not set constraint violations apart yet (#1234). A duplicate
-primary key or a NULL in a NOT NULL column is a ``StorageError`` in autocommit
-and an ``ExecutionError`` in a transaction, so both are ``DatabaseError``, and
-this module's ``IntegrityError`` is declared but not raised. A parameter value
-the binding cannot convert is a ``DataError``, such as an integer outside 64
-bits or text that is not valid UTF-8, or a ``ProgrammingError`` for a type it
-does not support. That error is also the binding's ``OverflowError``,
+A constraint or schema refusal keeps the engine's type for the path it took:
+a ``StorageError`` in autocommit and an ``ExecutionError`` in a transaction.
+Either way it has ``retryable`` set to ``False``, so neither class is an
+``OperationalError`` that a retry loop would repeat. ``IntegrityError`` is not
+``hawdb.exceptions.IntegrityError``, so ``except IntegrityError`` around an
+insert cannot swallow damaged storage. A parameter value the binding cannot
+convert is a ``DataError`` too, such as an integer outside 64 bits or text
+that is not valid UTF-8, or a ``ProgrammingError`` for a type it does not
+support. That error is also the binding's ``OverflowError``,
 ``UnicodeEncodeError``, ``ValueError`` or ``TypeError``, and a parameter
 container this module refuses is likewise a ``ProgrammingError`` and a
 ``TypeError``. A ``RuntimeError`` from the binding, which would mean that the
@@ -200,7 +207,7 @@ class DatabaseError(Error):
 
 
 class DataError(DatabaseError):
-    """A parameter value the binding cannot convert."""
+    """A value that does not fit its column, or a parameter the binding cannot convert."""
 
 
 class OperationalError(DatabaseError):
@@ -208,7 +215,7 @@ class OperationalError(DatabaseError):
 
 
 class IntegrityError(DatabaseError):
-    """Declared by PEP 249; not raised yet, see #1234."""
+    """A violated constraint, such as a duplicate key or a NULL in a NOT NULL column."""
 
 
 class InternalError(DatabaseError):
@@ -238,6 +245,14 @@ class _StorageError(exceptions.StorageError, DatabaseError):
     pass
 
 
+class _StorageConstraintError(exceptions.StorageError, IntegrityError):
+    pass
+
+
+class _StorageSchemaError(exceptions.StorageError, DataError):
+    pass
+
+
 class _StorageIntegrityError(exceptions.IntegrityError, InternalError):
     pass
 
@@ -247,6 +262,14 @@ class _DescriptorError(exceptions.DescriptorError, OperationalError):
 
 
 class _ExecutionError(exceptions.ExecutionError, DatabaseError):
+    pass
+
+
+class _ExecutionConstraintError(exceptions.ExecutionError, IntegrityError):
+    pass
+
+
+class _ExecutionSchemaError(exceptions.ExecutionError, DataError):
     pass
 
 
@@ -326,6 +349,13 @@ _ENGINE_ERRORS: dict[type[Exception], type[Exception]] = {
     exceptions.BackpressureError: _BackpressureError,
     RuntimeError: _InternalRuntimeError,
 }
+# A relational refusal keeps its engine type, and its ``kind`` picks the class.
+_RELATIONAL_ERRORS: dict[tuple[type[Exception], str], type[Exception]] = {
+    (exceptions.StorageError, "constraint"): _StorageConstraintError,
+    (exceptions.StorageError, "schema"): _StorageSchemaError,
+    (exceptions.ExecutionError, "constraint"): _ExecutionConstraintError,
+    (exceptions.ExecutionError, "schema"): _ExecutionSchemaError,
+}
 # Only statements convert parameters, so only there do these mean a bad value.
 _PARAMETER_ERRORS: dict[type[Exception], type[Exception]] = {
     TypeError: _ProgrammingTypeError,
@@ -342,6 +372,9 @@ def _pep249(error: Exception, statement: bool) -> Exception:
         target = _PARAMETER_ERRORS.get(type(error))
     if target is None:
         return error
+    kind = getattr(error, "kind", None)
+    if isinstance(kind, str):
+        target = _RELATIONAL_ERRORS.get((type(error), kind), target)
     if target is _ExecutionError and getattr(error, "retryable", False) is True:
         target = _RetryableExecutionError
     try:

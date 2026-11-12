@@ -510,6 +510,13 @@ fn json_error_from_hawdb(error: HawDBError) -> serde_json::Value {
         error @ HawDBError::WalRecoveryIo { .. } => json_error("storage", error),
         error @ HawDBError::PublishOutcomeUnknown { .. } => json_error("storage", error),
         HawDBError::Execution(message) => json_error("execution", message),
+        HawDBError::Constraint { surface, message } | HawDBError::Schema { surface, message } => {
+            let class = match surface {
+                hawdb_core::RelationalErrorSurface::Storage => "storage",
+                hawdb_core::RelationalErrorSurface::Execution => "execution",
+            };
+            json_error(class, message)
+        }
         error @ HawDBError::BranchEvidenceBudgetExceeded {
             resource,
             requested,

@@ -1237,6 +1237,86 @@ mod tests {
         );
     }
 
+    /// The binding's two SQL paths, autocommit through `database_mut` and a
+    /// statement inside an open transaction, carry the relational refusal kind
+    /// with the surface, and so the text, each path has always reported.
+    #[test]
+    fn relational_refusals_carry_their_kind_on_both_sql_paths() {
+        use crate::{RelationalErrorKind, RelationalErrorSurface};
+        const INSERT: &str = "INSERT INTO items (id, name) VALUES ($1, $2)";
+        let root = unique_test_dir("embedded-relational-kind");
+        for mut engine in [
+            HawDBEmbedded::open_in_memory(),
+            HawDBEmbedded::open(root.join("graph")).unwrap(),
+        ] {
+            let database = engine.database_mut();
+            database
+                .query_sql_with_params(
+                    "CREATE TABLE items (id BIGINT PRIMARY KEY, name TEXT NOT NULL)",
+                    &[],
+                )
+                .unwrap();
+            database
+                .query_sql_with_params(INSERT, &[Value::Int(1), Value::String("one".into())])
+                .unwrap();
+            for (parameters, kind) in [
+                (
+                    [Value::Int(1), Value::String("again".into())],
+                    RelationalErrorKind::Constraint,
+                ),
+                (
+                    [Value::Int(2), Value::Null],
+                    RelationalErrorKind::Constraint,
+                ),
+                ([Value::Int(3), Value::Int(3)], RelationalErrorKind::Schema),
+            ] {
+                let autocommit = engine
+                    .database_mut()
+                    .query_sql_with_params(INSERT, &parameters)
+                    .unwrap_err();
+                assert_eq!(
+                    autocommit.relational_error_kind(),
+                    Some(kind),
+                    "{autocommit:?}"
+                );
+                assert_eq!(
+                    autocommit.relational_error_surface(),
+                    Some(RelationalErrorSurface::Storage)
+                );
+                assert!(
+                    autocommit
+                        .to_string()
+                        .starts_with(&format!("storage error: {kind}: ")),
+                    "{autocommit}"
+                );
+
+                engine.begin_transaction().unwrap();
+                let staged = engine
+                    .transaction_query_sql_with_params(INSERT, &parameters)
+                    .unwrap_err();
+                engine.rollback_transaction().unwrap();
+                assert_eq!(staged.relational_error_kind(), Some(kind), "{staged:?}");
+                assert_eq!(
+                    staged.relational_error_surface(),
+                    Some(RelationalErrorSurface::Execution)
+                );
+                assert!(
+                    staged
+                        .to_string()
+                        .starts_with(&format!("execution error: {kind}: ")),
+                    "{staged}"
+                );
+            }
+            // Other failures keep their variants and have no relational kind.
+            let missing = engine
+                .database_mut()
+                .query_sql_with_params("SELECT id FROM missing", &[])
+                .unwrap_err();
+            assert!(matches!(missing, HawDBError::Semantic(_)), "{missing:?}");
+            assert_eq!(missing.relational_error_kind(), None);
+        }
+    }
+
     #[test]
     fn read_transaction_rejects_writes() {
         let mut engine = HawDBEmbedded::open_in_memory();

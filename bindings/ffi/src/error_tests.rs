@@ -64,3 +64,22 @@ fn ordinary_error_retains_the_existing_json_shape() {
         })
     );
 }
+
+#[test]
+fn relational_refusals_report_their_kind_and_keep_their_message() {
+    for (kind, name) in [
+        (hawdb::RelationalErrorKind::Constraint, "constraint"),
+        (hawdb::RelationalErrorKind::Schema, "schema"),
+    ] {
+        for (surface, prefix) in [
+            (hawdb::RelationalErrorSurface::Storage, "storage error"),
+            (hawdb::RelationalErrorSurface::Execution, "execution error"),
+        ] {
+            let error = HawDBError::relational(kind, surface, format!("{kind}: detail"));
+            assert_eq!(
+                delivered(FfiError::query(&EmbeddedQueryError::Database(error))),
+                json!({"kind": name, "message": format!("{prefix}: {kind}: detail")})
+            );
+        }
+    }
+}

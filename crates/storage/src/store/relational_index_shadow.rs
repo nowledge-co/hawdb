@@ -3088,7 +3088,7 @@ mod tests {
                 },
             );
             assert!(
-                matches!(duplicate, Err(HawDBError::Storage(message)) if message.contains("duplicate key"))
+                matches!(duplicate, Err(HawDBError::Constraint { surface: hawdb_core::RelationalErrorSurface::Storage, message }) if message.contains("duplicate key"))
             );
             assert_eq!(store.commit_epoch, base_epoch);
             assert_eq!(
@@ -3111,7 +3111,7 @@ mod tests {
                 },
             );
             assert!(
-                matches!(missing_foreign_key, Err(HawDBError::Storage(message)) if message.contains("no visible target"))
+                matches!(missing_foreign_key, Err(HawDBError::Constraint { surface: hawdb_core::RelationalErrorSurface::Storage, message }) if message.contains("no visible target"))
             );
             assert_eq!(store.commit_epoch, base_epoch);
             assert_eq!(

@@ -18,7 +18,7 @@ pub use hawdb::optimizer::{
     OptimizerCostPerturbation, OptimizerQualificationOptions, OptimizerRuleAssertion,
     OptimizerSearchDirective, OptionalOptimizerRule,
 };
-use hawdb::{HawDBError, Value};
+use hawdb::{HawDBError, RelationalErrorSurface, Value};
 use serde_json::{json, Value as JsonValue};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -2161,6 +2161,14 @@ fn error_class(error: &HawDBError) -> &'static str {
         HawDBError::Parse(_) => "parse",
         HawDBError::Semantic(_) => "semantic",
         HawDBError::Execution(_)
+        | HawDBError::Constraint {
+            surface: RelationalErrorSurface::Execution,
+            ..
+        }
+        | HawDBError::Schema {
+            surface: RelationalErrorSurface::Execution,
+            ..
+        }
         | HawDBError::ReadBudgetExceeded(_)
         | HawDBError::ResourceBudgetExceeded(_)
         | HawDBError::GraphExpansionCandidateLimitExceeded { .. }
@@ -2170,6 +2178,14 @@ fn error_class(error: &HawDBError) -> &'static str {
         | HawDBError::TransactionReadDependencyRefused { .. }
         | HawDBError::BranchCommandUnsupported { .. } => "execution",
         HawDBError::Storage(_)
+        | HawDBError::Constraint {
+            surface: RelationalErrorSurface::Storage,
+            ..
+        }
+        | HawDBError::Schema {
+            surface: RelationalErrorSurface::Storage,
+            ..
+        }
         | HawDBError::FileDescriptors(_)
         | HawDBError::StorageIntegrity(_)
         | HawDBError::WalRecoveryIo { .. }

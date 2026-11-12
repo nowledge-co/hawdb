@@ -83,6 +83,8 @@ impl QueryBridge {
                     HawDBError::Parse(_) => "parse",
                     HawDBError::Semantic(_) => "semantic",
                     HawDBError::Storage(_) => "storage",
+                    HawDBError::Constraint { .. } => "constraint",
+                    HawDBError::Schema { .. } => "schema",
                     HawDBError::ProjectionBusy => "projection_busy",
                     HawDBError::StorageIntegrity(_) => "storage_integrity",
                     HawDBError::WalRecoveryIo { .. } => "wal_recovery_io",

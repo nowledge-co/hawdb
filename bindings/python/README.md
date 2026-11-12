@@ -481,6 +481,14 @@ Errors raise `hawdb.exceptions` subclasses (`ParseError`, `SemanticError`,
 `StorageError`, `ExecutionError`, `ConflictError`, ...), mapped from
 `HawDBError` kinds.
 
+A relational constraint violation, such as a duplicate primary key or a NULL
+in a NOT NULL column, has `kind == "constraint"`, and a value that does not
+fit the relational schema, such as one of the wrong type for its column, has
+`kind == "schema"`; both have `retryable == False`. Each keeps the type of the
+path it took: `StorageError` from an autocommit statement and
+`ExecutionError` from a statement inside a transaction. Test `kind` rather
+than the message.
+
 Memory-ledger and spill-quota refusals raise `exceptions.ResourceBudgetError`,
 a subclass of `ExecutionError`, with `resource`, `scope`, `owner`,
 `memory_class`, `requested`, `used`, `budget`, and `budget_option` attributes.
@@ -526,9 +534,10 @@ the whole transaction, and the connection refuses further work until
 between transactions; read-only connections always autocommit. Errors follow
 the PEP 249 hierarchy, and engine errors keep their `hawdb.exceptions` types
 as well: a syntax error is both a `ProgrammingError` and a
-`hawdb.exceptions.ParseError`. Constraint violations such as a duplicate
-primary key are plain `DatabaseError`s, because the engine does not set them
-apart yet. Use and close a connection on the thread that opened it.
+`hawdb.exceptions.ParseError`. A constraint violation such as a duplicate
+primary key is an `IntegrityError`, and a value of the wrong type for its
+column is a `DataError`; each is also the `StorageError` (autocommit) or
+`ExecutionError` (transaction) it was before. Use and close a connection on the thread that opened it.
 
 Rows are tuples in SELECT-list order, and `description` lists the columns even
 when nothing matches, including queries on `information_schema`, `pg_catalog`
