@@ -1,0 +1,57 @@
+{
+  "format": "hawdb-logical-dump",
+  "dump_format_version": 1,
+  "created_by": {
+    "hawdb_version": "0.30.0",
+    "persistent_format_version": 1
+  },
+  "source": {
+    "branch": "main",
+    "commit_epoch": 11
+  },
+  "schema": {
+    "path": "schema.json",
+    "kind": "schema",
+    "records": 0,
+    "bytes": 2530,
+    "sha256": "c1bf296fa386f4ffbb9689aa5daa8348b63dcd29d0c9075b31895ab02fa8232c"
+  },
+  "files": [
+    {
+      "path": "data/table-00000-00000.jsonl",
+      "kind": "table_rows",
+      "table": "docs",
+      "records": 4,
+      "bytes": 702,
+      "sha256": "cdccbdd7198903af2149815de62dd7d368cf2e2b2847fd2f59afd7225a8b8c54"
+    },
+    {
+      "path": "data/table-00001-00000.jsonl",
+      "kind": "table_rows",
+      "table": "hawdb_schema_migrations",
+      "records": 1,
+      "bytes": 128,
+      "sha256": "cb95196d797136c4c520a2c9a19f3c47616bc1eb8f1763922b9db51455c1950d"
+    },
+    {
+      "path": "data/nodes-00000-00000.jsonl",
+      "kind": "nodes",
+      "records": 2,
+      "bytes": 163,
+      "sha256": "5c684ef24822edd43db66a03fb3130131cf30ffd2514cb8815e5cb73d3df4122"
+    },
+    {
+      "path": "data/relationships-00000-00000.jsonl",
+      "kind": "relationships",
+      "records": 1,
+      "bytes": 86,
+      "sha256": "567a3979d913f1a7bddd634e06252a683762b73bae095964492c78ad1737c732"
+    }
+  ],
+  "counts": {
+    "tables": 2,
+    "table_rows": 5,
+    "nodes": 2,
+    "relationships": 1
+  }
+}

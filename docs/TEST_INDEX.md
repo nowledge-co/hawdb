@@ -3605,3 +3605,120 @@ descriptors in a checkpoint and the WAL tail) reopening with no defaults and
 accepting a defaulted declaration. The binary WAL codec sample set adds
 defaulted `CreateProperty` ops (op code 29). No new lane, feature or fixture
 format; replay with `cargo test --locked -p hawdb --lib property_defaults`.
+
+## Logical dump and persistent format version (#1655)
+
+Specification: [LOGICAL_DUMP.md](LOGICAL_DUMP.md).
+
+- `tests/logical_dump.rs` (Bazel `//:hawdb_logical_dump_tests`, in the
+  required `//:hawdb_unit_tests` suite; Cargo
+  `cargo test --locked -p hawdb --test logical_dump`) is the public embedded
+  API owner. It covers:
+  - round-trip equality on a persistent database with every relational scalar
+    type, Unicode/CJK/emoji text, the full `i64` range, NaN/±Inf/-0.0,
+    binary with NUL and newline bytes, decimals, vectors, timestamps, column
+    defaults, composite keys, a keyless table with duplicate rows, quoted
+    identifiers, a self-referencing foreign key whose children precede their
+    parents in key order, and a typed graph with indexes and constraints.
+    Equality is checked by query comparison and by `dump(import(dump(db)))`
+    being byte-identical to `dump(db)`. Pages of 7 rows and files of 10
+    records exercise keyset paging and file rotation.
+  - snapshot consistency: a pinned read transaction exports while another
+    thread commits inserts, an update, a delete and graph writes.
+  - fail-closed export: strict append tables, materialized views (search
+    indexes excepted), a VECTOR
+    default, an open transaction and an existing destination. Nothing is
+    published and no staging directory is left behind.
+  - import atomicity: a flipped byte in the last relationship file (after
+    every table and node was written to the unpublished target), a truncated
+    table file, a missing data file, a missing manifest, a damaged schema, a
+    path-escaping manifest entry and an existing destination. Each publishes
+    nothing and leaves no staging directory. A stale staging directory from
+    an interrupted earlier import is neither adopted nor removed.
+  - `search_index_definitions_are_validated_and_never_dropped`: a
+    `search_indexes` entry on a non-text or absent column, or reusing a table
+    or search index name, fails `verify_logical_dump` and import with
+    `StorageIntegrity`; a well-formed entry naming an
+    analyzer this build does not implement verifies and is refused on import
+    with `Semantic`. Nothing is published.
+  - `search_index_round_trip_rebuilds_the_same_ranking`: a table with two
+    search indexes (one quoted name), CJK, full-width and NULL text, updates
+    and deletes is exported in 7-row pages; `schema.json` lists both
+    definitions and no index relation; the import, created index-first and
+    loaded in 7-row pages, has the same `pg_indexes` definitions and returns
+    the same `(id, score)` rows from `text_search` for every query, keeps
+    maintaining the index on a later insert, and re-exports byte-identically.
+  - graph property DEFAULT metadata (#1683) in format 1:
+    `graph_property_defaults_round_trip_and_apply_after_import` round-trips
+    literal (`INT`, `LIST`, `FLOAT`) and `current_timestamp()` defaults on
+    node and relationship properties, checks the `schema.json` spellings, that
+    restored records keep their stored values (an explicit NULL is not
+    replaced), that `dump(import(dump(db)))` stays byte-identical, and that a
+    node and a relationship created after import without the property get
+    the default (a fresh `current_timestamp()` instant).
+    `backfilling_property_defaults_restore_or_refuse_explicitly` restores a
+    literal default in `BACKFILL` with records lacking it, finishes that
+    backfill by maintenance in the imported database, refuses with
+    `Semantic` to export a `current_timestamp()` default still in `BACKFILL`
+    (nothing published), and exports it once maintenance has made it public.
+    `graph_property_defaults_are_validated_and_fail_closed` makes
+    `verify_logical_dump` and import refuse, with `StorageIntegrity` and
+    nothing published, a null default, a literal the type rejects,
+    `current_timestamp()` on a `STRING` property or in `backfill`, an unknown
+    default kind and an unknown value tag.
+  - a newer `dump_format_version` is a typed `UnsupportedStorageFormat`
+    refusal before any write (from `verify_logical_dump` too), and unknown
+    manifest fields are ignored.
+  - `verify_and_confirm_reconcile_a_published_dump`: `verify_logical_dump`
+    reports the export's manifest SHA-256, versions and counts, every damage
+    case above fails verification without writing, and
+    `confirm_logical_dump_publication` is idempotent on an export and an
+    import, changes no byte, and refuses a missing path or a file.
+  - the checked-in golden format 1 dump (`tests/logical_dump/golden_v1/`)
+    imports with exact values. These bytes must never change. Regenerate a
+    new golden version only with the `#[ignore]`d `write_golden_format_1_dump`
+    and `HAWDB_GOLDEN_OUT=<dir>`.
+  - a legacy store whose storage manifest declares `hawdb-storage-v0` is
+    refused through the embedded open with
+    `UnsupportedStorageFormat(UnsupportedVersion { "storage manifest", 0, 1 })`,
+    changes nothing, and opens again once the version is restored.
+
+  DDL dominates the cost (about 1.5 s per statement in the checked profile),
+  so the damage cases share a one-table fixture. The round-trip case is the
+  slowest, at about 35 s locally on an Apple M-series machine.
+- `src/logical_dump/value.rs` unit tests (root unit binary,
+  `logical_dump::value::tests`) cover base64 for every padding length and
+  value round trips, including a map whose key is a tag name.
+- `src/logical_dump/files/tests.rs` (root unit binary, general partition;
+  `cargo test --locked -p hawdb --lib logical_dump::files`) owns publication
+  through thread-local test hooks:
+  `a_destination_created_immediately_before_publication_is_never_replaced`
+  creates an empty directory, a populated directory, a file and (Unix) a
+  symlink at the destination right before the no-replace move; each is left
+  unchanged, nothing is published and no stage remains.
+  `a_parent_sync_failure_after_the_move_is_an_unknown_outcome_that_reconciles`
+  injects the post-move parent-directory sync failure, expects
+  `PublishOutcomeUnknown` naming the destination with the complete result kept
+  in place, and reconciles it with an injected-then-clean
+  `confirm_publication`. The native no-replace syscalls themselves, including
+  a destination created after the user-space existence check, are owned by
+  `crates/storage` `file_io::rename_new::tests`
+  (`a_target_created_after_the_check_is_not_replaced`).
+- `crates/storage` `durable_manifest` tests and the two
+  `rejects_unsupported_*_storage_version` store tests pin the typed storage
+  manifest/checkpoint version refusal. `graph_recovery` keeps the Lightning
+  empty-target import over the shared bounded `import_graph_rows_batch`.
+- `bindings/ffi/src/dump_tests.rs` (`//bindings/ffi:hawdb_ffi_tests`;
+  `cargo test --locked --manifest-path bindings/ffi/Cargo.toml dump`) covers
+  the C ABI JSON reports and error kinds (`storage`, `semantic`,
+  `invalid_argument`, `unsupported_storage_format`, `storage_integrity`), and
+  `verify_and_confirm_reconcile_a_publication` covers `hawdb_verify_dump`
+  (report equal to the export's, damage as `storage_integrity`) and the
+  idempotent `hawdb_confirm_dump_publication`.
+  `bindings/bun/tests/dump.test.ts` covers the Bun adapter, including handle
+  revalidation after path conversion closes the database, `verifyDump` and
+  `confirmDumpPublication`.
+- `scripts/check-persistent-format.test.py` and
+  `scripts/check-persistent-format.py` run in the `Persistent Format`
+  workflow on every pull request. On a published release, the same workflow
+  appends `Persistent format changed: yes|no (...)` to the release notes.

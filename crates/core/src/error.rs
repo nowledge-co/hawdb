@@ -107,6 +107,15 @@ pub enum HawDBError {
         message: String,
     },
     UnsupportedStorageFormat(StorageFormatError),
+    /// A directory publication reached the point where its result may be
+    /// visible at `destination`, then failed before success was durable (for
+    /// example the parent-directory sync). The destination is not a failed
+    /// attempt: never remove it on the strength of this error. Reconcile it
+    /// instead (docs/LOGICAL_DUMP.md, "Unknown publication outcome").
+    PublishOutcomeUnknown {
+        destination: std::path::PathBuf,
+        message: String,
+    },
     /// A registered Search target is retained by another native operation.
     ProjectionBusy,
     Execution(String),
@@ -174,6 +183,11 @@ impl Display for HawDBError {
                 write!(f, "storage integrity error: {message}")
             }
             HawDBError::UnsupportedStorageFormat(error) => Display::fmt(error, f),
+            HawDBError::PublishOutcomeUnknown { destination, message } => write!(
+                f,
+                "publication of {} has an unknown outcome; keep the destination and reconcile it before retrying: {message}",
+                destination.display()
+            ),
             HawDBError::ProjectionBusy => f.write_str("search projection operation is busy"),
             HawDBError::Execution(message) => write!(f, "execution error: {message}"),
             HawDBError::ResourceBudgetExceeded(error) => write!(f, "execution error: {error}"),

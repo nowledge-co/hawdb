@@ -52,14 +52,18 @@ use hawdb::{
 };
 use serde_json::json;
 
+mod dump;
 mod maintenance;
 mod open_options;
 mod retained;
 mod transaction;
+pub use dump::*;
 pub use maintenance::*;
 pub use retained::*;
 pub use transaction::*;
 
+#[cfg(test)]
+mod dump_tests;
 #[cfg(test)]
 mod error_tests;
 #[cfg(test)]
