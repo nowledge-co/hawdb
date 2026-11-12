@@ -76,22 +76,22 @@ enum Raced {
 #[test]
 fn a_destination_created_immediately_before_publication_is_never_replaced() {
     let temp = TempDir::new("race");
-    let mut cases = vec![
+    let cases = [
         Raced::EmptyDirectory,
         Raced::PopulatedDirectory,
         Raced::File,
+        #[cfg(unix)]
+        Raced::Symlink,
     ];
-    #[cfg(unix)]
-    cases.push(Raced::Symlink);
     for raced in cases {
         let destination = temp.0.join(format!("{raced:?}"));
         let foreign = temp.0.join(format!("{raced:?}-foreign-target"));
         fs::create_dir(&foreign).unwrap();
         let stage = complete_stage(&destination);
         // The destination did not exist when the stage was created; another
-        // process creates it after every user-space check, right before the
-        // move.
+        // process creates it right before the publication call.
         hooks::set_before_publish({
+            #[cfg_attr(not(unix), allow(unused_variables))]
             let foreign = foreign.clone();
             move |destination: &Path| match raced {
                 Raced::EmptyDirectory => fs::create_dir(destination).unwrap(),
