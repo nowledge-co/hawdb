@@ -79,6 +79,54 @@ impl ConversionFunction {
         self.apply_ref(value.as_ref())
     }
 
+    /// [`Self::apply_ref`] that calls `charge` with the byte length of a
+    /// string result before allocating it, so a budget refusal happens
+    /// first. Results whose size can exceed a small constant (`string(x)` of
+    /// composite or float values, `toString` of a string) are measured
+    /// without allocating; the remaining string results are a few dozen
+    /// bytes and are charged right after conversion.
+    pub fn apply_ref_charged(
+        self,
+        value: ValueRef<'_>,
+        charge: &mut dyn FnMut(usize) -> Result<()>,
+    ) -> Result<Value> {
+        match (self, value) {
+            (_, ValueRef::Null) => Ok(Value::Null),
+            (Self::KuzuString, value) => {
+                let len = kuzu_text::rendered_len(value)?;
+                charge(len)?;
+                kuzu_text::render(value, len).map(Value::String)
+            }
+            (Self::ToString, ValueRef::String(text)) => {
+                charge(text.len())?;
+                Ok(Value::String(text.to_owned()))
+            }
+            _ => {
+                let converted = self.apply_ref(value)?;
+                if let Value::String(text) = &converted {
+                    charge(text.len())?;
+                }
+                Ok(converted)
+            }
+        }
+    }
+
+    /// Conversion outside a query memory account (plan-time parameter binding
+    /// and batch mutation rows): a string result longer than
+    /// [`crate::MAX_UNACCOUNTED_LIST_BYTES`] is refused before allocation.
+    pub fn apply_unaccounted(self, value: &Value) -> Result<Value> {
+        self.apply_ref_charged(value.as_ref(), &mut |bytes| {
+            if bytes > crate::MAX_UNACCOUNTED_LIST_BYTES {
+                return Err(HawDBError::Execution(format!(
+                    "{}() result of {bytes} bytes exceeds {} bytes without a query memory account",
+                    self.function_name(),
+                    crate::MAX_UNACCOUNTED_LIST_BYTES
+                )));
+            }
+            Ok(())
+        })
+    }
+
     pub fn apply_ref(self, value: ValueRef<'_>) -> Result<Value> {
         if matches!(value, ValueRef::Null) {
             return Ok(Value::Null);
@@ -125,7 +173,10 @@ impl ConversionFunction {
                 Some(Value::String(crate::temporal::format_datetime(value)))
             }
             (Self::ToString, ValueRef::Duration(value)) => Some(Value::String(value.to_string())),
-            (Self::KuzuString, value) => return kuzu_text::render(value).map(Value::String),
+            (Self::KuzuString, value) => {
+                let len = kuzu_text::rendered_len(value)?;
+                return kuzu_text::render(value, len).map(Value::String);
+            }
             _ => None,
         };
         // A float outside the i64 range has no integer value; Neo4j reports
@@ -522,7 +573,77 @@ mod tests {
                 string(expected),
                 "{value:?}"
             );
+            // The non-allocating length pass is exact.
+            assert_eq!(
+                kuzu_text::rendered_len(value.as_ref()).unwrap(),
+                expected.len(),
+                "{value:?}"
+            );
         }
+    }
+
+    #[test]
+    fn charged_conversion_is_refused_before_rendering() {
+        let large = Value::List(vec![Value::Float(1e308); 1_000]);
+        let expected = kuzu_text::rendered_len(large.as_ref()).unwrap();
+        assert!(expected > 300_000, "{expected}");
+        let mut requested = Vec::new();
+        let error = KuzuString
+            .apply_ref_charged(large.as_ref(), &mut |bytes| {
+                requested.push(bytes);
+                Err(HawDBError::Execution("budget exhausted".into()))
+            })
+            .unwrap_err();
+        assert_eq!(error, HawDBError::Execution("budget exhausted".into()));
+        assert_eq!(requested, [expected]);
+        // Successful conversions are charged their exact string length.
+        for (function, value, text) in [
+            (KuzuString, Value::Float(1.0), "1.000000"),
+            (
+                KuzuString,
+                Value::List(vec![Value::Int(1), Value::Null]),
+                "[1,]",
+            ),
+            (ToString, string("abc"), "abc"),
+            (ToString, Value::Float(1.0), "1.0"),
+        ] {
+            let mut charged = 0;
+            let converted = function
+                .apply_ref_charged(value.as_ref(), &mut |bytes| {
+                    charged += bytes;
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(converted, string(text));
+            assert_eq!(charged, text.len());
+        }
+        let mut charged = 0;
+        assert_eq!(
+            ToInteger
+                .apply_ref_charged(string("7").as_ref(), &mut |bytes| {
+                    charged += bytes;
+                    Ok(())
+                })
+                .unwrap(),
+            Value::Int(7)
+        );
+        assert_eq!(charged, 0);
+    }
+
+    #[test]
+    fn unaccounted_conversion_refuses_oversized_text() {
+        // Each zero byte renders as `\x00`: 17 MiB of input is 68 MiB of
+        // text, above the 64 MiB unaccounted limit.
+        let large = Value::Binary(vec![0; 17 * 1024 * 1024]);
+        let error = KuzuString
+            .apply_unaccounted(&large)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("without a query memory account"), "{error}");
+        assert_eq!(
+            KuzuString.apply_unaccounted(&Value::Float(1.0)).unwrap(),
+            string("1.000000")
+        );
     }
 
     #[test]

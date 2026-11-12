@@ -646,7 +646,7 @@ pub(super) fn bind_value(
             bind_value(value, parameters).and_then(timestamp_value)
         }
         ValueExpressionKind::Conversion { function, argument } => {
-            function.apply(&bind_value(argument, parameters)?)
+            function.apply_unaccounted(&bind_value(argument, parameters)?)
         }
         ValueExpressionKind::Temporal {
             function,

@@ -551,7 +551,7 @@ fn resolve_row_value(value: &BatchMutationValue, variable: &str, row: &Value) ->
                 .unwrap_or(Value::Null))
         }
         BatchMutationValue::Converted { function, input } => {
-            function.apply(&resolve_row_value(input, variable, row)?)
+            function.apply_unaccounted(&resolve_row_value(input, variable, row)?)
         }
     }
 }
