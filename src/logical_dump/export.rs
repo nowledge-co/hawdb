@@ -34,7 +34,7 @@ use super::model::{
     Column, ColumnDefault, Counts, CreatedBy, FileEntry, FileKind, ForeignKey, GraphConstraint,
     GraphConstraintKind, GraphIndex, GraphIndexKind, GraphProperty, GraphPropertyDefault,
     GraphSchema, GraphTable, GraphTableKind, Index, Manifest, ReferentialAction, SchemaState,
-    Source, Table, DATA_DIR, FORMAT_NAME, MANIFEST_FILE, SCHEMA_FILE,
+    SearchIndex, Source, Table, DATA_DIR, FORMAT_NAME, MANIFEST_FILE, SCHEMA_FILE,
 };
 use super::{value, LogicalDumpExportReport, LogicalDumpOptions, LOGICAL_DUMP_FORMAT_VERSION};
 use crate::api::DatabaseReadTransaction;
@@ -156,7 +156,8 @@ fn refuse_unrepresentable(store: &GraphStore) -> Result<()> {
         ));
     }
     for schema in store.relational_state().table_schemas() {
-        if schema.materialized_view.is_some() {
+        // A search index is dumped as its definition (see `search_indexes`).
+        if schema.materialized_view.is_some() && schema.search_index().is_none() {
             return Err(unsupported(
                 "materialized views",
                 format!("view {}", schema.name),
@@ -272,13 +273,38 @@ fn table_model(schema: &RelationalTableSchema) -> Result<Table> {
     })
 }
 
+/// Search index definitions by source table, each table's in name order. The
+/// postings are derived from the table's rows and are not exported.
+fn search_indexes(store: &GraphStore) -> BTreeMap<String, Vec<SearchIndex>> {
+    let mut indexes = BTreeMap::<String, Vec<SearchIndex>>::new();
+    for schema in store.relational_state().table_schemas() {
+        let (Some(view), Some(spec)) = (&schema.materialized_view, schema.search_index()) else {
+            continue;
+        };
+        indexes
+            .entry(view.source.clone())
+            .or_default()
+            .push(SearchIndex {
+                name: schema.name.clone(),
+                column: spec.column.clone(),
+                analyzer: spec.analyzer.name().to_string(),
+            });
+    }
+    for table in indexes.values_mut() {
+        table.sort_by(|left, right| left.name.cmp(&right.name));
+    }
+    indexes
+}
+
 /// Tables ordered so that every foreign key's target precedes its source.
 /// A self-reference is allowed (rows are then written in primary-key order and
 /// imported in one statement per page); a cycle between tables is refused.
 fn relational_tables(store: &GraphStore) -> Result<Vec<(RelationalTableSchema, Table)>> {
+    let mut search = search_indexes(store);
     let schemas = store
         .relational_state()
         .table_schemas()
+        .filter(|schema| schema.search_index().is_none())
         .map(|schema| (schema.name.clone(), schema.clone()))
         .collect::<BTreeMap<_, _>>();
     let mut ordered = Vec::with_capacity(schemas.len());
@@ -304,7 +330,9 @@ fn relational_tables(store: &GraphStore) -> Result<Vec<(RelationalTableSchema, T
             ));
         };
         placed.insert(schema.name.clone());
-        ordered.push((schema.clone(), table_model(schema)?));
+        let mut table = table_model(schema)?;
+        table.search_indexes = search.remove(&schema.name).unwrap_or_default();
+        ordered.push((schema.clone(), table));
     }
     Ok(ordered)
 }

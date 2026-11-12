@@ -946,17 +946,17 @@ fn search_index_definitions_are_validated_and_never_dropped() {
         );
         assert_not_published(&destination);
     }
-    // A well-formed definition verifies. This build has no SQL search
-    // indexes, so import refuses it instead of dropping the index.
+    // A well-formed definition with an analyzer this build does not
+    // implement verifies, and import refuses it before writing anything.
     rewrite_schema(&dump, |schema| {
         docs_table(schema)["search_indexes"] =
-            serde_json::json!([{"name": "docs_body", "column": "body", "analyzer": "cjk_ngram"}]);
+            serde_json::json!([{"name": "docs_body", "column": "body", "analyzer": "porter"}]);
     });
     verify_logical_dump(&dump).unwrap();
     let destination = temp.path().join("imported");
     let error = Database::import_logical_dump(&dump, &destination).unwrap_err();
     assert!(
-        matches!(&error, HawDBError::Semantic(message) if message.contains("docs_body")),
+        matches!(&error, HawDBError::Semantic(message) if message.contains("porter")),
         "{error:?}"
     );
     assert_not_published(&destination);
@@ -1330,6 +1330,146 @@ fn graph_property_defaults_are_validated_and_fail_closed() {
         );
         assert_not_published(&destination);
     }
+}
+
+fn search(database: &mut HawDBEmbedded, index: &str, query: &str) -> Vec<Vec<Value>> {
+    database
+        .database_mut()
+        .query_sql_with_params(
+            &format!("SELECT id, score FROM text_search('{index}', $1, top_k => 1000)"),
+            &[Value::String(query.to_string())],
+        )
+        .unwrap()
+        .value_rows()
+        .map(<[Value]>::to_vec)
+        .collect()
+}
+
+/// A SQL search index is exported as its definition and rebuilt from the
+/// imported rows: the imported database answers `text_search` with the same
+/// `(id, score)` ranking, and its dump is byte-identical to the source's.
+#[test]
+fn search_index_round_trip_rebuilds_the_same_ranking() {
+    let temp = TempDir::new("search-round-trip");
+    let mut source = HawDBEmbedded::open(temp.path().join("source")).unwrap();
+    sql(
+        &mut source,
+        "CREATE TABLE docs (id BIGINT PRIMARY KEY, title TEXT, body TEXT)",
+    );
+    sql(
+        &mut source,
+        "CREATE SEARCH INDEX docs_body ON docs (body) WITH (analyzer = 'cjk_ngram')",
+    );
+    sql(
+        &mut source,
+        "CREATE SEARCH INDEX \"Docs Title\" ON docs (title)",
+    );
+    let bodies = [
+        "上次我们讨论了数据库的全文搜索",
+        "Lexical recall over the event log",
+        "数据库 recall and the log of events",
+        "全文搜索 needs a database index",
+        "",
+        "ＦＵＬＬ-width text folds to ASCII",
+    ];
+    for id in 0..40i64 {
+        let body = match id % 7 {
+            6 => Value::Null,
+            _ => Value::String(format!("{} {id}", bodies[id as usize % bodies.len()])),
+        };
+        sql_params(
+            &mut source,
+            "INSERT INTO docs (id, title, body) VALUES ($1, $2, $3)",
+            vec![
+                Value::Int(id),
+                Value::String(format!("note {}", id % 3)),
+                body,
+            ],
+        );
+    }
+    // Updates and deletes leave gaps in the source's document ordinals; the
+    // imported index assigns fresh ones, and scores must not depend on them.
+    sql(
+        &mut source,
+        "UPDATE docs SET body = 'recall 数据' WHERE id = 3",
+    );
+    sql(&mut source, "DELETE FROM docs WHERE id IN (1, 8, 20)");
+
+    let dump = temp.path().join("dump");
+    let report = source
+        .export_logical_dump_with_options(&dump, &small_pages())
+        .unwrap();
+    let schema: serde_json::Value =
+        serde_json::from_slice(&fs::read(dump.join("schema.json")).unwrap()).unwrap();
+    let tables = schema["tables"].as_array().unwrap();
+    // The index relations are not tables of the dump.
+    assert_eq!(report.table_count, tables.len() as u64);
+    assert!(tables
+        .iter()
+        .all(|table| !["docs_body", "Docs Title"].contains(&table["name"].as_str().unwrap())));
+    let docs = tables.iter().find(|table| table["name"] == "docs").unwrap();
+    assert_eq!(
+        docs["search_indexes"],
+        serde_json::json!([
+            {"name": "Docs Title", "column": "title", "analyzer": "cjk_ngram"},
+            {"name": "docs_body", "column": "body", "analyzer": "cjk_ngram"}
+        ])
+    );
+
+    let imported_path = temp.path().join("imported");
+    Database::import_logical_dump_with_options(&dump, &imported_path, &small_pages()).unwrap();
+    let mut imported = HawDBEmbedded::open(&imported_path).unwrap();
+    assert_eq!(
+        rows(
+            &mut imported,
+            "SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'docs' \
+             ORDER BY indexname"
+        ),
+        rows(
+            &mut source,
+            "SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'docs' \
+             ORDER BY indexname"
+        )
+    );
+    for query in [
+        "数据库",
+        "全文搜索",
+        "recall log",
+        "库",
+        "full",
+        "events 12",
+        "absent",
+    ] {
+        let expected = search(&mut source, "docs_body", query);
+        assert_eq!(
+            search(&mut imported, "docs_body", query),
+            expected,
+            "{query}"
+        );
+    }
+    assert!(!search(&mut source, "docs_body", "数据库").is_empty());
+    assert_eq!(
+        search(&mut imported, "Docs Title", "note 2"),
+        search(&mut source, "Docs Title", "note 2")
+    );
+    // Writes after import keep maintaining the rebuilt index.
+    for database in [&mut source, &mut imported] {
+        sql(
+            database,
+            "INSERT INTO docs (id, title, body) VALUES (100, 'new', '数据库 again')",
+        );
+    }
+    assert_eq!(
+        search(&mut imported, "docs_body", "数据库"),
+        search(&mut source, "docs_body", "数据库")
+    );
+
+    let again = temp.path().join("again");
+    sql(&mut imported, "DELETE FROM docs WHERE id = 100");
+    imported
+        .export_logical_dump_with_options(&again, &small_pages())
+        .unwrap();
+    assert_eq!(dump_content(&again), dump_content(&dump));
 }
 
 /// A dump written by format 1, checked in. Every later release must import it

@@ -19,6 +19,7 @@ use std::path::Path;
 
 use hawdb_core::{PropertyDefault, PropertyType, SchemaObjectState, TableKind, VectorDimension};
 use hawdb_storage::mutation::GraphMutation;
+use hawdb_storage::relational::SearchIndexAnalyzer;
 use serde_json::Value as Json;
 
 use super::export::{quote_identifier, SYSTEM_SCHEMA_REGISTRY_TABLE};
@@ -126,11 +127,12 @@ pub(super) fn import(
     let dump = open_dump(source)?;
     let (manifest, schema) = (&dump.manifest, &dump.schema);
     let plan = Plan::new(manifest, schema)?;
-    refuse_search_indexes(schema)?;
+    refuse_unknown_analyzers(schema)?;
 
     let stage = Stage::create(destination, "import")?;
     let mut target = Target::open(stage.path(), options)?;
     target.create_tables(&schema.tables)?;
+    target.create_search_indexes(&schema.tables)?;
     for table in &schema.tables {
         target.load_table(source, table, plan.table_files(&table.name))?;
     }
@@ -212,17 +214,18 @@ fn validate_search_indexes(schema: &Schema, tables: &BTreeSet<&str>) -> Result<(
     Ok(())
 }
 
-/// This build has no SQL search indexes, so it cannot rebuild one. Refusing
-/// before anything is written keeps a dump from importing without its index.
-fn refuse_search_indexes(schema: &Schema) -> Result<()> {
+/// Every analyzer must be one this build implements; an unknown one is
+/// refused before anything is written rather than when its index is created.
+fn refuse_unknown_analyzers(schema: &Schema) -> Result<()> {
     for table in &schema.tables {
-        if let Some(index) = table.search_indexes.first() {
-            return Err(HawDBError::Semantic(format!(
-                "logical dump: this build cannot recreate SQL search index {} on table {}; \
-                 import the dump with a release that supports CREATE SEARCH INDEX. \
-                 Nothing was imported",
-                index.name, table.name
-            )));
+        for index in &table.search_indexes {
+            if SearchIndexAnalyzer::parse(&index.analyzer).is_none() {
+                return Err(HawDBError::Semantic(format!(
+                    "logical dump: search index {} on table {} uses analyzer {}, which this \
+                     build does not implement. Nothing was imported",
+                    index.name, table.name, index.analyzer
+                )));
+            }
         }
     }
     Ok(())
@@ -700,6 +703,26 @@ impl Target {
                     quote_identifier(&index.name),
                     quote_identifier(&table.name),
                     column_list(&index.columns)
+                );
+                self.sql(&sql, &[])?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Creates each search index on its still-empty table, so every INSERT
+    /// page maintains the postings for its own rows. Creating the index after
+    /// loading would backfill the whole table in one transaction, which the
+    /// mutation budget refuses for a large corpus.
+    fn create_search_indexes(&mut self, tables: &[Table]) -> Result<()> {
+        for table in tables {
+            for index in &table.search_indexes {
+                let sql = format!(
+                    "CREATE SEARCH INDEX {} ON {} ({}) WITH (analyzer = {})",
+                    quote_identifier(&index.name),
+                    quote_identifier(&table.name),
+                    quote_identifier(&index.column),
+                    sql_string(&index.analyzer)
                 );
                 self.sql(&sql, &[])?;
             }

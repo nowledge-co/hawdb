@@ -142,6 +142,11 @@ column is not part of the corpus.
   plus WAL replay. Read-only opens search the same way.
 - **Branches.** Postings are branch data. A new branch starts with its
   source's index and diverges with its own writes; `USE BRANCH` switches both.
+- **Logical dump.** [Export](LOGICAL_DUMP.md) records each index's
+  definition (name, column, analyzer) with its table and never its postings.
+  Import creates the index on the empty table and rebuilds the postings as
+  it loads the rows, so `text_search` ranks the imported rows exactly as the
+  source did.
 - **Concurrency.** Like other derived relations, a transaction writing a
   source with a search index takes a database-wide version footprint for
   optimistic validation, and `text_search` reads record a database-wide read

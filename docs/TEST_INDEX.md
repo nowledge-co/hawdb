@@ -3605,7 +3605,8 @@ Specification: [LOGICAL_DUMP.md](LOGICAL_DUMP.md).
     records exercise keyset paging and file rotation.
   - snapshot consistency: a pinned read transaction exports while another
     thread commits inserts, an update, a delete and graph writes.
-  - fail-closed export: strict append tables, materialized views, a VECTOR
+  - fail-closed export: strict append tables, materialized views (search
+    indexes excepted), a VECTOR
     default, an open transaction and an existing destination. Nothing is
     published and no staging directory is left behind.
   - import atomicity: a flipped byte in the last relationship file (after
@@ -3617,8 +3618,16 @@ Specification: [LOGICAL_DUMP.md](LOGICAL_DUMP.md).
   - `search_index_definitions_are_validated_and_never_dropped`: a
     `search_indexes` entry on a non-text or absent column, or reusing a table
     or search index name, fails `verify_logical_dump` and import with
-    `StorageIntegrity`; a well-formed entry verifies, and a build without SQL
-    search indexes refuses its import with `Semantic`. Nothing is published.
+    `StorageIntegrity`; a well-formed entry naming an
+    analyzer this build does not implement verifies and is refused on import
+    with `Semantic`. Nothing is published.
+  - `search_index_round_trip_rebuilds_the_same_ranking`: a table with two
+    search indexes (one quoted name), CJK, full-width and NULL text, updates
+    and deletes is exported in 7-row pages; `schema.json` lists both
+    definitions and no index relation; the import, created index-first and
+    loaded in 7-row pages, has the same `pg_indexes` definitions and returns
+    the same `(id, score)` rows from `text_search` for every query, keeps
+    maintaining the index on a later insert, and re-exports byte-identically.
   - graph property DEFAULT metadata (#1683) in format 1:
     `graph_property_defaults_round_trip_and_apply_after_import` round-trips
     literal (`INT`, `LIST`, `FLOAT`) and `current_timestamp()` defaults on

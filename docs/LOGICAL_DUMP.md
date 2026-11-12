@@ -191,9 +191,15 @@ take file names from the manifest, never by listing the directory.
   The field is omitted when a table has none. An index name shares the
   relation namespace, so it never equals a table name or another search
   index's name; `verify` refuses a dump that breaks this or names a column
-  that is not `text`. The postings are never dumped. A build that has no SQL
-  search indexes refuses to import a dump listing one, with `Semantic`,
-  before writing anything, rather than importing the table without its index.
+  that is not `text`. The postings are never dumped. Import creates each
+  search index on its empty table before loading the table's rows, so every
+  INSERT page maintains the postings for its own rows within the ordinary
+  mutation budget (lower `page_rows` if a page of very long documents is
+  refused); creating it after the load would backfill the whole table in one
+  transaction. BM25 statistics depend only on the rows, so `text_search`
+  returns the same `(row, score)` ranking as the source. An analyzer this
+  build does not implement is refused with `Semantic` before anything is
+  written, rather than importing the table without its index.
 
 ### Data records
 
@@ -332,7 +338,8 @@ Format version 1 covers the selected branch's:
 
 - relational tables: every column type, nullability, defaults, primary keys,
   unique constraints, foreign keys including self-references, secondary
-  indexes, and rows;
+  indexes, SQL search index definitions (rebuilt from the rows on import),
+  and rows;
 - the property graph: labels, relationship types, typed node and
   relationship tables and properties with their schema states and
   creation-time defaults, nodes,
@@ -344,7 +351,8 @@ contains state that format 1 cannot represent. Nothing is written in that
 case:
 
 - strict append tables (`storage_mode = 'strict_append'`);
-- materialized views;
+- materialized views (SQL search indexes, which are derived relations too,
+  are exported as definitions);
 - persisted projected-graph definitions;
 - nodes with zero or several labels;
 - a `current_timestamp()` graph property default whose backfill has not
