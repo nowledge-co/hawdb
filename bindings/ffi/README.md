@@ -50,7 +50,8 @@ do not); see
   `{"kind": "<snake_case kind>", "message": "<text>"}` and leaves the
   database handle usable. `kind` is the engine's own error variant
   (e.g. `capability_unavailable`, `execution`, `admission`, `stopped`);
-  `invalid_argument` marks caller-side contract violations and `panic`
+  `invalid_argument` marks caller-side contract violations,
+  `transaction_open` / `no_transaction` transaction-state misuse, and `panic`
   a contained Rust panic.
 - **Resource refusals**: memory-ledger and spill-quota failures use
   `kind: "resource_budget_exceeded"` and add a `resource_budget` object with
@@ -104,6 +105,44 @@ The experimental retained ABI has no Decimal buffer type and reports
 `HAWDB_RETAINED_UNSUPPORTED_TYPE` for Decimal node scalar access. Use ordinary
 JSON queries for exact Decimal results.
 
+## Transactions
+
+Statements normally autocommit. To make several statements atomic, run them
+inside the handle's transaction:
+
+```c
+hawdb_begin_transaction(db, &err);
+hawdb_transaction_query_sql(db, insert_event, len, params, params_len, &res, &err);
+hawdb_transaction_query_sql(db, update_projection, len, NULL, 0, &res, &err);
+hawdb_transaction_query(db, cypher, len, NULL, 0, &res, &err); /* Cypher too */
+hawdb_commit_transaction(db, &res, &err);   /* or hawdb_rollback_transaction(db, &err) */
+```
+
+- The transaction belongs to the database handle; there is no separate
+  transaction pointer to free or to outlive its database. A handle has at
+  most one open transaction; nesting fails with `kind: "transaction_open"`.
+- Statements in the transaction see its own writes. Nothing outside the
+  transaction sees them until `hawdb_commit_transaction` publishes all of them
+  as one durable commit (under the handle's `durability` option).
+- While a transaction is open, `hawdb_query` / `hawdb_query_sql` on that
+  handle fail with `transaction_open`. Transaction calls, commit and rollback
+  without an open transaction (including after a commit or rollback) fail
+  with `kind: "no_transaction"`. SQL `BEGIN` / `COMMIT` stay rejected.
+- A failed statement leaves the transaction open; roll it back. Commit
+  closes the transaction whether or not it succeeds.
+- A commit is all or nothing, never partial. A commit refused before it
+  publishes (for example a write conflict or a budget refusal) leaves none of
+  its statements. A successful return means all of them are durable (under
+  the handle's `durability` option).
+- `hawdb_close` on a handle with an open transaction rolls it back, and a
+  process crash before `hawdb_commit_transaction` is called recovers none of
+  the transaction's statements.
+- A lost acknowledgment does not prove rollback. If the process dies while
+  `hawdb_commit_transaction` is running, the commit may already be durable
+  even though the caller never saw it return; an error raised while
+  publishing is equally uncertain. Recovery then shows either the whole
+  transaction or none of it. Reconcile against the reopened database, or make
+  the retry idempotent, rather than blindly running the transaction again.
 ## Backup, restore and scrub
 
 Each call returns a JSON report through `report_out` (unsigned 64-bit counts;
