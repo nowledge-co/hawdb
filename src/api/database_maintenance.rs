@@ -1480,6 +1480,14 @@ impl Database {
         })
     }
 
+    /// Declared property descriptors with their tables, types, states and
+    /// defaults, so callers can check them against their own schema files.
+    /// A database written before property defaults existed reports
+    /// `default: None` for every descriptor.
+    pub fn property_schemas(&self) -> Result<Vec<crate::schema::PropertySchema>> {
+        Ok(self.runtime.get()?.catalog.property_schemas())
+    }
+
     pub fn plan_schema_maintenance(&self) -> Result<QueryOutput> {
         Ok({
             let rows: Vec<Row> = self

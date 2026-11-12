@@ -216,6 +216,8 @@ pub enum GraphMutation {
         property: String,
         value_type: PropertyType,
         nullable: bool,
+        /// Creation-time default (`DEFAULT <literal>` / `current_timestamp()`).
+        default: Option<hawdb_core::PropertyDefault>,
     },
     AlterTableState {
         table_kind: TableKind,

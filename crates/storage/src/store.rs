@@ -21,7 +21,7 @@ use crate::schema::{
 };
 use crate::telemetry::TelemetrySink;
 use crate::value::Value;
-use hawdb_core::RuntimeTaskContext;
+use hawdb_core::{DeclaredPropertyDefault, PropertyDefault, RuntimeTaskContext};
 use hawdb_integrity::{checksum_u64, Sha256Digest};
 use hawdb_storage::mutation::compact_transaction_graph_ops;
 use hawdb_storage::projection::projection_document_id_for_node as search_projection_document_id_for_node;
@@ -726,6 +726,9 @@ struct MutationCommitOptions<'a> {
     /// Receives the unconsumed inputs when the commit fits an empty
     /// relational live overlay but not its remaining headroom.
     retain_on_live_headroom: Option<&'a mut Option<RetainedLiveHeadroomCommit>>,
+    /// The writing transaction's `current_timestamp()` default instant.
+    /// `None` reads the clock at most once for this commit.
+    creation_clock: Option<chrono::NaiveDateTime>,
 }
 
 /// Inputs of a commit rejected before WAL append only for live-overlay
@@ -779,6 +782,9 @@ pub struct GraphMutationTransaction {
     ops: Vec<WalOp>,
     rows: Vec<BTreeMap<String, Value>>,
     persistent_commit: bool,
+    /// One `current_timestamp()` default instant for every record this
+    /// transaction creates (Kùzu evaluates such defaults per transaction).
+    creation_clock: chrono::NaiveDateTime,
 }
 
 /// A sealed transaction preparation. No statement can mutate its compacted
@@ -1451,6 +1457,7 @@ impl GraphMutationTransaction {
             limits,
             MutationCommitOptions {
                 captured_graph_ops: Some(&mut captured_ops),
+                creation_clock: Some(self.creation_clock),
                 ..MutationCommitOptions::default()
             },
         )?;
@@ -2611,18 +2618,37 @@ fn validate_property_descriptor(
     nullable: bool,
 ) -> Result<()> {
     validate_property_descriptor_with_table_state(
-        catalog, store, table_id, property, value_type, nullable, false,
+        catalog,
+        store,
+        table_id,
+        PropertyCheck {
+            property,
+            value_type,
+            nullable,
+            force: false,
+            allow_absent: false,
+        },
     )
+}
+
+/// One descriptor validation over a table's existing records.
+#[derive(Clone, Copy)]
+struct PropertyCheck<'a> {
+    property: &'a str,
+    value_type: PropertyType,
+    nullable: bool,
+    /// Validate even when the table descriptor is not `Public`.
+    force: bool,
+    /// Accept records lacking the property (a defaulted declaration's
+    /// backfill fills them before validation).
+    allow_absent: bool,
 }
 
 fn validate_property_descriptor_with_table_state(
     catalog: &Catalog,
     store: &GraphStore,
     table_id: TableId,
-    property: &str,
-    value_type: PropertyType,
-    nullable: bool,
-    force: bool,
+    check: PropertyCheck<'_>,
 ) -> Result<()> {
     let Some(table) = catalog.table_descriptor(table_id) else {
         return Err(HawDBError::Storage(format!(
@@ -2630,9 +2656,22 @@ fn validate_property_descriptor_with_table_state(
             table_id.0
         )));
     };
-    if !force && table.state != SchemaObjectState::Public {
+    if !check.force && table.state != SchemaObjectState::Public {
         return Ok(());
     }
+    let validate = |value: Option<&Value>, record: &dyn Fn() -> String| {
+        if check.allow_absent && value.is_none() {
+            return Ok(());
+        }
+        validate_property_schema_value(
+            &table.name,
+            check.property,
+            check.value_type,
+            check.nullable,
+            value,
+            &record(),
+        )
+    };
     match table.kind {
         TableKind::Node => {
             let Some(label_id) = catalog.label_id(&table.name) else {
@@ -2640,14 +2679,9 @@ fn validate_property_descriptor_with_table_state(
             };
             for node in store.nodes.values() {
                 if node.labels.contains(&label_id) {
-                    validate_property_schema_value(
-                        &table.name,
-                        property,
-                        value_type,
-                        nullable,
-                        node.properties.get(property),
-                        &format!("node {}", node.id.0),
-                    )?;
+                    validate(node.properties.get(check.property), &|| {
+                        format!("node {}", node.id.0)
+                    })?;
                 }
             }
         }
@@ -2657,19 +2691,232 @@ fn validate_property_descriptor_with_table_state(
             };
             for relationship in store.relationships.values() {
                 if relationship.rel_type == rel_type_id {
-                    validate_property_schema_value(
-                        &table.name,
-                        property,
-                        value_type,
-                        nullable,
-                        relationship.properties.get(property),
-                        &format!("relationship {}", relationship.id.0),
-                    )?;
+                    validate(relationship.properties.get(check.property), &|| {
+                        format!("relationship {}", relationship.id.0)
+                    })?;
                 }
             }
         }
     }
     Ok(())
+}
+
+/// Rejects a declared default that the descriptor itself would reject, so a
+/// default can never make a later creation fail validation.
+fn validate_property_default(
+    table: &str,
+    property: &str,
+    value_type: PropertyType,
+    nullable: bool,
+    default: &PropertyDefault,
+) -> Result<()> {
+    let sample = match default {
+        PropertyDefault::Value(Value::Null) => {
+            return Err(HawDBError::Storage(format!(
+                "property schema {table}.{property} DEFAULT NULL is not a default; omit DEFAULT to leave the property absent"
+            )));
+        }
+        PropertyDefault::Value(value) => {
+            crate::canonical::validate_property_value(value).map_err(|error| {
+                HawDBError::Storage(format!(
+                    "property schema {table}.{property} default violates storage limits: {error}"
+                ))
+            })?;
+            value.clone()
+        }
+        PropertyDefault::CurrentTimestamp => {
+            Value::LocalDateTime(PropertyDefault::creation_clock())
+        }
+    };
+    validate_property_schema_value(
+        table,
+        property,
+        value_type,
+        nullable,
+        Some(&sample),
+        "default value",
+    )
+}
+
+/// A property descriptor declaration, as written by `CREATE PROPERTY`.
+pub(crate) struct PropertyDeclaration<'a> {
+    pub(crate) table_kind: TableKind,
+    pub(crate) table: &'a str,
+    pub(crate) table_id: TableId,
+    pub(crate) property: &'a str,
+    pub(crate) value_type: PropertyType,
+    pub(crate) nullable: bool,
+    pub(crate) default: Option<PropertyDefault>,
+}
+
+/// Ops declaring a property descriptor. A defaulted property declared on a
+/// table that has records without it enters `Backfill`: schema maintenance
+/// writes the default into those records before validation and `Public`.
+fn property_declaration_ops(
+    catalog: &Catalog,
+    store: &GraphStore,
+    declaration: &PropertyDeclaration<'_>,
+) -> Result<(
+    Vec<WalOp>,
+    Option<DeclaredPropertyDefault>,
+    SchemaObjectState,
+)> {
+    let PropertyDeclaration {
+        table_kind,
+        table,
+        table_id,
+        property,
+        value_type,
+        nullable,
+        ref default,
+    } = *declaration;
+    let create = |default: Option<DeclaredPropertyDefault>| WalOp::CreateProperty {
+        table_kind,
+        table: table.to_string(),
+        property: property.to_string(),
+        value_type,
+        nullable,
+        default: default.map(Box::new),
+    };
+    let Some(default) = default.clone() else {
+        validate_property_descriptor(catalog, store, table_id, property, value_type, nullable)?;
+        return Ok((vec![create(None)], None, SchemaObjectState::Public));
+    };
+    validate_property_default(table, property, value_type, nullable, &default)?;
+    let declared = DeclaredPropertyDefault::declare(default);
+    let needs_backfill = catalog
+        .table_descriptor(table_id)
+        .is_some_and(|descriptor| {
+            !property_backfill_ops(
+                catalog,
+                store,
+                descriptor,
+                property,
+                &declared.backfill_value,
+                Some(1),
+            )
+            .0
+            .is_empty()
+        });
+    // Records lacking the property are filled by the backfill; present values
+    // (including explicit NULLs) must already satisfy the descriptor.
+    validate_property_descriptor_with_table_state(
+        catalog,
+        store,
+        table_id,
+        PropertyCheck {
+            property,
+            value_type,
+            nullable,
+            force: false,
+            allow_absent: needs_backfill,
+        },
+    )?;
+    let mut ops = vec![create(Some(declared.clone()))];
+    let state = if needs_backfill {
+        ops.push(WalOp::AlterPropertyState {
+            table_kind,
+            table: table.to_string(),
+            property: property.to_string(),
+            state: SchemaObjectState::Backfill,
+        });
+        SchemaObjectState::Backfill
+    } else {
+        SchemaObjectState::Public
+    };
+    Ok((ops, Some(declared), state))
+}
+
+/// Set ops writing `value` into records of `table` that lack `property`
+/// (the key is absent; an explicit stored NULL is kept), up to `limit`
+/// records. The flag reports whether every lacking record was covered.
+fn property_backfill_ops(
+    catalog: &Catalog,
+    store: &GraphStore,
+    table: &TableDescriptor,
+    property: &str,
+    value: &Value,
+    limit: Option<usize>,
+) -> (Vec<WalOp>, bool) {
+    let mut ops = Vec::new();
+    let full = |ops: &Vec<WalOp>| limit.is_some_and(|limit| ops.len() >= limit);
+    match table.kind {
+        TableKind::Node => {
+            let Some(label_id) = catalog.label_id(&table.name) else {
+                return (ops, true);
+            };
+            for node in store.nodes.values() {
+                if node.labels.contains(&label_id) && !node.properties.contains_key(property) {
+                    if full(&ops) {
+                        return (ops, false);
+                    }
+                    ops.push(WalOp::SetNodeProperty {
+                        id: node.id,
+                        property: property.to_string(),
+                        value: value.clone(),
+                    });
+                }
+            }
+        }
+        TableKind::Relationship => {
+            let Some(rel_type_id) = catalog.rel_type_id(&table.name) else {
+                return (ops, true);
+            };
+            for relationship in store.relationships.values() {
+                if relationship.rel_type == rel_type_id
+                    && !relationship.properties.contains_key(property)
+                {
+                    if full(&ops) {
+                        return (ops, false);
+                    }
+                    ops.push(WalOp::SetRelationshipProperty {
+                        id: relationship.id,
+                        property: property.to_string(),
+                        value: value.clone(),
+                    });
+                }
+            }
+        }
+    }
+    (ops, true)
+}
+
+/// Fills declared defaults into every created record whose creating write
+/// did not mention the property. Present keys, including explicit NULLs, are
+/// never touched, and nothing is filled at read time. `clock` is the writing
+/// transaction's `current_timestamp()` instant, read lazily at most once.
+pub(crate) fn fill_creation_defaults(
+    catalog: &Catalog,
+    ops: &mut [WalOp],
+    clock: &mut impl FnMut() -> chrono::NaiveDateTime,
+) {
+    if !catalog.has_property_defaults() {
+        return;
+    }
+    for op in ops {
+        match op {
+            WalOp::CreateNode {
+                label, properties, ..
+            } => catalog.fill_creation_defaults(TableKind::Node, label, properties, clock),
+            WalOp::CreateRelationship {
+                rel_type,
+                properties,
+                ..
+            } => {
+                catalog.fill_creation_defaults(TableKind::Relationship, rel_type, properties, clock)
+            }
+            WalOp::Batch(ops) => fill_creation_defaults(catalog, ops, clock),
+            _ => {}
+        }
+    }
+}
+
+/// A lazily read, then fixed, creation clock.
+pub(crate) fn lazy_creation_clock(
+    fixed: Option<chrono::NaiveDateTime>,
+) -> impl FnMut() -> chrono::NaiveDateTime {
+    let mut instant = fixed;
+    move || *instant.get_or_insert_with(PropertyDefault::creation_clock)
 }
 
 fn validate_table_descriptor(
@@ -2688,10 +2935,13 @@ fn validate_table_descriptor(
             catalog,
             store,
             table_id,
-            &property.name,
-            property.value_type,
-            property.nullable,
-            true,
+            PropertyCheck {
+                property: &property.name,
+                value_type: property.value_type,
+                nullable: property.nullable,
+                force: true,
+                allow_absent: false,
+            },
         )?;
     }
     Ok(())

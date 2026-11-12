@@ -157,6 +157,7 @@ mod predicates;
 mod projected_graph_artifacts;
 mod projected_graph_execution;
 mod projection_generations;
+mod property_defaults;
 mod published_object_verification;
 mod query_execution;
 mod query_observability;

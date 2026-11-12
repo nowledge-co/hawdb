@@ -99,6 +99,8 @@ pub struct CreateProperty {
     pub property: String,
     pub value_type: SchemaPropertyType,
     pub nullable: bool,
+    /// `DEFAULT <literal>` or `DEFAULT current_timestamp()`.
+    pub default: Option<hawdb_core::PropertyDefault>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

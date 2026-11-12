@@ -84,12 +84,17 @@ impl RetainedHeapBytes for PhysicalPlan {
                 property,
                 value_type,
                 nullable,
+                default,
             } => checked_retained_heap_sum([
                 table_kind.retained_heap_bytes(),
                 table.retained_heap_bytes(),
                 property.retained_heap_bytes(),
                 value_type.retained_heap_bytes(),
                 nullable.retained_heap_bytes(),
+                match default {
+                    Some(hawdb_core::PropertyDefault::Value(value)) => value.retained_heap_bytes(),
+                    _ => Some(0),
+                },
             ]),
             Self::AlterTableState {
                 table_kind,

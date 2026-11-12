@@ -392,8 +392,12 @@ fn resolve_row_mutation(
     nulls: NullProperties,
 ) -> Result<Option<GraphMutation>> {
     let properties = |properties| resolve_row_properties(properties, variable, row);
+    // Created records omit a property whose row key is absent, so a declared
+    // property DEFAULT applies to it; a row value that is explicitly NULL is
+    // kept (UNWIND) or omitted with every other NULL (LOAD CSV, openCypher).
     let created = |values| {
-        let mut values: BTreeMap<String, Value> = properties(values)?;
+        let mut values: BTreeMap<String, Value> =
+            resolve_created_row_properties(values, variable, row)?;
         if nulls == NullProperties::Omit {
             values.retain(|_, value| *value != Value::Null);
         }
@@ -493,8 +497,7 @@ fn resolve_row_mutation(
             {
                 return Ok(None);
             }
-            let mut rel_properties = properties(&relationship.rel_properties)?;
-            rel_properties.retain(|_, value| *value != Value::Null);
+            let rel_properties = created(&relationship.rel_properties)?;
             Ok(Some(GraphMutation::CreateRelationshipsBetweenMatches(
                 MatchedRelationshipCreate {
                     source_label: relationship.source_label.clone(),
@@ -518,6 +521,25 @@ fn resolve_row_properties(
         .iter()
         .map(|(property, value)| Ok((property.clone(), resolve_row_value(value, variable, row)?)))
         .collect()
+}
+
+/// Like [`resolve_row_properties`], but a `row.key` reference to a key the row
+/// map does not contain leaves the property out instead of writing NULL.
+fn resolve_created_row_properties(
+    properties: &BTreeMap<String, BatchMutationValue>,
+    variable: &str,
+    row: &Value,
+) -> Result<BTreeMap<String, Value>> {
+    let mut resolved = BTreeMap::new();
+    for (property, value) in properties {
+        if let (BatchMutationValue::RowProperty(row_property), Value::Map(values)) = (value, row)
+            && !values.contains_key(row_property)
+        {
+            continue;
+        }
+        resolved.insert(property.clone(), resolve_row_value(value, variable, row)?);
+    }
+    Ok(resolved)
 }
 
 fn resolve_row_value(value: &BatchMutationValue, variable: &str, row: &Value) -> Result<Value> {

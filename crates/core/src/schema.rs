@@ -262,6 +262,100 @@ pub struct PropertyDescriptor {
     pub value_type: PropertyType,
     pub nullable: bool,
     pub state: SchemaObjectState,
+    /// Value written when a record of this table is created without the
+    /// property. `None` (the only state older catalogs can encode) means the
+    /// property stays absent.
+    pub default: Option<DeclaredPropertyDefault>,
+}
+
+/// A property default as declared by DDL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclaredPropertyDefault {
+    /// Applied to records created after the declaration.
+    pub value: PropertyDefault,
+    /// Written to records that already existed without the property when the
+    /// default was declared. Resolved once at declaration time, so a
+    /// `current_timestamp()` backfill writes one instant across every bounded
+    /// maintenance run (Kùzu `ALTER TABLE ... ADD ... DEFAULT` semantics).
+    pub backfill_value: Value,
+}
+
+/// One declared property descriptor, resolved to its table name, as exposed
+/// by catalog introspection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PropertySchema {
+    pub table_kind: TableKind,
+    pub table: String,
+    pub property: String,
+    pub value_type: PropertyType,
+    pub nullable: bool,
+    pub state: SchemaObjectState,
+    /// The declared default, if any. Older catalogs report `None`.
+    pub default: Option<DeclaredPropertyDefault>,
+}
+
+impl DeclaredPropertyDefault {
+    /// Resolves `value` at the current creation clock for a new declaration.
+    pub fn declare(value: PropertyDefault) -> Self {
+        let backfill_value = value.resolve(PropertyDefault::creation_clock());
+        Self {
+            value,
+            backfill_value,
+        }
+    }
+}
+
+/// A declared property default, applied only when a node or relationship is
+/// created without the property. An explicit NULL in the creating write is
+/// kept; the default never fills properties at read time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PropertyDefault {
+    /// A constant literal (bool, integer, float, string or list of those).
+    Value(Value),
+    /// `current_timestamp()`: one timezone-naive UTC `LocalDateTime` per
+    /// writing transaction, truncated to milliseconds (Kùzu semantics).
+    CurrentTimestamp,
+}
+
+impl PropertyDefault {
+    /// Resolves the default for a record created by a transaction whose
+    /// creation clock is `clock`.
+    pub fn resolve(&self, clock: chrono::NaiveDateTime) -> Value {
+        match self {
+            Self::Value(value) => value.clone(),
+            Self::CurrentTimestamp => Value::LocalDateTime(clock),
+        }
+    }
+
+    /// The `current_timestamp()` creation clock: the statement clock truncated
+    /// to whole milliseconds, as a timezone-naive UTC timestamp.
+    pub fn creation_clock() -> chrono::NaiveDateTime {
+        let now = crate::temporal::statement_now();
+        let millis = now.timestamp_millis();
+        chrono::DateTime::from_timestamp_millis(millis)
+            .unwrap_or(now)
+            .naive_utc()
+    }
+
+    /// Whether this descriptor state applies defaults to newly created records.
+    pub const fn applies_in(state: SchemaObjectState) -> bool {
+        matches!(
+            state,
+            SchemaObjectState::WriteOnly
+                | SchemaObjectState::Backfill
+                | SchemaObjectState::Validating
+                | SchemaObjectState::Public
+        )
+    }
+}
+
+impl std::fmt::Display for PropertyDefault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Value(value) => write!(f, "{value:?}"),
+            Self::CurrentTimestamp => f.write_str("current_timestamp()"),
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -582,6 +676,27 @@ impl Catalog {
         value_type: PropertyType,
         nullable: bool,
     ) -> PropertyId {
+        self.get_or_create_property_with_default(
+            table_id,
+            name,
+            value_type,
+            nullable,
+            None,
+            SchemaObjectState::Public,
+        )
+    }
+
+    /// Creates a descriptor with an optional creation-time default in the
+    /// given initial state, or returns the existing descriptor unchanged.
+    pub fn get_or_create_property_with_default(
+        &mut self,
+        table_id: TableId,
+        name: &str,
+        value_type: PropertyType,
+        nullable: bool,
+        default: Option<DeclaredPropertyDefault>,
+        state: SchemaObjectState,
+    ) -> PropertyId {
         let key = (table_id, name.to_string());
         if let Some(id) = self.properties_by_key.get(&key) {
             return *id;
@@ -593,7 +708,8 @@ impl Catalog {
             name: name.to_string(),
             value_type,
             nullable,
-            state: SchemaObjectState::Public,
+            state,
+            default,
         });
         self.properties_by_key.insert(key, id);
         id
@@ -624,6 +740,7 @@ impl Catalog {
                 value_type: PropertyType::Any,
                 nullable: true,
                 state: SchemaObjectState::Public,
+                default: None,
             });
         }
         self.properties[index] = PropertyDescriptor {
@@ -633,6 +750,7 @@ impl Catalog {
             value_type,
             nullable,
             state,
+            default: None,
         };
         self.properties_by_key.insert((table_id, name), id);
     }
@@ -661,6 +779,91 @@ impl Catalog {
         self.properties
             .get(id.0 as usize)
             .filter(|property| !property.name.is_empty())
+    }
+
+    /// Restores a persisted default on an imported descriptor.
+    pub fn set_property_default(
+        &mut self,
+        id: PropertyId,
+        default: Option<DeclaredPropertyDefault>,
+    ) -> bool {
+        let Some(property) = self.properties.get_mut(id.0 as usize) else {
+            return false;
+        };
+        if property.name.is_empty() {
+            return false;
+        }
+        property.default = default;
+        true
+    }
+
+    /// Every live property descriptor with its table, ordered by table kind,
+    /// table name and property name.
+    pub fn property_schemas(&self) -> Vec<PropertySchema> {
+        let mut schemas = self
+            .property_descriptors()
+            .filter_map(|property| {
+                let table = self.table_descriptor(property.table_id)?;
+                Some(PropertySchema {
+                    table_kind: table.kind,
+                    table: table.name.clone(),
+                    property: property.name.clone(),
+                    value_type: property.value_type,
+                    nullable: property.nullable,
+                    state: property.state,
+                    default: property.default.clone(),
+                })
+            })
+            .collect::<Vec<_>>();
+        schemas.sort_by(|left, right| {
+            (left.table_kind, &left.table, &left.property).cmp(&(
+                right.table_kind,
+                &right.table,
+                &right.property,
+            ))
+        });
+        schemas
+    }
+
+    /// Whether any live descriptor declares a default.
+    pub fn has_property_defaults(&self) -> bool {
+        self.property_descriptors()
+            .any(|property| property.default.is_some())
+    }
+
+    /// Defaults to apply to a record of `kind` table `name` created now:
+    /// descriptors whose state admits writes and that declare a default.
+    pub fn creation_defaults(
+        &self,
+        kind: TableKind,
+        name: &str,
+    ) -> impl Iterator<Item = (&str, &PropertyDefault)> {
+        self.table_id(kind, name)
+            .into_iter()
+            .flat_map(move |table_id| self.table_property_descriptors(table_id))
+            .filter(|property| PropertyDefault::applies_in(property.state))
+            .filter_map(|property| {
+                property
+                    .default
+                    .as_ref()
+                    .map(|default| (property.name.as_str(), &default.value))
+            })
+    }
+
+    /// Inserts every applicable default whose key is absent from
+    /// `properties`. Present keys, including explicit NULLs, are kept.
+    pub fn fill_creation_defaults(
+        &self,
+        kind: TableKind,
+        name: &str,
+        properties: &mut BTreeMap<String, Value>,
+        clock: &mut impl FnMut() -> chrono::NaiveDateTime,
+    ) {
+        for (property, default) in self.creation_defaults(kind, name) {
+            if !properties.contains_key(property) {
+                properties.insert(property.to_string(), default.resolve(clock()));
+            }
+        }
     }
 
     pub fn set_property_state(&mut self, id: PropertyId, state: SchemaObjectState) -> bool {

@@ -998,6 +998,70 @@ are supported through
 validation. Promoting a property descriptor to `PUBLIC` validates existing
 records before appending the WAL batch.
 
+Property defaults (#1683) use
+`CREATE PROPERTY ON NODE|RELATIONSHIP TABLE Name(property) TYPE Type [NOT NULL] DEFAULT value`.
+`value` is a non-NULL literal (`BOOL`, integer, float, string, or a list of
+those, including `[]`) or `current_timestamp()`. NULL, parameters, property
+references, temporal constructors such as `date('...')`, and other expressions
+are rejected by the parser. The default must satisfy the declared `TYPE` and
+`NOT NULL` at DDL time; `TYPE ANY DEFAULT value` declares a default without
+constraining later writes. A default is applied **only when a record is
+created without the property**: Cypher `CREATE` of nodes and relationships
+(including `UNWIND ... CREATE` and patterns that create both endpoints),
+MERGE-created nodes and relationships, explicit transactions, the direct
+`GraphStore` creation APIs, and `GraphStore::import_graph_snapshot_rows`. The
+default is written into the WAL record before validation, so recovery,
+checkpoints and readers see an ordinary stored value. Defaults are never filled
+at read time.
+
+| Write (table `E(p DOUBLE DEFAULT 0.0)`) | `p` reads back |
+|---|---|
+| `CREATE (:E {id: 'a'})` | `0.0` |
+| `CREATE (:E {id: 'b', p: NULL})` | `NULL` |
+| `CREATE (:E {id: 'c', p: $v})` with `$v = NULL` | `NULL` |
+| `MERGE (e:E {id: 'd'}) ON CREATE SET e.p = NULL` | `NULL` (default first, then `ON CREATE SET`) |
+| `CREATE (:E {id: 'e'})` then `SET e.p = NULL` | `NULL` |
+| `UNWIND $rows AS row CREATE (:E {p: row.p})`, row without key `p` / with `p: NULL` | `0.0` / `NULL` |
+| `GraphStore::import_graph_snapshot_rows` row without key `p` / with `p: NULL` | `0.0` / `NULL` |
+| `LOAD CSV ... CREATE (:E {p: row.p})` with an empty field | `0.0` (openCypher: CREATE omits NULL properties) |
+| record that existed before the declaration, after maintenance | `0.0` |
+
+HawDB storage distinguishes a property that was never written from one written
+as NULL: `CREATE (:E {p: NULL})`, `SET n.p = NULL` and `ON CREATE SET n.p = NULL`
+store an explicit NULL entry that survives WAL replay and checkpoints. A
+row-sourced CREATE or MERGE create branch whose row map lacks the referenced key
+(`row.p` with no `p` in `row`) now leaves the property out instead of storing
+NULL, so it receives the default; `UNWIND ... MATCH ... CREATE` relationships
+keep an explicit NULL row value instead of dropping it.
+`current_timestamp()` defaults produce a timezone-naive UTC `LocalDateTime`
+truncated to milliseconds, one value per writing transaction (every record of
+one auto-commit statement or of one explicit transaction shares it, matching
+Kùzu); declare such properties `TYPE ANY`. Adding a label to an existing node
+does not apply defaults.
+
+Declare properties before importing data. Declaring a defaulted property on a
+table that already has records lacking it puts the descriptor in `BACKFILL`;
+records lacking the property (key absent) are filled by schema maintenance,
+while explicitly stored NULLs and other present values are kept. The backfill
+value is resolved once at declaration time and persisted with the descriptor,
+so a `current_timestamp()` backfill writes the declaration instant to every
+pre-existing record even across several bounded maintenance runs. Records
+created while the descriptor is in `BACKFILL` already follow the creation rule.
+Each maintenance run writes its fills as one WAL batch, and the batch that
+fills the last lacking record also advances the descriptor to `VALIDATING`, so
+a crash leaves either a resumable `BACKFILL` or a completed one. Existing
+present values must already satisfy the descriptor at DDL time; `NOT NULL`
+defaulted properties therefore reject tables with stored NULLs.
+
+`Database::property_schemas` reports every descriptor with its table, type,
+nullability, state and declared default (`PropertySchema::default`, including
+the resolved backfill value). Defaults persist through binary WAL op code 29
+(`CreatePropertyWithDefault`; undefaulted descriptors keep op code 5 and their
+exact pre-default bytes) and a `property_default` checkpoint catalog line.
+Databases written before defaults reopen with no defaults. Binaries that
+predate defaults reject a database that declares one (`unknown WAL op code 29`
+or `invalid checkpoint line`) instead of silently dropping the default.
+
 Schema maintenance is explicit. `Database::run_schema_maintenance` scans table
 and property descriptors, validates the next state before appending WAL, and
 then writes all selected maintenance operations as one grouped WAL batch.
