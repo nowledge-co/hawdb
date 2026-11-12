@@ -354,6 +354,10 @@ with db.transaction() as tx:
     tx.rollback()      # abandons both statements; omit it to commit
 ```
 
+For a SQL INSERT, UPDATE or DELETE, `QueryResult.affected_rows` is the number
+of rows it changed (inside a transaction, the rows staged for commit); it is
+`None` for queries, DDL, Cypher and writes to strict append tables.
+
 `db.read_transaction()` pins the committed state for a stable read scope;
 write statements on it raise the engine's read-transaction error.
 
@@ -535,6 +539,10 @@ operator info, memory, disk`. `TIMESTAMP` columns fetch as naive
 `datetime.datetime` values and `TIMESTAMPTZ` columns as aware UTC ones, losslessly
 at HawDB's microsecond precision, and their `description` type code equals
 `hawdb.dbapi.DATETIME`; a value outside Python's year range stays a tagged dict.
+`cursor.rowcount` is the number of rows an INSERT, UPDATE or DELETE changed, in
+autocommit and in a transaction (where the rows are published at `commit()`),
+or the number of rows a SELECT returned. It is -1 for DDL, after `executemany`,
+and for writes to strict append tables.
 `pandas.read_sql` works, with a
 warning that pandas only tests SQLAlchemy and sqlite3 connections.
 `help(hawdb.dbapi)` gives the full contract.

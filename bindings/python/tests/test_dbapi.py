@@ -277,11 +277,57 @@ def test_type_objects_hash_by_identity():
 
 def test_statements_without_result_columns(connection):
     cursor = connection.cursor()
-    for statement, parameters in [(CREATE, None), (INSERT, [1, "one"])]:
+    for statement, parameters, rowcount in [(CREATE, None, -1), (INSERT, [1, "one"], 1)]:
         cursor.execute(statement, parameters)
-        assert (cursor.description, cursor.rowcount) == (None, -1)
+        assert (cursor.description, cursor.rowcount) == (None, rowcount)
         assert cursor.fetchone() is None
         assert cursor.fetchall() == []
+
+
+@pytest.mark.parametrize("autocommit", [True, False])
+def test_rowcount_reports_affected_rows(connect, autocommit):
+    connection = connect(autocommit=autocommit)
+    cursor = connection.cursor()
+    cursor.execute(CREATE)
+    assert cursor.rowcount == -1
+    cursor.execute(
+        "INSERT INTO items (id, name) VALUES ($1, 'a'), ($2, 'b'), ($3, 'c')", [1, 2, 3]
+    )
+    assert cursor.rowcount == 3
+    cursor.execute("UPDATE items SET name = $1 WHERE id >= $2", ["z", 2])
+    assert cursor.rowcount == 2
+    cursor.execute("UPDATE items SET name = 'none' WHERE id = 99")
+    assert cursor.rowcount == 0
+    cursor.execute("DELETE FROM items WHERE id = $1", [1])
+    assert cursor.rowcount == 1
+    cursor.execute(
+        "INSERT INTO items (id, name) VALUES ($1, 'x'), ($2, 'y') "
+        "ON CONFLICT (id) DO NOTHING RETURNING id",
+        [2, 4],
+    )
+    # The conflicting row is neither counted nor returned.
+    assert (cursor.rowcount, cursor.fetchall()) == (1, [(4,)])
+    cursor.execute("SELECT id FROM items ORDER BY id")
+    assert cursor.rowcount == 3
+    cursor.execute("CREATE TABLE other (id BIGINT PRIMARY KEY)")
+    assert cursor.rowcount == -1
+    cursor.executemany(INSERT, [(5, "e"), (6, "f")])
+    assert cursor.rowcount == -1
+    connection.commit()
+    assert ids(connection) == [2, 3, 4, 5, 6]
+
+
+def test_query_result_reports_affected_rows():
+    with hawdb.open() as db:
+        assert db.execute_sql(CREATE).affected_rows is None
+        assert db.execute_sql(INSERT, [1, "one"]).affected_rows == 1
+        assert db.execute_sql("SELECT id FROM items").affected_rows is None
+        assert db.execute("CREATE (:Item {id: 1})").affected_rows is None
+        with db.transaction() as tx:
+            assert tx.execute_sql("UPDATE items SET name = 'two' WHERE id = 1").affected_rows == 1
+            assert tx.execute_sql("SELECT id FROM items").affected_rows is None
+        with db.read_transaction() as tx:
+            assert tx.execute_sql("SELECT id FROM items").affected_rows is None
 
 
 def test_empty_key_lookup_still_describes_its_columns(connection):

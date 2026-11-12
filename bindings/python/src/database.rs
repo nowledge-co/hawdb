@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use hawdb::{
     DatabaseConfig, DatabaseReadTransaction, DurabilityPolicy, EmbeddedDeploymentProfile,
-    HawDBEmbedded, HawDBEmbeddedOpenOptions, QueryOutput, Value,
+    HawDBEmbedded, HawDBEmbeddedOpenOptions, QueryOutput, SqlStatementResult, Value,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -364,7 +364,9 @@ impl Database {
     /// Runs one SQL statement and returns the materialized result.
     ///
     /// `params` is an optional list of positional parameters with the same
-    /// supported value types as `execute`.
+    /// supported value types as `execute`. For an INSERT, UPDATE or DELETE
+    /// on a RowPage table, `affected_rows` of the result is the committed
+    /// row count.
     #[pyo3(signature = (sql, params = None))]
     fn execute_sql(
         &mut self,
@@ -390,12 +392,16 @@ impl Database {
         #[cfg(feature = "boundary-profiling")]
         let engine =
             crate::boundary_profile::PhaseTimer::start(crate::boundary_profile::Phase::Engine);
-        let output = py
-            .detach(|| database.database_mut().query_sql_with_params(sql, &values))
+        let result = py
+            .detach(|| {
+                database
+                    .database_mut()
+                    .query_sql_with_result_and_params(sql, &values)
+            })
             .map_err(|error| format_hawdb_error(&error))?;
         #[cfg(feature = "boundary-profiling")]
         drop(engine);
-        QueryResult::from_output(py, output)
+        QueryResult::from_sql_result(py, result)
     }
 
     /// Runs one Cypher statement for each parameter dict in one transaction.
@@ -498,6 +504,7 @@ pub struct QueryResult {
     columns: Vec<String>,
     rows: Vec<Py<PyDict>>,
     cursor: usize,
+    affected_rows: Option<usize>,
 }
 
 impl QueryResult {
@@ -519,6 +526,16 @@ impl QueryResult {
             columns,
             rows,
             cursor: 0,
+            affected_rows: None,
+        })
+    }
+
+    /// Converts a SQL statement result, keeping its RowPage mutation count.
+    fn from_sql_result(py: Python<'_>, result: SqlStatementResult) -> PyResult<Self> {
+        let affected_rows = result.mutation.map(|mutation| mutation.affected_rows);
+        Ok(Self {
+            affected_rows,
+            ..Self::from_output(py, result.output)?
         })
     }
 }
@@ -535,6 +552,16 @@ impl QueryResult {
     #[getter]
     fn row_count(&self) -> usize {
         self.rows.len()
+    }
+
+    /// Rows inserted, updated or deleted by a SQL INSERT, UPDATE or DELETE
+    /// on a RowPage table, or None for any other statement (queries, DDL,
+    /// branch commands, Strict Append writes, Cypher). Conflict no-ops of
+    /// `ON CONFLICT DO NOTHING` are not counted. Inside a transaction the
+    /// count is of staged rows, published on commit.
+    #[getter]
+    fn affected_rows(&self) -> Option<usize> {
+        self.affected_rows
     }
 
     /// Returns the next row as a dict, or None when exhausted.
@@ -708,7 +735,9 @@ impl Transaction {
     }
 
     /// Runs one SQL statement inside the transaction. Same signature and
-    /// parameter types as `Database.execute_sql`.
+    /// parameter types as `Database.execute_sql`. `affected_rows` of the
+    /// result counts the rows the statement staged; they are published only
+    /// when the transaction commits.
     #[pyo3(signature = (sql, params = None))]
     fn execute_sql(
         &mut self,
@@ -723,10 +752,10 @@ impl Transaction {
         self.required()?;
         let mut db = self.db.borrow_mut(py);
         let embedded = db.required()?;
-        let output = py
-            .detach(|| embedded.transaction_query_sql_with_params(sql, &values))
+        let result = py
+            .detach(|| embedded.transaction_query_sql_with_result_and_params(sql, &values))
             .map_err(|error| format_hawdb_error(&error))?;
-        QueryResult::from_output(py, output)
+        QueryResult::from_sql_result(py, result)
     }
 
     /// Runs a batch of Cypher bindings without committing the outer transaction.

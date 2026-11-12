@@ -62,9 +62,16 @@ Python type of the column's first non-null value, or ``None`` when there is
 none. ``STRING`` equals ``str``, ``BINARY`` equals ``bytes`` and ``NUMBER``
 equals ``int`` and ``float`` and ``DATETIME`` equals ``datetime.datetime``
 (and ``date``/``time``); booleans and vectors match none of them. DDL
-and every INSERT, UPDATE and DELETE leave ``description`` as ``None`` and
-``rowcount`` as -1, since the binding does not report affected rows, and
-fetching from them returns no rows.
+and every INSERT, UPDATE and DELETE without ``RETURNING`` leave
+``description`` as ``None``, and fetching from them returns no rows.
+
+``rowcount`` is the number of rows a SELECT returned, or the number an
+INSERT, UPDATE or DELETE inserted, updated or deleted, in autocommit and in a
+transaction alike. Inside a transaction the count is of the rows the
+statement staged, which ``commit()`` publishes. Rows that ``ON CONFLICT DO
+NOTHING`` skipped are not counted. ``rowcount`` is -1 for DDL and other
+statements without a result or a count, for writes to strict append tables,
+which report no row count, and after ``executemany``.
 
 ``TIMESTAMP`` values arrive as naive ``datetime.datetime`` objects and
 ``TIMESTAMPTZ`` values as aware ones in UTC. Both are microsecond-exact, so the
@@ -629,6 +636,9 @@ class Cursor:
                 for position, name in enumerate(columns)
             )
             self._rowcount = len(rows)
+        affected = result.affected_rows
+        if affected is not None:
+            self._rowcount = affected
         self._rows = iter(rows)
         return self
 
