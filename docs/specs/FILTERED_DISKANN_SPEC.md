@@ -304,6 +304,30 @@ Exact vector-only therefore keeps its `working_bytes / 256` uniqueness cap
 (262,144 eligible documents at 64 MiB, about 23 MB charged there, independent
 of dimension), and an unwindowed exact hybrid read charges about 690 bytes
 per eligible document.
+
+Hosts that choose between exact and approximate search ask HawDB for the
+capacity instead of reproducing these charges:
+`EmbeddedReadSnapshot::exact_vector_search_capacity(max_document_id_bytes)`
+returns the largest eligible-set size an exact vector-only candidate read in
+that snapshot is guaranteed to serve under the snapshot's admitted working
+memory, for projection document IDs (`kind:external_id`) of at most
+`max_document_id_bytes` bytes. It dispatches to
+`SearchOutOfCoreReader::exact_vector_search_capacity(working_bytes,
+max_document_id_bytes)` (also on `OutOfCoreSearchProjection`) or, for a
+resident projection, `SearchIndex`/`SearchIndexReadSnapshot::
+exact_vector_search_capacity`. Out of core it is the smaller of the
+duplicate-ID cap `min(max_score_entries, working_bytes / 128) / 2` and the
+account's room for one 72-byte entry plus the ID per eligible document after
+a fixed working set (4 MiB for one level-3 zstd decoder, the vector run,
+range validation and query metadata, plus the reader's candidate block
+directory, one cached block and one vector segment head); resident reads
+bound their geometrically grown raw candidates and a raw rerank lookup. Above
+the capacity a read may be refused with a typed `ResourceBudgetExceeded`
+error (`MetadataEntries` for the duplicate-ID cap, `MemoryBytes` for the
+account); it is never truncated. The page's hydration remains bounded by
+`max_hydrated_bytes` and must fit as well. The duplicate-ID refusal keeps its
+message (`search vector uniqueness check requires more than N document ids`)
+but is now a typed budget error instead of a storage error.
 `search_candidates_with_report[_context]` without a permit keep their previous
 unaccounted behavior.
 

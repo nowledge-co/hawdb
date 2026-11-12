@@ -1456,6 +1456,16 @@ impl OutOfCoreSearchProjection {
         self.search_candidates_with_report_execution(request, vector_execution_options, None)
     }
 
+    /// See [`SearchOutOfCoreReader::exact_vector_search_capacity`].
+    pub fn exact_vector_search_capacity(
+        &self,
+        working_bytes: usize,
+        max_document_id_bytes: usize,
+    ) -> usize {
+        self.reader
+            .exact_vector_search_capacity(working_bytes, max_document_id_bytes)
+    }
+
     /// Like [`Self::search_candidates_with_report_context`], under the
     /// caller's runtime admission: every allocation that scales with the
     /// eligible set is charged to `vector_execution_options.max_working_bytes`

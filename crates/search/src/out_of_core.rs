@@ -2589,6 +2589,68 @@ impl SearchOutOfCoreReader {
         Ok(output)
     }
 
+    /// The largest eligible-set size an exact vector-only read under
+    /// `working_bytes` of admitted working memory is guaranteed to serve, for
+    /// eligible document IDs of at most `max_document_id_bytes` bytes.
+    ///
+    /// It is the smaller of the scan's duplicate-ID cap,
+    /// `min(max_score_entries, working_bytes / 128) / 2` (262,144 at 64 MiB,
+    /// as before #1722), and what the query account admits: one charged
+    /// duplicate-ID entry per eligible document after this reader's fixed
+    /// working set (one zstd decoder at the pinned level-3 window, the vector
+    /// read run and segment head, cached candidate blocks, the candidate block
+    /// directory, range validation and query metadata). It does not depend on
+    /// the embedding dimension. A read of more eligible documents may be
+    /// refused with a typed `ResourceBudgetExceeded` error; it is never
+    /// truncated. The page's hit hydration is bounded separately by
+    /// `max_hydrated_bytes` and must also fit the admission.
+    pub fn exact_vector_search_capacity(
+        &self,
+        working_bytes: usize,
+        max_document_id_bytes: usize,
+    ) -> usize {
+        // One level-3 zstd decoder (<= 2.75 MiB), a 256 KiB vector run, 64 KiB
+        // range validation, the 8 KiB vector prefix and query metadata.
+        const FIXED_BYTES: usize = 4 << 20;
+        let uniqueness = vector_serving::admitted_score_entries(
+            self.config.max_score_entries.get(),
+            working_bytes,
+        ) / 2;
+        let id = max_document_id_bytes;
+        let mut fixed = FIXED_BYTES
+            .saturating_add(crate::build_memory::ID_SET_ROOT_BYTES)
+            .saturating_add(
+                self.manifest
+                    .embedding_dimension
+                    .unwrap_or_default()
+                    .saturating_mul(2 * size_of::<f32>()),
+            );
+        let mut max_segment_documents = 0usize;
+        for segment in self
+            .segments
+            .iter()
+            .flat_map(|artifact| &artifact.descriptor.segments)
+        {
+            // The candidate block directory entry and its copied ID bounds.
+            fixed = fixed
+                .saturating_add(128)
+                .saturating_add(segment.first_document_id.len())
+                .saturating_add(segment.last_document_id.len());
+            max_segment_documents = max_segment_documents.max(segment.document_count);
+        }
+        // One cached candidate block (raw bytes, read buffer and entries) and
+        // one vector segment head (ordinals and IDs).
+        fixed = fixed.saturating_add(
+            max_segment_documents.saturating_mul(
+                (2 * (id.saturating_add(12)))
+                    .saturating_add(2 * size_of::<String>())
+                    .saturating_add(id.saturating_add(4)),
+            ),
+        );
+        let per_document = crate::build_memory::ID_SET_ENTRY_BYTES.saturating_add(id);
+        uniqueness.min(working_bytes.saturating_sub(fixed) / per_document)
+    }
+
     pub fn search_with_options_access_control(
         &self,
         query_text: &str,

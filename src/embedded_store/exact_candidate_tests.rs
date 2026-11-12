@@ -132,7 +132,7 @@ pub(super) fn memory_filter() -> BTreeMap<String, String> {
     BTreeMap::from([("kind".into(), "memory".into())])
 }
 
-fn governor() -> hawdb_qos::RuntimeGovernor {
+pub(super) fn governor() -> hawdb_qos::RuntimeGovernor {
     use hawdb_qos::{RuntimeMemorySnapshot, RuntimeResourceBudget, RuntimeResourceSnapshot};
     hawdb_qos::RuntimeGovernor::new(
         hawdb_qos::RuntimeGovernorConfig::shared_host(),

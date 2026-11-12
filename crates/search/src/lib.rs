@@ -2331,6 +2331,25 @@ impl SearchIndex {
             .map_or(self.documents.len(), |summary| summary.document_count)
     }
 
+    /// The largest eligible-set size an exact vector-only read of this
+    /// resident index under `working_bytes` is guaranteed to serve, for
+    /// eligible document IDs of at most `max_document_id_bytes` bytes. Raw
+    /// candidates retain a geometrically grown vector (at most two slots per
+    /// candidate) plus their IDs; a raw rerank also keeps a lookup over every
+    /// indexed document and two ID copies per candidate. A larger read may be
+    /// refused; it is never truncated.
+    pub fn exact_vector_search_capacity(
+        &self,
+        working_bytes: usize,
+        max_document_id_bytes: usize,
+    ) -> usize {
+        resident_exact_vector_search_capacity(
+            self.document_count(),
+            working_bytes,
+            max_document_id_bytes,
+        )
+    }
+
     /// Returns vector-bearing document IDs accepted by HawDB's metadata
     /// predicate implementation. This validation surface keeps differential
     /// oracles aligned with serving filter semantics.
@@ -16608,3 +16627,20 @@ mod tests {
 }
 
 mod graph_store_adapter;
+
+fn resident_exact_vector_search_capacity(
+    document_count: usize,
+    working_bytes: usize,
+    max_document_id_bytes: usize,
+) -> usize {
+    use hawdb_executor::{VectorCandidate, VectorRawScore};
+    let id = max_document_id_bytes;
+    let candidates = working_bytes / (2 * size_of::<VectorCandidate>()).saturating_add(id).max(1);
+    let lookup = document_count.saturating_mul(3 * size_of::<(&str, &SearchDocument)>());
+    let rerank = working_bytes.saturating_sub(lookup)
+        / size_of::<VectorCandidate>()
+            .saturating_add(size_of::<VectorRawScore>())
+            .saturating_add(id.saturating_mul(2))
+            .max(1);
+    candidates.min(rerank)
+}

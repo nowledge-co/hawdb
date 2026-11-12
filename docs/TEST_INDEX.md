@@ -69,6 +69,14 @@ working set (excluding the caller-owned result), that refused queries never
 allocate beyond their admission, that exact hybrid is refused one byte below
 its charged peak, and that at 20,000 eligible documents exact vector-only and
 unwindowed exact hybrid charge between 1x and 2x their live working bytes.
+`snapshot_exact_vector_capacity_is_served_and_refused_above` builds 384- and
+1024-dimension out-of-core projections at an 8 MiB admission and requires
+`EmbeddedReadSnapshot::exact_vector_search_capacity` to equal the duplicate-ID
+cap (32,768), an exact vector-only read of exactly that many eligible
+documents to succeed and 25% more to fail with a typed budget error;
+`snapshot_exact_vector_capacity_covers_resident_reads` checks that the
+resident capacity is refused below and served once it covers the eligible
+set.
 Replay with `cargo test --locked -p hawdb --lib out_of_core_working_memory`
 and `cargo test --locked -p hawdb-search --lib admitted_working`. No new lane,
 profile or timeout.
