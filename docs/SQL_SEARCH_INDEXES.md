@@ -166,7 +166,9 @@ to its own `Bm25IndexScan` account before each allocation: the query terms,
 the skip entries, one decoded block per term, the read-ahead buffers, a
 128-row lengths window and the current round's heap/ranked prefix. The
 lengths window charges its fixed directory, all decoded entry slots (including
-deleted slots), and key bytes rather than a multiple of encoded payload size.
+deleted slots), and key bytes rather than a multiple of encoded payload size,
+so a full window costs about 128 x (2 KiB + row payload) however few of its
+documents remain live.
 All skip entries of the queried terms remain resident, so metadata grows with
 their total block count even for a one-row top-k. A selective residual filter
 can also grow the ranked prefix to the whole match set; the previous prefix
