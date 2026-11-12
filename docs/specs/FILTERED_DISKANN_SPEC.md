@@ -276,6 +276,27 @@ window exceeds that cap, and with
 eligible set does.
 Neither path falls back to approximate candidates.
 
+Embedded out-of-core candidate reads (`EmbeddedReadSnapshot` and
+`EmbeddedStoreHandle`, text, vector and hybrid, exact and default) also run
+with a query-memory account (`nowledge-co/hawdb#1722`). They call
+`OutOfCoreSearchProjection::search_candidates_with_report_admitted`, which
+serves through `SearchOutOfCoreReader::search_with_options_admitted` with the
+caller's `RuntimePermit`, one query I/O wave and one working account of
+`min(max_working_bytes, task memory reservation)` bytes: the snapshot's
+`query_memory_bytes` admission, or the handle's complete out-of-core search
+admission. Candidate filters and spills, segment and decoder buffers, score
+maps, rankings, fused candidates and hit hydration are charged to that account
+on the same paths native admitted roots use; returned hits stay on the
+caller's result budget. A request that does not fit is refused with a typed
+`ResourceBudgetExceeded` (`MemoryBytes`) error before it allocates beyond its
+admission. A hybrid request without a rank window ranks the complete eligible
+set in both legs and is charged for both rankings; it is refused, never
+truncated, when they do not fit, while a rank window bounds them. The default
+RaBitQ stage sizes its scan to the account's remaining bytes.
+`SearchOutOfCoreMetrics::query_memory_peak_bytes` reports the peak charge.
+`search_candidates_with_report[_context]` without a permit keep their previous
+unaccounted behavior.
+
 Resident checkpoints now write native DiskANN graphs into the existing candidate
 slot and seal their full source digest in the same manifest. The disk reader
 executes that graph after checkpoint; old readers retain their original graph

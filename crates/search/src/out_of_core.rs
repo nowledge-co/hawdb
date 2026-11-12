@@ -413,6 +413,10 @@ pub struct SearchOutOfCoreMetrics {
     pub streamed_body_bytes: u64,
     pub hydrated_documents: usize,
     pub hydrated_bytes: u64,
+    /// Peak bytes charged to the query's working account by
+    /// [`SearchOutOfCoreReader::search_with_options_admitted`]; zero for
+    /// unaccounted ordinary reads.
+    pub query_memory_peak_bytes: u64,
 }
 
 struct SearchDocumentSegmentRoute<'a> {
@@ -2534,6 +2538,57 @@ impl SearchOutOfCoreReader {
         )
     }
 
+    /// Serves like
+    /// [`Self::search_with_options_compressed_vector_projection_execution_options`]
+    /// under the caller's runtime admission. Every allocation that scales with
+    /// the eligible set (candidate filters, score maps, rankings, fused
+    /// candidates, segment buffers and hit hydration) is charged to one
+    /// working account of `min(max_working_bytes, task memory reservation)`
+    /// bytes. A query that does not fit, including a hybrid query without a
+    /// rank window over a large eligible set, is refused with a typed
+    /// memory-budget error rather than served above its admission.
+    ///
+    /// `vector_execution_options.task_context` is required and must be the
+    /// context bound to `permit`. Returned hits are not charged: the caller
+    /// owns the result payload budget.
+    pub fn search_with_options_admitted(
+        &self,
+        query_text: &str,
+        query_embedding: Option<&[f32]>,
+        mode: SearchMode,
+        options: SearchQueryOptions,
+        execution: SearchOutOfCoreExecutionContext<'_>,
+        permit: &hawdb_qos::RuntimePermit,
+    ) -> Result<SearchOutOfCoreOutput> {
+        let task = execution
+            .vector_execution_options
+            .task_context
+            .ok_or_else(|| {
+                HawDBError::Execution(
+                    "admitted out-of-core search requires the permit's task context".into(),
+                )
+            })?;
+        let working =
+            query_memory::Working::new(execution.vector_execution_options.max_working_bytes, task)?;
+        let io = crate::build_memory::read::QueryIoScope::acquire(task)?;
+        let mut output = self.search_hits(
+            query_text,
+            query_embedding,
+            mode,
+            options,
+            query_memory::Execution {
+                base: execution,
+                query: Some(working.context(task, permit, &io)),
+                immutable_freshness: false,
+                scratch: None,
+                output: None,
+            },
+            SearchHitHydration::Documents,
+        )?;
+        output.metrics.query_memory_peak_bytes = working.peak_bytes();
+        Ok(output)
+    }
+
     pub fn search_with_options_access_control(
         &self,
         query_text: &str,
@@ -2782,7 +2837,9 @@ impl SearchOutOfCoreReader {
             output,
         } = execution.into();
         let output_memory = query_output::Memory(output);
-        if output.is_some() != query.is_some() {
+        // Native results require working admission. An ordinary admitted read
+        // charges working memory while its caller owns the result budget.
+        if output.is_some() && query.is_none() {
             return Err(HawDBError::Execution(
                 "native query requires paired working and result admission".into(),
             ));
@@ -5786,6 +5843,8 @@ pub(super) fn seal_resident_candidate(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(all(feature = "full-text-search", feature = "vector-search"))]
+    mod admitted_working;
     #[cfg(feature = "full-text-search")]
     mod bm25_windows;
     #[cfg(feature = "full-text-search")]

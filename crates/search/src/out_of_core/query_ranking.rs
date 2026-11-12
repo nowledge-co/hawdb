@@ -179,7 +179,11 @@ impl Candidates {
             };
             let bytes = id.capacity();
             if score > 0.0 {
-                if let Some(memory) = &mut output.memory {
+                if let Some(memory) = &mut output.memory
+                    && output.values.len() == output.values.capacity()
+                {
+                    // Grow geometrically only when full: doubling on every
+                    // push would allocate and charge 2^n slots for n hits.
                     let required = add(output.values.len(), 1)?;
                     let capacity = required.max(output.values.capacity().saturating_mul(2));
                     reserve_capacity(&mut output.values, capacity, memory)?;

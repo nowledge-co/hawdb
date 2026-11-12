@@ -17,9 +17,10 @@
 use crate::search::{
     AdaptiveVectorSearchOptions, CompressedVectorSearchMode, SearchFallbackReasonCode,
     SearchLexicalProductionQualificationReport, SearchOutOfCoreConfig,
-    SearchOutOfCoreHydrationOutput, SearchOutOfCoreMetrics, SearchOutOfCoreReader,
-    SearchQueryOptions, SearchRangeReadConfig, VectorRecallProductionQualificationReport,
-    VectorRecallValidationOptions, VectorRecallValidationReport, VectorSearchExecutionOptions,
+    SearchOutOfCoreExecutionContext, SearchOutOfCoreHydrationOutput, SearchOutOfCoreMetrics,
+    SearchOutOfCoreReader, SearchQueryOptions, SearchRangeReadConfig,
+    VectorRecallProductionQualificationReport, VectorRecallValidationOptions,
+    VectorRecallValidationReport, VectorSearchExecutionOptions,
     NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS,
 };
 use crate::search_projection_evidence::{
@@ -194,6 +195,8 @@ mod app_read_snapshot_tests;
 mod candidate_facade_tests;
 #[cfg(test)]
 mod exact_candidate_tests;
+#[cfg(test)]
+mod out_of_core_working_memory_tests;
 
 #[cfg(test)]
 mod runtime_status_facade_tests {
@@ -1450,26 +1453,70 @@ impl OutOfCoreSearchProjection {
         request: &SearchCandidateRequest,
         vector_execution_options: VectorSearchExecutionOptions<'_>,
     ) -> Result<OutOfCoreSearchCandidateOutput> {
+        self.search_candidates_with_report_execution(request, vector_execution_options, None)
+    }
+
+    /// Like [`Self::search_candidates_with_report_context`], under the
+    /// caller's runtime admission: every allocation that scales with the
+    /// eligible set is charged to `vector_execution_options.max_working_bytes`
+    /// (at most the task's memory reservation), and a request that does not
+    /// fit is refused with a typed memory-budget error. A hybrid request
+    /// without a rank window charges both complete rankings.
+    /// `vector_execution_options.task_context` must be bound to `permit`.
+    pub fn search_candidates_with_report_admitted(
+        &self,
+        request: &SearchCandidateRequest,
+        vector_execution_options: VectorSearchExecutionOptions<'_>,
+        permit: &RuntimePermit,
+    ) -> Result<OutOfCoreSearchCandidateOutput> {
+        self.search_candidates_with_report_execution(
+            request,
+            vector_execution_options,
+            Some(permit),
+        )
+    }
+
+    fn search_candidates_with_report_execution(
+        &self,
+        request: &SearchCandidateRequest,
+        vector_execution_options: VectorSearchExecutionOptions<'_>,
+        permit: Option<&RuntimePermit>,
+    ) -> Result<OutOfCoreSearchCandidateOutput> {
         let effective_compressed_vector_search_mode = effective_search_candidate_mode(request);
         let vector_execution_options =
             request.vector_execution_options(vector_execution_options)?;
-        let output = self
-            .reader
-            .search_with_options_compressed_vector_projection_execution_options(
+        let options = SearchQueryOptions {
+            limit: request.limit,
+            offset: request.offset,
+            rank_window: request.rank_window,
+            fusion_weights: request.fusion_weights,
+            metadata_filters: request.metadata_filters.clone(),
+            policy_epoch: None,
+        };
+        let output = match permit {
+            Some(permit) => self.reader.search_with_options_admitted(
                 &request.query_text,
                 request.query_embedding.as_deref(),
                 request.mode,
-                SearchQueryOptions {
-                    limit: request.limit,
-                    offset: request.offset,
-                    rank_window: request.rank_window,
-                    fusion_weights: request.fusion_weights,
-                    metadata_filters: request.metadata_filters.clone(),
-                    policy_epoch: None,
+                options,
+                SearchOutOfCoreExecutionContext {
+                    access_control: None,
+                    compressed_vector_search_mode: effective_compressed_vector_search_mode,
+                    vector_execution_options,
                 },
-                effective_compressed_vector_search_mode,
-                vector_execution_options,
-            )?;
+                permit,
+            )?,
+            None => self
+                .reader
+                .search_with_options_compressed_vector_projection_execution_options(
+                    &request.query_text,
+                    request.query_embedding.as_deref(),
+                    request.mode,
+                    options,
+                    effective_compressed_vector_search_mode,
+                    vector_execution_options,
+                )?,
+        };
         let report = search_candidate_report(
             request,
             effective_compressed_vector_search_mode,

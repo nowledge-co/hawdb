@@ -6,13 +6,16 @@
 use super::*;
 use crate::search::SearchIndexReadLease;
 
-pub(super) struct AdmittedSearchRead {
+pub(super) struct AdmittedSearchRead<'a> {
     view: Arc<crate::api::PublishedConcurrentRead>,
     mode: GraphMode,
     resident: Option<SearchIndexReadLease>,
     out_of_core: Option<OutOfCoreSearchProjection>,
     advisor: RetrievalProjectionAdvisor,
     task: RuntimeTaskContext,
+    // The admission bound to `task`; out-of-core serving charges its working
+    // memory against this grant.
+    permit: &'a RuntimePermit,
 }
 
 impl PublishedCanonicalRead {
@@ -97,12 +100,13 @@ impl EmbeddedStoreHandle {
             out_of_core,
             advisor,
             task: permit.bind_task_context(RuntimeTaskContext::default()),
+            permit: &permit,
         };
         self.finish_canonical_read(operation(&read))
     }
 }
 
-impl AdmittedSearchRead {
+impl AdmittedSearchRead<'_> {
     pub(super) fn shadow_evidence_json<I, S>(
         &self,
         request: &SearchCandidateRequest,
@@ -134,6 +138,20 @@ impl AdmittedSearchRead {
         )
     }
 
+    /// Out-of-core admission covers the whole serving working set (see
+    /// `runtime_admission_memory_bytes`), all of which is charged to one
+    /// account, so the account receives the complete reservation.
+    fn out_of_core_execution(&self) -> VectorSearchExecutionOptions<'_> {
+        VectorSearchExecutionOptions::admitted(
+            self.task
+                .memory_reservation()
+                .map_or(usize::MAX, |reservation| {
+                    usize::try_from(reservation.memory_bytes()).unwrap_or(usize::MAX)
+                }),
+            &self.task,
+        )
+    }
+
     pub(super) fn search_candidates(
         &self,
         request: &SearchCandidateRequest,
@@ -142,7 +160,11 @@ impl AdmittedSearchRead {
             (Some(lease), None) => ResidentProjectionRef::Snapshot(lease.snapshot())
                 .try_search_candidates_with_report_context(request, self.execution()),
             (None, Some(projection)) => Ok(projection
-                .search_candidates_with_report_context(request, self.execution())?
+                .search_candidates_with_report_admitted(
+                    request,
+                    self.out_of_core_execution(),
+                    self.permit,
+                )?
                 .into()),
             (None, None) => Err(missing_search_projection_error()),
             (Some(_), Some(_)) => Err(ambiguous_search_projection_error()),
@@ -216,9 +238,10 @@ impl AdmittedSearchRead {
                     (search, snapshot.projection_freshness().clone(), None)
                 }
                 (None, Some(projection)) => {
-                    let output = projection.search_candidates_with_report_context(
+                    let output = projection.search_candidates_with_report_admitted(
                         &retrieval_request(config, &self.advisor, request),
-                        self.execution(),
+                        self.out_of_core_execution(),
+                        self.permit,
                     )?;
                     (output.result, projection.freshness(), Some(output.metrics))
                 }

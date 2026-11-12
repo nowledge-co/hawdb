@@ -10,7 +10,7 @@ use crate::lexical_projection::{
     retain_most_selective_terms, AccountedCorpusStatistics, QueryContext, QueryTermSelection,
     ScoringInputs,
 };
-use hawdb_executor::QueryMemoryLease;
+use hawdb_executor::{QueryMemoryAccount, QueryMemoryClass, QueryMemoryLease, QueryMemoryLedger};
 use hawdb_optimizer_predicate::{SearchPredicateConstructionError, SearchPredicateSet};
 
 #[cfg(test)]
@@ -34,6 +34,60 @@ impl<'a> From<SearchOutOfCoreExecutionContext<'a>> for Execution<'a> {
             scratch: None,
             output: None,
         }
+    }
+}
+
+/// The working account of an ordinary read served under a caller's runtime
+/// admission. Native roots fund their accounts from their own admission.
+pub(super) struct Working {
+    ledger: QueryMemoryLedger,
+    account: QueryMemoryAccount,
+}
+
+impl Working {
+    pub(super) fn new(max_working_bytes: usize, task: &crate::RuntimeTaskContext) -> Result<Self> {
+        crate::query_control::checkpoint(task)?;
+        let reservation = task
+            .memory_reservation()
+            .map(|reservation| usize::try_from(reservation.memory_bytes()).unwrap_or(usize::MAX));
+        let (bytes, option) = match reservation {
+            Some(reserved) if reserved < max_working_bytes => (
+                reserved,
+                "RuntimeTaskContext.memory_reservation.memory_bytes",
+            ),
+            _ => (
+                max_working_bytes,
+                "VectorSearchExecutionOptions.max_working_bytes",
+            ),
+        };
+        let bytes = NonZeroUsize::new(bytes)
+            .ok_or_else(|| HawDBError::Execution("admitted search has no working memory".into()))?;
+        let ledger = QueryMemoryLedger::new_with_budget_option(bytes, option);
+        let account = ledger.account_with_budget_option(
+            QueryMemoryClass::BlockingState,
+            "search out-of-core query",
+            bytes,
+            option,
+        );
+        Ok(Self { ledger, account })
+    }
+
+    pub(super) fn context<'a>(
+        &'a self,
+        task: &'a crate::RuntimeTaskContext,
+        permit: &'a hawdb_qos::RuntimePermit,
+        io: &'a crate::build_memory::read::QueryIoScope<'a>,
+    ) -> QueryContext<'a> {
+        QueryContext {
+            memory: &self.account,
+            task,
+            execution: Some(permit),
+            io_scope: Some(io),
+        }
+    }
+
+    pub(super) fn peak_bytes(&self) -> u64 {
+        u64::try_from(self.ledger.snapshot().peak_bytes).unwrap_or(u64::MAX)
     }
 }
 

@@ -21,14 +21,14 @@ use crate::search::{SearchProjectionKind, SearchProjectionRow};
 use crate::{Database, DatabaseConfig, SearchIndex};
 use std::num::NonZeroUsize;
 
-const DIMENSION: usize = 8;
+pub(super) const DIMENSION: usize = 8;
 const ROWS: usize = 480;
 const LIMIT: usize = 10;
 
-struct Root(PathBuf);
+pub(super) struct Root(pub(super) PathBuf);
 
 impl Root {
-    fn new(name: &str) -> Self {
+    pub(super) fn new(name: &str) -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
@@ -47,7 +47,7 @@ impl Drop for Root {
     }
 }
 
-fn embedding(number: usize) -> Vec<f32> {
+pub(super) fn embedding(number: usize) -> Vec<f32> {
     let mut state = (number as u64 + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15);
     (0..DIMENSION)
         .map(|_| {
@@ -128,7 +128,7 @@ fn hits(output: &SearchCandidateOutput) -> Vec<(String, u64)> {
         .collect()
 }
 
-fn memory_filter() -> BTreeMap<String, String> {
+pub(super) fn memory_filter() -> BTreeMap<String, String> {
     BTreeMap::from([("kind".into(), "memory".into())])
 }
 
@@ -184,7 +184,11 @@ fn out_of_core_projection(root: &Root, commit_epoch: u64) -> OutOfCoreSearchProj
     OutOfCoreSearchProjection::open(&path).unwrap()
 }
 
-fn handle(root: &Root, out_of_core: bool, config: DatabaseConfig) -> EmbeddedStoreHandle {
+pub(super) fn handle(
+    root: &Root,
+    out_of_core: bool,
+    config: DatabaseConfig,
+) -> EmbeddedStoreHandle {
     let mut database = Database::new_with_config(config);
     database
         .query("CREATE (:Memory {id: '0001', title: 'Canonical memory'})")
@@ -207,7 +211,7 @@ fn handle(root: &Root, out_of_core: bool, config: DatabaseConfig) -> EmbeddedSto
     EmbeddedStoreHandle::new(store).unwrap()
 }
 
-fn read_config() -> DatabaseConfig {
+pub(super) fn read_config() -> DatabaseConfig {
     DatabaseConfig {
         max_read_result_rows: Some(64),
         max_read_result_payload_bytes: Some(256 * 1024),
@@ -215,7 +219,7 @@ fn read_config() -> DatabaseConfig {
     }
 }
 
-fn snapshot_search(
+pub(super) fn snapshot_search(
     handle: &EmbeddedStoreHandle,
     request: &SearchCandidateRequest,
 ) -> Result<SearchCandidateOutput> {
@@ -414,9 +418,10 @@ fn snapshot_exact_search_refuses_when_admitted_memory_cannot_hold_the_scan() {
             .with_metadata_filters(memory_filter())
             .with_exact_vector_search();
         let error = snapshot_search(&handle, &request).unwrap_err().to_string();
+        // Out of core, the query-memory account refuses first (#1722).
         assert!(
             error.contains("exceeding admitted working memory")
-                || error.contains("search vector uniqueness check requires more than"),
+                || (out_of_core && error.contains("exceeding its 4096-byte budget")),
             "out_of_core={out_of_core}: {error}"
         );
     }

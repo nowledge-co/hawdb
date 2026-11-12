@@ -113,6 +113,8 @@ pub struct EmbeddedReadSnapshot<'a> {
     search_projection_durable_source_graph_commit_epoch: Option<u64>,
     budget: EmbeddedReadSnapshotBudget,
     task_context: RuntimeTaskContext,
+    // The admission bound to `task_context`; search serving borrows it.
+    permit: &'a RuntimePermit,
 }
 
 impl<'a> EmbeddedReadSnapshot<'a> {
@@ -123,6 +125,7 @@ impl<'a> EmbeddedReadSnapshot<'a> {
         projection: Option<ResidentProjectionRef<'a>>,
         out_of_core_projection: Option<&'a OutOfCoreSearchProjection>,
         task_context: RuntimeTaskContext,
+        permit: &'a RuntimePermit,
     ) -> Self {
         let freshness = match (projection, out_of_core_projection) {
             (Some(projection), None) => Some(projection.freshness()),
@@ -148,6 +151,7 @@ impl<'a> EmbeddedReadSnapshot<'a> {
                 .and_then(|value| value.durable_source_graph_commit_epoch),
             budget,
             task_context,
+            permit,
         }
     }
 
@@ -273,7 +277,7 @@ impl<'a> EmbeddedReadSnapshot<'a> {
                 projection.try_search_candidates_with_report_context(request, execution)?
             }
             (None, Some(projection)) => projection
-                .search_candidates_with_report_context(request, execution)?
+                .search_candidates_with_report_admitted(request, execution, self.permit)?
                 .into(),
             (None, None) => return Err(missing_search_projection_error()),
             (Some(_), Some(_)) => return Err(ambiguous_search_projection_error()),
@@ -711,6 +715,7 @@ impl EmbeddedStoreHandle {
                 None,
                 None,
                 _permit.bind_task_context(task_context.clone()),
+                &_permit,
             );
             return self.finish_canonical_read(operation(&mut snapshot));
         }
@@ -757,6 +762,7 @@ impl EmbeddedStoreHandle {
                 .map(|lease| ResidentProjectionRef::Snapshot(lease.snapshot())),
             projection.as_ref(),
             task_context,
+            &_permit,
         );
         self.finish_canonical_read(operation(&mut snapshot))
     }

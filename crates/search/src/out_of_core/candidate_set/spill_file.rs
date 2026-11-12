@@ -21,8 +21,13 @@ impl<'a> SpillFile<'a> {
         config: &SearchOutOfCoreConfig,
         context: Option<QueryContext<'a>>,
         scratch: Option<&'a ScratchDirectory>,
+        native: bool,
     ) -> Result<Self> {
-        let (file, legacy_path, memory) = if let Some(context) = context {
+        // Native queries spill only into their captured scratch. Ordinary
+        // reads, admitted or not, use the reader's configured spill directory;
+        // an admitted one still charges the open file to its working account.
+        let captured = context.filter(|_| native || scratch.is_some());
+        let (file, legacy_path, memory) = if let Some(context) = captured {
             if context.execution.is_none() {
                 return Err(HawDBError::Execution(
                     "candidate spill requires current execution".into(),
@@ -51,16 +56,25 @@ impl<'a> SpillFile<'a> {
                     "captured candidate scratch requires query admission".into(),
                 ));
             }
-            fs::create_dir_all(&config.spill_directory)?;
+            let memory = context
+                .map(|context| context.memory.reserve(size_of::<Self>()))
+                .transpose()?;
             let path = unique_candidate_path(&config.spill_directory);
+            let open = || {
+                fs::create_dir_all(&config.spill_directory)?;
+                OpenOptions::new()
+                    .create_new(true)
+                    .read(true)
+                    .write(true)
+                    .open(&path)
+            };
             let mut guard = CandidateFileGuard::new(path.clone());
-            let file = OpenOptions::new()
-                .create_new(true)
-                .read(true)
-                .write(true)
-                .open(&path)?;
+            let file = match context.and_then(|context| Some((context, context.io_scope?))) {
+                Some((context, scope)) => scope.with_io(context.task, open)?,
+                None => open()?,
+            };
             guard.disarm();
-            (file, Some(path), None)
+            (file, Some(path), memory)
         };
         Ok(Self {
             file: Some(file),
@@ -82,11 +96,10 @@ impl<'a> SpillFile<'a> {
             .checked_add(bytes.len() as u64)
             .ok_or_else(|| HawDBError::Execution("candidate spill length overflow".into()))?;
         let file = self.file.as_mut().expect("live candidate spill");
-        if let Some(context) = self.context {
-            context
-                .io_scope
-                .expect("captured query I/O")
-                .with_io(context.task, || file.write_all(bytes))?;
+        if let Some(scope) = self.context.and_then(|context| context.io_scope) {
+            scope.with_io(self.context.expect("scoped spill").task, || {
+                file.write_all(bytes)
+            })?;
         } else {
             file.write_all(bytes)?;
         }
@@ -96,11 +109,8 @@ impl<'a> SpillFile<'a> {
 
     pub(super) fn sync_all(&self) -> Result<()> {
         let file = self.file.as_ref().expect("live candidate spill");
-        if let Some(context) = self.context {
-            context
-                .io_scope
-                .expect("captured query I/O")
-                .with_io(context.task, || file.sync_all())
+        if let Some(scope) = self.context.and_then(|context| context.io_scope) {
+            scope.with_io(self.context.expect("scoped spill").task, || file.sync_all())
         } else {
             Ok(file.sync_all()?)
         }
