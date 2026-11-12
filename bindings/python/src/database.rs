@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use hawdb::{
     DatabaseConfig, DatabaseReadTransaction, DurabilityPolicy, EmbeddedDeploymentProfile,
-    HawDBEmbedded, HawDBEmbeddedOpenOptions, QueryOutput, QueryRowRef, QueryRows,
+    HawDBEmbedded, HawDBEmbeddedOpenOptions, QueryOutput, QueryRowRef, QueryRows, SqlQueryRequest,
     SqlStatementResult, Value,
 };
 use pyo3::exceptions::{PyIndexError, PyRuntimeError, PyValueError};
@@ -32,9 +32,11 @@ use crate::value::{
 /// An open HawDB database.
 ///
 /// Follows the embedded-database idiom (`sqlite3`, `duckdb`): each
-/// `execute` call runs one statement and commits on success. The
-/// embedded facade applies its own query admission and result budgets,
-/// so statements keep HawDB's bounded-resource behavior.
+/// `execute` call runs one statement and commits on success. `execute`,
+/// `execute_sql` and SQL in a transaction pass the embedded facade's query
+/// admission and result budgets, so statements keep HawDB's bounded-resource
+/// behavior; a saturated runtime raises `AdmissionError` before the statement
+/// runs.
 ///
 /// `Database()` opens an empty in-memory database; `Database(path)` opens
 /// a durable project directory.
@@ -368,7 +370,9 @@ impl Database {
     /// `params` is an optional list of positional parameters with the same
     /// supported value types as `execute`. For an INSERT, UPDATE or DELETE
     /// on a RowPage table, `affected_rows` of the result is the committed
-    /// row count.
+    /// row count. Admitted like `execute`: a saturated runtime raises
+    /// `AdmissionError` (`retryable` for a transient shortage) and runs
+    /// nothing.
     #[pyo3(signature = (sql, params = None))]
     fn execute_sql(
         &mut self,
@@ -396,11 +400,11 @@ impl Database {
             crate::boundary_profile::PhaseTimer::start(crate::boundary_profile::Phase::Engine);
         let result = py
             .detach(|| {
-                database
-                    .database_mut()
-                    .query_sql_with_result_and_params(sql, &values)
+                database.query_sql_request_admitted_with_result(
+                    SqlQueryRequest::new(sql).with_params(&values),
+                )
             })
-            .map_err(|error| format_hawdb_error(&error))?;
+            .map_err(|error| format_embedded_error(&error))?;
         #[cfg(feature = "boundary-profiling")]
         drop(engine);
         Ok(QueryResult::from_sql_result(result))
@@ -727,7 +731,9 @@ impl QueryResult {
 /// single user transaction and see their own writes. `commit()` publishes
 /// all staged mutations; `rollback()` discards them. Leaving a `with` block
 /// commits on success and rolls back on exception. Calling into the parent
-/// `Database` while a transaction is open raises `RuntimeError`.
+/// `Database` while a transaction is open raises `RuntimeError`. The
+/// transaction pins the snapshot it began with until it ends, even if it
+/// only reads, which holds back checkpoint reclamation.
 #[pyclass(module = "hawdb", name = "Transaction", unsendable)]
 pub struct Transaction {
     db: Py<Database>,
@@ -810,7 +816,10 @@ impl Transaction {
     /// Runs one SQL statement inside the transaction. Same signature and
     /// parameter types as `Database.execute_sql`. `affected_rows` of the
     /// result counts the rows the statement staged; they are published only
-    /// when the transaction commits.
+    /// when the transaction commits. Admitted like `Database.execute_sql`;
+    /// an `AdmissionError` stages nothing and leaves the transaction open.
+    /// The statement is recorded in the slow-query log and statement
+    /// summary, and refused once the handle is poisoned.
     #[pyo3(signature = (sql, params = None))]
     fn execute_sql(
         &mut self,
@@ -826,8 +835,12 @@ impl Transaction {
         let mut db = self.db.borrow_mut(py);
         let embedded = db.required()?;
         let result = py
-            .detach(|| embedded.transaction_query_sql_with_result_and_params(sql, &values))
-            .map_err(|error| format_hawdb_error(&error))?;
+            .detach(|| {
+                embedded.transaction_query_sql_request_admitted_with_result(
+                    SqlQueryRequest::new(sql).with_params(&values),
+                )
+            })
+            .map_err(|error| format_embedded_error(&error))?;
         Ok(QueryResult::from_sql_result(result))
     }
 
@@ -861,9 +874,13 @@ impl Transaction {
             let params = py_sequence_to_params(parameter_sequence(row)?)?;
             let mut db = transaction.db.borrow_mut(py);
             let embedded = db.required()?;
-            py.detach(|| embedded.transaction_query_sql_with_params(sql, &params))
-                .map(|_| ())
-                .map_err(|error| format_hawdb_error(&error))
+            py.detach(|| {
+                embedded.transaction_query_sql_request_admitted(
+                    SqlQueryRequest::new(sql).with_params(&params),
+                )
+            })
+            .map(|_| ())
+            .map_err(|error| format_embedded_error(&error))
         })
     }
 
@@ -1051,4 +1068,132 @@ pub fn open(
         max_read_result_payload_bytes,
         namespace_durability_anchor,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::errors::AdmissionError;
+    use hawdb::{RuntimePermit, RuntimeWorkKind, RuntimeWorkPriority, RuntimeWorkRequest};
+
+    const CREATE: &str = "CREATE TABLE items (id BIGINT PRIMARY KEY, qty BIGINT)";
+
+    /// Holds every CPU slot of the handle's governor until the permit drops.
+    fn saturate(py: Python<'_>, db: &Py<Database>) -> RuntimePermit {
+        let database = db.borrow(py);
+        let governor = database.inner.as_ref().unwrap().runtime_governor();
+        governor
+            .try_admit(
+                RuntimeWorkRequest::new(RuntimeWorkPriority::Foreground, RuntimeWorkKind::Control)
+                    .with_cpu_slots(governor.snapshot().limits.effective_cpu_slots.get()),
+            )
+            .unwrap()
+    }
+
+    fn assert_retryable_admission(py: Python<'_>, error: &PyErr) {
+        assert!(error.is_instance_of::<AdmissionError>(py), "{error}");
+        let value = error.value(py);
+        assert!(value
+            .getattr("retryable")
+            .unwrap()
+            .extract::<bool>()
+            .unwrap());
+        assert_eq!(
+            value.getattr("code").unwrap().extract::<String>().unwrap(),
+            "cpu_saturated"
+        );
+    }
+
+    fn execute_sql(py: Python<'_>, db: &Py<Database>, sql: &str) -> PyResult<QueryResult> {
+        db.borrow_mut(py).execute_sql(py, sql, None)
+    }
+
+    fn open(py: Python<'_>) -> Py<Database> {
+        let db = Py::new(
+            py,
+            Database::open_impl(None, false, None, None, None).unwrap(),
+        )
+        .unwrap();
+        execute_sql(py, &db, CREATE).unwrap();
+        db
+    }
+
+    #[test]
+    fn autocommit_sql_is_admitted_and_reports_affected_rows() {
+        Python::initialize();
+        Python::attach(|py| {
+            let db = open(py);
+            let busy = saturate(py, &db);
+            let refused = execute_sql(py, &db, "INSERT INTO items (id, qty) VALUES (1, 1)")
+                .err()
+                .expect("a saturated governor refuses autocommit SQL");
+            assert_retryable_admission(py, &refused);
+            drop(busy);
+            let inserted =
+                execute_sql(py, &db, "INSERT INTO items (id, qty) VALUES (2, 2), (3, 3)").unwrap();
+            assert_eq!(inserted.affected_rows, Some(2));
+            let selected = execute_sql(py, &db, "SELECT id FROM items").unwrap();
+            assert_eq!(selected.affected_rows, None);
+            assert_eq!(selected.row_count(), 2);
+        });
+    }
+
+    #[test]
+    fn transaction_sql_is_admitted_and_keeps_the_transaction_open() {
+        Python::initialize();
+        Python::attach(|py| {
+            let db = open(py);
+            let mut transaction = Database::transaction(db.clone_ref(py), py).unwrap();
+            let busy = saturate(py, &db);
+            let refused = transaction
+                .execute_sql(py, "INSERT INTO items (id, qty) VALUES (1, 1)", None)
+                .err()
+                .expect("a saturated governor refuses transaction SQL");
+            assert_retryable_admission(py, &refused);
+            drop(busy);
+            let inserted = transaction
+                .execute_sql(py, "INSERT INTO items (id, qty) VALUES (2, 2)", None)
+                .unwrap();
+            assert_eq!(inserted.affected_rows, Some(1));
+            // Only the admitted INSERT was staged.
+            let updated = transaction
+                .execute_sql(py, "UPDATE items SET qty = 0 WHERE id >= 0", None)
+                .unwrap();
+            assert_eq!(updated.affected_rows, Some(1));
+            transaction.commit(py).unwrap();
+            assert_eq!(
+                execute_sql(py, &db, "SELECT id FROM items")
+                    .unwrap()
+                    .row_count(),
+                1
+            );
+        });
+    }
+
+    #[test]
+    fn executemany_sql_is_admitted_and_rolls_the_batch_back() {
+        Python::initialize();
+        Python::attach(|py| {
+            let db = open(py);
+            let rows = PyList::new(py, [PyList::new(py, [1]).unwrap()]).unwrap();
+            let busy = saturate(py, &db);
+            let refused = Database::executemany_sql(
+                db.clone_ref(py),
+                py,
+                "INSERT INTO items (id) VALUES ($1)",
+                rows.as_any(),
+            )
+            .expect_err("a saturated governor refuses the batch");
+            assert_retryable_admission(py, &refused);
+            drop(busy);
+            // The batch's transaction is over and staged nothing.
+            assert!(!db.borrow(py).inner.as_ref().unwrap().transaction_active());
+            assert_eq!(
+                execute_sql(py, &db, "SELECT id FROM items")
+                    .unwrap()
+                    .row_count(),
+                0
+            );
+        });
+    }
 }

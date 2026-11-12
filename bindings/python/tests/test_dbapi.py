@@ -665,6 +665,17 @@ def test_a_retryable_execution_error_is_operational():
     assert translated.retryable
 
 
+def test_an_admission_refusal_is_operational_and_keeps_its_code():
+    error = hawdb.exceptions.AdmissionError(
+        "runtime admission cpu_saturated: requested 1, available 0"
+    )
+    error.code, error.retryable = "cpu_saturated", True
+    translated = dbapi._pep249(error, statement=True)
+    assert isinstance(translated, hawdb.exceptions.AdmissionError)
+    assert pep249_classes(translated) == [dbapi.DatabaseError, dbapi.OperationalError]
+    assert (translated.code, translated.retryable) == ("cpu_saturated", True)
+
+
 def test_built_in_errors_gain_classes_only_from_statements():
     for error, pep in [
         (TypeError("type"), dbapi.ProgrammingError),

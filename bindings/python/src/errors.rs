@@ -225,11 +225,19 @@ fn relational_error(
     })
 }
 
-/// Maps an [`EmbeddedQueryError`] onto the matching Python exception.
+/// Maps an [`EmbeddedQueryError`] onto the matching Python exception. An
+/// admission refusal carries the refused resource as `code` and `retryable`.
 pub fn format_embedded_error(error: &EmbeddedQueryError) -> PyErr {
     match error {
         EmbeddedQueryError::Database(inner) => format_hawdb_error(inner),
-        EmbeddedQueryError::Admission(_) => AdmissionError::new_err(error.to_string()),
+        EmbeddedQueryError::Admission(admission) => Python::attach(|py| {
+            let exception = AdmissionError::new_err(error.to_string());
+            let value = exception.value(py);
+            let attributes = value
+                .setattr("code", admission.code.as_str())
+                .and_then(|()| value.setattr("retryable", admission.is_retryable()));
+            attributes.err().unwrap_or(exception)
+        }),
         EmbeddedQueryError::Stopped(_) => TaskStoppedError::new_err(error.to_string()),
     }
 }
@@ -412,6 +420,46 @@ mod tests {
                         .extract::<bool>()
                         .unwrap());
                 }
+            }
+        });
+    }
+
+    #[test]
+    fn admission_refusal_carries_its_code_and_retryability() {
+        Python::initialize();
+        Python::attach(|py| {
+            for (code, retryable) in [
+                (hawdb::RuntimeAdmissionCode::CpuSaturated, true),
+                (hawdb::RuntimeAdmissionCode::MemorySaturated, false),
+            ] {
+                let exception = format_embedded_error(&EmbeddedQueryError::Admission(
+                    hawdb::RuntimeAdmissionError {
+                        code,
+                        requested: 2,
+                        available: 1,
+                        retryable,
+                    },
+                ));
+                assert!(exception.is_instance_of::<AdmissionError>(py));
+                let value = exception.value(py);
+                assert_eq!(
+                    value.getattr("code").unwrap().extract::<String>().unwrap(),
+                    code.as_str()
+                );
+                assert_eq!(
+                    value
+                        .getattr("retryable")
+                        .unwrap()
+                        .extract::<bool>()
+                        .unwrap(),
+                    retryable
+                );
+                assert!(value
+                    .str()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .contains(code.as_str()));
             }
         });
     }

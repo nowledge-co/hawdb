@@ -97,7 +97,9 @@ with hawdb.open(max_read_result_rows=1000, max_read_result_payload_bytes=1048576
 ```
 
 Omitted options and `None` preserve engine defaults: no host row ceiling and a
-64 MiB result payload ceiling. Zero rows follows `DatabaseConfig` semantics and
+64 MiB result payload ceiling. Statements that pass runtime admission (see
+[Usage](#usage)) are also held to the runtime's result budget of 16 MiB per
+statement, which a larger payload ceiling does not raise. Zero rows follows `DatabaseConfig` semantics and
 disables the host row ceiling; zero payload bytes remains a zero-byte ceiling.
 Other engine memory and session limits still apply. These options do not expose
 the rest of `DatabaseConfig` or change durability.
@@ -393,6 +395,29 @@ savepoints. Catching the exception does not leave a partial batch that can later
 be committed. A successful batch stays staged until the caller commits or exits
 the transaction context normally.
 
+`db.execute`, `db.execute_sql` and `tx.execute_sql`, and every row of
+`db.executemany_sql` and `tx.executemany_sql`, pass the embedded runtime's
+admission before they run. When the runtime is saturated the statement raises
+`hawdb.exceptions.AdmissionError` and nothing of it runs; its `code` names the
+refused resource and `retryable` is `True` for a transient shortage, so the
+call can be retried. A refused `tx.execute_sql` leaves the transaction open with
+its earlier statements staged, while a refused batch rolls back like any batch
+failure. Cypher in a transaction (`tx.execute`, `db.executemany`,
+`tx.executemany`), `db.explain` and `db.read_transaction()` statements are not
+admitted.
+
+SQL statements in `db.transaction()` are recorded in the slow-query log and
+statement summary like autocommit statements, under their own text and
+statement kind, although their effects stay staged until commit; a failed one
+counts as an error. Once a storage integrity failure has poisoned the handle,
+they are refused like autocommit statements, and an integrity failure of a
+read in a transaction poisons the handle.
+
+A transaction pins the snapshot it began with until it commits or rolls back,
+even if it only reads, and that pin holds back checkpoint reclamation. End
+transactions promptly and read in autocommit for long-lived work;
+`db.read_transaction()` pins its snapshot the same way until it is closed.
+
 `hawdb.open()` without a path returns an empty in-memory database for tests,
 notebooks, and other hosts that already hold their data. It answers the same
 `execute` / `execute_sql` calls through the same embedded admission path;
@@ -545,7 +570,9 @@ as well: a syntax error is both a `ProgrammingError` and a
 `hawdb.exceptions.ParseError`. A constraint violation such as a duplicate
 primary key is an `IntegrityError`, and a value of the wrong type for its
 column is a `DataError`; each is also the `StorageError` (autocommit) or
-`ExecutionError` (transaction) it was before. Use and close a connection on the thread that opened it.
+`ExecutionError` (transaction) it was before. A statement refused by runtime
+admission is an `OperationalError` and still the `AdmissionError` with its
+`retryable` flag. Use and close a connection on the thread that opened it.
 
 Rows are tuples in SELECT-list order, and `description` lists the columns even
 when nothing matches, including queries on `information_schema`, `pg_catalog`
