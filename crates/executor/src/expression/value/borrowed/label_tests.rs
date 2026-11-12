@@ -158,3 +158,30 @@ fn label_values_are_charged_to_the_memory_account() {
         assert_eq!(account.available_bytes(), available);
     }
 }
+
+/// A label id the catalog cannot name is a storage inconsistency: `label(n)`
+/// and `labels(n)` refuse it rather than skipping it and returning the
+/// remaining label.
+#[test]
+fn a_label_id_missing_from_the_catalog_is_refused_not_skipped() {
+    let (catalog, mut binding) = fixture();
+    let person = catalog.label_id("Person").unwrap();
+    let unknown = hawdb_core::LabelId(u32::MAX);
+    assert!(catalog.label_name(unknown).is_none());
+    binding.nodes.insert(
+        "stale".to_string(),
+        NodeRecord {
+            id: NodeId(9),
+            labels: [unknown, person].into_iter().collect(),
+            properties: BTreeMap::new(),
+        },
+    );
+    for function in [LabelFunction::Label, LabelFunction::Labels] {
+        let error = evaluate_projection_expression(&call(function, "stale"), &catalog, &binding)
+            .unwrap_err();
+        assert!(
+            matches!(error, HawDBError::StorageIntegrity(_)),
+            "{function:?}: {error:?}"
+        );
+    }
+}
