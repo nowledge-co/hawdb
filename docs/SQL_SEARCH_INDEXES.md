@@ -559,11 +559,10 @@ document keeping its ordinal, and delete-heavy churn compacting blocks until
 the relation is empty; every layout check also verifies each bounds row
 against its block and the lengths of its documents.
 
-`api::tests::search_indexes::scan` covers the access path: exact top-k equal
-to the oracle (ids and score bits) on random Zipf-like corpora with random
-queries, `k` and stream filters, before and after churn that rewrites,
-shortens, deletes and inserts documents (block bounds re-verified after each
-phase); a one-row top-k over 3,000 documents decoding a small fraction of the
+`api::tests::search_indexes::scan` covers the access path: exact top-k and
+stream-filtered top-k equal to the oracle (ids and score bits) after
+documents in early, middle and late blocks shorten, so their blocks' length
+bounds must drop; a one-row top-k over 3,000 documents decoding a small fraction of the
 postings and skipping most blocks unread (from `EXPLAIN ANALYZE`); filters by
 bounded over-fetch (more than one round, the stream's own top-k, a bounded
 number of hydrated candidates, and a filter nothing satisfies); LIMIT
@@ -572,11 +571,14 @@ and the concurrency footprint (a source writer does not conflict with writers
 of other tables or other rows; a serializable `text_search` read conflicts
 with a concurrent source change and with nothing else).
 
-`hawdb_executor::bm25` units check Block-Max WAND against brute force on 400
-random corpora (random block sizes, conservative length bounds, unique keys
-unrelated to ordinals), ties among identical documents ordered by key, and a
-100,000-document corpus where a one-row top-k decodes under 5% of the
-postings. `hawdb-relational` units check that the scan's memory is admitted
+`hawdb_executor::bm25` units check Block-Max WAND against brute force on
+named cases: empty input, block boundaries (one-posting to single-block
+lists, `k` around a block and the match count), loose length bounds, ties
+among identical documents ordered by key, and a 100,000-document corpus where
+a one-row top-k decodes under 5% of the postings. The generated differential
+campaigns (400 random kernel corpora; four random SQL corpora with random
+queries, filters and churn) are ignored tests, run only by hand, with the
+seed in every failure message; see [the test index](TEST_INDEX.md). `hawdb-relational` units check that the scan's memory is admitted
 to its own account (one 512 KiB budget serves the named top-10 fixtures with
 4,096 and 16,384 matches; the full-ranking scan needed 56 bytes per match,
 917 KB for the larger). A sparse-after-deletion case verifies low-budget

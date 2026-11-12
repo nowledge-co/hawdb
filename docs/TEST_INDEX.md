@@ -870,17 +870,22 @@ block and the lengths of its documents. A focused compaction regression
 empties the retained first block while its successor has 192 postings, then
 shrinks that successor to 19 postings and verifies the merged length bound,
 remaining rows and exact search results. The `scan` submodule owns the
-`Bm25IndexScan` access path: exact top-k equal to the oracle (ids and score
-bits) on four random Zipf-like corpora with random queries, `k` and stream
-filters before and after churn that rewrites, shortens, deletes and inserts
-documents; a one-row top-k over 3,000 documents decoding a small fraction of
+`Bm25IndexScan` access path: exact top-k and stream-filtered top-k equal to
+the oracle (ids and score bits) after documents in early, middle and late
+blocks shorten (`search_index_scan_stays_exact_after_documents_shorten`); a
+one-row top-k over 3,000 documents decoding a small fraction of
 the postings with most blocks never read (asserted from `EXPLAIN ANALYZE`);
 filters by bounded over-fetch (several rounds, the stream's own top-k,
 bounded hydration, a filter nothing satisfies); LIMIT pushdown in rank order
 only; the EXPLAIN operator tree and ANALYZE fields; and the concurrency
 footprint (source writers do not conflict with writers of other tables or
 rows, and a serializable `text_search` read conflicts with a concurrent
-source change only). It belongs to the
+source change only). The generated differential campaign
+`search_index_scan_generated_campaign` (four random Zipf-like corpora, random
+queries, `k`, stream filters and churn; the corpus seed is in every failure
+message) is `#[ignore]`d, local only and not run by CI:
+`cargo test --locked -p hawdb --lib search_index_scan_generated_campaign -- --ignored`.
+The family belongs to the
 existing root general unit lane and Cargo library tests; the reopen/mode case
 takes about 25 seconds locally and the admission case about 5 seconds. Replay:
 `cargo test --locked -p hawdb --lib api::tests::search_indexes`. The storage
@@ -899,11 +904,15 @@ unknown-layout refusal
 (`cargo test --locked -p hawdb-storage --lib search_index`); `hawdb-sql`'s `tests::search_index` covers the DDL and table
 function grammar (`cargo test --locked -p hawdb-sql --lib search_index`).
 `hawdb-executor`'s `bm25::tests` own the shared scorer and Block-Max WAND
-kernel: brute-force equality (hits, keys, score bits) on 400 random corpora
-with random block sizes and conservative length bounds, ties among identical
+kernel: brute-force equality (hits, keys, score bits) on named cases (empty
+input, block boundaries, loose length bounds), ties among identical
 documents ordered by key, and a 100,000-document corpus on which a one-row
 top-k decodes under 5% of the postings
 (`cargo test --locked -p hawdb-executor --lib bm25`; well under a second).
+The 400-case generated campaign `block_max_wand_generated_campaign` is
+`#[ignore]`d, local only and not run by CI; each failure names its case
+seed, replayed by `generated_case(seed)`:
+`cargo test --locked -p hawdb-executor --lib bm25::tests::block_max_wand_generated_campaign -- --ignored`.
 `hawdb-relational`'s `query::tests::text_search_admission` indexes 4,096
 documents sharing one term (and 16,384 in a second corpus) and requires both
 top-10s to run within one 512 KiB blocking budget (the full-ranking scan
