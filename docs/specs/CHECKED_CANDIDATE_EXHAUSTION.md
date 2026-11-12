@@ -39,6 +39,10 @@ The validator requires:
 - Every requested retrieval leg was available and has exact input eligibility.
 - Known exhaustive scoring evidence: BM25/segmented BM25 for text, and raw
   vector candidate generation plus raw vector final scoring for vectors.
+- No lossy query-term reduction in the text leg. `TextQueryTermsReduced`
+  refuses exhaustion even when the retained terms use exact BM25, the result
+  window is complete, or an exact vector leg also ran. `MostSelective` without
+  actual term reduction remains eligible for a proof.
 
 ANN candidate generation is not an exhaustion proof, even after raw vector
 reranking, with exact metadata filters, with fewer than k results, or when the
@@ -108,6 +112,10 @@ ranking windows, check missing/unknown retrievers and safe diagnostics, and
 reject ANN generation followed by raw reranking. A two-document persisted
 fixture executes out-of-core exact text/vector/hybrid queries and the default
 graph candidate path; it also retains the original metrics.
+Six-document resident, retained-generation and persisted-reader regressions
+retain documents matching only a dropped term. They distinguish exact and
+unchanged `MostSelective` queries from reduced text and hybrid queries, and
+verify that refusal preserves the bounded result and report.
 
 The existing root `fallible_search_contract` default/minimal owners verify the
 public facade export and explicit bounded result/report behavior. Compile-fail

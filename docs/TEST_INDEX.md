@@ -13,8 +13,11 @@ require `full-text-search`; vector/hybrid cases additionally require
 `vector-search`; typed refusal diagnostics run in every profile. Two-document
 resident and persisted out-of-core fixtures distinguish completed empty queries
 from bounded windows, offsets, restricted ranking, unavailable/unknown
-retrievers and ANN candidate generation followed by raw reranking. The public
-facade assertions extend `//:hawdb_fallible_search_contract_tests` and
+retrievers and ANN candidate generation followed by raw reranking.
+Six-document fixtures also cover lossy lexical term reduction through resident,
+retained-generation and persisted readers, unchanged `MostSelective` controls,
+exact-vector hybrid requests, and preservation of bounded results on refusal.
+The public facade assertions extend `//:hawdb_fallible_search_contract_tests` and
 `//:hawdb_fallible_search_contract_minimal_tests` in their existing CI owners.
 Snapshot and exact-vector owners retain their existing assertions while
 explicitly choosing bounded coverage for top-k. Compile-fail documentation

@@ -20,8 +20,8 @@ use super::{
     search_candidate_report, SearchCandidateOutput, SearchCandidateReport, SearchCandidateRequest,
 };
 use crate::{
-    CompressedVectorSearchMode, SearchHit, SearchMode, SearchOutOfCoreMetrics, SearchResultSet,
-    SearchRetrieverReport,
+    CompressedVectorSearchMode, SearchFallbackReasonCode, SearchHit, SearchMode,
+    SearchOutOfCoreMetrics, SearchResultSet, SearchRetrieverReport,
 };
 
 /// Why an otherwise valid bounded result cannot certify source exhaustion.
@@ -223,13 +223,19 @@ fn exhaustive_retriever(retriever: &SearchRetrieverReport) -> bool {
                 && retriever.final_score_source == "raw_vector"
         }
         "text" => {
-            matches!(
-                retriever.candidate_score_source.as_str(),
-                "bm25" | "segmented_bm25"
-            ) && matches!(
-                retriever.final_score_source.as_str(),
-                "bm25" | "segmented_bm25"
-            )
+            // Scoring retained terms exactly does not cover documents that
+            // matched only query terms discarded by the lexical policy.
+            !retriever
+                .fallback_reason_codes
+                .contains(&SearchFallbackReasonCode::TextQueryTermsReduced)
+                && matches!(
+                    retriever.candidate_score_source.as_str(),
+                    "bm25" | "segmented_bm25"
+                )
+                && matches!(
+                    retriever.final_score_source.as_str(),
+                    "bm25" | "segmented_bm25"
+                )
         }
         _ => false,
     }
