@@ -291,8 +291,8 @@ impl JoinAdapter<'_, '_, '_> {
         )?;
         let mut row = probe.clone();
         for name in self.introduced {
-            row.nodes.remove(name);
-            row.relationships.remove(name);
+            row.nodes.discard(name);
+            row.relationships.discard(name);
             row.values.insert(name.clone(), Value::Null);
         }
         self.append(&row)
@@ -461,8 +461,8 @@ pub(super) fn stream_graph_match_hash_join(
             runtime_checkpoint(context.task_context)?;
             let mut probe = row.clone();
             for name in &program.introduced {
-                probe.nodes.remove(name);
-                probe.relationships.remove(name);
+                probe.nodes.discard(name);
+                probe.relationships.discard(name);
                 probe.values.remove(name);
             }
             let control = match probe_key(&probe, adapter.import)? {

@@ -1,8 +1,9 @@
 # Optimizer cost qualification and calibration
 
 Status: phase 1 candidate proof implemented, 2026-11-10; phases 2 through 5
-remain prospective acceptance criteria. The four-family timing runner,
-observed-cardinality diagnosis and coefficient fitter are not implemented.
+remain prospective acceptance criteria. A separate paired-measurement pilot
+covers warm materialized Cypher bounded ordering only. The full four-family
+runner, observed-cardinality diagnosis and coefficient fitter are not implemented.
 Existing optimizer and admission contracts remain authoritative.
 
 Tracking: [#1596](https://github.com/nowledge-co/hawdb/issues/1596).

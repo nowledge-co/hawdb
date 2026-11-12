@@ -1,8 +1,10 @@
 # Optimizer cost qualification development plan
 
-Status: phase 1 candidate proof implemented, 2026-11-10. The shared workload
-generator, frozen ordinary-plan baseline and fixed Sort/TopN proof are manual
-tools; the four-family runner, diagnosis and fitting phases remain pending. The
+Status: phase 1 candidate proof implemented, 2026-11-10; a manual warm,
+materialized Cypher bounded-order measurement/paired-diagnosis pilot is also
+available through `query-lab cost-measure`. The shared workload generator,
+ordinary-plan baseline and fixed proof remain separate protocols. The complete
+four-family runner, observed-cardinality re-costing and fitting remain pending. The
 [specification](specs/OPTIMIZER_COST_QUALIFICATION_SPEC.md) defines acceptance;
 [TODO](../TODO.md) is the single actionable checklist. Related work:
 [#1596](https://github.com/nowledge-co/hawdb/issues/1596).

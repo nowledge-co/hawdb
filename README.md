@@ -337,6 +337,7 @@ Alongside the models, the repository keeps differential fuzzing, crash-recovery 
 | [`docs/FILE_DESCRIPTOR_CAPACITY.md`](docs/FILE_DESCRIPTOR_CAPACITY.md) | Descriptor capacity, pins, internal progress and Windows probe isolation |
 | [`docs/specs/README.md`](docs/specs/README.md) | Index of normative contracts |
 | [`docs/WASM.md`](docs/WASM.md) | In-tree experimental browser runtime |
+| [`docs/PREBUILT_LIBRARIES.md`](docs/PREBUILT_LIBRARIES.md) | Prebuilt C ABI release archives and the Bun npm packages |
 | [hawdb.ai](https://hawdb.ai) | Public site and playground. Source: [hawdb-website](https://github.com/nowledge-co/hawdb-website) |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Issues, pull requests, and validation expectations |
 
