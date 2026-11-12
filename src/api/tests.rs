@@ -127,6 +127,7 @@ mod knowledge_retrieval_graph_context;
 mod knowledge_retrieval_identity;
 mod knowledge_retrieval_pipeline;
 mod knowledge_retrieval_ranking;
+mod kuzu_string_cast;
 mod label_lifecycle;
 mod list_functions;
 mod list_literals;
