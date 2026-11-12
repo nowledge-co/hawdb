@@ -17,10 +17,11 @@ use hawdb_sql::SqlTextSearch;
 use hawdb_storage::relational::{
     decode_search_sealed_block, search_index_block_fence, search_index_dictionary_key,
     search_index_length_block_range, search_index_length_block_start,
-    search_index_sealed_block_range, search_index_statistics_key, SearchIndexStatistics,
-    SearchLengthBlock, SearchPosting, SearchTermDictionary, SEARCH_INDEX_COLUMN_COUNT,
-    SEARCH_INDEX_LENGTH_BLOCK_DOCUMENTS,
+    search_index_sealed_block_range, search_index_statistics_key, SearchIndexAnalyzer,
+    SearchIndexStatistics, SearchLengthBlock, SearchPosting, SearchTermDictionary,
+    SEARCH_INDEX_COLUMN_COUNT, SEARCH_INDEX_LENGTH_BLOCK_DOCUMENTS,
 };
+use std::collections::btree_map::Entry;
 
 /// Okapi BM25 with the conventional Lucene defaults.
 const BM25_K1: f64 = 1.2;
@@ -28,6 +29,12 @@ const BM25_B: f64 = 0.75;
 pub const TEXT_SEARCH_SCORE_COLUMN: &str = "score";
 /// Upper bound on `top_k`; larger result sets should page with OFFSET.
 pub const TEXT_SEARCH_MAX_TOP_K: usize = 10_000;
+
+/// Estimated resident bytes of one entry of a B-tree map or set: twice the
+/// entry (nodes other than the root are at least half full) plus headers.
+const fn btree_entry_bytes<K, V>() -> usize {
+    2 * (std::mem::size_of::<K>() + std::mem::size_of::<V>()) + 16
+}
 
 fn semantic(message: impl Into<String>) -> HawDBError {
     HawDBError::Semantic(message.into())
@@ -121,7 +128,8 @@ fn data(row: &RelationalReadRow) -> Result<&[u8]> {
 fn rank<R: RelationalRowStoreReader>(
     state: &RelationalState,
     index: &str,
-    terms: &[String],
+    analyzer: SearchIndexAnalyzer,
+    query: &str,
     row_mode: RelationalRowReadMode<'_, R>,
     resources: &RelationalQueryResourceContext<'_>,
     ledger: &QueryMemoryLedger,
@@ -150,6 +158,14 @@ fn rank<R: RelationalRowStoreReader>(
         resources.execution_memory.blocking_operator_bytes,
     );
     let mut memory = account.reserve(0)?;
+    // Query terms, the needed-lengths set and the score map are admitted
+    // before each allocation, like the postings and identities below.
+    let terms = analyzer.admitted_query_terms(query, |bytes| memory.grow(bytes))?;
+    memory.grow(
+        terms
+            .len()
+            .saturating_mul(std::mem::size_of::<(f64, Vec<SearchPosting>)>()),
+    )?;
     let mut work = 0usize;
     let max_work = resources.limits.max_candidate_work;
     let mut charge_work = |amount: usize| {
@@ -166,7 +182,7 @@ fn rank<R: RelationalRowStoreReader>(
     // Phase 1: every query term's postings and IDF, in query-term order.
     let mut gathered = Vec::<(f64, Vec<SearchPosting>)>::with_capacity(terms.len());
     let mut needed = BTreeSet::<u64>::new();
-    for term in terms {
+    for term in &terms {
         hawdb_executor::pipeline::runtime_checkpoint(resources.task_context)?;
         let Some(row) = runtime.read_point(index, &search_index_dictionary_key(term))? else {
             continue;
@@ -176,7 +192,7 @@ fn rank<R: RelationalRowStoreReader>(
         // term is refused before any of its blocks is read.
         let frequency = usize::try_from(dictionary.document_frequency).unwrap_or(usize::MAX);
         charge_work(frequency)?;
-        memory.grow(frequency.saturating_mul(std::mem::size_of::<SearchPosting>() + 16))?;
+        memory.grow(frequency.saturating_mul(std::mem::size_of::<SearchPosting>()))?;
         let mut postings = Vec::with_capacity(frequency);
         if dictionary.sealed_blocks > 0 {
             let mut blocks = 0u64;
@@ -210,8 +226,17 @@ fn rank<R: RelationalRowStoreReader>(
         if postings.is_empty() {
             continue;
         }
+        // Ordinals ascend within a term, so each block is checked once.
+        let mut previous = None;
         for posting in &postings {
-            needed.insert(posting.ordinal / SEARCH_INDEX_LENGTH_BLOCK_DOCUMENTS);
+            let block = posting.ordinal / SEARCH_INDEX_LENGTH_BLOCK_DOCUMENTS;
+            if previous != Some(block) {
+                previous = Some(block);
+                if !needed.contains(&block) {
+                    memory.grow(btree_entry_bytes::<u64, ()>())?;
+                    needed.insert(block);
+                }
+            }
         }
         let frequency = postings.len() as f64;
         let idf = (1.0 + (documents - frequency + 0.5) / (frequency + 0.5)).ln();
@@ -259,15 +284,29 @@ fn rank<R: RelationalRowStoreReader>(
             let length = entry(posting.ordinal)?.length;
             let term_frequency = posting.frequency as f64;
             let normalization = BM25_K1 * (1.0 - BM25_B + BM25_B * length as f64 / average_length);
-            *scores.entry(posting.ordinal).or_insert(0.0) +=
+            let contribution =
                 idf * term_frequency * (BM25_K1 + 1.0) / (term_frequency + normalization);
+            let score = match scores.entry(posting.ordinal) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => {
+                    // A document's first matching term admits its map entry.
+                    memory.grow(btree_entry_bytes::<u64, f64>())?;
+                    entry.insert(0.0)
+                }
+            };
+            *score += contribution;
         }
     }
     drop(gathered);
+    memory.grow(
+        scores
+            .len()
+            .saturating_mul(std::mem::size_of::<(String, f64)>()),
+    )?;
     let mut ranked = Vec::with_capacity(scores.len());
     for (ordinal, score) in scores {
         let document = &entry(ordinal)?.key;
-        memory.grow(document.len().saturating_mul(2).saturating_add(64))?;
+        memory.grow(document.len().saturating_mul(2).saturating_add(2))?;
         ranked.push((identity(document), score));
     }
     // Hex identities preserve the encoded-key byte order used for ties.
@@ -333,11 +372,11 @@ pub(super) fn execute_text_search_select<R: RelationalQueryStoreReader>(
         resources.execution_memory,
         resources.task_context,
     )?);
-    let terms = spec.analyzer.query_terms(bound.query);
     let (ranked, index_evidence) = rank(
         state,
         bound.index,
-        &terms,
+        spec.analyzer,
+        bound.query,
         read_modes.row,
         &resources,
         &ledger,

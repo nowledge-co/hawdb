@@ -83,7 +83,10 @@ own staged writes, like any other SELECT.
 
 Work is bounded by the ordinary SQL read limits: postings visited by the
 ranking phase and rows hydrated for `WHERE` count against the query's
-candidate-work limit, and score state is charged to the query memory ledger.
+candidate-work limit, and the query's terms, gathered postings, the set of
+needed lengths rows, each document's score entry and the ranked identities are
+charged to the query memory ledger before each is allocated, so a broad term is
+refused before its score map outgrows the budget.
 Exceeding a limit fails the query; it never returns a truncated ranking.
 
 ## Analyzer `cjk_ngram`
@@ -136,7 +139,12 @@ the gathered postings share the transaction's `RelationalMutationLimits` budget
 (250,000 row work units and 64 MiB of logical payload by default). A document
 with `t` distinct terms costs about `t` dictionary-row reads and writes per
 insert; a backfill costs about the source row count plus the corpus's distinct
-term count, plus a few dozen payload bytes per posting. A transaction that
+term count, plus a few dozen payload bytes per posting. Analysis is streamed:
+each distinct term of a document is charged to the same payload budget (its
+bytes plus an estimated map entry) before it is allocated, repeated tokens
+allocate nothing, and long analyses reach a cancellation checkpoint every 4,096
+tokens, so a large ideographic value is refused part-way through analysis
+instead of first expanding into millions of token strings. A transaction that
 exceeds the budget is rejected before WAL append with its source rows; load in
 smaller transactions, or create the index on a smaller corpus first, when a
 backfill is refused.
@@ -319,12 +327,16 @@ analyzer, requiring bit-equal scores, through inserts, updates (including primar
 deletes, upserts, drop/re-create backfill, explicit transactions and rollback,
 WAL replay, checkpoint reopen, torn WAL tails (strict refusal and repair),
 shadow/demand-paged index modes, out-of-core residency, authoritative refusal,
-branch isolation, concurrent writers, admission refusal and coexistence with a
+branch isolation, concurrent writers, admission refusal (including a large
+pseudo-random CJK document refused with its row) and coexistence with a
 materialized view. Layout cases check exact block shapes as tails seal,
 changes to older documents at block boundaries, a block split by one large
 transaction, many updates of one document keeping its ordinal, and
 delete-heavy churn compacting blocks until the relation is empty. Storage and
-SQL units cover the analyzer, the layout codec (varint widths and refused
+SQL units cover the analyzer (streamed document terms equal to the
+materialized tokens, and an allocation-observed refusal of a 1,000,000-ideograph
+value before expansion), `text_search` admitting score entries before the
+score map grows (an allocation-observed broad-term refusal), the layout codec (varint widths and refused
 spellings, block/dictionary/statistics/lengths round trips and corrupt
 inputs), the schema codec with unknown analyzer and layout tags, and the
 grammar. The Bun suite runs the same SQL through `querySQL` on a

@@ -679,6 +679,42 @@ fn search_index_backfill_and_writes_are_admitted_atomically() {
 }
 
 #[test]
+fn search_index_refuses_large_cjk_document_before_expanding_it() {
+    let mut db = Database::new();
+    db.query_sql(SCHEMA).unwrap();
+    db.query_sql(INDEX).unwrap();
+    insert(&mut db, 1, "s", Some("数据库"));
+    // 800,000 pseudo-random ideographs (2.4 MB of TEXT) analyze into about
+    // 1.6 million distinct unigrams and bigrams. Their admission exceeds the
+    // transaction payload budget part-way through analysis, so the row is
+    // refused without materializing every term.
+    let mut state = 0x2545_f491_u32;
+    let text = (0..800_000)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            char::from_u32(0x4E00 + state % 0x5200).unwrap()
+        })
+        .collect::<String>();
+    let error = db
+        .query_sql_with_params(
+            "INSERT INTO events (id, stream, seq, text) VALUES (2, 's', 2, $1)",
+            &[Value::String(text)],
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("payload budget"), "{error}");
+    assert!(db
+        .query_sql("SELECT id FROM events WHERE id = 2")
+        .unwrap()
+        .rows
+        .is_empty());
+    assert_eq!(ids(&search(&mut db, "数据库", 5)), [1]);
+    assert_matches_oracle(&mut db, "数据库");
+}
+
+#[test]
 fn search_index_coexists_with_materialized_views_on_one_source() {
     let mut db = Database::new();
     corpus(&mut db);

@@ -75,42 +75,102 @@ impl SearchIndexAnalyzer {
     }
 
     /// Index-side tokens in document order, with repetition. The count is
-    /// the BM25 document length.
+    /// the BM25 document length. Allocates every token; maintenance uses
+    /// [`Self::document_terms`] instead.
     pub fn index_tokens(self, text: &str) -> Vec<String> {
         let mut tokens = Vec::new();
-        analyze(text, |run| match run {
-            Run::Word(word) => tokens.push(word),
-            Run::Ideographic(chars) => {
-                for (position, ch) in chars.iter().enumerate() {
-                    tokens.push(ch.to_string());
-                    if let Some(next) = chars.get(position + 1) {
-                        tokens.push([*ch, *next].iter().collect());
-                    }
-                }
-            }
+        let Ok(()) = self.visit_index_tokens::<std::convert::Infallible>(text, |token| {
+            tokens.push(token.to_owned());
+            Ok(())
         });
         tokens
+    }
+
+    /// Visits index-side tokens in document order, with repetition. Tokens
+    /// borrow bounded scratch buffers, so analysis itself allocates nothing
+    /// proportional to the text, and `visit` can stop it at any token.
+    pub fn visit_index_tokens<E>(
+        self,
+        text: &str,
+        mut visit: impl FnMut(&str) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let mut buffer = [0u8; 8];
+        analyze(text, |piece| match piece {
+            Piece::Word(word) => visit(word),
+            Piece::Ideograph { previous, ch } => {
+                if let Some(previous) = previous {
+                    visit(ideographic_token(&mut buffer, Some(previous), ch))?;
+                }
+                visit(ideographic_token(&mut buffer, None, ch))
+            }
+            Piece::LoneIdeograph(_) => Ok(()),
+        })
+    }
+
+    /// One document's distinct index terms with their frequencies, and its
+    /// length. `admit` is called with an estimate of the bytes each new
+    /// distinct term will occupy before that term is allocated, and with 0
+    /// every [`SEARCH_INDEX_ANALYSIS_CHECKPOINT_TOKENS`] tokens as a
+    /// cancellation checkpoint; its first error stops the analysis. Repeated
+    /// tokens allocate nothing.
+    pub fn document_terms<E>(
+        self,
+        text: &str,
+        mut admit: impl FnMut(usize) -> Result<(), E>,
+    ) -> Result<(BTreeMap<String, u64>, u64), E> {
+        let mut terms = BTreeMap::<String, u64>::new();
+        let mut length = 0u64;
+        self.visit_index_tokens(text, |token| {
+            length += 1;
+            if length.is_multiple_of(SEARCH_INDEX_ANALYSIS_CHECKPOINT_TOKENS) {
+                admit(0)?;
+            }
+            match terms.get_mut(token) {
+                Some(frequency) => *frequency += 1,
+                None => {
+                    admit(search_index_term_entry_bytes(token))?;
+                    terms.insert(token.to_owned(), 1);
+                }
+            }
+            Ok(())
+        })?;
+        Ok((terms, length))
     }
 
     /// Distinct query-side terms in ascending order. Multi-character
     /// ideographic runs use their bigrams, which are more selective than the
     /// unigrams also present in the index; a lone character uses its unigram.
     pub fn query_terms(self, text: &str) -> Vec<String> {
-        let mut terms = BTreeSet::new();
-        analyze(text, |run| match run {
-            Run::Word(word) => {
-                terms.insert(word);
+        let Ok(terms) = self.admitted_query_terms::<std::convert::Infallible>(text, |_| Ok(()));
+        terms
+    }
+
+    /// [`Self::query_terms`], calling `admit` with each new distinct term's
+    /// estimated bytes before allocating it.
+    pub fn admitted_query_terms<E>(
+        self,
+        text: &str,
+        mut admit: impl FnMut(usize) -> Result<(), E>,
+    ) -> Result<Vec<String>, E> {
+        let mut terms = BTreeSet::<String>::new();
+        let mut buffer = [0u8; 8];
+        let mut insert = |term: &str| {
+            if !terms.contains(term) {
+                admit(search_index_term_entry_bytes(term))?;
+                terms.insert(term.to_owned());
             }
-            Run::Ideographic(chars) if chars.len() == 1 => {
-                terms.insert(chars[0].to_string());
-            }
-            Run::Ideographic(chars) => {
-                for pair in chars.windows(2) {
-                    terms.insert(pair.iter().collect());
-                }
-            }
-        });
-        terms.into_iter().collect()
+            Ok(())
+        };
+        analyze(text, |piece| match piece {
+            Piece::Word(word) => insert(word),
+            Piece::Ideograph {
+                previous: Some(previous),
+                ch,
+            } => insert(ideographic_token(&mut buffer, Some(previous), ch)),
+            Piece::Ideograph { previous: None, .. } => Ok(()),
+            Piece::LoneIdeograph(ch) => insert(ideographic_token(&mut buffer, None, ch)),
+        })?;
+        Ok(terms.into_iter().collect())
     }
 }
 
@@ -119,11 +179,6 @@ impl SearchIndexAnalyzer {
 pub struct SearchIndexSpec {
     pub column: String,
     pub analyzer: SearchIndexAnalyzer,
-}
-
-enum Run {
-    Word(String),
-    Ideographic(Vec<char>),
 }
 
 fn fold(ch: char) -> char {
@@ -152,36 +207,105 @@ pub(crate) fn is_ideographic(ch: char) -> bool {
     )
 }
 
-fn analyze(text: &str, mut emit: impl FnMut(Run)) {
-    let mut word = String::new();
-    let mut ideographic = Vec::new();
-    let flush_word = |word: &mut String, emit: &mut dyn FnMut(Run)| {
-        if !word.is_empty() {
-            let token = std::mem::take(word);
-            if token.len() <= SEARCH_INDEX_MAX_TOKEN_BYTES {
-                emit(Run::Word(token));
-            }
+/// One analysis event. Words borrow a scratch buffer bounded by
+/// [`SEARCH_INDEX_MAX_TOKEN_BYTES`]; ideographic runs are streamed one
+/// character at a time, so nothing proportional to the text is buffered.
+enum Piece<'a> {
+    Word(&'a str),
+    /// An ideographic character and its predecessor in the same run.
+    Ideograph {
+        previous: Option<char>,
+        ch: char,
+    },
+    /// The end of an ideographic run of exactly one character.
+    LoneIdeograph(char),
+}
+
+/// A unigram (`previous == None`) or bigram encoded into `buffer`.
+fn ideographic_token(buffer: &mut [u8; 8], previous: Option<char>, ch: char) -> &str {
+    let mut length = 0;
+    if let Some(previous) = previous {
+        length = previous.encode_utf8(&mut buffer[..]).len();
+    }
+    length += ch.encode_utf8(&mut buffer[length..]).len();
+    std::str::from_utf8(&buffer[..length]).expect("encoded characters are UTF-8")
+}
+
+/// Estimated resident bytes of one distinct analysis term in a B-tree map
+/// or set: the term's bytes plus twice the entry (B-tree nodes other than
+/// the root are at least half full) plus node headers.
+pub fn search_index_term_entry_bytes(term: &str) -> usize {
+    term.len()
+        .saturating_add(2 * (std::mem::size_of::<String>() + std::mem::size_of::<u64>()))
+        .saturating_add(16)
+}
+
+/// Tokens between analysis cancellation checkpoints.
+pub const SEARCH_INDEX_ANALYSIS_CHECKPOINT_TOKENS: u64 = 4096;
+
+struct Scanner {
+    word: String,
+    /// The current word already exceeds the token bound; the rest of it is
+    /// skipped instead of buffered.
+    oversized: bool,
+    previous: Option<char>,
+    run: usize,
+}
+
+impl Scanner {
+    fn flush_word<E>(
+        &mut self,
+        emit: &mut impl FnMut(Piece<'_>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let oversized = std::mem::take(&mut self.oversized);
+        if !oversized && !self.word.is_empty() {
+            emit(Piece::Word(&self.word))?;
         }
-    };
-    let flush_ideographic = |run: &mut Vec<char>, emit: &mut dyn FnMut(Run)| {
-        if !run.is_empty() {
-            emit(Run::Ideographic(std::mem::take(run)));
+        self.word.clear();
+        Ok(())
+    }
+
+    fn flush_run<E>(&mut self, emit: &mut impl FnMut(Piece<'_>) -> Result<(), E>) -> Result<(), E> {
+        let previous = self.previous.take();
+        if let (1, Some(ch)) = (std::mem::take(&mut self.run), previous) {
+            emit(Piece::LoneIdeograph(ch))?;
         }
+        Ok(())
+    }
+}
+
+fn analyze<E>(text: &str, mut emit: impl FnMut(Piece<'_>) -> Result<(), E>) -> Result<(), E> {
+    let mut scanner = Scanner {
+        word: String::new(),
+        oversized: false,
+        previous: None,
+        run: 0,
     };
     for ch in text.chars().map(fold) {
         if is_ideographic(ch) {
-            flush_word(&mut word, &mut emit);
-            ideographic.push(ch);
+            scanner.flush_word(&mut emit)?;
+            emit(Piece::Ideograph {
+                previous: scanner.previous,
+                ch,
+            })?;
+            scanner.previous = Some(ch);
+            scanner.run = scanner.run.saturating_add(1);
         } else if ch.is_alphanumeric() {
-            flush_ideographic(&mut ideographic, &mut emit);
-            word.extend(ch.to_lowercase());
+            scanner.flush_run(&mut emit)?;
+            if !scanner.oversized {
+                scanner.word.extend(ch.to_lowercase());
+                if scanner.word.len() > SEARCH_INDEX_MAX_TOKEN_BYTES {
+                    scanner.oversized = true;
+                    scanner.word.clear();
+                }
+            }
         } else {
-            flush_word(&mut word, &mut emit);
-            flush_ideographic(&mut ideographic, &mut emit);
+            scanner.flush_word(&mut emit)?;
+            scanner.flush_run(&mut emit)?;
         }
     }
-    flush_word(&mut word, &mut emit);
-    flush_ideographic(&mut ideographic, &mut emit);
+    scanner.flush_word(&mut emit)?;
+    scanner.flush_run(&mut emit)
 }
 
 pub(super) fn table_schema(
@@ -237,6 +361,7 @@ fn analyzed_document(
     spec: &SearchIndexSpec,
     source: &RelationalTableSchema,
     row: Option<&RelationalRow>,
+    budget: &mut MaintenanceBudget<'_>,
 ) -> Result<(BTreeMap<String, u64>, u64), RelationalError> {
     let Some(row) = row else {
         return Ok((BTreeMap::new(), 0));
@@ -250,13 +375,11 @@ fn analyzed_document(
             ))
         }
     };
-    let tokens = spec.analyzer.index_tokens(text);
-    let length = tokens.len() as u64;
-    let mut terms = BTreeMap::new();
-    for token in tokens {
-        *terms.entry(token).or_insert(0u64) += 1;
-    }
-    Ok((terms, length))
+    // Each distinct term is admitted against the transaction payload budget
+    // before it is allocated, which bounds one document's analysis state;
+    // a large ideographic value is refused before it expands into terms.
+    spec.analyzer
+        .document_terms(text, |bytes| budget.charge(0, bytes))
 }
 
 fn corruption(message: &str) -> RelationalError {
@@ -421,8 +544,8 @@ pub(super) fn maintain(
         };
         // Overflowed TEXT is hydrated by the maintenance read before analysis.
         let new = index.budget.read(index.next, &source.name, key)?;
-        let (old_terms, old_length) = analyzed_document(spec, source, old.as_ref())?;
-        let (new_terms, new_length) = analyzed_document(spec, source, new.as_ref())?;
+        let (old_terms, old_length) = analyzed_document(spec, source, old.as_ref(), index.budget)?;
+        let (new_terms, new_length) = analyzed_document(spec, source, new.as_ref(), index.budget)?;
         if old_terms == new_terms {
             continue;
         }
@@ -732,6 +855,87 @@ mod tests {
             [
                 "東", "東京", "京", "京タ", "タ", "タワ", "ワ", "ワー", "ー", "서", "서울", "울"
             ]
+        );
+    }
+
+    /// A long run of distinct ideographs: about two distinct terms per
+    /// character (its unigram and the bigram ending at it).
+    fn distinct_cjk(characters: usize) -> String {
+        let mut state = 0x2545_f491_u32;
+        (0..characters)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                char::from_u32(0x4E00 + state % 0x5200).expect("CJK unified ideograph")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn analyzer_streams_document_terms_and_matches_materialized_tokens() {
+        let analyzer = SearchIndexAnalyzer::CjkNgram;
+        let long = "y".repeat(SEARCH_INDEX_MAX_TOKEN_BYTES + 1);
+        for text in [
+            "数据库用HawDB 数据库 the THE 東京タワー 서울 库".to_owned(),
+            format!("{long} 数 a{long}b ＡＢＣ v2 数据"),
+            distinct_cjk(5_000),
+        ] {
+            let tokens = analyzer.index_tokens(&text);
+            let mut expected = BTreeMap::<String, u64>::new();
+            for token in &tokens {
+                *expected.entry(token.clone()).or_default() += 1;
+            }
+            let mut admitted = 0usize;
+            let (terms, length) = analyzer
+                .document_terms::<()>(&text, |bytes| {
+                    admitted += bytes;
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!((terms, length), (expected.clone(), tokens.len() as u64));
+            assert_eq!(
+                admitted,
+                expected
+                    .keys()
+                    .map(|term| search_index_term_entry_bytes(term))
+                    .sum::<usize>()
+            );
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn analyzer_refuses_large_cjk_document_before_expanding_it() {
+        // 1,000,000 distinct-ish ideographs (3 MB of TEXT) materialize about
+        // two million tokens, tens of megabytes of transient strings. The
+        // admission callback refuses at 64 KiB of distinct terms, and the
+        // analysis must stop there without having expanded the rest.
+        let analyzer = SearchIndexAnalyzer::CjkNgram;
+        let text = distinct_cjk(1_000_000);
+        let limit = 64 * 1024;
+        let mut admitted = 0usize;
+        let mut checks = 0usize;
+        let observation = crate::test_allocator::AllocationObservation::start_all();
+        let result = analyzer.document_terms(&text, |bytes| {
+            checks += 1;
+            if admitted + bytes > limit {
+                return Err(admitted);
+            }
+            admitted += bytes;
+            Ok(())
+        });
+        let allocated = observation.finish_bytes();
+        assert!(result.is_err(), "the oversized document must be refused");
+        assert!(admitted <= limit);
+        // Refused within the first few thousand terms, not after two million.
+        assert!(
+            checks < 2 * limit / search_index_term_entry_bytes("数据"),
+            "{checks}"
+        );
+        assert!(
+            allocated < 4 * limit,
+            "analysis allocated {allocated} bytes before refusing"
         );
     }
 

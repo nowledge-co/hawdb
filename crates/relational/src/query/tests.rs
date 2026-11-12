@@ -34,6 +34,7 @@ mod exact_count_planning;
 mod having;
 mod ordinary_aggregate;
 mod projection_admission;
+mod text_search_admission;
 
 fn assert_intermediate_work_refusal(error: &HawDBError) {
     let HawDBError::ResourceBudgetExceeded(cause) = error else {
