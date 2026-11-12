@@ -23,7 +23,9 @@ import datetime
 import gc
 import inspect
 import pickle
+import sys
 import threading
+import tracemalloc
 from collections import deque
 
 import pytest
@@ -214,6 +216,108 @@ def test_description_type_codes_come_from_python_values(connection):
     assert flag_code != dbapi.NUMBER and label_code != dbapi.NUMBER
     assert label_code != dbapi.DATETIME and id_code != dbapi.ROWID
     assert dbapi.Binary(bytearray(b"x")) == b"x"
+
+
+@pytest.mark.parametrize("autocommit", [False, True])
+def test_description_type_codes_cover_the_whole_result_before_fetching(
+    connection, autocommit
+):
+    # Rows convert as they are fetched; the type codes must not depend on it.
+    connection.autocommit = autocommit
+    cursor = connection.cursor()
+    cursor.execute(
+        "CREATE TABLE late (id BIGINT PRIMARY KEY, label TEXT, at TIMESTAMP,"
+        " missing TEXT)"
+    )
+    last = 2 * dbapi._FETCH_CHUNK + 5
+    cursor.executemany(
+        "INSERT INTO late (id, label, at, missing) VALUES ($1, $2, $3, $4)",
+        [
+            (i, "x", datetime.datetime(2026, 1, 1), None) if i == last
+            else (i, None, None, None)
+            for i in range(last + 1)
+        ],
+    )
+    cursor.execute("SELECT id, label, at, missing FROM late ORDER BY id")
+    codes = [column[1] for column in cursor.description]
+    assert codes == [int, str, datetime.datetime, None]
+    assert cursor.rowcount == last + 1
+    assert cursor.fetchone() == (0, None, None, None)
+    assert [column[1] for column in cursor.description] == codes
+    rows = cursor.fetchall()
+    assert len(rows) == last
+    assert rows[-1] == (last, "x", datetime.datetime(2026, 1, 1), None)
+    connection.commit()
+
+
+def test_cursor_keeps_no_fetched_row_and_releases_the_result(connection, monkeypatch):
+    results = []
+    execute = connection._execute
+
+    def recording(*args):
+        result = execute(*args)
+        results.append(result)
+        return result
+
+    monkeypatch.setattr(connection, "_execute", recording)
+    cursor = connection.cursor()
+    cursor.execute(CREATE)
+    cursor.executemany(INSERT, [(i, str(i)) for i in range(dbapi._FETCH_CHUNK + 1)])
+    cursor.execute("SELECT id, name FROM items ORDER BY id")
+    result = results[-1]
+    # `results`, `result` and getrefcount's argument, plus the cursor.
+    assert sys.getrefcount(result) == 4
+    row = cursor.fetchone()
+    # Only `row` and getrefcount's argument refer to the tuple.
+    assert sys.getrefcount(row) == 2
+    assert row == (0, "0")
+    rest = cursor.fetchmany(dbapi._FETCH_CHUNK)
+    # `rest`, the loop variable and getrefcount's argument.
+    assert [sys.getrefcount(item) for item in rest] == [3] * len(rest)
+    assert sys.getrefcount(result) == 4
+    assert cursor.fetchall() == []
+    assert sys.getrefcount(result) == 3  # exhausted: the cursor let go
+    cursor.execute("SELECT id FROM items WHERE id = $1", [1])
+    held = results[-1]
+    cursor.execute("SELECT id FROM items WHERE id = $1", [2])
+    assert sys.getrefcount(held) == 3  # a new statement releases the old result
+    last = results[-1]
+    assert sys.getrefcount(last) == 4
+    cursor.close()
+    assert sys.getrefcount(last) == 3
+    connection.rollback()
+
+
+def test_execute_and_fetchall_hold_one_python_copy_of_the_rows(connection):
+    """Peak Python memory is the fetched list plus a chunk, not dicts and tuples."""
+    count = 20_000
+    cursor = connection.cursor()
+    cursor.execute(
+        "CREATE TABLE wide (id BIGINT PRIMARY KEY, name TEXT, score DOUBLE PRECISION)"
+    )
+    cursor.executemany(
+        "INSERT INTO wide (id, name, score) VALUES ($1, $2, $3)",
+        [(i, f"name-{i:08d}", i / 2) for i in range(count)],
+    )
+    connection.commit()
+    gc.collect()
+    tracemalloc.start()
+    try:
+        base = tracemalloc.get_traced_memory()[0]
+        cursor.execute("SELECT id, name, score FROM wide")
+        executed, execute_peak = tracemalloc.get_traced_memory()
+        rows = cursor.fetchall()
+        held, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert len(rows) == count
+    # Before rows were converted per fetch, `execute` alone built a dict and
+    # a tuple per row (several MiB here) and the peak was about three times
+    # the returned list.
+    assert execute_peak - base < 256 * 1024
+    assert executed - base < 64 * 1024
+    assert peak - base < (held - base) * 1.25
+    connection.rollback()
 
 
 @pytest.mark.parametrize("autocommit", [False, True])

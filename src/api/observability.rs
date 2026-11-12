@@ -919,7 +919,8 @@ impl Database {
                 if rows.is_empty()
                     && let Some(mutation) = &mutation
                 {
-                    // Shares the RETURNING rows' storage; no copy.
+                    // `executor::QueryRows::clone` only bumps the `Arc` over its
+                    // immutable storage: this shares the RETURNING rows, no copy.
                     rows = mutation.rows.clone();
                 }
                 Ok(super::SqlStatementResult {

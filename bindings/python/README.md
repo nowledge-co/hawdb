@@ -354,6 +354,14 @@ with db.transaction() as tx:
     tx.rollback()      # abandons both statements; omit it to commit
 ```
 
+A `QueryResult` holds the engine's rows, materialized when the statement
+returns, and converts them to Python only as they are fetched: each
+`fetchone`, `fetchmany`, `fetchall` or iteration step returns new dicts that the
+result does not keep, so mutating a fetched row changes nothing else, and a
+result whose rows are fetched in batches never holds a Python copy of all of
+them. `fetchmany_tuples(size)` returns the next rows as tuples in column order
+from the same cursor.
+
 For a SQL INSERT, UPDATE or DELETE, `QueryResult.affected_rows` is the number
 of rows it changed (inside a transaction, the rows staged for commit); it is
 `None` for queries, DDL, Cypher and writes to strict append tables.
@@ -548,6 +556,12 @@ operator info, memory, disk`. `TIMESTAMP` columns fetch as naive
 `datetime.datetime` values and `TIMESTAMPTZ` columns as aware UTC ones, losslessly
 at HawDB's microsecond precision, and their `description` type code equals
 `hawdb.dbapi.DATETIME`; a value outside Python's year range stays a tagged dict.
+A type code is the Python type of the column's first non-null value anywhere in
+the result, known before any row is fetched, or `None` if every value is null.
+Cursors convert rows to tuples as they are fetched, without an intermediate dict
+per row, so a `fetchall()` of a large result needs Python memory for the
+returned list and one 1,024-row chunk: for 200,000 rows of four columns the
+`tracemalloc` peak is 38 MiB, where building dicts first took 115 MiB.
 `cursor.rowcount` is the number of rows an INSERT, UPDATE or DELETE changed, in
 autocommit and in a transaction (where the rows are published at `commit()`),
 or the number of rows a SELECT returned. It is -1 for DDL, after `executemany`,

@@ -58,12 +58,22 @@ lost work. ``close()`` still succeeds.
 Rows are tuples in ``description`` order, which is the order of the SELECT
 list. ``description`` holds one seven-item tuple per column, also when no
 row matches: the name, a type code and five ``None``. The type code is the
-Python type of the column's first non-null value, or ``None`` when there is
-none. ``STRING`` equals ``str``, ``BINARY`` equals ``bytes`` and ``NUMBER``
-equals ``int`` and ``float`` and ``DATETIME`` equals ``datetime.datetime``
+Python type of the column's first non-null value in the whole result, or
+``None`` when every value is null; it is known at ``execute``, before any
+row is fetched. The engine's result schema carries column names but no
+types, so a column whose values are all null has no type code. ``STRING``
+equals ``str``, ``BINARY`` equals ``bytes`` and ``NUMBER`` equals ``int``
+and ``float`` and ``DATETIME`` equals ``datetime.datetime``
 (and ``date``/``time``); booleans and vectors match none of them. DDL
 and every INSERT, UPDATE and DELETE without ``RETURNING`` leave
 ``description`` as ``None``, and fetching from them returns no rows.
+
+``execute`` holds the engine's whole result, as ``Database.execute_sql``
+does, but no Python copy of it: rows become tuples as they are fetched,
+1,024 at a time, and the cursor keeps none of the tuples it returns.
+``fetchall()`` of a large result therefore needs Python memory for the
+returned list and one such chunk. The engine's rows are released once
+every row has been fetched or the cursor runs another statement or closes.
 
 ``rowcount`` is the number of rows a SELECT returned, or the number an
 INSERT, UPDATE or DELETE inserted, updated or deleted, in autocommit and in a
@@ -632,8 +642,10 @@ connect = Connection
 class Cursor:
     """A DB-API cursor; rows are tuples in ``description`` order.
 
-    ``execute`` materializes the whole result, as ``Database.execute_sql``
-    does, and the fetch methods consume it.
+    ``execute`` materializes the engine's whole result, as
+    ``Database.execute_sql`` does. The fetch methods convert rows to Python
+    tuples as they return them, and the result is released once every row
+    has been fetched or the cursor runs another statement or closes.
     """
 
     _rows: Iterator[tuple[Any, ...]] | None  # None: nothing to fetch
@@ -661,18 +673,16 @@ class Cursor:
         bound = None if parameters is None else list(_sequence(parameters, "parameters"))
         result = self.connection._execute(operation, bound)
         columns = result.columns
-        # The binding fills each row dict in column order.
-        rows = [tuple(map(_sql_value, row.values())) for row in result.fetchall()]
         if columns:
             self._description = tuple(
-                (name, _type_code(rows, position), None, None, None, None, None)
+                (name, _type_code(result, position), None, None, None, None, None)
                 for position, name in enumerate(columns)
             )
-            self._rowcount = len(rows)
+            self._rowcount = result.row_count
         affected = result.affected_rows
         if affected is not None:
             self._rowcount = affected
-        self._rows = iter(rows)
+        self._rows = _tuples(result)
         return self
 
     def executemany(
@@ -791,8 +801,29 @@ def _sql_value(value: Any) -> Any:
     return parsed if parsed.tzinfo is None else parsed.astimezone(datetime.timezone.utc)
 
 
-def _type_code(rows: list[tuple[Any, ...]], position: int) -> type | None:
-    for row in rows:
-        if row[position] is not None:
-            return type(row[position])
-    return None
+# Rows the binding converts per call: bounds the tuples of a fetch that are
+# alive twice, once as the binding returns them and once converted.
+_FETCH_CHUNK = 1024
+
+
+def _tuples(result: QueryResult) -> Iterator[tuple[Any, ...]]:
+    """Yields the rows of ``result`` as tuples, converting them as they are fetched.
+
+    The binding builds Python objects only for the rows it returns, and keeps
+    none of them, so the cursor holds the engine's rows plus at most one chunk
+    beyond what its caller kept. ``result`` is released when the rows run out
+    or the cursor resets.
+    """
+    while chunk := result.fetchmany_tuples(_FETCH_CHUNK):
+        for row in chunk:
+            yield tuple(map(_sql_value, row))
+
+
+def _type_code(result: QueryResult, position: int) -> type | None:
+    """The type of the column's first non-null value in the whole result.
+
+    The binding finds it among the engine's values without converting the
+    rows, so the code does not depend on how many rows have been fetched.
+    """
+    value = result._first_non_null(position)
+    return None if value is None else type(_sql_value(value))
