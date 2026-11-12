@@ -33,6 +33,9 @@ enum Path_ {
     Runtime,
     /// `apply_initial_import_projection_delta_and_checkpoint`.
     InitialImport,
+    /// `apply_initial_import_projection_delta` then the deferred
+    /// `checkpoint_initial_import_projection` (#1707).
+    DeferredInitialImport,
 }
 
 fn options(root: &Path) -> EmbeddedStoreOpenOptions {
@@ -94,6 +97,12 @@ fn page(store: &mut EmbeddedStore, path: Path_, page: usize) {
             store
                 .apply_initial_import_projection_delta_and_checkpoint(delta, 41)
                 .unwrap();
+        }
+        Path_::DeferredInitialImport => {
+            store
+                .apply_initial_import_projection_delta(delta, 41)
+                .unwrap();
+            store.checkpoint_initial_import_projection().unwrap();
         }
     }
 }
@@ -376,4 +385,9 @@ fn resident_runtime_checkpoint_survives_lost_torn_and_reordered_writes() {
 #[test]
 fn resident_initial_import_checkpoint_survives_lost_torn_and_reordered_writes() {
     qualify(Path_::InitialImport);
+}
+
+#[test]
+fn resident_deferred_initial_import_checkpoint_survives_lost_torn_and_reordered_writes() {
+    qualify(Path_::DeferredInitialImport);
 }

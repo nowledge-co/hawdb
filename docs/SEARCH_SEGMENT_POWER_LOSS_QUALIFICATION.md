@@ -92,8 +92,10 @@ Two owners qualify the protocol:
 
 - `api::tests::power_loss::resident_search_checkpoint` (Unix `test-support`)
   drives `EmbeddedStore` with full residency through the runtime
-  `apply_search_projection_delta_and_checkpoint` path and the
-  `apply_initial_import_projection_delta_and_checkpoint` path. Three
+  `apply_search_projection_delta_and_checkpoint` path,
+  `apply_initial_import_projection_delta_and_checkpoint`, and the deferred
+  `apply_initial_import_projection_delta` plus
+  `checkpoint_initial_import_projection` path. Three
   checkpoints are acknowledged and the fourth is cut at the first checkpoint
   write (lost, complete, reversed, isolated and torn), after the generation
   snapshot rename, after the layout rename, before and after the selector
