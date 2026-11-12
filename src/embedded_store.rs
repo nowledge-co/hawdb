@@ -192,6 +192,8 @@ use std::time::Instant;
 mod app_read_snapshot_tests;
 #[cfg(test)]
 mod candidate_facade_tests;
+#[cfg(test)]
+mod exact_candidate_tests;
 
 #[cfg(test)]
 mod runtime_status_facade_tests {
@@ -1449,6 +1451,8 @@ impl OutOfCoreSearchProjection {
         vector_execution_options: VectorSearchExecutionOptions<'_>,
     ) -> Result<OutOfCoreSearchCandidateOutput> {
         let effective_compressed_vector_search_mode = effective_search_candidate_mode(request);
+        let vector_execution_options =
+            request.vector_execution_options(vector_execution_options)?;
         let output = self
             .reader
             .search_with_options_compressed_vector_projection_execution_options(
@@ -1471,6 +1475,7 @@ impl OutOfCoreSearchProjection {
             effective_compressed_vector_search_mode,
             &output.result,
         );
+        report.ensure_requested_exact_vector_search()?;
         Ok(OutOfCoreSearchCandidateOutput {
             result: output.result,
             report,
@@ -1568,6 +1573,11 @@ impl SearchProjection {
         &self,
         request: &SearchCandidateRequest,
     ) -> Result<SearchCandidateOutput> {
+        if request.exact_vector_search {
+            // Exact search needs explicit execution options; the default
+            // working budget matches the in-memory path below.
+            return self.try_search_candidates_with_report(request);
+        }
         let effective_compressed_vector_search_mode = effective_search_candidate_mode(request);
         let result = self.index.search_with_options_adaptive_vector_projection(
             &request.query_text,
@@ -1612,6 +1622,8 @@ impl SearchProjection {
         vector_execution_options: VectorSearchExecutionOptions<'_>,
     ) -> Result<SearchCandidateOutput> {
         let effective_compressed_vector_search_mode = effective_search_candidate_mode(request);
+        let vector_execution_options =
+            request.vector_execution_options(vector_execution_options)?;
         let result = self
             .index
             .try_search_with_options_adaptive_vector_projection_context(
@@ -1635,6 +1647,7 @@ impl SearchProjection {
             )?;
         let report =
             search_candidate_report(request, effective_compressed_vector_search_mode, &result);
+        report.ensure_requested_exact_vector_search()?;
         Ok(SearchCandidateOutput {
             result,
             report,

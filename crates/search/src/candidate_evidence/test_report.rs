@@ -23,6 +23,8 @@ pub(super) fn ready_report() -> SearchCandidateReport {
         protocol: SEARCH_CANDIDATE_REPORT_PROTOCOL.to_string(),
         compressed_vector_search_mode: CompressedVectorSearchMode::Disabled,
         requested_compressed_vector_search_mode: CompressedVectorSearchMode::Disabled,
+        exact_vector_search_requested: false,
+        exact_vector_search: false,
         retrieval_projection_advisor: RetrievalProjectionAdvisor::default(),
         retrieval_projection_advisor_blocker_codes: Vec::new(),
         mode: SearchMode::Text,

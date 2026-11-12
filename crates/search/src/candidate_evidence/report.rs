@@ -16,8 +16,9 @@ use super::{SEARCH_CANDIDATE_READINESS_PROTOCOL, SEARCH_CANDIDATE_REPORT_PROTOCO
 use crate::{
     CompressedVectorSearchMode, SearchCandidateSetReport, SearchFusionWeights, SearchMode,
     SearchOutOfCoreMetrics, SearchResultSet, VectorRecallValidationReport,
-    VECTOR_RECALL_VALIDATION_PROTOCOL,
+    VectorSearchExecutionOptions, VECTOR_RECALL_VALIDATION_PROTOCOL,
 };
+use hawdb_core::{HawDBError, Result};
 use hawdb_optimizer_vector::AdaptiveVectorBackendPolicy;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -111,6 +112,12 @@ pub struct SearchCandidateRequest {
     pub adaptive_vector_backend_policy: AdaptiveVectorBackendPolicy,
     pub recall_validation_probe: bool,
     pub retrieval_projection_advisor: RetrievalProjectionAdvisor,
+    /// Score the complete metadata-filtered eligible set with raw vectors
+    /// instead of approximate graph or quantized candidates. Defaults to
+    /// `false`. Exact search stays bounded by the caller's admitted working
+    /// memory and refuses, rather than falling back to approximate candidates,
+    /// when that budget cannot hold the scan.
+    pub exact_vector_search: bool,
 }
 
 impl SearchCandidateRequest {
@@ -128,6 +135,7 @@ impl SearchCandidateRequest {
             adaptive_vector_backend_policy: AdaptiveVectorBackendPolicy::default(),
             recall_validation_probe: false,
             retrieval_projection_advisor: RetrievalProjectionAdvisor::default(),
+            exact_vector_search: false,
         }
     }
 
@@ -145,6 +153,7 @@ impl SearchCandidateRequest {
             adaptive_vector_backend_policy: AdaptiveVectorBackendPolicy::default(),
             recall_validation_probe: false,
             retrieval_projection_advisor: RetrievalProjectionAdvisor::default(),
+            exact_vector_search: false,
         }
     }
 
@@ -162,6 +171,7 @@ impl SearchCandidateRequest {
             adaptive_vector_backend_policy: AdaptiveVectorBackendPolicy::default(),
             recall_validation_probe: false,
             retrieval_projection_advisor: RetrievalProjectionAdvisor::default(),
+            exact_vector_search: false,
         }
     }
 
@@ -214,6 +224,34 @@ impl SearchCandidateRequest {
         self
     }
 
+    /// Requests exact vector scoring for the vector leg of vector and hybrid
+    /// searches. See [`Self::exact_vector_search`].
+    pub fn with_exact_vector_search(mut self) -> Self {
+        self.exact_vector_search = true;
+        self
+    }
+
+    /// Applies this request's exact-search choice to the caller's admitted
+    /// vector execution options. Exact search cannot be combined with an
+    /// effective compressed (quantized) candidate mode; that combination is
+    /// refused instead of silently choosing one of the two.
+    pub fn vector_execution_options<'a>(
+        &self,
+        execution: VectorSearchExecutionOptions<'a>,
+    ) -> Result<VectorSearchExecutionOptions<'a>> {
+        if !self.exact_vector_search {
+            return Ok(execution);
+        }
+        let compression = self.effective_compressed_vector_search_mode();
+        if compression != CompressedVectorSearchMode::Disabled {
+            return Err(HawDBError::Semantic(format!(
+                "exact vector search cannot use compressed vector search mode {}",
+                compression.as_str()
+            )));
+        }
+        Ok(execution.with_exact_search())
+    }
+
     fn effective_compressed_vector_search_mode(&self) -> CompressedVectorSearchMode {
         advised_compressed_vector_search_mode(
             self.compressed_vector_search_mode,
@@ -227,6 +265,13 @@ pub struct SearchCandidateReport {
     pub protocol: String,
     pub compressed_vector_search_mode: CompressedVectorSearchMode,
     pub requested_compressed_vector_search_mode: CompressedVectorSearchMode,
+    /// The request asked for exact vector search.
+    pub exact_vector_search_requested: bool,
+    /// The vector leg ran and scored the complete eligible set with raw
+    /// vectors (`raw_vector` candidates), so its top-k is exact. This is
+    /// derived from the executed retriever, not copied from the request, and
+    /// is also `true` when default execution chose a full scalar scan.
+    pub exact_vector_search: bool,
     pub retrieval_projection_advisor: RetrievalProjectionAdvisor,
     pub retrieval_projection_advisor_blocker_codes: Vec<String>,
     pub mode: SearchMode,
@@ -277,6 +322,26 @@ pub struct SearchCandidateReport {
 }
 
 impl SearchCandidateReport {
+    /// Fails when exact vector search was requested and the vector leg ran
+    /// but did not score the eligible set exactly. Entry points call this so
+    /// an exact request never returns approximate vector candidates.
+    pub fn ensure_requested_exact_vector_search(&self) -> Result<()> {
+        let vector_leg_ran = self
+            .retriever_available
+            .get("vector")
+            .copied()
+            .unwrap_or(false);
+        if self.exact_vector_search_requested && vector_leg_ran && !self.exact_vector_search {
+            return Err(HawDBError::Execution(format!(
+                "exact vector search was requested but the vector leg used {} candidates",
+                self.retriever_candidate_score_sources
+                    .get("vector")
+                    .map_or("unknown", String::as_str)
+            )));
+        }
+        Ok(())
+    }
+
     pub fn json(&self) -> serde_json::Value {
         let mut value = serde_json::json!({
             "protocol": self.protocol,
@@ -323,6 +388,14 @@ impl SearchCandidateReport {
         });
         let object = value.as_object_mut().expect("report JSON is an object");
         object.insert("offset".to_string(), serde_json::json!(self.offset));
+        object.insert(
+            "exact_vector_search_requested".to_string(),
+            serde_json::json!(self.exact_vector_search_requested),
+        );
+        object.insert(
+            "exact_vector_search".to_string(),
+            serde_json::json!(self.exact_vector_search),
+        );
         object.insert(
             "projection_durable_source_graph_commit_epoch".to_string(),
             serde_json::json!(self.projection_durable_source_graph_commit_epoch),
@@ -589,6 +662,8 @@ pub fn search_candidate_report(
         protocol: SEARCH_CANDIDATE_REPORT_PROTOCOL.to_string(),
         compressed_vector_search_mode: effective_compressed_vector_search_mode,
         requested_compressed_vector_search_mode: request.compressed_vector_search_mode,
+        exact_vector_search_requested: request.exact_vector_search,
+        exact_vector_search: vector_leg_scored_exactly(result),
         retrieval_projection_advisor: request.retrieval_projection_advisor.clone(),
         retrieval_projection_advisor_blocker_codes: if request.compressed_vector_search_mode
             == effective_compressed_vector_search_mode
@@ -870,6 +945,17 @@ fn search_mode_name(mode: SearchMode) -> &'static str {
 }
 
 // Keep facade-only adapters off the methods of public host types.
+/// The vector retriever ran and its candidates came from raw-vector scoring
+/// of the eligible set rather than graph or quantized candidate generation.
+fn vector_leg_scored_exactly(result: &SearchResultSet) -> bool {
+    result.retrievers.iter().any(|retriever| {
+        retriever.name == "vector"
+            && retriever.available
+            && retriever.candidate_score_source == "raw_vector"
+            && retriever.final_score_source == "raw_vector"
+    })
+}
+
 pub fn effective_search_candidate_mode(
     request: &SearchCandidateRequest,
 ) -> CompressedVectorSearchMode {

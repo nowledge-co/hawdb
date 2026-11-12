@@ -78,6 +78,7 @@ impl ResidentProjectionRef<'_> {
         execution: VectorSearchExecutionOptions<'_>,
     ) -> Result<SearchCandidateOutput> {
         let compression = effective_search_candidate_mode(request);
+        let execution = request.vector_execution_options(execution)?;
         let result = read_projection!(
             self,
             try_search_with_options_adaptive_vector_projection_context(
@@ -101,6 +102,7 @@ impl ResidentProjectionRef<'_> {
             )
         )?;
         let report = search_candidate_report(request, compression, &result);
+        report.ensure_requested_exact_vector_search()?;
         Ok(SearchCandidateOutput {
             result,
             report,
