@@ -21,6 +21,13 @@ build:release --compilation_mode=opt
 build:release --@rules_rust//rust/settings:extra_rustc_flags=-Copt-level=3,-Cdebuginfo=0,-Ccodegen-units=1,-Cdebug-assertions=no,-Coverflow-checks=no,-Cstrip=none
 build:release --@rules_rust//rust/settings:lto=thin
 
+# Prebuilt release archives (docs/PREBUILT_LIBRARIES.md): the release profile
+# plus a platform ABI floor only. Without it, macOS objects and the linked dylib
+# target the build host's own OS version. Other platforms ignore these.
+build:prebuilt --config=release
+build:prebuilt --macos_minimum_os=11.0
+build:prebuilt --action_env=MACOSX_DEPLOYMENT_TARGET=11.0
+
 # Rust test binaries also run cases in parallel; bound concurrent local binaries.
 test --local_test_jobs=HOST_CPUS*0.5
 

@@ -2,14 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{
-    cardinality, cost_qualification,
+    cardinality, cost_measurement, cost_qualification,
     manifest::{write_new, Frozen},
     runner,
 };
 use query_workloads::smith::Limits;
 use std::{fs, io::Write, path::Path};
 
-pub const USAGE: &str = "query-lab freeze PATH [SEED CASES ROWS]\nquery-lab freeze-cost PATH [SEED CASES ROWS]\nquery-lab freeze-ce PATH [SEED ROWS]\nquery-lab freeze-graph-stats PATH [SEED ROWS]\nquery-lab compare MANIFEST REPORT\nquery-lab ce-run MANIFEST REPORT\nquery-lab ce-report MANIFEST RUN_REPORT OUTPUT\nquery-lab ce-diff MANIFEST BASELINE_RUN CANDIDATE_RUN OUTPUT\nquery-lab cost MANIFEST REPORT\nquery-lab cost-check MANIFEST REPORT\nquery-lab cost-proof REPORT\nquery-lab cost-proof-replay REPORT\nquery-lab replay MANIFEST CELL\nAll commands are manual. Cost requires a release build and collects a frozen ordinary-plan baseline, not qualified alternative-plan regret. Cost-proof is a fixed-fixture Sort/TopN correctness proof with no timing or regret claim. Cost-check exercises sampling under the checked profile. CE reports analyze validation observations only; CE diffs are diagnostics, not automatic performance gates.";
+pub const USAGE: &str = "query-lab freeze PATH [SEED CASES ROWS]\nquery-lab freeze-cost PATH [SEED CASES ROWS]\nquery-lab freeze-ce PATH [SEED ROWS]\nquery-lab freeze-graph-stats PATH [SEED ROWS]\nquery-lab compare MANIFEST REPORT\nquery-lab ce-run MANIFEST REPORT\nquery-lab ce-report MANIFEST RUN_REPORT OUTPUT\nquery-lab ce-diff MANIFEST BASELINE_RUN CANDIDATE_RUN OUTPUT\nquery-lab cost MANIFEST REPORT\nquery-lab cost-check MANIFEST REPORT\nquery-lab cost-proof REPORT\nquery-lab cost-proof-replay REPORT\nquery-lab cost-measure-freeze MANIFEST [ROWS]\nquery-lab cost-measure MANIFEST REPORT\nquery-lab cost-measure-check MANIFEST REPORT\nquery-lab replay MANIFEST CELL\nAll commands are manual. Cost requires a release build and collects a frozen ordinary-plan baseline, not qualified alternative-plan regret. Cost-proof is a fixed-fixture Sort/TopN correctness proof with no timing or regret claim. Cost-check exercises sampling under the checked profile. CE reports analyze validation observations only; CE diffs are diagnostics, not automatic performance gates.";
 
 fn load_run(path: &str) -> Result<runner::Report, String> {
     use std::io::Read;
@@ -35,6 +35,35 @@ pub fn run(args: impl IntoIterator<Item = String>) -> Result<bool, String> {
         Some("--help") => {
             println!("{USAGE}");
             Ok(true)
+        }
+        Some("cost-measure-freeze") if args.len() == 2 || args.len() == 3 => {
+            let manifest = cost_measurement::Manifest::new(
+                usize::try_from(parse(2, 4096)?).map_err(|e| e.to_string())?,
+            )?;
+            write_new(
+                Path::new(&args[1]),
+                &serde_json::to_vec(&manifest).map_err(|e| e.to_string())?,
+            )?;
+            Ok(true)
+        }
+        Some("cost-measure" | "cost-measure-check") if args.len() == 3 => {
+            if Path::new(&args[2]).exists() {
+                return Err("report path already exists".into());
+            }
+            let manifest = cost_measurement::Manifest::load(Path::new(&args[1]))?;
+            let report = cost_measurement::run(&manifest, args[0] == "cost-measure-check")?;
+            let success = report["cases"]
+                .as_array()
+                .is_some_and(|cases| cases.iter().all(|case| case["status"] == "completed"));
+            write_new(
+                Path::new(&args[2]),
+                &serde_json::to_vec(&report).map_err(|e| e.to_string())?,
+            )?;
+            println!(
+                "{}",
+                serde_json::json!({"protocol":report["protocol"],"claim":report["claim"],"success":success})
+            );
+            Ok(success)
         }
         Some("freeze-graph-stats") if args.len() == 2 || args.len() == 4 => {
             let frozen = Frozen::graph_statistics(

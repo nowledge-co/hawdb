@@ -481,6 +481,81 @@ bool hawdb_import(const char *src_path,
                   struct HawdbBuffer *err_out);
 
 /**
+ * Write a consistent, self-verifying backup of an open database to
+ * `dest_path`, a directory that must not exist yet (its parent must).
+ *
+ * The database first checkpoints, so the backup holds every transaction
+ * committed before the call; the handle stays open and usable. Writes are
+ * paused for the duration of the call. Requires a writable persistent
+ * handle: a read-only or in-memory handle, an open transaction
+ * (`transaction_open`) or an existing destination fail without writing a
+ * backup.
+ *
+ * On success returns true and `report_out` receives
+ * `{"generation", "checkpoint_commit_epoch", "file_count", "total_bytes",
+ * "manifest_checksum"}` (unsigned 64-bit integers; preserve their
+ * precision). On failure returns false and fills `err_out`.
+ *
+ * # Safety
+ * `db` must be a live [`super::hawdb_open`] handle; `dest_path` must be
+ * readable for `dest_len` bytes or NULL; `report_out` and `err_out` must be
+ * NULL or writable [`HawdbBuffer`] storage.
+ */
+bool hawdb_backup(struct HawdbDatabase *db,
+                  const char *dest_path,
+                  uintptr_t dest_len,
+                  struct HawdbBuffer *report_out,
+                  struct HawdbBuffer *err_out);
+
+/**
+ * Restore the backup directory at `src_path` into `dest_path`, a new
+ * directory that must not exist yet. Every backup file is verified against
+ * the backup manifest (length, CRC32C and SHA-256) before anything is
+ * written; the result is an ordinary database to open with
+ * [`super::hawdb_open`]. No database handle is needed, and the backup is
+ * never modified.
+ *
+ * On success returns true and `report_out` receives
+ * `{"generation", "checkpoint_commit_epoch", "file_count", "total_bytes",
+ * "manifest_checksum"}`, matching the [`hawdb_backup`] report of the same
+ * backup. A damaged or incomplete backup fails without creating
+ * `dest_path`.
+ *
+ * # Safety
+ * `src_path` and `dest_path` must be readable for `src_len` / `dest_len`
+ * bytes or NULL; `report_out` and `err_out` must be NULL or writable
+ * [`HawdbBuffer`] storage.
+ */
+bool hawdb_restore(const char *src_path,
+                   uintptr_t src_len,
+                   const char *dest_path,
+                   uintptr_t dest_len,
+                   struct HawdbBuffer *report_out,
+                   struct HawdbBuffer *err_out);
+
+/**
+ * Verify every durable file of the open database's published generation
+ * and its WAL against their recorded checksums (CRC32C, and SHA-256 where
+ * recorded), streaming without loading the database.
+ *
+ * On success returns true and `report_out` receives
+ * `{"generation", "checked_file_count", "checked_bytes",
+ * "sha256_verified_file_count", "wal_record_count", "wal_bytes"}`.
+ * Damage fails with the engine's storage error kind and a message naming
+ * the mismatch; the handle is then poisoned so that later statements fail
+ * until it is closed and the database reopened (or restored from a
+ * backup). An in-memory handle or an open transaction (`transaction_open`)
+ * fails without scrubbing. Read-only handles can be scrubbed.
+ *
+ * # Safety
+ * `db` must be a live [`super::hawdb_open`] handle; `report_out` and
+ * `err_out` must be NULL or writable [`HawdbBuffer`] storage.
+ */
+bool hawdb_scrub(struct HawdbDatabase *db,
+                 struct HawdbBuffer *report_out,
+                 struct HawdbBuffer *err_out);
+
+/**
  * Return the additive experimental retained descriptor ABI version.
  */
 uint32_t hawdb_retained_abi_version(void);

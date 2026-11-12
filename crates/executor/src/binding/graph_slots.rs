@@ -94,6 +94,13 @@ impl<T: Clone> GraphSlots<T> {
         }
     }
     pub fn remove(&mut self, name: &str) -> Option<T> {
+        self.remove_shared(name).map(Arc::unwrap_or_clone)
+    }
+    /// Release a temporary binding without materializing a shared record.
+    pub(crate) fn discard(&mut self, name: &str) {
+        drop(self.remove_shared(name));
+    }
+    fn remove_shared(&mut self, name: &str) -> Option<Arc<T>> {
         let i = self.position(name).ok()?;
         let slots = self.entries_mut();
         let value = slots.remove(i).1;
@@ -103,7 +110,7 @@ impl<T: Clone> GraphSlots<T> {
         if slots.is_empty() {
             self.clear();
         }
-        Some(Arc::unwrap_or_clone(value))
+        Some(value)
     }
     pub fn get_mut(&mut self, name: &str) -> Option<&mut T> {
         let i = self.position(name).ok()?;
@@ -147,15 +154,8 @@ impl<T: Clone> GraphSlots<T> {
     /// Remove a replaced variable without copying its record payload.
     pub(crate) fn without(&self, name: Option<&str>) -> Self {
         let mut slots = self.clone();
-        if let Some(i) = name.and_then(|name| slots.position(name).ok()) {
-            let entries = slots.entries_mut();
-            entries.remove(i);
-            if entries.capacity() > entries.len().saturating_mul(2).max(4) {
-                entries.shrink_to_fit();
-            }
-        }
-        if slots.is_empty() {
-            slots.clear();
+        if let Some(name) = name {
+            slots.discard(name);
         }
         slots
     }
@@ -245,6 +245,64 @@ mod tests {
                 payload: self.payload.clone(),
                 clones: self.clones.clone(),
             }
+        }
+    }
+
+    #[test]
+    fn discarding_shared_slots_never_clones_records_and_releases_empty_arrays() {
+        let clones = Arc::new(AtomicUsize::new(0));
+        let original = GraphSlots::from(BTreeMap::from([(
+            "seed".into(),
+            Tracked {
+                payload: "x".repeat(65536),
+                clones: clones.clone(),
+            },
+        )]));
+        let mut working = original.clone();
+        working.discard("missing");
+        working.discard("seed");
+        assert_eq!(clones.load(Ordering::Relaxed), 0);
+        assert!(working.slots.is_none());
+        assert_eq!(original["seed"].payload.len(), 65536);
+        let mut returning = original.clone();
+        assert_eq!(returning.remove("seed").unwrap().payload.len(), 65536);
+        assert_eq!(
+            clones.load(Ordering::Relaxed),
+            1,
+            "owned removal keeps its public contract"
+        );
+    }
+
+    #[test]
+    #[ignore = "manual shared-slot cleanup allocation measurement"]
+    fn shared_slot_cleanup_measurement() {
+        use std::{hint::black_box, time::Instant};
+        for bytes in [64, 4096, 65536] {
+            let clones = Arc::new(AtomicUsize::new(0));
+            let original = GraphSlots::from(BTreeMap::from([(
+                "seed".into(),
+                Tracked {
+                    payload: "x".repeat(bytes),
+                    clones: clones.clone(),
+                },
+            )]));
+            let repeats = 10_000;
+            let started = Instant::now();
+            for _ in 0..repeats {
+                let mut working = original.clone();
+                black_box(working.remove(black_box("seed")));
+            }
+            let owned_ns = started.elapsed().as_nanos();
+            assert_eq!(clones.swap(0, Ordering::Relaxed), repeats);
+            let started = Instant::now();
+            for _ in 0..repeats {
+                let mut working = original.clone();
+                working.discard(black_box("seed"));
+                black_box(working);
+            }
+            let discard_ns = started.elapsed().as_nanos();
+            assert_eq!(clones.load(Ordering::Relaxed), 0);
+            println!("payload_bytes={bytes} repeats={repeats} owned_ns={owned_ns} discard_ns={discard_ns} copied_payload_bytes_before={} copied_payload_bytes_after=0", bytes * repeats);
         }
     }
 

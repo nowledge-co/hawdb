@@ -157,6 +157,17 @@ query ceilings remain enforced. See [the estimation contract](QUERY_JOINT_STATIS
 The manual `joint_ndv_planning` benchmark is local-only; no test lane, feature
 matrix, timeout or compilation profile changes.
 
+The same optimizer owner checks MATCH seed/target correlation, complete versus
+sparse/invalid joint populations, and MCV/exact-point precedence. Catalog
+controls retain the 32-group cap and ambiguity/staleness rules, share the
+immutable view across query overrides and retain one label key per label.
+The ignored `joint_key_lookup_measurement` compares the former owned-key
+lookup with the four-key borrowed stack path, checking equal results and
+reporting retained label keys. Replay with `cargo test --locked --release
+-p hawdb-optimizer-graph --lib joint_key_lookup_measurement -- --ignored
+--nocapture --test-threads=1`. Metadata-only timings do not qualify query latency
+or process RSS; collection and persistence lanes are unchanged.
+
 `//:pypi_publish_script_test` belongs to the required root
 `//:hawdb_unit_tests` aggregate. It executes the publisher workflow's Python
 preflight and registry verification with temporary distributions and mocked
@@ -660,10 +671,13 @@ stride directory and 1/24 of the segment, that reads of dense-id segments
 examine exactly one directory entry and at most one stride plus one frame
 (gapped ids still binary search), and that a directory entry with a wrong id,
 a wrong offset or a wrong length fails closed. The single-walk projected
-decode equals the two-walk reference in rows and admitted bytes for every
-one- and two-key selection, every key prefix (past the eight-value located
-capacity, which falls back) and absent keys, and an admission refusal decodes
-nothing. The root case compares out-of-core projected rows with the resident
+decode equals the two-walk reference in rows and admitted bytes on three
+records of a directory-backed segment for a bounded table of named
+selections: none, each key alone (one per encoded value type of the
+fixture), exactly the eight-value located capacity, nine values (which falls
+back to the two-walk path), every key, and absent keys; each admission sees
+the reference bytes before decoding and a refusal decodes nothing. The root
+case compares out-of-core projected rows with the resident
 store before and after committed uncheckpointed updates, deletions
 (tombstones) and creations, with spilled selected and unselected values, and
 after a checkpoint and reopen. Structural assertions use the test-only
@@ -672,6 +686,18 @@ Replay with `cargo test --locked -p hawdb-storage point_directory`, `cargo
 test --locked -p hawdb-storage point_read_scope` and `cargo test --locked -p
 hawdb --lib api::tests::point_read_reuse`. No lane, profile or deadline
 changes.
+
+Shared graph-slot cleanup (#1615) is owned by executor
+`binding::graph_slots::tests` in the existing executor unit lane. It proves
+that discarding a slot never clones its shared record, leaves retained output
+snapshots intact, and releases the final slot array; owned `remove` still
+returns an independent record. MATCH, OPTIONAL and hash-join cleanup use this
+discard path. The ignored `shared_slot_cleanup_measurement` compares 10,000
+owned-removal/discard operations at 64 B, 4 KiB and 64 KiB payloads, asserting
+the exact clone count and copied payload bytes. Replay with `cargo test
+--locked --release -p hawdb-executor --lib shared_slot_cleanup_measurement --
+--ignored --nocapture --test-threads=1`. This is a cleanup-kernel measurement,
+not full-query latency or process-RSS evidence. No lane/profile/timeout changes.
 
 The adaptive execution family extends those existing executor owners with
 encoded non-expression key selection, complete-record validation, 64-KiB nested
@@ -1110,9 +1136,11 @@ legacy document tombstones before reducing the complete pinned source interval.
 | Prow checkpoint controls presubmit: `//:hawdb_unit_checkpoint_headroom_controls_tests`, `//:hawdb_unit_checkpoint_lifecycle_tests`, `//:hawdb_unit_checkpoint_large_commit_interrupted_tests` | Remaining headroom controls, lifecycle, cancellation, deadline and process-stop cases | Required PR context `ci/skein-bazel-test-checkpoint-controls`; exclusive local test execution over the shared checked root binary. |
 | Prow dense analytics: `//:hawdb_unit_analytics_rss_tests` | Persistent graph identity admission, edge streaming and bounded incremental RSS in a fresh process | Separate exclusive target; dense fixture construction is outside the measured child's RSS baseline. |
 | Prow storage crash recovery: `//:hawdb_storage_crash_recovery_tests` | Subprocess termination at persistence boundaries, complete transaction recovery, endpoint integrity and artifact generations | Dedicated job binds evidence to source/toolchain/features. Process termination does not alone establish power-loss safety. |
-| Native bindings: `//bindings/ffi:hawdb_ffi_tests`, `//bindings/go:hawdb_go_tests`, `bindings/bun`, `//bindings/python/...` | C ABI retention, host ownership/errors, Go integration/race checks, Bun FFI ownership/lossless `i64` behavior, reentrant close and sparse-array refusal, and Python behavior | Binding-specific PR/mainline workflows; the Unix Native Bindings matrix runs Bun against the same Bazel-built C ABI as Go. Bun lifecycle regressions run an instrumented internal native bridge in isolated child processes (5s per child), covering parameter/option getters that close a database or library, deterministic pointer-address reuse, and healthy-call ownership; the real-engine suite remains in the parent process. Open options (#1656): C ABI `open_options_tests` and Bun `tests/open-options.test.ts` cover every `hawdb_open` key (durability observed through `SHOW CURRENT BRANCH`, row and payload budget refusal, the monotonic-append fast path with out-of-order/duplicate fallback and reopen), unknown-key and invalid-value rejection before the database path is created, and defaults restored on a reopen without options; replay with `bazel test //bindings/ffi:hawdb_ffi_tests --test_arg=open_options` and `bun test tests/open-options.test.ts` (needs `HAWDB_LIBRARY`). JSON tests cover top-level/nested sparse arrays and dense null/empty-list controls. Replay with `bun test tests/json.test.ts tests/lifecycle.test.ts` from `bindings/bun`; these targeted tests need no native library. Windows contracts and scheduled qualification are distinct receipts. See workflow definitions for current triggers. |
+| Native bindings: `//bindings/ffi:hawdb_ffi_tests`, `//bindings/go:hawdb_go_tests`, `bindings/bun`, `//bindings/python/...` | C ABI retention, host ownership/errors, Go integration/race checks, Bun FFI ownership/lossless `i64` behavior, reentrant close and sparse-array refusal, and Python behavior | Binding-specific PR/mainline workflows; the Unix Native Bindings matrix runs Bun against the same Bazel-built C ABI as Go. Bun lifecycle regressions run an instrumented internal native bridge in isolated child processes (5s per child), covering parameter/option getters that close a database or library, deterministic pointer-address reuse, and healthy-call ownership; the real-engine suite remains in the parent process. Open options (#1656): C ABI `open_options_tests` and Bun `tests/open-options.test.ts` cover every `hawdb_open` key (durability observed through `SHOW CURRENT BRANCH`, row and payload budget refusal, the monotonic-append fast path with out-of-order/duplicate fallback and reopen), unknown-key and invalid-value rejection before the database path is created, and defaults restored on a reopen without options; replay with `bazel test //bindings/ffi:hawdb_ffi_tests --test_arg=open_options` and `bun test tests/open-options.test.ts` (needs `HAWDB_LIBRARY`). Backup, restore and scrub (#1658): C ABI `maintenance_tests` and Bun `tests/maintenance.test.ts` back up an open database, keep writing, restore into a fresh directory with an identical report and reopen it at the backed-up state; scrub the original, a read-only handle and the restored copy; flip a byte of the served canonical checkpoint in a restored copy and expect a CRC32C/SHA-256 scrub failure that poisons only that handle; and refuse a damaged backup, an existing destination, read-only/in-memory backups and NULL arguments without creating the destination. Bun lifecycle scenarios `backup-close`, `backup-reuse`, `restore-backup-library-close` and `restore-destination-library-close` pass boxed paths whose conversion closes the database, closes and reopens one at the same address, or unloads the library, and assert that nothing is dispatched; `maintenance-healthy` is the control. Replay with `bazel test //bindings/ffi:hawdb_ffi_tests --test_arg=maintenance_tests` and `bun test tests/maintenance.test.ts` (needs `HAWDB_LIBRARY`). JSON tests cover top-level/nested sparse arrays and dense null/empty-list controls. Replay with `bun test tests/json.test.ts tests/lifecycle.test.ts` from `bindings/bun`; these targeted tests need no native library. Windows contracts and scheduled qualification are distinct receipts. See workflow definitions for current triggers. |
 | MoonBit Native: `//bindings/moonbit:hawdb_moonbit_tests` (Rust lifecycle + real-engine conformance) | Direct Rust adapter builds against `//:hawdb`; Rust ownership, codec (including exact Decimal text, malformed-tag refusal and literal marker maps), autocommit/transaction separation, SQL/Cypher, transactions and durability contracts | Native Bindings Bazel Linux/macOS matrix runs the toolchain-free `//bindings/moonbit/native:hawdb_moonbit_rust_tests` on every engine change. `.github/workflows/moonbit-native.yml` runs the `manual`-tagged executable conformance through Bazel on Linux/macOS and through Cargo on Windows, for SDK changes and mainline engine changes; the MoonBit compiler must be on `PATH`. |
 | Python release: `.github/workflows/pypi.yaml` | Released tag/version/main-history agreement, reviewed shared dependency identities, byte-identical sdist lock/profile and tool exclusions, five native wheel builds from that sdist, installed default/Pydantic binding tests, typing/license/metadata payloads and PyPI file hashes | GitHub Release publication or explicit replay of an existing release tag. Linux x86-64/AArch64 use manylinux 2.28; macOS x86-64/AArch64 and Windows x86-64 build natively. Reuses `bindings/python/tests` on CPython 3.11; the final public install smoke is Linux x86-64 with bounded index/CDN retries. No fuzz campaigns or new presubmit test lane. Build cost includes a first release-profile compilation on each platform. See [publishing](../bindings/python/README.md#publishing). |
+| Native C ABI release: `.github/workflows/native-release.yml`, `//:native_release_package_script_test`, `//:native_release_mode_script_test` | Stable-release exclusion: the mode test evaluates the real workflow's job and step conditions with the real `scripts/native-release-mode.py` and proves a stable release, a prerelease flag on a stable or non-development version, a draft and a `workflow_dispatch` replay of a stable tag reach no build, upload or npm job (`test_stable_release_cannot_reach_build_upload_or_npm_jobs` and siblings), while a `-dev.<n>`/`-nightly.<n>` prerelease uploads and publishes under its own dist-tag and `publish-assembled.sh` refuses `latest`; release tag/version agreement across the root, `bindings/ffi` Cargo/Bazel and `bindings/bun` versions; `--config=prebuilt` C ABI archives for macOS arm64/x86-64, Linux glibc x86-64/AArch64 and Windows x86-64; per-archive manifest (revision, default feature profile, ABI rule, measured macOS deployment target or glibc floor, static-link flags, file hashes); macOS `@rpath` install name and ad-hoc signature; shared and static C links of `bindings/ffi/examples/embed.c` (Windows: import library); the Bun suite against each unpacked archive; `SHA256SUMS`; byte-identical release-asset retries; npm trusted publishing and a public zero-argument install smoke | Publication of a development GitHub prerelease (`v<x.y.z>-dev.<n>` or `-nightly.<n>`) or `workflow_dispatch` replay of one; stable releases start no job. Pull requests changing the pipeline build and test every archive without upload or publish. Both script tests are in the required root `//:hawdb_unit_tests` aggregate; the packager test runs with stand-in libraries and mocked `otool`/`objdump`/`readelf` output. Replay with `bazel test //:native_release_package_script_test //:native_release_mode_script_test`, or `python3 scripts/package-ffi-release.test.py` and `python3 scripts/native-release-mode.test.py`. Build cost is a first release-profile compilation on each of the five runners. The npm job runs only when the `NPM_TRUSTED_PUBLISHING` repository variable is `enabled`. See [prebuilt libraries](PREBUILT_LIBRARIES.md). |
+| Bun npm packages: `bindings/bun/tests/platform.test.ts`, `bindings/bun/tests/npm-package.test.ts` | Host to `@nowledge/hawdb-ffi-<platform>` selection; glibc/musl detection from the running executable's ELF program interpreter (synthetic images: a glibc process on a host that also has musl installed selects glibc, a musl process stays refused, static/non-ELF/32-bit/unknown interpreters give no libc; on Linux hosts also the real Bun process); unsupported-host, missing-package and other-release refusals (a resolved platform package whose `package.json` version differs from the main package); platform table agreement with the release matrix; packed main/platform tarball contents and zero-argument `loadHawDB()` from a fresh `node_modules` tree, and refusal of an older platform package installed in place of the pinned one | `platform.test.ts` needs no library: `bun test tests/platform.test.ts` from `bindings/bun`. `npm-package.test.ts` uses the harness `HAWDB_LIBRARY` and runs in the Unix Native Bindings Bun step and in every Native Release build (Windows installs the assembled directories instead of tarballs). |
 | Python dependency lock: `bindings/python/test_check_lock.py` and `check_lock.py` | Reject shared version/source/checksum drift and local engine version mismatch; accept reviewed multiple-version selections and binding-only dependencies | Existing Python Bindings pip job, before its locked wheel build. Replay: `python -m unittest discover -s bindings/python -p test_check_lock.py` and `python bindings/python/check_lock.py` with Python 3.11+. These pure metadata controls do not join the Bazel native-binding test inventory or compile the engine. |
 | Weekly platform and daily Windows abandonment qualification | Supported platform/feature combinations and the complete Windows abandonment/GC fault matrix | Scheduled or explicit workflows. They are not fuzz time budgets. |
 | Cypher PEG frontend | The default statement, profiled, pipeline and projected-filter entries use the compiled peg grammar with a Cypher-specific lexer. Selected captures lower to owned ASTs; immutable pre-removal and independently compiled main fixtures cover complete AST/source spans and rejection classes, including the current Mem query contracts. Generated clause/wrapper, contextual-keyword, UTF-8 truncation and backtracking cases cover anonymous-name order, hints, procedure admission and independent work/capture/nesting limits. The core function catalog supplies list/string names. Compact capture tests cover branch span/count boundaries, alias tag overlap, borrowed child slices and arena fallback; property-only scalar lists lower directly without temporary value lists. Private 12-byte lexer tokens retain the existing byte/token limits; range/layout tests cover full admitted offsets, UTF-8, named parameters and EOF. Logical capture budgets are unchanged. Rank CASE lowering has 2,026 independently exported main statement/pipeline outcomes covering literal and parameter branches, mixed references, operators, parentheses, invalid values and nesting boundaries; complete AST hashes include source spans. Independent main diagnostics cover 693 CSV-message, string-decoding, argument-arity, computed-UNWIND location and overflowing-integer location repairs, checking complete error strings and source positions. A third independent fixture adds 815 value/scalar-default diagnostic repairs and four procedure-argument controls, preserving existing correct diagnostics and checking complete messages and positions. A fourth fixture adds1,590 predicate, punctuation and trailing-input repairs (1,548 distinct cases); a Unicode-message/context regression verifies single-buffer diagnostic formatting. SQL retains its separate memoized PEG engine and resource tests. Handwritten drivers, the duplicate Cypher DSL and backend selection feature are removed. | `cargo test --locked -p hawdb-cypher`; `bazel test //crates/cypher:hawdb_cypher_tests //crates/cypher:hawdb_cypher_backtracking_fuzz_tests`. SQL engine regressions remain in `//crates/sql-syntax:hawdb_sql_syntax_tests`; SQL/PGQ integration targets remain unchanged. No new CI or crate boundary. |
@@ -1274,8 +1302,18 @@ succeed, with no failed attempt, exact totals and reads after reopen (base
 `bd26dc4d` rejects the first, commit 22, before WAL append). A 30,000-line
 autocommit statement drains first too. A commit larger than the whole envelope
 is rejected, in a transaction and in autocommit, with the limits and its size
-named, no drain, an unchanged epoch and nothing written. The concurrent-handle
-and task cases hold the idle owner just before it starts the drain that a
+named, no drain, an unchanged epoch and nothing written. When the owner can
+drain but its attempt is deferred (a one-byte governor denies background
+admission, as under memory pressure), a district that needs the drain gets the
+retryable `BranchBusy` with an unchanged epoch, no completed checkpoint and
+nothing written, then commits once the governor admits the drain
+([#1637](https://github.com/nowledge-co/hawdb/issues/1637),
+[#1618](https://github.com/nowledge-co/hawdb/issues/1618); main returns the
+non-retryable live-view admission error). An owner made unable to drain while
+it is held before the drain a waiting district requested (suspended, stopped,
+or with its operation retries exhausted) keeps that live-view rejection, with
+nothing written, and the district commits after a manual checkpoint. The
+concurrent-handle and task cases hold the idle owner just before it starts the drain that a
 waiting district requested (no sleeps or free-running threads): on a concurrent
 handle a reader keeps its published view during the wait, and another writer
 queues behind the district and commits after it. A district whose task is
@@ -3004,7 +3042,20 @@ schedule, profile override or performance gate is added. Cargo replay uses
 See [query-lab](../tools/query-lab/README.md) for frozen manifests, exact CLI
 replay, cooperative-budget limits and the unqualified ordinary-plan baseline.
 Existing Shiro oracle suites and CLI controls remain intact. Candidate-plan
-timing, regret, diagnosis and coefficient-promotion phases remain pending.
+qualification across all four families and coefficient promotion remain pending.
+
+`cost_measurement::tests` additionally owns the separate paired bounded-order
+diagnostic: bounded manifests, explicit unsupported-family inventory, complete
+typed result/snapshot/identity parity across the 3-warmup/15-sample schedule,
+NULL/duplicates, offset/wide output and empty results, equal-plan deduplication,
+reliable inversion controls and refusal of missing/failed/zero-duration regret.
+The existing embedded qualification entry point exposes preparation and
+execution/materialization durations without changing ordinary query execution.
+Replay with `cargo test --locked --manifest-path tools/query-lab/Cargo.toml
+cost_measurement -- --test-threads=1`. Actual performance uses the repository
+release profile and Cargo's compiled source receipt through `cost-measure`;
+Bazel/checked runs remain correctness controls. See the query-lab README for
+the bounded cohorts and unimplemented adapters. No CI lane or timeout changes.
 
 
 ## Embedded architecture ownership (#1222)
@@ -3401,6 +3452,19 @@ existing digest/hash framing vectors and capacity checks remain unchanged.
 parameter binding byte limits, capability/cancellation checks, statistics
 isolation and WAL replay coverage. `in_memory_portable` and minimal WASM strict
 Clippy cover the embedded facade. No new crate or CI job is introduced.
+
+### Manual search and durable-write component profiles (#1669)
+
+`examples/component_profiles.rs` is a manual release-only driver over existing
+public search and concurrent-database APIs. Search rotates candidate selection,
+selected-ID hydration and combined calls on a pinned synthetic generation,
+asserting all score/rank fields, IDs and hydrated content. Writes verify complete
+rows before checkpoint and after reopen under default strict durability while
+recording preparation/commit and existing overlapping coordinator metrics.
+The example's inline checks and bounded argument refusals are its local owner;
+ordinary CI compiles it but does not run performance campaigns. Replay and
+measurement limits are in [component profiles](COMPONENT_PROFILES.md). No new
+test lane, feature, target-local profile, timeout or production dependency.
 
 ## Logical dump and persistent format version (#1655)
 
