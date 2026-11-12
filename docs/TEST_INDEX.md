@@ -38,6 +38,22 @@ or the owning Bazel target with
 `--test_arg=typed_snapshot_candidates`. No new lane, profile, fixture
 amplification or timeout is introduced.
 
+Request-level exact vector candidates (`nowledge-co/hawdb#1692`) live in
+`embedded_store::exact_candidate_tests` in the same
+`//:hawdb_unit_general_tests` owner. A 480-row, 8-dimension resident and
+out-of-core fixture interleaves Source rows with `kind=memory` rows. Default
+out-of-core snapshot reads must report DiskANN `graph_distance` candidates and
+resident reads the adaptive `compression_disabled` scalar scan (already exact);
+exact snapshot and handle reads must equal an independent brute-force cosine
+top-k (IDs and score bits), report `exact_vector_search`, and keep hybrid
+vector scores raw. Projection-level entry points cover the same equality and
+refuse a 4 KiB working budget with the scan's budget error; snapshot reads
+refuse a 4 KiB `query_memory_bytes`; exact plus an effective
+compressed mode is refused. Request admission and report guards are in
+`candidate_evidence::boundaries` (`//crates/search:hawdb_search_tests`). Replay
+with `cargo test --locked -p hawdb --lib exact_candidate_tests` or
+`--test_arg=exact_candidate_tests`. No new lane, profile or timeout.
+
 The same Mem query owner also covers PR 1504 review optimizations: invariant
 regexp_replace validation on empty scans, cache rebinding across pattern and
 replacement values (including an invalid-pattern failure), row-dependent patterns,
