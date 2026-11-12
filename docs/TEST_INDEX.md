@@ -867,18 +867,25 @@ and leaving bounded rows; and delete-heavy churn compacting shrunken blocks,
 re-insertion after compaction, and the relation emptying with its last
 document; every layout check also verifies each block bounds row against its
 block and the lengths of its documents. A focused compaction regression
-empties the retained first block next to a 192-posting successor, then shrinks
-the successor and checks its positive merged length bound and exact ranking.
-The `scan` submodule owns the `Bm25IndexScan` access path: a named
-shortening/deletion/insertion case checks exact score bits across a block
-boundary and a residual stream filter; a one-row top-k over 3,000 documents decoding a small fraction of
+empties the retained first block while its successor has 192 postings, then
+shrinks that successor to 19 postings and verifies the merged length bound,
+remaining rows and exact search results. The `scan` submodule owns the
+`Bm25IndexScan` access path: exact top-k and stream-filtered top-k equal to
+the oracle (ids and score bits) after documents in early, middle and late
+blocks shorten (`search_index_scan_stays_exact_after_documents_shorten`); a
+one-row top-k over 3,000 documents decoding a small fraction of
 the postings with most blocks never read (asserted from `EXPLAIN ANALYZE`);
 filters by bounded over-fetch (several rounds, the stream's own top-k,
 bounded hydration, a filter nothing satisfies); LIMIT pushdown in rank order
 only; the EXPLAIN operator tree and ANALYZE fields; and the concurrency
 footprint (source writers do not conflict with writers of other tables or
 rows, and a serializable `text_search` read conflicts with a concurrent
-source change only). It belongs to the
+source change only). The generated differential campaign
+`search_index_scan_generated_campaign` (four random Zipf-like corpora, random
+queries, `k`, stream filters and churn; the corpus seed is in every failure
+message) is `#[ignore]`d, local only and not run by CI:
+`cargo test --locked -p hawdb --lib search_index_scan_generated_campaign -- --ignored`.
+The family belongs to the
 existing root general unit lane and Cargo library tests; the reopen/mode case
 takes about 25 seconds locally and the admission case about 5 seconds. Replay:
 `cargo test --locked -p hawdb --lib api::tests::search_indexes`. The storage
@@ -897,35 +904,34 @@ unknown-layout refusal
 (`cargo test --locked -p hawdb-storage --lib search_index`); `hawdb-sql`'s `tests::search_index` covers the DDL and table
 function grammar (`cargo test --locked -p hawdb-sql --lib search_index`).
 `hawdb-executor`'s `bm25::tests` own the shared scorer and Block-Max WAND
-kernel: named empty-input/zero-limit and gapped-posting/loose-bound cases,
-ties among identical documents ordered by key, and a 100,000-document corpus on which a one-row
+kernel: brute-force equality (hits, keys, score bits) on named cases (empty
+input, block boundaries, loose length bounds), ties among identical
+documents ordered by key, and a 100,000-document corpus on which a one-row
 top-k decodes under 5% of the postings
-(`cargo test --locked -p hawdb-executor --lib bm25`).
+(`cargo test --locked -p hawdb-executor --lib bm25`; well under a second).
+The 400-case generated campaign `block_max_wand_generated_campaign` is
+`#[ignore]`d, local only and not run by CI; each failure names its case
+seed, replayed by `generated_case(seed)`:
+`cargo test --locked -p hawdb-executor --lib bm25::tests::block_max_wand_generated_campaign -- --ignored`.
 `hawdb-relational`'s `query::tests::text_search_admission` indexes 4,096
 documents sharing one term (and 16,384 in a second corpus) and requires both
 top-10s to run within one 512 KiB blocking budget (the full-ranking scan
 needed 56 bytes per match, 917 KB for the larger corpus), skipping most
 blocks unread, to be refused by the `Bm25IndexScan` account under a tiny
-budget, and to honour cancellation. Lengths admission includes the fixed
-window directory, all decoded slots including deleted entries, and key bytes;
-512 KiB replaces the unsafe encoded-payload-based 320 KiB estimate. A sparse
-32-row lengths-window regression succeeds at 128 KiB and refuses at 32 KiB
-before allocating half the control run's decoded-array bytes. Its multi-term
-case on a second corpus (ten short documents repeating the term) compares exact rows and score bits
+budget, and to honour cancellation. The budget charges the fixed lengths
+directory, all decoded entry slots (including deleted slots), and key bytes;
+it replaces the earlier 320 KiB estimate based on encoded lengths payloads.
+A sparse-after-deletion regression retains only the last document of each
+of 32 lengths rows, succeeds at 128 KiB, and requires refusal at 32 KiB before
+half the control's decoded-array allocation bytes are allocated. Its multi-term case on a second corpus
+(ten short documents repeating the term) compares exact rows and score bits
 with a residual-filtered scan and a whole-match-set ranking across
 sealed-block boundaries, visiting fewer postings and skipping blocks
 (`cargo test --locked -p hawdb-relational --lib text_search`). The
 Bun suite (`bindings/bun/tests/hawdb.test.ts`, Native Bindings matrix) runs the
 same SQL through `querySQL` on a persistent database and a read-only reopen.
-The two generated differential campaigns are ignored manual tests, excluded
-from ordinary Cargo/Bazel runs. The kernel retains all 400 seeded corpora
-(seed `0x9e3779b97f4a7c15`, random block sizes and conservative bounds):
-`cargo test --locked -p hawdb-executor --lib bm25::tests::block_max_wand_equals_the_brute_force_ranking_on_random_corpora -- --ignored --exact`.
-The SQL campaign retains all four Zipf-like corpora, three churn phases and
-12 random queries/filters per phase (seed `0x2545f4914f6cdd1d`):
-`cargo test --locked -p hawdb --lib search_index_scan_equals_the_oracle_on_random_corpora_and_churn -- --ignored`.
-Keep these out of CI, scheduled jobs and ordinary test suites. No new CI lane,
-profile, timeout or fuzz target. See [the guide](SQL_SEARCH_INDEXES.md).
+No new lane, profile, timeout, fixture or fuzz target. See
+[the guide](SQL_SEARCH_INDEXES.md).
 
 The manual [IMV work-limit diagnostic](benchmarks/imv_work_limits_2026_10_30/README.md)
 measures process peak RSS at the row-work ceiling and near the unchanged payload

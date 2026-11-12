@@ -307,51 +307,119 @@ fn assert_bit_exact(actual: &[Bm25Hit], expected: &[Bm25Hit]) {
     }
 }
 
-#[test]
-#[ignore = "manual differential campaign; see docs/TEST_INDEX.md"]
-fn block_max_wand_equals_the_brute_force_ranking_on_random_corpora() {
-    let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
-    for case in 0..400 {
-        let documents = 1 + rng.below(300) as usize;
-        let vocabulary = 1 + rng.below(12) as usize;
-        let corpus = random_corpus(&mut rng, documents, vocabulary);
-        let mut query = (0..1 + rng.below(5) as usize)
-            .map(|_| rng.below(vocabulary as u64) as usize)
-            .filter(|&term| !corpus.postings[term].is_empty())
-            .collect::<Vec<_>>();
-        query.sort_unstable();
-        query.dedup();
-        let k = 1 + rng.below(documents as u64 + 2) as usize;
-        let block_size = 1 + rng.below(9) as usize;
-        let loose = case % 3 == 0;
-        let (top, _, _) = run(&corpus, &query, k, block_size, &mut rng, loose);
-        assert_bit_exact(&top.hits, &corpus.oracle(&query, k));
+/// A small fixed corpus: three terms of different densities over 40
+/// documents of varying length, with repeated terms and keys unrelated to
+/// ordinals (so equal scores order by key).
+fn fixed_corpus() -> Corpus {
+    let documents = 40u64;
+    let mut postings = vec![Vec::new(); 3];
+    let mut lengths = Vec::new();
+    for ordinal in 0..documents {
+        let mut length = 2 + ordinal % 7;
+        for (term, list) in postings.iter_mut().enumerate() {
+            let every = [1, 3, 7][term];
+            if ordinal % every == 0 {
+                let frequency = 1 + (ordinal / every) % [1, 3, 4][term];
+                list.push((ordinal, frequency));
+                length += frequency;
+            }
+        }
+        lengths.push(length);
+    }
+    Corpus {
+        lengths,
+        keys: (0..documents)
+            .map(|ordinal| [((ordinal * 17) % 41) as u8, ordinal as u8].to_vec())
+            .collect(),
+        postings,
     }
 }
 
 #[test]
-fn block_max_wand_handles_empty_input_and_zero_limit() {
-    let corpus = Corpus {
-        lengths: vec![1],
-        keys: vec![vec![1]],
-        postings: vec![vec![(0, 1)]],
+fn block_max_wand_returns_nothing_for_empty_input() {
+    let corpus = fixed_corpus();
+    let mut rng = Rng(1);
+    // No query terms, k = 0, and a term without postings.
+    assert!(run(&corpus, &[], 5, 4, &mut rng, false).0.hits.is_empty());
+    assert!(run(&corpus, &[0, 1], 0, 4, &mut rng, false)
+        .0
+        .hits
+        .is_empty());
+    let empty = Corpus {
+        postings: vec![Vec::new()],
+        ..fixed_corpus()
     };
-    let mut rng = Rng(7);
-    assert!(run(&corpus, &[], 1, 2, &mut rng, false).0.hits.is_empty());
-    assert!(run(&corpus, &[0], 0, 2, &mut rng, false).0.hits.is_empty());
-    let top = run(&corpus, &[0], 2, 2, &mut rng, false).0;
-    assert_bit_exact(&top.hits, &corpus.oracle(&[0], 2));
+    assert!(run(&empty, &[0], 5, 4, &mut rng, false).0.hits.is_empty());
 }
 
 #[test]
-fn block_max_wand_preserves_gapped_postings_with_loose_bounds() {
-    let corpus = Corpus {
-        lengths: vec![8, 12, 2, 5, 3, 14],
-        keys: vec![vec![5], vec![4], vec![3], vec![2], vec![1], vec![0]],
-        postings: vec![vec![(0, 2), (2, 1), (5, 2)], vec![(1, 2), (2, 1), (4, 2)]],
+fn block_max_wand_is_exact_at_block_boundaries() {
+    // Blocks of one posting, a size that splits each list unevenly, and one
+    // block per list; k below, at and beyond a block and the match count.
+    let corpus = fixed_corpus();
+    let mut rng = Rng(2);
+    let mut check = |query: &[usize], k, block_size| {
+        let (top, _, _) = run(&corpus, query, k, block_size, &mut rng, false);
+        assert_bit_exact(&top.hits, &corpus.oracle(query, k));
     };
-    let top = run(&corpus, &[0, 1], 3, 2, &mut Rng(7), true).0;
-    assert_bit_exact(&top.hits, &corpus.oracle(&[0, 1], 3));
+    check(&[0], 1, 1);
+    check(&[1, 2], 3, 3);
+    check(&[0, 1, 2], 8, 7);
+    check(&[0, 1, 2], 41, 64);
+}
+
+#[test]
+fn block_max_wand_is_exact_with_loose_length_bounds() {
+    // Maintenance may leave a block's minimum length below its documents'
+    // (after deletes or updates): bounds only loosen, results stay exact.
+    let corpus = fixed_corpus();
+    let mut rng = Rng(3);
+    for (query, k) in [(vec![0], 1), (vec![1, 2], 5), (vec![0, 1, 2], 12)] {
+        let (top, _, _) = run(&corpus, &query, k, 3, &mut rng, true);
+        assert_bit_exact(&top.hits, &corpus.oracle(&query, k));
+    }
+}
+
+/// One generated case: a random corpus, query, `k` and block size, compared
+/// with the brute-force ranking. Every case derives from its own seed, which
+/// the failure message names; replay it with `generated_case(seed)`.
+fn generated_case(seed: u64) {
+    let mut rng = Rng(seed | 1);
+    let documents = 1 + rng.below(300) as usize;
+    let vocabulary = 1 + rng.below(12) as usize;
+    let corpus = random_corpus(&mut rng, documents, vocabulary);
+    let mut query = (0..1 + rng.below(5) as usize)
+        .map(|_| rng.below(vocabulary as u64) as usize)
+        .filter(|&term| !corpus.postings[term].is_empty())
+        .collect::<Vec<_>>();
+    query.sort_unstable();
+    query.dedup();
+    let k = 1 + rng.below(documents as u64 + 2) as usize;
+    let block_size = 1 + rng.below(9) as usize;
+    let loose = rng.below(3) == 0;
+    let (top, _, _) = run(&corpus, &query, k, block_size, &mut rng, loose);
+    let expected = corpus.oracle(&query, k);
+    let context = format!("seed {seed:#x}: query {query:?} k={k} block_size={block_size}");
+    assert_eq!(top.hits.len(), expected.len(), "{context}");
+    for (actual, expected) in top.hits.iter().zip(&expected) {
+        assert_eq!(
+            (actual.ordinal, &actual.key, actual.score.to_bits()),
+            (expected.ordinal, &expected.key, expected.score.to_bits()),
+            "{context}"
+        );
+    }
+}
+
+/// The generated differential campaign. Manual only, not part of ordinary
+/// unit runs or CI: `cargo test --locked -p hawdb-executor --lib
+/// bm25::tests::block_max_wand_generated_campaign -- --ignored`.
+#[test]
+#[ignore = "explicit local differential campaign"]
+fn block_max_wand_generated_campaign() {
+    let mut seeds = Rng(0x9e37_79b9_7f4a_7c15);
+    for _ in 0..400 {
+        generated_case(seeds.next());
+    }
 }
 
 #[test]

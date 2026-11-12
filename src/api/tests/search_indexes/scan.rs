@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! The `Bm25IndexScan` access path: exact Block-Max WAND top-k against the
-//! brute-force oracle on random corpora and churn, block skipping, filters
+//! brute-force oracle after shortening churn (and, manually, on generated
+//! corpora and churn), block skipping, filters
 //! by bounded over-fetch, LIMIT pushdown, EXPLAIN, and the narrow
 //! concurrency footprint of a search index source.
 
@@ -154,11 +155,72 @@ fn number(evidence: &BTreeMap<String, String>, key: &str) -> u64 {
     evidence[key].parse().unwrap()
 }
 
+/// A shortened document keeps some terms with their old frequencies, so its
+/// blocks' length bounds must drop: otherwise Block-Max WAND would skip the
+/// block that now holds the best (shortest) match.
 #[test]
-#[ignore = "manual SQL differential campaign; see docs/TEST_INDEX.md"]
-fn search_index_scan_equals_the_oracle_on_random_corpora_and_churn() {
-    let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+fn search_index_scan_stays_exact_after_documents_shorten() {
+    let mut db = Database::new();
+    db.query_sql(SCHEMA).unwrap();
+    db.query_sql(INDEX).unwrap();
+    let filler = "w ".repeat(40);
+    let rows = (0..600)
+        .map(|id| {
+            (
+                id,
+                format!("s{}", id % 4),
+                format!("deploy failed {filler}"),
+            )
+        })
+        .collect::<Vec<_>>();
+    insert_rows(&mut db, &rows);
+    let queries = ["deploy", "deploy failed", "failed"];
+    for query in queries {
+        assert_matches_oracle(&mut db, query);
+    }
+    // Late, middle and first-block documents shrink to their two terms.
+    for id in [599, 300, 129, 3] {
+        db.query_sql_with_params(
+            "UPDATE events SET text = 'deploy failed' WHERE id = $1",
+            &[Value::Int(id)],
+        )
+        .unwrap();
+    }
+    check_block_bounds(&db);
+    for (query, k) in [("deploy", 1), ("deploy failed", 4), ("failed", 5)] {
+        assert_bit_exact(
+            &search(&mut db, query, k),
+            &oracle(&mut db, query, k as usize),
+            &format!("{query:?} k={k}"),
+        );
+    }
+    let mut expected = ranked_oracle(&mut db, "deploy failed", Some("s1"));
+    expected.truncate(2);
+    assert_bit_exact(
+        &filtered_search(&mut db, "deploy failed", 2, "s1"),
+        &expected,
+        "filtered rank after shortening",
+    );
+    assert_eq!(ids(&search(&mut db, "deploy", 4)), [3, 129, 300, 599]);
+}
+
+/// The generated differential campaign: random corpora, queries, filters
+/// and churn against the brute-force oracle. Manual only, not part of
+/// ordinary unit runs or CI: `cargo test --locked -p hawdb --lib
+/// search_index_scan_generated_campaign -- --ignored`. The failure message
+/// names the corpus seed; `oracle_campaign(seed)` replays it.
+#[test]
+#[ignore = "explicit local differential campaign"]
+fn search_index_scan_generated_campaign() {
+    let mut seeds = Rng(0x2545_f491_4f6c_dd1d);
     for corpus in 0..4 {
+        oracle_campaign(seeds.next(), corpus);
+    }
+}
+
+fn oracle_campaign(seed: u64, corpus: i64) {
+    let mut rng = Rng(seed | 1);
+    {
         let mut db = Database::new();
         db.query_sql(SCHEMA).unwrap();
         db.query_sql(INDEX).unwrap();
@@ -172,7 +234,8 @@ fn search_index_scan_equals_the_oracle_on_random_corpora_and_churn() {
             for _ in 0..12 {
                 let query = random_query(&mut rng);
                 let k = 1 + rng.below(40) as usize;
-                let context = format!("corpus {corpus} phase {phase} query {query:?} k={k}");
+                let context =
+                    format!("seed {seed:#x} corpus {corpus} phase {phase} query {query:?} k={k}");
                 assert_bit_exact(
                     &search(&mut db, &query, k as i64),
                     &oracle(&mut db, &query, k),
@@ -227,34 +290,6 @@ fn search_index_scan_equals_the_oracle_on_random_corpora_and_churn() {
             }
         }
     }
-}
-
-#[test]
-fn search_index_scan_preserves_ranking_after_shortening_and_deletion() {
-    let mut db = Database::new();
-    db.query_sql(SCHEMA).unwrap();
-    db.query_sql(INDEX).unwrap();
-    let rows = (0..260)
-        .map(|id| (id, format!("s{}", id % 2), "common long filler".to_owned()))
-        .collect::<Vec<_>>();
-    insert_rows(&mut db, &rows);
-    db.query_sql("UPDATE events SET text = 'common' WHERE id = 193")
-        .unwrap();
-    db.query_sql("DELETE FROM events WHERE id = 128").unwrap();
-    insert_rows(&mut db, &[(300, "s1".into(), "common common long".into())]);
-    layout_rows(&db);
-    assert_bit_exact(
-        &search(&mut db, "common long", 3),
-        &oracle(&mut db, "common long", 3),
-        "shortened document and deleted block boundary",
-    );
-    let mut expected = ranked_oracle(&mut db, "common", Some("s1"));
-    expected.truncate(3);
-    assert_bit_exact(
-        &filtered_search(&mut db, "common", 3, "s1"),
-        &expected,
-        "filtered ranking after churn",
-    );
 }
 
 /// 3,000 documents of varying length share one term; three repeat it, the
