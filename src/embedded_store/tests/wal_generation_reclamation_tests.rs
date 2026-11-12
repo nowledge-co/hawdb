@@ -125,13 +125,7 @@ fn run_variant(variant: Variant, background_maintenance: bool) -> VariantRun {
         eprintln!("{variant:?} bg={background_maintenance} round {round}: {files:?}");
         history.push(files);
     }
-    let pressure = handle
-        .read_store()
-        .unwrap()
-        .graph
-        .database()
-        .storage_pressure_snapshot()
-        .unwrap();
+    let pressure = handle.storage_pressure_snapshot().unwrap();
     drop(handle);
 
     // Reclamation must not cost data: reopen and read back every write.

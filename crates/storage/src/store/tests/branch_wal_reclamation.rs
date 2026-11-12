@@ -208,6 +208,50 @@ fn failed_head_reread_or_directory_sync_deletes_nothing_and_is_retryable_debt() 
 }
 
 #[test]
+fn branch_wals_are_reclaimed_while_an_unpinned_reader_defers_data_root_reclamation() {
+    let fixture = BranchFixture::new();
+    let directory = branch_directory(&fixture, fixture.main);
+    let mut main = fixture.admit(fixture.main, DurabilityPolicy::SyncOnEveryWrite);
+    write_schema_and_graph(&mut main);
+    checkpoint(&mut main).unwrap();
+    write_row(&mut main, "first");
+    checkpoint(&mut main).unwrap();
+    write_row(&mut main, &"reader".repeat(4096));
+    let superseded = main.head().active_wal.generation;
+    let data_root = main.store().durable.as_ref().unwrap().root_path.clone();
+    let data_files = |root: &Path| {
+        fs::read_dir(root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .filter(|name| {
+                crate::artifact_files::storage_generation_for_file(name.to_str().unwrap()).is_some()
+            })
+            .collect::<BTreeSet<_>>()
+    };
+    let data_before = data_files(&data_root);
+
+    // An open reader without a known pin set: every data-root generation is
+    // retained, but no reader can open a branch-private WAL.
+    let (store, catalog) = main.store_and_catalog_mut();
+    let reader_epoch = store.commit_epoch();
+    store
+        .checkpoint_with_reader_epoch(catalog, Some(reader_epoch))
+        .unwrap();
+    assert!(data_files(&data_root).is_superset(&data_before));
+    assert!(!directory
+        .join(crate::artifact_files::wal_generation_file(superseded))
+        .exists());
+    assert_eq!(
+        branch_wal_generations(&directory),
+        vec![main.head().active_wal.generation]
+    );
+    assert_no_reclamation_debt(&main);
+    drop(main);
+    let main = fixture.admit(fixture.main, DurabilityPolicy::SyncOnEveryWrite);
+    assert_eq!(message_rows(&main), 3);
+}
+
+#[test]
 fn interrupted_checkpoint_keeps_selected_wal_and_a_later_checkpoint_reclaims_leftovers() {
     for durability in [
         DurabilityPolicy::SyncOnEveryWrite,

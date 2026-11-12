@@ -91,6 +91,10 @@ impl DurableStore {
             return debt;
         };
         if self.oldest_reader_commit_epoch.is_some() && pinned_reader_generations.is_none() {
+            // An open reader with an unknown pin set may still read any older
+            // data-root generation, so that scan waits for a known pin set.
+            // Readers never open a branch-private WAL, so its sweep proceeds.
+            self.reclaim_superseded_branch_wals(None, &mut debt);
             return debt;
         }
 

@@ -457,7 +457,9 @@ successors, in-flight checkpoint candidates, interrupted-publication evidence)
 and reader-pinned generations are kept. The branch sweep does not use the
 data-root retention of the current and previous checkpoint generations, which
 number data-root artifacts; readers never open a branch WAL, so a reader pin
-that matches a branch WAL number only delays its removal. An interrupted-publication name below
+that matches a branch WAL number only delays its removal. The branch sweep also runs when an
+open reader without a known pin set defers data-root reclamation, because no
+reader opens a branch WAL. An interrupted-publication name below
 the selected generation is reclaimed like a data-root generation below the
 selected checkpoint: the durable head selecting a newer generation resolves its
 uncertainty. The writer's exclusive branch-directory
