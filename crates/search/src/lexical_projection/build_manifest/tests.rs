@@ -14,7 +14,7 @@
 
 use super::*;
 use crate::lexical_projection::manifest_encoding::tests::manifest;
-use crate::lexical_projection::{LexicalProjectionWriter, ARTIFACT_HEADER};
+use crate::lexical_projection::{LexicalProjectionWriter, ARTIFACT_HEADER, MANIFEST_FILE};
 use crate::{SearchAnalyzerLexicon, SearchDocument};
 use hawdb_core::{RuntimeCancellationToken, RuntimeMemoryReservation};
 use std::cell::RefCell;
@@ -257,7 +257,7 @@ fn decode_output_and_scratch_admission_precede_manifest_file_creation() {
     for deny_scratch in [false, true] {
         let fixture = Fixture::new();
         let (memory, task) = context(BUDGET);
-        let mut paths = Paths::new(&fixture.0, 7, &memory, &task).unwrap();
+        let mut paths = Paths::new(&fixture.0, 7, MANIFEST_FILE, &memory, &task).unwrap();
         let artifact = ArtifactBuilder::new_with_context(
             &paths.artifact_tmp,
             7,

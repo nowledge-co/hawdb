@@ -254,7 +254,10 @@ mod tests {
         let mut names = std::fs::read_dir(root)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            // The generation snapshot is the resident checkpoint's private
+            // alias source; a Consumer closure names the current snapshot.
             .filter(|name| name == crate::SEARCH_SNAPSHOT_FILE || name.ends_with(".1.hawdb"))
+            .filter(|name| *name != crate::resident_snapshot_file(1))
             .collect::<Vec<_>>();
         names.sort();
         let mut artifacts = names

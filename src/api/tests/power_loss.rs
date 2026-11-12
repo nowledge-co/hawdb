@@ -29,6 +29,7 @@ mod branch_abandonment;
 mod consumer_reclamation;
 #[cfg(feature = "vector-search")]
 mod consumer_vector_incremental;
+mod resident_search_checkpoint;
 mod runtime_roots;
 mod search_projection;
 

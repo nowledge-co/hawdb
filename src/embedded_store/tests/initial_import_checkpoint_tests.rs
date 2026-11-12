@@ -485,61 +485,70 @@ fn scheduled_checkpoints(
 }
 
 #[test]
-fn initial_import_1707_crash_inside_checkpoint_fails_closed_and_reimports() {
-    // The resident checkpoint durably replaces the snapshot before it
-    // publishes the generation manifest. Model a crash in that window by
-    // pairing the next checkpoint's snapshot with the previous generation.
+fn initial_import_1711_crash_inside_checkpoint_reopens_previous_or_new() {
+    // #1711: the resident checkpoint writes generation-named files, commits by
+    // renaming the selector, then re-links the current names. Model a crash
+    // on either side of the selector from the files of a completed checkpoint.
     const ROWS: usize = 10;
-    let fixture = ImportFixture::new("initial_import_1707_crash_inside_checkpoint");
+    const SELECTOR: &str = "search_projection.out_of_core.manifest.hawdb";
+    let fixture = ImportFixture::new("initial_import_1711_crash_inside_checkpoint");
     let search = fixture.root.join("search");
-    let torn = fixture.root.join("search_torn");
+    let previous = fixture.root.join("search_previous");
     let mut store = fixture.open();
     store
         .apply_initial_import_projection_delta(import_page(0, ROWS), IMPORT_SOURCE_EPOCH)
         .unwrap();
     store.checkpoint_initial_import_projection().unwrap();
+    let first = projection_state(&store, 2 * ROWS);
     drop(store);
-    std::fs::create_dir_all(&torn).unwrap();
-    for entry in std::fs::read_dir(&search).unwrap() {
-        let entry = entry.unwrap();
-        assert!(entry.file_type().unwrap().is_file(), "{entry:?}");
-        std::fs::copy(entry.path(), torn.join(entry.file_name())).unwrap();
-    }
+    copy_files(&search, &previous, |_| true);
     let mut store = fixture.open();
     store
         .apply_initial_import_projection_delta(import_page(1, ROWS), IMPORT_SOURCE_EPOCH)
         .unwrap();
     store.checkpoint_initial_import_projection().unwrap();
-    let expected = projection_state(&store, 2 * ROWS);
+    let second = projection_state(&store, 2 * ROWS);
     drop(store);
-    std::fs::copy(
-        search.join("search_projection.hawdb"),
-        torn.join("search_projection.hawdb"),
-    )
-    .unwrap();
+    assert_ne!(first, second);
+    let new_name = |name: &str| !previous.join(name).exists();
 
-    // Reopen refuses the mixed state instead of serving either generation.
-    let mut options = fixture.options.clone();
-    options.search_projection_path = Some(torn.clone());
-    let error = EmbeddedStore::open_with_options(options.clone()).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("does not match the published immutable projection"),
-        "{error}"
-    );
-
-    // Recovery for an initial import: discard the projection and re-import
-    // from page 0 with the host cursor and checkpointed count reset.
-    std::fs::remove_dir_all(&torn).unwrap();
-    let (mut store, _) = EmbeddedStore::open_with_options(options).unwrap();
-    for page in 0..2 {
+    for (name, after_selector) in [("before_selector", false), ("after_selector", true)] {
+        let torn = fixture.root.join(format!("search_{name}"));
+        copy_files(&previous, &torn, |_| true);
+        // Every generation file of the next checkpoint is present. Before the
+        // selector, the snapshot the old protocol replaced first is new too.
+        copy_files(&search, &torn, |name| {
+            new_name(name)
+                || (after_selector && name == SELECTOR)
+                || (!after_selector && name == "search_projection.hawdb")
+        });
+        let mut options = fixture.options.clone();
+        options.search_projection_path = Some(torn.clone());
+        let (mut store, _) = EmbeddedStore::open_with_options(options).unwrap();
+        if after_selector {
+            assert_eq!(projection_state(&store, 2 * ROWS), second);
+            continue;
+        }
+        assert_eq!(projection_state(&store, 2 * ROWS), first);
+        // The host's cursor still names page 0: replay page 1.
         store
-            .apply_initial_import_projection_delta(import_page(page, ROWS), IMPORT_SOURCE_EPOCH)
+            .apply_initial_import_projection_delta(import_page(1, ROWS), IMPORT_SOURCE_EPOCH)
             .unwrap();
+        store.checkpoint_initial_import_projection().unwrap();
+        assert_eq!(projection_state(&store, 2 * ROWS), second);
     }
-    store.checkpoint_initial_import_projection().unwrap();
-    assert_eq!(projection_state(&store, 2 * ROWS), expected);
+}
+
+fn copy_files(from: &std::path::Path, to: &std::path::Path, keep: impl Fn(&str) -> bool) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        assert!(entry.file_type().unwrap().is_file(), "{entry:?}");
+        let name = entry.file_name().into_string().unwrap();
+        if keep(&name) {
+            std::fs::copy(entry.path(), to.join(&name)).unwrap();
+        }
+    }
 }
 
 fn run_schedule(

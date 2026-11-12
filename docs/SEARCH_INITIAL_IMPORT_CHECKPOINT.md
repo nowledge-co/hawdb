@@ -86,28 +86,23 @@ state changes only when a checkpoint publishes a new generation.
    Replaying from the durable cursor therefore skips no page and duplicates no
    document. The tests assert this, including a crash in the last and largest
    gap of a geometric schedule.
-6. A crash *during* a checkpoint is not atomic today. The resident checkpoint
-   first durably replaces the snapshot (`search_projection.hawdb`), then writes
-   the lexical, segment and vector artifacts, and only then publishes the
-   generation manifest (`search_projection.out_of_core.manifest.hawdb`). A
-   crash before the snapshot replace leaves the previous checkpoint intact. A
-   crash after the manifest publish leaves the new one. A crash between the two,
-   which covers most of the checkpoint's duration, leaves a new snapshot paired
-   with the previous generation. Reopen then refuses with
-   `resident search snapshot does not match the published immutable
-   projection`. It does not silently serve either state.
-
-   For an initial import, recover by deleting the search projection directory
-   and re-importing from page 0, with the cursor and `checkpointed_bytes` reset
-   to 0. `initial_import_1707_crash_inside_checkpoint_fails_closed_and_reimports`
-   pins this behavior. The existing power-loss qualification
-   (`api::tests::power_loss::search_projection`,
-   [SEARCH_SEGMENT_POWER_LOSS_QUALIFICATION](SEARCH_SEGMENT_POWER_LOSS_QUALIFICATION.md))
-   covers out-of-core generation publication, not this resident
-   snapshot-then-manifest sequence. The same window exists for every per-page
-   checkpoint taken by `apply_initial_import_projection_delta_and_checkpoint`.
-   A geometric schedule takes fewer checkpoints, so it is exposed to this
-   window fewer times.
+6. A crash *during* a checkpoint is atomic (#1711). The resident checkpoint
+   writes every artifact, including the snapshot, under a generation name. Its
+   single commit point is the rename of the generation manifest
+   (`search_projection.out_of_core.manifest.hawdb`). Only after that rename
+   does it re-link the current names (`search_projection.hawdb` and the
+   descriptor, payload and lexical manifest). A crash before the rename reopens
+   the previous checkpoint, so the host replays from its persisted cursor as in
+   rule 4. A crash after it reopens the new checkpoint, and reopen finishes any
+   interrupted re-link. Either way the reopened documents, epochs and search
+   results equal one of the two checkpoints. The host never needs to delete the
+   projection and re-import. A host that persisted its cursor only after `Ok`
+   may replay pages that are already durable, which rule 5 makes harmless.
+   `initial_import_1711_crash_inside_checkpoint_reopens_previous_or_new` and
+   the recorder qualification `api::tests::power_loss::resident_search_checkpoint`
+   ([SEARCH_SEGMENT_POWER_LOSS_QUALIFICATION](SEARCH_SEGMENT_POWER_LOSS_QUALIFICATION.md#resident-checkpoint))
+   cover this for both `checkpoint_initial_import_projection` and
+   `apply_initial_import_projection_delta_and_checkpoint`.
 
 `import_source_graph_commit_epoch` is immutable provenance for the whole import,
 not a per-page cursor. Every page of one import must pass the same value. A
@@ -202,10 +197,13 @@ data.
   The resume seeds the schedule from the persisted `checkpointed_bytes`. It
   takes at most one more checkpoint than the uninterrupted schedule had left,
   and in the last-gap case at least two fewer than a resume restarted at 0.
-- `initial_import_1707_crash_inside_checkpoint_fails_closed_and_reimports`:
-  pairs the next checkpoint's snapshot with the previous generation (rule 6).
-  Reopen refuses, and re-importing into a fresh directory reproduces the
-  expected state.
+- `initial_import_1711_crash_inside_checkpoint_reopens_previous_or_new`:
+  rebuilds the files of a crash on either side of the next checkpoint's
+  selector (rule 6). Before the selector, the directory also contains the new
+  snapshot that the pre-#1711 protocol replaced first. Reopen yields exactly
+  the previous checkpoint, and replaying the page reaches the new state. After
+  the selector, with stale current names, reopen yields exactly the new
+  checkpoint.
 - `initial_import_1707_geometric_schedule_bounds_write_amplification`: for 8 and
   32 pages, asserts that a doubling schedule writes at most 3× the final
   checkpoint's bytes in at most `log2(P) + 2` generations. Per-page

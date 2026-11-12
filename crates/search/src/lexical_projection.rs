@@ -95,6 +95,10 @@ pub(super) fn artifact_file(generation: u64) -> String {
     format!("search_lexical.{generation}.hawdb")
 }
 
+pub(super) fn generation_manifest_file(generation: u64) -> String {
+    format!("search_lexical.manifest.{generation}.hawdb")
+}
+
 pub(super) fn manifest_generation(path: &Path, max_bytes: u64) -> Result<Option<u64>> {
     // Invalid candidates remain skippable. Admission or I/O failures must not
     // hide existing generations and allow their identities to be reused.
@@ -2837,6 +2841,7 @@ pub(super) struct LexicalProjectionWriter<'workspace> {
     config: LexicalProjectionConfig,
     build_context: Option<(BuildMemory, RuntimeTaskContext)>,
     analyzer_workspace: Option<&'workspace crate::analyzer_workspace::Workspace>,
+    generation_manifest: bool,
 }
 
 impl<'workspace> LexicalProjectionWriter<'workspace> {
@@ -2845,7 +2850,15 @@ impl<'workspace> LexicalProjectionWriter<'workspace> {
             config,
             build_context: None,
             analyzer_workspace: None,
+            generation_manifest: false,
         }
+    }
+
+    /// Write only the generation-named manifest. The unsuffixed current
+    /// manifest is then an alias its publisher installs after the selector.
+    pub(super) const fn with_generation_manifest(mut self) -> Self {
+        self.generation_manifest = true;
+        self
     }
 
     pub(super) fn with_context(mut self, memory: BuildMemory, task: RuntimeTaskContext) -> Self {
@@ -2904,19 +2917,23 @@ impl<'workspace> LexicalProjectionWriter<'workspace> {
         if self.analyzer_workspace.is_none() && self.needs_analyzer_workspace(documents.clone())? {
             let (memory, task) = self.context()?;
             let config = self.config;
+            let generation_manifest = self.generation_manifest;
             return crate::analyzer_workspace::run(&memory, &task, |workspace| {
-                LexicalProjectionWriter::new(config)
-                    .with_context(memory.clone(), task.clone())
-                    .with_analyzer_workspace(Some(workspace))
-                    .write(
-                        root,
-                        generation,
-                        source_graph_commit_epoch,
-                        analyzer_digest,
-                        documents_digest,
-                        documents,
-                        analyzer,
-                    )
+                LexicalProjectionWriter {
+                    generation_manifest,
+                    ..LexicalProjectionWriter::new(config)
+                }
+                .with_context(memory.clone(), task.clone())
+                .with_analyzer_workspace(Some(workspace))
+                .write(
+                    root,
+                    generation,
+                    source_graph_commit_epoch,
+                    analyzer_digest,
+                    documents_digest,
+                    documents,
+                    analyzer,
+                )
             });
         }
         self.write_scanned(
@@ -2951,7 +2968,13 @@ impl<'workspace> LexicalProjectionWriter<'workspace> {
     ) -> Result<Arc<LexicalProjectionReader>> {
         let (memory, task) = self.context()?;
         checkpoint(&task)?;
-        let mut paths = build_manifest::Paths::new(root, generation, &memory, &task)?;
+        let manifest_name = if self.generation_manifest {
+            generation_manifest_file(generation)
+        } else {
+            MANIFEST_FILE.to_owned()
+        };
+        let mut paths =
+            build_manifest::Paths::new(root, generation, &manifest_name, &memory, &task)?;
         let mut artifact_guard =
             crate::build_control::temporary::RemoveOnDrop::new(&paths.artifact_tmp);
         let mut artifact = ArtifactBuilder::new_with_context(
