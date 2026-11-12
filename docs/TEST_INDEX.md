@@ -817,7 +817,10 @@ splitting an overgrown block; 300 updates of one document keeping its ordinal
 and leaving bounded rows; and delete-heavy churn compacting shrunken blocks,
 re-insertion after compaction, and the relation emptying with its last
 document; every layout check also verifies each block bounds row against its
-block and the lengths of its documents. The `scan` submodule owns the
+block and the lengths of its documents. A focused compaction regression
+empties the retained first block while its successor has 192 postings, then
+shrinks that successor to 19 postings and verifies the merged length bound,
+remaining rows and exact search results. The `scan` submodule owns the
 `Bm25IndexScan` access path: exact top-k equal to the oracle (ids and score
 bits) on four random Zipf-like corpora with random queries, `k` and stream
 filters before and after churn that rewrites, shortens, deletes and inserts
@@ -854,10 +857,15 @@ top-k decodes under 5% of the postings
 (`cargo test --locked -p hawdb-executor --lib bm25`; well under a second).
 `hawdb-relational`'s `query::tests::text_search_admission` indexes 4,096
 documents sharing one term (and 16,384 in a second corpus) and requires both
-top-10s to run within one 320 KiB blocking budget (the full-ranking scan
+top-10s to run within one 512 KiB blocking budget (the full-ranking scan
 needed 56 bytes per match, 917 KB for the larger corpus), skipping most
 blocks unread, to be refused by the `Bm25IndexScan` account under a tiny
-budget, and to honour cancellation. Its multi-term case on a second corpus
+budget, and to honour cancellation. The budget charges the fixed lengths
+directory, all decoded entry slots (including deleted slots), and key bytes;
+it replaces the earlier 320 KiB estimate based on encoded lengths payloads.
+A sparse-after-deletion regression retains only the last document of each
+of 32 lengths rows, succeeds at 128 KiB, and requires refusal at 32 KiB before
+half the control's decoded-array allocation bytes are allocated. Its multi-term case on a second corpus
 (ten short documents repeating the term) compares exact rows and score bits
 with a residual-filtered scan and a whole-match-set ranking across
 sealed-block boundaries, visiting fewer postings and skipping blocks

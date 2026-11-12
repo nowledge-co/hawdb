@@ -1120,4 +1120,44 @@ fn search_index_delete_churn_compacts_blocks_and_empties_the_relation() {
     assert_matches_oracle(&mut db, "fresh");
 }
 
+#[test]
+fn search_index_compacts_a_populated_block_into_an_empty_first_block() {
+    let mut db = Database::new();
+    db.query_sql(SCHEMA).unwrap();
+    db.query_sql(INDEX).unwrap();
+    let values = (0..320)
+        .map(|id| {
+            let text = if (192..256).contains(&id) {
+                "bar"
+            } else {
+                "foo"
+            };
+            format!("({id}, 's', {id}, '{text}')")
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    db.query_sql(&format!(
+        "INSERT INTO events (id, stream, seq, text) VALUES {values}"
+    ))
+    .unwrap();
+    assert_eq!(term_blocks(&db, "foo"), (vec![128, 128], 0));
+    db.query_sql("UPDATE events SET text = 'foo' WHERE id >= 192 AND id < 256")
+        .unwrap();
+    assert_eq!(term_blocks(&db, "foo"), (vec![128, 192], 0));
+    // The empty first block cannot absorb its oversized successor yet.
+    db.query_sql("DELETE FROM events WHERE id < 128").unwrap();
+    assert_eq!(term_blocks(&db, "foo"), (vec![0, 192], 0));
+    // Once the successor shrinks, its positive length bound must survive
+    // merging into the retained empty block's fence.
+    db.query_sql("DELETE FROM events WHERE id >= 128 AND id <= 300")
+        .unwrap();
+    assert_eq!(term_blocks(&db, "foo"), (vec![19], 0));
+    layout_rows(&db);
+    assert_eq!(
+        ids(&search(&mut db, "foo", 100)),
+        (301..320).collect::<Vec<_>>()
+    );
+    assert_matches_oracle(&mut db, "foo");
+}
+
 mod scan;

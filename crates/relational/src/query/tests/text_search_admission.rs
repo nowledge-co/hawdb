@@ -1,9 +1,10 @@
 // Copyright 2026 Nowledge
 // SPDX-License-Identifier: Apache-2.0
 
-//! `text_search` admits its scan state before allocating it, and that state
-//! is bounded by `k` and the blocks it reads, not by the number of matches.
+//! `text_search` admits skip metadata, ranked prefixes and bounded block and
+//! lengths windows before allocating their retained state.
 
+use super::projection_admission::PayloadProbe;
 use super::*;
 
 const DOCUMENTS: i64 = 4096;
@@ -102,7 +103,7 @@ fn search_sql(
 }
 
 #[test]
-fn text_search_scan_state_is_bounded_by_k_not_by_matches() {
+fn text_search_scan_admits_fixed_windows_and_skip_metadata() {
     let state = search_state();
     let control = search(&state, 64 * 1024 * 1024, None).unwrap();
     assert_eq!(control.rows.len(), 10);
@@ -117,7 +118,9 @@ fn text_search_scan_state_is_bounded_by_k_not_by_matches() {
     // a bounded read-ahead and lengths window: one fixed budget serves four
     // times as many matches. (The full-ranking scan needed more than 56
     // bytes per match: about 229 KB here, 917 KB for the larger corpus.)
-    let budget = 320 * 1024;
+    // Decoded length entries, including deleted slots, and the window's
+    // fixed directory are charged independently of their compact encoding.
+    let budget = 512 * 1024;
     let bounded = search(&state, budget, None).unwrap();
     assert_eq!(bounded.rows, control.rows);
     let larger = search_state_of(4 * DOCUMENTS);
@@ -130,6 +133,50 @@ fn text_search_scan_state_is_bounded_by_k_not_by_matches() {
     // that state is allocated.
     let error = search(&state, 512, None).unwrap_err().to_string();
     assert!(error.contains("Bm25IndexScan"), "{error}");
+}
+
+#[test]
+fn text_search_admits_sparse_lengths_before_decoding_the_window() {
+    use hawdb_storage::relational::{
+        RelationalKey, RelationalTransaction, RelationalWrite, SearchDocumentEntry,
+        SEARCH_INDEX_LENGTH_BLOCK_DOCUMENTS,
+    };
+
+    let state = state_of_bodies((0..2048).map(|id| (id, "common".to_owned())));
+    // Keep only the last slot of each 64-document lengths row. Its compact
+    // payload is small, but decoding still allocates all 64 entry slots.
+    let state = state
+        .stage_transaction(
+            RelationalTransaction {
+                writes: vec![RelationalWrite::DeleteByPrimaryKey {
+                    table: "docs".into(),
+                    keys: (0..2048)
+                        .filter(|id| id % 64 != 63)
+                        .map(|id| RelationalKey(vec![RelationalValue::BigInt(id)]))
+                        .collect(),
+                }],
+            },
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap();
+    let sql = "SELECT id FROM text_search('docs_body', 'common', top_k => 1)";
+    let entries_bytes = SEARCH_INDEX_LENGTH_BLOCK_DOCUMENTS as usize
+        * std::mem::size_of::<Option<SearchDocumentEntry>>();
+    let probe = PayloadProbe::start(entries_bytes);
+    let control = search_sql(&state, 128 * 1024, None, sql).unwrap();
+    let control_allocations = probe.finish();
+    assert_eq!(control.rows.len(), 1);
+    assert_eq!(control.search_index_scan.unwrap().lengths_rows_read, 32);
+    let probe = PayloadProbe::start(entries_bytes);
+    let refused = search_sql(&state, 32 * 1024, None, sql);
+    let refused_allocations = probe.finish();
+    let error = refused.unwrap_err().to_string();
+    assert!(error.contains("Bm25IndexScan"), "{error}");
+    assert!(
+        refused_allocations < control_allocations / 2,
+        "refused={refused_allocations}, control={control_allocations}"
+    );
 }
 
 #[test]
