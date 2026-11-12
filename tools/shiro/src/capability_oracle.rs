@@ -256,7 +256,7 @@ impl Run {
                 if (matches!(
                     &error,
                     hawdb::HawDBError::Execution(_) | hawdb::HawDBError::Semantic(_)
-                ) || matches!(&error, hawdb::HawDBError::Storage(detail) if detail.starts_with("relational constraint violation: execution error: ")))
+                ) || matches!(&error, hawdb::HawDBError::Constraint { surface: hawdb::RelationalErrorSurface::Storage, message } if message.starts_with("relational constraint violation: execution error: ")))
                     && error.to_string().contains(message) =>
             {
                 self.verified.insert(phase.into());

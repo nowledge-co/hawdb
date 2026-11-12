@@ -419,21 +419,70 @@ def test_errors_keep_their_types_and_gain_pep249_classes(
     assert pep249_classes(caught.value) == [connection.DatabaseError, pep]
 
 
-def test_constraint_violations_are_plain_database_errors(connection):
+@pytest.mark.parametrize("autocommit", [True, False], ids=["autocommit", "transaction"])
+@pytest.mark.parametrize(
+    "parameters,kind,pep",
+    [
+        ([1, "again"], "constraint", dbapi.IntegrityError),
+        ([2, None], "constraint", dbapi.IntegrityError),
+        ([3, 3], "schema", dbapi.DataError),
+    ],
+    ids=["duplicate key", "not null", "wrong type"],
+)
+def test_relational_refusals_gain_integrity_and_data_errors(
+    connect, autocommit, parameters, kind, pep
+):
+    connection = connect(autocommit=autocommit)
     cursor = connection.cursor()
-    cursor.execute(CREATE)
+    cursor.execute("CREATE TABLE items (id BIGINT PRIMARY KEY, name TEXT NOT NULL)")
     cursor.execute(INSERT, [1, "one"])
     connection.commit()
-    connection.autocommit = True
-    with pytest.raises(hawdb.exceptions.StorageError, match="duplicate") as autocommitted:
-        cursor.execute(INSERT, [1, "again"])
-    connection.autocommit = False
-    with pytest.raises(hawdb.exceptions.ExecutionError, match="duplicate") as staged:
-        cursor.execute(INSERT, [1, "again"])
-    # Not IntegrityError, which the engine cannot tell apart yet, nor an
-    # OperationalError that a retry loop would repeat.
-    for caught in (autocommitted, staged):
-        assert pep249_classes(caught.value) == [dbapi.DatabaseError]
+    # Each keeps the engine type of its path: storage in autocommit, execution
+    # in a transaction.
+    native = (
+        hawdb.exceptions.StorageError if autocommit else hawdb.exceptions.ExecutionError
+    )
+    with pytest.raises(pep) as caught:
+        cursor.execute(INSERT, parameters)
+    error = caught.value
+    assert type(error.__context__) is native
+    assert isinstance(error, native)
+    assert (error.kind, error.retryable) == (kind, False)
+    # Not an OperationalError that a retry loop would repeat, nor the engine's
+    # IntegrityError, which reports damaged storage.
+    assert pep249_classes(error) == [dbapi.DatabaseError, pep]
+    assert not isinstance(error, hawdb.exceptions.IntegrityError)
+    # The failed statement leaves the transaction usable.
+    cursor.execute(INSERT, [4, "four"])
+    connection.commit()
+    assert ids(connection) == [1, 4]
+
+
+@pytest.mark.parametrize("native", [hawdb.exceptions.StorageError,
+                                    hawdb.exceptions.ExecutionError])
+def test_only_relational_kinds_pick_integrity_and_data_errors(native):
+    for kind, pep in [("constraint", dbapi.IntegrityError), ("schema", dbapi.DataError)]:
+        error = native("message")
+        error.kind, error.retryable = kind, False
+        translated = dbapi._pep249(error, statement=False)
+        assert isinstance(translated, native)
+        assert pep249_classes(translated) == [dbapi.DatabaseError, pep]
+        assert translated.kind == kind
+    # Other kinds, a missing kind and a subclass keep their documented classes.
+    for kind in ["execution", "wal_recovery_io", "unsupported_storage_format", None, 1]:
+        error = native("message")
+        if kind is not None:
+            error.kind = kind
+        assert pep249_classes(dbapi._pep249(error, statement=False)) == [
+            dbapi.DatabaseError
+        ]
+    for subclass in [hawdb.exceptions.IntegrityError, hawdb.exceptions.DescriptorError,
+                     hawdb.exceptions.ResourceBudgetError]:
+        error = subclass("message")
+        error.kind = "constraint"
+        assert pep249_classes(dbapi._pep249(error, statement=False)) == [
+            pep for pep in PEP249_ERRORS if issubclass(PEP249_CLASS[subclass], pep)
+        ]
 
 
 def test_a_busy_path_is_an_operational_error(tmp_path):
@@ -454,13 +503,13 @@ def test_translated_errors_keep_attributes_and_pickle():
         with pytest.raises(hawdb.exceptions.ExecutionError) as caught:
             cursor.execute(INSERT, [1, "duplicate"])
     error = caught.value
-    assert (error.kind, error.retryable) == ("execution", False)
-    assert pep249_classes(error) == [dbapi.DatabaseError]
+    assert (error.kind, error.retryable) == ("constraint", False)
+    assert pep249_classes(error) == [dbapi.DatabaseError, dbapi.IntegrityError]
     # The binding's own error stays reachable for debugging.
     assert type(error.__context__) is hawdb.exceptions.ExecutionError
     restored = pickle.loads(pickle.dumps(error))
     assert type(restored) is type(error)
-    assert (restored.args, restored.kind) == (error.args, "execution")
+    assert (restored.args, restored.kind) == (error.args, "constraint")
 
 
 def test_translated_work_budget_errors_keep_attributes_and_pickle():
@@ -635,7 +684,7 @@ def test_failed_executemany_aborts_until_rollback(connect):
     # Engine, value and row-shape failures inside the batch.
     for rows, error, pep in [
         ([(2, "b"), (2, "duplicate")], hawdb.exceptions.ExecutionError,
-         dbapi.DatabaseError),
+         dbapi.IntegrityError),
         ([(2, "b"), (3, object())], TypeError, dbapi.ProgrammingError),
         ([(2, "b"), "not a row"], TypeError, dbapi.ProgrammingError),
     ]:

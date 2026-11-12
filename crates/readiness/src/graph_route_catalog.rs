@@ -18,7 +18,7 @@
 //! owns the stable route protocol, its input validation, and the fail-closed
 //! reduction of query reports into route evidence.
 use crate::json_parse::{optional_query_name, parse_parameters_json};
-use hawdb_core::{HawDBError, Result, Value};
+use hawdb_core::{HawDBError, RelationalErrorSurface, Result, Value};
 use hawdb_evidence::inventory::REQUIRED_NOWLEDGE_REPLACEMENT_QUERY_FAMILIES;
 use hawdb_route_ownership::graph::{
     required_query_families_for_route, REQUIRED_BOUNDED_READ_ROUTES,
@@ -645,6 +645,14 @@ fn error_class(error: &HawDBError) -> &'static str {
         HawDBError::Parse(_) => "parse",
         HawDBError::Semantic(_) => "semantic",
         HawDBError::Storage(_)
+        | HawDBError::Constraint {
+            surface: RelationalErrorSurface::Storage,
+            ..
+        }
+        | HawDBError::Schema {
+            surface: RelationalErrorSurface::Storage,
+            ..
+        }
         | HawDBError::FileDescriptors(_)
         | HawDBError::StorageIntegrity(_)
         | HawDBError::WalRecoveryIo { .. }
@@ -654,6 +662,14 @@ fn error_class(error: &HawDBError) -> &'static str {
         | HawDBError::BranchBusy { .. }
         | HawDBError::BranchReclamationBlocked { .. } => "storage",
         HawDBError::Execution(_)
+        | HawDBError::Constraint {
+            surface: RelationalErrorSurface::Execution,
+            ..
+        }
+        | HawDBError::Schema {
+            surface: RelationalErrorSurface::Execution,
+            ..
+        }
         | HawDBError::BranchEvidenceBudgetExceeded { .. }
         | HawDBError::ReadBudgetExceeded(_)
         | HawDBError::ResourceBudgetExceeded(_)

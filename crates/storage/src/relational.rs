@@ -6554,16 +6554,29 @@ impl fmt::Display for RelationalError {
 }
 
 impl std::error::Error for RelationalError {
+    /// Constraint and schema refusals report their typed kind as the source,
+    /// so `HawDBError::from_storage_error` keeps it through any wrapper.
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::FileDescriptors(error) => Some(error),
             Self::UnsupportedFormat(error) => Some(error),
+            Self::Constraint(_) => Some(&hawdb_core::RelationalErrorKind::Constraint),
+            Self::Schema(_) => Some(&hawdb_core::RelationalErrorKind::Schema),
             _ => None,
         }
     }
 }
 
 impl RelationalError {
+    /// The typed kind of a constraint or schema refusal.
+    pub const fn kind(&self) -> Option<hawdb_core::RelationalErrorKind> {
+        match self {
+            Self::Constraint(_) => Some(hawdb_core::RelationalErrorKind::Constraint),
+            Self::Schema(_) => Some(hawdb_core::RelationalErrorKind::Schema),
+            _ => None,
+        }
+    }
+
     pub(crate) fn into_wal_recovery_error(self) -> hawdb_core::HawDBError {
         match self {
             Self::Corruption(message) => hawdb_core::HawDBError::StorageIntegrity(format!(

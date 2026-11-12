@@ -14,7 +14,8 @@
 
 use crate::{
     graph_read_route_catalog_digest, DatabaseConfig, EmbeddedGraph, EmbeddedStore, HawDBError,
-    NowledgeQueryRuntimePreflightProbe, Result, GRAPH_READ_ROUTE_CATALOG_VERSION,
+    NowledgeQueryRuntimePreflightProbe, RelationalErrorSurface, Result,
+    GRAPH_READ_ROUTE_CATALOG_VERSION,
 };
 pub use hawdb_readiness::query_runtime_preflight_cli::nowledge_query_runtime_preflight_usage;
 use hawdb_readiness::query_runtime_preflight_cli::parse_query_runtime_preflight_cli_inputs;
@@ -100,6 +101,14 @@ fn error_class(error: &HawDBError) -> &'static str {
         HawDBError::Parse(_) => "parse",
         HawDBError::Semantic(_) => "semantic",
         HawDBError::Storage(_)
+        | HawDBError::Constraint {
+            surface: RelationalErrorSurface::Storage,
+            ..
+        }
+        | HawDBError::Schema {
+            surface: RelationalErrorSurface::Storage,
+            ..
+        }
         | HawDBError::FileDescriptors(_)
         | HawDBError::StorageIntegrity(_)
         | HawDBError::WalRecoveryIo { .. }
@@ -109,6 +118,14 @@ fn error_class(error: &HawDBError) -> &'static str {
         | HawDBError::BranchBusy { .. }
         | HawDBError::BranchReclamationBlocked { .. } => "storage",
         HawDBError::Execution(_)
+        | HawDBError::Constraint {
+            surface: RelationalErrorSurface::Execution,
+            ..
+        }
+        | HawDBError::Schema {
+            surface: RelationalErrorSurface::Execution,
+            ..
+        }
         | HawDBError::BranchEvidenceBudgetExceeded { .. }
         | HawDBError::ReadBudgetExceeded(_)
         | HawDBError::ResourceBudgetExceeded(_)

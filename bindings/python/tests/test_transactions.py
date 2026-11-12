@@ -66,6 +66,33 @@ def test_transaction_sql_statements(db):
     assert result.fetchall() == [{"id": 1}, {"id": 2}]
 
 
+# A value per refusal: a duplicate key, a NULL in a NOT NULL column, a wrong type.
+RELATIONAL_REFUSALS = [([1, "again"], "constraint"), ([2, None], "constraint"),
+                       ([3, 3], "schema")]
+
+
+@pytest.mark.parametrize("parameters,kind", RELATIONAL_REFUSALS,
+                         ids=["duplicate key", "not null", "wrong type"])
+def test_relational_refusals_carry_their_kind_on_both_sql_paths(db, parameters, kind):
+    insert = "INSERT INTO items (id, name) VALUES ($1, $2)"
+    db.execute_sql("CREATE TABLE items (id BIGINT PRIMARY KEY, name TEXT NOT NULL)")
+    db.execute_sql(insert, [1, "one"])
+    # Autocommit reports through storage, a transaction statement through execution.
+    with pytest.raises(hawdb.exceptions.StorageError) as autocommitted:
+        db.execute_sql(insert, parameters)
+    with db.transaction() as tx:
+        with pytest.raises(hawdb.exceptions.ExecutionError) as staged:
+            tx.execute_sql(insert, parameters)
+        tx.rollback()
+    for caught, prefix in [(autocommitted, "storage error: "), (staged, "execution error: ")]:
+        error = caught.value
+        assert (error.kind, error.retryable) == (kind, False)
+        assert str(error).startswith(f"{prefix}relational {kind} ")
+        # Not the engine's IntegrityError, which reports damaged storage.
+        assert not isinstance(error, hawdb.exceptions.IntegrityError)
+    assert db.execute_sql("SELECT id FROM items").fetchall() == [{"id": 1}]
+
+
 def test_nested_transaction_fails(db):
     with db.transaction():
         with pytest.raises(hawdb.exceptions.Error):

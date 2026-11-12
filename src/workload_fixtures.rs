@@ -20,8 +20,8 @@ use crate::graph_route_evidence::{
 };
 use crate::{
     Database, EmbeddedGraph, EmbeddedQueryReportOptions, EmbeddedReadOptions, GraphMode,
-    KnowledgeCandidateScoringPolicy, KnowledgeRetrievalRequest, Result, RouteQuery,
-    SearchFusionWeights, SearchIndex, SearchMode, SearchPredicatePushdownReport,
+    KnowledgeCandidateScoringPolicy, KnowledgeRetrievalRequest, RelationalErrorSurface, Result,
+    RouteQuery, SearchFusionWeights, SearchIndex, SearchMode, SearchPredicatePushdownReport,
     SearchQueryOptions, SearchRebuildOptions, Value, DENSE_ADJACENCY_DEGREE_THRESHOLD,
 };
 use hawdb_core::{
@@ -691,6 +691,14 @@ fn error_class(error: &crate::HawDBError) -> String {
         crate::HawDBError::Parse(_) => "parse",
         crate::HawDBError::Semantic(_) => "semantic",
         crate::HawDBError::Execution(_)
+        | crate::HawDBError::Constraint {
+            surface: RelationalErrorSurface::Execution,
+            ..
+        }
+        | crate::HawDBError::Schema {
+            surface: RelationalErrorSurface::Execution,
+            ..
+        }
         | crate::HawDBError::BranchEvidenceBudgetExceeded { .. }
         | crate::HawDBError::ReadBudgetExceeded(_)
         | crate::HawDBError::ResourceBudgetExceeded(_)
@@ -701,6 +709,14 @@ fn error_class(error: &crate::HawDBError) -> String {
         | crate::HawDBError::TransactionReadDependencyRefused { .. }
         | crate::HawDBError::BranchCommandUnsupported { .. } => "execution",
         crate::HawDBError::Storage(_)
+        | crate::HawDBError::Constraint {
+            surface: RelationalErrorSurface::Storage,
+            ..
+        }
+        | crate::HawDBError::Schema {
+            surface: RelationalErrorSurface::Storage,
+            ..
+        }
         | crate::HawDBError::FileDescriptors(_)
         | crate::HawDBError::StorageIntegrity(_)
         | crate::HawDBError::WalRecoveryIo { .. }

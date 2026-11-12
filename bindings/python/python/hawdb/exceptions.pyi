@@ -26,6 +26,10 @@ class SemanticError(Error):
 class StorageError(Error):
     """Storage layer failure."""
 
+    # Some failures carry `kind`, such as "constraint" or "schema" for a
+    # relational refusal, and `retryable`.
+    def __getattr__(self, name: str) -> Any: ...
+
 class IntegrityError(StorageError):
     """Storage integrity violation."""
 

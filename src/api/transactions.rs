@@ -1320,9 +1320,17 @@ pub(super) fn map_transaction_relational_error(
         | hawdb_storage::relational::RelationalError::Durability(message) => {
             HawDBError::StorageIntegrity(message)
         }
-        error @ (hawdb_storage::relational::RelationalError::Admission(_)
-        | hawdb_storage::relational::RelationalError::Schema(_)
-        | hawdb_storage::relational::RelationalError::Constraint(_)) => {
+        error @ (hawdb_storage::relational::RelationalError::Schema(_)
+        | hawdb_storage::relational::RelationalError::Constraint(_)) => match error.kind() {
+            // A statement in an explicit transaction keeps the execution surface.
+            Some(kind) => HawDBError::relational(
+                kind,
+                hawdb_core::RelationalErrorSurface::Execution,
+                error.to_string(),
+            ),
+            None => HawDBError::Execution(error.to_string()),
+        },
+        error @ hawdb_storage::relational::RelationalError::Admission(_) => {
             HawDBError::Execution(error.to_string())
         }
     }

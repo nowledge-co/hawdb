@@ -21,6 +21,8 @@ mod transaction;
 pub use transaction::{TransactionRetryError, TransactionRetryReason};
 mod storage_format;
 pub use storage_format::StorageFormatError;
+mod relational;
+pub use relational::{find_relational_error_kind, RelationalErrorKind, RelationalErrorSurface};
 
 /// Descriptor admission failures are distinct from corrupt storage or a busy
 /// branch. Project quota counts belong to one engine resource domain; OS-limit
@@ -97,6 +99,19 @@ pub enum HawDBError {
     Parse(String),
     Semantic(String),
     Storage(String),
+    /// A relational constraint violation, such as a duplicate key or a NULL
+    /// in a NOT NULL column. It displays as `Storage` or `Execution` would,
+    /// by `surface`; `message` is the relational text after that prefix.
+    Constraint {
+        surface: RelationalErrorSurface,
+        message: String,
+    },
+    /// A relational schema refusal, such as a value of the wrong type for its
+    /// column. Displays like [`HawDBError::Constraint`].
+    Schema {
+        surface: RelationalErrorSurface,
+        message: String,
+    },
     FileDescriptors(FileDescriptorError),
     StorageIntegrity(String),
     /// Recovery IO may have completed an effect; reopen to resume its audit.
@@ -177,6 +192,10 @@ impl Display for HawDBError {
             HawDBError::Parse(message) => write!(f, "parse error: {message}"),
             HawDBError::Semantic(message) => write!(f, "semantic error: {message}"),
             HawDBError::Storage(message) => write!(f, "storage error: {message}"),
+            HawDBError::Constraint { surface, message }
+            | HawDBError::Schema { surface, message } => {
+                write!(f, "{}: {message}", surface.prefix())
+            }
             HawDBError::FileDescriptors(error) => Display::fmt(error, f),
             HawDBError::WalRecoveryIo { operation, message, .. } => write!(f, "WAL recovery {operation} failed; retain evidence and retry open: {message}"),
             HawDBError::StorageIntegrity(message) => {
@@ -271,6 +290,36 @@ impl HawDBError {
         })
     }
 
+    /// A relational refusal of `kind`, reported by `surface`.
+    pub fn relational(
+        kind: RelationalErrorKind,
+        surface: RelationalErrorSurface,
+        message: impl Into<String>,
+    ) -> Self {
+        let message = message.into();
+        match kind {
+            RelationalErrorKind::Constraint => Self::Constraint { surface, message },
+            RelationalErrorKind::Schema => Self::Schema { surface, message },
+        }
+    }
+
+    /// The relational refusal kind, for `Constraint` and `Schema` only.
+    pub const fn relational_error_kind(&self) -> Option<RelationalErrorKind> {
+        match self {
+            Self::Constraint { .. } => Some(RelationalErrorKind::Constraint),
+            Self::Schema { .. } => Some(RelationalErrorKind::Schema),
+            _ => None,
+        }
+    }
+
+    /// The layer that reported a `Constraint` or `Schema` refusal.
+    pub const fn relational_error_surface(&self) -> Option<RelationalErrorSurface> {
+        match self {
+            Self::Constraint { surface, .. } | Self::Schema { surface, .. } => Some(*surface),
+            _ => None,
+        }
+    }
+
     /// Preserve typed storage refusals through nested error wrappers.
     pub fn from_storage_error(error: impl std::error::Error + 'static) -> Self {
         if let Some(error) = (&error as &dyn std::error::Error).downcast_ref::<Self>() {
@@ -282,6 +331,8 @@ impl HawDBError {
             Self::from(resource)
         } else if let Some(error) = storage_format::find_storage_format_error(&error) {
             Self::UnsupportedStorageFormat(error)
+        } else if let Some(kind) = find_relational_error_kind(&error) {
+            Self::relational(kind, RelationalErrorSurface::Storage, error.to_string())
         } else {
             Self::Storage(error.to_string())
         }
@@ -296,6 +347,20 @@ impl HawDBError {
     ) -> Self {
         match Self::from_storage_error(error) {
             Self::Storage(message) => Self::Storage(format!("{context}: {message}")),
+            Self::Constraint {
+                surface: surface @ RelationalErrorSurface::Storage,
+                message,
+            } => Self::Constraint {
+                surface,
+                message: format!("{context}: {message}"),
+            },
+            Self::Schema {
+                surface: surface @ RelationalErrorSurface::Storage,
+                message,
+            } => Self::Schema {
+                surface,
+                message: format!("{context}: {message}"),
+            },
             error => error,
         }
     }
