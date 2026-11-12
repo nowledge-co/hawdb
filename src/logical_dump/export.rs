@@ -267,6 +267,7 @@ fn table_model(schema: &RelationalTableSchema) -> Result<Table> {
                 unique: index.unique,
             })
             .collect(),
+        search_indexes: Vec::new(),
     })
 }
 

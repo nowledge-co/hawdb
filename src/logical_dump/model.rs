@@ -101,6 +101,13 @@ pub(super) struct Table {
     pub foreign_keys: Vec<ForeignKey>,
     #[serde(default)]
     pub indexes: Vec<Index>,
+    /// BM25 search indexes over this table's TEXT columns. Only the
+    /// definition is dumped; import recreates each index before loading the
+    /// table's rows, so the postings are rebuilt from those rows. Omitted when
+    /// empty, so a dump without search indexes is byte-identical to one
+    /// written before the field existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub search_indexes: Vec<SearchIndex>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -150,6 +157,16 @@ pub(super) struct Index {
     pub name: String,
     pub columns: Vec<String>,
     pub unique: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct SearchIndex {
+    pub name: String,
+    /// The indexed TEXT column.
+    pub column: String,
+    /// The analyzer name as `CREATE SEARCH INDEX ... WITH (analyzer = ...)`
+    /// spells it, e.g. `cjk_ngram`.
+    pub analyzer: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

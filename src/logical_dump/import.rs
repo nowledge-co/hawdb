@@ -126,6 +126,7 @@ pub(super) fn import(
     let dump = open_dump(source)?;
     let (manifest, schema) = (&dump.manifest, &dump.schema);
     let plan = Plan::new(manifest, schema)?;
+    refuse_search_indexes(schema)?;
 
     let stage = Stage::create(destination, "import")?;
     let mut target = Target::open(stage.path(), options)?;
@@ -184,6 +185,49 @@ fn parse_manifest(bytes: &[u8]) -> Result<Manifest> {
         .map_err(|error| malformed(format!("manifest.json is not a format 1 manifest: {error}")))
 }
 
+/// A search index shares the relation namespace and indexes one TEXT column
+/// of its table; anything else is a damaged schema.
+fn validate_search_indexes(schema: &Schema, tables: &BTreeSet<&str>) -> Result<()> {
+    let mut names = BTreeSet::new();
+    for table in &schema.tables {
+        for index in &table.search_indexes {
+            if tables.contains(index.name.as_str()) || !names.insert(index.name.as_str()) {
+                return Err(malformed(format!(
+                    "search index {} reuses a relation name",
+                    index.name
+                )));
+            }
+            if !table
+                .columns
+                .iter()
+                .any(|column| column.name == index.column && column.column_type == "text")
+            {
+                return Err(malformed(format!(
+                    "search index {} names {}.{}, which is not a text column",
+                    index.name, table.name, index.column
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// This build has no SQL search indexes, so it cannot rebuild one. Refusing
+/// before anything is written keeps a dump from importing without its index.
+fn refuse_search_indexes(schema: &Schema) -> Result<()> {
+    for table in &schema.tables {
+        if let Some(index) = table.search_indexes.first() {
+            return Err(HawDBError::Semantic(format!(
+                "logical dump: this build cannot recreate SQL search index {} on table {}; \
+                 import the dump with a release that supports CREATE SEARCH INDEX. \
+                 Nothing was imported",
+                index.name, table.name
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// The manifest's data files, validated against the schema before any write.
 struct Plan<'a> {
     tables: BTreeMap<&'a str, Vec<&'a FileEntry>>,
@@ -201,6 +245,7 @@ impl<'a> Plan<'a> {
         if names.len() != schema.tables.len() {
             return Err(malformed("schema.json lists a table twice"));
         }
+        validate_search_indexes(schema, &names)?;
         let mut paths = BTreeSet::from([manifest.schema.path.as_str()]);
         let mut plan = Self {
             tables: BTreeMap::new(),

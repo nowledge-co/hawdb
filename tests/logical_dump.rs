@@ -857,6 +857,111 @@ fn newer_dump_format_is_a_typed_refusal_before_any_write() {
     Database::import_logical_dump(&dump, &destination).unwrap();
 }
 
+/// Rewrites `schema.json` and the manifest's schema entry so the dump stays
+/// internally consistent: the edit is a well-formed schema, not damage.
+fn rewrite_schema(dump: &Path, edit: impl FnOnce(&mut serde_json::Value)) {
+    let path = dump.join("schema.json");
+    let mut schema: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    edit(&mut schema);
+    let bytes = serde_json::to_vec(&schema).unwrap();
+    fs::write(&path, &bytes).unwrap();
+    let mut hasher = hawdb_integrity::IntegrityHasher::new();
+    hasher.update(&bytes);
+    let mut document = manifest(dump);
+    document["schema"]["bytes"] = serde_json::json!(bytes.len());
+    document["schema"]["sha256"] = serde_json::json!(hasher.finish().sha256.to_string());
+    fs::write(
+        dump.join("manifest.json"),
+        serde_json::to_vec(&document).unwrap(),
+    )
+    .unwrap();
+}
+
+fn docs_table(schema: &mut serde_json::Value) -> &mut serde_json::Value {
+    schema["tables"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|table| table["name"] == "docs")
+        .unwrap()
+}
+
+/// `search_indexes` is part of format 1: a reader validates every entry and,
+/// when it cannot rebuild the index, refuses the import before writing
+/// anything rather than importing the table without it.
+#[test]
+fn search_index_definitions_are_validated_and_never_dropped() {
+    let temp = TempDir::new("search-def");
+    let mut database = HawDBEmbedded::open(temp.path().join("db")).unwrap();
+    sql(
+        &mut database,
+        "CREATE TABLE docs (id BIGINT PRIMARY KEY, n BIGINT, body TEXT)",
+    );
+    let dump = temp.path().join("dump");
+    database.export_logical_dump(&dump).unwrap();
+    assert!(!fs::read_to_string(dump.join("schema.json"))
+        .unwrap()
+        .contains("search_indexes"));
+    let cases: &[(&str, serde_json::Value)] = &[
+        (
+            "not-text",
+            serde_json::json!([{"name": "docs_n", "column": "n", "analyzer": "cjk_ngram"}]),
+        ),
+        (
+            "absent-column",
+            serde_json::json!([{"name": "docs_x", "column": "x", "analyzer": "cjk_ngram"}]),
+        ),
+        (
+            "table-name",
+            serde_json::json!([{"name": "docs", "column": "body", "analyzer": "cjk_ngram"}]),
+        ),
+        (
+            "twice",
+            serde_json::json!([
+                {"name": "docs_body", "column": "body", "analyzer": "cjk_ngram"},
+                {"name": "docs_body", "column": "body", "analyzer": "cjk_ngram"}
+            ]),
+        ),
+    ];
+    for (name, indexes) in cases {
+        let copy = temp.path().join(format!("{name}-dump"));
+        copy_dump(&dump, &copy);
+        rewrite_schema(&copy, |schema| {
+            docs_table(schema)["search_indexes"] = indexes.clone()
+        });
+        assert!(
+            matches!(
+                verify_logical_dump(&copy),
+                Err(HawDBError::StorageIntegrity(_))
+            ),
+            "{name}"
+        );
+        let destination = temp.path().join(format!("{name}-db"));
+        assert!(
+            matches!(
+                Database::import_logical_dump(&copy, &destination),
+                Err(HawDBError::StorageIntegrity(_))
+            ),
+            "{name}"
+        );
+        assert_not_published(&destination);
+    }
+    // A well-formed definition verifies. This build has no SQL search
+    // indexes, so import refuses it instead of dropping the index.
+    rewrite_schema(&dump, |schema| {
+        docs_table(schema)["search_indexes"] =
+            serde_json::json!([{"name": "docs_body", "column": "body", "analyzer": "cjk_ngram"}]);
+    });
+    verify_logical_dump(&dump).unwrap();
+    let destination = temp.path().join("imported");
+    let error = Database::import_logical_dump(&dump, &destination).unwrap_err();
+    assert!(
+        matches!(&error, HawDBError::Semantic(message) if message.contains("docs_body")),
+        "{error:?}"
+    );
+    assert_not_published(&destination);
+}
+
 /// A dump written by format 1, checked in. Every later release must import it
 /// unchanged; this is the forward-compatibility contract of
 /// docs/LOGICAL_DUMP.md.

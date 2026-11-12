@@ -170,6 +170,15 @@ take file names from the manifest, never by listing the directory.
 - Index and constraint *definitions* are dumped, never their physical state.
   Import rebuilds them over the imported data, which also re-validates every
   constraint.
+- A table may list `search_indexes`, the definitions of BM25 SQL search
+  indexes over its `text` columns:
+  `[{"name": "events_text", "column": "text", "analyzer": "cjk_ngram"}]`.
+  The field is omitted when a table has none. An index name shares the
+  relation namespace, so it never equals a table name or another search
+  index's name; `verify` refuses a dump that breaks this or names a column
+  that is not `text`. The postings are never dumped. A build that has no SQL
+  search indexes refuses to import a dump listing one, with `Semantic`,
+  before writing anything, rather than importing the table without its index.
 
 ### Data records
 

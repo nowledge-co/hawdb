@@ -3499,6 +3499,11 @@ Specification: [LOGICAL_DUMP.md](LOGICAL_DUMP.md).
     path-escaping manifest entry and an existing destination. Each publishes
     nothing and leaves no staging directory. A stale staging directory from
     an interrupted earlier import is neither adopted nor removed.
+  - `search_index_definitions_are_validated_and_never_dropped`: a
+    `search_indexes` entry on a non-text or absent column, or reusing a table
+    or search index name, fails `verify_logical_dump` and import with
+    `StorageIntegrity`; a well-formed entry verifies, and a build without SQL
+    search indexes refuses its import with `Semantic`. Nothing is published.
   - a newer `dump_format_version` is a typed `UnsupportedStorageFormat`
     refusal before any write (from `verify_logical_dump` too), and unknown
     manifest fields are ignored.
