@@ -19,8 +19,8 @@ name = "shiro_core"
 query-lab = { path = "../query-lab" }
 query-workloads = { path = "../query-workloads" }
 serde_json = "1"
-hawdb = { path = "../..", version = "0.30.0", default-features = false }
-hawdb-fuzz-contracts = { path = "../../crates/fuzz-contracts", version = "0.30.0" }
+hawdb = { path = "../..", version = "0.31.0", default-features = false }
+hawdb-fuzz-contracts = { path = "../../crates/fuzz-contracts", version = "0.31.0" }
 
 [features]
 default = [

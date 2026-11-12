@@ -9,10 +9,10 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-hawdb-core = { path = "../core", version = "0.30.0" }
-hawdb-ddl = { path = "../ddl", version = "0.30.0" }
+hawdb-core = { path = "../core", version = "0.31.0" }
+hawdb-ddl = { path = "../ddl", version = "0.31.0" }
 
-hawdb-sql-syntax = { path = "../sql-syntax", version = "0.30.0" }
+hawdb-sql-syntax = { path = "../sql-syntax", version = "0.31.0" }
 peg = "=0.8.6"
 
 [dev-dependencies]
