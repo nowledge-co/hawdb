@@ -1033,11 +1033,15 @@ row-sourced CREATE or MERGE create branch whose row map lacks the referenced key
 (`row.p` with no `p` in `row`) now leaves the property out instead of storing
 NULL, so it receives the default; `UNWIND ... MATCH ... CREATE` relationships
 keep an explicit NULL row value instead of dropping it.
-`current_timestamp()` defaults produce a timezone-naive UTC `LocalDateTime`
-truncated to milliseconds, one value per writing transaction (every record of
-one auto-commit statement or of one explicit transaction shares it, matching
-Kùzu); declare such properties `TYPE ANY`. Adding a label to an existing node
-does not apply defaults.
+`current_timestamp()` defaults use exactly the representation of HawDB's own
+Cypher `current_timestamp()`, `timestamp('...')` and `CAST(... AS TIMESTAMP)`:
+an `INT` of epoch nanoseconds, so defaulted and explicitly written timestamps
+compare and sort together. The value is truncated to whole milliseconds (a
+multiple of 1,000,000 ns, matching Kùzu's precision) and is one value per
+writing transaction: every record of one auto-commit statement or of one
+explicit transaction shares it, matching Kùzu, whereas the Cypher function is
+pinned per statement. Declare such properties `TYPE INT` or `TYPE ANY`.
+Adding a label to an existing node does not apply defaults.
 
 Declare properties before importing data. Declaring a defaulted property on a
 table that already has records lacking it puts the descriptor in `BACKFILL`;

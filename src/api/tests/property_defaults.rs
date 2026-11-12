@@ -374,7 +374,7 @@ fn invalid_defaults_are_rejected_at_ddl_time() {
             "property DEFAULT must be a non-NULL literal",
         ),
         (
-            "CREATE PROPERTY ON NODE TABLE V(p) TYPE INT DEFAULT current_timestamp()",
+            "CREATE PROPERTY ON NODE TABLE V(p) TYPE STRING DEFAULT current_timestamp()",
             "property schema violation",
         ),
         (
@@ -388,21 +388,22 @@ fn invalid_defaults_are_rejected_at_ddl_time() {
     assert!(db.property_schemas().unwrap().is_empty());
 }
 
-fn timestamp(value: &Value) -> chrono::NaiveDateTime {
+/// `current_timestamp()` values are `Int` epoch nanoseconds, like HawDB's
+/// own `current_timestamp()`.
+fn timestamp(value: &Value) -> i64 {
     match value {
-        Value::LocalDateTime(value) => *value,
-        other => panic!("timestamp default expected, got {other:?}"),
+        Value::Int(value) => *value,
+        other => panic!("epoch-nanosecond timestamp expected, got {other:?}"),
     }
 }
 
-fn now_millis() -> chrono::NaiveDateTime {
+/// Wall-clock epoch nanoseconds truncated to whole milliseconds.
+fn now_millis() -> i64 {
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis() as i64;
-    chrono::DateTime::from_timestamp_millis(millis)
-        .unwrap()
-        .naive_utc()
+    millis * 1_000_000
 }
 
 #[test]
@@ -424,7 +425,7 @@ fn current_timestamp_default_is_one_millisecond_instant_per_transaction() {
     assert_eq!(rows.len(), 64);
     let bulk = timestamp(&rows[0]["created_at"]);
     assert!(rows.iter().all(|row| timestamp(&row["created_at"]) == bulk));
-    assert_eq!(bulk.and_utc().timestamp_subsec_nanos() % 1_000_000, 0);
+    assert_eq!(bulk % 1_000_000, 0, "millisecond precision");
 
     // Two statements of one explicit transaction share the instant.
     let mut transaction = db.begin_transaction().unwrap();
@@ -459,6 +460,53 @@ fn current_timestamp_default_is_one_millisecond_instant_per_transaction() {
         node_value(&mut db, "G", "explicit_null", "created_at"),
         Value::Null
     );
+}
+
+/// A defaulted `current_timestamp()` value has the same type as an explicit
+/// `current_timestamp()` (and as imported TIMESTAMP values), so comparisons
+/// and ORDER BY mix them correctly.
+#[test]
+fn current_timestamp_default_matches_explicit_current_timestamp() {
+    let mut db = Database::new();
+    db.query("CREATE NODE TABLE T").unwrap();
+    db.query("CREATE PROPERTY ON NODE TABLE T(at) TYPE INT DEFAULT current_timestamp()")
+        .unwrap();
+    let mut transaction = db.begin_transaction().unwrap();
+    transaction.query("CREATE (:T {id: 'defaulted'})").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    transaction
+        .query("CREATE (:T {id: 'explicit', at: current_timestamp()})")
+        .unwrap();
+    transaction.commit().unwrap();
+    let defaulted = node_value(&mut db, "T", "defaulted", "at");
+    let explicit = node_value(&mut db, "T", "explicit", "at");
+    assert!(matches!(defaulted, Value::Int(_)), "{defaulted:?}");
+    assert!(matches!(explicit, Value::Int(_)), "{explicit:?}");
+    // The default is the transaction's instant truncated to milliseconds, so
+    // it never exceeds a later statement's current_timestamp().
+    let (defaulted, explicit) = (timestamp(&defaulted), timestamp(&explicit));
+    assert!(defaulted <= explicit, "{defaulted} <= {explicit}");
+    assert!(explicit - defaulted < 60_000_000_000);
+    let ordered = db
+        .query("MATCH (t:T) WHERE t.at <= current_timestamp() RETURN t.id AS id ORDER BY t.at")
+        .unwrap();
+    assert_eq!(
+        column_values(&ordered, "id"),
+        [
+            Value::String("defaulted".into()),
+            Value::String("explicit".into())
+        ]
+    );
+    let compared = db
+        .query(
+            "MATCH (d:T {id: 'defaulted'}), (e:T {id: 'explicit'}) WHERE d.at <= e.at RETURN d.id AS id",
+        )
+        .unwrap();
+    assert_eq!(compared.rows.len(), 1);
+}
+
+fn column_values(output: &QueryOutput, name: &str) -> Vec<Value> {
+    output.rows.iter().map(|row| row[name].clone()).collect()
 }
 
 fn schema_state(db: &Database, table: &str, property: &str) -> SchemaObjectState {
@@ -590,7 +638,7 @@ fn current_timestamp_backfill_writes_one_declaration_instant() {
         .clone()
         .unwrap();
     assert_eq!(declared.value, PropertyDefault::CurrentTimestamp);
-    assert_eq!(declared.backfill_value, Value::LocalDateTime(values[0]));
+    assert_eq!(declared.backfill_value, Value::Int(values[0]));
 }
 
 /// A crash that tears the final backfill batch (the one that also advances

@@ -3464,8 +3464,10 @@ after a checkpoint. It also covers explicit transactions, `UNWIND ... CREATE`,
 literal round trips (`[]`, `'{}'`, negative integers, nested lists) through
 reopen and checkpoint, `TYPE ANY DEFAULT` with later writes of other types,
 DDL-time rejection (type/NOT NULL mismatch, NULL, parameters, temporal
-constructors, `current_timestamp()` on a typed column),
-`current_timestamp()` as one millisecond `LocalDateTime` per transaction,
+constructors, `current_timestamp()` on a `STRING` column),
+`current_timestamp()` as one millisecond-truncated `INT` epoch-nanosecond
+value per transaction that compares and sorts with an explicit
+`current_timestamp()` written in the same transaction,
 backfill of a non-empty table through bounded maintenance with records created
 during `BACKFILL`, a reopen between bounded batches, a torn final backfill
 batch that reopens resumable, one backfill instant for a `current_timestamp()`

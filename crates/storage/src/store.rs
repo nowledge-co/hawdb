@@ -2725,7 +2725,7 @@ fn validate_property_default(
             value.clone()
         }
         PropertyDefault::CurrentTimestamp => {
-            Value::LocalDateTime(PropertyDefault::creation_clock())
+            PropertyDefault::CurrentTimestamp.resolve(PropertyDefault::creation_clock())
         }
     };
     validate_property_schema_value(

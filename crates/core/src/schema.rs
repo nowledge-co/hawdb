@@ -312,8 +312,9 @@ impl DeclaredPropertyDefault {
 pub enum PropertyDefault {
     /// A constant literal (bool, integer, float, string or list of those).
     Value(Value),
-    /// `current_timestamp()`: one timezone-naive UTC `LocalDateTime` per
-    /// writing transaction, truncated to milliseconds (Kùzu semantics).
+    /// `current_timestamp()`: the representation HawDB's own
+    /// `current_timestamp()` produces (`Int` epoch nanoseconds), one value per
+    /// writing transaction, truncated to whole milliseconds (Kùzu semantics).
     CurrentTimestamp,
 }
 
@@ -323,7 +324,13 @@ impl PropertyDefault {
     pub fn resolve(&self, clock: chrono::NaiveDateTime) -> Value {
         match self {
             Self::Value(value) => value.clone(),
-            Self::CurrentTimestamp => Value::LocalDateTime(clock),
+            Self::CurrentTimestamp => Value::Int(
+                clock
+                    .and_utc()
+                    .timestamp_millis()
+                    .saturating_mul(1_000_000)
+                    .max(0),
+            ),
         }
     }
 
