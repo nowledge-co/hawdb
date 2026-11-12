@@ -20,9 +20,10 @@ use super::*;
 mod search_index;
 pub(crate) use search_index::SEARCH_INDEX_LAYOUT_TAG;
 pub use search_index::{
-    decode_search_sealed_block, search_index_block_fence, search_index_dictionary_key,
-    search_index_length_block_key, search_index_length_block_range,
-    search_index_length_block_start, search_index_sealed_block_range, search_index_statistics_key,
+    decode_search_sealed_block, search_index_block_bounds_range, search_index_block_fence,
+    search_index_dictionary_key, search_index_length_block_key, search_index_length_block_range,
+    search_index_length_block_start, search_index_sealed_block_range,
+    search_index_sealed_block_window, search_index_statistics_key, SearchBlockBounds,
     SearchDocumentEntry, SearchIndexAnalyzer, SearchIndexSpec, SearchIndexStatistics,
     SearchLengthBlock, SearchPosting, SearchTermDictionary, SEARCH_INDEX_BLOCK_POSTINGS,
     SEARCH_INDEX_COLUMN_COUNT, SEARCH_INDEX_DATA_COLUMN, SEARCH_INDEX_KIND_COLUMN,

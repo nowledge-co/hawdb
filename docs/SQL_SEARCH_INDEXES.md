@@ -64,10 +64,10 @@ Semantics:
 
 1. The query is analyzed with the index's analyzer into distinct terms. A
    document matches if it contains any term (disjunctive match).
-2. Every matching document is scored exactly with Okapi BM25 (`k1 = 1.2`,
+2. Matching documents are scored exactly with Okapi BM25 (`k1 = 1.2`,
    `b = 0.75`, `idf = ln(1 + (N - n + 0.5) / (n + 0.5))`), using the corpus
    statistics of the same snapshot. Nothing is approximated.
-3. Candidates are visited in descending score order, ties by encoded primary
+3. Candidates are taken in descending score order, ties by encoded primary
    key, and hydrated from the same snapshot. `WHERE` is applied to each; the
    first `top_k` rows that satisfy it are the result. Filtering therefore
    happens before the top-k cut: a selective `WHERE e.stream = $2` still returns
@@ -77,17 +77,95 @@ Semantics:
 
 Joins, grouping, aggregates, `DISTINCT` and locking clauses are refused with
 `text_search` in this release; filter on the source columns directly instead
-of joining back to the source table. `EXPLAIN` of a `text_search` query is
-refused. Inside an explicit transaction, `text_search` reads the transaction's
-own staged writes, like any other SELECT.
+of joining back to the source table. Inside an explicit transaction,
+`text_search` reads the transaction's own staged writes, like any other
+SELECT. `EXPLAIN` and `EXPLAIN ANALYZE` show the plan below.
 
-Work is bounded by the ordinary SQL read limits: postings visited by the
-ranking phase and rows hydrated for `WHERE` count against the query's
-candidate-work limit, and the query's terms, gathered postings, the set of
-needed lengths rows, each document's score entry and the ranked identities are
-charged to the query memory ledger before each is allocated, so a broad term is
-refused before its score map outgrows the budget.
-Exceeding a limit fails the query; it never returns a truncated ranking.
+## Execution: the `Bm25IndexScan` access path
+
+A `text_search` call is planned as a physical `Bm25IndexScan` over the
+search index, followed by a hydration of source rows by primary key, the
+residual `WHERE`, projection, `ORDER BY` and `LIMIT`:
+
+```text
+LimitExec            (LIMIT/OFFSET)
+└─TopNExec           (ORDER BY, when present)
+  └─ProjectionExec   (virtual column: score)
+    └─SelectionExec  (residual WHERE: post-filter, bounded over-fetch)
+      └─SearchHydrationExec   table:events, fetch=primary_key, order=rank
+        └─Bm25IndexScan       table:events, search_index:events_text(text)
+                              algorithm=block_max_wand, terms=[...], top_k, k
+```
+
+**k, and LIMIT pushdown.** The scan ranks exactly `k` documents. `k` is
+`top_k`, or `OFFSET + LIMIT` when that is smaller and the statement's output
+order is the rank order (no `ORDER BY`, or exactly `ORDER BY score DESC`).
+Any other `ORDER BY` needs the whole `top_k` window and gets it.
+
+**Exact top-k with Block-Max WAND.** The scan reads the statistics row, then
+for each query term its dictionary row and its block bounds rows (the skip
+entries, see [Physical layout](#physical-layout)) in one range scan; no posting
+block is read yet. Ranking uses the BM25 scorer and Block-Max WAND kernel in
+`hawdb_executor::bm25`, which the graph-side lexical projection also uses for
+its scores (one implementation of the formula, so both paths compute the
+same bits). Cursors walk each term's postings in ordinal order; their
+positions are lower bounds until a block is decoded. With a k-sized heap
+(score descending, then encoded key) full, the kernel:
+
+1. picks the WAND pivot: the first document at which the cursors at or
+   before it can, by their term-wide bounds, reach the heap's floor;
+2. checks the block-max bound: the sum of the bounds of the blocks that hold
+   those cursors' postings at the pivot. Below the floor, every document up
+   to the end of the first of those blocks (or the next cursor) is skipped
+   without decoding the blocks in between;
+3. otherwise decodes the blocks at the pivot and scores the document exactly.
+
+A block's bound is the BM25 contribution of its maximum term frequency in a
+document of its minimum length, inflated by a relative 1e-12 so that no
+rounding can put it below a covered document's score. Pruning is strict (a
+bound equal to the floor is still examined, because equal scores are ordered
+by key), so the result is exactly the first `k` entries of the full ranking,
+with bit-identical scores. Cursors read a decoded block's successors ahead
+only while they are consecutive and each block alone can still reach the
+floor, so read-ahead does not undo the skipping. Reads are windows (4 to 64
+consecutive competitive blocks; 128 lengths rows) because every range read has a fixed cost that
+dominates small reads on a snapshot with a large uncheckpointed overlay.
+
+**Filters: bounded iterative over-fetch.** A `WHERE` clause cannot be decided
+from the index (the index holds no source columns), so it is applied to
+hydrated candidates in rank order. The first round ranks `4k` documents
+(`k` without a `WHERE`); when
+candidates fail `WHERE` and more are needed, the next round ranks a prefix
+four times as long (rank order is total, so each round extends the previous
+one exactly; the scan checks it) and hydration continues where it stopped.
+A prefix that would reach the queried terms' total postings ranks the whole
+match set instead. Rounds stop as soon as enough rows are accepted, or the
+match set is exhausted. The total ranking work is at most about 4/3 of the
+last round's, and nothing ranks more than the hydration needs, rounded up
+by the growth factor. A filter that
+rejects every candidate still hydrates every match; pushing filters into the
+index would need filter columns stored in it, which this release does not
+do.
+
+**Observability.** `EXPLAIN ANALYZE` reports, on the `Bm25IndexScan` row:
+`rounds`, `final_k`, `ranked_rows`, `matched_terms` (terms present / query
+terms), `postings_visited` (decoded / total postings of the queried terms,
+summed over rounds), `blocks_decoded`, `blocks_read` (decoded or read ahead),
+`blocks_skipped` (never read), `blocks_total`, `block_skips` (pivots pruned
+by block bounds), `documents_scored`, `lengths_rows_read` and
+`terminated_early`; the `SearchHydrationExec` row reports the candidates
+hydrated. The same counters are returned with profiled SQL reads
+(`RelationalSqlReadProfile::search_index_scan`), and the query's access path
+is `SearchIndex`.
+
+**Work and memory.** Every row the scan reads counts against the query's
+candidate-work limit as it is read (a block counts its postings, every other
+row one), and so does every hydrated candidate. The scan's memory is charged
+to its own `Bm25IndexScan` account before each allocation: the query terms,
+the skip entries, one decoded block per term, the read-ahead buffers, a
+small window of lengths rows and the k-entry heap. None of it grows with the
+number of matching documents. Exceeding a limit fails the query; it never
+returns a truncated ranking.
 
 ## Analyzer `cjk_ngram`
 
@@ -105,13 +183,26 @@ Exceeding a limit fails the query; it never returns a truncated ranking.
 - The analyzer is part of the persistent definition. Its output never
   changes; a different analysis would be a new analyzer name.
 
-## Maintenance, persistence and recovery
+## Catalog and maintenance
 
-The index is a synchronous derived relation built on the
-[materialized view](MATERIALIZED_VIEWS.md) maintenance kernel. Its rows live in
-a hidden RowPage relation with a compact postings layout (see
-[Physical layout](#physical-layout)). A document with a NULL or token-free
-column is not part of the corpus.
+**Catalog.** A search index is an index object in the persistent catalog: the
+relational schema encoding records it with its own derived-relation tag
+(`2`, distinct from materialized views) and its definition (source table,
+column, analyzer, physical layout). Its name lives in the relation namespace,
+as PostgreSQL index names do, and `pg_indexes` lists it against its source.
+Its postings are stored as rows of a private RowPage relation under that
+name, which only the search index access method reads: SQL cannot select
+from, write, alter or index it, and `information_schema.tables` and
+`pg_tables` omit it. The physical layout is versioned behind that access
+method (layout tag `2` below), so it can change without changing the SQL
+surface. The in-memory definition reuses the commit-time maintenance hook
+that materialized views also use (one point where derived rows are written
+inside the base transaction); it does not inherit materialized view
+semantics such as selectability or their writer footprint.
+
+**Maintenance** is synchronous: postings are written by the base
+transaction itself. A document with a NULL or token-free column is not part
+of the corpus.
 
 - **Commit.** For each source key a transaction changed, maintenance analyzes
   the old and new row images and gathers the changed postings for the whole
@@ -129,10 +220,16 @@ column is not part of the corpus.
   plus WAL replay. Read-only opens search the same way.
 - **Branches.** Postings are branch data. A new branch starts with its
   source's index and diverges with its own writes; `USE BRANCH` switches both.
-- **Concurrency.** Like other derived relations, a transaction writing a
-  source with a search index takes a database-wide version footprint for
-  optimistic validation, and `text_search` reads record a database-wide read
-  dependency, because BM25 statistics depend on every document.
+- **Concurrency.** Postings are derived at commit from the latest committed
+  state, and nothing but `text_search` reads them, so a transaction writing a
+  source with a search index keeps the ordinary per-row writer footprint of
+  its source rows: writers to other tables, and writers of other rows of the
+  same table, do not conflict with it. (Materialized views still take a
+  database-wide footprint, because their rows are read like tables.) A
+  `text_search` read records a read dependency on its source table's domain:
+  BM25 statistics depend on every document, so a serializable transaction
+  that ranked the corpus conflicts with any concurrent change to the source
+  table, and with nothing else.
 
 Admission follows the materialized view rules: index row reads and writes and
 the gathered postings share the transaction's `RelationalMutationLimits` budget
@@ -157,7 +254,7 @@ are supported.
 
 ## Physical layout
 
-Layout tag `1`. Every row of the hidden relation has the primary key
+Layout tag `2`. Every row of the hidden relation has the primary key
 `(kind BIGINT, name BYTEA, slot BIGINT)` and one `data BYTEA` payload of
 unsigned LEB128 varints (canonical spelling only; decoders refuse overlong,
 truncated or trailing bytes):
@@ -167,8 +264,9 @@ truncated or trailing bytes):
 | 0 statistics | empty | 0 | live documents, total tokens, next ordinal |
 | 1 document | encoded source primary key | 0 | the document's ordinal |
 | 2 lengths | empty | ordinal / 64 | per ordinal: token count (0 = none), encoded primary key |
-| 3 term dictionary | term (UTF-8) | `i64::MAX` | document frequency, sealed block count, tail start, tail postings |
+| 3 term dictionary | term (UTF-8) | `i64::MAX` | document frequency, sealed block count, tail start, tail minimum length, tail postings |
 | 3 sealed block | term (UTF-8) | fence | postings |
+| 4 block bounds | term (UTF-8) | fence | last ordinal - fence, posting count, maximum frequency, minimum length |
 
 - **Ordinals.** A document entering the corpus gets the next dense integer
   ordinal, in source-key order within a commit; ordinals are never reused,
@@ -192,37 +290,58 @@ truncated or trailing bytes):
   term's ordinals in `[f, next fence)`; the first block's fence is 0, and it
   is kept, possibly empty, while the term exists, so every older ordinal has
   an owner.
+- **Block bounds (skip entries).** Every sealed block has exactly one bounds
+  row under the same fence: its last posting's ordinal, its posting count, the
+  maximum term frequency of its postings and a lower bound on the lengths of
+  its documents (the retained empty fence-0 block has all zeros). They are
+  separate rows so that a ranked scan reads a term's skip entries in one
+  range scan without reading any block, and decodes only the blocks that can
+  still reach the top-k. The maximum frequency is exact: it is recomputed
+  whenever the block is rewritten. The minimum length is conservative: it
+  only ever decreases while a block lives (an added posting lowers it to its
+  document's length, a split keeps it, a merge takes the smaller one, and a
+  removed posting leaves it), so a delete never invalidates it. A document
+  that becomes shorter lowers the bound of every block holding one of its
+  unchanged postings, by rewriting only those blocks' bounds rows; a longer
+  document needs nothing. The dictionary keeps the same conservative minimum
+  for its tail (0 exactly when the tail is empty), and a flushed tail carries
+  it into its blocks. Readers check the bounds against every decoded block
+  (count, last ordinal, maximum frequency) and against the length of every
+  scored document, and refuse a violation as a storage-integrity error.
 - **Updates and deletes rewrite blocks in place; there are no tombstones.**
   A change to an older document rewrites the one block that owns its ordinal
-  (at most 256 postings, a few hundred bytes), so BM25 statistics stay exact
-  without a dead-posting filter, nothing accumulates, and the cost per commit
-  is bounded by the number of changed postings, not by a term's document
-  frequency. A block that grows past 256 postings splits into 128-posting
-  blocks; a changed block that shrinks below 32 merges into a neighbour when
-  the two fit in 128, so delete-heavy churn cannot leave a run of nearly
-  empty blocks. When a term's last posting goes, its rows go; when the last
-  document goes, the relation is empty.
+  (at most 256 postings, a few hundred bytes) and its bounds row, so BM25
+  statistics stay exact without a dead-posting filter, nothing accumulates,
+  and the cost per commit is bounded by the number of changed postings, not by
+  a term's document frequency. A block that grows past 256 postings splits
+  into 128-posting blocks; a changed block that shrinks below 32 merges into a
+  neighbour when the two fit in 128, so delete-heavy churn cannot leave a run
+  of nearly empty blocks. When a term's last posting goes, its rows go; when
+  the last document goes, the relation is empty.
 
 Tombstones were rejected: exact BM25 needs live document frequencies and
 document counts anyway, so a delete must touch every one of its terms'
 dictionaries regardless, and tombstoned postings would need a filter on every
 query plus a compaction whose cost grows with a term's frequency.
 
-`text_search` reads the statistics row, then per query term the dictionary
-row and (if any) the term's sealed blocks through one primary-key range, then
-the lengths rows of all scored documents in one ordered range scan (one point
-read per lengths row costs a page decode each on a persistent snapshot).
-Scores are computed with the same operations, in the same term order, as a
-brute-force evaluation, so they are exactly equal to it. Decoders check every count against the dictionary and
-refuse an inconsistent index as a storage-integrity error.
+The ranked scan reads the statistics row, then per query term the dictionary
+row and the term's bounds rows (one primary-key range), then only the sealed
+blocks Block-Max WAND has to decode, through short primary-key ranges that read
+ahead over consecutive competitive blocks, and the lengths rows of the
+documents it scores, in forward windows of 128 rows (8,192 ordinals). A term-level and
+a block-level bound decide what is skipped; see
+[Execution](#execution-the-bm25indexscan-access-path).
 
 ### Measurements
 
 Temporary local harness (not committed), repository release profile, macOS
 arm64, persistent database with the default `SyncOnEveryWrite`. Each event row
 has about 30 English words, 30 distinct `wNNNN` tokens and two short Chinese
-sentences, about 70 postings. "Old" is the previous revision of this change
-(one row per `(term, document)`); "new" is the layout above. The three
+sentences, about 70 postings. "Old" is the first revision of this change
+(one row per `(term, document)`); "new" is the compact layout 1 (the layout
+above without block bounds) with the full-ranking scan that preceded
+`Bm25IndexScan`; the next subsection compares that scan with the current
+one. The three
 variants ran side by side on a host that other workloads also loaded, so
 latencies are comparable within a table, not across tables or machines.
 
@@ -294,27 +413,107 @@ What the numbers say:
 - A filtered query whose `WHERE` rejects every candidate still hydrates them
   all; a candidate-side filter remains future work.
 
+### Block-Max WAND scan versus full ranking
+
+The same harness, release profile, one host, the same afternoon:
+"before" is layout 1 with the full-ranking scan (head `7f1122073`), "after"
+is layout 2 with `Bm25IndexScan` (this revision). The host is shared, so
+differences under about 30% are noise; repeated "after" runs varied by up to
+1.6x on the live (uncheckpointed) state. "Live" queries run after the
+single-row inserts, before any checkpoint; "reopened" ones after checkpoint
+and reopen. Two added queries take a one-row top-k.
+
+| 100,000 events (99k in 500-row transactions, 1,000 single INSERTs) | before | after |
+| --- | --- | --- |
+| index relation rows | 157,520 | 208,356 (+50,836 bounds rows) |
+| estimated resident row bytes, all tables | 88.66 MB | 94.35 MB |
+| 99,000-row batched load | 243 s | 251 s |
+| INSERT p50 / p99 | 8.2 / 29.5 ms | 7.5 / 12.1 ms |
+| live: `w42` / `deploy failed` / `数据库 搜索` (k = 20) | 5.1 / 25.0 / 19.6 ms | 9.2 / 15.2 / 16.0 ms |
+| live: `deploy` / `deploy failed` (k = 1) | 13.6 / 24.5 ms | 8.9 / 12.8 ms |
+| live: `WHERE stream = 's0'` / `'s3'` | 22.5 ms / 3.43 s | 16.9 ms / 4.21 s |
+| reopened: `w42` / `deploy failed` / `数据库 搜索` | 2.5 / 22.9 / 16.5 ms | 3.6 / 8.6 / 8.9 ms |
+| reopened: `deploy` / `deploy failed` (k = 1) | 12.0 / 22.4 ms | 5.3 / 7.8 ms |
+| reopened: `WHERE stream = 's0'` / `'s3'` | 15.4 ms / 1.52 s | 8.4 ms / 1.48 s |
+
+| 10,000 events, one INSERT per transaction | before | after |
+| --- | --- | --- |
+| index relation rows | 18,351 | 21,424 |
+| INSERT p50 / p99 | 6.7 / 14.9 ms | 6.6 / 15.8 ms (second run) |
+| live: `w42` / `deploy failed` / `数据库 搜索` | 2.7 / 4.8 / 4.0 ms | 3.8 / 4.3 / 4.6 ms |
+| live: `deploy` / `deploy failed` (k = 1) | 1.7 / 2.9 ms | 1.6 / 2.1 ms |
+| live: `WHERE stream = 's0'` / `'s3'` | 5.8 / 316 ms | 6.1 / 379 ms |
+| reopened: `w42` / `deploy failed` / `数据库 搜索` | 1.0 / 2.9 / 2.2 ms | 1.2 / 1.6 / 1.7 ms |
+| reopened: `deploy` / `deploy failed` (k = 1) | 1.2 / 2.2 ms | 0.6 / 0.9 ms |
+
+`EXPLAIN ANALYZE` at 100,000 events (after):
+
+| query | rounds | postings visited | blocks decoded / total | documents scored | lengths rows |
+| --- | --- | --- | --- | --- | --- |
+| `w42`, k = 20 | 1 | 600 / 600 | 4 / 4 | 600 | 1,555 |
+| `deploy failed`, k = 20 | 1 | 66,667 / 66,667 | 520 / 520 | 33,433 (terminated early) | 1,563 |
+| `数据库 搜索`, k = 20 | 1 | 100,002 / 100,002 | 780 / 780 | 33,334 | 1,563 |
+| `deploy`, k = 1 | 1 | 33,334 / 33,334 | 260 / 260 | 33,334 | 1,563 |
+| `数据库` `WHERE stream = 's0'`, k = 10 | 1 (k = 40) | 66,668 / 66,668 | 520 / 520 | 33,334 | 1,563 |
+| `数据库` `WHERE stream = 's3'`, k = 10 | 6 (k = 40,960) | 400,008 over rounds | 3,120 over rounds | 200,004 | 9,378 |
+
+What the numbers say:
+
+- This corpus gives Block-Max WAND nothing to skip: every event contains each
+  of its English words exactly twice and has almost the same length, so every
+  block of a term has the same bound, equal to the best score. Pruning needs
+  score variation across blocks (term-frequency bursts or length variation),
+  as in the unit cases: on 100,000 synthetic documents with occasional
+  repeated terms a one-row top-k decodes under 5% of the postings
+  (`hawdb_executor::bm25`), and on 3,000 SQL rows of varying length most
+  blocks are never read (`api::tests::search_indexes::scan`). Here the gains
+  come from not materializing a score map and a sorted candidate list: the
+  broad k = 20 and k = 1 queries are 1.3x to 2.9x faster at 100,000 events,
+  and two-term queries stop as soon as no remaining document can reach the
+  floor (`terminated_early`).
+- The rare term `w42` is slower (2.5 to 3.6 ms reopened, 5.1 to 9.2 ms live):
+  its 600 documents are spread over 1,563 lengths rows, which the scan reads
+  in 13 windows of 128 rows where the full ranking read them in one range.
+  Every range read has a fixed cost that is large on a snapshot with a big
+  uncheckpointed overlay; an earlier revision of this scan that read one to
+  eight rows at a time took 322 ms here at 10,000 events, which is why reads
+  are windows.
+- A filter that rejects every candidate (`s3`) still hydrates every match; the
+  over-fetch rounds add about a third of a full ranking on top (4.2 s against
+  3.4 s live, equal after reopen). A selective filter that accepts early
+  (`s0`) needs one round.
+- The bounds rows add about 32% index rows and 5.7 MB of estimated resident
+  bytes at 100,000 events (about 50 bytes per sealed block); insert latency
+  and the batched load are unchanged within noise.
+
 ## Format
 
 The relational schema encoding tags the derived-relation definition: `0` none,
 `1` materialized view (unchanged layout), `2` search index (source table,
 column, analyzer tag, physical layout tag; `cjk_ngram` is analyzer `1`, the
-layout above is layout `1`). Existing databases read unchanged. Older binaries
+layout above is layout `2`). Existing databases read unchanged. Older binaries
 refuse a schema with tag `2`, and current binaries refuse unknown tags,
 analyzer tags or layout tags as an unsupported format rather than guessing.
-No codec version changes, following the materialized view MIN/MAX precedent
-and HawDB's development-phase format policy.
+Layout `1` (the same rows without block bounds and tail minimum lengths) was
+never released; a development database that holds it is refused as an
+unsupported layout, and dropping and re-creating the index rebuilds it. No
+codec version changes, following the materialized view MIN/MAX precedent and
+HawDB's development-phase format policy.
 
 ## Out of scope
 
 - Vector and hybrid scoring (#1471, #293); phrase, prefix, fuzzy and boolean
   query syntax; per-field weights; highlighting and snippets.
-- Joins in the same SELECT as `text_search`, and `EXPLAIN` output for it.
+- Joins in the same SELECT as `text_search`, a `WHERE`-clause match operator
+  over the base table (the scan is reached through `text_search` only), and
+  plan reuse for prepared `text_search` statements.
+- Filters evaluated inside the index (filter columns stored with the
+  postings); `WHERE` is a post-filter with bounded over-fetch.
 - Multi-column indexes, non-TEXT columns, strict append source tables, and a
   search index over a materialized view.
-- Block-max or WAND pruning, and SIMD bit-packing of posting blocks. Every
-  matching document is still scored; the graph-side lexical projection's
-  layout work is #206 and its follow-ups.
+- SIMD bit-packing of posting blocks, and impact-ordered or quantized block
+  maxima; blocks hold delta varints with exact maximum frequencies and
+  conservative minimum lengths.
 - A dictionary analyzer (for example the graph search kernel's Jieba-based
   analyzer); `cjk_ngram` is dictionary-free and recall-oriented.
 - Background or chunked backfill of large existing tables.
@@ -323,21 +522,45 @@ and HawDB's development-phase format policy.
 
 `api::tests::search_indexes` (root general unit lane) checks every query
 against a brute-force BM25 oracle over `SELECT * FROM events` with the same
-analyzer, requiring bit-equal scores, through inserts, updates (including primary-key moves and NULL),
-deletes, upserts, drop/re-create backfill, explicit transactions and rollback,
-WAL replay, checkpoint reopen, torn WAL tails (strict refusal and repair),
-shadow/demand-paged index modes, out-of-core residency, authoritative refusal,
-branch isolation, concurrent writers, admission refusal (including a large
-pseudo-random CJK document refused with its row) and coexistence with a
-materialized view. Layout cases check exact block shapes as tails seal,
-changes to older documents at block boundaries, a block split by one large
-transaction, many updates of one document keeping its ordinal, and
-delete-heavy churn compacting blocks until the relation is empty. Storage and
-SQL units cover the analyzer (streamed document terms equal to the
-materialized tokens, and an allocation-observed refusal of a 1,000,000-ideograph
-value before expansion), `text_search` admitting score entries before the
-score map grows (an allocation-observed broad-term refusal), the layout codec (varint widths and refused
-spellings, block/dictionary/statistics/lengths round trips and corrupt
-inputs), the schema codec with unknown analyzer and layout tags, and the
-grammar. The Bun suite runs the same SQL through `querySQL` on a
+analyzer, requiring bit-equal scores, through inserts, updates (including
+primary-key moves and NULL), deletes, upserts, drop/re-create backfill,
+explicit transactions and rollback, WAL replay, checkpoint reopen, torn WAL
+tails (strict refusal and repair), shadow/demand-paged index modes,
+out-of-core residency, authoritative refusal, branch isolation, concurrent
+writers, admission refusal (including a large pseudo-random CJK document
+refused with its row) and coexistence with a materialized view. Layout cases
+check exact block shapes as tails seal, changes to older documents at block
+boundaries, a block split by one large transaction, many updates of one
+document keeping its ordinal, and delete-heavy churn compacting blocks until
+the relation is empty; every layout check also verifies each bounds row
+against its block and the lengths of its documents.
+
+`api::tests::search_indexes::scan` covers the access path: exact top-k equal
+to the oracle (ids and score bits) on random Zipf-like corpora with random
+queries, `k` and stream filters, before and after churn that rewrites,
+shortens, deletes and inserts documents (block bounds re-verified after each
+phase); a one-row top-k over 3,000 documents decoding a small fraction of the
+postings and skipping most blocks unread (from `EXPLAIN ANALYZE`); filters by
+bounded over-fetch (more than one round, the stream's own top-k, a bounded
+number of hydrated candidates, and a filter nothing satisfies); LIMIT
+pushdown only in rank order; the EXPLAIN operator tree and ANALYZE fields;
+and the concurrency footprint (a source writer does not conflict with writers
+of other tables or other rows; a serializable `text_search` read conflicts
+with a concurrent source change and with nothing else).
+
+`hawdb_executor::bm25` units check Block-Max WAND against brute force on 400
+random corpora (random block sizes, conservative length bounds, unique keys
+unrelated to ordinals), ties among identical documents ordered by key, and a
+100,000-document corpus where a one-row top-k decodes under 5% of the
+postings. `hawdb-relational` units check that the scan's memory is admitted
+to its own account and stays bounded independently of the match count (one
+320 KiB budget serves a top-10 over 4,096 and over 16,384 matches; the
+full-ranking scan needed 56 bytes per match, 917 KB for the larger), that
+the scan honours cancellation, and that skipped blocks are never read.
+Storage and SQL units cover the analyzer (streamed document terms equal to
+the materialized tokens, and an allocation-observed refusal of a
+1,000,000-ideograph value before expansion), the layout codec (varint widths
+and refused spellings, block/bounds/dictionary/statistics/lengths round trips
+and corrupt inputs), the schema codec with unknown analyzer and layout tags,
+and the grammar. The Bun suite runs the same SQL through `querySQL` on a
 persistent database and a read-only reopen.

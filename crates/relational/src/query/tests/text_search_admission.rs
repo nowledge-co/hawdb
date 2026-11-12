@@ -1,17 +1,31 @@
 // Copyright 2026 Nowledge
 // SPDX-License-Identifier: Apache-2.0
 
-//! `text_search` admits its score state before allocating it.
+//! `text_search` admits its scan state before allocating it, and that state
+//! is bounded by `k` and the blocks it reads, not by the number of matches.
 
-use super::projection_admission::SizeProbe;
 use super::*;
 
 const DOCUMENTS: i64 = 4096;
 
 fn search_state() -> RelationalState {
+    search_state_of(DOCUMENTS)
+}
+
+fn search_state_of(documents: i64) -> RelationalState {
     let mut state = RelationalState::default();
-    let values = (0..DOCUMENTS)
-        .map(|id| format!("({id}, 'common d{id}')"))
+    let values = (0..documents)
+        .map(|id| {
+            // Every document matches. The first twelve and every 331st
+            // repeat the term, so after the first block the top-10 floor
+            // lies above every block without a repeat.
+            let repeats = if id < 12 || id % 331 == 0 {
+                " common common"
+            } else {
+                ""
+            };
+            format!("({id}, 'common d{id}{repeats}')")
+        })
         .collect::<Vec<_>>()
         .join(", ");
     for sql in [
@@ -30,14 +44,13 @@ fn search_state() -> RelationalState {
 fn search(
     state: &RelationalState,
     blocking_operator_bytes: usize,
-) -> (Result<RelationalQueryOutput>, usize) {
+    context: Option<&hawdb_core::RuntimeTaskContext>,
+) -> Result<RelationalQueryOutput> {
     let memory = hawdb_executor::ExecutionMemoryConfig {
         blocking_operator_bytes: NonZeroUsize::new(blocking_operator_bytes).unwrap(),
         ..Default::default()
     };
-    // Count the allocations shaped like one leaf node of the score map.
-    let probe = SizeProbe::start(SizeProbe::score_leaf_bytes());
-    let result = execute_relational_query_sql_with_runtime(
+    execute_relational_query_sql_with_runtime(
         "SELECT id, score FROM text_search('docs_body', 'common', top_k => 10)",
         &[],
         state,
@@ -53,27 +66,47 @@ fn search(
             ..batched_index_join_limits()
         },
         &memory,
-        None,
-    );
-    (result, probe.finish())
+        context,
+    )
 }
 
 #[test]
-fn text_search_admits_broad_term_score_state_before_allocating_it() {
+fn text_search_scan_state_is_bounded_by_k_not_by_matches() {
     let state = search_state();
-    let (control, control_nodes) = search(&state, 64 * 1024 * 1024);
-    assert_eq!(control.unwrap().rows.len(), 10);
-    assert!(control_nodes > 0);
-    // Room for the postings, the needed lengths blocks and their rows, but
-    // for only about a third of the per-document score entries. Charging
-    // the score map only after building it would let it reach its full
-    // size here before the identities phase refused.
-    let budget = DOCUMENTS as usize * 56;
-    let (refused, refused_nodes) = search(&state, budget);
-    let error = refused.unwrap_err().to_string();
-    assert!(error.contains("TextSearch scores"), "{error}");
+    let control = search(&state, 64 * 1024 * 1024, None).unwrap();
+    assert_eq!(control.rows.len(), 10);
+    let evidence = control.search_index_scan.expect("scan evidence");
+    assert_eq!(evidence.postings_total, DOCUMENTS as u64);
     assert!(
-        refused_nodes * 2 < control_nodes,
-        "score map grew to {refused_nodes} of {control_nodes} leaf nodes before refusal"
+        evidence.postings_visited * 2 < evidence.postings_total
+            && evidence.blocks_skipped * 2 > evidence.blocks_total,
+        "{evidence:?}"
     );
+    // Block-Max WAND retains a 10-entry heap, one decoded block per term,
+    // a bounded read-ahead and lengths window: one fixed budget serves four
+    // times as many matches. (The full-ranking scan needed more than 56
+    // bytes per match: about 229 KB here, 917 KB for the larger corpus.)
+    let budget = 320 * 1024;
+    let bounded = search(&state, budget, None).unwrap();
+    assert_eq!(bounded.rows, control.rows);
+    let larger = search_state_of(4 * DOCUMENTS);
+    let evidence = search(&larger, budget, None)
+        .unwrap()
+        .search_index_scan
+        .unwrap();
+    assert_eq!(evidence.postings_total, 4 * DOCUMENTS as u64);
+    // Below the scan's fixed state it is refused by its own account, before
+    // that state is allocated.
+    let error = search(&state, 512, None).unwrap_err().to_string();
+    assert!(error.contains("Bm25IndexScan"), "{error}");
+}
+
+#[test]
+fn text_search_observes_cancellation() {
+    let state = search_state();
+    let cancellation = hawdb_core::RuntimeCancellationToken::new();
+    let context = hawdb_core::RuntimeTaskContext::without_deadline(cancellation.clone());
+    cancellation.cancel();
+    let error = search(&state, 64 * 1024 * 1024, Some(&context)).unwrap_err();
+    assert!(error.to_string().contains("cancelled"), "{error}");
 }

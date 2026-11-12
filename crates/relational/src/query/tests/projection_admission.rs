@@ -21,18 +21,9 @@ struct ProjectionAllocator;
 thread_local! {
     static PAYLOAD_THRESHOLD: Cell<usize> = const { Cell::new(0) };
     static PAYLOAD_BYTES: Cell<usize> = const { Cell::new(0) };
-    static SIZE_TARGET: Cell<usize> = const { Cell::new(0) };
-    static SIZE_COUNT: Cell<usize> = const { Cell::new(0) };
-    static LAST_SIZE: Cell<usize> = const { Cell::new(0) };
 }
 
 fn record_allocation(bytes: usize) {
-    let _ = LAST_SIZE.try_with(|last| last.set(bytes));
-    let _ = SIZE_TARGET.try_with(|target| {
-        if target.get() != 0 && bytes == target.get() {
-            let _ = SIZE_COUNT.try_with(|count| count.set(count.get().saturating_add(1)));
-        }
-    });
     let _ = PAYLOAD_THRESHOLD.try_with(|threshold| {
         if threshold.get() != 0 && bytes >= threshold.get() {
             let _ = PAYLOAD_BYTES.try_with(|total| total.set(total.get().saturating_add(bytes)));
@@ -92,38 +83,6 @@ impl PayloadProbe {
 impl Drop for PayloadProbe {
     fn drop(&mut self) {
         PAYLOAD_THRESHOLD.set(0);
-    }
-}
-
-/// Counts this thread's allocations of exactly one size.
-pub(super) struct SizeProbe;
-
-impl SizeProbe {
-    pub(super) fn start(bytes: usize) -> Self {
-        SIZE_COUNT.set(0);
-        SIZE_TARGET.set(bytes);
-        Self
-    }
-
-    pub(super) fn finish(self) -> usize {
-        let count = SIZE_COUNT.get();
-        drop(self);
-        count
-    }
-
-    /// The allocation size of one `BTreeMap<u64, f64>` leaf node.
-    pub(super) fn score_leaf_bytes() -> usize {
-        let mut map = std::collections::BTreeMap::<u64, f64>::new();
-        map.insert(0, 0.0);
-        let bytes = LAST_SIZE.get();
-        drop(map);
-        bytes
-    }
-}
-
-impl Drop for SizeProbe {
-    fn drop(&mut self) {
-        SIZE_TARGET.set(0);
     }
 }
 

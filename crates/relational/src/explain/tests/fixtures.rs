@@ -231,6 +231,7 @@ impl Case {
                 projection_version: optional(6),
                 projection_publication_commit_epoch: optional(7),
             },
+            search_index_scan: None,
             blocking_operator_memory_reports: [
                 "TopNExec",
                 "DistinctExec",

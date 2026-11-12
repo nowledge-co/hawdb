@@ -815,7 +815,19 @@ and losing terms inside sealed blocks at block boundaries, and one transaction
 splitting an overgrown block; 300 updates of one document keeping its ordinal
 and leaving bounded rows; and delete-heavy churn compacting shrunken blocks,
 re-insertion after compaction, and the relation emptying with its last
-document. It belongs to the
+document; every layout check also verifies each block bounds row against its
+block and the lengths of its documents. The `scan` submodule owns the
+`Bm25IndexScan` access path: exact top-k equal to the oracle (ids and score
+bits) on four random Zipf-like corpora with random queries, `k` and stream
+filters before and after churn that rewrites, shortens, deletes and inserts
+documents; a one-row top-k over 3,000 documents decoding a small fraction of
+the postings with most blocks never read (asserted from `EXPLAIN ANALYZE`);
+filters by bounded over-fetch (several rounds, the stream's own top-k,
+bounded hydration, a filter nothing satisfies); LIMIT pushdown in rank order
+only; the EXPLAIN operator tree and ANALYZE fields; and the concurrency
+footprint (source writers do not conflict with writers of other tables or
+rows, and a serializable `text_search` read conflicts with a concurrent
+source change only). It belongs to the
 existing root general unit lane and Cargo library tests; the reopen/mode case
 takes about 25 seconds locally and the admission case about 5 seconds. Replay:
 `cargo test --locked -p hawdb --lib api::tests::search_indexes`. The storage
@@ -825,17 +837,24 @@ unit lane owns the `cjk_ngram` analyzer cases (including
 thread's allocations with `test_allocator` and requires refusal of a
 1,000,000-ideograph value within a few times the 64 KiB admission limit), the layout codec cases (varints
 at every width and refusal of truncated, overlong and trailing spellings;
-posting blocks, dictionaries, statistics and lengths rows round-tripping and
-refusing unordered ordinals, zero frequencies and inconsistent counts) and the
-schema codec round trip with unknown-analyzer and unknown-layout refusal
+posting blocks, block bounds, dictionaries, statistics and lengths rows
+round-tripping and refusing unordered ordinals, zero frequencies, inconsistent
+counts and bounds) and the schema codec round trip with unknown-analyzer and
+unknown-layout refusal
 (`cargo test --locked -p hawdb-storage --lib search_index`); `hawdb-sql`'s `tests::search_index` covers the DDL and table
 function grammar (`cargo test --locked -p hawdb-sql --lib search_index`).
-`hawdb-relational`'s
-`query::tests::text_search_admission::text_search_admits_broad_term_score_state_before_allocating_it`
-indexes 4,096 documents sharing one term and, under a blocking-memory budget
-that fits the postings and lengths rows, requires the refusal to come from the
-score account with fewer than half of the control run's score-map leaf
-allocations (counted by the existing `projection_admission` test allocator)
+`hawdb-executor`'s `bm25::tests` own the shared scorer and Block-Max WAND
+kernel: brute-force equality (hits, keys, score bits) on 400 random corpora
+with random block sizes and conservative length bounds, ties among identical
+documents ordered by key, and a 100,000-document corpus on which a one-row
+top-k decodes under 5% of the postings
+(`cargo test --locked -p hawdb-executor --lib bm25`; well under a second).
+`hawdb-relational`'s `query::tests::text_search_admission` indexes 4,096
+documents sharing one term (and 16,384 in a second corpus) and requires both
+top-10s to run within one 320 KiB blocking budget (the full-ranking scan
+needed 56 bytes per match, 917 KB for the larger corpus), skipping most
+blocks unread, to be refused by the `Bm25IndexScan` account under a tiny
+budget, and to honour cancellation
 (`cargo test --locked -p hawdb-relational --lib text_search`). The
 Bun suite (`bindings/bun/tests/hawdb.test.ts`, Native Bindings matrix) runs the
 same SQL through `querySQL` on a persistent database and a read-only reopen.

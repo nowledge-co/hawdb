@@ -18,6 +18,7 @@ pub(super) fn profiled_relational_sql_output(
         index_execution_evidence,
         row_execution_evidence,
         blocking_operator_memory_reports,
+        search_index_scan,
         ..
     } = output;
     let profile = RelationalSqlReadProfile {
@@ -74,6 +75,7 @@ pub(super) fn profiled_relational_sql_output(
             overlay_resident_bytes: row_execution_evidence.overlay_resident_bytes,
         },
         blocking_operator_memory_reports,
+        search_index_scan,
     };
     ProfiledRelationalSqlQueryOutput {
         output: QueryOutput { rows },

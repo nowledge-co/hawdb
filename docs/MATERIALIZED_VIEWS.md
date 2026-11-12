@@ -35,8 +35,9 @@ accepts an existing materialized view; it does not replace its definition or
 silently accept a base table with the same name. `DROP MATERIALIZED VIEW IF
 EXISTS` accepts an absent relation, but cannot drop a base table.
 
-[SQL search indexes](SQL_SEARCH_INDEXES.md) reuse this maintenance kernel for
-BM25 postings over one TEXT column.
+[SQL search indexes](SQL_SEARCH_INDEXES.md) reuse this commit-time maintenance
+hook for BM25 postings over one TEXT column, but not view semantics: their
+rows are not selectable and their sources keep per-row writer footprints.
 
 ## Supported definitions
 
@@ -154,7 +155,8 @@ resident source rows. `RelationalIndexMode::Authoritative` is rejected for
 databases with materialized views, including reopen and out-of-core activation.
 Shadow and demand-paged index modes retain the resident maintenance path.
 Transactions that modify a source with dependent views conservatively acquire
-a database-wide version footprint for optimistic conflict validation.
+a database-wide version footprint for optimistic conflict validation (a source
+with only search indexes does not).
 
 ## Persistence and recovery
 
