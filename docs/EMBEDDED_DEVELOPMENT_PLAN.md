@@ -785,7 +785,10 @@ remains rejected. Anonymous relationship endpoints such as `()` and `(:Label)`
 are supported for Nowledge relationship-count reads. Untyped one-hop
 relationship reads such as `MATCH (a)-[r]->(b)` are supported for Nowledge
 overview edge queries, and `label(r)`/`type(r)` can project the bound
-relationship type. The graph-canvas id-set induced subgraph is a fixed bounded
+relationship type. Kùzu `label(n)` reads a node's label and openCypher
+`labels(n)` its label list, in every expression position including
+`WHERE label(b) IN $labels` (#1678; see
+[label functions](CYPHER_LIST_FUNCTIONS.md#labels-and-relationship-types)). The graph-canvas id-set induced subgraph is a fixed bounded
 query decoded by the host route. Nowledge-used
 `RETURN` projection fallbacks support
 `COALESCE(...)` and `LEFT(...)`, including nested forms such as

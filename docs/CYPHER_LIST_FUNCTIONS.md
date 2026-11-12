@@ -195,3 +195,36 @@ the same name; a key that reads the graph is computed into a column before
 sorting.
 Plan-derived prepared source reads refuse pattern expressions, whose reads
 their dependency collector cannot see.
+
+## Labels and relationship types
+
+`label(x)` follows Kùzu, whose label semantics HawDB uses; `labels(n)` and
+`type(r)` follow openCypher ([#1678](https://github.com/nowledge-co/hawdb/issues/1678)).
+The argument must be a node or relationship variable bound by MATCH or
+OPTIONAL MATCH, or carried through `WITH`.
+
+| Call | Result |
+| --- | --- |
+| `label(n)` on a node | The node's label as a STRING. A node without a label gives `NULL`. A node with more than one label is an execution error that names `labels(n)`; HawDB never picks one of several labels. |
+| `label(r)` on a relationship | The relationship type, equal to `type(r)`. |
+| `labels(n)` on a node | The list of the node's labels, in label-creation order (the order of the `labels` entry of a returned node value). |
+| `labels(r)` on a relationship | Execution error; use `label(r)` or `type(r)`. |
+| `type(r)` on a relationship | The relationship type. |
+
+Every form returns `NULL` for a `NULL` variable, such as one an unmatched
+OPTIONAL MATCH leaves. The names are case-insensitive, and the calls are
+expressions: they work in `RETURN`, `WITH`, `WHERE` (including
+`label(b) IN $labels`, `label(r) <> 'RELATES_TO'` and `'Entity' IN labels(b)`),
+`ORDER BY`, aggregation keys and nested scalars such as `lower(label(b))` or
+`CASE`.
+
+Each node in a Mem graph has one label, so `label(n)` is defined there. The
+database itself accepts nodes with several labels, and for those `labels(n)`
+is the defined read.
+
+The value comes from the bound record: the call reads no properties, and a
+projected `GraphMatchExec` read keeps labels and types. A node that an
+access-control policy hides is never bound, so its label is never returned.
+`label(b) IN $labels` is evaluated as a row filter beside the pattern; it is
+not turned into a label scan. Mem's identity reads also bound the start by
+`b.id IN $ids`.

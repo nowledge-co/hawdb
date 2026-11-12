@@ -2049,7 +2049,11 @@ fn collect_projection_properties(
         | ProjectionExpression::CaseColumnSearchRank(_)
         // A pattern matches whole records of the variables it copies.
         | ProjectionExpression::Pattern(_) => false,
-        ProjectionExpression::Id { variable: current } => current == variable,
+        // A projected node keeps its identity and labels.
+        ProjectionExpression::Id { variable: current }
+        | ProjectionExpression::Label {
+            variable: current, ..
+        } => current == variable,
         ProjectionExpression::Literal(_) => true,
         ProjectionExpression::Property {
             variable: current,

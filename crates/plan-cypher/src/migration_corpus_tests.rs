@@ -445,7 +445,7 @@ fn normalized_pipeline_frozen_plan_coverage() {
     );
     assert_eq!(
         exact,
-        354,
+        353,
         "{}",
         serde_json::to_string_pretty(&differences).unwrap()
     );
@@ -469,7 +469,8 @@ fn normalized_pipeline_frozen_plan_coverage() {
     }
     // Every difference is explicitly qualified in the migration fixture.
     // probe-0034..0038, 0050 and 0051 carry a grouped WITH variable as a graph
-    // slot (#1615). The two original probe differences are not permission to restore the incorrect
+    // slot (#1615). owner-0090 plans Kuzu label(r) as the entity label
+    // expression (#1678). The two original probe differences are not permission to restore the incorrect
     // group-key or pre-lookup RETURN window (#757).
     assert_eq!(
         differences
@@ -484,6 +485,7 @@ fn normalized_pipeline_frozen_plan_coverage() {
             "owner-0059",
             "owner-0060",
             "owner-0061",
+            "owner-0090",
             "probe-0008",
             "probe-0034",
             "probe-0035",

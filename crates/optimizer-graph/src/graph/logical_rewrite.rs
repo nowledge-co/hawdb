@@ -507,6 +507,7 @@ fn collect_projection_columns(
         | ProjectionExpression::Property { .. }
         | ProjectionExpression::Id { .. }
         | ProjectionExpression::RelationshipType { .. }
+        | ProjectionExpression::Label { .. }
         | ProjectionExpression::RelationshipEndpoint { .. }
         | ProjectionExpression::DatePart { .. }
         | ProjectionExpression::DefaultIfNullOrEq { .. }
@@ -565,6 +566,7 @@ fn projection_expression_references_column(expression: &ProjectionExpression) ->
         | ProjectionExpression::Property { .. }
         | ProjectionExpression::Id { .. }
         | ProjectionExpression::RelationshipType { .. }
+        | ProjectionExpression::Label { .. }
         | ProjectionExpression::RelationshipEndpoint { .. }
         | ProjectionExpression::Literal(_)
         | ProjectionExpression::DatePart { .. }

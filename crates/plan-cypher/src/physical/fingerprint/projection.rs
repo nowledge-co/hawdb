@@ -137,6 +137,15 @@ pub fn write_projection_expression(output: &mut String, expression: &ProjectionE
             write_identifier(output, variable);
             output.push(')');
         }
+        // Distinct from `type(r)` above, which also renders as `label(`:
+        // this form also reads node labels.
+        ProjectionExpression::Label { function, variable } => {
+            output.push_str("entity_");
+            output.push_str(function.function_name());
+            output.push('(');
+            write_identifier(output, variable);
+            output.push(')');
+        }
         ProjectionExpression::Literal(value) => {
             write_value(output, value);
         }

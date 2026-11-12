@@ -545,7 +545,10 @@ fn expression(expression: &ProjectionExpression, demand: &mut Demand) {
         | ProjectionExpression::ColumnValueCasePropertyNotNullOrEq { column, .. }
         | ProjectionExpression::Path { column, .. } => demand.whole(column),
         ProjectionExpression::CaseColumnSearchRank(rank) => demand.whole(&rank.column),
-        ProjectionExpression::Id { variable } => demand.identity(variable),
+        // Projected records keep their labels and relationship type.
+        ProjectionExpression::Id { variable } | ProjectionExpression::Label { variable, .. } => {
+            demand.identity(variable)
+        }
         // The endpoint is returned as a whole node value from one of the
         // binding step's node variables.
         ProjectionExpression::RelationshipEndpoint {

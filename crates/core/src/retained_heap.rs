@@ -100,6 +100,7 @@ impl_retained_heap_for_copy!(
     crate::ConversionFunction,
     crate::NumericFunction,
     crate::RelationshipEndpoint,
+    crate::LabelFunction,
 );
 
 impl RetainedHeapBytes for String {
