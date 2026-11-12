@@ -1080,34 +1080,51 @@ fn entity_label<'a>(
     let string_bytes = |name: &str| std::mem::size_of::<Value>() + name.len();
     if let Some(node) = binding.nodes.get(variable) {
         // A label id missing from the catalog is a storage inconsistency, as on
-        // every other read path; it is never skipped.
-        let names = node
-            .labels
-            .iter()
-            .map(|label| {
-                catalog.label_name(*label).ok_or_else(|| {
-                    HawDBError::StorageIntegrity(format!(
-                        "{}({variable}) found a node label id that is missing from the catalog",
-                        function.function_name()
-                    ))
-                })
+        // every other read path; it is never skipped. Names are validated by
+        // iterating, never collected, so no scratch proportional to the label
+        // count is allocated outside the query memory account.
+        let name_of = |label: &hawdb_core::LabelId| {
+            catalog.label_name(*label).ok_or_else(|| {
+                HawDBError::StorageIntegrity(format!(
+                    "{}({variable}) found a node label id that is missing from the catalog",
+                    function.function_name()
+                ))
             })
-            .collect::<Result<Vec<&str>>>()?;
+        };
         return match function {
-            LabelFunction::Label => match names.as_slice() {
-                [] => Ok(ProjectedValue::scalar(Value::Null)),
-                [name] => allocated(string_bytes(name), account, || Value::String((*name).into())),
-                _ => Err(HawDBError::Execution(format!(
-                    "label({variable}) requires a node with one label, but the node has {}; use labels({variable})",
-                    names.len()
-                ))),
-            },
+            LabelFunction::Label => {
+                let mut names = node.labels.iter().map(name_of);
+                match (names.next().transpose()?, names.next().transpose()?) {
+                    (None, _) => Ok(ProjectedValue::scalar(Value::Null)),
+                    (Some(name), None) => {
+                        allocated(string_bytes(name), account, || Value::String(name.into()))
+                    }
+                    (Some(_), Some(_)) => {
+                        names.try_for_each(|name| name.map(drop))?;
+                        Err(HawDBError::Execution(format!(
+                            "label({variable}) requires a node with one label, but the node has {}; use labels({variable})",
+                            node.labels.len()
+                        )))
+                    }
+                }
+            }
             LabelFunction::Labels => {
-                let bytes = names.iter().fold(std::mem::size_of::<Value>(), |total, name| {
-                    total.saturating_add(string_bytes(name))
-                });
+                let bytes =
+                    node.labels
+                        .iter()
+                        .try_fold(std::mem::size_of::<Value>(), |total, label| {
+                            Ok::<_, HawDBError>(total.saturating_add(string_bytes(name_of(label)?)))
+                        })?;
+                // Every name was validated above; the list is built only after
+                // its bytes were charged.
                 allocated(bytes, account, || {
-                    Value::List(names.iter().map(|name| Value::String((*name).into())).collect())
+                    Value::List(
+                        node.labels
+                            .iter()
+                            .filter_map(|label| catalog.label_name(*label))
+                            .map(|name| Value::String(name.into()))
+                            .collect(),
+                    )
                 })
             }
         };

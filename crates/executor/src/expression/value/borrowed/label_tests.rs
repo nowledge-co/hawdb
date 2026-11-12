@@ -185,3 +185,59 @@ fn a_label_id_missing_from_the_catalog_is_refused_not_skipped() {
         );
     }
 }
+
+/// `labels(n)` over many labels with a tiny query memory account is refused by
+/// the account before the list is built, and `label(n)` on the same node
+/// reports the multi-label error without allocating per-label scratch.
+#[test]
+fn many_labels_are_refused_by_a_small_memory_account() {
+    let mut catalog = Catalog::default();
+    let labels = (0..4_096)
+        .map(|index| catalog.get_or_create_label(&format!("L{index:05}")))
+        .collect::<Vec<_>>();
+    let mut binding = Binding::values(BTreeMap::new());
+    binding.nodes.insert(
+        "many".to_string(),
+        NodeRecord {
+            id: NodeId(1),
+            labels: labels.iter().copied().collect(),
+            properties: BTreeMap::new(),
+        },
+    );
+    let ledger = QueryMemoryLedger::new(NonZeroUsize::new(1 << 20).unwrap());
+    let account = ledger.account(
+        QueryMemoryClass::PipelineBatch,
+        "many labels",
+        NonZeroUsize::new(1024).unwrap(),
+    );
+    let available = account.available_bytes();
+    let Err(refused) = evaluate_projection_borrowed(
+        &call(LabelFunction::Labels, "many"),
+        &catalog,
+        &binding,
+        Some(&account),
+    ) else {
+        panic!("labels(n) over 4096 labels must not fit a 1 KiB account");
+    };
+    let budget = account.reserve(available + 1).unwrap_err();
+    assert_eq!(
+        std::mem::discriminant(&refused),
+        std::mem::discriminant(&budget),
+        "labels(n) must be refused by the memory account: {refused:?}"
+    );
+    assert_eq!(account.available_bytes(), available);
+
+    let Err(ambiguous) = evaluate_projection_borrowed(
+        &call(LabelFunction::Label, "many"),
+        &catalog,
+        &binding,
+        Some(&account),
+    ) else {
+        panic!("label(n) on a multi-label node must be an error");
+    };
+    assert!(
+        matches!(&ambiguous, HawDBError::Execution(message) if message.contains("4096")),
+        "{ambiguous:?}"
+    );
+    assert_eq!(account.available_bytes(), available);
+}
