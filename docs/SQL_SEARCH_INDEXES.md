@@ -164,9 +164,19 @@ candidate-work limit as it is read (a block counts its postings, every other
 row one), and so does every hydrated candidate. The scan's memory is charged
 to its own `Bm25IndexScan` account before each allocation: the query terms,
 the skip entries, one decoded block per term, the read-ahead buffers, a
-small window of lengths rows and the k-entry heap. None of it grows with the
-number of matching documents. Exceeding a limit fails the query; it never
-returns a truncated ranking.
+small window of lengths rows and the current ranked-prefix heap. Each lengths
+row reserves all decoded slots, including deleted slots, and an upper bound
+on its keys; the fixed window directory is admitted separately.
+
+The complete scan is not O(requested `top_k`) memory. Skip metadata grows with
+the queried terms' sealed-block counts, including blocks whose payloads are
+never read. Residual filtering can grow the ranked prefix to the whole match
+set; the previous and new prefixes coexist while a round is replaced. Block
+read-ahead and the 128-row lengths window have fixed bounds, but their payload
+bytes still count against admission. Exceeding any admitted limit fails the
+query; it never returns a truncated ranking or falls back to approximate
+scoring. A selective or reject-all filter can therefore be refused even when
+its final output is small.
 
 ## Analyzer `cjk_ngram`
 
@@ -221,6 +231,11 @@ of the corpus.
   plus WAL replay. Read-only opens search the same way.
 - **Branches.** Postings are branch data. A new branch starts with its
   source's index and diverges with its own writes; `USE BRANCH` switches both.
+- **Logical dump.** [Export](LOGICAL_DUMP.md) records each index's
+  definition (name, column, analyzer) with its table and never its postings.
+  Import creates the index on the empty table and rebuilds the postings as
+  it loads the rows, so `text_search` ranks the imported rows exactly as the
+  source did.
 - **Concurrency.** Postings are derived at commit from the latest committed
   state, and nothing but `text_search` reads them, so a transaction writing a
   source with a search index keeps the ordinary per-row writer footprint of
@@ -544,10 +559,9 @@ the relation is empty; every layout check also verifies each bounds row
 against its block and the lengths of its documents.
 
 `api::tests::search_indexes::scan` covers the access path: exact top-k equal
-to the oracle (ids and score bits) on random Zipf-like corpora with random
-queries, `k` and stream filters, before and after churn that rewrites,
-shortens, deletes and inserts documents (block bounds re-verified after each
-phase); a one-row top-k over 3,000 documents decoding a small fraction of the
+to the oracle (ids and score bits) for a named shortening/deletion case
+across a block boundary and a residual filter; an ignored manual campaign
+retains the generated Zipf-like corpora, queries, `k`, filters and churn; a one-row top-k over 3,000 documents decoding a small fraction of the
 postings and skipping most blocks unread (from `EXPLAIN ANALYZE`); filters by
 bounded over-fetch (more than one round, the stream's own top-k, a bounded
 number of hydrated candidates, and a filter nothing satisfies); LIMIT
@@ -556,15 +570,21 @@ and the concurrency footprint (a source writer does not conflict with writers
 of other tables or other rows; a serializable `text_search` read conflicts
 with a concurrent source change and with nothing else).
 
-`hawdb_executor::bm25` units check Block-Max WAND against brute force on 400
-random corpora (random block sizes, conservative length bounds, unique keys
-unrelated to ordinals), ties among identical documents ordered by key, and a
-100,000-document corpus where a one-row top-k decodes under 5% of the
-postings. `hawdb-relational` units check that the scan's memory is admitted
-to its own account and stays bounded independently of the match count (one
-320 KiB budget serves a top-10 over 4,096 and over 16,384 matches; the
-full-ranking scan needed 56 bytes per match, 917 KB for the larger), that
-the scan honours cancellation, and that skipped blocks are never read.
+`hawdb_executor::bm25` ordinary units cover empty inputs, zero limits,
+gapped postings, conservative length bounds and key-ordered ties. A focused
+100,000-document case checks that a one-row top-k decodes under 5% of postings.
+The 400-corpus differential campaign (random block sizes, conservative bounds
+and keys unrelated to ordinals) is an ignored manual test. The generated SQL
+corpora/churn campaign is also ignored; replay commands and seeds are in
+[TEST_INDEX](TEST_INDEX.md).
+
+`hawdb-relational` units check admission of the complete scan state. One
+512 KiB budget serves a top-10 over both 4,096 and 16,384 matches; this fixture
+demonstrates pruning under one budget, not memory independence from match
+count. The full-ranking scan needed 56 bytes per match, 917 KB for the larger
+fixture. A sparse-after-deletion case checks refusal before decoded lengths
+arrays exceed admission. The scan also honours cancellation and never reads
+skipped block payloads.
 Storage and SQL units cover the analyzer (streamed document terms equal to
 the materialized tokens, and an allocation-observed refusal of a
 1,000,000-ideograph value before expansion), the layout codec (varint widths

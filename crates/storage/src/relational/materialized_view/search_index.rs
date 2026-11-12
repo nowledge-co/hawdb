@@ -472,8 +472,11 @@ enum PostingChange {
     Shorter { length: u64 },
 }
 
-/// Lowers a conservative minimum length (0 = none yet) to cover `length`.
+/// Lowers a conservative minimum length, treating 0 on either side as absent.
 fn lower(min_length: &mut u64, length: u64) {
+    if length == 0 {
+        return;
+    }
     *min_length = if *min_length == 0 {
         length
     } else {

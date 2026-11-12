@@ -256,6 +256,7 @@ pub(super) fn retrieval_request(
         adaptive_vector_backend_policy: config.adaptive_vector_backend_policy,
         recall_validation_probe: false,
         retrieval_projection_advisor: advisor.clone(),
+        exact_vector_search: false,
     }
 }
 

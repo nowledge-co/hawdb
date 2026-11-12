@@ -93,6 +93,11 @@ WAL doctor planning, apply revalidation, and automatic repair require the same
 capabilities, including when resuming an interrupted repair. An unsupported
 record followed by a torn tail never authorizes truncation or quarantine.
 
+The storage manifest and checkpoint `version` line (`hawdb-storage-v<N>`)
+follows the same rule: an intact version of that family other than the
+supported one returns `StorageFormatError::UnsupportedVersion { format:
+"storage manifest", found: N, supported }`; any other text is malformed.
+
 Upgrade the reader to a release that supports the writer's codecs and features;
 do not downgrade a database containing features that the older reader lacks.
 Older binaries cannot acquire this classification retroactively and may still
@@ -101,6 +106,20 @@ their baseline changes, but an open or doctor refusal must not do that implicitl
 No compatibility migration, stable Mem inclusion, or production activation is
 authorized by this error-classification change. Retain the original database and
 recovery evidence when a reader refuses it.
+
+### Persistent format version
+
+`PERSISTENT_FORMAT_VERSION` (`crates/storage/src/persistent_format.rs`,
+re-exported as `hawdb::PERSISTENT_FORMAT_VERSION` and returned by the C ABI's
+`hawdb_format_version()`) summarizes every codec above in one integer: equal
+values open each other's databases, and a change that makes an existing
+database unreadable bumps it. It is not stored in the database; each codec's
+own version and refusal stay authoritative. `docs/persistent-format.lock`
+pins it together with the persistent codec constants, and the `Persistent
+Format` workflow fails while they disagree and states in each release's notes
+whether it changed. Development formats still break without migrations;
+embedding hosts carry data across a change with a logical dump (export with
+the old release, import with the new one). See [LOGICAL_DUMP.md](LOGICAL_DUMP.md).
 
 Recovery:
 

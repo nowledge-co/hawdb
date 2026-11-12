@@ -70,13 +70,19 @@ unsafe impl GlobalAlloc for ProjectionAllocator {
 #[global_allocator]
 static ALLOCATOR: ProjectionAllocator = ProjectionAllocator;
 
-struct PayloadProbe;
+pub(super) struct PayloadProbe;
 
 impl PayloadProbe {
-    fn start(threshold: usize) -> Self {
+    pub(super) fn start(threshold: usize) -> Self {
         PAYLOAD_BYTES.set(0);
         PAYLOAD_THRESHOLD.set(threshold);
         Self
+    }
+
+    pub(super) fn finish(self) -> usize {
+        let bytes = PAYLOAD_BYTES.get();
+        drop(self);
+        bytes
     }
 }
 

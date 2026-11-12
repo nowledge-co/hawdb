@@ -214,6 +214,37 @@ same results and errors.
 One handle serializes its calls, so it has no group-commit setting; Rust hosts
 that need WAL group commit across concurrent writers use `ConcurrentDatabase`.
 
+## Upgrading across a persistent format change
+
+`hawdb_format_version()` returns the engine-wide persistent format version.
+Two library builds with the same value open each other's databases. Before
+shipping a library whose value differs, export each database with the old
+library and import it with the new one:
+
+```c
+bool hawdb_export(struct HawdbDatabase *db, const char *dest_path, uintptr_t dest_len,
+                  struct HawdbBuffer *report_out, struct HawdbBuffer *err_out);
+bool hawdb_import(const char *src_path, uintptr_t src_len, const char *dest_path,
+                  uintptr_t dest_len, struct HawdbBuffer *report_out,
+                  struct HawdbBuffer *err_out);
+bool hawdb_verify_dump(const char *path, uintptr_t path_len,
+                       struct HawdbBuffer *report_out, struct HawdbBuffer *err_out);
+bool hawdb_confirm_dump_publication(const char *dest_path, uintptr_t dest_len,
+                                    struct HawdbBuffer *err_out);
+uint32_t hawdb_format_version(void);
+uint32_t hawdb_dump_format_version(void);
+```
+
+Both write only to a destination that does not exist yet, publish it with a
+move that never replaces an existing or concurrently created destination,
+and publish nothing on any error except `publish_outcome_unknown`. That kind
+means the complete result may already be at the destination: keep it, call
+`hawdb_confirm_dump_publication` (idempotent) and check it with
+`hawdb_verify_dump` (export) or by opening it (import). Reports are JSON objects mirroring the Rust
+`LogicalDumpExportReport` / `LogicalDumpImportReport`; errors use the usual
+`{"kind", "message"}` envelope. See [docs/LOGICAL_DUMP.md](../../docs/LOGICAL_DUMP.md)
+for the dump format, the host recipe and what the format covers.
+
 ## Consumers
 
 - `bindings/go` — purego client (no cgo): `LoadLibrary` registers the

@@ -105,8 +105,8 @@ pub struct Bm25Term<C> {
 pub trait Bm25Documents {
     /// The token count of a document that has postings.
     fn length(&mut self, ordinal: u64) -> Result<u64>;
-    /// The document's encoded key, the tie-breaker (ascending).
-    fn key(&mut self, ordinal: u64) -> Result<Vec<u8>>;
+    /// The document's encoded key, borrowed until heap admission succeeds.
+    fn key(&mut self, ordinal: u64) -> Result<&[u8]>;
     /// Cancellation and work admission, called once per loop iteration.
     fn checkpoint(&mut self) -> Result<()>;
     /// Admits `bytes` of retained heap state before it is allocated.
@@ -347,13 +347,17 @@ pub fn block_max_wand<C: Bm25PostingCursor, D: Bm25Documents>(
             _ => true,
         };
         if competitive {
-            let key = documents.key(pivot)?;
-            let enters = match heap.peek() {
-                Some(worst) if full => worst.0.worse_than(score, &key),
-                _ => true,
+            let retained_key = {
+                let key = documents.key(pivot)?;
+                let enters = match heap.peek() {
+                    Some(worst) if full => worst.0.worse_than(score, key),
+                    _ => true,
+                };
+                enters.then_some(key.len())
             };
-            if enters {
-                documents.admit(Bm25Hit::retained_bytes(key.len()))?;
+            if let Some(key_len) = retained_key {
+                documents.admit(Bm25Hit::retained_bytes(key_len))?;
+                let key = documents.key(pivot)?.to_vec();
                 if full && let Some(evicted) = heap.pop() {
                     documents.release(Bm25Hit::retained_bytes(evicted.0.key.len()));
                 }

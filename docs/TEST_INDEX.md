@@ -38,6 +38,22 @@ or the owning Bazel target with
 `--test_arg=typed_snapshot_candidates`. No new lane, profile, fixture
 amplification or timeout is introduced.
 
+Request-level exact vector candidates (`nowledge-co/hawdb#1692`) live in
+`embedded_store::exact_candidate_tests` in the same
+`//:hawdb_unit_general_tests` owner. A 480-row, 8-dimension resident and
+out-of-core fixture interleaves Source rows with `kind=memory` rows. Default
+out-of-core snapshot reads must report DiskANN `graph_distance` candidates and
+resident reads the adaptive `compression_disabled` scalar scan (already exact);
+exact snapshot and handle reads must equal an independent brute-force cosine
+top-k (IDs and score bits), report `exact_vector_search`, and keep hybrid
+vector scores raw. Projection-level entry points cover the same equality and
+refuse a 4 KiB working budget with the scan's budget error; snapshot reads
+refuse a 4 KiB `query_memory_bytes`; exact plus an effective
+compressed mode is refused. Request admission and report guards are in
+`candidate_evidence::boundaries` (`//crates/search:hawdb_search_tests`). Replay
+with `cargo test --locked -p hawdb --lib exact_candidate_tests` or
+`--test_arg=exact_candidate_tests`. No new lane, profile or timeout.
+
 The same Mem query owner also covers PR 1504 review optimizations: invariant
 regexp_replace validation on empty scans, cache rebinding across pattern and
 replacement values (including an invalid-pattern failure), row-dependent patterns,
@@ -248,6 +264,26 @@ refund is observed before opening the automatic-maintenance owner; global
 admission counters are not assumed stable while that worker can run. Local replay:
 `cargo test --locked -p hawdb --lib catch_up_admission_tests -- --test-threads=1`.
 See [caller-priority catch-up](https://github.com/nowledge-co/hawdb/issues/1306).
+
+`embedded_store::tests::initial_import_checkpoint_tests` (`nowledge-co/hawdb#1707`)
+belongs to the existing root `//:hawdb_unit_general_tests` owner. It pins the
+split between resident-only `apply_initial_import_projection_delta` and the
+full-rewrite `checkpoint_initial_import_projection`. Deferred and per-page
+checkpointing yield identical documents, delta reports, and text and hybrid
+hits (exact score bits), before and after reopen. A dropped store reopens at
+exactly the last checkpointed generation and import epoch, including a crash
+before any checkpoint and one in the last, largest gap of a doubling schedule.
+Replay from the host's durable cursor (plus one already-durable page) matches an
+uninterrupted run. A resume seeded from the persisted checkpointed input bytes
+takes at most one more checkpoint than the uninterrupted run had left. A crash
+between the resident snapshot replace and the generation manifest publish
+reopens fail-closed, and a fresh re-import recovers. For 8 and 32 pages, a doubling schedule writes at most 3x
+the final checkpoint in at most `log2(P) + 2` generations, while per-page
+checkpointing writes at least `P / 4` final-size rewrites. The fixtures are
+small temporary persistent projections (at most 640 documents, 8-dimensional
+embeddings), take a few seconds, and add no lane, profile or timeout. Local
+replay: `cargo test --locked -p hawdb --lib initial_import_1707 -- --test-threads=1`.
+See [the contract](SEARCH_INITIAL_IMPORT_CHECKPOINT.md).
 
 The experimental [Windows directory-custody first packet](../scripts/windows-directory-custody-probe.ps1)
 is owned by the narrowly path-filtered, same-repository
@@ -531,6 +567,19 @@ fully consumed, identical ordered results for ordinary and rule-disabled plans
 on one pinned synthetic snapshot, with alternating order, two warmups, fifteen
 measurements and raw cost/execution profiles. It is a developer experiment,
 not a new CI performance gate or a general LDBC acceptance claim.
+
+Planning prefix scratch is covered by `graph::pattern_start::tests` in the
+same optimizer unit lane: orientation and hop-limit reuse, independent catalog
+lifetimes, a context size at most 2 KiB, and direct-computation fallback after
+16 keys. A correlated three-node walk checks joint seed/target cardinalities
+while both expansions and repeated estimates share one prefix scan.
+The ignored `prefix_statistics_scaling_measurement` is a manual metadata-only
+experiment at 100, 10,000 and 100,000 path tuples with 64 repeated estimates.
+Replay with `cargo test --locked --release -p hawdb-optimizer-graph --lib
+prefix_statistics_scaling_measurement -- --ignored --nocapture --test-threads=1`.
+It compares identical prefix arithmetic with and without per-estimate reuse;
+its timings exclude query execution and do not establish application speedup.
+No new CI lane, feature, profile override or timeout is introduced.
 
 Bounded-path provenance follows the existing statistics lanes: storage
 `statistics::tests` and `statistics::checkpoint::tests` cover completed versus
@@ -817,11 +866,12 @@ splitting an overgrown block; 300 updates of one document keeping its ordinal
 and leaving bounded rows; and delete-heavy churn compacting shrunken blocks,
 re-insertion after compaction, and the relation emptying with its last
 document; every layout check also verifies each block bounds row against its
-block and the lengths of its documents. The `scan` submodule owns the
-`Bm25IndexScan` access path: exact top-k equal to the oracle (ids and score
-bits) on four random Zipf-like corpora with random queries, `k` and stream
-filters before and after churn that rewrites, shortens, deletes and inserts
-documents; a one-row top-k over 3,000 documents decoding a small fraction of
+block and the lengths of its documents. A focused compaction regression
+empties the retained first block next to a 192-posting successor, then shrinks
+the successor and checks its positive merged length bound and exact ranking.
+The `scan` submodule owns the `Bm25IndexScan` access path: a named
+shortening/deletion/insertion case checks exact score bits across a block
+boundary and a residual stream filter; a one-row top-k over 3,000 documents decoding a small fraction of
 the postings with most blocks never read (asserted from `EXPLAIN ANALYZE`);
 filters by bounded over-fetch (several rounds, the stream's own top-k,
 bounded hydration, a filter nothing satisfies); LIMIT pushdown in rank order
@@ -847,25 +897,35 @@ unknown-layout refusal
 (`cargo test --locked -p hawdb-storage --lib search_index`); `hawdb-sql`'s `tests::search_index` covers the DDL and table
 function grammar (`cargo test --locked -p hawdb-sql --lib search_index`).
 `hawdb-executor`'s `bm25::tests` own the shared scorer and Block-Max WAND
-kernel: brute-force equality (hits, keys, score bits) on 400 random corpora
-with random block sizes and conservative length bounds, ties among identical
-documents ordered by key, and a 100,000-document corpus on which a one-row
+kernel: named empty-input/zero-limit and gapped-posting/loose-bound cases,
+ties among identical documents ordered by key, and a 100,000-document corpus on which a one-row
 top-k decodes under 5% of the postings
-(`cargo test --locked -p hawdb-executor --lib bm25`; well under a second).
+(`cargo test --locked -p hawdb-executor --lib bm25`).
 `hawdb-relational`'s `query::tests::text_search_admission` indexes 4,096
 documents sharing one term (and 16,384 in a second corpus) and requires both
-top-10s to run within one 320 KiB blocking budget (the full-ranking scan
+top-10s to run within one 512 KiB blocking budget (the full-ranking scan
 needed 56 bytes per match, 917 KB for the larger corpus), skipping most
 blocks unread, to be refused by the `Bm25IndexScan` account under a tiny
-budget, and to honour cancellation. Its multi-term case on a second corpus
-(ten short documents repeating the term) compares exact rows and score bits
+budget, and to honour cancellation. Lengths admission includes the fixed
+window directory, all decoded slots including deleted entries, and key bytes;
+512 KiB replaces the unsafe encoded-payload-based 320 KiB estimate. A sparse
+32-row lengths-window regression succeeds at 128 KiB and refuses at 32 KiB
+before allocating half the control run's decoded-array bytes. Its multi-term
+case on a second corpus (ten short documents repeating the term) compares exact rows and score bits
 with a residual-filtered scan and a whole-match-set ranking across
 sealed-block boundaries, visiting fewer postings and skipping blocks
 (`cargo test --locked -p hawdb-relational --lib text_search`). The
 Bun suite (`bindings/bun/tests/hawdb.test.ts`, Native Bindings matrix) runs the
 same SQL through `querySQL` on a persistent database and a read-only reopen.
-No new lane, profile, timeout, fixture or fuzz target. See
-[the guide](SQL_SEARCH_INDEXES.md).
+The two generated differential campaigns are ignored manual tests, excluded
+from ordinary Cargo/Bazel runs. The kernel retains all 400 seeded corpora
+(seed `0x9e3779b97f4a7c15`, random block sizes and conservative bounds):
+`cargo test --locked -p hawdb-executor --lib bm25::tests::block_max_wand_equals_the_brute_force_ranking_on_random_corpora -- --ignored --exact`.
+The SQL campaign retains all four Zipf-like corpora, three churn phases and
+12 random queries/filters per phase (seed `0x2545f4914f6cdd1d`):
+`cargo test --locked -p hawdb --lib search_index_scan_equals_the_oracle_on_random_corpora_and_churn -- --ignored`.
+Keep these out of CI, scheduled jobs and ordinary test suites. No new CI lane,
+profile, timeout or fuzz target. See [the guide](SQL_SEARCH_INDEXES.md).
 
 The manual [IMV work-limit diagnostic](benchmarks/imv_work_limits_2026_10_30/README.md)
 measures process peak RSS at the row-work ceiling and near the unchanged payload
@@ -3609,3 +3669,120 @@ descriptors in a checkpoint and the WAL tail) reopening with no defaults and
 accepting a defaulted declaration. The binary WAL codec sample set adds
 defaulted `CreateProperty` ops (op code 29). No new lane, feature or fixture
 format; replay with `cargo test --locked -p hawdb --lib property_defaults`.
+
+## Logical dump and persistent format version (#1655)
+
+Specification: [LOGICAL_DUMP.md](LOGICAL_DUMP.md).
+
+- `tests/logical_dump.rs` (Bazel `//:hawdb_logical_dump_tests`, in the
+  required `//:hawdb_unit_tests` suite; Cargo
+  `cargo test --locked -p hawdb --test logical_dump`) is the public embedded
+  API owner. It covers:
+  - round-trip equality on a persistent database with every relational scalar
+    type, Unicode/CJK/emoji text, the full `i64` range, NaN/±Inf/-0.0,
+    binary with NUL and newline bytes, decimals, vectors, timestamps, column
+    defaults, composite keys, a keyless table with duplicate rows, quoted
+    identifiers, a self-referencing foreign key whose children precede their
+    parents in key order, and a typed graph with indexes and constraints.
+    Equality is checked by query comparison and by `dump(import(dump(db)))`
+    being byte-identical to `dump(db)`. Pages of 7 rows and files of 10
+    records exercise keyset paging and file rotation.
+  - snapshot consistency: a pinned read transaction exports while another
+    thread commits inserts, an update, a delete and graph writes.
+  - fail-closed export: strict append tables, materialized views (search
+    indexes excepted), a VECTOR
+    default, an open transaction and an existing destination. Nothing is
+    published and no staging directory is left behind.
+  - import atomicity: a flipped byte in the last relationship file (after
+    every table and node was written to the unpublished target), a truncated
+    table file, a missing data file, a missing manifest, a damaged schema, a
+    path-escaping manifest entry and an existing destination. Each publishes
+    nothing and leaves no staging directory. A stale staging directory from
+    an interrupted earlier import is neither adopted nor removed.
+  - `search_index_definitions_are_validated_and_never_dropped`: a
+    `search_indexes` entry on a non-text or absent column, or reusing a table
+    or search index name, fails `verify_logical_dump` and import with
+    `StorageIntegrity`; a well-formed entry naming an
+    analyzer this build does not implement verifies and is refused on import
+    with `Semantic`. Nothing is published.
+  - `search_index_round_trip_rebuilds_the_same_ranking`: a table with two
+    search indexes (one quoted name), CJK, full-width and NULL text, updates
+    and deletes is exported in 7-row pages; `schema.json` lists both
+    definitions and no index relation; the import, created index-first and
+    loaded in 7-row pages, has the same `pg_indexes` definitions and returns
+    the same `(id, score)` rows from `text_search` for every query, keeps
+    maintaining the index on a later insert, and re-exports byte-identically.
+  - graph property DEFAULT metadata (#1683) in format 1:
+    `graph_property_defaults_round_trip_and_apply_after_import` round-trips
+    literal (`INT`, `LIST`, `FLOAT`) and `current_timestamp()` defaults on
+    node and relationship properties, checks the `schema.json` spellings, that
+    restored records keep their stored values (an explicit NULL is not
+    replaced), that `dump(import(dump(db)))` stays byte-identical, and that a
+    node and a relationship created after import without the property get
+    the default (a fresh `current_timestamp()` instant).
+    `backfilling_property_defaults_restore_or_refuse_explicitly` restores a
+    literal default in `BACKFILL` with records lacking it, finishes that
+    backfill by maintenance in the imported database, refuses with
+    `Semantic` to export a `current_timestamp()` default still in `BACKFILL`
+    (nothing published), and exports it once maintenance has made it public.
+    `graph_property_defaults_are_validated_and_fail_closed` makes
+    `verify_logical_dump` and import refuse, with `StorageIntegrity` and
+    nothing published, a null default, a literal the type rejects,
+    `current_timestamp()` on a `STRING` property or in `backfill`, an unknown
+    default kind and an unknown value tag.
+  - a newer `dump_format_version` is a typed `UnsupportedStorageFormat`
+    refusal before any write (from `verify_logical_dump` too), and unknown
+    manifest fields are ignored.
+  - `verify_and_confirm_reconcile_a_published_dump`: `verify_logical_dump`
+    reports the export's manifest SHA-256, versions and counts, every damage
+    case above fails verification without writing, and
+    `confirm_logical_dump_publication` is idempotent on an export and an
+    import, changes no byte, and refuses a missing path or a file.
+  - the checked-in golden format 1 dump (`tests/logical_dump/golden_v1/`)
+    imports with exact values. These bytes must never change. Regenerate a
+    new golden version only with the `#[ignore]`d `write_golden_format_1_dump`
+    and `HAWDB_GOLDEN_OUT=<dir>`.
+  - a legacy store whose storage manifest declares `hawdb-storage-v0` is
+    refused through the embedded open with
+    `UnsupportedStorageFormat(UnsupportedVersion { "storage manifest", 0, 1 })`,
+    changes nothing, and opens again once the version is restored.
+
+  DDL dominates the cost (about 1.5 s per statement in the checked profile),
+  so the damage cases share a one-table fixture. The round-trip case is the
+  slowest, at about 35 s locally on an Apple M-series machine.
+- `src/logical_dump/value.rs` unit tests (root unit binary,
+  `logical_dump::value::tests`) cover base64 for every padding length and
+  value round trips, including a map whose key is a tag name.
+- `src/logical_dump/files/tests.rs` (root unit binary, general partition;
+  `cargo test --locked -p hawdb --lib logical_dump::files`) owns publication
+  through thread-local test hooks:
+  `a_destination_created_immediately_before_publication_is_never_replaced`
+  creates an empty directory, a populated directory, a file and (Unix) a
+  symlink at the destination right before the no-replace move; each is left
+  unchanged, nothing is published and no stage remains.
+  `a_parent_sync_failure_after_the_move_is_an_unknown_outcome_that_reconciles`
+  injects the post-move parent-directory sync failure, expects
+  `PublishOutcomeUnknown` naming the destination with the complete result kept
+  in place, and reconciles it with an injected-then-clean
+  `confirm_publication`. The native no-replace syscalls themselves, including
+  a destination created after the user-space existence check, are owned by
+  `crates/storage` `file_io::rename_new::tests`
+  (`a_target_created_after_the_check_is_not_replaced`).
+- `crates/storage` `durable_manifest` tests and the two
+  `rejects_unsupported_*_storage_version` store tests pin the typed storage
+  manifest/checkpoint version refusal. `graph_recovery` keeps the Lightning
+  empty-target import over the shared bounded `import_graph_rows_batch`.
+- `bindings/ffi/src/dump_tests.rs` (`//bindings/ffi:hawdb_ffi_tests`;
+  `cargo test --locked --manifest-path bindings/ffi/Cargo.toml dump`) covers
+  the C ABI JSON reports and error kinds (`storage`, `semantic`,
+  `invalid_argument`, `unsupported_storage_format`, `storage_integrity`), and
+  `verify_and_confirm_reconcile_a_publication` covers `hawdb_verify_dump`
+  (report equal to the export's, damage as `storage_integrity`) and the
+  idempotent `hawdb_confirm_dump_publication`.
+  `bindings/bun/tests/dump.test.ts` covers the Bun adapter, including handle
+  revalidation after path conversion closes the database, `verifyDump` and
+  `confirmDumpPublication`.
+- `scripts/check-persistent-format.test.py` and
+  `scripts/check-persistent-format.py` run in the `Persistent Format`
+  workflow on every pull request. On a published release, the same workflow
+  appends `Persistent format changed: yes|no (...)` to the release notes.

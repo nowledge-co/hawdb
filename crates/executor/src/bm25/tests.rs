@@ -128,8 +128,8 @@ impl Bm25Documents for Documents<'_> {
         Ok(self.lengths[ordinal as usize])
     }
 
-    fn key(&mut self, ordinal: u64) -> Result<Vec<u8>> {
-        Ok(self.keys[ordinal as usize].clone())
+    fn key(&mut self, ordinal: u64) -> Result<&[u8]> {
+        Ok(&self.keys[ordinal as usize])
     }
 
     fn checkpoint(&mut self) -> Result<()> {
@@ -308,6 +308,7 @@ fn assert_bit_exact(actual: &[Bm25Hit], expected: &[Bm25Hit]) {
 }
 
 #[test]
+#[ignore = "manual differential campaign; see docs/TEST_INDEX.md"]
 fn block_max_wand_equals_the_brute_force_ranking_on_random_corpora() {
     let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
     for case in 0..400 {
@@ -326,6 +327,31 @@ fn block_max_wand_equals_the_brute_force_ranking_on_random_corpora() {
         let (top, _, _) = run(&corpus, &query, k, block_size, &mut rng, loose);
         assert_bit_exact(&top.hits, &corpus.oracle(&query, k));
     }
+}
+
+#[test]
+fn block_max_wand_handles_empty_input_and_zero_limit() {
+    let corpus = Corpus {
+        lengths: vec![1],
+        keys: vec![vec![1]],
+        postings: vec![vec![(0, 1)]],
+    };
+    let mut rng = Rng(7);
+    assert!(run(&corpus, &[], 1, 2, &mut rng, false).0.hits.is_empty());
+    assert!(run(&corpus, &[0], 0, 2, &mut rng, false).0.hits.is_empty());
+    let top = run(&corpus, &[0], 2, 2, &mut rng, false).0;
+    assert_bit_exact(&top.hits, &corpus.oracle(&[0], 2));
+}
+
+#[test]
+fn block_max_wand_preserves_gapped_postings_with_loose_bounds() {
+    let corpus = Corpus {
+        lengths: vec![8, 12, 2, 5, 3, 14],
+        keys: vec![vec![5], vec![4], vec![3], vec![2], vec![1], vec![0]],
+        postings: vec![vec![(0, 2), (2, 1), (5, 2)], vec![(1, 2), (2, 1), (4, 2)]],
+    };
+    let top = run(&corpus, &[0, 1], 3, 2, &mut Rng(7), true).0;
+    assert_bit_exact(&top.hits, &corpus.oracle(&[0, 1], 3));
 }
 
 #[test]

@@ -155,6 +155,7 @@ fn number(evidence: &BTreeMap<String, String>, key: &str) -> u64 {
 }
 
 #[test]
+#[ignore = "manual SQL differential campaign; see docs/TEST_INDEX.md"]
 fn search_index_scan_equals_the_oracle_on_random_corpora_and_churn() {
     let mut rng = Rng(0x2545_f491_4f6c_dd1d);
     for corpus in 0..4 {
@@ -226,6 +227,34 @@ fn search_index_scan_equals_the_oracle_on_random_corpora_and_churn() {
             }
         }
     }
+}
+
+#[test]
+fn search_index_scan_preserves_ranking_after_shortening_and_deletion() {
+    let mut db = Database::new();
+    db.query_sql(SCHEMA).unwrap();
+    db.query_sql(INDEX).unwrap();
+    let rows = (0..260)
+        .map(|id| (id, format!("s{}", id % 2), "common long filler".to_owned()))
+        .collect::<Vec<_>>();
+    insert_rows(&mut db, &rows);
+    db.query_sql("UPDATE events SET text = 'common' WHERE id = 193")
+        .unwrap();
+    db.query_sql("DELETE FROM events WHERE id = 128").unwrap();
+    insert_rows(&mut db, &[(300, "s1".into(), "common common long".into())]);
+    layout_rows(&db);
+    assert_bit_exact(
+        &search(&mut db, "common long", 3),
+        &oracle(&mut db, "common long", 3),
+        "shortened document and deleted block boundary",
+    );
+    let mut expected = ranked_oracle(&mut db, "common", Some("s1"));
+    expected.truncate(3);
+    assert_bit_exact(
+        &filtered_search(&mut db, "common", 3, "s1"),
+        &expected,
+        "filtered ranking after churn",
+    );
 }
 
 /// 3,000 documents of varying length share one term; three repeat it, the

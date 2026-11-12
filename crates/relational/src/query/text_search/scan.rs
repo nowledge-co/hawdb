@@ -19,8 +19,8 @@ use hawdb_storage::relational::{
     decode_search_sealed_block, search_index_block_bounds_range, search_index_block_fence,
     search_index_dictionary_key, search_index_length_block_range, search_index_length_block_start,
     search_index_sealed_block_window, search_index_statistics_key, SearchBlockBounds,
-    SearchIndexStatistics, SearchLengthBlock, SearchPosting, SearchTermDictionary,
-    SEARCH_INDEX_LENGTH_BLOCK_DOCUMENTS,
+    SearchDocumentEntry, SearchIndexStatistics, SearchLengthBlock, SearchPosting,
+    SearchTermDictionary, SEARCH_INDEX_LENGTH_BLOCK_DOCUMENTS,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -524,24 +524,32 @@ impl Bm25PostingCursor for IndexCursor<'_> {
 /// Document lengths and keys, read in forward windows of lengths rows.
 pub(super) struct IndexDocuments<'a> {
     context: &'a ScanContext<'a>,
-    rows: BTreeMap<u64, (SearchLengthBlock, usize)>,
+    rows: Vec<(u64, SearchLengthBlock, usize)>,
+    rows_bytes: usize,
 }
 
 impl<'a> IndexDocuments<'a> {
-    pub(super) fn new(context: &'a ScanContext<'a>) -> Self {
-        Self {
+    pub(super) fn new(context: &'a ScanContext<'a>) -> Result<Self> {
+        let capacity = LENGTHS_WINDOW as usize;
+        let rows_bytes = capacity * std::mem::size_of::<(u64, SearchLengthBlock, usize)>();
+        context.admit(rows_bytes)?;
+        Ok(Self {
             context,
-            rows: BTreeMap::new(),
-        }
+            rows: Vec::with_capacity(capacity),
+            rows_bytes,
+        })
     }
 
     fn entry(&mut self, ordinal: u64) -> Result<&hawdb_storage::relational::SearchDocumentEntry> {
         let row = ordinal / SEARCH_INDEX_LENGTH_BLOCK_DOCUMENTS;
-        if !self.rows.contains_key(&row) {
-            // Rounds score in ascending ordinal order: rows behind the
-            // requested one are not needed again in this round.
-            let keep = self.rows.split_off(&row);
-            for (_, (_, bytes)) in std::mem::replace(&mut self.rows, keep) {
+        if self
+            .rows
+            .binary_search_by_key(&row, |entry| entry.0)
+            .is_err()
+        {
+            // Scoring advances by ordinal. A cache miss starts the next
+            // window; retain its admitted directory capacity for reuse.
+            for (_, _, bytes) in self.rows.drain(..) {
                 self.context.release(bytes);
             }
             let last = row.saturating_add(LENGTHS_WINDOW - 1);
@@ -558,14 +566,24 @@ impl<'a> IndexDocuments<'a> {
                     context.charge(1)?;
                     let start =
                         search_index_length_block_start(read.value(2)?).map_err(integrity)?;
-                    if rows.contains_key(&(start / SEARCH_INDEX_LENGTH_BLOCK_DOCUMENTS)) {
-                        return Ok(true);
+                    let row = start / SEARCH_INDEX_LENGTH_BLOCK_DOCUMENTS;
+                    if rows.len() == LENGTHS_WINDOW as usize
+                        || rows.last().is_some_and(|entry| entry.0 >= row)
+                    {
+                        return Err(corrupt(
+                            "lengths window is out of order or exceeds its bound",
+                        ));
                     }
                     let data = data(&read)?;
-                    let bytes = data.len().saturating_mul(2).saturating_add(96);
+                    // Deleted slots still occupy decoded entries. Reserve
+                    // all 64 slots plus an upper bound on the key bytes;
+                    // the fixed window directory is already admitted.
+                    let bytes = (SEARCH_INDEX_LENGTH_BLOCK_DOCUMENTS as usize)
+                        .saturating_mul(std::mem::size_of::<Option<SearchDocumentEntry>>())
+                        .saturating_add(data.len());
                     context.admit(bytes)?;
                     let block = SearchLengthBlock::decode(data).map_err(integrity)?;
-                    rows.insert(start / SEARCH_INDEX_LENGTH_BLOCK_DOCUMENTS, (block, bytes));
+                    rows.push((row, block, bytes));
                     let mut evidence = context.evidence.borrow_mut();
                     evidence.lengths_rows_read = evidence.lengths_rows_read.saturating_add(1);
                     Ok(true)
@@ -573,17 +591,19 @@ impl<'a> IndexDocuments<'a> {
             )?;
         }
         self.rows
-            .get(&row)
-            .and_then(|(block, _)| block.get(ordinal))
+            .binary_search_by_key(&row, |entry| entry.0)
+            .ok()
+            .and_then(|index| self.rows[index].1.get(ordinal))
             .ok_or_else(|| corrupt("posting names an absent document"))
     }
 }
 
 impl Drop for IndexDocuments<'_> {
     fn drop(&mut self) {
-        for (_, (_, bytes)) in std::mem::take(&mut self.rows) {
+        for (_, _, bytes) in self.rows.drain(..) {
             self.context.release(bytes);
         }
+        self.context.release(self.rows_bytes);
     }
 }
 
@@ -592,9 +612,8 @@ impl Bm25Documents for IndexDocuments<'_> {
         Ok(self.entry(ordinal)?.length)
     }
 
-    fn key(&mut self, ordinal: u64) -> Result<Vec<u8>> {
-        // The kernel admits a key before retaining it in the heap.
-        Ok(self.entry(ordinal)?.key.clone())
+    fn key(&mut self, ordinal: u64) -> Result<&[u8]> {
+        Ok(&self.entry(ordinal)?.key)
     }
 
     fn checkpoint(&mut self) -> Result<()> {
@@ -626,7 +645,7 @@ pub(super) fn rank_top_k(
             max_bound: postings.max_bound,
         })
         .collect::<Vec<_>>();
-    let mut documents = IndexDocuments::new(context);
+    let mut documents = IndexDocuments::new(context)?;
     let top = block_max_wand(&mut cursors, average_length, k, &mut documents)?;
     let mut evidence = context.evidence.borrow_mut();
     evidence.rounds += 1;

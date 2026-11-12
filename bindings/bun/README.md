@@ -136,6 +136,20 @@ trusted-publisher setup are described in
 - Calls fail before native dispatch if parameter or option getters close their
   database or library while the arguments are being normalized.
 
+- `database.export(destination)` writes the database's current snapshot as a
+  logical dump directory, and `library.import(source, destination)` builds a
+  new database from one. `library.formatVersion()` is the persistent format
+  version and `library.dumpFormatVersion()` the newest dump version the
+  library reads. Before updating to a library whose `formatVersion()` differs,
+  export with the old library and import with the new one
+  ([docs/LOGICAL_DUMP.md](../../docs/LOGICAL_DUMP.md)). Both calls refuse an
+  existing destination, publish only on complete success, and return the C
+  ABI's snake_case JSON report; counts are `number`, or `bigint` above 2^53.
+  `library.verifyDump(path)` checks a dump without writing. A
+  `publish_outcome_unknown` error means the complete result may already be at
+  the destination: keep it, call `library.confirmDumpPublication(destination)`
+  (idempotent) and then verify it; every other error published nothing.
+
 All calls are synchronous and therefore block the Bun event-loop thread. Run
 long queries in a Bun Worker and open the database handle inside that Worker.
 One native handle serializes its calls; use separate handles when independent

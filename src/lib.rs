@@ -35,6 +35,7 @@ pub mod embedded_store;
 pub mod embedded_tokio;
 pub mod executor;
 pub mod graph_route_evidence;
+pub mod logical_dump;
 pub mod mem_library_readiness;
 pub mod nowledge_fuzz;
 pub mod nowledge_inventory;
@@ -299,8 +300,8 @@ pub use embedded_store::{
     EmbeddedRuntimeStatus, EmbeddedServingEntrypoint, EmbeddedServingPathReadiness,
     EmbeddedStorageRecoveryReport, EmbeddedStore, EmbeddedStoreHandle, EmbeddedStoreOpenOptions,
     EmbeddedStoreOpenReport, GraphMode, GraphReadRouteEvidenceKind, GraphReadRouteOwner,
-    GraphReadRouteSpec, IncrementalSearchMaintenanceOptions, LibraryProductionPathSummary,
-    LibraryReadinessReport, NowledgeQueryRuntimePreflightProbe,
+    GraphReadRouteSpec, IncrementalSearchMaintenanceOptions, InitialImportProjectionPending,
+    LibraryProductionPathSummary, LibraryReadinessReport, NowledgeQueryRuntimePreflightProbe,
     NowledgeQueryRuntimePreflightProbeReport, NowledgeQueryRuntimePreflightReport,
     OperationsReadinessReport, OutOfCoreSearchCandidateOutput, OutOfCoreSearchProjection,
     PreparedSearchProjectionConsumerUpdate, QualifiedOutOfCoreSearchOptions, ReadControl,
@@ -455,6 +456,11 @@ pub use hawdb_vector_projection::{
     ProjectionBuildReport as RaBitQCandidateProjectionBuildReport,
     ProjectionManifest as RaBitQCandidateProjectionManifest,
     ProjectionSearchReport as RaBitQCandidateScanReport, ScanKernel as RaBitQScanKernel,
+};
+pub use logical_dump::{
+    confirm_logical_dump_publication, persistent_format_version, verify_logical_dump,
+    LogicalDumpExportReport, LogicalDumpImportReport, LogicalDumpOptions, LogicalDumpVerifyReport,
+    LOGICAL_DUMP_FORMAT_VERSION, PERSISTENT_FORMAT_VERSION,
 };
 pub use mem_integration_bundle::{integration_bundle_json, IntegrationBundleInputs};
 pub use mem_integration_readiness::{

@@ -5,6 +5,123 @@ use super::*;
 use crate::graph::{OptimizerCatalogIndexes, OptimizerCatalogStatistics};
 use RelationshipDirection::{Incoming, Outgoing, Undirected};
 
+#[test]
+fn prefix_scratch_is_bounded_and_reuses_each_orientation() {
+    let catalog = catalog();
+    let mut context = WalkContext::new(&catalog);
+    assert!(std::mem::size_of_val(&context) <= 2048);
+    for direction in [Outgoing, Incoming, Undirected] {
+        let reference = collect_prefixes(&catalog, "Person", "KNOWS", direction);
+        for _ in 0..5 {
+            assert_eq!(context.prefixes("Person", "KNOWS", direction), reference);
+        }
+    }
+    assert_eq!(context.scans, 3);
+    assert_eq!(context.len, 3);
+}
+
+#[test]
+fn saturated_prefix_scratch_falls_back_without_evicting_or_growing() {
+    let catalog = catalog();
+    let labels = (0..PREFIX_CACHE_CAPACITY + 1)
+        .map(|id| format!("Label{id}"))
+        .collect::<Vec<_>>();
+    let mut context = WalkContext::new(&catalog);
+    for label in &labels {
+        assert_eq!(
+            context.prefixes(label, "KNOWS", Outgoing),
+            collect_prefixes(&catalog, label, "KNOWS", Outgoing)
+        );
+    }
+    assert_eq!(context.len, PREFIX_CACHE_CAPACITY);
+    let scans = context.scans;
+    context.prefixes(&labels[0], "KNOWS", Outgoing);
+    assert_eq!(context.scans, scans);
+    context.prefixes(&labels[PREFIX_CACHE_CAPACITY], "KNOWS", Outgoing);
+    assert_eq!(context.scans, scans + 1);
+    assert_eq!(context.len, PREFIX_CACHE_CAPACITY);
+}
+
+#[test]
+fn prefix_reuse_preserves_hop_limits_and_does_not_cross_catalogs() {
+    let original = catalog();
+    let mut context = WalkContext::new(&original);
+    let from = node("a", "Person", &[]);
+    let to = node("b", "Person", &[]);
+    let mut edge = edge("KNOWS", Outgoing);
+    for max_hops in [1, 3, 2, 8, 1] {
+        edge.max_hops = max_hops;
+        assert_eq!(
+            expand_work(&mut context, &from, &to, &edge, Outgoing),
+            expand_work(
+                &mut WalkContext::new(&original),
+                &from,
+                &to,
+                &edge,
+                Outgoing
+            )
+        );
+    }
+    assert_eq!(context.scans, 1);
+    let changed = OptimizerCatalog::new(
+        OptimizerCatalogIndexes::default(),
+        OptimizerCatalogStatistics {
+            label_counts: [("Person".into(), 3_000)].into(),
+            path_counts: [(("Person".into(), "KNOWS".into(), "Person".into()), 48_000)].into(),
+            ..Default::default()
+        },
+    );
+    assert_ne!(
+        context.prefixes("Person", "KNOWS", Outgoing),
+        WalkContext::new(&changed).prefixes("Person", "KNOWS", Outgoing)
+    );
+}
+
+#[test]
+#[ignore = "manual planning metadata scaling measurement"]
+fn prefix_statistics_scaling_measurement() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    for tuples in [100, 10_000, 100_000] {
+        let catalog = OptimizerCatalog::new(
+            OptimizerCatalogIndexes::default(),
+            OptimizerCatalogStatistics {
+                label_counts: [("Source".into(), 100)].into(),
+                path_counts: (0..tuples)
+                    .map(|id| (("Source".into(), "R".into(), format!("Target{id}")), 100))
+                    .collect(),
+                ..Default::default()
+            },
+        );
+        let repeats = 64;
+        let mut reference = [0.0; MAX_ESTIMATED_HOPS + 1];
+        let started = Instant::now();
+        for _ in 0..repeats {
+            reference = black_box(collect_prefixes(
+                black_box(&catalog),
+                "Source",
+                "R",
+                Outgoing,
+            ));
+        }
+        let direct_ns = started.elapsed().as_nanos();
+        let mut context = WalkContext::new(&catalog);
+        let started = Instant::now();
+        for _ in 0..repeats {
+            assert_eq!(
+                black_box(context.prefixes("Source", "R", Outgoing)),
+                reference
+            );
+        }
+        let cached_ns = started.elapsed().as_nanos();
+        assert_eq!(context.scans, 1);
+        println!(
+            "tuples={tuples} repeats={repeats} direct_ns={direct_ns} cached_ns={cached_ns} scratch_bytes={} scans={}",
+            std::mem::size_of_val(&context), context.scans
+        );
+    }
+}
+
 fn correlated_catalog(indexed_rows: u64, joint_ndv: u64) -> OptimizerCatalog {
     OptimizerCatalog::new(
         OptimizerCatalogIndexes::new(
@@ -70,6 +187,30 @@ fn match_seeds_and_expansion_filters_reuse_the_joint_domain() {
     assert_eq!(node_selectivity(&sparse, &node), 0.05);
     let invalid = correlated_catalog(1000, 5);
     assert_eq!(node_work(&invalid, &node).unwrap().rows, 10.0);
+}
+
+#[test]
+fn reused_prefix_scratch_preserves_joint_seed_and_target_rows() {
+    let mut catalog = correlated_catalog(1000, 10);
+    catalog.path_counts = [(("Item".into(), "R".into(), "Item".into()), 2000)].into();
+    let nodes = [
+        node("seed", "Item", &["a", "b"]),
+        node("middle", "Item", &["a", "b"]),
+        node("target", "Item", &["a", "b"]),
+    ];
+    let edges = [edge("R", Outgoing), edge("R", Outgoing)];
+    let mut context = WalkContext::new(&catalog);
+    for _ in 0..3 {
+        assert_eq!(
+            walk_with_context(&mut context, &nodes, &edges, 0),
+            Some(WalkEstimate {
+                work: 461.0,
+                rows: 4.0,
+            })
+        );
+    }
+    assert_eq!(context.scans, 1);
+    assert_eq!(context.len, 1);
 }
 
 #[test]

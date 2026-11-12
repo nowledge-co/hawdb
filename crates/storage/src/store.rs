@@ -12534,9 +12534,16 @@ mod tests {
 
         let mut catalog = Catalog::default();
         let error = GraphStore::open(&path, &mut catalog).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("unsupported storage version: hawdb-storage-v0"));
+        assert_eq!(
+            error,
+            HawDBError::UnsupportedStorageFormat(
+                hawdb_core::StorageFormatError::UnsupportedVersion {
+                    format: "storage manifest",
+                    found: 0,
+                    supported: 1,
+                }
+            )
+        );
         std::fs::remove_dir_all(path).unwrap();
     }
 
@@ -12659,9 +12666,16 @@ mod tests {
 
         let mut catalog = Catalog::default();
         let error = GraphStore::open(&path, &mut catalog).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("unsupported storage version: hawdb-storage-v0"));
+        assert_eq!(
+            error,
+            HawDBError::UnsupportedStorageFormat(
+                hawdb_core::StorageFormatError::UnsupportedVersion {
+                    format: "storage manifest",
+                    found: 0,
+                    supported: 1,
+                }
+            )
+        );
         std::fs::remove_dir_all(path).unwrap();
     }
 
