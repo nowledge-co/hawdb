@@ -144,7 +144,15 @@ describe("Bun transactions", () => {
         timeout: 30_000,
       });
       expect(new TextDecoder().decode(child.stdout).trim()).toBe(marker);
-      expect(child.signalCode).toBe("SIGKILL");
+      if (process.platform === "win32") {
+        // Windows has no signals: Bun ends the process with TerminateProcess,
+        // which reports a nonzero exit code and no signal.
+        expect(child.signalCode).toBeUndefined();
+        expect(child.exitCode).not.toBe(0);
+        expect(child.exitCode).not.toBeNull();
+      } else {
+        expect(child.signalCode).toBe("SIGKILL");
+      }
       const reopened = library.open(path);
       expect(state(reopened)).toEqual(expected);
       reopened.close();

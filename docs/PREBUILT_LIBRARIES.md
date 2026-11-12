@@ -1,41 +1,40 @@
 # Prebuilt C ABI libraries
 
-Each HawDB development prerelease carries the C ABI (`bindings/ffi`) built
-for a fixed platform matrix, so a host can embed a development engine without
-compiling Rust. The same libraries are published to npm for the
+Each HawDB release, stable or development prerelease, carries the C ABI
+(`bindings/ffi`) built for a fixed platform matrix, so a host can embed HawDB
+without compiling Rust. The same libraries are published to npm for the
 [Bun binding](../bindings/bun/README.md). Language adapters that do not use the
 C ABI still need their own build, and the `hawdb` CLI binary is not an embedding
 artifact.
 
+HawDB's on-disk format carries no compatibility promise until HawDB declares
+one: a database written by one release may need to be recreated to open with a
+later one, stable releases included.
+
 ## Release modes
 
-During the current development phase HawDB must not appear in any stable or GA
-release ([AGENTS.md](../AGENTS.md#mem-release-modes-and-full-verification)), so
-the [Native Release workflow](../.github/workflows/native-release.yml) has only
-two modes:
+The [Native Release workflow](../.github/workflows/native-release.yml) has two
+modes:
 
 | Trigger | Mode | Compiles | Uploads to the release | Publishes to npm |
 | --- | --- | --- | --- | --- |
 | Pull request changing the pipeline | `pull-request` | yes | no | no |
-| Published GitHub **prerelease** whose tag is `v<x.y.z>-dev.<n>` or `v<x.y.z>-nightly.<n>`, or a `workflow_dispatch` replay of one | `development` | yes | yes | yes, under the `dev` or `nightly` dist-tag |
-| Any stable (non-prerelease) release, a prerelease with another version (for example `v0.31.0` or `-rc.1`), a draft, or a replay of any of these | refused | no | no | no |
+| Published stable (non-prerelease) GitHub Release tagged `v<x.y.z>`, or a `workflow_dispatch` replay of one | `release` | yes | yes | yes, under `latest` |
+| Published GitHub **prerelease** tagged `v<x.y.z>-dev.<n>` or `v<x.y.z>-nightly.<n>`, or a `workflow_dispatch` replay of one | `release` | yes | yes | yes, under `dev` or `nightly` |
+| A draft, a tag that differs from the source version, a stable release with a prerelease version, or a prerelease with any other version (for example `v0.31.0` or `-rc.1`) | refused | no | no | no |
 
-A stable release does not start the workflow's jobs at all: the `source` job
-runs only for a prerelease, and
-[`scripts/native-release-mode.py`](../scripts/native-release-mode.py) refuses
-anything but a development version whose tag, root and binding versions agree.
-Because the version itself carries the `-dev`/`-nightly` suffix, promoting the
-GitHub Release to stable afterwards cannot turn its artifacts into a
-stable-numbered release. `//:native_release_mode_script_test` evaluates the
-workflow's job and step conditions for each trigger and fails if a stable
-release could reach compilation, the release upload or npm. Shipping these
-artifacts from stable releases needs a separate, explicit release-policy
-decision first.
+[`scripts/native-release-mode.py`](../scripts/native-release-mode.py) requires
+the tag, root and binding versions to agree and the GitHub prerelease flag to
+match the version, so npm `latest` only ever receives a stable version and a
+`-dev`/`-nightly` build only its own channel. `//:native_release_mode_script_test`
+evaluates the workflow's job and step conditions for each trigger and checks
+this mapping.
 
-To cut a development prerelease, set the root `Cargo.toml`, `bindings/ffi`
-(Cargo and `BUILD.bazel`) and `bindings/bun/package.json` versions to the same
-`<x.y.z>-dev.<n>` on `main`, tag that commit `v<x.y.z>-dev.<n>`, and publish the
-GitHub Release with **Set as a pre-release** checked.
+To cut a release, set the root `Cargo.toml`, `bindings/ffi` (Cargo and
+`BUILD.bazel`) and `bindings/bun/package.json` versions to the same
+`<x.y.z>` (or `<x.y.z>-dev.<n>`) on `main`, tag that commit `v<version>`, and
+publish the GitHub Release, with **Set as a pre-release** checked only for a
+`-dev`/`-nightly` version.
 
 ## Platform matrix
 
@@ -102,7 +101,7 @@ experimental (retained descriptor ABI version 1).
 
 ## Download and verify
 
-Every development prerelease also carries `SHA256SUMS` covering all five archives:
+Every release also carries `SHA256SUMS` covering all five archives:
 
 ```sh
 version=0.31.0-dev.1
@@ -162,8 +161,8 @@ responsibility: sign the dylib with your own identity when you sign the app.
 
 ## Building from source
 
-Unsupported targets, custom feature profiles and any stable release build the
-same targets from a checkout of the tag:
+Unsupported targets and custom feature profiles build the same targets from a
+checkout of the tag:
 
 ```sh
 bazel build --config=prebuilt //bindings/ffi:hawdb_ffi //bindings/ffi:hawdb_ffi_static
@@ -191,12 +190,12 @@ host that also has musl installed still selects the glibc package. The exact
 refuses one whose version differs from `@nowledge/hawdb-bun`'s (for example an
 older copy left after installing with optional dependencies disabled).
 
-Package versions equal the development prerelease version, and every package
-is published under that channel's dist-tag, `dev` or `nightly`, never `latest`:
-install with `bun add @nowledge/hawdb-bun@dev` or an exact version.
+Package versions equal the release version. A stable release is published
+under `latest` (`bun add @nowledge/hawdb-bun`), a development prerelease under
+its channel's dist-tag (`bun add @nowledge/hawdb-bun@dev` or `@nightly`).
 [`scripts/npm/publish-assembled.sh`](../scripts/npm/publish-assembled.sh)
-refuses any other dist-tag and any version that is not that channel's
-prerelease. The release workflow assembles the packages from the archives it
+refuses any other dist-tag, a prerelease version under `latest` and a version
+that does not belong to the requested channel. The release workflow assembles the packages from the archives it
 just uploaded (so npm and the GitHub Release ship the same bytes) and publishes
 the platform packages before the main package. A version already on npm is
 skipped when its tarball shasum matches and refused otherwise, so retries are
@@ -207,10 +206,10 @@ safe.
 The `npm` job publishes with
 [npm trusted publishing](https://docs.npmjs.com/trusted-publishers): a
 short-lived GitHub Actions OIDC token, no stored npm token, and automatic
-provenance. It runs only for a development prerelease, only in the `npm`
-environment and only when the repository variable `NPM_TRUSTED_PUBLISHING` is
-`enabled`; otherwise the prerelease still gets its archives and the workflow
-reports the npm publish as skipped.
+provenance. It runs only for a release, only in the `npm` environment and only
+when the repository variable `NPM_TRUSTED_PUBLISHING` is `enabled`; otherwise
+the release still gets its archives and the workflow reports the npm publish as
+skipped.
 
 npm cannot attach a trusted publisher to a package that does not exist, an
 unused trusted-publisher configuration expires 48 hours after it is created,
@@ -219,10 +218,9 @@ bootstraps once:
 
 1. Use an npm account with two-factor authentication that can publish to the
    existing `@nowledge` organization, and npm CLI 11.15.0 or later.
-2. On a macOS arm64 machine at a development prerelease tag, build the
-   library and publish the first version by hand (a dry run omits
-   `--publish`; the script refuses a version that is not `<x.y.z>-dev.<n>` or
-   `-nightly.<n>`):
+2. On a macOS arm64 machine at a release tag, build the library and publish
+   the first version by hand (a dry run omits `--publish`; the script refuses
+   a version that is not `<x.y.z>`, `<x.y.z>-dev.<n>` or `<x.y.z>-nightly.<n>`):
 
    ```sh
    bazel build --config=prebuilt //bindings/ffi:hawdb_ffi
@@ -233,12 +231,12 @@ bootstraps once:
 
    This publishes `@nowledge/hawdb-ffi-darwin-arm64@<version>` and a
    `@nowledge/hawdb-bun@<version>` whose optional dependencies list only that
-   package, both under the version's `dev` or `nightly` dist-tag, and every
-   other platform package as a library-free `0.0.0-placeholder.0` under the
-   `placeholder` dist-tag, which only creates the name. npm points `latest`
-   at a package's first published version whatever its dist-tag, so these
-   first versions also hold `latest` until a later version is tagged so; that
-   is the bootstrap development build, never a stable one.
+   package, both under the version's dist-tag (`latest`, `dev` or `nightly`),
+   and every other platform package as a library-free `0.0.0-placeholder.0`
+   under the `placeholder` dist-tag, which only creates the name. npm points
+   `latest` at a package's first published version whatever its dist-tag, so
+   a development bootstrap also holds `latest` until the first stable release
+   is published.
 3. Shortly before the next release (configurations expire after 48 unused
    hours), attach the trusted publisher to all six packages:
 
@@ -254,12 +252,11 @@ bootstraps once:
    or, on each package's npmjs.com **Settings → Trusted Publisher → GitHub
    Actions** page: organization `nowledge-co`, repository `hawdb`, workflow
    `native-release.yml`, environment `npm`, with `npm publish` allowed.
-4. Restrict the GitHub `npm` environment to the `main` branch and `v*-dev.*`
-   and `v*-nightly.*` tags, and set the repository variable
+4. Restrict the GitHub `npm` environment to the `main` branch and `v*` tags,
+   and set the repository variable
    `NPM_TRUSTED_PUBLISHING=enabled`.
-5. Publish the next development prerelease. If its npm job ran before the
-   configuration existed, rerun the workflow with `workflow_dispatch` and the
-   prerelease tag.
+5. Publish the next release. If its npm job ran before the configuration
+   existed, rerun the workflow with `workflow_dispatch` and the release tag.
 
 After the first successful trusted publish, consider setting each package's
 **Publishing access** to require two-factor authentication and disallow
