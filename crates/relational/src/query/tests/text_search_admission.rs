@@ -103,7 +103,7 @@ fn search_sql(
 }
 
 #[test]
-fn text_search_scan_admits_metadata_and_bounded_ranking() {
+fn text_search_scan_admits_fixed_windows_and_skip_metadata() {
     let state = search_state();
     let control = search(&state, 64 * 1024 * 1024, None).unwrap();
     assert_eq!(control.rows.len(), 10);
