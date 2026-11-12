@@ -155,6 +155,22 @@ export interface ImportReport {
   manifest_sha256: string;
 }
 
+/** `library.verifyDump` result; see docs/LOGICAL_DUMP.md. */
+export interface VerifyReport {
+  dump_format_version: number;
+  source_hawdb_version: string;
+  source_persistent_format_version: number;
+  branch: string | null;
+  commit_epoch: Count;
+  table_count: Count;
+  table_row_count: Count;
+  node_count: Count;
+  relationship_count: Count;
+  file_count: Count;
+  total_bytes: Count;
+  manifest_sha256: string;
+}
+
 /** The fields a report must carry: unsigned counts, and optionally strings. */
 type ReportFields = readonly string[] | { counts: readonly string[]; strings: readonly string[] };
 
@@ -205,6 +221,20 @@ const exportReportFields = {
     "total_bytes",
   ],
   strings: ["hawdb_version", "manifest_sha256"],
+} as const;
+const verifyReportFields = {
+  counts: [
+    "dump_format_version",
+    "source_persistent_format_version",
+    "commit_epoch",
+    "table_count",
+    "table_row_count",
+    "node_count",
+    "relationship_count",
+    "file_count",
+    "total_bytes",
+  ],
+  strings: ["source_hawdb_version", "manifest_sha256"],
 } as const;
 const importReportFields = {
   counts: [
@@ -617,6 +647,56 @@ export class HawDBLibrary {
         error,
       ),
     );
+  }
+
+  /**
+   * Verify the logical dump at `path` against its manifest without writing
+   * anything. Damage throws a `storage_integrity` `HawDBError`.
+   */
+  verifyDump(path: string): VerifyReport {
+    this.assertOpen();
+    const pathBytes = encoder.encode(path);
+    if (pathBytes.length === 0) {
+      throw new TypeError("HawDB dump path must not be empty");
+    }
+    // Path conversion may have unloaded the library.
+    this.assertOpen();
+    return this.report<VerifyReport>(verifyReportFields, "verify", (report, error) =>
+      this.native.symbols.hawdb_verify_dump(pathBytes, pathBytes, report, error),
+    );
+  }
+
+  /**
+   * Reconcile an `export` or `import` that threw `publish_outcome_unknown`:
+   * the complete result may already be at `destination`, so keep it. This
+   * makes its name durable and is safe to repeat; then check an export with
+   * `verifyDump` or open an import. A missing destination means the
+   * publication did not survive and the call can be run again.
+   */
+  confirmDumpPublication(destination: string): void {
+    this.assertOpen();
+    const destinationBytes = encoder.encode(destination);
+    if (destinationBytes.length === 0) {
+      throw new TypeError("HawDB dump destination must not be empty");
+    }
+    this.assertOpen();
+    const error = outputBuffer();
+    if (
+      !this.native.symbols.hawdb_confirm_dump_publication(
+        destinationBytes,
+        destinationBytes,
+        error,
+      )
+    ) {
+      throw this.errorFrom(error, "HawDB confirm dump publication failed");
+    }
+    const unexpected = this.takeBuffer(error);
+    if (unexpected !== null) {
+      throw new HawDBError(
+        "ffi",
+        `HawDB confirm dump publication succeeded with an error payload: ${unexpected}`,
+      );
+    }
   }
 
   closeDatabase(database: Database, handle: NativePointer): void {

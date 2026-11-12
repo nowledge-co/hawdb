@@ -59,6 +59,14 @@ const symbols = {
     args: ["buffer", "buffer_length", "buffer", "buffer_length", "buffer", "buffer"],
     returns: "bool",
   },
+  hawdb_verify_dump: {
+    args: ["buffer", "buffer_length", "buffer", "buffer"],
+    returns: "bool",
+  },
+  hawdb_confirm_dump_publication: {
+    args: ["buffer", "buffer_length", "buffer"],
+    returns: "bool",
+  },
   hawdb_format_version: { args: [], returns: "u32" },
   hawdb_dump_format_version: { args: [], returns: "u32" },
   hawdb_backup: {

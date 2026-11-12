@@ -26,6 +26,14 @@
 //! builds the database in an unpublished sibling directory and renames it onto
 //! the destination only after every file verified and every count matched; a
 //! failed or interrupted import never leaves a database at the destination.
+//!
+//! Publication is one no-replace directory move: an existing or concurrently
+//! created destination is never replaced. Every error before that move
+//! publishes nothing. An error at or after the move, when the destination may
+//! already hold the complete result, is the distinct
+//! [`HawDBError::PublishOutcomeUnknown`]; reconcile it with
+//! [`confirm_logical_dump_publication`] and, for an export,
+//! [`verify_logical_dump`].
 
 mod export;
 mod files;
@@ -115,6 +123,51 @@ pub struct LogicalDumpImportReport {
     pub file_count: u64,
     pub total_bytes: u64,
     pub manifest_sha256: String,
+}
+
+/// What [`verify_logical_dump`] checked: the dump's own manifest fields and
+/// counts, every one of which matched its files.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogicalDumpVerifyReport {
+    pub dump_format_version: u16,
+    /// The HawDB release that wrote the dump.
+    pub source_hawdb_version: String,
+    pub source_persistent_format_version: u32,
+    pub branch: Option<String>,
+    pub commit_epoch: u64,
+    pub table_count: u64,
+    pub table_row_count: u64,
+    pub node_count: u64,
+    pub relationship_count: u64,
+    pub file_count: u64,
+    pub total_bytes: u64,
+    /// Lowercase hex SHA-256 of `manifest.json`; equals the export report's
+    /// `manifest_sha256` for the dump that export wrote.
+    pub manifest_sha256: String,
+}
+
+/// Verifies the logical dump at `path` without writing anything: the
+/// manifest is a supported format version, the schema and every data file
+/// match their manifest length, SHA-256 and record count, and the manifest
+/// counts match the files. A damaged or incomplete dump fails with
+/// [`HawDBError::StorageIntegrity`]; a dump from a newer release with
+/// [`HawDBError::UnsupportedStorageFormat`].
+pub fn verify_logical_dump(path: impl AsRef<Path>) -> Result<LogicalDumpVerifyReport> {
+    import::verify(path.as_ref())
+}
+
+/// Reconciles a publication that failed with
+/// [`HawDBError::PublishOutcomeUnknown`]: checks that `destination` is a
+/// directory and synchronizes it and its parent directory, so its name
+/// survives a crash once this returns `Ok`. Idempotent: calling it again, or
+/// after a successful export or import, changes nothing. It does not judge
+/// the content; after it succeeds, check an export with
+/// [`verify_logical_dump`] and an import by opening it (and, for full
+/// assurance, scrubbing its storage). If `destination` is missing, the
+/// publication did not survive and the export or import can simply be run
+/// again.
+pub fn confirm_logical_dump_publication(destination: impl AsRef<Path>) -> Result<()> {
+    files::confirm_publication(destination.as_ref())
 }
 
 impl DatabaseReadTransaction {

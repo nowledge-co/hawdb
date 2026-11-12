@@ -73,6 +73,17 @@ describe("logical dump", () => {
 
     expect(thrown(() => library.import(dump, target)).kind).toBe("storage");
     database.close();
+
+    // Reconciliation is idempotent and verification matches the export.
+    library.confirmDumpPublication(dump);
+    library.confirmDumpPublication(dump);
+    library.confirmDumpPublication(target);
+    const verified = library.verifyDump(dump);
+    expect(verified.manifest_sha256).toBe(exported.manifest_sha256);
+    expect(verified.commit_epoch).toBe(exported.commit_epoch);
+    expect(verified.node_count).toBe(1);
+    expect(verified.source_hawdb_version).toBe(exported.hawdb_version);
+    expect(thrown(() => library.confirmDumpPublication(join(root, "absent"))).kind).toBe("storage");
     expect(thrown(() => database.export(join(root, "closed"))).kind).toBe("closed");
   });
 
@@ -86,6 +97,7 @@ describe("logical dump", () => {
       manifest,
       readFileSync(manifest, "utf8").replace('"dump_format_version": 1', '"dump_format_version": 999'),
     );
+    expect(thrown(() => library.verifyDump(dump)).kind).toBe("unsupported_storage_format");
     const target = join(root, "newer-imported");
     expect(thrown(() => library.import(dump, target)).kind).toBe("unsupported_storage_format");
     expect(existsSync(target)).toBe(false);

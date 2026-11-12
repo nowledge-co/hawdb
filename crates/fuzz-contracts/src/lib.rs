@@ -169,6 +169,7 @@ pub const fn nowledge_query_fuzz_error_class(error: &HawDBError) -> &'static str
         | HawDBError::FileDescriptors(_)
         | HawDBError::StorageIntegrity(_)
         | HawDBError::WalRecoveryIo { .. }
+        | HawDBError::PublishOutcomeUnknown { .. }
         | HawDBError::ProjectionBusy
         | HawDBError::AppendSequenceExhausted { .. }
         | HawDBError::BranchBusy { .. }

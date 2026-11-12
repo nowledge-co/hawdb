@@ -3495,7 +3495,13 @@ Specification: [LOGICAL_DUMP.md](LOGICAL_DUMP.md).
     nothing and leaves no staging directory. A stale staging directory from
     an interrupted earlier import is neither adopted nor removed.
   - a newer `dump_format_version` is a typed `UnsupportedStorageFormat`
-    refusal before any write, and unknown manifest fields are ignored.
+    refusal before any write (from `verify_logical_dump` too), and unknown
+    manifest fields are ignored.
+  - `verify_and_confirm_reconcile_a_published_dump`: `verify_logical_dump`
+    reports the export's manifest SHA-256, versions and counts, every damage
+    case above fails verification without writing, and
+    `confirm_logical_dump_publication` is idempotent on an export and an
+    import, changes no byte, and refuses a missing path or a file.
   - the checked-in golden format 1 dump (`tests/logical_dump/golden_v1/`)
     imports with exact values. These bytes must never change. Regenerate a
     new golden version only with the `#[ignore]`d `write_golden_format_1_dump`
@@ -3511,6 +3517,21 @@ Specification: [LOGICAL_DUMP.md](LOGICAL_DUMP.md).
 - `src/logical_dump/value.rs` unit tests (root unit binary,
   `logical_dump::value::tests`) cover base64 for every padding length and
   value round trips, including a map whose key is a tag name.
+- `src/logical_dump/files/tests.rs` (root unit binary, general partition;
+  `cargo test --locked -p hawdb --lib logical_dump::files`) owns publication
+  through thread-local test hooks:
+  `a_destination_created_immediately_before_publication_is_never_replaced`
+  creates an empty directory, a populated directory, a file and (Unix) a
+  symlink at the destination right before the no-replace move; each is left
+  unchanged, nothing is published and no stage remains.
+  `a_parent_sync_failure_after_the_move_is_an_unknown_outcome_that_reconciles`
+  injects the post-move parent-directory sync failure, expects
+  `PublishOutcomeUnknown` naming the destination with the complete result kept
+  in place, and reconciles it with an injected-then-clean
+  `confirm_publication`. The native no-replace syscalls themselves, including
+  a destination created after the user-space existence check, are owned by
+  `crates/storage` `file_io::rename_new::tests`
+  (`a_target_created_after_the_check_is_not_replaced`).
 - `crates/storage` `durable_manifest` tests and the two
   `rejects_unsupported_*_storage_version` store tests pin the typed storage
   manifest/checkpoint version refusal. `graph_recovery` keeps the Lightning
@@ -3518,9 +3539,13 @@ Specification: [LOGICAL_DUMP.md](LOGICAL_DUMP.md).
 - `bindings/ffi/src/dump_tests.rs` (`//bindings/ffi:hawdb_ffi_tests`;
   `cargo test --locked --manifest-path bindings/ffi/Cargo.toml dump`) covers
   the C ABI JSON reports and error kinds (`storage`, `semantic`,
-  `invalid_argument`, `unsupported_storage_format`, `storage_integrity`).
+  `invalid_argument`, `unsupported_storage_format`, `storage_integrity`), and
+  `verify_and_confirm_reconcile_a_publication` covers `hawdb_verify_dump`
+  (report equal to the export's, damage as `storage_integrity`) and the
+  idempotent `hawdb_confirm_dump_publication`.
   `bindings/bun/tests/dump.test.ts` covers the Bun adapter, including handle
-  revalidation after path conversion closes the database.
+  revalidation after path conversion closes the database, `verifyDump` and
+  `confirmDumpPublication`.
 - `scripts/check-persistent-format.test.py` and
   `scripts/check-persistent-format.py` run in the `Persistent Format`
   workflow on every pull request. On a published release, the same workflow

@@ -29,7 +29,10 @@ use super::model::{
     MANIFEST_FILE,
 };
 use super::value::{self, malformed};
-use super::{LogicalDumpImportReport, LogicalDumpOptions, LOGICAL_DUMP_FORMAT_VERSION};
+use super::{
+    LogicalDumpImportReport, LogicalDumpOptions, LogicalDumpVerifyReport,
+    LOGICAL_DUMP_FORMAT_VERSION,
+};
 use crate::embedded::{HawDBEmbedded, HawDBEmbeddedOpenOptions};
 use crate::store::{DurabilityPolicy, KernelWriteBatch};
 use crate::{HawDBError, Result, Value};
@@ -39,11 +42,16 @@ const ENGINE_SCHEMA_OWNER: &str = hawdb_relational::system_schema::ENGINE_SYSTEM
 /// Upper bound on bound parameters in one generated INSERT statement.
 const MAX_INSERT_PARAMETERS: usize = 8192;
 
-pub(super) fn import(
-    source: &Path,
-    destination: &Path,
-    options: &LogicalDumpOptions,
-) -> Result<LogicalDumpImportReport> {
+/// A dump whose manifest and schema verified and whose file plan is
+/// consistent. Data files are verified as they are streamed.
+struct OpenedDump {
+    manifest_bytes: u64,
+    manifest: Manifest,
+    manifest_sha256: String,
+    schema: Schema,
+}
+
+fn open_dump(source: &Path) -> Result<OpenedDump> {
     let manifest_bytes = read_metadata(&source.join(MANIFEST_FILE))?;
     let manifest = parse_manifest(&manifest_bytes)?;
     let manifest_sha256 = {
@@ -58,7 +66,66 @@ pub(super) fn import(
     verify_bytes(&manifest.schema, &schema_bytes)?;
     let schema: Schema = serde_json::from_slice(&schema_bytes)
         .map_err(|error| malformed(format!("schema.json is not a format 1 schema: {error}")))?;
-    let plan = Plan::new(&manifest, &schema)?;
+    Ok(OpenedDump {
+        manifest_bytes: manifest_bytes.len() as u64,
+        manifest,
+        manifest_sha256,
+        schema,
+    })
+}
+
+impl OpenedDump {
+    fn file_count(&self) -> u64 {
+        self.manifest.files.len() as u64 + 2
+    }
+
+    fn total_bytes(&self) -> u64 {
+        self.manifest
+            .files
+            .iter()
+            .map(|file| file.bytes)
+            .sum::<u64>()
+            + self.manifest.schema.bytes
+            + self.manifest_bytes
+    }
+}
+
+/// Verifies every file of the dump at `source` against its manifest (length,
+/// SHA-256 and record count) and the manifest against the schema, writing
+/// nothing.
+pub(super) fn verify(source: &Path) -> Result<LogicalDumpVerifyReport> {
+    let dump = open_dump(source)?;
+    Plan::new(&dump.manifest, &dump.schema)?;
+    for entry in &dump.manifest.files {
+        let mut reader = RecordReader::open(source, entry)?;
+        while reader.next_record()?.is_some() {}
+        reader.finish()?;
+    }
+    let manifest = &dump.manifest;
+    Ok(LogicalDumpVerifyReport {
+        dump_format_version: manifest.dump_format_version,
+        source_hawdb_version: manifest.created_by.hawdb_version.clone(),
+        source_persistent_format_version: manifest.created_by.persistent_format_version,
+        branch: manifest.source.branch.clone(),
+        commit_epoch: manifest.source.commit_epoch,
+        table_count: manifest.counts.tables,
+        table_row_count: manifest.counts.table_rows,
+        node_count: manifest.counts.nodes,
+        relationship_count: manifest.counts.relationships,
+        file_count: dump.file_count(),
+        total_bytes: dump.total_bytes(),
+        manifest_sha256: dump.manifest_sha256.clone(),
+    })
+}
+
+pub(super) fn import(
+    source: &Path,
+    destination: &Path,
+    options: &LogicalDumpOptions,
+) -> Result<LogicalDumpImportReport> {
+    let dump = open_dump(source)?;
+    let (manifest, schema) = (&dump.manifest, &dump.schema);
+    let plan = Plan::new(manifest, schema)?;
 
     let stage = Stage::create(destination, "import")?;
     let mut target = Target::open(stage.path(), options)?;
@@ -70,7 +137,7 @@ pub(super) fn import(
     target.create_graph_schema(&schema.graph)?;
     target.load_graph(source, &plan.nodes, &plan.relationships)?;
     target.finish_graph_schema(&schema.graph)?;
-    target.verify(&manifest)?;
+    target.verify(manifest)?;
     target.close()?;
     stage.publish()?;
 
@@ -83,11 +150,9 @@ pub(super) fn import(
         table_row_count: manifest.counts.table_rows,
         node_count: manifest.counts.nodes,
         relationship_count: manifest.counts.relationships,
-        file_count: manifest.files.len() as u64 + 2,
-        total_bytes: manifest.files.iter().map(|file| file.bytes).sum::<u64>()
-            + manifest.schema.bytes
-            + manifest_bytes.len() as u64,
-        manifest_sha256,
+        file_count: dump.file_count(),
+        total_bytes: dump.total_bytes(),
+        manifest_sha256: dump.manifest_sha256.clone(),
     })
 }
 

@@ -132,6 +132,15 @@ pub fn format_hawdb_error(error: &HawDBError) -> PyErr {
             })();
             attributes.err().unwrap_or(exception)
         }),
+        HawDBError::PublishOutcomeUnknown { destination, .. } => Python::attach(|py| {
+            let exception = StorageError::new_err(message);
+            let value = exception.value(py);
+            let attributes = (|| -> PyResult<()> {
+                value.setattr("kind", "publish_outcome_unknown")?;
+                value.setattr("destination", destination.display().to_string())
+            })();
+            attributes.err().unwrap_or(exception)
+        }),
         HawDBError::UnsupportedStorageFormat(_) => Python::attach(|py| {
             let exception = StorageError::new_err(message);
             let attributes = exception

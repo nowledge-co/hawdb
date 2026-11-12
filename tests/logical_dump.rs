@@ -27,8 +27,9 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
 use hawdb::{
-    Database, HawDBEmbedded, HawDBError, LogicalDumpOptions, StorageFormatError, Value,
-    LOGICAL_DUMP_FORMAT_VERSION, PERSISTENT_FORMAT_VERSION,
+    confirm_logical_dump_publication, verify_logical_dump, Database, HawDBEmbedded, HawDBError,
+    LogicalDumpOptions, StorageFormatError, Value, LOGICAL_DUMP_FORMAT_VERSION,
+    PERSISTENT_FORMAT_VERSION,
 };
 use logical_dump_support::{golden_v1_files, TempDir};
 
@@ -736,6 +737,15 @@ fn damaged_or_incomplete_dumps_publish_nothing() {
         let copy = temp.path().join(format!("{name}-dump"));
         copy_dump(&dump, &copy);
         damage(&copy);
+        // Verification refuses the same damage without writing anything.
+        let error = verify_logical_dump(&copy).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                HawDBError::StorageIntegrity(_) | HawDBError::Storage(_)
+            ),
+            "{name}: verify: {error:?}"
+        );
         let destination = temp.path().join(format!("{name}-db"));
         let error = Database::import_logical_dump_with_options(&copy, &destination, &small_pages())
             .unwrap_err();
@@ -765,6 +775,52 @@ fn damaged_or_incomplete_dumps_publish_nothing() {
 }
 
 #[test]
+fn verify_and_confirm_reconcile_a_published_dump() {
+    let temp = TempDir::new("verify");
+    let dump = exported_fixture(&temp);
+    let before = dump_content(&dump);
+    let written = manifest(&dump);
+    let report = verify_logical_dump(&dump).unwrap();
+    let mut hasher = hawdb_integrity::IntegrityHasher::new();
+    hasher.update(&fs::read(dump.join("manifest.json")).unwrap());
+    assert_eq!(report.manifest_sha256, hasher.finish().sha256.to_string());
+    assert_eq!(report.dump_format_version, LOGICAL_DUMP_FORMAT_VERSION);
+    assert_eq!(
+        report.source_persistent_format_version,
+        PERSISTENT_FORMAT_VERSION
+    );
+    let counts = &written["counts"];
+    assert_eq!(report.table_count, counts["tables"].as_u64().unwrap());
+    assert_eq!(
+        report.table_row_count,
+        counts["table_rows"].as_u64().unwrap()
+    );
+    assert_eq!(report.node_count, 12);
+    assert_eq!(report.relationship_count, 11);
+    assert_eq!(
+        report.file_count,
+        written["files"].as_array().unwrap().len() as u64 + 2
+    );
+    assert_eq!(
+        report.commit_epoch,
+        written["source"]["commit_epoch"].as_u64().unwrap()
+    );
+    // Confirming a publication is idempotent and changes no byte; it refuses
+    // a missing destination and one that is not a directory.
+    confirm_logical_dump_publication(&dump).unwrap();
+    confirm_logical_dump_publication(&dump).unwrap();
+    assert_eq!(dump_content(&dump), before);
+    assert_eq!(verify_logical_dump(&dump).unwrap(), report);
+    assert!(confirm_logical_dump_publication(temp.path().join("absent")).is_err());
+    assert!(confirm_logical_dump_publication(dump.join("manifest.json")).is_err());
+    // An imported database confirms the same way.
+    let imported = temp.path().join("imported");
+    Database::import_logical_dump(&dump, &imported).unwrap();
+    confirm_logical_dump_publication(&imported).unwrap();
+    HawDBEmbedded::open(&imported).unwrap();
+}
+
+#[test]
 fn newer_dump_format_is_a_typed_refusal_before_any_write() {
     let temp = TempDir::new("newer");
     let dump = temp.path().join("dump");
@@ -777,6 +833,14 @@ fn newer_dump_format_is_a_typed_refusal_before_any_write() {
     document["a_future_field"] = serde_json::json!({"ignored": true});
     fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
     let destination = temp.path().join("imported");
+    assert_eq!(
+        verify_logical_dump(&dump).unwrap_err(),
+        HawDBError::UnsupportedStorageFormat(StorageFormatError::UnsupportedVersion {
+            format: "logical dump",
+            found: LOGICAL_DUMP_FORMAT_VERSION + 1,
+            supported: LOGICAL_DUMP_FORMAT_VERSION,
+        })
+    );
     assert_eq!(
         Database::import_logical_dump(&dump, &destination).unwrap_err(),
         HawDBError::UnsupportedStorageFormat(StorageFormatError::UnsupportedVersion {

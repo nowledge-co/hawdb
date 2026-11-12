@@ -427,6 +427,7 @@ impl ExpectedErrorClass {
             | HawDBError::Storage(_)
             | HawDBError::StorageIntegrity(_)
             | HawDBError::WalRecoveryIo { .. }
+            | HawDBError::PublishOutcomeUnknown { .. }
             | HawDBError::ProjectionBusy
             | HawDBError::AppendSequenceExhausted { .. }
             | HawDBError::BranchBusy { .. }

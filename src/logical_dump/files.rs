@@ -39,9 +39,10 @@ pub(super) fn io_error(action: &str, path: &Path, error: std::io::Error) -> HawD
 }
 
 /// A destination that must not exist yet, with a unique sibling staging
-/// directory created for this call only. Publication renames the staging
-/// directory onto the destination; dropping an unpublished stage removes the
-/// directory this call created and nothing else.
+/// directory created for this call only. Publication moves the staging
+/// directory onto the destination with a no-replace rename; dropping an
+/// unpublished stage removes the directory this call created and nothing
+/// else.
 pub(super) struct Stage {
     staging: PathBuf,
     destination: PathBuf,
@@ -96,27 +97,61 @@ impl Stage {
         &self.staging
     }
 
-    /// Atomically renames the complete stage onto the destination and makes
-    /// the rename durable. The rename refuses if the destination appeared in
-    /// the meantime on platforms where rename does not replace directories;
-    /// the explicit check narrows the window elsewhere.
+    /// Atomically moves the complete stage onto the destination and makes the
+    /// move durable.
+    ///
+    /// The move is one no-replace filesystem operation
+    /// (`renameat2(RENAME_NOREPLACE)` on Linux, `renamex_np(RENAME_EXCL)` on
+    /// macOS, `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING` on Windows):
+    /// a file, directory or symlink that appears at the destination at any
+    /// point before the move is never replaced, and the publication refuses
+    /// with nothing published. Platforms or filesystems without such a
+    /// primitive refuse rather than fall back to check-then-rename.
+    ///
+    /// Once the move may have happened, every failure is
+    /// [`HawDBError::PublishOutcomeUnknown`]: the destination then holds this
+    /// call's complete result, but its name may not survive a crash. The
+    /// stage is never removed after that point.
     pub(super) fn publish(mut self) -> Result<()> {
         sync_directory(&self.staging)?;
-        if fs::symlink_metadata(&self.destination).is_ok() {
-            return Err(HawDBError::Storage(format!(
-                "logical dump: destination {} appeared during the operation; nothing was published",
-                self.destination.display()
-            )));
-        }
-        fs::rename(&self.staging, &self.destination)
-            .map_err(|error| io_error("publish", &self.destination, error))?;
-        self.published = true;
-        if let Some(parent) = self.destination.parent()
-            && !parent.as_os_str().is_empty()
+        #[cfg(test)]
+        hooks::before_publish(&self.destination);
+        if let Err(error) =
+            hawdb_storage::file_io::rename_directory_new(&self.staging, &self.destination)
         {
-            sync_directory(parent)?;
+            // An error may follow a completed move. A stage that is no longer
+            // at its own name was moved: the destination is ours.
+            if fs::symlink_metadata(&self.staging).is_ok() {
+                let reason = if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    "appeared during the operation".to_string()
+                } else {
+                    format!("could not be published ({error})")
+                };
+                return Err(HawDBError::Storage(format!(
+                    "logical dump: destination {} {reason}; nothing was published",
+                    self.destination.display()
+                )));
+            }
+            self.published = true;
+            return Err(self.outcome_unknown(format!("the move reported {error}")));
         }
-        Ok(())
+        self.published = true;
+        let parent = match self.destination.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent,
+            _ => Path::new("."),
+        };
+        sync_published_parent(parent).map_err(|error| {
+            self.outcome_unknown(format!(
+                "the parent directory sync after the move failed: {error}"
+            ))
+        })
+    }
+
+    fn outcome_unknown(&self, message: String) -> HawDBError {
+        HawDBError::PublishOutcomeUnknown {
+            destination: self.destination.clone(),
+            message: format!("logical dump: {message}"),
+        }
     }
 }
 
@@ -125,6 +160,81 @@ impl Drop for Stage {
         if !self.published {
             let _ = fs::remove_dir_all(&self.staging);
         }
+    }
+}
+
+fn sync_published_parent(parent: &Path) -> Result<()> {
+    #[cfg(test)]
+    hooks::parent_sync_failure()?;
+    sync_directory(parent)
+}
+
+/// Completes the durability barrier of a publication that returned
+/// [`HawDBError::PublishOutcomeUnknown`], or confirms one that succeeded:
+/// checks that `destination` is a directory (not a symlink) and synchronizes
+/// it and its parent directory. Idempotent and read-only for the namespace.
+pub(super) fn confirm_publication(destination: impl AsRef<Path>) -> Result<()> {
+    let destination = destination.as_ref();
+    let metadata = fs::symlink_metadata(destination)
+        .map_err(|error| io_error("inspect", destination, error))?;
+    if !metadata.is_dir() {
+        return Err(HawDBError::Storage(format!(
+            "logical dump: {} is not a directory, so it is not a published dump or import",
+            destination.display()
+        )));
+    }
+    sync_directory(destination)?;
+    let parent = match destination.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    sync_published_parent(parent)
+}
+
+/// Test-only fault points around publication. Thread-local, so a test only
+/// affects publications on its own thread.
+#[cfg(test)]
+pub(super) mod hooks {
+    use std::cell::{Cell, RefCell};
+    use std::path::Path;
+
+    use crate::{HawDBError, Result};
+
+    type BeforePublish = Box<dyn FnOnce(&Path)>;
+
+    thread_local! {
+        static BEFORE_PUBLISH: RefCell<Option<BeforePublish>> = const { RefCell::new(None) };
+        static FAIL_PARENT_SYNC: Cell<u32> = const { Cell::new(0) };
+    }
+
+    /// Runs `hook` with the destination immediately before the no-replace
+    /// move of the next publication on this thread.
+    pub(crate) fn set_before_publish(hook: impl FnOnce(&Path) + 'static) {
+        BEFORE_PUBLISH.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+    }
+
+    /// Fails the next `count` post-move parent-directory syncs on this thread.
+    pub(crate) fn fail_parent_sync(count: u32) {
+        FAIL_PARENT_SYNC.with(|slot| slot.set(count));
+    }
+
+    pub(super) fn before_publish(destination: &Path) {
+        let hook = BEFORE_PUBLISH.with(|slot| slot.borrow_mut().take());
+        if let Some(hook) = hook {
+            hook(destination);
+        }
+    }
+
+    pub(super) fn parent_sync_failure() -> Result<()> {
+        FAIL_PARENT_SYNC.with(|slot| match slot.get() {
+            0 => Ok(()),
+            remaining => {
+                slot.set(remaining - 1);
+                Err(HawDBError::Storage(
+                    "injected parent directory sync failure".to_string(),
+                ))
+            }
+        })
     }
 }
 
@@ -354,3 +464,6 @@ impl<'a> RecordReader<'a> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;

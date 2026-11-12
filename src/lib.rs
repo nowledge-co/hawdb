@@ -458,8 +458,9 @@ pub use hawdb_vector_projection::{
     ProjectionSearchReport as RaBitQCandidateScanReport, ScanKernel as RaBitQScanKernel,
 };
 pub use logical_dump::{
-    persistent_format_version, LogicalDumpExportReport, LogicalDumpImportReport,
-    LogicalDumpOptions, LOGICAL_DUMP_FORMAT_VERSION, PERSISTENT_FORMAT_VERSION,
+    confirm_logical_dump_publication, persistent_format_version, verify_logical_dump,
+    LogicalDumpExportReport, LogicalDumpImportReport, LogicalDumpOptions, LogicalDumpVerifyReport,
+    LOGICAL_DUMP_FORMAT_VERSION, PERSISTENT_FORMAT_VERSION,
 };
 pub use mem_integration_bundle::{integration_bundle_json, IntegrationBundleInputs};
 pub use mem_integration_readiness::{

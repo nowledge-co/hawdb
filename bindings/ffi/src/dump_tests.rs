@@ -255,3 +255,99 @@ fn errors_use_the_engine_kinds() {
     assert_eq!(error["kind"], "storage_integrity", "{error}");
     unsafe { hawdb_close(db) };
 }
+
+fn verify(path: &Path) -> Result<serde_json::Value, serde_json::Value> {
+    let path = path.to_str().unwrap();
+    let mut report = empty_buffer();
+    let mut error = empty_buffer();
+    let ok =
+        unsafe { hawdb_verify_dump(path.as_ptr().cast(), path.len(), &mut report, &mut error) };
+    let (report, error) = unsafe { (take(&mut report), take(&mut error)) };
+    if ok {
+        assert!(error.is_none());
+        Ok(report.unwrap())
+    } else {
+        assert!(report.is_none());
+        Err(error.unwrap())
+    }
+}
+
+fn confirm(path: &Path) -> Result<(), serde_json::Value> {
+    let path = path.to_str().unwrap();
+    let mut error = empty_buffer();
+    let ok =
+        unsafe { hawdb_confirm_dump_publication(path.as_ptr().cast(), path.len(), &mut error) };
+    let error = unsafe { take(&mut error) };
+    if ok {
+        assert!(error.is_none());
+        Ok(())
+    } else {
+        Err(error.unwrap())
+    }
+}
+
+#[test]
+fn verify_and_confirm_reconcile_a_publication() {
+    let directory = TestDirectory::new("reconcile");
+    let db = open(&directory.0.join("source"));
+    sql(
+        db,
+        "CREATE TABLE t (id BIGINT PRIMARY KEY)",
+        serde_json::json!([]),
+    );
+    sql(
+        db,
+        "INSERT INTO t (id) VALUES ($1), ($2)",
+        serde_json::json!([1, 2]),
+    );
+    let dump = directory.0.join("dump");
+    let exported = export(db, &dump).unwrap();
+    unsafe { hawdb_close(db) };
+
+    confirm(&dump).unwrap();
+    confirm(&dump).unwrap();
+    let verified = verify(&dump).unwrap();
+    for field in [
+        "dump_format_version",
+        "branch",
+        "commit_epoch",
+        "table_count",
+        "table_row_count",
+        "node_count",
+        "relationship_count",
+        "file_count",
+        "total_bytes",
+        "manifest_sha256",
+    ] {
+        assert_eq!(verified[field], exported[field], "{field}");
+    }
+    assert_eq!(verified["source_hawdb_version"], exported["hawdb_version"]);
+
+    let imported = directory.0.join("imported");
+    import(&dump, &imported).unwrap();
+    confirm(&imported).unwrap();
+
+    let error = confirm(&directory.0.join("absent")).unwrap_err();
+    assert_eq!(error["kind"], "storage", "{error}");
+    let mut error = empty_buffer();
+    let ok = unsafe { hawdb_confirm_dump_publication(ptr::null(), 0, &mut error) };
+    assert!(!ok);
+    assert_eq!(
+        unsafe { take(&mut error) }.unwrap()["kind"],
+        "invalid_argument"
+    );
+
+    // Damage is an integrity failure, and verification wrote nothing.
+    let table = std::fs::read_dir(dump.join("data"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let mut bytes = std::fs::read(&table).unwrap();
+    bytes[0] ^= 0x20;
+    std::fs::write(&table, &bytes).unwrap();
+    let error = verify(&dump).unwrap_err();
+    assert_eq!(error["kind"], "storage_integrity", "{error}");
+    assert_eq!(std::fs::read(&table).unwrap(), bytes);
+}

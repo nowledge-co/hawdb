@@ -32,7 +32,9 @@ Before replacing the HawDB library a host ships:
    in place.
 3. If they differ, use the **old** library to export every database it owns
    (`hawdb_export` / `Database::export_logical_dump`) into a new directory.
-   Keep the original database until the next step succeeds.
+   Keep the original database until the next step succeeds. Optionally check
+   the dump with `hawdb_verify_dump` / `hawdb::verify_logical_dump`; its
+   `manifest_sha256` equals the export report's.
 4. Use the **new** library to import each dump into a new path
    (`hawdb_import` / `Database::import_logical_dump`), then point the
    application at the imported database. Delete the old database and the
@@ -231,16 +233,17 @@ These rules are what lets every later release read a version 1 dump:
   snapshot's statistics.
 - Export writes into a sibling staging directory
   (`.<name>.hawdb-export-<pid>-<nonce>-<n>`), synchronizes every file and
-  directory, and renames the stage onto the destination last. A failed export
-  removes the stage it created and leaves nothing at the destination.
+  directory, and moves the stage onto the destination last (see
+  [Publication](#publication)). A failed export removes the stage it created
+  and leaves nothing at the destination.
 - **Import** reads `manifest.json` and `schema.json` (each at most 64 MiB),
   checks the format and version, and validates the manifest's paths, kinds,
   tables and counts before it creates anything. It builds the database in a
   sibling staging directory with `SyncOnCheckpoint` durability. It verifies
   every data file's length, record count and SHA-256 as it streams it.
   Afterwards it compares each table's `COUNT(*)` and the graph counts with the
-  manifest, checkpoints, closes the database and renames the stage onto the
-  destination. Anything short of complete success publishes nothing.
+  manifest, checkpoints, closes the database and moves the stage onto the
+  destination. Every failure before that move publishes nothing.
 - Both refuse an existing destination and require its parent directory to
   exist.
 - A process crash or power loss during either operation can leave a
@@ -248,12 +251,56 @@ These rules are what lets every later release read a version 1 dump:
   destination. It is never adopted or resumed. Run the operation again
   (staging names are unique) and delete leftovers when no operation is
   running.
+- `verify_logical_dump` (`hawdb_verify_dump`, `library.verifyDump`) checks
+  a dump the way import does (format version, paths, counts, and every
+  file's length, record count and SHA-256) without building anything or
+  writing a byte.
 - Import keeps the importing engine's own rows in the engine migration
   registry (`hawdb_schema_migrations`, owner `hawdb.engine`). Only the
   application owners' migration records come from the dump.
 - Memory stays bounded by `page_rows`. Graph import commits a batch of
   `page_rows` records at a time and checkpoints every
   `import_checkpoint_records` records (default 200,000).
+
+## Publication
+
+The last step of both operations moves the complete staging directory onto
+the destination with one no-replace filesystem operation:
+`renameat2(RENAME_NOREPLACE)` on Linux, `renamex_np(RENAME_EXCL)` on macOS and
+`MoveFileExW` without `MOVEFILE_REPLACE_EXISTING` on Windows. An empty
+directory, populated directory, file or symlink that another process creates
+at the destination at any moment before the move is never replaced: the call
+fails with `storage`, removes its own stage and publishes nothing. There is no
+check-then-rename fallback. A platform or filesystem without such a primitive
+(for example one returning `EINVAL` or `ENOTSUP` for the flag) fails the same
+way, with nothing published.
+
+### Unknown publication outcome
+
+After the move the destination holds the complete result, but its name is
+durable only once the parent directory is synchronized. A failure from the
+move onwards, for example a failing parent-directory sync, cannot honestly be
+reported as "nothing published", so it is a distinct error:
+`HawDBError::PublishOutcomeUnknown { destination, message }`, C ABI and Bun
+kind `publish_outcome_unknown`. Every other error kind means nothing was
+published. On `publish_outcome_unknown`:
+
+1. **Keep the destination.** It is never a partial result, and the operation
+   does not remove it. Do not delete it as a failed attempt.
+2. Call `confirm_logical_dump_publication(destination)`
+   (`hawdb_confirm_dump_publication`, `library.confirmDumpPublication`). It
+   checks that the destination is a directory and synchronizes it and its
+   parent. It is idempotent: repeat it until it succeeds; calling it after a
+   successful operation changes nothing.
+3. Check the content: an export with `verify_logical_dump(destination)`, an
+   import by opening it (and scrubbing it for full assurance).
+4. If the destination is missing (a crash undid the move), the publication
+   did not survive. Run the operation again; its stale stage is neither
+   adopted nor removed, as above.
+
+A retried export or import against the same destination refuses with
+`storage` because the destination exists, so a host never publishes twice by
+retrying.
 
 ## Coverage
 
@@ -300,13 +347,17 @@ tracked under issue #1655.
 | `hawdb::LOGICAL_DUMP_FORMAT_VERSION` | `uint32_t hawdb_dump_format_version(void)` | `library.dumpFormatVersion()` |
 | `Database::export_logical_dump(dest)`, `DatabaseReadTransaction::export_logical_dump(dest, &options)`, `HawDBEmbedded::export_logical_dump(dest)` | `bool hawdb_export(db, dest, dest_len, report_out, err_out)` | `database.export(dest)` |
 | `Database::import_logical_dump(src, dest)`, `HawDBEmbedded::import_logical_dump(src, dest)` | `bool hawdb_import(src, src_len, dest, dest_len, report_out, err_out)` | `library.import(src, dest)` |
+| `hawdb::verify_logical_dump(path)` | `bool hawdb_verify_dump(path, path_len, report_out, err_out)` | `library.verifyDump(path)` |
+| `hawdb::confirm_logical_dump_publication(dest)` | `bool hawdb_confirm_dump_publication(dest, dest_len, err_out)` | `library.confirmDumpPublication(dest)` |
 
-The C ABI reports are the Rust `LogicalDumpExportReport` and
-`LogicalDumpImportReport` serialized field for field as JSON, and errors use
-the usual `{"kind", "message"}` envelope:
+The C ABI reports are the Rust `LogicalDumpExportReport`,
+`LogicalDumpImportReport` and `LogicalDumpVerifyReport` serialized field for
+field as JSON, and errors use the usual `{"kind", "message"}` envelope:
 
 - `semantic` for an unrepresentable kind of data;
 - `transaction_open` when a handle with an open transaction exports;
 - `unsupported_storage_format` for a dump from a newer release;
 - `storage_integrity` for a damaged or incomplete dump;
-- `storage` for an existing destination or an I/O failure.
+- `storage` for an existing destination or an I/O failure;
+- `publish_outcome_unknown` when the complete result may already be at the
+  destination ([Unknown publication outcome](#unknown-publication-outcome)).
