@@ -210,6 +210,12 @@ fn prepare_database_path(path: &Path, read_only: bool) -> PyResult<PathBuf> {
 /// default) instead of the profile's 16 MiB, as for an `EmbeddedStore`.
 /// Admitted statements reserve that budget at admission, so SQL keeps the
 /// ceiling it had before it was admitted.
+///
+/// Python's `max_read_result_payload_bytes=None` keeps the engine default
+/// (`Some(64 MiB)`) and never reaches this function as `None`. A
+/// `DatabaseConfig` whose ceiling is `None` would mean no payload ceiling on
+/// the raw path; here the governor would keep the profile's 16 MiB result
+/// budget, so admitted statements would be capped at 16 MiB.
 fn runtime_governor_config(config: &DatabaseConfig) -> RuntimeGovernorConfig {
     let mut governor = RuntimeGovernorConfig::shared_host();
     if let Some(bytes) = config.max_read_result_payload_bytes {
@@ -1068,7 +1074,9 @@ impl ReadTransaction {
 /// sqlite3, `":memory:"` is not an in-memory path and raises ValueError, as does
 /// an empty path. Filesystem path errors raise StorageError.
 /// `read_only=True` requires a path and opens an existing database read-only.
-/// Optional read budgets pass through to the engine; None keeps its defaults.
+/// Optional read budgets pass through to the engine; None keeps its defaults
+/// (no row ceiling, a 64 MiB payload ceiling). The payload ceiling is also the
+/// runtime result budget of admitted statements; None does not remove it.
 /// A namespace_durability_anchor is an existing ancestor whose name and ancestry
 /// the host guarantees durable and stable for the handle's lifetime. Namespace
 /// synchronization includes that boundary. None keeps the engine's mount walk.

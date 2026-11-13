@@ -121,7 +121,10 @@ def open(
     *, max_read_result_rows: Optional[int] = None,
     max_read_result_payload_bytes: Optional[int] = None,
     namespace_durability_anchor: Optional[Union[str, "os.PathLike[str]"]] = None,
-) -> Database: ...
+) -> Database:
+    """Open a database. `max_read_result_payload_bytes=None` keeps the 64 MiB
+    default, which is also the admitted runtime result budget; it never removes
+    the ceiling or falls back to the runtime's 16 MiB profile default."""
 def capabilities() -> Mapping[str, bool]:
     """Engine capabilities compiled into this extension (read-only)."""
 

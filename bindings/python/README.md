@@ -101,7 +101,11 @@ with hawdb.open(max_read_result_rows=1000, max_read_result_payload_bytes=1048576
 ```
 
 Omitted options and `None` preserve engine defaults: no host row ceiling and a
-64 MiB result payload ceiling. The payload ceiling is also the per-statement
+64 MiB result payload ceiling. For the payload option, `None` means that
+64 MiB default, not an unbounded result, both before and since SQL became
+admitted. Only a Rust host that sets `DatabaseConfig::max_read_result_payload_bytes`
+to `None` gets no ceiling on raw `Database` calls; its admitted statements are
+then bounded by the runtime's own 16 MiB per-statement result budget. The payload ceiling is also the per-statement
 result budget of the handle's runtime admission (see [Usage](#usage)), which
 reserves it from the runtime memory budget while the statement runs, so a
 ceiling larger than the runtime memory capacity makes admission refuse
