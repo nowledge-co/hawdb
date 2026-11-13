@@ -84,5 +84,13 @@ while IFS=$'\t' read -r name version directory kind; do
     command+=(--dry-run)
   fi
   echo "+ ${command[*]}"
-  "${command[@]}"
+  if [[ "$publish" == true ]] && { : </dev/tty; } 2>/dev/null; then
+    # This loop's stdin is the package list: npm must never read it. A local
+    # publish gives npm the terminal, where it waits for the 2FA confirmation
+    # (reading the list instead, it fails with EOTP); without a terminal (CI)
+    # it gets no input at all.
+    "${command[@]}" </dev/tty
+  else
+    "${command[@]}" </dev/null
+  fi
 done < <(entries)
