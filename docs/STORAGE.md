@@ -440,6 +440,36 @@ generations are reclaimed even while an older reader remains active. Reclamation
 also follows retained row-page, overflow-extent, and append manifests so shared
 physical artifacts outlive every reader that can still reference them.
 
+An admitted branch keeps its private WAL beside `branch.head`
+(`branches/<id>/wal.<generation>.hawdb`), outside the data root. Each
+checkpoint or seal copies the active WAL's records into immutable objects (or
+covers them with the new checkpoint), then publishes a head selecting a fresh
+successor WAL. Recovery opens only `wal.<head.active_wal.generation>`; child
+and sibling branches are created from the sealed parent root, own their own
+directory and never read a parent's private WAL. The same reclamation pass
+therefore also removes branch WALs with a generation below the selected one
+([#1727](https://github.com/nowledge-co/hawdb/issues/1727)). It runs only
+after the selecting head is published; it re-reads that head, requires it to
+match the runtime's head and synchronizes the branch directory before the
+first removal, so a head adopted after a crash with an unsynchronized rename
+becomes durable first. Names at or above the selected generation (prepared
+successors, in-flight checkpoint candidates, interrupted-publication evidence)
+and reader-pinned generations are kept. The branch sweep does not use the
+data-root retention of the current and previous checkpoint generations, which
+number data-root artifacts; readers never open a branch WAL, so a reader pin
+that matches a branch WAL number only delays its removal. The branch sweep also runs when an
+open reader without a known pin set defers data-root reclamation, because no
+reader opens a branch WAL. An interrupted-publication name below
+the selected generation is reclaimed like a data-root generation below the
+selected checkpoint: the durable head selecting a newer generation resolves its
+uncertainty. The writer's exclusive branch-directory
+lease excludes concurrent admission of the same branch. A failed removal or
+directory synchronization is reported as `generation_reclamation_pending_*`
+debt and retried by the next reclamation pass; a crash between head
+publication and removal leaves only an unselected file, which the next
+checkpoint after recovery removes. Each WAL directory therefore holds at most
+the current and previous generation after a checkpoint.
+
 `DatabaseTransaction` owns a transaction-private COW graph workspace. Each
 Cypher mutation is applied to that workspace immediately, so later Cypher reads
 and mutations observe earlier writes. The transaction retains the exact graph

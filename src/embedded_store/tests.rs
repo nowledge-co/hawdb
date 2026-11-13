@@ -7714,6 +7714,7 @@ fn grouped_evidence_complete_text_preserves_graph_eligibility_and_retained_reads
 mod catch_up_admission_tests;
 mod initial_import_checkpoint_tests;
 mod storage_pressure_tests;
+mod wal_generation_reclamation_tests;
 
 #[cfg(feature = "vector-search")]
 #[test]

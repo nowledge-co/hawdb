@@ -3004,7 +3004,11 @@ fn concurrent_transaction_publishes_graph_relational_and_append_writes_in_one_wa
     let path = super::unique_test_dir("concurrent_mixed_transaction");
     {
         let db = crate::ConcurrentDatabase::open(&path).unwrap();
-        let transaction_wal = super::active_wal_path(&path);
+        // The schema checkpoint below supersedes this private WAL, and
+        // reclamation then removes its branch-directory name (#1727). Keep a
+        // second name for the same appended inode outside the database.
+        let transaction_wal = path.with_extension("transaction-wal");
+        std::fs::hard_link(super::active_wal_path(&path), &transaction_wal).unwrap();
         let mut tx = db
             .begin_transaction(ConcurrentTransactionOptions::pessimistic(
                 Duration::from_secs(1),
@@ -3046,6 +3050,7 @@ fn concurrent_transaction_publishes_graph_relational_and_append_writes_in_one_wa
         let wal = crate::store::render_wal_records_for_test(&transaction_wal).unwrap();
         assert_eq!(wal.lines().count(), 1);
         assert!(wal.contains("\tbatch\t"));
+        std::fs::remove_file(&transaction_wal).unwrap();
     }
 
     let wal = super::read_test_wal(&path).unwrap();

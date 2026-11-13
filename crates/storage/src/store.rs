@@ -545,6 +545,51 @@ fn remove_generation_reclamation_candidate(path: &Path) -> std::io::Result<()> {
     fs::remove_file(path)
 }
 
+/// Test-only faults for the branch-private WAL sweep (#1727): the head
+/// re-read and the directory barrier that precede its first removal.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BranchWalSweepFailpoint {
+    HeadRead,
+    DirectorySync,
+}
+
+#[cfg(test)]
+thread_local! {
+    static BRANCH_WAL_SWEEP_FAILPOINT: std::cell::Cell<Option<BranchWalSweepFailpoint>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn set_branch_wal_sweep_failpoint(failpoint: Option<BranchWalSweepFailpoint>) {
+    BRANCH_WAL_SWEEP_FAILPOINT.with(|slot| slot.set(failpoint));
+}
+
+/// Reads the selected branch head before a branch-private WAL sweep.
+fn read_branch_head_for_wal_sweep(
+    path: &Path,
+) -> std::result::Result<hawdb_storage::branch_head::BranchHead, ()> {
+    #[cfg(test)]
+    if BRANCH_WAL_SWEEP_FAILPOINT.with(|slot| slot.get()) == Some(BranchWalSweepFailpoint::HeadRead)
+    {
+        return Err(());
+    }
+    hawdb_storage::branch_head::read_branch_head(path).map_err(|_| ())
+}
+
+/// Synchronizes the branch directory before a branch-private WAL sweep.
+fn sync_branch_directory_for_wal_sweep(directory: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if BRANCH_WAL_SWEEP_FAILPOINT.with(|slot| slot.get())
+        == Some(BranchWalSweepFailpoint::DirectorySync)
+    {
+        return Err(std::io::Error::other(
+            "injected branch WAL sweep directory sync failure",
+        ));
+    }
+    hawdb_storage::durability::sync_directory(directory)
+}
+
 /// Fails the next removal of the named obsolete generation file on this
 /// thread, leaving generation reclamation debt for pressure assertions.
 #[cfg(any(test, feature = "test-support"))]
