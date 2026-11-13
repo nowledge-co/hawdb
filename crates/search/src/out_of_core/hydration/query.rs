@@ -293,9 +293,12 @@ fn select_records(
                 }
                 .into());
             }
-            let required = add(selected.documents.len(), 1)?;
-            let capacity = required.max(selected.documents.capacity().saturating_mul(2));
-            reserve_capacity(&mut selected.documents, capacity, &mut selected._memory)?;
+            if selected.documents.len() == selected.documents.capacity() {
+                // Grow geometrically only when full, never on every push.
+                let required = add(selected.documents.len(), 1)?;
+                let capacity = required.max(selected.documents.capacity().saturating_mul(2));
+                reserve_capacity(&mut selected.documents, capacity, &mut selected._memory)?;
+            }
             selected.documents.push(document);
         }
     }

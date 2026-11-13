@@ -113,6 +113,8 @@ pub struct EmbeddedReadSnapshot<'a> {
     search_projection_durable_source_graph_commit_epoch: Option<u64>,
     budget: EmbeddedReadSnapshotBudget,
     task_context: RuntimeTaskContext,
+    // The admission bound to `task_context`; search serving borrows it.
+    permit: &'a RuntimePermit,
 }
 
 impl<'a> EmbeddedReadSnapshot<'a> {
@@ -123,6 +125,7 @@ impl<'a> EmbeddedReadSnapshot<'a> {
         projection: Option<ResidentProjectionRef<'a>>,
         out_of_core_projection: Option<&'a OutOfCoreSearchProjection>,
         task_context: RuntimeTaskContext,
+        permit: &'a RuntimePermit,
     ) -> Self {
         let freshness = match (projection, out_of_core_projection) {
             (Some(projection), None) => Some(projection.freshness()),
@@ -148,6 +151,7 @@ impl<'a> EmbeddedReadSnapshot<'a> {
                 .and_then(|value| value.durable_source_graph_commit_epoch),
             budget,
             task_context,
+            permit,
         }
     }
 
@@ -243,6 +247,41 @@ impl<'a> EmbeddedReadSnapshot<'a> {
         Ok(self.search_candidates_with_report(request)?.result)
     }
 
+    /// The largest number of eligible documents an exact vector-only
+    /// candidate read (`SearchCandidateRequest::with_exact_vector_search`) in
+    /// this snapshot is guaranteed to serve, for eligible projection document
+    /// IDs (`kind:external_id`) of at most `max_document_id_bytes` bytes. It
+    /// applies this snapshot's admitted working memory and pinned projection,
+    /// so hosts need not reproduce HawDB's per-entry charges. Above it a read
+    /// may be refused with a typed budget error; it is never truncated.
+    pub fn exact_vector_search_capacity(&self, max_document_id_bytes: usize) -> Result<usize> {
+        let working_bytes = self.admitted_working_bytes()?;
+        match (
+            self.external.projection,
+            self.external.out_of_core_projection,
+        ) {
+            (Some(projection), None) => {
+                Ok(projection.exact_vector_search_capacity(working_bytes, max_document_id_bytes))
+            }
+            (None, Some(projection)) => {
+                Ok(projection.exact_vector_search_capacity(working_bytes, max_document_id_bytes))
+            }
+            (None, None) => Err(missing_search_projection_error()),
+            (Some(_), Some(_)) => Err(ambiguous_search_projection_error()),
+        }
+    }
+
+    fn admitted_working_bytes(&self) -> Result<usize> {
+        self.task_context
+            .memory_reservation()
+            .map(|reservation| usize::try_from(reservation.memory_bytes()).unwrap_or(usize::MAX))
+            .ok_or_else(|| {
+                HawDBError::Execution(
+                    "bounded Search candidates require admitted working memory".into(),
+                )
+            })
+    }
+
     /// Equivalent to [`Self::search_candidates`] and preserves candidate,
     /// truncation, backend, and projection-freshness evidence.
     pub fn search_candidates_with_report(
@@ -254,15 +293,7 @@ impl<'a> EmbeddedReadSnapshot<'a> {
             .map_err(|reason| HawDBError::Execution(format!("runtime task {reason}")))?;
         let _ = self.statement_row_budget(request.limit.max(1))?;
         let _ = self.remaining_payload_bytes()?;
-        let max_working_bytes = self
-            .task_context
-            .memory_reservation()
-            .map(|reservation| usize::try_from(reservation.memory_bytes()).unwrap_or(usize::MAX))
-            .ok_or_else(|| {
-                HawDBError::Execution(
-                    "bounded Search candidates require admitted working memory".into(),
-                )
-            })?;
+        let max_working_bytes = self.admitted_working_bytes()?;
         let execution =
             VectorSearchExecutionOptions::admitted(max_working_bytes, &self.task_context);
         let output = match (
@@ -273,7 +304,7 @@ impl<'a> EmbeddedReadSnapshot<'a> {
                 projection.try_search_candidates_with_report_context(request, execution)?
             }
             (None, Some(projection)) => projection
-                .search_candidates_with_report_context(request, execution)?
+                .search_candidates_with_report_admitted(request, execution, self.permit)?
                 .into(),
             (None, None) => return Err(missing_search_projection_error()),
             (Some(_), Some(_)) => return Err(ambiguous_search_projection_error()),
@@ -727,6 +758,7 @@ impl EmbeddedStoreHandle {
                 None,
                 None,
                 _permit.bind_task_context(task_context.clone()),
+                &_permit,
             );
             return self.finish_canonical_read(operation(&mut snapshot));
         }
@@ -773,6 +805,7 @@ impl EmbeddedStoreHandle {
                 .map(|lease| ResidentProjectionRef::Snapshot(lease.snapshot())),
             projection.as_ref(),
             task_context,
+            &_permit,
         );
         self.finish_canonical_read(operation(&mut snapshot))
     }

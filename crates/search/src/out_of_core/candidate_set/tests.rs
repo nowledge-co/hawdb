@@ -100,7 +100,7 @@ fn captured_candidate_spill_uses_original_fd_domain_and_one_query_io_slot() {
                 drop(grant);
             });
             ready.wait();
-            let result = SpillFile::create(&config, Some(context), Some(scratch));
+            let result = SpillFile::create(&config, Some(context), Some(scratch), true);
             release.wait();
             let error = result.err().expect("original project is full");
             assert!(matches!(error, HawDBError::FileDescriptors(_)), "{error:?}");
@@ -113,11 +113,12 @@ fn captured_candidate_spill_uses_original_fd_domain_and_one_query_io_slot() {
                 ..context
             }),
             Some(scratch),
+            true,
         )
         .err()
         .expect("scope belongs to exact original task");
         assert!(matches!(error, HawDBError::Execution(_)), "{error:?}");
-        let mut file = SpillFile::create(&config, Some(context), Some(scratch)).unwrap();
+        let mut file = SpillFile::create(&config, Some(context), Some(scratch), true).unwrap();
         assert_eq!(project.metrics().open, before.open + 1);
         file.write_all(b"private candidates").unwrap();
         file.sync_all().unwrap();
@@ -131,7 +132,8 @@ fn captured_candidate_spill_uses_original_fd_domain_and_one_query_io_slot() {
 }
 
 fn set<'a>(context: QueryContext<'a>, scratch: &'a ScratchDirectory) -> SpilledCandidateSet<'a> {
-    let mut file = SpillFile::create(&Default::default(), Some(context), Some(scratch)).unwrap();
+    let mut file =
+        SpillFile::create(&Default::default(), Some(context), Some(scratch), true).unwrap();
     let mut blocks = Vec::new();
     let mut offset = 0;
     for (segment_id, id) in ["a", "b"].into_iter().enumerate() {
@@ -249,7 +251,8 @@ fn cancelled_candidate_spill_retains_funded_debt_until_fresh_original_cleanup() 
         execution: Some(&permit),
         io_scope: Some(&scope),
     };
-    let mut file = SpillFile::create(&Default::default(), Some(context), Some(&scratch)).unwrap();
+    let mut file =
+        SpillFile::create(&Default::default(), Some(context), Some(&scratch), true).unwrap();
     file.write_all(b"retained private bytes").unwrap();
     task.cancellation().cancel();
     assert!(matches!(

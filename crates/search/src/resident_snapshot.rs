@@ -269,6 +269,17 @@ impl SearchIndexReadSnapshot {
         self.generation.index.document_count()
     }
 
+    /// See [`crate::SearchIndex::exact_vector_search_capacity`].
+    pub fn exact_vector_search_capacity(
+        &self,
+        working_bytes: usize,
+        max_document_id_bytes: usize,
+    ) -> usize {
+        self.generation
+            .index
+            .exact_vector_search_capacity(working_bytes, max_document_id_bytes)
+    }
+
     pub fn projection_freshness(&self) -> &SearchProjectionFreshness {
         &self.generation.freshness
     }

@@ -413,6 +413,10 @@ pub struct SearchOutOfCoreMetrics {
     pub streamed_body_bytes: u64,
     pub hydrated_documents: usize,
     pub hydrated_bytes: u64,
+    /// Peak bytes charged to the query's working account by
+    /// [`SearchOutOfCoreReader::search_with_options_admitted`]; zero for
+    /// unaccounted ordinary reads.
+    pub query_memory_peak_bytes: u64,
 }
 
 struct SearchDocumentSegmentRoute<'a> {
@@ -2534,6 +2538,119 @@ impl SearchOutOfCoreReader {
         )
     }
 
+    /// Serves like
+    /// [`Self::search_with_options_compressed_vector_projection_execution_options`]
+    /// under the caller's runtime admission. Every allocation that scales with
+    /// the eligible set (candidate filters, score maps, rankings, fused
+    /// candidates, segment buffers and hit hydration) is charged to one
+    /// working account of `min(max_working_bytes, task memory reservation)`
+    /// bytes. A query that does not fit, including a hybrid query without a
+    /// rank window over a large eligible set, is refused with a typed
+    /// memory-budget error rather than served above its admission.
+    ///
+    /// `vector_execution_options.task_context` is required and must be the
+    /// context bound to `permit`. Returned hits are not charged: the caller
+    /// owns the result payload budget.
+    pub fn search_with_options_admitted(
+        &self,
+        query_text: &str,
+        query_embedding: Option<&[f32]>,
+        mode: SearchMode,
+        options: SearchQueryOptions,
+        execution: SearchOutOfCoreExecutionContext<'_>,
+        permit: &hawdb_qos::RuntimePermit,
+    ) -> Result<SearchOutOfCoreOutput> {
+        let task = execution
+            .vector_execution_options
+            .task_context
+            .ok_or_else(|| {
+                HawDBError::Execution(
+                    "admitted out-of-core search requires the permit's task context".into(),
+                )
+            })?;
+        let working =
+            query_memory::Working::new(execution.vector_execution_options.max_working_bytes, task)?;
+        let io = crate::build_memory::read::QueryIoScope::acquire(task)?;
+        let mut output = self.search_hits(
+            query_text,
+            query_embedding,
+            mode,
+            options,
+            query_memory::Execution {
+                base: execution,
+                query: Some(working.context(task, permit, &io)),
+                immutable_freshness: false,
+                scratch: None,
+                output: None,
+            },
+            SearchHitHydration::Documents,
+        )?;
+        output.metrics.query_memory_peak_bytes = working.peak_bytes();
+        Ok(output)
+    }
+
+    /// The largest eligible-set size an exact vector-only read under
+    /// `working_bytes` of admitted working memory is guaranteed to serve, for
+    /// eligible document IDs of at most `max_document_id_bytes` bytes.
+    ///
+    /// It is the smaller of the scan's duplicate-ID cap,
+    /// `min(max_score_entries, working_bytes / 128) / 2` (262,144 at 64 MiB,
+    /// as before #1722), and what the query account admits: one charged
+    /// duplicate-ID entry per eligible document after this reader's fixed
+    /// working set (one zstd decoder at the pinned level-3 window, the vector
+    /// read run and segment head, cached candidate blocks, the candidate block
+    /// directory, range validation and query metadata). It does not depend on
+    /// the embedding dimension. A read of more eligible documents may be
+    /// refused with a typed `ResourceBudgetExceeded` error; it is never
+    /// truncated. The page's hit hydration is bounded separately by
+    /// `max_hydrated_bytes` and must also fit the admission.
+    pub fn exact_vector_search_capacity(
+        &self,
+        working_bytes: usize,
+        max_document_id_bytes: usize,
+    ) -> usize {
+        // One level-3 zstd decoder (<= 2.75 MiB), a 256 KiB vector run, 64 KiB
+        // range validation, the 8 KiB vector prefix and query metadata.
+        const FIXED_BYTES: usize = 4 << 20;
+        let uniqueness = vector_serving::admitted_score_entries(
+            self.config.max_score_entries.get(),
+            working_bytes,
+        ) / 2;
+        let id = max_document_id_bytes;
+        let mut fixed = FIXED_BYTES
+            .saturating_add(crate::build_memory::ID_SET_ROOT_BYTES)
+            .saturating_add(
+                self.manifest
+                    .embedding_dimension
+                    .unwrap_or_default()
+                    .saturating_mul(2 * size_of::<f32>()),
+            );
+        let mut max_segment_documents = 0usize;
+        for segment in self
+            .segments
+            .iter()
+            .flat_map(|artifact| &artifact.descriptor.segments)
+        {
+            // The candidate block directory entry and its copied ID bounds.
+            fixed = fixed
+                .saturating_add(128)
+                .saturating_add(segment.first_document_id.len())
+                .saturating_add(segment.last_document_id.len());
+            max_segment_documents = max_segment_documents.max(segment.document_count);
+        }
+        // One cached candidate block (raw bytes, read buffer and entries) and
+        // one vector segment head (ordinals and IDs).
+        fixed = fixed.saturating_add(
+            max_segment_documents.saturating_mul(
+                (2 * (id.saturating_add(12)))
+                    .saturating_add(2 * size_of::<String>())
+                    .saturating_add(id.saturating_add(4)),
+            ),
+        );
+        let per_document = crate::build_memory::ID_SET_ENTRY_BYTES.saturating_add(id);
+        uniqueness.min(working_bytes.saturating_sub(fixed) / per_document)
+    }
+
     pub fn search_with_options_access_control(
         &self,
         query_text: &str,
@@ -2782,7 +2899,9 @@ impl SearchOutOfCoreReader {
             output,
         } = execution.into();
         let output_memory = query_output::Memory(output);
-        if output.is_some() != query.is_some() {
+        // Native results require working admission. An ordinary admitted read
+        // charges working memory while its caller owns the result budget.
+        if output.is_some() && query.is_none() {
             return Err(HawDBError::Execution(
                 "native query requires paired working and result admission".into(),
             ));
@@ -5786,6 +5905,8 @@ pub(super) fn seal_resident_candidate(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(all(feature = "full-text-search", feature = "vector-search"))]
+    mod admitted_working;
     #[cfg(feature = "full-text-search")]
     mod bm25_windows;
     #[cfg(feature = "full-text-search")]

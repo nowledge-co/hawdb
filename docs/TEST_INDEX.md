@@ -54,6 +54,33 @@ compressed mode is refused. Request admission and report guards are in
 with `cargo test --locked -p hawdb --lib exact_candidate_tests` or
 `--test_arg=exact_candidate_tests`. No new lane, profile or timeout.
 
+Embedded out-of-core candidate working memory (`nowledge-co/hawdb#1722`) lives
+in `embedded_store::out_of_core_working_memory_tests` (same
+`//:hawdb_unit_general_tests` owner), reusing the #1692 fixture. At the
+smallest admission serving text, exact vector-only and windowed exact hybrid
+snapshot reads (measured at 256 MiB), those reads and default vector-only
+succeed within the charge while an unwindowed exact hybrid read is refused with
+a typed `MemoryBytes` budget error; at 256 MiB every mode succeeds with a
+nonzero `query_memory_peak_bytes` within admission, through both snapshot and
+handle. `out_of_core::tests::admitted_working`
+(`//crates/search:hawdb_search_tests` and the FTS+vector profiles) asserts with
+the live-allocation allocator, not RSS, that the charged peak covers the live
+working set (excluding the caller-owned result), that refused queries never
+allocate beyond their admission, that exact hybrid is refused one byte below
+its charged peak, and that at 20,000 eligible documents exact vector-only and
+unwindowed exact hybrid charge between 1x and 2x their live working bytes.
+`snapshot_exact_vector_capacity_is_served_and_refused_above` builds 384- and
+1024-dimension out-of-core projections at an 8 MiB admission and requires
+`EmbeddedReadSnapshot::exact_vector_search_capacity` to equal the duplicate-ID
+cap (32,768), an exact vector-only read of exactly that many eligible
+documents to succeed and 25% more to fail with a typed budget error;
+`snapshot_exact_vector_capacity_covers_resident_reads` checks that the
+resident capacity is refused below and served once it covers the eligible
+set.
+Replay with `cargo test --locked -p hawdb --lib out_of_core_working_memory`
+and `cargo test --locked -p hawdb-search --lib admitted_working`. No new lane,
+profile or timeout.
+
 The same Mem query owner also covers PR 1504 review optimizations: invariant
 regexp_replace validation on empty scans, cache rebinding across pattern and
 replacement values (including an invalid-pattern failure), row-dependent patterns,

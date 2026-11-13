@@ -13,10 +13,11 @@
 // limitations under the License.
 
 use super::{BoundedScoreCollector, CandidateSet, SearchOutOfCoreMetrics, SearchOutOfCoreReader};
-use crate::build_memory::{checked_add as add, SET_ENTRY_BYTES};
+use crate::build_memory::{checked_add as add, ID_SET_ENTRY_BYTES, ID_SET_ROOT_BYTES};
 use crate::error::{HawDBError, Result};
 use crate::lexical_projection::QueryContext;
 use crate::{CompressedVectorSearchMode, SearchFallbackReasonCode, VectorRelevanceQuery};
+use hawdb_core::{ResourceBudgetError, ResourceBudgetKind, ResourceBudgetScope};
 use hawdb_executor::QueryMemoryLease;
 #[cfg(feature = "vector-search")]
 use std::cmp::{Ordering, Reverse};
@@ -93,7 +94,7 @@ pub(super) fn candidate_working_bytes(limit: usize) -> Result<usize> {
         .ok_or_else(|| HawDBError::Storage("search RaBitQ candidate size overflow".into()))
 }
 
-fn admitted_score_entries(configured_max_entries: usize, working_bytes: usize) -> usize {
+pub(super) fn admitted_score_entries(configured_max_entries: usize, working_bytes: usize) -> usize {
     configured_max_entries.min(working_bytes / VECTOR_SCORE_ENTRY_WORKING_BYTES)
 }
 
@@ -619,8 +620,9 @@ impl SearchOutOfCoreReader {
         .with_scoring(self.vector_scoring());
         let mut vector_document_count = 0usize;
         let mut segment_scan_count = 0usize;
+        // The uniqueness set's root node is funded with the set.
         let mut id_memory = context
-            .map(|context| context.memory.reserve(0))
+            .map(|context| context.memory.reserve(ID_SET_ROOT_BYTES))
             .transpose()?;
         let mut scored_document_ids = BTreeSet::new();
         for (layer, artifact) in self.segments.iter().enumerate() {
@@ -651,12 +653,23 @@ impl SearchOutOfCoreReader {
                         )));
                     }
                     if scored_document_ids.len() == max_scored_documents {
-                        return Err(HawDBError::Storage(format!(
-                            "search vector uniqueness check requires more than {max_scored_documents} document ids"
-                        )));
+                        return Err(ResourceBudgetError {
+                            resource: ResourceBudgetKind::MetadataEntries,
+                            scope: ResourceBudgetScope::Operator,
+                            owner: "search vector uniqueness check".into(),
+                            memory_class: None,
+                            requested: 1,
+                            used: max_scored_documents as u64,
+                            budget: max_scored_documents as u64,
+                            budget_option: "VectorSearchExecutionOptions.max_working_bytes",
+                            message: format!(
+                                "search vector uniqueness check requires more than {max_scored_documents} document ids"
+                            ),
+                        }
+                        .into());
                     }
                     if let Some(memory) = &mut id_memory {
-                        memory.grow(add(SET_ENTRY_BYTES, document.id.len())?)?;
+                        memory.grow(add(ID_SET_ENTRY_BYTES, document.id.len())?)?;
                     }
                     scored_document_ids.insert(document.id.clone());
                     vector_document_count = vector_document_count.saturating_add(1);

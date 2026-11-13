@@ -37,7 +37,7 @@ fn score_heap_transfers_funded_ids_to_map_and_refunds_replaced_payloads() {
             expected
         );
         if !scores.values.is_empty() {
-            assert!(ledger.snapshot().used_bytes >= scores.values.len() * MAP_ENTRY_BYTES);
+            assert!(ledger.snapshot().used_bytes >= scores.values.len() * SCORE_MAP_ENTRY_BYTES);
         }
         drop(scores);
         assert_eq!(ledger.snapshot().used_bytes, 0);
