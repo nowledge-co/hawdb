@@ -219,14 +219,18 @@ graph WAL recovery.
 A resident snapshot that disagrees with the selector it is opened beside, such
 as the crash state of a HawDB 0.31.0 or earlier checkpoint (#1711) or a damaged
 generation snapshot, is refused with the typed
-`HawDBError::SearchProjectionMismatch { projection, message }` (#1735). Its
-text is unchanged (`storage error: resident search snapshot does not match the
-published immutable projection; ...`); the C ABI, Bun, Go and MoonBit report
+`HawDBError::SearchProjectionMismatch { projection, message }` (#1735). It
+displays as `storage error: resident search snapshot does not match the
+published immutable projection; incremental catch-up cannot repair it: ...`,
+naming `EmbeddedStoreHandle::rebuild_out_of_core_search_projection` and
+`Database::rebuild_search_projection` (#1738 changed the text after the
+`;`); the C ABI, Bun, Go and MoonBit report
 `kind: "search_projection_mismatch"`, and the Python mapping is a `StorageError` with
 `kind == "search_projection_mismatch"`, `projection` and `retryable == False`.
 Reopening the same directory fails the same way, so it is not retryable as-is:
-rebuild the search projection from the authoritative graph (for example remove
-the refused directory and re-import). The check reads only the projection's
+rebuild the search projection from the authoritative graph, for example with
+`EmbeddedStoreHandle::rebuild_out_of_core_search_projection` into a new
+directory (see [`SEARCH_PROJECTION_REBUILD.md`](SEARCH_PROJECTION_REBUILD.md)). The check reads only the projection's
 own directory. `EmbeddedStore` opens and recovers the graph before the
 projection, the refusal writes nothing to it, and a graph-only open of the same
 store succeeds with an unpoisoned handle. Other projection refusals, such as a
@@ -275,6 +279,22 @@ profile and its RSS, page-fault, spool, descriptor, payload, and peak-segment
 evidence. [`SEARCH_GENERATION_BENCHMARK.md`](SEARCH_GENERATION_BENCHMARK.md)
 records the reproducible resident-versus-streaming kernel comparison and keeps
 it explicitly separate from representative Mem qualification.
+
+An incremental-maintenance projection whose change-log cursor has been trimmed,
+or whose directory is damaged or missing, is recovered with
+`EmbeddedStoreHandle::rebuild_out_of_core_search_projection`. It pins one graph
+read snapshot at epoch E, streams the canonical graph rows (plus host-hydrated
+embeddings and host-owned rows) in bounded batches through
+`SearchOutOfCoreGenerationWriter::create_unordered_replacement_with_context`,
+an external sort into a fresh directory, and stamps the generation with E. A
+complete read of the generation and a second scan of the pinned graph must have
+the same document count and order-independent content digest before a
+no-replace rename installs the private stage at a new target directory. The
+current projection directory is never written; the host switches by reopening
+on the target, and incremental catch-up resumes from E. Precondition and
+verification refusals are the typed, non-storage
+`HawDBError::SearchProjectionRebuildRefused`. See
+[`SEARCH_PROJECTION_REBUILD.md`](SEARCH_PROJECTION_REBUILD.md).
 
 ### WAL recovery
 

@@ -100,3 +100,21 @@ fn search_projection_mismatch_reports_its_kind_and_keeps_its_message() {
         expected
     );
 }
+
+#[test]
+fn search_projection_rebuild_refusal_reports_its_kind_and_keeps_its_message() {
+    let error = HawDBError::SearchProjectionRebuildRefused {
+        reason: hawdb::SearchProjectionRebuildRefusal::VerificationMismatch,
+        target: "/data/search-rebuilt".into(),
+        message: "differs from graph snapshot 7".into(),
+    };
+    let expected = json!({
+        "kind": "search_projection_rebuild_refused",
+        "message": "search projection rebuild refused (verification_mismatch): differs from graph snapshot 7",
+    });
+    assert_eq!(delivered(FfiError::open(&error)), expected);
+    assert_eq!(
+        delivered(FfiError::query(&EmbeddedQueryError::Database(error))),
+        expected
+    );
+}

@@ -53,8 +53,9 @@ pub use conversion_function::ConversionFunction;
 pub use decimal::{Decimal, DecimalError, DecimalType};
 pub use error::{
     HawDBError, ReadBudgetError, ReadBudgetResource, RelationalErrorKind, RelationalErrorSurface,
-    ResourceBudgetError, ResourceBudgetKind, ResourceBudgetScope, Result, StorageFormatError,
-    TransactionRetryError, TransactionRetryReason,
+    ResourceBudgetError, ResourceBudgetKind, ResourceBudgetScope, Result,
+    SearchProjectionRebuildRefusal, StorageFormatError, TransactionRetryError,
+    TransactionRetryReason,
 };
 pub use graph::{LabelFunction, RelationshipDirection, RelationshipEndpoint};
 pub use graph_rag::{

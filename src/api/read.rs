@@ -1334,6 +1334,53 @@ where
     }
 }
 
+impl DatabaseReadTransaction {
+    /// Streams the canonical graph-derived search rows of this pinned snapshot.
+    ///
+    /// Rows use the same mapping as graph deltas, including business labels.
+    /// Nothing is retained between nodes; visit order is the store's node
+    /// order, not document-ID order. Returns the number of scanned nodes.
+    pub(crate) fn visit_search_projection_rows(
+        &self,
+        task: &hawdb_core::RuntimeTaskContext,
+        visitor: &mut dyn FnMut(crate::SearchProjectionRow) -> Result<()>,
+    ) -> Result<u64> {
+        let mut scanned = 0u64;
+        let mut failure = None;
+        self.store.visit_nodes_owned(None, |node| {
+            scanned += 1;
+            let step = (|| {
+                if scanned.is_multiple_of(1024) {
+                    rebuild_scan_checkpoint(task)?;
+                }
+                if let Some(row) =
+                    projection_row_from_node_with_graph_metadata(&self.catalog, &self.store, &node)?
+                {
+                    visitor(row)?;
+                }
+                Ok(())
+            })();
+            match step {
+                Ok(()) => crate::store::GraphScanControl::Continue,
+                Err(error) => {
+                    failure = Some(error);
+                    crate::store::GraphScanControl::Stop
+                }
+            }
+        })?;
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        rebuild_scan_checkpoint(task)?;
+        Ok(scanned)
+    }
+}
+
+fn rebuild_scan_checkpoint(task: &hawdb_core::RuntimeTaskContext) -> Result<()> {
+    task.checkpoint()
+        .map_err(|reason| HawDBError::Execution(format!("search projection rebuild scan {reason}")))
+}
+
 impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
     /// Retrieves from resident search payloads, propagating search and graph/pipeline errors.
     pub fn retrieve_knowledge(

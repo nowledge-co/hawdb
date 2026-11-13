@@ -64,6 +64,7 @@ mod concurrent_owner;
 mod incremental_search;
 mod read_execution;
 mod resident_read;
+mod search_projection_rebuild;
 mod search_read;
 use resident_read::ResidentProjectionRef;
 mod handle;
@@ -110,6 +111,11 @@ pub use incremental_search::IncrementalSearchMaintenanceOptions;
 pub use registered_search::{
     DefinedSearchProjectionConsumer, PreparedSearchProjectionConsumerUpdate,
     RegisteredSearchProjectionConsumer,
+};
+pub use search_projection_rebuild::{
+    GraphOnlySearchProjectionRebuild, SearchProjectionRebuildOptions, SearchProjectionRebuildPhase,
+    SearchProjectionRebuildProgress, SearchProjectionRebuildReport, SearchProjectionRebuildSource,
+    SearchProjectionRebuildVerification,
 };
 
 #[cfg(test)]

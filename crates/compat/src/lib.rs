@@ -458,7 +458,8 @@ impl ExpectedErrorClass {
             | HawDBError::TransactionConflict { .. }
             | HawDBError::TransactionRetryRequired(_)
             | HawDBError::TransactionReadDependencyRefused { .. }
-            | HawDBError::BranchCommandUnsupported { .. } => Self::Execution,
+            | HawDBError::BranchCommandUnsupported { .. }
+            | HawDBError::SearchProjectionRebuildRefused { .. } => Self::Execution,
             HawDBError::CapabilityUnavailable { .. } => Self::CapabilityUnavailable,
         }
     }
