@@ -1215,6 +1215,42 @@ operation budget to both QoS admission and descriptor-level bounded execution.
 WAL replay applies descriptor GC before the database is exposed, while record
 pages and index artifacts remain separately rebuildable or reclaimable.
 
+HawDB never runs schema maintenance on its own: `BackgroundMaintenanceOptions`
+with `include_schema_maintenance` only reports a `SchemaMaintenance` candidate,
+so a `BACKFILL` descriptor stays in `BACKFILL` until a caller runs maintenance,
+whatever `RuntimeCapabilities::background_maintenance` says. Hosts on the
+admitted embedded handle (#1739) use `EmbeddedStoreHandle::property_schemas` and
+`EmbeddedStoreHandle::plan_schema_maintenance` (read-only, same results as the
+`Database` methods, no runtime admission) and
+`EmbeddedStoreHandle::run_bounded_schema_maintenance`, which takes one
+foreground maintenance admission like `EmbeddedStoreHandle::checkpoint` and then
+runs `Database::run_bounded_schema_maintenance` under the handle's write guard.
+That explicit call does not require the `background_maintenance` capability, so
+an offline host with background maintenance disabled can repeat it with a small
+budget while the descriptor is in `BACKFILL`; the `VALIDATING` to `PUBLIC`
+advance is one action whose planned estimate is the table's record count, so
+the promoting call needs at least that budget. That validation scans every
+record of the table while holding the handle's exclusive write guard, so it
+blocks writers for the length of a full-table scan; on large tables hosts
+should schedule the promoting call like a checkpoint (idle time, preparation
+phase) rather than on a latency-sensitive write path.
+
+`CREATE PROPERTY` on a property that already has a descriptor is idempotent only
+when type, nullability and default all match (`created: false`). A declaration
+that differs in any of them is rejected with an error naming the existing
+declaration, instead of being dropped. This is a behaviour change (#1739):
+such a re-declaration used to be a silent no-op returning `created: false`. The
+refusal is the typed `HawDBError::Schema { surface: Storage, .. }` (displayed
+as `storage error: ...`, like other storage-surface schema refusals), not
+`HawDBError::Storage`, so hosts can tell a rejected DDL from a storage
+failure; the database stays usable. In particular a `DEFAULT` cannot be
+attached to an existing undefaulted descriptor this way (`ALTER PROPERTY ...
+SET DEFAULT` is tracked in #1740). Schema-less writes such as
+`CREATE (:Entity {score: 0.3})` create no property descriptors, so declaring a
+defaulted property on a label that was only written schema-lessly creates a
+fresh descriptor (implicit table descriptor included) and enters `BACKFILL`; a
+`TYPE ANY` declaration constrains no other property of that label.
+
 Checkpoint files include a statistics snapshot for observability and future
 costing: total node count, total relationship count, per-label counts,
 per-relationship-type counts, relationship-type source counts,

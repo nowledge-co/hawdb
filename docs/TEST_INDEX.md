@@ -312,6 +312,28 @@ storage_pressure_tests -- --test-threads=1` or the owning Bazel target with
 `--test_arg=storage_pressure_tests`. No new lane, profile, fixture
 amplification or timeout is introduced.
 
+`embedded_store::tests::schema_maintenance_tests` (`nowledge-co/hawdb#1739`)
+belongs to the existing root `//:hawdb_unit_general_tests` owner. With
+`background_maintenance = false`, it writes `Entity` nodes and `MENTIONS`
+relationships schema-lessly (never `CREATE NODE TABLE`), some lacking the
+property and some with an explicit NULL, and checks that no property descriptor
+exists. It then declares `TYPE ANY DEFAULT 0.0` on both, observes `BACKFILL`
+through `EmbeddedStoreHandle::property_schemas` and
+`plan_schema_maintenance`, and drives `run_bounded_schema_maintenance(2)` over
+several passes until no descriptor is in `BACKFILL`. A budget below the planned
+validation estimate leaves `VALIDATING` unchanged, and the planned estimate
+empties the plan. Absent keys are filled, explicit NULLs
+and present values are kept, both descriptors reach `PUBLIC`, and the label
+still accepts arbitrary undeclared properties. A reopen without a checkpoint
+and a reopen after one preserve the fills and states. A second case pins
+`CREATE PROPERTY` re-declaration: identical declarations return
+`created: false`, while a changed default, type or nullability is a typed
+`HawDBError::Schema { surface: Storage, .. }` refusal (Display text
+`storage error: ...`) that leaves the descriptor unchanged and the handle
+unpoisoned. Replay with `cargo test --locked -p hawdb --lib
+schema_maintenance_tests`. No new lane, profile, fixture amplification or
+timeout is introduced.
+
 `embedded_store::tests::initial_import_checkpoint_tests` (`nowledge-co/hawdb#1707`)
 belongs to the existing root `//:hawdb_unit_general_tests` owner. It pins the
 split between resident-only `apply_initial_import_projection_delta` and the
