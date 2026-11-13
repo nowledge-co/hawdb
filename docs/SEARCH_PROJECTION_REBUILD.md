@@ -140,5 +140,19 @@ the body field; corpora with long bodies have larger descriptors.
 
 ## Measurements
 
-Synthetic corpora on a shared 8-core Linux host under concurrent load. See the
-PR for the recorded table.
+Synthetic Memory nodes (about 48 words each) with 384-dimensional host
+embeddings, default options (256 MiB reservation), release build, on a shared
+8-core Linux host under load 15 to 38. The graph was checkpointed and reopened
+first. RSS is measured from the open graph's baseline to VmHWM; wall time is
+dominated by default DiskANN construction in the Build phase.
+
+| Documents | Logical bytes | Wall (scan / build / verify) | CPU user | RSS baseline, Scan+Build peak, overall peak |
+| --- | --- | --- | --- | --- |
+| 100,000 | 578 MB | 4,059 s (205 / 3,767 / 87) | 26 m 45 s | 231 MB, 345 MB (+114 MB), 486 MB (+255 MB) |
+| 300,000 | 1.73 GB | 12,124 s (617 / 11,206 / 300) | 79 m 07 s | 414 MB, 476 MB (+61 MB), 905 MB (+490 MB) |
+
+Scan, sort and build stay within the reservation independent of corpus size.
+The overall peak is reached in Verify, which opens the generation as a serving
+reader; its resident range index grows with the number of segments and the
+size of the descriptor statistics (see Memory above) and is the same residency
+the host pays when it serves the projection.
