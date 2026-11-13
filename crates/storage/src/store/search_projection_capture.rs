@@ -34,15 +34,26 @@ pub(super) fn projection_wal_requires_rebuild(ops: &[WalOp]) -> bool {
             return true;
         }
         match op {
+            // Retiring a descriptor can hide or discard stored values without
+            // a point record effect, so the feed cannot name what changed.
+            WalOp::AlterTableState { state, .. } | WalOp::AlterPropertyState { state, .. } => {
+                matches!(state, SchemaObjectState::DeleteOnly | SchemaObjectState::Gc)
+            }
+            WalOp::GcTableDescriptor { .. }
+            | WalOp::GcPropertyDescriptor { .. }
+            | WalOp::MarkInitialImportSource { .. } => true,
+            // Additive catalog effects change no record. Descriptor state is
+            // catalog metadata: graph reads, the search rebuild source and
+            // delta hydration never filter by it (non-retiring states above
+            // only gate planner proofs, constraints and write-time defaults).
+            // A declared default reaches existing records only through
+            // backfill, whose fills are point property writes the collector
+            // captures. These commits are complete, usually empty, captures.
             WalOp::CreateNodeLabel { .. }
             | WalOp::CreateRelationshipType { .. }
             | WalOp::CreateNodeTable { .. }
             | WalOp::CreateRelationshipTable { .. }
             | WalOp::CreateProperty { .. }
-            | WalOp::AlterTableState { .. }
-            | WalOp::AlterPropertyState { .. }
-            | WalOp::GcTableDescriptor { .. }
-            | WalOp::GcPropertyDescriptor { .. }
             | WalOp::CreateIndex { .. }
             | WalOp::CreateCompositeIndex { .. }
             | WalOp::CreateRangeIndex { .. }
@@ -50,8 +61,7 @@ pub(super) fn projection_wal_requires_rebuild(ops: &[WalOp]) -> bool {
             | WalOp::CreateUniqueConstraint { .. }
             | WalOp::CreateNodePropertyExistsConstraint { .. }
             | WalOp::CreateRelationshipUniqueConstraint { .. }
-            | WalOp::CreateRelationshipPropertyExistsConstraint { .. }
-            | WalOp::MarkInitialImportSource { .. } => true,
+            | WalOp::CreateRelationshipPropertyExistsConstraint { .. } => false,
             // Tracked projection reads cannot access append tables or named
             // projections. These writes leave the enumerated source unchanged.
             WalOp::Append { .. } | WalOp::ProjectGraph { .. } => false,
