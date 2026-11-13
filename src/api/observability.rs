@@ -443,12 +443,45 @@ impl Database {
                 .with_output_limits(options),
             system_variables,
         )
+        .map(|result| result.output)
     }
 
     pub fn query_sql_request(
         &mut self,
         request: super::SqlQueryRequest<'_>,
     ) -> Result<QueryOutput> {
+        self.query_sql_request_with_result(request)
+            .map(|result| result.output)
+    }
+
+    /// Executes and commits one SQL statement, returning its rows together
+    /// with the committed RowPage mutation outcome.
+    ///
+    /// `output` is what [`Self::query_sql_with_params`] returns. `mutation`
+    /// carries the confirmed `affected_rows`/`conflict_rows` of a RowPage
+    /// INSERT, UPDATE or DELETE and is `None` for queries, DDL, branch
+    /// commands and Strict Append writes, matching
+    /// [`crate::SqlSession::query`].
+    pub fn query_sql_with_result_and_params(
+        &mut self,
+        sql_text: &str,
+        parameters: &[Value],
+    ) -> Result<super::SqlStatementResult> {
+        self.query_sql_request_with_result(
+            super::SqlQueryRequest::new(sql_text)
+                .with_params(parameters)
+                .with_output_limits(QueryStreamOptions {
+                    max_rows: self.config.read_result_row_limit(),
+                    max_payload_bytes: self.config.max_read_result_payload_bytes,
+                }),
+        )
+    }
+
+    /// Request form of [`Self::query_sql_with_result_and_params`].
+    pub fn query_sql_request_with_result(
+        &mut self,
+        request: super::SqlQueryRequest<'_>,
+    ) -> Result<super::SqlStatementResult> {
         self.query_sql_request_with_system_variables(request, self.system_variables.clone())
     }
 
@@ -456,7 +489,7 @@ impl Database {
         &mut self,
         request: super::SqlQueryRequest<'_>,
         system_variables: super::QuerySystemVariables,
-    ) -> Result<QueryOutput> {
+    ) -> Result<super::SqlStatementResult> {
         super::query_runtime::query_runtime_checkpoint(request.task_context)?;
         let sql_text = request.sql;
         let parameters = request.parameters;
@@ -486,7 +519,7 @@ impl Database {
                 result.as_ref(),
                 StatementExecutionContext::default(),
             );
-            return result;
+            return result.map(super::sql_query_result);
         }
         self.runtime.get()?.store.ensure_usable()?;
         self.query_sql_with_prepared_request_inner(
@@ -516,6 +549,7 @@ impl Database {
             hawdb_core::time::Instant::now(),
             self.system_variables.clone(),
         )
+        .map(|result| result.output)
     }
 
     fn query_sql_with_prepared_request_inner(
@@ -524,7 +558,7 @@ impl Database {
         prepared: crate::relational_sql::PreparedRelationalSql,
         started: hawdb_core::time::Instant,
         system_variables: super::QuerySystemVariables,
-    ) -> Result<QueryOutput> {
+    ) -> Result<super::SqlStatementResult> {
         let sql_text = request.sql;
         let parameters = request.parameters;
         let task_context = request.task_context;
@@ -539,12 +573,9 @@ impl Database {
             (|| {
                 super::query_runtime::query_runtime_checkpoint(task_context)?;
                 if let SqlStatement::Branch(statement) = prepared.statement() {
-                    return self.execute_branch_sql(
-                        statement,
-                        parameters,
-                        max_rows,
-                        max_payload_bytes,
-                    );
+                    return self
+                        .execute_branch_sql(statement, parameters, max_rows, max_payload_bytes)
+                        .map(super::sql_query_result);
                 }
                 self.runtime.get()?.store.ensure_usable()?;
                 super::reject_locking_select_without_manager(prepared.statement(), false)?;
@@ -638,7 +669,22 @@ impl Database {
                             "SQL mutation result exceeds the effective payload ceiling",
                         ));
                     }
-                    return transaction.commit();
+                    let super::TransactionCommitResult {
+                        output, mutations, ..
+                    } = transaction.commit_with_result()?;
+                    // The staged outcome is provisional; report the one
+                    // recomputed against the durable commit instead.
+                    let mutation = result
+                        .mutation
+                        .map(|_| {
+                            mutations.into_iter().next().ok_or_else(|| {
+                                HawDBError::StorageIntegrity(
+                                    "SQL commit omitted its mutation outcome".to_string(),
+                                )
+                            })
+                        })
+                        .transpose()?;
+                    return Ok(super::SqlStatementResult { output, mutation });
                 }
                 if matches!(
                     prepared.statement(),
@@ -666,6 +712,7 @@ impl Database {
                                 statement_summaries: &statement_summaries,
                             },
                         )
+                        .map(super::sql_query_result)
                     };
                 }
 
@@ -682,9 +729,9 @@ impl Database {
                         plan.max_rows,
                         max_payload_bytes.unwrap_or(usize::MAX),
                     )?;
-                    return Ok(QueryOutput {
+                    return Ok(super::sql_query_result(QueryOutput {
                         rows: project_append_rows(&plan, &output.rows)?,
-                    });
+                    }));
                 }
                 if let Some(plan) = compile_prepared_append_explain_sql(
                     &prepared.template,
@@ -718,7 +765,8 @@ impl Database {
                             max_payload_bytes,
                         },
                         task_context,
-                    );
+                    )
+                    .map(super::sql_query_result);
                 }
 
                 if matches!(
@@ -755,7 +803,7 @@ impl Database {
                         .store
                         .poison_on_storage_error(&query_result);
                     let output = query_result?;
-                    return Ok(QueryOutput { rows: output.rows });
+                    return Ok(super::sql_query_result(QueryOutput { rows: output.rows }));
                 }
 
                 super::query_runtime::query_runtime_checkpoint(task_context)?;
@@ -807,9 +855,10 @@ impl Database {
                             self.config.mutation_limits,
                         )
                     }?;
-                    return Ok(QueryOutput {
+                    // Strict Append writes report no RowPage mutation count.
+                    return Ok(super::sql_query_result(QueryOutput {
                         rows: summary.rows.into(),
-                    });
+                    }));
                 }
                 if let crate::sql::SqlStatement::CreateTable(create) = prepared.statement()
                     && self
@@ -868,11 +917,16 @@ impl Database {
                     .transpose()?;
                 let mut rows: executor::QueryRows = summary.rows.into();
                 if rows.is_empty()
-                    && let Some(mutation) = mutation
+                    && let Some(mutation) = &mutation
                 {
-                    rows = mutation.rows;
+                    // `executor::QueryRows::clone` only bumps the `Arc` over its
+                    // immutable storage: this shares the RETURNING rows, no copy.
+                    rows = mutation.rows.clone();
                 }
-                Ok(QueryOutput { rows })
+                Ok(super::SqlStatementResult {
+                    output: QueryOutput { rows },
+                    mutation,
+                })
             })()
         });
         self.record_statement_execution(
@@ -880,7 +934,7 @@ impl Database {
             sql_text,
             statement_kind,
             started,
-            query_result.as_ref(),
+            query_result.as_ref().map(|result| &result.output),
             StatementExecutionContext::default(),
         );
         query_result

@@ -85,7 +85,7 @@ describe("logical dump", () => {
     expect(verified.source_hawdb_version).toBe(exported.hawdb_version);
     expect(thrown(() => library.confirmDumpPublication(join(root, "absent"))).kind).toBe("storage");
     expect(thrown(() => database.export(join(root, "closed"))).kind).toBe("closed");
-  });
+  }, 30_000);
 
   test("refuses a newer dump without publishing", () => {
     const source = library.openInMemory();

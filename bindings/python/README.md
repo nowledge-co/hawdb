@@ -354,6 +354,18 @@ with db.transaction() as tx:
     tx.rollback()      # abandons both statements; omit it to commit
 ```
 
+A `QueryResult` holds the engine's rows, materialized when the statement
+returns, and converts them to Python only as they are fetched: each
+`fetchone`, `fetchmany`, `fetchall` or iteration step returns new dicts that the
+result does not keep, so mutating a fetched row changes nothing else, and a
+result whose rows are fetched in batches never holds a Python copy of all of
+them. `fetchmany_tuples(size)` returns the next rows as tuples in column order
+from the same cursor.
+
+For a SQL INSERT, UPDATE or DELETE, `QueryResult.affected_rows` is the number
+of rows it changed (inside a transaction, the rows staged for commit); it is
+`None` for queries, DDL, Cypher and writes to strict append tables.
+
 `db.read_transaction()` pins the committed state for a stable read scope;
 write statements on it raise the engine's read-transaction error.
 
@@ -477,6 +489,14 @@ Errors raise `hawdb.exceptions` subclasses (`ParseError`, `SemanticError`,
 `StorageError`, `ExecutionError`, `ConflictError`, ...), mapped from
 `HawDBError` kinds.
 
+A relational constraint violation, such as a duplicate primary key or a NULL
+in a NOT NULL column, has `kind == "constraint"`, and a value that does not
+fit the relational schema, such as one of the wrong type for its column, has
+`kind == "schema"`; both have `retryable == False`. Each keeps the type of the
+path it took: `StorageError` from an autocommit statement and
+`ExecutionError` from a statement inside a transaction. Test `kind` rather
+than the message.
+
 Memory-ledger and spill-quota refusals raise `exceptions.ResourceBudgetError`,
 a subclass of `ExecutionError`, with `resource`, `scope`, `owner`,
 `memory_class`, `requested`, `used`, `budget`, and `budget_option` attributes.
@@ -522,9 +542,10 @@ the whole transaction, and the connection refuses further work until
 between transactions; read-only connections always autocommit. Errors follow
 the PEP 249 hierarchy, and engine errors keep their `hawdb.exceptions` types
 as well: a syntax error is both a `ProgrammingError` and a
-`hawdb.exceptions.ParseError`. Constraint violations such as a duplicate
-primary key are plain `DatabaseError`s, because the engine does not set them
-apart yet. Use and close a connection on the thread that opened it.
+`hawdb.exceptions.ParseError`. A constraint violation such as a duplicate
+primary key is an `IntegrityError`, and a value of the wrong type for its
+column is a `DataError`; each is also the `StorageError` (autocommit) or
+`ExecutionError` (transaction) it was before. Use and close a connection on the thread that opened it.
 
 Rows are tuples in SELECT-list order, and `description` lists the columns even
 when nothing matches, including queries on `information_schema`, `pg_catalog`
@@ -535,6 +556,16 @@ operator info, memory, disk`. `TIMESTAMP` columns fetch as naive
 `datetime.datetime` values and `TIMESTAMPTZ` columns as aware UTC ones, losslessly
 at HawDB's microsecond precision, and their `description` type code equals
 `hawdb.dbapi.DATETIME`; a value outside Python's year range stays a tagged dict.
+A type code is the Python type of the column's first non-null value anywhere in
+the result, known before any row is fetched, or `None` if every value is null.
+Cursors convert rows to tuples as they are fetched, without an intermediate dict
+per row, so a `fetchall()` of a large result needs Python memory for the
+returned list and one 1,024-row chunk: for 200,000 rows of four columns the
+`tracemalloc` peak is 38 MiB, where building dicts first took 115 MiB.
+`cursor.rowcount` is the number of rows an INSERT, UPDATE or DELETE changed, in
+autocommit and in a transaction (where the rows are published at `commit()`),
+or the number of rows a SELECT returned. It is -1 for DDL, after `executemany`,
+and for writes to strict append tables.
 `pandas.read_sql` works, with a
 warning that pandas only tests SQLAlchemy and sqlite3 connections.
 `help(hawdb.dbapi)` gives the full contract.

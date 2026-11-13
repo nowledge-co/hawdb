@@ -187,9 +187,9 @@ pub use api::{
     RelationalSqlReadProfile, RelationalSqlRowReadProfile, RelationalSqlStageTimings,
     ScheduledSearchProjectionCatchUpReport, ScoreFeature, ScoringCombination, ScoringEvaluation,
     ScoringFeatureSource, ScoringProgram, ScoringProgramError, ScoringProgramShape, ScoringRequest,
-    ScoringSpec, ScoringSpecError, ScoringTerm, SearchProjectionCatchUpReport,
-    SearchProjectionCatchUpStopReason, SearchProjectionChangeBatch, SearchProjectionConsumer,
-    SearchProjectionConsumerCatchUpReport, SearchProjectionConsumerError,
+    ScoringSpec, ScoringSpecError, ScoringTerm, SearchIndexScanEvidence,
+    SearchProjectionCatchUpReport, SearchProjectionCatchUpStopReason, SearchProjectionChangeBatch,
+    SearchProjectionConsumer, SearchProjectionConsumerCatchUpReport, SearchProjectionConsumerError,
     SearchProjectionConsumerId, SearchProjectionConsumerOptions, SearchProjectionConsumerReadPin,
     SearchProjectionConsumerReadiness, SearchProjectionConsumerRebuildReason,
     SearchProjectionConsumerResult, SearchProjectionConsumerState, SearchProjectionConsumerStatus,
@@ -338,9 +338,9 @@ pub use embedded_tokio::{
     HawDBTokioEmbedded, HawDBTokioEmbeddedError, TokioQueryBatchStream, TokioQueryStreamOptions,
 };
 pub use error::{
-    FileDescriptorError, HawDBError, ReadBudgetError, ReadBudgetResource, ResourceBudgetError,
-    ResourceBudgetKind, ResourceBudgetScope, Result, StorageFormatError, TransactionRetryError,
-    TransactionRetryReason,
+    FileDescriptorError, HawDBError, ReadBudgetError, ReadBudgetResource, RelationalErrorKind,
+    RelationalErrorSurface, ResourceBudgetError, ResourceBudgetKind, ResourceBudgetScope, Result,
+    StorageFormatError, TransactionRetryError, TransactionRetryReason,
 };
 pub use executor::{
     ProjectedRowRef, QueryRow, QueryRowRef, QueryRows, QuerySchema, ReadExecutionProfile, Row,

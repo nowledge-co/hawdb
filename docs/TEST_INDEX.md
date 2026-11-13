@@ -17,6 +17,8 @@ retrievers and ANN candidate generation followed by raw reranking.
 Six-document fixtures also cover lossy lexical term reduction through resident,
 retained-generation and persisted readers, unchanged `MostSelective` controls,
 exact-vector hybrid requests, and preservation of bounded results on refusal.
+The persisted cases run with and without runtime admission, retaining query
+memory metrics and typed working-memory refusal alongside the coverage checks.
 The public facade assertions extend `//:hawdb_fallible_search_contract_tests` and
 `//:hawdb_fallible_search_contract_minimal_tests` in their existing CI owners.
 Snapshot and exact-vector owners retain their existing assertions while
@@ -77,6 +79,33 @@ compressed mode is refused. Request admission and report guards are in
 `candidate_evidence::boundaries` (`//crates/search:hawdb_search_tests`). Replay
 with `cargo test --locked -p hawdb --lib exact_candidate_tests` or
 `--test_arg=exact_candidate_tests`. No new lane, profile or timeout.
+
+Embedded out-of-core candidate working memory (`nowledge-co/hawdb#1722`) lives
+in `embedded_store::out_of_core_working_memory_tests` (same
+`//:hawdb_unit_general_tests` owner), reusing the #1692 fixture. At the
+smallest admission serving text, exact vector-only and windowed exact hybrid
+snapshot reads (measured at 256 MiB), those reads and default vector-only
+succeed within the charge while an unwindowed exact hybrid read is refused with
+a typed `MemoryBytes` budget error; at 256 MiB every mode succeeds with a
+nonzero `query_memory_peak_bytes` within admission, through both snapshot and
+handle. `out_of_core::tests::admitted_working`
+(`//crates/search:hawdb_search_tests` and the FTS+vector profiles) asserts with
+the live-allocation allocator, not RSS, that the charged peak covers the live
+working set (excluding the caller-owned result), that refused queries never
+allocate beyond their admission, that exact hybrid is refused one byte below
+its charged peak, and that at 20,000 eligible documents exact vector-only and
+unwindowed exact hybrid charge between 1x and 2x their live working bytes.
+`snapshot_exact_vector_capacity_is_served_and_refused_above` builds 384- and
+1024-dimension out-of-core projections at an 8 MiB admission and requires
+`EmbeddedReadSnapshot::exact_vector_search_capacity` to equal the duplicate-ID
+cap (32,768), an exact vector-only read of exactly that many eligible
+documents to succeed and 25% more to fail with a typed budget error;
+`snapshot_exact_vector_capacity_covers_resident_reads` checks that the
+resident capacity is refused below and served once it covers the eligible
+set.
+Replay with `cargo test --locked -p hawdb --lib out_of_core_working_memory`
+and `cargo test --locked -p hawdb-search --lib admitted_working`. No new lane,
+profile or timeout.
 
 The same Mem query owner also covers PR 1504 review optimizations: invariant
 regexp_replace validation on empty scans, cache rebinding across pattern and
@@ -288,6 +317,26 @@ refund is observed before opening the automatic-maintenance owner; global
 admission counters are not assumed stable while that worker can run. Local replay:
 `cargo test --locked -p hawdb --lib catch_up_admission_tests -- --test-threads=1`.
 See [caller-priority catch-up](https://github.com/nowledge-co/hawdb/issues/1306).
+
+`embedded_store::tests::storage_pressure_tests` (`nowledge-co/hawdb#1725`)
+belongs to the existing root `//:hawdb_unit_general_tests` owner. It opens a
+durable handle with explicit checkpoints only and pins
+`EmbeddedStoreHandle::storage_pressure_snapshot` to the `Database` snapshot
+(ignoring only the wall-clock WAL age and filesystem free-space samples), both
+with WAL debt and after a checkpoint. Under the root `test-support` feature,
+like the other storage failpoint tests, the failpoint
+`set_generation_reclamation_remove_failpoint` fails one obsolete checkpoint
+deletion; the handle must report it as pending reclamation files/bytes and
+`GenerationReclamationDebt` until the next checkpoint clears it. Default-feature
+Bazel builds compile that case out. A reader held
+across three checkpoints must report reader lag, obsolete bytes and retained
+WAL generations without pending debt; after release and one more checkpoint,
+reader lag and pending debt are zero and the main branch data directory holds
+at most two `wal.*.hawdb` files.
+Replay with `cargo test --locked -p hawdb --features test-support --lib
+storage_pressure_tests -- --test-threads=1` or the owning Bazel target with
+`--test_arg=storage_pressure_tests`. No new lane, profile, fixture
+amplification or timeout is introduced.
 
 `embedded_store::tests::initial_import_checkpoint_tests` (`nowledge-co/hawdb#1707`)
 belongs to the existing root `//:hawdb_unit_general_tests` owner. It pins the
@@ -889,7 +938,27 @@ and losing terms inside sealed blocks at block boundaries, and one transaction
 splitting an overgrown block; 300 updates of one document keeping its ordinal
 and leaving bounded rows; and delete-heavy churn compacting shrunken blocks,
 re-insertion after compaction, and the relation emptying with its last
-document. It belongs to the
+document; every layout check also verifies each block bounds row against its
+block and the lengths of its documents. A focused compaction regression
+empties the retained first block while its successor has 192 postings, then
+shrinks that successor to 19 postings and verifies the merged length bound,
+remaining rows and exact search results. The `scan` submodule owns the
+`Bm25IndexScan` access path: exact top-k and stream-filtered top-k equal to
+the oracle (ids and score bits) after documents in early, middle and late
+blocks shorten (`search_index_scan_stays_exact_after_documents_shorten`); a
+one-row top-k over 3,000 documents decoding a small fraction of
+the postings with most blocks never read (asserted from `EXPLAIN ANALYZE`);
+filters by bounded over-fetch (several rounds, the stream's own top-k,
+bounded hydration, a filter nothing satisfies); LIMIT pushdown in rank order
+only; the EXPLAIN operator tree and ANALYZE fields; and the concurrency
+footprint (source writers do not conflict with writers of other tables or
+rows, and a serializable `text_search` read conflicts with a concurrent
+source change only). The generated differential campaign
+`search_index_scan_generated_campaign` (four random Zipf-like corpora, random
+queries, `k`, stream filters and churn; the corpus seed is in every failure
+message) is `#[ignore]`d, local only and not run by CI:
+`cargo test --locked -p hawdb --lib search_index_scan_generated_campaign -- --ignored`.
+The family belongs to the
 existing root general unit lane and Cargo library tests; the reopen/mode case
 takes about 25 seconds locally and the admission case about 5 seconds. Replay:
 `cargo test --locked -p hawdb --lib api::tests::search_indexes`. The storage
@@ -899,17 +968,38 @@ unit lane owns the `cjk_ngram` analyzer cases (including
 thread's allocations with `test_allocator` and requires refusal of a
 1,000,000-ideograph value within a few times the 64 KiB admission limit), the layout codec cases (varints
 at every width and refusal of truncated, overlong and trailing spellings;
-posting blocks, dictionaries, statistics and lengths rows round-tripping and
-refusing unordered ordinals, zero frequencies and inconsistent counts) and the
-schema codec round trip with unknown-analyzer and unknown-layout refusal
+posting blocks, block bounds, dictionaries, statistics and lengths rows
+round-tripping and refusing unordered ordinals, zero frequencies, inconsistent
+counts and bounds; every single-bit flip of a sealed block or bounds row
+fails its CRC32C, and a bounds row must agree with its block's verified
+header) and the schema codec round trip with unknown-analyzer and
+unknown-layout refusal
 (`cargo test --locked -p hawdb-storage --lib search_index`); `hawdb-sql`'s `tests::search_index` covers the DDL and table
 function grammar (`cargo test --locked -p hawdb-sql --lib search_index`).
-`hawdb-relational`'s
-`query::tests::text_search_admission` indexes 4,096 documents and proves the
-bounded top-k WAND path succeeds under a budget that refused the former
-per-document score map, visits fewer postings than the corpus and skips losing
-blocks. Its multi-term case compares exact rows and score bits with the
-filter-triggered exhaustive path across sealed-block boundaries
+`hawdb-executor`'s `bm25::tests` own the shared scorer and Block-Max WAND
+kernel: brute-force equality (hits, keys, score bits) on named cases (empty
+input, block boundaries, loose length bounds), ties among identical
+documents ordered by key, and a 100,000-document corpus on which a one-row
+top-k decodes under 5% of the postings
+(`cargo test --locked -p hawdb-executor --lib bm25`; well under a second).
+The 400-case generated campaign `block_max_wand_generated_campaign` is
+`#[ignore]`d, local only and not run by CI; each failure names its case
+seed, replayed by `generated_case(seed)`:
+`cargo test --locked -p hawdb-executor --lib bm25::tests::block_max_wand_generated_campaign -- --ignored`.
+`hawdb-relational`'s `query::tests::text_search_admission` indexes 4,096
+documents sharing one term (and 16,384 in a second corpus) and requires both
+top-10s to run within one 512 KiB blocking budget (the full-ranking scan
+needed 56 bytes per match, 917 KB for the larger corpus), skipping most
+blocks unread, to be refused by the `Bm25IndexScan` account under a tiny
+budget, and to honour cancellation. The budget charges the fixed lengths
+directory, all decoded entry slots (including deleted slots), and key bytes;
+it replaces the earlier 320 KiB estimate based on encoded lengths payloads.
+A sparse-after-deletion regression retains only the last document of each
+of 32 lengths rows, succeeds at 128 KiB, and requires refusal at 32 KiB before
+half the control's decoded-array allocation bytes are allocated. Its multi-term case on a second corpus
+(ten short documents repeating the term) compares exact rows and score bits
+with a residual-filtered scan and a whole-match-set ranking across
+sealed-block boundaries, visiting fewer postings and skipping blocks
 (`cargo test --locked -p hawdb-relational --lib text_search`). The
 Bun suite (`bindings/bun/tests/hawdb.test.ts`, Native Bindings matrix) runs the
 same SQL through `querySQL` on a persistent database and a read-only reopen.
@@ -1334,6 +1424,7 @@ owns the restricted-token descriptor case.
 | Scoped Consumer preparation (`cargo test --locked -p hawdb --all-features --test mvcc_staging_session registered_consumer_`) | Real writer commits between capture, reservation, construction and selection; repeated durable watermarks; graph/SQL/schema/source fences; reserved/prepared drop recovery and cold reopen | Root integration lane owns the tests. The split API is described in [Consumer progress and retention](CONSUMER_PROGRESS_AND_RETENTION.md); manual `consumer_publication` timing also records commits during native construction. |
 | Read-only conflict history (`cargo test --locked -p hawdb-storage --lib snapshot_retention_tests`) | Long readers release unrelated stamps; stale read-to-write upgrades fail closed; writable savepoints preserve delete/reinsert conflicts; snapshot allocation accounting | Storage unit lane owns the tests. Read data and dependency/write validation pins have separate lifetimes. |
 | Cross-crate FD refusal and owned cleanup (`spill::tests`, relational `descriptor_exhaustion`, vector `artifact::descriptor_tests`, Search descriptor/root-registry/stage-cleanup families, storage control-candidate and root derived-repair units) | Strict foreground rejection versus internal progress, native cleanup failure, lock custody and exact retry | Existing crate/root checked-profile CI owners and the complete Search feature matrix. Foreground refusal fixtures explicitly select strict mode, and repair metadata/database owners share that policy. Pressure loops stop at the configured target rather than running to OS exhaustion. Abandoned projection writers, private stages, stationary producers and publication locks must progress at occupied strict capacity while preserving pinned readers and peer exclusion. Captured publication leases use bounded directory duplicates, preserve foreign lock-path evidence on native failure, release failed registration, and retry under strict pressure; background-only/vector-only matrices must not use native process exhaustion as the fixture. Directory blockers or injected native unlink failures retain cleanup debt, bytes, host charges and retry dispositions; cancellation/memory refusal and root-alias/foreign-root registry isolation remain covered. Native Windows selects storage control-candidate, stationary Consumer and captured-publication lease families explicitly; the lease cases reuse the existing all-feature Search test binary and retain their own evidence file. No feature matrix, fixture, assertion budget or timeout is reduced. |
+| Resident search checkpoint atomicity (#1711) | `api::tests::power_loss::resident_search_checkpoint` (Unix `test-support` power-loss family) cuts the fourth full-residency `EmbeddedStore` checkpoint for the runtime `apply_search_projection_delta_and_checkpoint` path, `apply_initial_import_projection_delta_and_checkpoint` and the deferred `checkpoint_initial_import_projection`. The cuts are the first write (including torn writes), the generation snapshot and layout renames, before and after the selector, the snapshot and lexical aliases, and the first cleanup unlink. Every image reopens to the previous or the new checkpoint with identical documents, epochs and Text, Vector and Hybrid hit score bits. Pre-selector cuts must keep the previous checkpoint. `resident_checkpoint_atomicity_tests` in the existing `hawdb-search` unit owner abort at each step, including a crash on the Nth repeated delta, an old-layout upgrade, an old-layout mixed snapshot that still fails closed, damaged-generation refusal and a reopen sweep that removes only resident checkpoint scratch. `resident_generation_snapshot_reference_rejects_installed_same_length_changes` checks the pre-selector snapshot verification. Replay with `cargo test --locked -p hawdb --features test-support --lib api::tests::power_loss::resident_search_checkpoint -- --test-threads=1` and `cargo test --locked -p hawdb-search --lib resident_checkpoint_atomicity`. | No new lane, profile or timeout. Recorder images do not qualify physical devices or Windows namespace semantics. Registered Consumer checkpoints are outside this family. See [resident checkpoint](SEARCH_SEGMENT_POWER_LOSS_QUALIFICATION.md#resident-checkpoint). |
 | Consumer physical reclamation (`cargo test --locked -p hawdb --all-features --lib consumer_reclamation`) | Old snapshot and initial-lease protection, durable branch and pending-operation roots, bounded retries, unknown-evidence retention, FD/memory release and ledger retirement before unlink | Seven lifecycle cases belong to the root unit lane, including cleanup and retry at occupied strict foreground FD capacity; two recorder cases belong to the power-loss family. The recorder fixture and database opens explicitly share the strict 32-descriptor configuration. The Windows native contract lane selects all nine through its existing family filter. Recorder cases explore lost/torn/reordered uncovered writes at the first retirement unlink and verify sealed-producer inode sharing before the target-directory barrier, durable linked data after scratch retirement, scratch-removal synchronization and Consumer reopen. Replay the latter pair with `cargo test --locked -p hawdb --features test-support --lib api::tests::power_loss::consumer_reclamation`. Close/reopen fixtures do not qualify the complete platform power-loss matrix. See [cleanup ownership](SEARCH_CLEANUP_OWNERSHIP.md). |
 | Publication-owner admission (`api::publication::tests`) | A waiting admitted reader precedes later writers, an admitted writer precedes later readers, reader callbacks remain concurrent, and nonblocking writers honor the gate, retry after release and reject poisoned admission | Existing root unit lane, ordinary profile. Channel-controlled cases inspect only the private acquisition gate; they do not claim platform-wide FIFO fairness. Validation/publication exclusion and error/retry tests retain their existing ownership. No additional CI job. |
 | Registered covered-token reclamation (`registered_consumer_reclamation_preserves_continuously_invalidated_covered_base`) and manual `consumer_publication` benchmark | Actual post-E writer commits while preparation is paused, typed refusal and retained base during GC; outer publication-owner latency and watermark progress under 1/4/8 writers | Regression: default/minimal `mvcc_staging_session` and native Windows registered selection. Benchmark: manual only, repository bench profile, disabled/legacy/covered/scoped-blocking/detached controls and raw p95/p99 samples. The opt-in `--sustained true` detached workload continues publication until writers finish or its explicit attempt ceiling, with checkpoints every 16,384 foreground writes and retained checkpoint samples. Its finite-progress qualification is separate from latency controls and the original strict writer gate. Manual `python3 scripts/measure-consumer-publication.test.py` checks executable/profile matching and actual feature provenance; no default CI registration. The separate opt-in `--with-readers` driver cohort adds one pinned canonical reader per writer and phase-boundary Linux process RSS/high-water/CPU-tick/I/O observations. It checks every document identity/content and retains per-request owner wait and preparation-overlap intervals. Missing resources, zero reads or drain-only reads cannot qualify; process high-water marks do not prove phase heap ownership. Reader measurement remains manual and does not change the completed writer-only cohorts. Whole-Database post-E dependencies retain conservative refusals; Domains-scoped finite progress is qualified separately. The helper records intake/mapping call counts with a `2 * feed.items + 1` host bound for its Done-only/no-delta mapper, without changing feed/mapping resources. A 60,000-update manual regression exercises complete coverage and native publication past the old 100,000-call bound; no new CI job. Quiescent drains are not sustained progress. [Workload and qualification boundaries](CONSUMER_PUBLICATION_QUALIFICATION.md). |
@@ -1601,7 +1692,7 @@ workload does not change default or CI benchmark selection.
 | QoS, cgroup, telemetry, resource-profile and runtime-tokio | Resource detection/admission, metrics and synchronous/async runtime boundaries. Existing `//crates/qos:hawdb_qos_tests` owns SharedHost SSD no-hint 12/3 defaults, explicit-hint clamps, unchanged non-SSD/mobile profiles and independent foreground/background I/O saturation/refund. Host-detector initialization refusals preserve unknown host readings, the fallback budget and independent cgroup pressure; native recovery reuses the successful detector. Focused replay: `cargo test --locked -p hawdb-qos resource::tests`. No benchmark or device-discovery qualification is implied. |
 | Readiness, evidence, route-ownership, nowledge-contracts, compat and qualification | Typed readiness, complete evidence identity, compatibility and host integration contracts. |
 | `crates/fuzz-contracts` | Production readiness contract values only. Its fast unit tests are not the Shiro generator/campaign. |
-| Python DB-API (`bindings/python/tests/test_dbapi.py`) | The PEP 249 layer in `hawdb.dbapi`: module globals and the PEP 249 exception hierarchy, with every engine error and every built-in error from statement parameters raised as its PEP 249 class while keeping its own type, attributes and pickling, or raised unchanged if it cannot be rebuilt as that class; tuple rows in SELECT-list order, a `description` with type codes, also for a key lookup that matches nothing, and identity-hashed type objects; lazily begun connection transactions with commit, rollback, close and context-manager semantics; autocommit set at connect or between transactions, read-only and branch-command routing; `executemany` delegation and the aborted state after a failed batch; parameter containers matching the native rule; and refusal of closed objects and of other threads, including reused thread idents. Owned by `//bindings/python:hawdb_python_tests` and the Python Bindings pip job. Engine transaction semantics run on file and in-memory databases, durability, read-only and branch cases on a file database, and the rest in memory. The engine's column order per query shape belongs to the SQL result column order family. Catalog queries also pin tuple order and empty-result descriptions under both autocommit and transactions; SQL EXPLAIN and EXPLAIN ANALYZE pin their diagnostic column and tuple order. The `pandas.read_sql` smoke skips without pandas; the pip job installs a pinned pandas and selects it with `-k pandas`. Replay: `pytest tests/test_dbapi.py` in `bindings/python` with the wheel installed. |
+| Python DB-API (`bindings/python/tests/test_dbapi.py`) | The PEP 249 layer in `hawdb.dbapi`: module globals and the PEP 249 exception hierarchy, with every engine error and every built-in error from statement parameters raised as its PEP 249 class while keeping its own type, attributes and pickling, or raised unchanged if it cannot be rebuilt as that class; a duplicate primary key and a NOT NULL violation raised as `IntegrityError` and a wrong-type value as `DataError` in autocommit and in a transaction, each still the `StorageError` or `ExecutionError` of its path, selected by the binding's `kind` (`tests/test_transactions.py` pins that `kind` on both native SQL paths, the binding's Rust `errors::tests` and FFI `error_tests` its mapping, and root `embedded::tests::relational_refusals_carry_their_kind_on_both_sql_paths` the engine's `HawDBError::Constraint`/`Schema` surface); tuple rows in SELECT-list order, a `description` with type codes, also for a key lookup that matches nothing, and identity-hashed type objects; type codes from a column's first non-null value anywhere in the result, known before any fetch, including NULL-led columns longer than a fetch chunk and all-NULL columns (`None`); rows converted per fetch (#1726): the cursor keeps no tuple it returned and releases the `QueryResult` once exhausted, on the next statement and on close, and a `tracemalloc` regression on 20,000 rows bounds `execute` to under 256 KiB of Python allocations and the `fetchall` peak to 1.25 times the returned list (the binding side, `fetchmany_tuples`, fresh dicts per fetch and `_first_non_null`, is in `tests/test_smoke.py`); `rowcount` from the engine's affected-row count for INSERT, UPDATE (including no match) and DELETE in autocommit and in a transaction, with `ON CONFLICT DO NOTHING` skips uncounted and -1 for DDL and `executemany`, plus `QueryResult.affected_rows` on `execute_sql` in both modes (Root `embedded::tests::autocommit_sql_reports_committed_affected_rows` and `transaction_sql_reports_provisional_affected_rows` pin the engine side under `//:hawdb_unit_general_tests`); lazily begun connection transactions with commit, rollback, close and context-manager semantics; autocommit set at connect or between transactions, read-only and branch-command routing; `executemany` delegation and the aborted state after a failed batch; parameter containers matching the native rule; and refusal of closed objects and of other threads, including reused thread idents. Owned by `//bindings/python:hawdb_python_tests` and the Python Bindings pip job. Engine transaction semantics run on file and in-memory databases, durability, read-only and branch cases on a file database, and the rest in memory. The engine's column order per query shape belongs to the SQL result column order family. Catalog queries also pin tuple order and empty-result descriptions under both autocommit and transactions; SQL EXPLAIN and EXPLAIN ANALYZE pin their diagnostic column and tuple order. The `pandas.read_sql` smoke skips without pandas; the pip job installs a pinned pandas and selects it with `-k pandas`. Replay: `pytest tests/test_dbapi.py` in `bindings/python` with the wheel installed. |
 | LlamaIndex property graph store (`integrations/llama-index-graph-stores-hawdb/tests`) | `HawDBPropertyGraphStore` under LlamaIndex's `PropertyGraphStore` contract, on in-memory and file databases: replaced nodes, rewrites for changed properties alone, kept relations and placeholder endpoints, and indexed copies of `triplet_source_id` and `ref_doc_id` that follow a rewrite; chunk text, label, empty-label and vector embedding round trips, including a rewrite for a changed embedding alone; LlamaIndex node round trips and deletion by chunk or document; id and property filters, JSON comparison by type, `None` versus empty lists and refused keys, values and out-of-range integers; hostile labels, ids and values bound as parameters; entity names matched by name where they differ from ids; entity-only triplets, with every property member matching on the same end; breadth-first `get_rel_map` depth, limit and ignored labels, with the limit counting each relation once and endpoints found by the ids they are stored under; per-filter deletes; the statements of each read snapshot and write transaction, recorded through a proxy under patched limits: reads split into pages by id count and node size, through the indexed copy of `ref_doc_id`, `get_triplets` over a snapshot, and `get_rel_map` as one statement per hop followed by paged endpoint sizes and reads; writes split into transactions by bytes and by row count; digest reads before any write, no write for unchanged nodes, one statement for new nodes, one per changed node, and one each for relation endpoints and relations, because each write statement the store runs takes time that grows with the stored graph; deletes split into transactions by nodes and relations, each label transaction deleting its own sources' relations, as a failed second transaction shows; filters combined in one transaction; relationships of any type counted; a node whose relations go to other deleted nodes deleted after them; and a node or relation source over the limit refused before anything is deleted; 1,500 vector embeddings of 3,072 dimensions split across 16 MiB WAL records; 3,000 chunks of 25,000 characters written, read and deleted although they exceed the 64 MiB one statement in a read snapshot returns and, on a file database, a 16 MiB WAL record; node pages that count ids, labels and names, with nodes whose labels, or ids and names, exceed a 1 MiB result limit read back by id and in full; the widest nodes and relations the store accepts, which a statement matching a relationship holds in one 16 MiB intermediate row, read back in full by `get`, `get_rel_map`, `get_triplets`, the schema and a delete by relation label: nodes of 4 MiB of values with 64 KiB ids and labels, 1 MiB of properties also kept as an indexed copy and, in entities, an embedding, linked by relations with 64 KiB labels and 1 MiB of properties; writes refused before any transaction commits (node values over 4 MiB of UTF-8, counting 4 bytes per embedding coordinate, also in CJK, node ids and labels and relation labels and endpoint ids over 64 KiB of UTF-8, also in CJK, node and relation properties over 1 MiB of JSON, non-finite or out-of-range embeddings, unencodable strings, NaN or unserializable properties, other node classes); schema labels, counts of the store's own label and type only, refresh and `aget_schema_str`; constraint and index creation that a reopened or read-only database reuses; `WrongThreadError` from every public method on another thread and on LlamaIndex's async worker thread; and one offline `PropertyGraphIndex` insert, retrieve and delete with a fixed extractor, mock LLM and embedding model and a whitespace splitter. Owned by the Python Bindings pip job on Ubuntu only: after the pandas step it installs a pinned `llama-index-core`, installs the package without dependencies over the wheel built from the same commit, runs `pip check` and the tests (about 19 seconds locally, about 14 of them opening file databases; the 3,000-chunk case takes about 0.5 seconds per database and the embedding case about 0.3). Not part of Bazel or `//bindings/python/...`; needs no network or API keys. An autouse fixture collects garbage on the test thread after each test, so no `hawdb.Database` is freed on LlamaIndex's worker thread. Replay from the repository root with a hawdb 0.28.0 or later wheel installed: `pip install ./integrations/llama-index-graph-stores-hawdb pytest` and `pytest integrations/llama-index-graph-stores-hawdb/tests`. |
 
 ## Default WAL recovery

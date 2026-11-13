@@ -194,6 +194,8 @@ mod app_read_snapshot_tests;
 mod candidate_facade_tests;
 #[cfg(test)]
 mod exact_candidate_tests;
+#[cfg(test)]
+mod out_of_core_working_memory_tests;
 
 #[cfg(test)]
 mod runtime_status_facade_tests {
@@ -1441,6 +1443,36 @@ impl OutOfCoreSearchProjection {
     ) -> Result<OutOfCoreSearchCandidateOutput> {
         self.reader
             .search_candidates_with_report_context(request, vector_execution_options)
+    }
+
+    /// See [`SearchOutOfCoreReader::exact_vector_search_capacity`].
+    pub fn exact_vector_search_capacity(
+        &self,
+        working_bytes: usize,
+        max_document_id_bytes: usize,
+    ) -> usize {
+        self.reader
+            .exact_vector_search_capacity(working_bytes, max_document_id_bytes)
+    }
+
+    /// Like [`Self::search_candidates_with_report_context`], under the
+    /// caller's runtime admission: every allocation that scales with the
+    /// eligible set is charged to `vector_execution_options.max_working_bytes`
+    /// (at most the task's memory reservation), and a request that does not
+    /// fit is refused with a typed memory-budget error. A hybrid request
+    /// without a rank window charges both complete rankings.
+    /// `vector_execution_options.task_context` must be bound to `permit`.
+    pub fn search_candidates_with_report_admitted(
+        &self,
+        request: &SearchCandidateRequest,
+        vector_execution_options: VectorSearchExecutionOptions<'_>,
+        permit: &RuntimePermit,
+    ) -> Result<OutOfCoreSearchCandidateOutput> {
+        self.reader.search_candidates_with_report_admitted(
+            request,
+            vector_execution_options,
+            permit,
+        )
     }
 }
 

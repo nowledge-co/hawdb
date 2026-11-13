@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use hawdb::{EmbeddedQueryError, HawDBError};
+use hawdb::{EmbeddedQueryError, HawDBError, RelationalErrorKind, RelationalErrorSurface};
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
@@ -115,6 +115,12 @@ pub fn format_hawdb_error(error: &HawDBError) -> PyErr {
         HawDBError::Parse(_) => ParseError::new_err(message),
         HawDBError::Semantic(_) => SemanticError::new_err(message),
         HawDBError::Storage(_) => StorageError::new_err(message),
+        HawDBError::Constraint { surface, .. } => {
+            relational_error(message, RelationalErrorKind::Constraint, *surface)
+        }
+        HawDBError::Schema { surface, .. } => {
+            relational_error(message, RelationalErrorKind::Schema, *surface)
+        }
         HawDBError::WalRecoveryIo {
             operation,
             kind,
@@ -195,6 +201,28 @@ pub fn format_hawdb_error(error: &HawDBError) -> PyErr {
         | HawDBError::BranchBusy { .. }
         | HawDBError::BranchReclamationBlocked { .. } => BranchError::new_err(message),
     }
+}
+
+/// A relational constraint or schema refusal keeps the type its surface has
+/// always raised, `StorageError` in autocommit and `ExecutionError` inside a
+/// transaction, and gains `kind` (`"constraint"` or `"schema"`) and
+/// `retryable = False`, so callers can tell it apart without parsing text.
+fn relational_error(
+    message: String,
+    kind: RelationalErrorKind,
+    surface: RelationalErrorSurface,
+) -> PyErr {
+    Python::attach(|py| {
+        let exception = match surface {
+            RelationalErrorSurface::Storage => StorageError::new_err(message),
+            RelationalErrorSurface::Execution => ExecutionError::new_err(message),
+        };
+        let value = exception.value(py);
+        let attributes = value
+            .setattr("kind", kind.as_str())
+            .and_then(|()| value.setattr("retryable", false));
+        attributes.err().unwrap_or(exception)
+    })
 }
 
 /// Maps an [`EmbeddedQueryError`] onto the matching Python exception.
@@ -344,6 +372,47 @@ mod tests {
                 .unwrap()
                 .extract::<bool>()
                 .unwrap());
+        });
+    }
+
+    #[test]
+    fn relational_refusals_keep_their_surface_type_and_gain_a_kind() {
+        Python::initialize();
+        Python::attach(|py| {
+            for (kind, name) in [
+                (RelationalErrorKind::Constraint, "constraint"),
+                (RelationalErrorKind::Schema, "schema"),
+            ] {
+                for surface in [
+                    RelationalErrorSurface::Storage,
+                    RelationalErrorSurface::Execution,
+                ] {
+                    let error = HawDBError::relational(kind, surface, format!("{kind}: detail"));
+                    let exception = format_hawdb_error(&error);
+                    let value = exception.value(py);
+                    let (storage, prefix) = match surface {
+                        RelationalErrorSurface::Storage => (true, "storage error"),
+                        RelationalErrorSurface::Execution => (false, "execution error"),
+                    };
+                    assert_eq!(exception.is_instance_of::<StorageError>(py), storage);
+                    assert_eq!(exception.is_instance_of::<ExecutionError>(py), !storage);
+                    // Not the engine's IntegrityError, which reports damaged storage.
+                    assert!(!exception.is_instance_of::<IntegrityError>(py));
+                    assert_eq!(
+                        value.str().unwrap().to_str().unwrap(),
+                        format!("{prefix}: {kind}: detail")
+                    );
+                    assert_eq!(
+                        value.getattr("kind").unwrap().extract::<String>().unwrap(),
+                        name
+                    );
+                    assert!(!value
+                        .getattr("retryable")
+                        .unwrap()
+                        .extract::<bool>()
+                        .unwrap());
+                }
+            }
         });
     }
 

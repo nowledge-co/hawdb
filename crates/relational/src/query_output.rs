@@ -53,6 +53,8 @@ pub struct RelationalQueryOutput {
     pub index_execution_evidence: Vec<RelationalIndexExecutionEvidence>,
     pub row_execution_evidence: RelationalRowExecutionEvidence,
     pub blocking_operator_memory_reports: Vec<BlockingOperatorMemoryReport>,
+    /// The search index scan's visit/skip evidence, for `text_search`.
+    pub search_index_scan: Option<crate::query::text_search::SearchIndexScanEvidence>,
 }
 
 pub fn push_relational_output(

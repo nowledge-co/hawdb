@@ -83,7 +83,7 @@ impl SearchOutOfCoreReader {
         } else {
             blocks = Vec::with_capacity(block_count);
         }
-        let mut file = SpillFile::create(&self.config, context, scratch)?;
+        let mut file = SpillFile::create(&self.config, context, scratch, output.0.is_some())?;
         file.write_all(CANDIDATE_FILE_HEADER)?;
         let keys = crate::MetadataKeys::for_predicates(predicates);
         let postings_query =
@@ -157,11 +157,14 @@ impl SearchOutOfCoreReader {
                             document.id
                         ))
                     })?;
-                    if let Some(memory) = &mut encoded_memory {
-                        let required = crate::build_memory::checked_add(
-                            encoded.len(),
-                            crate::build_memory::checked_add(document.id.len(), 12)?,
-                        )?;
+                    let required = crate::build_memory::checked_add(
+                        encoded.len(),
+                        crate::build_memory::checked_add(document.id.len(), 12)?,
+                    )?;
+                    if let Some(memory) = &mut encoded_memory
+                        && required > encoded.capacity()
+                    {
+                        // Grow only when the next record does not fit.
                         let limit = usize::try_from(self.config.max_candidate_block_bytes.get())
                             .unwrap_or(usize::MAX);
                         let capacity =

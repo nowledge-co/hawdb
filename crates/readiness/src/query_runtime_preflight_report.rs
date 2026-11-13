@@ -19,7 +19,7 @@
 
 use crate::embedded_query_report::scan_pruning_report_json;
 use crate::query_runtime_preflight::NowledgeQueryRuntimePreflightProbe;
-use hawdb_core::HawDBError;
+use hawdb_core::{HawDBError, RelationalErrorSurface};
 use hawdb_evidence::inventory::REQUIRED_NOWLEDGE_REPLACEMENT_QUERY_FAMILIES;
 use hawdb_route_ownership::graph::REQUIRED_BOUNDED_READ_ROUTES;
 use hawdb_storage::scan::ScanPruningReport;
@@ -362,6 +362,14 @@ pub const fn hawdb_error_class(error: &HawDBError) -> &'static str {
         HawDBError::Parse(_) => "parse",
         HawDBError::Semantic(_) => "semantic",
         HawDBError::Storage(_)
+        | HawDBError::Constraint {
+            surface: RelationalErrorSurface::Storage,
+            ..
+        }
+        | HawDBError::Schema {
+            surface: RelationalErrorSurface::Storage,
+            ..
+        }
         | HawDBError::FileDescriptors(_)
         | HawDBError::StorageIntegrity(_)
         | HawDBError::WalRecoveryIo { .. }
@@ -371,6 +379,14 @@ pub const fn hawdb_error_class(error: &HawDBError) -> &'static str {
         | HawDBError::BranchBusy { .. }
         | HawDBError::BranchReclamationBlocked { .. } => "storage",
         HawDBError::Execution(_)
+        | HawDBError::Constraint {
+            surface: RelationalErrorSurface::Execution,
+            ..
+        }
+        | HawDBError::Schema {
+            surface: RelationalErrorSurface::Execution,
+            ..
+        }
         | HawDBError::BranchEvidenceBudgetExceeded { .. }
         | HawDBError::ReadBudgetExceeded(_)
         | HawDBError::ResourceBudgetExceeded(_)

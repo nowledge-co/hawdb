@@ -6,6 +6,18 @@ limits, persisted bytes and the current/previous-generation retention rules
 remain unchanged. The approved pair now exposes the integrated
 [context contract](SEARCH_GENERATION_CONTEXT.md).
 
+## Resident generation snapshots
+
+An unregistered resident checkpoint writes its snapshot as
+`search_projection.<g>.hawdb` before its selector (#1711). The cleanup grammar
+classifies that name as a content-generation artifact. The current and previous
+generation snapshots are therefore retained, together with any generation the
+active closure still references, under the same predicate as the descriptor
+and payload files. A generation newer than the selector (an interrupted
+checkpoint) is never obsolete. The next checkpoint reuses or supersedes it.
+`search_projection.hawdb` is a hard link to the selected generation, so
+reclaiming an old generation name never removes the current snapshot.
+
 ## One-shot old-generation cleanup
 
 A writer immediately discarded the full cleanup state's pending-name queue and

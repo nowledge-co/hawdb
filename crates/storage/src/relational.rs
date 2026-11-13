@@ -39,11 +39,12 @@ pub(crate) use index_shadow::{
     IndexReadAdmission, IndexReadCharge, IndexReadObserver, IndexReadPreflightError,
 };
 pub use materialized_view::{
-    decode_search_sealed_block, decode_search_sealed_block_header, search_index_block_fence,
-    search_index_dictionary_key, search_index_length_block_key, search_index_length_block_range,
-    search_index_length_block_start, search_index_sealed_block_after_range,
-    search_index_sealed_block_range, search_index_statistics_key, MaterializedViewColumn,
-    MaterializedViewDefinition, MaterializedViewExpression, SearchDocumentEntry,
+    decode_search_sealed_block, decode_search_sealed_block_header, search_index_block_bounds_range,
+    search_index_block_fence, search_index_dictionary_key, search_index_length_block_key,
+    search_index_length_block_range, search_index_length_block_start,
+    search_index_sealed_block_after_range, search_index_sealed_block_range,
+    search_index_sealed_block_window, search_index_statistics_key, MaterializedViewColumn,
+    MaterializedViewDefinition, MaterializedViewExpression, SearchBlockBounds, SearchDocumentEntry,
     SearchIndexAnalyzer, SearchIndexSpec, SearchIndexStatistics, SearchLengthBlock, SearchPosting,
     SearchPostingBlockHeader, SearchTermDictionary, SEARCH_INDEX_BLOCK_POSTINGS,
     SEARCH_INDEX_COLUMN_COUNT, SEARCH_INDEX_DATA_COLUMN, SEARCH_INDEX_KIND_COLUMN,
@@ -6553,16 +6554,29 @@ impl fmt::Display for RelationalError {
 }
 
 impl std::error::Error for RelationalError {
+    /// Constraint and schema refusals report their typed kind as the source,
+    /// so `HawDBError::from_storage_error` keeps it through any wrapper.
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::FileDescriptors(error) => Some(error),
             Self::UnsupportedFormat(error) => Some(error),
+            Self::Constraint(_) => Some(&hawdb_core::RelationalErrorKind::Constraint),
+            Self::Schema(_) => Some(&hawdb_core::RelationalErrorKind::Schema),
             _ => None,
         }
     }
 }
 
 impl RelationalError {
+    /// The typed kind of a constraint or schema refusal.
+    pub const fn kind(&self) -> Option<hawdb_core::RelationalErrorKind> {
+        match self {
+            Self::Constraint(_) => Some(hawdb_core::RelationalErrorKind::Constraint),
+            Self::Schema(_) => Some(hawdb_core::RelationalErrorKind::Schema),
+            _ => None,
+        }
+    }
+
     pub(crate) fn into_wal_recovery_error(self) -> hawdb_core::HawDBError {
         match self {
             Self::Corruption(message) => hawdb_core::HawDBError::StorageIntegrity(format!(

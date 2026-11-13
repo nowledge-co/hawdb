@@ -413,6 +413,10 @@ pub struct SearchOutOfCoreMetrics {
     pub streamed_body_bytes: u64,
     pub hydrated_documents: usize,
     pub hydrated_bytes: u64,
+    /// Peak bytes charged to the query's working account by
+    /// [`SearchOutOfCoreReader::search_with_options_admitted`]; zero for
+    /// unaccounted ordinary reads.
+    pub query_memory_peak_bytes: u64,
 }
 
 struct SearchDocumentSegmentRoute<'a> {
@@ -2534,6 +2538,119 @@ impl SearchOutOfCoreReader {
         )
     }
 
+    /// Serves like
+    /// [`Self::search_with_options_compressed_vector_projection_execution_options`]
+    /// under the caller's runtime admission. Every allocation that scales with
+    /// the eligible set (candidate filters, score maps, rankings, fused
+    /// candidates, segment buffers and hit hydration) is charged to one
+    /// working account of `min(max_working_bytes, task memory reservation)`
+    /// bytes. A query that does not fit, including a hybrid query without a
+    /// rank window over a large eligible set, is refused with a typed
+    /// memory-budget error rather than served above its admission.
+    ///
+    /// `vector_execution_options.task_context` is required and must be the
+    /// context bound to `permit`. Returned hits are not charged: the caller
+    /// owns the result payload budget.
+    pub fn search_with_options_admitted(
+        &self,
+        query_text: &str,
+        query_embedding: Option<&[f32]>,
+        mode: SearchMode,
+        options: SearchQueryOptions,
+        execution: SearchOutOfCoreExecutionContext<'_>,
+        permit: &hawdb_qos::RuntimePermit,
+    ) -> Result<SearchOutOfCoreOutput> {
+        let task = execution
+            .vector_execution_options
+            .task_context
+            .ok_or_else(|| {
+                HawDBError::Execution(
+                    "admitted out-of-core search requires the permit's task context".into(),
+                )
+            })?;
+        let working =
+            query_memory::Working::new(execution.vector_execution_options.max_working_bytes, task)?;
+        let io = crate::build_memory::read::QueryIoScope::acquire(task)?;
+        let mut output = self.search_hits(
+            query_text,
+            query_embedding,
+            mode,
+            options,
+            query_memory::Execution {
+                base: execution,
+                query: Some(working.context(task, permit, &io)),
+                immutable_freshness: false,
+                scratch: None,
+                output: None,
+            },
+            SearchHitHydration::Documents,
+        )?;
+        output.metrics.query_memory_peak_bytes = working.peak_bytes();
+        Ok(output)
+    }
+
+    /// The largest eligible-set size an exact vector-only read under
+    /// `working_bytes` of admitted working memory is guaranteed to serve, for
+    /// eligible document IDs of at most `max_document_id_bytes` bytes.
+    ///
+    /// It is the smaller of the scan's duplicate-ID cap,
+    /// `min(max_score_entries, working_bytes / 128) / 2` (262,144 at 64 MiB,
+    /// as before #1722), and what the query account admits: one charged
+    /// duplicate-ID entry per eligible document after this reader's fixed
+    /// working set (one zstd decoder at the pinned level-3 window, the vector
+    /// read run and segment head, cached candidate blocks, the candidate block
+    /// directory, range validation and query metadata). It does not depend on
+    /// the embedding dimension. A read of more eligible documents may be
+    /// refused with a typed `ResourceBudgetExceeded` error; it is never
+    /// truncated. The page's hit hydration is bounded separately by
+    /// `max_hydrated_bytes` and must also fit the admission.
+    pub fn exact_vector_search_capacity(
+        &self,
+        working_bytes: usize,
+        max_document_id_bytes: usize,
+    ) -> usize {
+        // One level-3 zstd decoder (<= 2.75 MiB), a 256 KiB vector run, 64 KiB
+        // range validation, the 8 KiB vector prefix and query metadata.
+        const FIXED_BYTES: usize = 4 << 20;
+        let uniqueness = vector_serving::admitted_score_entries(
+            self.config.max_score_entries.get(),
+            working_bytes,
+        ) / 2;
+        let id = max_document_id_bytes;
+        let mut fixed = FIXED_BYTES
+            .saturating_add(crate::build_memory::ID_SET_ROOT_BYTES)
+            .saturating_add(
+                self.manifest
+                    .embedding_dimension
+                    .unwrap_or_default()
+                    .saturating_mul(2 * size_of::<f32>()),
+            );
+        let mut max_segment_documents = 0usize;
+        for segment in self
+            .segments
+            .iter()
+            .flat_map(|artifact| &artifact.descriptor.segments)
+        {
+            // The candidate block directory entry and its copied ID bounds.
+            fixed = fixed
+                .saturating_add(128)
+                .saturating_add(segment.first_document_id.len())
+                .saturating_add(segment.last_document_id.len());
+            max_segment_documents = max_segment_documents.max(segment.document_count);
+        }
+        // One cached candidate block (raw bytes, read buffer and entries) and
+        // one vector segment head (ordinals and IDs).
+        fixed = fixed.saturating_add(
+            max_segment_documents.saturating_mul(
+                (2 * (id.saturating_add(12)))
+                    .saturating_add(2 * size_of::<String>())
+                    .saturating_add(id.saturating_add(4)),
+            ),
+        );
+        let per_document = crate::build_memory::ID_SET_ENTRY_BYTES.saturating_add(id);
+        uniqueness.min(working_bytes.saturating_sub(fixed) / per_document)
+    }
+
     pub fn search_with_options_access_control(
         &self,
         query_text: &str,
@@ -2782,7 +2899,9 @@ impl SearchOutOfCoreReader {
             output,
         } = execution.into();
         let output_memory = query_output::Memory(output);
-        if output.is_some() != query.is_some() {
+        // Native results require working admission. An ordinary admitted read
+        // charges working memory while its caller owns the result budget.
+        if output.is_some() && query.is_none() {
             return Err(HawDBError::Execution(
                 "native query requires paired working and result admission".into(),
             ));
@@ -4639,6 +4758,10 @@ pub(super) struct ResidentRaBitQArtifact {
 
 pub(super) struct ResidentPublicationPlan {
     pub(super) generation: u64,
+    /// Write only generation-named artifacts, publish the selector, then
+    /// install the unsuffixed current names as aliases. See
+    /// [`recover_resident_aliases`] for the reopen half of this protocol.
+    pub(super) deferred_aliases: bool,
     #[cfg(feature = "vector-search")]
     pub(super) rabitq: Option<ResidentRaBitQArtifact>,
 }
@@ -4654,26 +4777,50 @@ pub(super) fn write_resident_artifacts(
     let memory = crate::build_memory::BuildMemory::new(task)?;
     let io = generation_writer::io::GenerationIo::new(&memory, task);
     let mut descriptor = SearchSegmentDescriptor::build(&index.documents);
-    let payload =
-        super::write_search_segment_payloads(root, &index.documents, &mut descriptor, |file| {
-            ArtifactObject::from_reference(io.seal_file(file)?.reference)
-        })?;
-    let (descriptor_bytes, descriptor_object) =
-        super::write_search_segment_descriptor_output(root, &descriptor, u64::MAX, |file| {
-            ArtifactObject::from_reference(io.seal_file(file)?.reference)
-        })?;
+    let (payload_name, descriptor_name) = if plan.deferred_aliases {
+        (
+            format!("search_projection_segment_payloads.{generation}.hawdb"),
+            format!("search_projection_segments.{generation}.hawdb"),
+        )
+    } else {
+        (
+            SEARCH_SEGMENT_PAYLOAD_FILE.to_owned(),
+            SEARCH_SEGMENT_DESCRIPTOR_FILE.to_owned(),
+        )
+    };
+    let payload = super::write_search_segment_payloads(
+        root,
+        &payload_name,
+        &index.documents,
+        &mut descriptor,
+        |file| ArtifactObject::from_reference(io.seal_file(file)?.reference),
+    )?;
+    let (descriptor_bytes, descriptor_object) = super::write_search_segment_descriptor_output(
+        root,
+        &descriptor_name,
+        &descriptor,
+        u64::MAX,
+        |file| ArtifactObject::from_reference(io.seal_file(file)?.reference),
+    )?;
+    #[cfg(test)]
+    resident_checkpoint_fault(ResidentCheckpointStep::SegmentArtifacts)?;
     let lexical_generation = generation;
-    let projection = super::LexicalProjectionWriter::new(index.lexical_config)
-        .with_context(memory.clone(), task.clone())
-        .write(
-            root,
-            lexical_generation,
-            index.source_graph_commit_epoch,
-            lexical_analyzer_digest(&index.analyzer_lexicon),
-            lexical_documents_digest(&index.documents),
-            index.documents.values(),
-            &index.analyzer_lexicon,
-        )?;
+    let writer = super::LexicalProjectionWriter::new(index.lexical_config)
+        .with_context(memory.clone(), task.clone());
+    let writer = if plan.deferred_aliases {
+        writer.with_generation_manifest()
+    } else {
+        writer
+    };
+    let projection = writer.write(
+        root,
+        lexical_generation,
+        index.source_graph_commit_epoch,
+        lexical_analyzer_digest(&index.analyzer_lexicon),
+        lexical_documents_digest(&index.documents),
+        index.documents.values(),
+        &index.analyzer_lexicon,
+    )?;
     let lexical = projection.producer_references().ok_or_else(|| {
         HawDBError::StorageIntegrity(
             "resident checkpoint requires lexical producer references".into(),
@@ -4684,6 +4831,8 @@ pub(super) fn write_resident_artifacts(
         .saturating_add(lexical.manifest.byte_length)
         .saturating_add(lexical.artifact.byte_length);
     index.replace_lexical_projection(Some(projection));
+    #[cfg(test)]
+    resident_checkpoint_fault(ResidentCheckpointStep::Lexical)?;
     let mut published = publish_out_of_core_projection(
         index,
         root,
@@ -4725,18 +4874,21 @@ fn publish_out_of_core_projection(
     let vector_payload_file = format!("search_projection_vector_payloads.{generation}.hawdb");
     let layout_file = format!("search_projection_out_of_core_layout.{generation}.hawdb");
     let lexical_manifest_file = format!("search_lexical.manifest.{generation}.hawdb");
-    let mut bytes_written = publish_generation_link(
-        &root.join(SEARCH_SEGMENT_DESCRIPTOR_FILE),
-        &root.join(&descriptor_file),
-    )?;
-    bytes_written = bytes_written.saturating_add(publish_generation_link(
-        &root.join(SEARCH_SEGMENT_PAYLOAD_FILE),
-        &root.join(&payload_file),
-    )?);
-    bytes_written = bytes_written.saturating_add(publish_generation_link(
-        &root.join(MANIFEST_FILE),
-        &root.join(&lexical_manifest_file),
-    )?);
+    let mut bytes_written = 0u64;
+    if !plan.deferred_aliases {
+        // Legacy registered order: current names were written first and are
+        // linked to their generation names before the selector.
+        for (current, generation_file) in [
+            (SEARCH_SEGMENT_DESCRIPTOR_FILE, &descriptor_file),
+            (SEARCH_SEGMENT_PAYLOAD_FILE, &payload_file),
+            (MANIFEST_FILE, &lexical_manifest_file),
+        ] {
+            bytes_written = bytes_written.saturating_add(publish_generation_link(
+                &root.join(current),
+                &root.join(generation_file),
+            )?);
+        }
+    }
 
     let (layout, metadata_object, vector_object) = write_out_of_core_sidecars(
         index,
@@ -4767,6 +4919,7 @@ fn publish_out_of_core_projection(
     #[cfg(test)]
     AFTER_RESIDENT_SIDECARS.with(|hook| {
         if let Some(index) = hook.take() {
+            let snapshot_file = crate::resident_snapshot_file(generation);
             let name = [
                 &metadata_payload_file,
                 &vector_payload_file,
@@ -4775,6 +4928,7 @@ fn publish_out_of_core_projection(
                 &payload_file,
                 &lexical_manifest_file,
                 &lexical_payload_file,
+                &snapshot_file,
             ][index];
             let path = root.join(name);
             let mut bytes = fs::read(&path).unwrap();
@@ -4792,6 +4946,14 @@ fn publish_out_of_core_projection(
         (&lexical_payload_file, lexical_payload_object),
     ] {
         io.verify_object(&root.join(name), object)?;
+    }
+    if plan.deferred_aliases {
+        // The selector's receipt is the writer's in-memory reference. Bind it
+        // to the installed generation snapshot before the selector names it.
+        io.verify_object(
+            &root.join(crate::resident_snapshot_file(generation)),
+            ArtifactObject::from_reference(snapshot.encoded_object)?,
+        )?;
     }
     #[cfg(feature = "vector-search")]
     if let Some(artifact) = rabitq.as_ref() {
@@ -4920,11 +5082,262 @@ fn publish_out_of_core_projection(
         file.write_all(&manifest_bytes)?;
         file.sync_all()?;
     }
+    #[cfg(test)]
+    resident_checkpoint_fault(ResidentCheckpointStep::BeforeSelector)?;
     durable_replace_file(&tmp_path, &manifest_path)?;
+    // The selector rename above is the commit point. Aliases are derived
+    // names; reopen re-derives them if this process stops before they land.
+    if plan.deferred_aliases {
+        #[cfg(test)]
+        resident_checkpoint_fault(ResidentCheckpointStep::AfterSelector)?;
+        for (current, generation_file) in resident_aliases(generation) {
+            bytes_written = bytes_written.saturating_add(publish_generation_link(
+                &root.join(generation_file),
+                &root.join(current),
+            )?);
+            #[cfg(test)]
+            resident_checkpoint_fault(ResidentCheckpointStep::AfterAlias(current))?;
+        }
+    }
     Ok(PublishedOutOfCoreProjection {
         generation,
         bytes_written: bytes_written.saturating_add(manifest_bytes.len() as u64),
     })
+}
+
+/// Current (unsuffixed) names and the generation names they alias, in the
+/// order a resident checkpoint installs them after its selector.
+fn resident_aliases(generation: u64) -> [(&'static str, String); 4] {
+    [
+        (
+            crate::SEARCH_SNAPSHOT_FILE,
+            crate::resident_snapshot_file(generation),
+        ),
+        // The payload precedes the descriptor that addresses its ranges.
+        (
+            SEARCH_SEGMENT_PAYLOAD_FILE,
+            format!("search_projection_segment_payloads.{generation}.hawdb"),
+        ),
+        (
+            SEARCH_SEGMENT_DESCRIPTOR_FILE,
+            format!("search_projection_segments.{generation}.hawdb"),
+        ),
+        (
+            MANIFEST_FILE,
+            crate::lexical_projection::generation_manifest_file(generation),
+        ),
+    ]
+}
+
+/// Steps of a resident checkpoint at which tests stop it as a process abort
+/// would: every earlier file operation has completed and nothing later runs.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResidentCheckpointStep {
+    RaBitQ,
+    Snapshot,
+    SegmentArtifacts,
+    Lexical,
+    BeforeSelector,
+    AfterSelector,
+    AfterAlias(&'static str),
+    Cleanup,
+}
+
+#[cfg(test)]
+thread_local! {
+    static RESIDENT_CHECKPOINT_FAULT: std::cell::Cell<Option<ResidentCheckpointStep>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn inject_resident_checkpoint_fault(step: Option<ResidentCheckpointStep>) {
+    RESIDENT_CHECKPOINT_FAULT.with(|fault| fault.set(step));
+}
+
+#[cfg(test)]
+pub(crate) fn published_generation_for_test(root: &Path) -> u64 {
+    SearchOutOfCoreManifestBody::decode(&fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap())
+        .unwrap()
+        .generation
+}
+
+#[cfg(test)]
+pub(crate) fn resident_checkpoint_fault(step: ResidentCheckpointStep) -> Result<()> {
+    if RESIDENT_CHECKPOINT_FAULT.with(|fault| fault.get()) == Some(step) {
+        RESIDENT_CHECKPOINT_FAULT.with(|fault| fault.set(None));
+        return Err(HawDBError::Storage(format!(
+            "injected resident checkpoint abort at {step:?}"
+        )));
+    }
+    Ok(())
+}
+
+/// Reopen half of the resident checkpoint protocol.
+///
+/// A resident checkpoint writes every artifact, including its snapshot, under
+/// generation names and then renames the out-of-core manifest: that rename is
+/// the single commit point. Only afterwards are the unsuffixed current names
+/// (`search_projection.hawdb` and the descriptor, payload and lexical
+/// manifest) replaced by hard links to the selected generation. A process or
+/// power loss before the selector leaves every current name and the manifest
+/// at the previous checkpoint. A loss after it leaves some current names one
+/// generation behind; this repair re-links them from the generation the
+/// manifest selects, after verifying each source against its manifest object.
+///
+/// The repair applies only when the selected generation's own snapshot exists
+/// and matches the manifest receipt. Older layouts (no generation snapshot)
+/// and generations published by other writers keep their existing behavior.
+pub(super) fn recover_resident_aliases(root: &Path) -> Result<()> {
+    sweep_resident_scratch(root);
+    let manifest_path = root.join(OUT_OF_CORE_MANIFEST_FILE);
+    if !fs::try_exists(&manifest_path)? {
+        return Ok(());
+    }
+    let Ok(manifest) = read_bounded_file(&manifest_path, MAX_OUT_OF_CORE_MANIFEST_BYTES)
+        .and_then(|bytes| SearchOutOfCoreManifestBody::decode(&bytes))
+    else {
+        // Existing open validation reports an unreadable selector.
+        return Ok(());
+    };
+    let Some(snapshot) = manifest
+        .resident_snapshot
+        .filter(|snapshot| !snapshot.metadata_only)
+    else {
+        return Ok(());
+    };
+    let generation = manifest.generation;
+    let [segment] = manifest.segments.as_slice() else {
+        return Ok(());
+    };
+    let aliases = resident_aliases(generation);
+    if !manifest.mutation_runs.is_empty()
+        || segment.generation != generation
+        || segment.payload_file != aliases[1].1
+        || segment.descriptor_file != aliases[2].1
+        || segment.lexical_manifest_file != aliases[3].1
+    {
+        return Ok(());
+    }
+    let objects = [
+        snapshot.object,
+        segment.objects.payload,
+        segment.objects.descriptor,
+        segment.objects.lexical_manifest,
+    ];
+    for (index, ((current, generation_file), object)) in aliases.iter().zip(objects).enumerate() {
+        let source = root.join(generation_file);
+        let target = root.join(current);
+        if !fs::try_exists(&source)? {
+            if index == 0 {
+                // Not a deferred-alias publication: nothing to re-derive.
+                return Ok(());
+            }
+            continue;
+        }
+        if same_file(&source, &target)?
+            || (fs::try_exists(&target)? && file_matches_object(&target, object)?)
+        {
+            continue;
+        }
+        if !file_matches_object(&source, object)? {
+            if index == 0 {
+                return Ok(());
+            }
+            continue;
+        }
+        publish_generation_link(&source, &target)?;
+    }
+    Ok(())
+}
+
+/// Families a resident checkpoint writes under generation names and then
+/// aliases. Their scratch names are private to that checkpoint.
+const RESIDENT_ALIAS_STEMS: [&str; 4] = [
+    "search_projection",
+    "search_projection_segment_payloads",
+    "search_projection_segments",
+    "search_lexical.manifest",
+];
+
+/// Scratch a resident checkpoint can leave after a crash: an alias link
+/// temporary (`<stem>.tmp.<pid>.<sequence>`) or a generation file's write
+/// temporary (`<stem>.<generation>.hawdb.tmp` / `.hawdb.zstd.tmp`). Neither
+/// is ever selected; a snapshot-sized one would otherwise persist forever.
+fn is_resident_scratch(name: &str) -> bool {
+    let digits = |value: &str| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit());
+    RESIDENT_ALIAS_STEMS.iter().any(|stem| {
+        let Some(rest) = name.strip_prefix(stem) else {
+            return false;
+        };
+        if let Some(sequence) = rest.strip_prefix(".tmp.") {
+            return sequence
+                .split_once('.')
+                .is_some_and(|(pid, sequence)| digits(pid) && digits(sequence));
+        }
+        rest.strip_prefix('.')
+            .and_then(|rest| {
+                rest.strip_suffix(".hawdb.zstd.tmp")
+                    .or_else(|| rest.strip_suffix(".hawdb.tmp"))
+            })
+            .is_some_and(digits)
+    })
+}
+
+/// Runs only while the caller holds the root's publication lease, so no live
+/// checkpoint owns any of these names. Best effort, like generation cleanup:
+/// a name that cannot be removed now is retried on the next open.
+fn sweep_resident_scratch(root: &Path) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if let Some(name) = entry.file_name().to_str()
+            && is_resident_scratch(name)
+        {
+            let _ = fs::remove_file(root.join(name));
+        }
+    }
+}
+
+#[cfg(unix)]
+fn same_file(left: &Path, right: &Path) -> Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+    let left = fs::metadata(left)?;
+    let right = match fs::metadata(right) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    Ok(left.dev() == right.dev() && left.ino() == right.ino())
+}
+
+#[cfg(not(unix))]
+fn same_file(_source: &Path, _target: &Path) -> Result<bool> {
+    // Stable std exposes no file identity on Windows (`file_index` is
+    // unstable). The caller then hashes each current name once per reopen.
+    Ok(false)
+}
+
+fn file_matches_object(path: &Path, object: ArtifactObject) -> Result<bool> {
+    use hawdb_storage::immutable_object::ObjectReferenceWriter;
+    let expected = object.reference();
+    let mut file = File::open(path)?;
+    if file.metadata()?.len() != expected.byte_length {
+        return Ok(false);
+    }
+    let mut writer =
+        ObjectReferenceWriter::new(expected.kind, expected.format_version, expected.byte_length)
+            .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
+    let mut buffer = vec![0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        writer.write_all(&buffer[..read])?;
+    }
+    Ok(writer.finish().ok() == Some(expected))
 }
 
 #[cfg(test)]
@@ -5492,6 +5905,8 @@ pub(super) fn seal_resident_candidate(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(all(feature = "full-text-search", feature = "vector-search"))]
+    mod admitted_working;
     #[cfg(feature = "full-text-search")]
     mod bm25_windows;
     #[cfg(feature = "full-text-search")]
@@ -5582,6 +5997,11 @@ mod tests {
     #[test]
     fn resident_segment_and_lexical_producer_references_reject_installed_same_length_changes() {
         check_resident_producer_changes(3..7);
+    }
+
+    #[test]
+    fn resident_generation_snapshot_reference_rejects_installed_same_length_changes() {
+        check_resident_producer_changes(7..8);
     }
 
     fn check_resident_producer_changes(artifacts: std::ops::Range<usize>) {

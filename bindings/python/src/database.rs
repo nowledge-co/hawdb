@@ -12,15 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use hawdb::{
     DatabaseConfig, DatabaseReadTransaction, DurabilityPolicy, EmbeddedDeploymentProfile,
-    HawDBEmbedded, HawDBEmbeddedOpenOptions, QueryOutput, Value,
+    HawDBEmbedded, HawDBEmbeddedOpenOptions, QueryOutput, QueryRowRef, QueryRows,
+    SqlStatementResult, Value,
 };
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyIndexError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList, PySequenceMethods};
+use pyo3::types::{PyDict, PyList, PySequenceMethods, PyString, PyTuple};
 
 use crate::errors::{format_embedded_error, format_hawdb_error, StorageError};
 use crate::value::{
@@ -256,7 +258,7 @@ impl Database {
             .map_err(|error| format_embedded_error(&error))?;
         #[cfg(feature = "boundary-profiling")]
         drop(engine);
-        QueryResult::from_output(py, output)
+        Ok(QueryResult::from_output(output))
     }
 
     /// Returns the physical Cypher plan without executing the statement.
@@ -364,7 +366,9 @@ impl Database {
     /// Runs one SQL statement and returns the materialized result.
     ///
     /// `params` is an optional list of positional parameters with the same
-    /// supported value types as `execute`.
+    /// supported value types as `execute`. For an INSERT, UPDATE or DELETE
+    /// on a RowPage table, `affected_rows` of the result is the committed
+    /// row count.
     #[pyo3(signature = (sql, params = None))]
     fn execute_sql(
         &mut self,
@@ -390,12 +394,16 @@ impl Database {
         #[cfg(feature = "boundary-profiling")]
         let engine =
             crate::boundary_profile::PhaseTimer::start(crate::boundary_profile::Phase::Engine);
-        let output = py
-            .detach(|| database.database_mut().query_sql_with_params(sql, &values))
+        let result = py
+            .detach(|| {
+                database
+                    .database_mut()
+                    .query_sql_with_result_and_params(sql, &values)
+            })
             .map_err(|error| format_hawdb_error(&error))?;
         #[cfg(feature = "boundary-profiling")]
         drop(engine);
-        QueryResult::from_output(py, output)
+        Ok(QueryResult::from_sql_result(result))
     }
 
     /// Runs one Cypher statement for each parameter dict in one transaction.
@@ -489,37 +497,98 @@ impl Database {
     }
 }
 
-/// Materialized rows of one statement result.
+/// Rows of one statement result.
 ///
-/// Rows are materialized eagerly when the query returns; iterating or
-/// fetching never touches the engine again.
+/// The engine's result is materialized when the query returns, and fetching
+/// never touches the engine again. Rows become Python objects only as they
+/// are fetched: each fetch builds new dicts (or tuples) that the caller owns,
+/// so the result never keeps a Python copy of a row it has handed out.
 #[pyclass(module = "hawdb", name = "QueryResult")]
 pub struct QueryResult {
-    columns: Vec<String>,
-    rows: Vec<Py<PyDict>>,
+    /// The engine's rows, moved out of its `QueryOutput` without a copy.
+    /// They stay alive, and keep their result-memory charge, until the
+    /// result is dropped; fetches convert from them.
+    rows: QueryRows,
     cursor: usize,
+    affected_rows: Option<usize>,
 }
 
 impl QueryResult {
-    fn from_output(py: Python<'_>, output: QueryOutput) -> PyResult<Self> {
+    fn from_output(output: QueryOutput) -> Self {
+        Self {
+            rows: output.rows,
+            cursor: 0,
+            affected_rows: None,
+        }
+    }
+
+    /// Converts a SQL statement result, keeping its RowPage mutation count.
+    fn from_sql_result(result: SqlStatementResult) -> Self {
+        Self {
+            affected_rows: result.mutation.map(|mutation| mutation.affected_rows),
+            ..Self::from_output(result.output)
+        }
+    }
+
+    /// Converts rows `range` with `convert`, which receives the row's values
+    /// in column order and the interned column names.
+    fn convert_rows<'py, T>(
+        &self,
+        py: Python<'py>,
+        range: Range<usize>,
+        mut convert: impl FnMut(&[Bound<'py, PyString>], QueryRowRef<'_>) -> PyResult<T>,
+    ) -> PyResult<Vec<T>> {
         #[cfg(feature = "boundary-profiling")]
         let _conversion =
             crate::boundary_profile::PhaseTimer::start(crate::boundary_profile::Phase::Results);
-        let columns = output.schema().columns().to_vec();
-        let mut rows = Vec::new();
-        for row in output.value_rows() {
+        // One key object per column, shared by every dict of this fetch.
+        let names = self
+            .rows
+            .schema()
+            .columns()
+            .iter()
+            .map(|name| PyString::new(py, name))
+            .collect::<Vec<_>>();
+        range
+            .map(|index| {
+                let row = self.rows.row(index).expect("row ordinal is in range");
+                convert(&names, row)
+            })
+            .collect()
+    }
+
+    fn dicts<'py>(
+        &self,
+        py: Python<'py>,
+        range: Range<usize>,
+    ) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        self.convert_rows(py, range, |names, row| {
             let dict = PyDict::new(py);
-            for (index, column) in columns.iter().enumerate() {
-                let value = row.get(index).unwrap_or(&Value::Null);
-                dict.set_item(column, value_to_py(py, value)?)?;
+            for (name, value) in names.iter().zip(row.values()) {
+                dict.set_item(name, value_to_py(py, value)?)?;
             }
-            rows.push(dict.unbind());
-        }
-        Ok(Self {
-            columns,
-            rows,
-            cursor: 0,
+            Ok(dict)
         })
+    }
+
+    fn tuples<'py>(
+        &self,
+        py: Python<'py>,
+        range: Range<usize>,
+    ) -> PyResult<Vec<Bound<'py, PyTuple>>> {
+        self.convert_rows(py, range, |_, row| {
+            PyTuple::new(
+                py,
+                row.values()
+                    .map(|value| value_to_py(py, value))
+                    .collect::<PyResult<Vec<_>>>()?,
+            )
+        })
+    }
+
+    /// The next `size` rows from the cursor, clamped to the row count.
+    fn next_range(&self, size: usize) -> Range<usize> {
+        self.cursor..self.cursor.saturating_add(size).min(self.rows.len())
     }
 }
 
@@ -528,44 +597,60 @@ impl QueryResult {
     /// Column names of the result, in declaration order.
     #[getter]
     fn columns(&self) -> Vec<String> {
-        self.columns.clone()
+        self.rows.schema().columns().to_vec()
     }
 
-    /// Number of materialized rows.
+    /// Number of rows in the result, fetched or not.
     #[getter]
     fn row_count(&self) -> usize {
         self.rows.len()
     }
 
-    /// Returns the next row as a dict, or None when exhausted.
-    fn fetchone(&mut self, py: Python<'_>) -> Option<Py<PyDict>> {
-        let row = self.rows.get(self.cursor).map(|row| row.clone_ref(py));
-        if row.is_some() {
-            self.cursor += 1;
-        }
-        row
+    /// Rows inserted, updated or deleted by a SQL INSERT, UPDATE or DELETE
+    /// on a RowPage table, or None for any other statement (queries, DDL,
+    /// branch commands, Strict Append writes, Cypher). Conflict no-ops of
+    /// `ON CONFLICT DO NOTHING` are not counted. Inside a transaction the
+    /// count is of staged rows, published on commit.
+    #[getter]
+    fn affected_rows(&self) -> Option<usize> {
+        self.affected_rows
     }
 
-    /// Returns up to `size` rows starting at the cursor.
+    /// Returns the next row as a new dict, or None when exhausted.
+    fn fetchone<'py>(&mut self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        Ok(self.fetchmany(py, 1)?.pop())
+    }
+
+    /// Returns up to `size` rows starting at the cursor, as new dicts.
     #[pyo3(signature = (size = 1))]
-    fn fetchmany(&mut self, py: Python<'_>, size: usize) -> Vec<Py<PyDict>> {
-        let end = (self.cursor + size).min(self.rows.len());
-        let rows = self.rows[self.cursor..end]
-            .iter()
-            .map(|row| row.clone_ref(py))
-            .collect();
-        self.cursor = end;
-        rows
+    fn fetchmany<'py>(
+        &mut self,
+        py: Python<'py>,
+        size: usize,
+    ) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        let range = self.next_range(size);
+        let rows = self.dicts(py, range.clone())?;
+        self.cursor = range.end;
+        Ok(rows)
     }
 
-    /// Returns every remaining row from the cursor.
-    fn fetchall(&mut self, py: Python<'_>) -> Vec<Py<PyDict>> {
-        let rows = self.rows[self.cursor..]
-            .iter()
-            .map(|row| row.clone_ref(py))
-            .collect();
-        self.cursor = self.rows.len();
-        rows
+    /// Returns up to `size` rows starting at the cursor, as new tuples in
+    /// column order. Shares the cursor with the dict fetches.
+    #[pyo3(signature = (size = 1))]
+    fn fetchmany_tuples<'py>(
+        &mut self,
+        py: Python<'py>,
+        size: usize,
+    ) -> PyResult<Vec<Bound<'py, PyTuple>>> {
+        let range = self.next_range(size);
+        let rows = self.tuples(py, range.clone())?;
+        self.cursor = range.end;
+        Ok(rows)
+    }
+
+    /// Returns every remaining row from the cursor, as new dicts.
+    fn fetchall<'py>(&mut self, py: Python<'py>) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        self.fetchmany(py, usize::MAX)
     }
 
     fn __len__(&self) -> usize {
@@ -576,46 +661,61 @@ impl QueryResult {
         slf
     }
 
-    fn __next__(&mut self, py: Python<'_>) -> Option<Py<PyDict>> {
-        let row = self.rows.get(self.cursor).map(|row| row.clone_ref(py));
-        if row.is_some() {
-            self.cursor += 1;
+    fn __next__<'py>(&mut self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        self.fetchone(py)
+    }
+
+    /// The first non-null value of column `column` in the whole result,
+    /// independent of the fetch cursor, or None when every value is null.
+    ///
+    /// Scans the engine's values and converts only the one it returns; the
+    /// DB-API derives `description` type codes from it.
+    fn _first_non_null(&self, py: Python<'_>, column: usize) -> PyResult<Option<Py<PyAny>>> {
+        if column >= self.rows.schema().len() {
+            return Err(PyIndexError::new_err("column index out of range"));
         }
-        row
+        self.rows
+            .value_rows()
+            .map(|values| &values[column])
+            .find(|value| !matches!(value, Value::Null))
+            .map(|value| value_to_py(py, value))
+            .transpose()
     }
 
     /// Notebook HTML table of the first rows; the plain `repr` is unchanged.
     ///
     /// Always renders from the first row, independent of the fetch cursor.
-    /// The row cap lives in `hawdb._display`; only rows within it are handed
-    /// over, so large results do not build a full list to draw a few rows.
+    /// The row cap lives in `hawdb._display`; only rows within it are
+    /// converted, so large results do not build a full list to draw a few rows.
     fn _repr_html_(&self, py: Python<'_>) -> PyResult<String> {
         let display = py.import("hawdb._display")?;
         let limit: usize = display.getattr("DISPLAY_ROW_LIMIT")?.extract()?;
-        let rows = PyList::new(py, self.rows.iter().take(limit).map(|row| row.bind(py)))?;
+        let rows = self.dicts(py, 0..limit.min(self.rows.len()))?;
         display
             .getattr("render_html")?
-            .call1((self.columns.clone(), rows, self.rows.len()))?
+            .call1((self.columns(), rows, self.rows.len()))?
             .extract()
     }
 
-    /// Rows `start..stop` for notebook display, independent of the fetch cursor.
+    /// Rows `start..stop` for notebook display, as new dicts, independent of
+    /// the fetch cursor.
     ///
     /// `stop` defaults to the row count; both bounds are clamped to it.
     #[pyo3(signature = (start = 0, stop = None))]
-    fn _display_rows(&self, py: Python<'_>, start: usize, stop: Option<usize>) -> Vec<Py<PyDict>> {
+    fn _display_rows<'py>(
+        &self,
+        py: Python<'py>,
+        start: usize,
+        stop: Option<usize>,
+    ) -> PyResult<Vec<Bound<'py, PyDict>>> {
         let stop = stop.unwrap_or(self.rows.len()).min(self.rows.len());
-        let start = start.min(stop);
-        self.rows[start..stop]
-            .iter()
-            .map(|row| row.clone_ref(py))
-            .collect()
+        self.dicts(py, start.min(stop)..stop)
     }
 
     fn __repr__(&self) -> String {
         format!(
             "hawdb.QueryResult(columns={:?}, rows={})",
-            self.columns,
+            self.rows.schema().columns(),
             self.rows.len()
         )
     }
@@ -704,11 +804,13 @@ impl Transaction {
         let output = py
             .detach(|| embedded.transaction_query_with_params(cypher, &params))
             .map_err(|error| format_hawdb_error(&error))?;
-        QueryResult::from_output(py, output)
+        Ok(QueryResult::from_output(output))
     }
 
     /// Runs one SQL statement inside the transaction. Same signature and
-    /// parameter types as `Database.execute_sql`.
+    /// parameter types as `Database.execute_sql`. `affected_rows` of the
+    /// result counts the rows the statement staged; they are published only
+    /// when the transaction commits.
     #[pyo3(signature = (sql, params = None))]
     fn execute_sql(
         &mut self,
@@ -723,10 +825,10 @@ impl Transaction {
         self.required()?;
         let mut db = self.db.borrow_mut(py);
         let embedded = db.required()?;
-        let output = py
-            .detach(|| embedded.transaction_query_sql_with_params(sql, &values))
+        let result = py
+            .detach(|| embedded.transaction_query_sql_with_result_and_params(sql, &values))
             .map_err(|error| format_hawdb_error(&error))?;
-        QueryResult::from_output(py, output)
+        Ok(QueryResult::from_sql_result(result))
     }
 
     /// Runs a batch of Cypher bindings without committing the outer transaction.
@@ -777,7 +879,7 @@ impl Transaction {
         let output = py
             .detach(|| embedded.commit_transaction())
             .map_err(|error| format_hawdb_error(&error))?;
-        QueryResult::from_output(py, output)
+        Ok(QueryResult::from_output(output))
     }
 
     /// Abandons the transaction without committing. Safe to call once.
@@ -870,7 +972,7 @@ impl ReadTransaction {
         let output = py
             .detach(|| transaction.query_with_params(cypher, &params))
             .map_err(|error| format_hawdb_error(&error))?;
-        QueryResult::from_output(py, output)
+        Ok(QueryResult::from_output(output))
     }
 
     /// Runs one SQL statement against the pinned snapshot. Same signature
@@ -890,7 +992,7 @@ impl ReadTransaction {
         let output = py
             .detach(|| transaction.query_sql_with_params(sql, &values))
             .map_err(|error| format_hawdb_error(&error))?;
-        QueryResult::from_output(py, output)
+        Ok(QueryResult::from_output(output))
     }
 
     /// Releases the pinned snapshot. Safe to call more than once.

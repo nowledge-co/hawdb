@@ -14,17 +14,19 @@ use super::*;
 
 mod layout;
 use layout::{
-    decode_document_ordinal, document_key, put_varint, sealed_block_key, sealed_block_range,
-    MIN_BLOCK_POSTINGS,
+    bounds_key, decode_document_ordinal, document_key, put_varint, sealed_block_key,
+    sealed_block_range, MIN_BLOCK_POSTINGS,
 };
 pub use layout::{
-    decode_search_sealed_block, decode_search_sealed_block_header, search_index_block_fence,
-    search_index_dictionary_key, search_index_length_block_key, search_index_length_block_range,
-    search_index_length_block_start, search_index_sealed_block_after_range,
-    search_index_sealed_block_range, search_index_statistics_key, SearchDocumentEntry,
-    SearchIndexStatistics, SearchLengthBlock, SearchPosting, SearchPostingBlockHeader,
-    SearchTermDictionary, SEARCH_INDEX_BLOCK_POSTINGS, SEARCH_INDEX_LENGTH_BLOCK_DOCUMENTS,
-    SEARCH_INDEX_MAX_BLOCK_POSTINGS, SEARCH_INDEX_TAIL_POSTINGS,
+    decode_search_sealed_block, decode_search_sealed_block_header, search_index_block_bounds_range,
+    search_index_block_fence, search_index_dictionary_key, search_index_length_block_key,
+    search_index_length_block_range, search_index_length_block_start,
+    search_index_sealed_block_after_range, search_index_sealed_block_range,
+    search_index_sealed_block_window, search_index_statistics_key, SearchBlockBounds,
+    SearchDocumentEntry, SearchIndexStatistics, SearchLengthBlock, SearchPosting,
+    SearchPostingBlockHeader, SearchTermDictionary, SEARCH_INDEX_BLOCK_POSTINGS,
+    SEARCH_INDEX_LENGTH_BLOCK_DOCUMENTS, SEARCH_INDEX_MAX_BLOCK_POSTINGS,
+    SEARCH_INDEX_TAIL_POSTINGS,
 };
 
 /// Every row of a search index relation is `(kind, name, slot) -> data`; see
@@ -37,7 +39,7 @@ pub const SEARCH_INDEX_DATA_COLUMN: &str = "__hawdb_search_data";
 pub const SEARCH_INDEX_COLUMN_COUNT: usize = 4;
 /// The physical layout recorded with every search index definition. Readers
 /// refuse any other layout as an unsupported format.
-pub(crate) const SEARCH_INDEX_LAYOUT_TAG: u8 = 2;
+pub(crate) const SEARCH_INDEX_LAYOUT_TAG: u8 = 3;
 /// Tokens longer than this many bytes are not indexed (encoded blobs, hashes).
 pub const SEARCH_INDEX_MAX_TOKEN_BYTES: usize = 128;
 
@@ -457,13 +459,39 @@ impl IndexRows<'_, '_> {
     }
 }
 
-/// Applies ordinal-sorted changes (`Some(tf)` sets, `None` removes) to an
-/// ordinal-sorted posting list, keeping `frequency` (the term's document
-/// frequency) exact.
+/// One commit's change to one term's posting for one document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PostingChange {
+    /// The document now contains the term `frequency` times and is `length`
+    /// tokens long.
+    Set { frequency: u64, length: u64 },
+    /// The document no longer contains the term (or left the corpus).
+    Remove,
+    /// The posting is unchanged, but its document became shorter (`length`
+    /// tokens), so the owning block's minimum length must not exceed it.
+    Shorter { length: u64 },
+}
+
+/// Lowers a conservative minimum length, treating 0 on either side as absent.
+fn lower(min_length: &mut u64, length: u64) {
+    if length == 0 {
+        return;
+    }
+    *min_length = if *min_length == 0 {
+        length
+    } else {
+        (*min_length).min(length)
+    };
+}
+
+/// Applies ordinal-sorted changes to an ordinal-sorted posting list, keeping
+/// `frequency` (the term's document frequency) exact and `min_length` at most
+/// the length of every document the list holds.
 fn apply_changes(
     postings: &mut Vec<SearchPosting>,
-    changes: &[(u64, Option<u64>)],
+    changes: &[(u64, PostingChange)],
     frequency: &mut u64,
+    min_length: &mut u64,
 ) -> Result<(), RelationalError> {
     let mut merged = Vec::with_capacity(postings.len() + changes.len());
     let mut existing = std::mem::take(postings).into_iter().peekable();
@@ -471,12 +499,13 @@ fn apply_changes(
         while let Some(posting) = existing.next_if(|posting| posting.ordinal < ordinal) {
             merged.push(posting);
         }
-        let present = existing
-            .next_if(|posting| posting.ordinal == ordinal)
-            .is_some();
+        let present = existing.next_if(|posting| posting.ordinal == ordinal);
         match change {
-            Some(term_frequency) => {
-                if !present {
+            PostingChange::Set {
+                frequency: term_frequency,
+                length,
+            } => {
+                if present.is_none() {
                     *frequency = frequency
                         .checked_add(1)
                         .ok_or_else(|| corruption("document frequency overflows"))?;
@@ -485,18 +514,81 @@ fn apply_changes(
                     ordinal,
                     frequency: term_frequency,
                 });
+                lower(min_length, length);
             }
-            None if present => {
+            PostingChange::Remove if present.is_some() => {
                 *frequency = frequency
                     .checked_sub(1)
                     .ok_or_else(|| corruption("document frequency is negative"))?;
             }
-            None => return Err(corruption("posting to remove is missing")),
+            PostingChange::Remove => return Err(corruption("posting to remove is missing")),
+            PostingChange::Shorter { length } => {
+                merged.push(present.ok_or_else(|| corruption("posting to bound is missing"))?);
+                lower(min_length, length);
+            }
         }
     }
     merged.extend(existing);
     *postings = merged;
     Ok(())
+}
+
+/// A sealed block's postings with its bounds row, checked against each other.
+fn read_block(
+    index: &mut IndexRows<'_, '_>,
+    term: &str,
+    fence: u64,
+) -> Result<(Vec<SearchPosting>, SearchBlockBounds), RelationalError> {
+    let data = index
+        .read(&sealed_block_key(term, fence))?
+        .ok_or_else(|| corruption("sealed block is missing"))?;
+    let mut postings = Vec::new();
+    decode_search_sealed_block(fence, &data, &mut postings)?;
+    let bounds = read_bounds(index, term, fence)?;
+    if !bounds.describes(fence, &postings) {
+        return Err(corruption("block bounds disagree with their block"));
+    }
+    Ok((postings, bounds))
+}
+
+fn read_bounds(
+    index: &mut IndexRows<'_, '_>,
+    term: &str,
+    fence: u64,
+) -> Result<SearchBlockBounds, RelationalError> {
+    let data = index
+        .read(&bounds_key(term, fence))?
+        .ok_or_else(|| corruption("block bounds are missing"))?;
+    SearchBlockBounds::decode(fence, &data)
+}
+
+/// Writes a sealed block and its bounds row: the exact count, last ordinal
+/// and maximum frequency of `postings`, and `min_length` as the length bound.
+fn write_block(
+    index: &mut IndexRows<'_, '_>,
+    term: &str,
+    fence: u64,
+    postings: &[SearchPosting],
+    min_length: u64,
+) -> Result<(), RelationalError> {
+    if !postings.is_empty() && min_length == 0 {
+        return Err(corruption("sealed block has no length bound"));
+    }
+    let bounds = SearchBlockBounds::of(fence, postings, min_length);
+    index.write(
+        sealed_block_key(term, fence),
+        Some(layout::encode_sealed_block(fence, postings)),
+    )?;
+    index.write(bounds_key(term, fence), Some(bounds.encode(fence)))
+}
+
+fn delete_block(
+    index: &mut IndexRows<'_, '_>,
+    term: &str,
+    fence: u64,
+) -> Result<(), RelationalError> {
+    index.write(sealed_block_key(term, fence), None)?;
+    index.write(bounds_key(term, fence), None)
 }
 
 fn encode_ordinal(ordinal: u64) -> Vec<u8> {
@@ -535,7 +627,7 @@ pub(super) fn maintain(
     let mut statistics = stored.unwrap_or_default();
     // Changes are gathered for the whole commit first so that each term's
     // dictionary row and each touched block is rewritten once per commit.
-    let mut terms = BTreeMap::<String, BTreeMap<u64, Option<u64>>>::new();
+    let mut terms = BTreeMap::<String, BTreeMap<u64, PostingChange>>::new();
     let mut lengths = BTreeMap::<u64, Option<SearchDocumentEntry>>::new();
     for key in keys {
         let old = if rebuild {
@@ -593,17 +685,28 @@ pub(super) fn maintain(
         for term in old_terms.keys() {
             if !new_terms.contains_key(term) {
                 index.budget.charge(0, term.len().saturating_add(16))?;
-                terms.entry(term.clone()).or_default().insert(ordinal, None);
+                terms
+                    .entry(term.clone())
+                    .or_default()
+                    .insert(ordinal, PostingChange::Remove);
             }
         }
+        // A shorter document can score higher for a term whose posting did
+        // not change, so its owning block's length bound is lowered too.
+        let shorter = !old_terms.is_empty() && new_length < old_length;
         for (term, frequency) in new_terms {
-            if old_terms.get(&term) != Some(&frequency) {
-                index.budget.charge(0, term.len().saturating_add(16))?;
-                terms
-                    .entry(term)
-                    .or_default()
-                    .insert(ordinal, Some(frequency));
-            }
+            let change = if old_terms.get(&term) != Some(&frequency) {
+                PostingChange::Set {
+                    frequency,
+                    length: new_length,
+                }
+            } else if shorter {
+                PostingChange::Shorter { length: new_length }
+            } else {
+                continue;
+            };
+            index.budget.charge(0, term.len().saturating_add(16))?;
+            terms.entry(term).or_default().insert(ordinal, change);
         }
     }
     let mut block_changes = BTreeMap::<u64, Vec<(u64, Option<SearchDocumentEntry>)>>::new();
@@ -642,26 +745,28 @@ pub(super) fn maintain(
 
 /// Applies one commit's ordinal-sorted changes to one term. Appends touch
 /// only the dictionary row (flushing a full tail into sealed blocks); changes to
-/// older documents rewrite the sealed blocks that own them. Every rewritten
-/// block holds at most `SEARCH_INDEX_MAX_BLOCK_POSTINGS` postings, so the work is bounded
-/// by the number of changes rather than by the term's document frequency.
+/// older documents rewrite the sealed blocks that own them, and a document
+/// that only became shorter rewrites just its blocks' bounds rows. Every
+/// rewritten block holds at most `SEARCH_INDEX_MAX_BLOCK_POSTINGS` postings, so the work is
+/// bounded by the number of changes rather than by the term's document
+/// frequency.
 fn maintain_term(
     index: &mut IndexRows<'_, '_>,
     term: &str,
-    changes: &[(u64, Option<u64>)],
+    changes: &[(u64, PostingChange)],
 ) -> Result<(), RelationalError> {
     let dictionary_key = search_index_dictionary_key(term);
     let stored = index.read(&dictionary_key)?;
-    let existed = stored.is_some();
     let mut dictionary = stored
-        .map(|data| SearchTermDictionary::decode(&data))
+        .as_deref()
+        .map(SearchTermDictionary::decode)
         .transpose()?
         .unwrap_or_default();
     let split = changes.partition_point(|(ordinal, _)| *ordinal < dictionary.tail_start);
     let (sealed_changes, tail_changes) = changes.split_at(split);
     // Route each older change to the sealed block that owns its ordinal:
     // the block with the greatest fence at or below it.
-    let mut owned = BTreeMap::<u64, Vec<(u64, Option<u64>)>>::new();
+    let mut owned = BTreeMap::<u64, Vec<(u64, PostingChange)>>::new();
     let mut owner: Option<(u64, Option<u64>)> = None;
     for &(ordinal, change) in sealed_changes {
         let fence = match owner {
@@ -682,36 +787,55 @@ fn maintain_term(
     }
     let mut touched = Vec::with_capacity(owned.len());
     for (fence, changes) in owned {
-        let key = sealed_block_key(term, fence);
-        let data = index
-            .read(&key)?
-            .ok_or_else(|| corruption("sealed block is missing"))?;
-        let mut postings = Vec::new();
-        decode_search_sealed_block(fence, &data, &mut postings)?;
-        apply_changes(&mut postings, &changes, &mut dictionary.document_frequency)?;
+        if changes
+            .iter()
+            .all(|(_, change)| matches!(change, PostingChange::Shorter { .. }))
+        {
+            // Postings are unchanged: only the length bound can tighten.
+            let mut bounds = read_bounds(index, term, fence)?;
+            let mut min_length = bounds.min_length;
+            for (_, change) in &changes {
+                if let PostingChange::Shorter { length } = change {
+                    lower(&mut min_length, *length);
+                }
+            }
+            if bounds.count == 0 {
+                return Err(corruption("posting to bound is missing"));
+            }
+            if min_length != bounds.min_length {
+                bounds.min_length = min_length;
+                index.write(bounds_key(term, fence), Some(bounds.encode(fence)))?;
+            }
+            continue;
+        }
+        let (mut postings, bounds) = read_block(index, term, fence)?;
+        let mut min_length = bounds.min_length;
+        apply_changes(
+            &mut postings,
+            &changes,
+            &mut dictionary.document_frequency,
+            &mut min_length,
+        )?;
         if postings.len() > SEARCH_INDEX_MAX_BLOCK_POSTINGS {
             // Many older documents gained this term in one commit: split into
-            // full blocks keyed by their first ordinals.
+            // full blocks keyed by their first ordinals. Each part keeps the
+            // whole block's (conservative) length bound.
             let rest = postings.split_off(SEARCH_INDEX_BLOCK_POSTINGS);
             for chunk in rest.chunks(SEARCH_INDEX_BLOCK_POSTINGS) {
-                let chunk_fence = chunk[0].ordinal;
-                index.write(
-                    sealed_block_key(term, chunk_fence),
-                    Some(layout::encode_sealed_block(chunk_fence, chunk)),
-                )?;
+                write_block(index, term, chunk[0].ordinal, chunk, min_length)?;
                 dictionary.sealed_blocks += 1;
             }
         }
         if postings.is_empty() && fence != 0 {
             // The predecessor's range absorbs this one. The first block keeps
             // fence 0 even when empty so that every older ordinal has an owner.
-            index.write(key, None)?;
+            delete_block(index, term, fence)?;
             dictionary.sealed_blocks = dictionary
                 .sealed_blocks
                 .checked_sub(1)
                 .ok_or_else(|| corruption("sealed block count is negative"))?;
         } else {
-            index.write(key, Some(layout::encode_sealed_block(fence, &postings)))?;
+            write_block(index, term, fence, &postings, min_length)?;
             touched.push(fence);
         }
     }
@@ -719,28 +843,28 @@ fn maintain_term(
         &mut dictionary.tail,
         tail_changes,
         &mut dictionary.document_frequency,
+        &mut dictionary.tail_min_length,
     )?;
     if dictionary.tail.len() >= SEARCH_INDEX_TAIL_POSTINGS {
         // Flush the tail: first top up the last sealed block to a full block,
         // then seal what remains in blocks of up to a full block each. The
         // dictionary row rewritten by every append stays small, and a sealed
-        // block is rewritten once per flush, not once per append.
+        // block is rewritten once per flush, not once per append. Flushed
+        // postings carry the tail's length bound into their blocks.
         let mut tail = std::mem::take(&mut dictionary.tail);
+        let tail_min_length = dictionary.tail_min_length;
         if dictionary.sealed_blocks > 0 {
             let fence = index
                 .fence(sealed_block_range(term, (0, true), None)?, true)?
                 .ok_or_else(|| corruption("sealed block is missing"))?;
-            let key = sealed_block_key(term, fence);
-            let data = index
-                .read(&key)?
-                .ok_or_else(|| corruption("sealed block is missing"))?;
-            let mut postings = Vec::new();
-            decode_search_sealed_block(fence, &data, &mut postings)?;
+            let (mut postings, bounds) = read_block(index, term, fence)?;
             let room = SEARCH_INDEX_BLOCK_POSTINGS.saturating_sub(postings.len());
             if room > 0 {
                 postings.extend(tail.drain(..room.min(tail.len())));
                 dictionary.tail_start = postings[postings.len() - 1].ordinal + 1;
-                index.write(key, Some(layout::encode_sealed_block(fence, &postings)))?;
+                let mut min_length = bounds.min_length;
+                lower(&mut min_length, tail_min_length);
+                write_block(index, term, fence, &postings, min_length)?;
             }
         }
         while tail.len() >= SEARCH_INDEX_TAIL_POSTINGS {
@@ -748,26 +872,24 @@ fn maintain_term(
                 .drain(..SEARCH_INDEX_BLOCK_POSTINGS.min(tail.len()))
                 .collect::<Vec<_>>();
             let fence = dictionary.tail_start;
-            index.write(
-                sealed_block_key(term, fence),
-                Some(layout::encode_sealed_block(fence, &chunk)),
-            )?;
+            write_block(index, term, fence, &chunk, tail_min_length)?;
             dictionary.sealed_blocks += 1;
             dictionary.tail_start = chunk[chunk.len() - 1].ordinal + 1;
         }
         dictionary.tail = tail;
+    }
+    if dictionary.tail.is_empty() {
+        dictionary.tail_min_length = 0;
     }
     // Compaction: a changed block that shrank below a quarter merges into its
     // predecessor, or absorbs its successor, when the two fit in one block.
     // Delete-heavy churn therefore cannot leave a run of nearly empty blocks,
     // and each changed block costs at most one extra block rewrite.
     for fence in touched {
-        let key = sealed_block_key(term, fence);
-        let Some(data) = index.read(&key)? else {
+        if index.read(&sealed_block_key(term, fence))?.is_none() {
             continue;
-        };
-        let mut postings = Vec::new();
-        decode_search_sealed_block(fence, &data, &mut postings)?;
+        }
+        let (mut postings, bounds) = read_block(index, term, fence)?;
         if postings.len() >= MIN_BLOCK_POSTINGS {
             continue;
         }
@@ -784,27 +906,21 @@ fn maintain_term(
             let Some(neighbor) = neighbor else {
                 continue;
             };
-            let neighbor_key = sealed_block_key(term, neighbor);
-            let data = index
-                .read(&neighbor_key)?
-                .ok_or_else(|| corruption("sealed block is missing"))?;
-            let mut neighbor_postings = Vec::new();
-            decode_search_sealed_block(neighbor, &data, &mut neighbor_postings)?;
+            let (mut neighbor_postings, neighbor_bounds) = read_block(index, term, neighbor)?;
             if postings.len() + neighbor_postings.len() > SEARCH_INDEX_BLOCK_POSTINGS {
                 continue;
             }
+            let mut min_length = bounds.min_length;
+            lower(&mut min_length, neighbor_bounds.min_length);
             let (kept, kept_fence, removed) = if absorb {
                 postings.extend(neighbor_postings);
-                (postings, fence, neighbor_key)
+                (postings, fence, neighbor)
             } else {
                 neighbor_postings.extend(postings);
-                (neighbor_postings, neighbor, key)
+                (neighbor_postings, neighbor, fence)
             };
-            index.write(removed, None)?;
-            index.write(
-                sealed_block_key(term, kept_fence),
-                Some(layout::encode_sealed_block(kept_fence, &kept)),
-            )?;
+            delete_block(index, term, removed)?;
+            write_block(index, term, kept_fence, &kept, min_length)?;
             dictionary.sealed_blocks = dictionary
                 .sealed_blocks
                 .checked_sub(1)
@@ -816,15 +932,19 @@ fn maintain_term(
         // Only the retained empty first block can remain.
         match dictionary.sealed_blocks {
             0 => {}
-            1 => index.write(sealed_block_key(term, 0), None)?,
+            1 => delete_block(index, term, 0)?,
             _ => return Err(corruption("empty term retains sealed blocks")),
         }
-        if existed {
+        if stored.is_some() {
             index.write(dictionary_key, None)?;
         }
         return Ok(());
     }
-    index.write(dictionary_key, Some(dictionary.encode()))
+    let encoded = dictionary.encode();
+    if stored.as_deref() != Some(encoded.as_slice()) {
+        index.write(dictionary_key, Some(encoded))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

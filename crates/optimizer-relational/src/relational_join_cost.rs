@@ -127,7 +127,10 @@ impl RelationalAccessCostContext {
                     sequential: pages.saturating_mul(SNAPSHOT_ROOT_DESCRIPTOR_READS),
                 }
             }
-            RelationalAccessPathKind::PrimaryKey => snapshot.point_work(rows),
+            // Ranked candidates are fetched by primary key.
+            RelationalAccessPathKind::PrimaryKey | RelationalAccessPathKind::SearchIndex => {
+                snapshot.point_work(rows)
+            }
             RelationalAccessPathKind::PrimaryKeyRange => {
                 // One root search positions the interval on its first page;
                 // the remaining rows share the following pages in key order.
@@ -283,6 +286,9 @@ pub fn estimate_relational_access_path_cost_with_context(
             input_rows,
         ),
         RelationalAccessPathKind::PrimaryKey => (rows, rows, 0),
+        // Index work is reported by the scan itself; each ranked row is a
+        // primary-key fetch.
+        RelationalAccessPathKind::SearchIndex => (rows, rows, 0),
         // A clustered interval is one seek followed by an in-order row scan.
         RelationalAccessPathKind::PrimaryKeyRange => (rows, 1, rows),
         RelationalAccessPathKind::Index => {

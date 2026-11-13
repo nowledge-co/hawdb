@@ -175,7 +175,45 @@ does not mutate graph records or increase WAL replay work.
 Search projection snapshots use the same temporary-file, file sync, atomic
 rename, and parent-directory sync boundary when `SearchIndex::checkpoint`
 publishes `search_projection.hawdb`; the snapshot uses the same zstd envelope
-by default. The projection remains rebuildable and is not part of canonical
+by default. An unregistered resident checkpoint is crash-atomic (#1711). It
+first synchronizes the projection directory's ancestry, so a directory that
+`SearchIndex::open` created cannot lose its entry after a durable selector. It
+then writes every artifact under a generation name (the snapshot as
+`search_projection.<g>.hawdb`, plus the descriptor, payload, lexical, sidecar
+and vector files), each synced and renamed into place. The rename of
+`search_projection.out_of_core.manifest.hawdb`, whose receipt already binds the
+snapshot's object reference, is the single commit point. Only then are
+`search_projection.hawdb`, `search_projection_segment_payloads.hawdb`,
+`search_projection_segments.hawdb` and `search_lexical.manifest.hawdb`, in that
+order, replaced by hard links (or synced copies) to the selected generation. A loss
+before the selector leaves every current name and the selector at the previous
+checkpoint. After it, `SearchIndex::open` re-links any current name that differs
+from the selected generation, but only from a generation file whose bytes match
+the selector's object reference. The repair runs only when the selected
+generation snapshot exists and matches its receipt. Older layouts and selectors
+from other writers keep the existing validation. Before the selector, every
+installed generation file, including the snapshot, is re-read and checked
+against the reference the selector records. Reopen also removes alias-link and
+generation-write temporaries left by an interrupted checkpoint. On Windows,
+which has no stable file identity in std, each reopen hashes the four current
+files once. The current and previous generation snapshots stay under the
+ordinary content-generation retention. See
+[resident checkpoint qualification](SEARCH_SEGMENT_POWER_LOSS_QUALIFICATION.md#resident-checkpoint).
+
+Compatibility: a projection written before #1711 has no generation snapshot
+and opens unchanged. The first new checkpoint adds one. After a completed
+checkpoint, older binaries see the same current names and selector as before
+and open normally. They ignore and never clean up the extra
+`search_projection.<g>.hawdb` links. A crash can leave a projection between
+its selector and its aliases. If its snapshot alias is still stale, an older
+binary refuses it with the existing "resident search snapshot does not match
+the published immutable projection" error. Once the snapshot alias has landed,
+the older binary's existing identity checks reject any stale descriptor or
+lexical alias. It then rebuilds the descriptor or treats the lexical projection
+as absent, so it never serves the previous generation's artifacts as the new
+one. A newer binary repairs every alias on open. Registered
+Consumer checkpoints keep their previous order; their Consumer publication
+record selects the producer closure. The projection remains rebuildable and is not part of canonical
 graph WAL recovery. Snapshot publication streams the header and one encoded
 document record at a time through zstd into a temporary payload, then copies
 that payload behind the checksummed envelope before publication. It does not

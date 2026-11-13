@@ -5,8 +5,8 @@
 
 use super::{effective_search_candidate_mode, SearchCandidateOutput, SearchCandidateRequest};
 use crate::{
-    AdaptiveVectorSearchOptions, Result, SearchIndex, SearchOutOfCoreReader, SearchQueryOptions,
-    VectorSearchExecutionOptions,
+    AdaptiveVectorSearchOptions, Result, SearchIndex, SearchOutOfCoreExecutionContext,
+    SearchOutOfCoreReader, SearchQueryOptions, VectorSearchExecutionOptions,
 };
 
 fn query_options(request: &SearchCandidateRequest) -> SearchQueryOptions {
@@ -78,16 +78,52 @@ impl SearchOutOfCoreReader {
         request: &SearchCandidateRequest,
         execution: VectorSearchExecutionOptions<'_>,
     ) -> Result<SearchCandidateOutput> {
+        self.search_candidates_with_report_execution(request, execution, None)
+    }
+
+    /// Bind candidate evidence while charging the caller's admitted working memory.
+    ///
+    /// See [`Self::search_with_options_admitted`] for the working-memory and
+    /// result-budget contract. The execution task context must be bound to `permit`.
+    pub fn search_candidates_with_report_admitted(
+        &self,
+        request: &SearchCandidateRequest,
+        execution: VectorSearchExecutionOptions<'_>,
+        permit: &hawdb_qos::RuntimePermit,
+    ) -> Result<SearchCandidateOutput> {
+        self.search_candidates_with_report_execution(request, execution, Some(permit))
+    }
+
+    fn search_candidates_with_report_execution(
+        &self,
+        request: &SearchCandidateRequest,
+        execution: VectorSearchExecutionOptions<'_>,
+        permit: Option<&hawdb_qos::RuntimePermit>,
+    ) -> Result<SearchCandidateOutput> {
         let compression = effective_search_candidate_mode(request);
         let execution = request.vector_execution_options(execution)?;
-        let output = self.search_with_options_compressed_vector_projection_execution_options(
-            &request.query_text,
-            request.query_embedding.as_deref(),
-            request.mode,
-            query_options(request),
-            compression,
-            execution,
-        )?;
+        let output = match permit {
+            Some(permit) => self.search_with_options_admitted(
+                &request.query_text,
+                request.query_embedding.as_deref(),
+                request.mode,
+                query_options(request),
+                SearchOutOfCoreExecutionContext {
+                    access_control: None,
+                    compressed_vector_search_mode: compression,
+                    vector_execution_options: execution,
+                },
+                permit,
+            )?,
+            None => self.search_with_options_compressed_vector_projection_execution_options(
+                &request.query_text,
+                request.query_embedding.as_deref(),
+                request.mode,
+                query_options(request),
+                compression,
+                execution,
+            )?,
+        };
         SearchCandidateOutput::from_search_result(
             request,
             compression,

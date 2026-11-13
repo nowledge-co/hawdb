@@ -136,6 +136,40 @@ mod retrieval {
         }
     }
 
+    fn admitted_output(
+        reader: &crate::SearchOutOfCoreReader,
+        request: &SearchCandidateRequest,
+        working_bytes: usize,
+    ) -> crate::Result<SearchCandidateOutput> {
+        use hawdb_qos::{
+            IoConcurrencyBudget, RuntimeGovernor, RuntimeGovernorConfig, RuntimeMemorySnapshot,
+            RuntimeResourceBudget, RuntimeResourceSnapshot, RuntimeWorkRequest,
+        };
+        use std::num::NonZeroUsize;
+
+        let governor = RuntimeGovernor::new(
+            RuntimeGovernorConfig::shared_host(),
+            RuntimeResourceSnapshot::from_parts(
+                RuntimeResourceBudget::from_limits(NonZeroUsize::new(2).unwrap(), None, None),
+                RuntimeMemorySnapshot::from_limits(Some(4 << 30), Some(4 << 30), None, None, None),
+            ),
+            IoConcurrencyBudget::new(2, 1),
+        );
+        let permit = governor
+            .try_admit(
+                RuntimeWorkRequest::foreground_query(working_bytes as u64, 1 << 20)
+                    .with_io_slots(1)
+                    .with_blocking(true),
+            )
+            .unwrap();
+        let task = permit.bind_task_context(Default::default());
+        reader.search_candidates_with_report_admitted(
+            request,
+            VectorSearchExecutionOptions::admitted(working_bytes, &task),
+            &permit,
+        )
+    }
+
     #[test]
     fn persisted_reduced_lexical_terms_do_not_prove_exhaustion() {
         use std::num::NonZeroUsize;
@@ -169,28 +203,53 @@ mod retrieval {
                 },
             )
             .unwrap();
-            let text = reader
-                .search_candidates_with_report_context(
-                    &request,
-                    VectorSearchExecutionOptions::default(),
-                )
-                .unwrap();
-            assert!(text.out_of_core_metrics().is_some());
-            if reduced {
-                assert_eq!(text.accept_bounded().hits[0].id, "doc0");
-                assert_reduced_text_refuses_exhaustion(&text, 1);
-                if cfg!(feature = "vector-search") {
-                    let hybrid = reader
-                        .search_candidates_with_report_context(
-                            &SearchCandidateRequest::hybrid("common rare", vec![1.0, 0.0], 10)
-                                .with_exact_vector_search(),
+            if policy == crate::LexicalQueryTermPolicy::Exact {
+                let error = admitted_output(&reader, &request, 1).unwrap_err();
+                assert!(
+                    matches!(&error, crate::HawDBError::ResourceBudgetExceeded(budget)
+                        if budget.resource == hawdb_core::ResourceBudgetKind::MemoryBytes),
+                    "{error}"
+                );
+            }
+            for admitted in [false, true] {
+                let search = |request: &SearchCandidateRequest| {
+                    if admitted {
+                        admitted_output(&reader, request, 64 << 20)
+                    } else {
+                        reader.search_candidates_with_report_context(
+                            request,
                             VectorSearchExecutionOptions::default(),
                         )
-                        .unwrap();
-                    assert_reduced_text_refuses_exhaustion(&hybrid, 6);
+                    }
+                };
+                let text = search(&request).unwrap();
+                let metrics = text.out_of_core_metrics().unwrap();
+                if admitted {
+                    assert!(metrics.query_memory_peak_bytes > 0);
                 }
-            } else {
-                assert_eq!(text.require_exhaustive().unwrap().hits().len(), 6);
+                if reduced {
+                    assert_eq!(text.accept_bounded().hits[0].id, "doc0");
+                    assert_reduced_text_refuses_exhaustion(&text, 1);
+                    if cfg!(feature = "vector-search") {
+                        let hybrid = search(
+                            &SearchCandidateRequest::hybrid("common rare", vec![1.0, 0.0], 10)
+                                .with_exact_vector_search(),
+                        )
+                        .unwrap();
+                        assert_reduced_text_refuses_exhaustion(&hybrid, 6);
+                        if admitted {
+                            assert!(
+                                hybrid
+                                    .out_of_core_metrics()
+                                    .unwrap()
+                                    .query_memory_peak_bytes
+                                    > 0
+                            );
+                        }
+                    }
+                } else {
+                    assert_eq!(text.require_exhaustive().unwrap().hits().len(), 6);
+                }
             }
         }
         std::fs::remove_dir_all(path).unwrap();

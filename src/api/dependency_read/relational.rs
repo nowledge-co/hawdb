@@ -56,9 +56,31 @@ pub(in crate::api) fn collect_transaction(
             .map_err(|error| HawDBError::Execution(error.to_string()))
     };
     match statement {
-        SqlStatement::Select(select) if select.text_search().is_some() => {
-            // BM25 statistics depend on every indexed document.
-            record(dependencies, VersionKey::Database)
+        SqlStatement::Select(select) if let Some(search) = select.text_search() => {
+            // BM25 statistics depend on every indexed document, and results
+            // on the hydrated source rows. Index rows change only with source
+            // rows, so the source table's domain covers both; an index name
+            // that does not resolve keeps the database barrier.
+            let index = match &search.index {
+                crate::sql::SqlValue::Literal(Value::String(index)) => Some(index.as_str()),
+                crate::sql::SqlValue::Parameter(position) => position
+                    .checked_sub(1)
+                    .and_then(|position| parameters.get(position))
+                    .and_then(|value| match value {
+                        Value::String(index) => Some(index.as_str()),
+                        _ => None,
+                    }),
+                _ => None,
+            };
+            let source = index
+                .and_then(|index| state.table_schema(index))
+                .filter(|schema| schema.search_index().is_some())
+                .and_then(|schema| schema.materialized_view.as_deref())
+                .map(|definition| definition.source.clone());
+            match source {
+                Some(source) => record(dependencies, VersionKey::ReadRelationalTableDomain(source)),
+                None => record(dependencies, VersionKey::Database),
+            }
         }
         SqlStatement::Select(select) => {
             qualify_expressions(select)?;

@@ -23,7 +23,9 @@ import datetime
 import gc
 import inspect
 import pickle
+import sys
 import threading
+import tracemalloc
 from collections import deque
 
 import pytest
@@ -217,6 +219,108 @@ def test_description_type_codes_come_from_python_values(connection):
 
 
 @pytest.mark.parametrize("autocommit", [False, True])
+def test_description_type_codes_cover_the_whole_result_before_fetching(
+    connection, autocommit
+):
+    # Rows convert as they are fetched; the type codes must not depend on it.
+    connection.autocommit = autocommit
+    cursor = connection.cursor()
+    cursor.execute(
+        "CREATE TABLE late (id BIGINT PRIMARY KEY, label TEXT, at TIMESTAMP,"
+        " missing TEXT)"
+    )
+    last = 2 * dbapi._FETCH_CHUNK + 5
+    cursor.executemany(
+        "INSERT INTO late (id, label, at, missing) VALUES ($1, $2, $3, $4)",
+        [
+            (i, "x", datetime.datetime(2026, 1, 1), None) if i == last
+            else (i, None, None, None)
+            for i in range(last + 1)
+        ],
+    )
+    cursor.execute("SELECT id, label, at, missing FROM late ORDER BY id")
+    codes = [column[1] for column in cursor.description]
+    assert codes == [int, str, datetime.datetime, None]
+    assert cursor.rowcount == last + 1
+    assert cursor.fetchone() == (0, None, None, None)
+    assert [column[1] for column in cursor.description] == codes
+    rows = cursor.fetchall()
+    assert len(rows) == last
+    assert rows[-1] == (last, "x", datetime.datetime(2026, 1, 1), None)
+    connection.commit()
+
+
+def test_cursor_keeps_no_fetched_row_and_releases_the_result(connection, monkeypatch):
+    results = []
+    execute = connection._execute
+
+    def recording(*args):
+        result = execute(*args)
+        results.append(result)
+        return result
+
+    monkeypatch.setattr(connection, "_execute", recording)
+    cursor = connection.cursor()
+    cursor.execute(CREATE)
+    cursor.executemany(INSERT, [(i, str(i)) for i in range(dbapi._FETCH_CHUNK + 1)])
+    cursor.execute("SELECT id, name FROM items ORDER BY id")
+    result = results[-1]
+    # `results`, `result` and getrefcount's argument, plus the cursor.
+    assert sys.getrefcount(result) == 4
+    row = cursor.fetchone()
+    # Only `row` and getrefcount's argument refer to the tuple.
+    assert sys.getrefcount(row) == 2
+    assert row == (0, "0")
+    rest = cursor.fetchmany(dbapi._FETCH_CHUNK)
+    # `rest`, the loop variable and getrefcount's argument.
+    assert [sys.getrefcount(item) for item in rest] == [3] * len(rest)
+    assert sys.getrefcount(result) == 4
+    assert cursor.fetchall() == []
+    assert sys.getrefcount(result) == 3  # exhausted: the cursor let go
+    cursor.execute("SELECT id FROM items WHERE id = $1", [1])
+    held = results[-1]
+    cursor.execute("SELECT id FROM items WHERE id = $1", [2])
+    assert sys.getrefcount(held) == 3  # a new statement releases the old result
+    last = results[-1]
+    assert sys.getrefcount(last) == 4
+    cursor.close()
+    assert sys.getrefcount(last) == 3
+    connection.rollback()
+
+
+def test_execute_and_fetchall_hold_one_python_copy_of_the_rows(connection):
+    """Peak Python memory is the fetched list plus a chunk, not dicts and tuples."""
+    count = 20_000
+    cursor = connection.cursor()
+    cursor.execute(
+        "CREATE TABLE wide (id BIGINT PRIMARY KEY, name TEXT, score DOUBLE PRECISION)"
+    )
+    cursor.executemany(
+        "INSERT INTO wide (id, name, score) VALUES ($1, $2, $3)",
+        [(i, f"name-{i:08d}", i / 2) for i in range(count)],
+    )
+    connection.commit()
+    gc.collect()
+    tracemalloc.start()
+    try:
+        base = tracemalloc.get_traced_memory()[0]
+        cursor.execute("SELECT id, name, score FROM wide")
+        executed, execute_peak = tracemalloc.get_traced_memory()
+        rows = cursor.fetchall()
+        held, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert len(rows) == count
+    # Before rows were converted per fetch, `execute` alone built a dict and
+    # a tuple per row (several MiB here) and the peak was about three times
+    # the returned list.
+    assert execute_peak - base < 256 * 1024
+    assert executed - base < 64 * 1024
+    assert peak - base < (held - base) * 1.25
+    connection.rollback()
+
+
+@pytest.mark.parametrize("autocommit", [False, True])
 def test_catalog_description_and_tuple_order(connection, autocommit):
     connection.autocommit = autocommit
     cursor = connection.cursor()
@@ -277,11 +381,57 @@ def test_type_objects_hash_by_identity():
 
 def test_statements_without_result_columns(connection):
     cursor = connection.cursor()
-    for statement, parameters in [(CREATE, None), (INSERT, [1, "one"])]:
+    for statement, parameters, rowcount in [(CREATE, None, -1), (INSERT, [1, "one"], 1)]:
         cursor.execute(statement, parameters)
-        assert (cursor.description, cursor.rowcount) == (None, -1)
+        assert (cursor.description, cursor.rowcount) == (None, rowcount)
         assert cursor.fetchone() is None
         assert cursor.fetchall() == []
+
+
+@pytest.mark.parametrize("autocommit", [True, False])
+def test_rowcount_reports_affected_rows(connect, autocommit):
+    connection = connect(autocommit=autocommit)
+    cursor = connection.cursor()
+    cursor.execute(CREATE)
+    assert cursor.rowcount == -1
+    cursor.execute(
+        "INSERT INTO items (id, name) VALUES ($1, 'a'), ($2, 'b'), ($3, 'c')", [1, 2, 3]
+    )
+    assert cursor.rowcount == 3
+    cursor.execute("UPDATE items SET name = $1 WHERE id >= $2", ["z", 2])
+    assert cursor.rowcount == 2
+    cursor.execute("UPDATE items SET name = 'none' WHERE id = 99")
+    assert cursor.rowcount == 0
+    cursor.execute("DELETE FROM items WHERE id = $1", [1])
+    assert cursor.rowcount == 1
+    cursor.execute(
+        "INSERT INTO items (id, name) VALUES ($1, 'x'), ($2, 'y') "
+        "ON CONFLICT (id) DO NOTHING RETURNING id",
+        [2, 4],
+    )
+    # The conflicting row is neither counted nor returned.
+    assert (cursor.rowcount, cursor.fetchall()) == (1, [(4,)])
+    cursor.execute("SELECT id FROM items ORDER BY id")
+    assert cursor.rowcount == 3
+    cursor.execute("CREATE TABLE other (id BIGINT PRIMARY KEY)")
+    assert cursor.rowcount == -1
+    cursor.executemany(INSERT, [(5, "e"), (6, "f")])
+    assert cursor.rowcount == -1
+    connection.commit()
+    assert ids(connection) == [2, 3, 4, 5, 6]
+
+
+def test_query_result_reports_affected_rows():
+    with hawdb.open() as db:
+        assert db.execute_sql(CREATE).affected_rows is None
+        assert db.execute_sql(INSERT, [1, "one"]).affected_rows == 1
+        assert db.execute_sql("SELECT id FROM items").affected_rows is None
+        assert db.execute("CREATE (:Item {id: 1})").affected_rows is None
+        with db.transaction() as tx:
+            assert tx.execute_sql("UPDATE items SET name = 'two' WHERE id = 1").affected_rows == 1
+            assert tx.execute_sql("SELECT id FROM items").affected_rows is None
+        with db.read_transaction() as tx:
+            assert tx.execute_sql("SELECT id FROM items").affected_rows is None
 
 
 def test_empty_key_lookup_still_describes_its_columns(connection):
@@ -373,21 +523,70 @@ def test_errors_keep_their_types_and_gain_pep249_classes(
     assert pep249_classes(caught.value) == [connection.DatabaseError, pep]
 
 
-def test_constraint_violations_are_plain_database_errors(connection):
+@pytest.mark.parametrize("autocommit", [True, False], ids=["autocommit", "transaction"])
+@pytest.mark.parametrize(
+    "parameters,kind,pep",
+    [
+        ([1, "again"], "constraint", dbapi.IntegrityError),
+        ([2, None], "constraint", dbapi.IntegrityError),
+        ([3, 3], "schema", dbapi.DataError),
+    ],
+    ids=["duplicate key", "not null", "wrong type"],
+)
+def test_relational_refusals_gain_integrity_and_data_errors(
+    connect, autocommit, parameters, kind, pep
+):
+    connection = connect(autocommit=autocommit)
     cursor = connection.cursor()
-    cursor.execute(CREATE)
+    cursor.execute("CREATE TABLE items (id BIGINT PRIMARY KEY, name TEXT NOT NULL)")
     cursor.execute(INSERT, [1, "one"])
     connection.commit()
-    connection.autocommit = True
-    with pytest.raises(hawdb.exceptions.StorageError, match="duplicate") as autocommitted:
-        cursor.execute(INSERT, [1, "again"])
-    connection.autocommit = False
-    with pytest.raises(hawdb.exceptions.ExecutionError, match="duplicate") as staged:
-        cursor.execute(INSERT, [1, "again"])
-    # Not IntegrityError, which the engine cannot tell apart yet, nor an
-    # OperationalError that a retry loop would repeat.
-    for caught in (autocommitted, staged):
-        assert pep249_classes(caught.value) == [dbapi.DatabaseError]
+    # Each keeps the engine type of its path: storage in autocommit, execution
+    # in a transaction.
+    native = (
+        hawdb.exceptions.StorageError if autocommit else hawdb.exceptions.ExecutionError
+    )
+    with pytest.raises(pep) as caught:
+        cursor.execute(INSERT, parameters)
+    error = caught.value
+    assert type(error.__context__) is native
+    assert isinstance(error, native)
+    assert (error.kind, error.retryable) == (kind, False)
+    # Not an OperationalError that a retry loop would repeat, nor the engine's
+    # IntegrityError, which reports damaged storage.
+    assert pep249_classes(error) == [dbapi.DatabaseError, pep]
+    assert not isinstance(error, hawdb.exceptions.IntegrityError)
+    # The failed statement leaves the transaction usable.
+    cursor.execute(INSERT, [4, "four"])
+    connection.commit()
+    assert ids(connection) == [1, 4]
+
+
+@pytest.mark.parametrize("native", [hawdb.exceptions.StorageError,
+                                    hawdb.exceptions.ExecutionError])
+def test_only_relational_kinds_pick_integrity_and_data_errors(native):
+    for kind, pep in [("constraint", dbapi.IntegrityError), ("schema", dbapi.DataError)]:
+        error = native("message")
+        error.kind, error.retryable = kind, False
+        translated = dbapi._pep249(error, statement=False)
+        assert isinstance(translated, native)
+        assert pep249_classes(translated) == [dbapi.DatabaseError, pep]
+        assert translated.kind == kind
+    # Other kinds, a missing kind and a subclass keep their documented classes.
+    for kind in ["execution", "wal_recovery_io", "unsupported_storage_format", None, 1]:
+        error = native("message")
+        if kind is not None:
+            error.kind = kind
+        assert pep249_classes(dbapi._pep249(error, statement=False)) == [
+            dbapi.DatabaseError
+        ]
+    for subclass in [hawdb.exceptions.IntegrityError, hawdb.exceptions.DescriptorError,
+                     hawdb.exceptions.ResourceBudgetError]:
+        error = subclass("message")
+        error.kind = "constraint"
+        assert pep249_classes(dbapi._pep249(error, statement=False)) == [
+            pep for pep in PEP249_ERRORS if issubclass(PEP249_CLASS[subclass], pep)
+        ]
 
 
 def test_a_busy_path_is_an_operational_error(tmp_path):
@@ -408,13 +607,13 @@ def test_translated_errors_keep_attributes_and_pickle():
         with pytest.raises(hawdb.exceptions.ExecutionError) as caught:
             cursor.execute(INSERT, [1, "duplicate"])
     error = caught.value
-    assert (error.kind, error.retryable) == ("execution", False)
-    assert pep249_classes(error) == [dbapi.DatabaseError]
+    assert (error.kind, error.retryable) == ("constraint", False)
+    assert pep249_classes(error) == [dbapi.DatabaseError, dbapi.IntegrityError]
     # The binding's own error stays reachable for debugging.
     assert type(error.__context__) is hawdb.exceptions.ExecutionError
     restored = pickle.loads(pickle.dumps(error))
     assert type(restored) is type(error)
-    assert (restored.args, restored.kind) == (error.args, "execution")
+    assert (restored.args, restored.kind) == (error.args, "constraint")
 
 
 def test_translated_work_budget_errors_keep_attributes_and_pickle():
@@ -589,7 +788,7 @@ def test_failed_executemany_aborts_until_rollback(connect):
     # Engine, value and row-shape failures inside the batch.
     for rows, error, pep in [
         ([(2, "b"), (2, "duplicate")], hawdb.exceptions.ExecutionError,
-         dbapi.DatabaseError),
+         dbapi.IntegrityError),
         ([(2, "b"), (3, object())], TypeError, dbapi.ProgrammingError),
         ([(2, "b"), "not a row"], TypeError, dbapi.ProgrammingError),
     ]:

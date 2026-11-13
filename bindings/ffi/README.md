@@ -50,6 +50,9 @@ The on-disk format carries no compatibility promise until HawDB declares one.
   `{"kind": "<snake_case kind>", "message": "<text>"}` and leaves the
   database handle usable. `kind` is the engine's own error variant
   (e.g. `capability_unavailable`, `execution`, `admission`, `stopped`);
+  a relational constraint violation, such as a duplicate primary key or a
+  NULL in a NOT NULL column, is `constraint`, and a value that does not fit
+  the relational schema, such as one of the wrong type, is `schema`;
   `invalid_argument` marks caller-side contract violations,
   `transaction_open` / `no_transaction` transaction-state misuse, and `panic`
   a contained Rust panic.

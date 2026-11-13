@@ -517,14 +517,14 @@ fn record_matched_node_label_scan() {
     MATCHED_NODE_LABEL_SCANS.with(|scans| scans.set(scans.get().saturating_add(1)));
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static GENERATION_RECLAMATION_REMOVE_FAILPOINT: std::cell::RefCell<Option<String>> =
         const { std::cell::RefCell::new(None) };
 }
 
 fn remove_generation_reclamation_candidate(path: &Path) -> std::io::Result<()> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     {
         let file_name = path.file_name().and_then(|name| name.to_str());
         let should_fail = GENERATION_RECLAMATION_REMOVE_FAILPOINT
@@ -545,8 +545,11 @@ fn remove_generation_reclamation_candidate(path: &Path) -> std::io::Result<()> {
     fs::remove_file(path)
 }
 
-#[cfg(test)]
-fn set_generation_reclamation_remove_failpoint(file_name: Option<String>) {
+/// Fails the next removal of the named obsolete generation file on this
+/// thread, leaving generation reclamation debt for pressure assertions.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn set_generation_reclamation_remove_failpoint(file_name: Option<String>) {
     GENERATION_RECLAMATION_REMOVE_FAILPOINT.with(|failpoint| {
         *failpoint.borrow_mut() = file_name;
     });

@@ -28,6 +28,17 @@ impl ResidentProjectionRef<'_> {
         read_projection!(self, document(id))
     }
 
+    pub(super) fn exact_vector_search_capacity(
+        &self,
+        working_bytes: usize,
+        max_document_id_bytes: usize,
+    ) -> usize {
+        read_projection!(
+            self,
+            exact_vector_search_capacity(working_bytes, max_document_id_bytes)
+        )
+    }
+
     pub(super) fn freshness(&self) -> SearchProjectionFreshness {
         match self {
             Self::Live(projection) => projection.freshness(),

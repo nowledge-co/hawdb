@@ -116,6 +116,9 @@ Six-document resident, retained-generation and persisted-reader regressions
 retain documents matching only a dropped term. They distinguish exact and
 unchanged `MostSelective` queries from reduced text and hybrid queries, and
 verify that refusal preserves the bounded result and report.
+The persisted cases also cover the admitted reader entrypoint: it binds the
+same evidence inside the retriever while preserving the runtime permit,
+working-memory charges, metrics and typed budget refusal.
 
 The existing root `fallible_search_contract` default/minimal owners verify the
 public facade export and explicit bounded result/report behavior. Compile-fail

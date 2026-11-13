@@ -13,22 +13,31 @@
 # limitations under the License.
 
 import os
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Union
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 from hawdb import exceptions as exceptions
 
 __version__: str
 
 class QueryResult:
-    """Materialized rows of one statement result."""
+    """Rows of one statement result, converted to Python as they are fetched.
+
+    Each fetch returns new objects that the result does not keep.
+    """
 
     @property
     def columns(self) -> List[str]: ...
     @property
     def row_count(self) -> int: ...
+    @property
+    def affected_rows(self) -> Optional[int]:
+        """Rows changed by a SQL INSERT, UPDATE or DELETE; None otherwise."""
     def fetchone(self) -> Optional[Dict[str, Any]]: ...
     def fetchmany(self, size: int = 1) -> List[Dict[str, Any]]: ...
     def fetchall(self) -> List[Dict[str, Any]]: ...
+    def fetchmany_tuples(self, size: int = 1) -> List[Tuple[Any, ...]]:
+        """Up to ``size`` rows from the shared cursor, as tuples in column order."""
+    def _first_non_null(self, column: int) -> Any: ...
     def _repr_html_(self) -> str: ...
     def _display_rows(
         self, start: int = 0, stop: Optional[int] = None

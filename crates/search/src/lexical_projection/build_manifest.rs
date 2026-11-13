@@ -16,8 +16,7 @@
 
 use super::{
     artifact_file, artifacts::DirectoryMemory, manifest_encoding, BlockDescriptor,
-    LexicalProjectionConfig, LexicalProjectionReader, ManifestBody, MANIFEST_FILE,
-    SPILL_IO_BUFFER_BYTES,
+    LexicalProjectionConfig, LexicalProjectionReader, ManifestBody, SPILL_IO_BUFFER_BYTES,
 };
 use crate::build_control::{checkpoint, temporary::RemoveOnDrop, CheckedWriter};
 use crate::build_memory::{checked_add as add, checked_mul as mul, path::OwnedPath, BuildMemory};
@@ -48,6 +47,7 @@ impl Paths {
     pub(super) fn new(
         root: &Path,
         generation: u64,
+        manifest_name: &str,
         memory: &BuildMemory,
         task: &RuntimeTaskContext,
     ) -> Result<Self> {
@@ -62,7 +62,7 @@ impl Paths {
         name_memory.shrink(name_memory.bytes() - artifact_name.capacity());
         let artifact = OwnedPath::join(root, Path::new(&artifact_name), memory, task)?;
         let artifact_tmp = OwnedPath::with_extension(&artifact, "hawdb.tmp", memory, task)?;
-        let manifest = OwnedPath::join(root, Path::new(MANIFEST_FILE), memory, task)?;
+        let manifest = OwnedPath::join(root, Path::new(manifest_name), memory, task)?;
         let manifest_tmp = OwnedPath::with_extension(&manifest, "hawdb.tmp", memory, task)?;
         Ok(Self {
             artifact_name,

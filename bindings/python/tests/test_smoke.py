@@ -19,6 +19,8 @@ the in-memory database from `hawdb.open()`. File-only behaviors live in
 test_file.py; in-memory specifics in test_memory.py.
 """
 
+import sys
+
 import pytest
 
 import hawdb
@@ -68,6 +70,50 @@ def test_fetch_protocols(db):
     assert result.fetchone() is None
     result = db.execute("MATCH (n:N) RETURN n.x ORDER BY n.x")
     assert [row["n.x"] for row in result] == [1, 2, 3]
+
+
+def test_fetch_tuples_share_the_cursor(db):
+    db.execute_sql("CREATE TABLE t (id BIGINT PRIMARY KEY, label TEXT)")
+    db.executemany_sql(
+        "INSERT INTO t (id, label) VALUES ($1, $2)", [(i, f"r{i}") for i in range(5)]
+    )
+    result = db.execute_sql("SELECT label, id FROM t ORDER BY id")
+    assert result.fetchone() == {"label": "r0", "id": 0}
+    assert result.fetchmany_tuples(2) == [("r1", 1), ("r2", 2)]
+    assert result.fetchmany_tuples() == [("r3", 3)]
+    assert result.fetchall() == [{"label": "r4", "id": 4}]
+    assert result.fetchmany_tuples(10) == []
+    assert result.row_count == len(result) == 5
+    assert db.execute_sql("SELECT id FROM t WHERE id < 0").fetchmany_tuples(3) == []
+
+
+def test_fetched_rows_are_new_objects_the_result_does_not_keep(db):
+    """Rows are converted per fetch, so the result holds no Python copy."""
+    db.execute_sql("CREATE TABLE t (id BIGINT PRIMARY KEY, label TEXT)")
+    db.execute_sql("INSERT INTO t (id, label) VALUES (1, 'one')")
+    result = db.execute_sql("SELECT id, label FROM t")
+    row = result.fetchone()
+    # Only `row` and getrefcount's argument refer to the dict.
+    assert sys.getrefcount(row) == 2
+    row["label"] = "changed"
+    assert result._display_rows() == [{"id": 1, "label": "one"}]
+    assert result._display_rows()[0] is not result._display_rows()[0]
+    (values,) = db.execute_sql("SELECT id, label FROM t").fetchmany_tuples()
+    assert sys.getrefcount(values) == 2
+
+
+def test_first_non_null_scans_the_whole_result(db):
+    db.execute_sql("CREATE TABLE t (id BIGINT PRIMARY KEY, late TEXT, never TEXT)")
+    db.executemany_sql(
+        "INSERT INTO t (id, late, never) VALUES ($1, $2, $3)",
+        [(i, "found" if i == 2999 else None, None) for i in range(3000)],
+    )
+    result = db.execute_sql("SELECT id, late, never FROM t ORDER BY id")
+    assert result.fetchmany_tuples(3000)[-1] == (2999, "found", None)
+    # Independent of the cursor, which is now at the end.
+    assert [result._first_non_null(i) for i in range(3)] == [0, "found", None]
+    with pytest.raises(IndexError):
+        result._first_non_null(3)
 
 
 def test_parse_error_maps_to_exception(db):
