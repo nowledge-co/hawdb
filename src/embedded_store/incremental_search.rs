@@ -14,7 +14,7 @@
 
 use super::*;
 use crate::search::{
-    SearchLexicalSourcePolicy, SearchOutOfCoreGenerationBuildOptions,
+    SearchGenerationAdmission, SearchLexicalSourcePolicy, SearchOutOfCoreGenerationBuildOptions,
     SearchOutOfCoreGenerationWriter,
 };
 use std::num::NonZeroU64;
@@ -188,7 +188,7 @@ impl EmbeddedStoreHandle {
 }
 
 impl EmbeddedStore {
-    fn refresh_incremental_search_reader(&mut self) -> Result<()> {
+    pub(super) fn refresh_incremental_search_reader(&mut self) -> Result<()> {
         let projection = self.out_of_core_search_projection.as_mut().ok_or_else(|| {
             HawDBError::Semantic("incremental search maintenance is not configured".into())
         })?;
@@ -222,10 +222,12 @@ impl EmbeddedStore {
         self.incremental_search_memory_bytes() != 0
     }
 
+    /// `permit` must be the maintenance admission that covers this delta; it
+    /// governs the build, the publication and its generation cleanup.
     pub(super) fn apply_incremental_search_delta(
         &mut self,
         delta: SearchProjectionDelta,
-        task: RuntimeTaskContext,
+        permit: std::sync::Arc<RuntimePermit>,
     ) -> Result<SearchProjectionDeltaReport> {
         // A previous response may have been lost after publication. Re-read the
         // durable head before retrying instead of assuming that it rolled back.
@@ -236,17 +238,21 @@ impl EmbeddedStore {
         let (_, options) = projection.maintenance.as_ref().ok_or_else(|| {
             HawDBError::Semantic("qualified search cannot publish maintenance deltas".into())
         })?;
-        let task = task.with_memory_reservation(hawdb_core::RuntimeMemoryReservation::new(
-            options.working_memory_bytes.get(),
-            0,
-        ));
-        let result = SearchOutOfCoreGenerationWriter::prepare_delta_with_context(
-            &projection.reader,
-            delta,
-            options.build_options.clone(),
-            task,
-        )?
-        .finish();
+        // The configured working memory caps the permit's reservation. Owning
+        // the permit lets cleanup verify under it (#1755): a governor-bound
+        // task without its permit forms no read admission, so every embedded
+        // incremental publication used to refuse its generation cleanup.
+        let task = RuntimeTaskContext::default().with_memory_reservation(
+            hawdb_core::RuntimeMemoryReservation::new(options.working_memory_bytes.get(), 0),
+        );
+        let result = SearchGenerationAdmission::from_permit(permit)
+            .prepare_update_with_context(
+                &projection.reader,
+                delta,
+                options.build_options.clone(),
+                task,
+            )?
+            .finish();
         self.refresh_incremental_search_reader()?;
         let (report, _, _) = result?;
         Ok(report)
@@ -258,7 +264,7 @@ impl EmbeddedStore {
         max_projection: usize,
         max_batches: usize,
         mut hydrator: F,
-        task: RuntimeTaskContext,
+        permit: std::sync::Arc<RuntimePermit>,
     ) -> Result<SearchProjectionCatchUpReport>
     where
         F: FnMut(
@@ -277,6 +283,7 @@ impl EmbeddedStore {
         })?;
         let start = projection.freshness();
         let graph_epoch = self.graph.database().commit_epoch()?;
+        let task = permit.bind_task_context(RuntimeTaskContext::default());
         let mut batch_count = 0usize;
         let mut operation_count = 0usize;
         while batch_count < max_batches {
@@ -301,7 +308,7 @@ impl EmbeddedStore {
                 .database()
                 .build_search_projection_change_delta(batch, relational)?;
             drop(snapshot);
-            self.apply_incremental_search_delta(delta, task.clone())?;
+            self.apply_incremental_search_delta(delta, permit.clone())?;
             batch_count = batch_count.saturating_add(1);
             operation_count = operation_count.saturating_add(count);
         }

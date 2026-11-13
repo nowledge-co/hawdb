@@ -16,6 +16,7 @@ pub(crate) struct VerifiedRetention<'a> {
     publication: &'a SearchProjectionPublishLease,
     identity: hawdb_storage::file_io::SourceDirectoryIdentity,
     generations: SearchProjectionGenerations,
+    work: crate::out_of_core::VerificationWork,
     _memory: Option<crate::build_memory::read::ReaderMemory>,
 }
 impl<'a> VerifiedRetention<'a> {
@@ -35,6 +36,7 @@ impl<'a> VerifiedRetention<'a> {
             options,
             admission,
         )?;
+        let work = verified.work;
         let resident_vector_absence_verified = verified.resident_vector_absence_verified;
         let resident_vector_receipt_verified = verified.resident_vector_receipt_verified;
         let generations =
@@ -61,8 +63,13 @@ impl<'a> VerifiedRetention<'a> {
             publication,
             identity: publication.source_identity(),
             generations,
+            work,
             _memory: verified.memory,
         })
+    }
+    /// Bytes re-hashed and bytes reused from earlier verification.
+    pub(crate) fn work(&self) -> crate::out_of_core::VerificationWork {
+        self.work
     }
     pub(crate) fn with_source<T>(
         self,
@@ -72,6 +79,7 @@ impl<'a> VerifiedRetention<'a> {
             publication,
             identity,
             generations,
+            work: _,
             _memory: memory,
         } = self;
         let result = publication.with_captured_directory(|directory| {

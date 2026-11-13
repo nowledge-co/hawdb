@@ -4,6 +4,53 @@
 //! Check the producer's vector count against its complete captured snapshot.
 use super::*;
 
+/// Decoded vector counts of resident snapshots, keyed by their complete
+/// content reference. Bounded; a forgotten entry only restores a decode.
+static KNOWN_VECTOR_COUNTS: std::sync::Mutex<std::collections::BTreeMap<ObjectReference, usize>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+const MAX_KNOWN_VECTOR_COUNTS: usize = 64;
+
+pub(super) fn known_vector_count(reference: ObjectReference) -> Option<usize> {
+    KNOWN_VECTOR_COUNTS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .get(&reference)
+        .copied()
+}
+
+/// Records the vector count of the snapshot with exactly these bytes, as
+/// decoded by cleanup or counted by the producer that encoded them.
+pub(crate) fn remember_vector_count(reference: ObjectReference, count: usize) {
+    let mut known = KNOWN_VECTOR_COUNTS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if !known.contains_key(&reference) && known.len() >= MAX_KNOWN_VECTOR_COUNTS {
+        known.pop_first();
+    }
+    known.insert(reference, count);
+}
+
+/// Decoded snapshot length from the envelope header of a held snapshot,
+/// reading at most the bounded header. The cursor returns to the start.
+pub(super) fn decoded_len(file: &mut File, task: &hawdb_core::RuntimeTaskContext) -> Result<u64> {
+    const HEADER_LIMIT: usize = 8192 + 2;
+    crate::build_control::checkpoint(task)?;
+    file.seek(SeekFrom::Start(0))?;
+    let mut header = Vec::with_capacity(HEADER_LIMIT);
+    Read::take(&mut *file, HEADER_LIMIT as u64).read_to_end(&mut header)?;
+    file.seek(SeekFrom::Start(0))?;
+    let end = header
+        .windows(2)
+        .position(|window| window == b"\n\n")
+        .ok_or_else(|| HawDBError::StorageIntegrity("resident snapshot header missing".into()))?;
+    let header = std::str::from_utf8(&header[..end])
+        .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
+    crate::parse_snapshot_header(header)?
+        .uncompressed_len
+        .map(|length| length as u64)
+        .ok_or_else(|| HawDBError::StorageIntegrity("resident snapshot length missing".into()))
+}
+
 pub(super) fn vector_count(
     bytes: &[u8],
     maximum: u64,
