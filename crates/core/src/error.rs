@@ -78,6 +78,25 @@ pub enum ReadBudgetResource {
     PayloadBytes,
 }
 
+impl ReadBudgetResource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Rows => "result_rows",
+            Self::PayloadBytes => "result_payload_bytes",
+        }
+    }
+
+    /// The `DatabaseConfig` read ceiling that bounds this resource. A
+    /// per-request limit or an admitted runtime result budget can be smaller;
+    /// the refusal's `limit` is the effective one.
+    pub const fn budget_option(self) -> &'static str {
+        match self {
+            Self::Rows => "max_read_result_rows",
+            Self::PayloadBytes => "max_read_result_payload_bytes",
+        }
+    }
+}
+
 /// Retains budget identity independently of the execution diagnostic text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadBudgetError {

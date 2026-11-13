@@ -84,8 +84,12 @@ misses. All five wheels have their own native installation tests before upload.
 `open`, `connect` and `Database` accept the keyword-only options
 `max_read_result_rows` and `max_read_result_payload_bytes`. They configure the
 engine's read ceilings for in-memory, file-backed and read-only databases.
-Exceeding a ceiling raises `hawdb.exceptions.ExecutionError`; the binding does
-not return a shortened result. A later read can still succeed within the budget.
+Exceeding a ceiling raises `hawdb.exceptions.ResourceBudgetError`, a subclass
+of `ExecutionError` (DB-API `OperationalError`), whose `budget_option` names
+the option (`"max_read_result_rows"` or `"max_read_result_payload_bytes"`),
+`resource` is `"result_rows"` or `"result_payload_bytes"` and `budget` is the
+effective limit; `requested` and `used` are `None`. The binding does not return
+a shortened result. A later read can still succeed within the budget.
 
 ```python
 with hawdb.open(max_read_result_rows=1000, max_read_result_payload_bytes=1048576) as db:
@@ -97,7 +101,15 @@ with hawdb.open(max_read_result_rows=1000, max_read_result_payload_bytes=1048576
 ```
 
 Omitted options and `None` preserve engine defaults: no host row ceiling and a
-64 MiB result payload ceiling. Zero rows follows `DatabaseConfig` semantics and
+64 MiB result payload ceiling. For the payload option, `None` means that
+64 MiB default, not an unbounded result, both before and since SQL became
+admitted. Only a Rust host that sets `DatabaseConfig::max_read_result_payload_bytes`
+to `None` gets no ceiling on raw `Database` calls; its admitted statements are
+then bounded by the runtime's own 16 MiB per-statement result budget. The payload ceiling is also the per-statement
+result budget of the handle's runtime admission (see [Usage](#usage)), which
+reserves it from the runtime memory budget while the statement runs, so a
+ceiling larger than the runtime memory capacity makes admission refuse
+statements with `AdmissionError`. Zero rows follows `DatabaseConfig` semantics and
 disables the host row ceiling; zero payload bytes remains a zero-byte ceiling.
 Other engine memory and session limits still apply. These options do not expose
 the rest of `DatabaseConfig` or change durability.
@@ -393,6 +405,29 @@ savepoints. Catching the exception does not leave a partial batch that can later
 be committed. A successful batch stays staged until the caller commits or exits
 the transaction context normally.
 
+`db.execute`, `db.execute_sql` and `tx.execute_sql`, and every row of
+`db.executemany_sql` and `tx.executemany_sql`, pass the embedded runtime's
+admission before they run. When the runtime is saturated the statement raises
+`hawdb.exceptions.AdmissionError` and nothing of it runs; its `code` names the
+refused resource and `retryable` is `True` for a transient shortage, so the
+call can be retried. A refused `tx.execute_sql` leaves the transaction open with
+its earlier statements staged, while a refused batch rolls back like any batch
+failure. Cypher in a transaction (`tx.execute`, `db.executemany`,
+`tx.executemany`), `db.explain` and `db.read_transaction()` statements are not
+admitted.
+
+SQL statements in `db.transaction()` are recorded in the slow-query log and
+statement summary like autocommit statements, under their own text and
+statement kind, although their effects stay staged until commit; a failed one
+counts as an error. Once a storage integrity failure has poisoned the handle,
+they are refused like autocommit statements, and an integrity failure of a
+read in a transaction poisons the handle.
+
+A transaction pins the snapshot it began with until it commits or rolls back,
+even if it only reads, and that pin holds back checkpoint reclamation. End
+transactions promptly and read in autocommit for long-lived work;
+`db.read_transaction()` pins its snapshot the same way until it is closed.
+
 `hawdb.open()` without a path returns an empty in-memory database for tests,
 notebooks, and other hosts that already hold their data. It answers the same
 `execute` / `execute_sql` calls through the same embedded admission path;
@@ -497,7 +532,8 @@ path it took: `StorageError` from an autocommit statement and
 `ExecutionError` from a statement inside a transaction. Test `kind` rather
 than the message.
 
-Memory-ledger and spill-quota refusals raise `exceptions.ResourceBudgetError`,
+Memory-ledger and spill-quota refusals, and the read ceilings described under
+[Read budgets](#read-budgets-and-query-plans), raise `exceptions.ResourceBudgetError`,
 a subclass of `ExecutionError`, with `resource`, `scope`, `owner`,
 `memory_class`, `requested`, `used`, `budget`, and `budget_option` attributes.
 The message retains the existing execution diagnostic. `requested` is the
@@ -545,7 +581,9 @@ as well: a syntax error is both a `ProgrammingError` and a
 `hawdb.exceptions.ParseError`. A constraint violation such as a duplicate
 primary key is an `IntegrityError`, and a value of the wrong type for its
 column is a `DataError`; each is also the `StorageError` (autocommit) or
-`ExecutionError` (transaction) it was before. Use and close a connection on the thread that opened it.
+`ExecutionError` (transaction) it was before. A statement refused by runtime
+admission is an `OperationalError` and still the `AdmissionError` with its
+`retryable` flag. Use and close a connection on the thread that opened it.
 
 Rows are tuples in SELECT-list order, and `description` lists the columns even
 when nothing matches, including queries on `information_schema`, `pg_catalog`

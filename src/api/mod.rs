@@ -95,11 +95,12 @@ mod database_transactions;
 mod retrieval;
 pub(crate) use retrieval::search_hit_payload_bytes;
 mod transactions;
+pub(crate) use observability::sql_statement_kind;
 use retrieval::*;
 use transactions::*;
 pub(crate) use transactions::{
     commit_database_transaction_state, execute_concurrent_graph_transaction_request,
-    execute_database_transaction_sql_request,
+    execute_recorded_database_transaction_sql_request,
 };
 mod graph_adapter;
 mod logical_dump_access;
