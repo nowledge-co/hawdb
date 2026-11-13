@@ -30,6 +30,31 @@ pub(crate) fn remember_vector_count(reference: ObjectReference, count: usize) {
     known.insert(reference, count);
 }
 
+/// Fixed bound on a resident snapshot decoded in memory for its vector count.
+/// `max_verification_bytes` only bounds streaming re-hash work, which a host
+/// may raise freely; decoding never exceeds this, nor that ceiling.
+pub(crate) const MAX_SNAPSHOT_DECODE_BYTES: u64 = 128 * 1024 * 1024;
+
+#[cfg(test)]
+thread_local! {
+    static DECODE_LIMIT_OVERRIDE: std::cell::Cell<Option<u64>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Test hook: lowers the fixed decode bound on this thread.
+#[cfg(test)]
+pub(crate) fn set_decode_limit_for_test(limit: Option<u64>) {
+    DECODE_LIMIT_OVERRIDE.with(|cell| cell.set(limit));
+}
+
+pub(super) fn decode_limit(ceiling: u64) -> u64 {
+    #[cfg(test)]
+    if let Some(limit) = DECODE_LIMIT_OVERRIDE.with(std::cell::Cell::get) {
+        return limit.min(ceiling);
+    }
+    MAX_SNAPSHOT_DECODE_BYTES.min(ceiling)
+}
+
 /// Decoded snapshot length from the envelope header of a held snapshot,
 /// reading at most the bounded header. The cursor returns to the start.
 pub(super) fn decoded_len(file: &mut File, task: &hawdb_core::RuntimeTaskContext) -> Result<u64> {

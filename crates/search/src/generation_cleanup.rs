@@ -29,7 +29,9 @@ pub struct SearchProjectionCleanupOptions {
     pub max_pending_files: NonZeroUsize,
     pub max_delete_attempts: NonZeroUsize,
     /// Active-closure bytes one pass may re-hash before any unlink, per file
-    /// and in total. Files this process already hashed against the same
+    /// and in total. Re-hashing streams; raising this does not let a pass
+    /// decode a larger resident snapshot in memory, which stays under a fixed
+    /// 128 MiB bound (above it the snapshot is only stream-verified). Files this process already hashed against the same
     /// reference and that are unchanged since (the publisher verifies every
     /// installed file) are not re-hashed and not charged, and the first file
     /// a pass re-hashes is admitted at any size. Every completed hash is
@@ -80,6 +82,12 @@ pub struct SearchProjectionCleanupReport {
     /// already hashed the same unmodified file against the same reference
     /// (the publisher's post-install check or an earlier cleanup pass).
     pub verification_reused_bytes: u64,
+    /// Encoded bytes of the resident snapshot this pass decoded in memory to
+    /// check its vector count; 0 when the count was already known or the
+    /// snapshot exceeded the fixed decode bound and was only stream-verified.
+    pub verification_decoded_snapshot_bytes: u64,
+    /// The active closure could not be proven intact; nothing was deleted.
+    pub closure_unverified: bool,
 }
 
 impl Default for SearchProjectionCleanupReport {
@@ -112,6 +120,8 @@ impl Default for SearchProjectionCleanupReport {
             retry_required: false,
             verification_rehashed_bytes: 0,
             verification_reused_bytes: 0,
+            verification_decoded_snapshot_bytes: 0,
+            closure_unverified: false,
         }
     }
 }
@@ -142,6 +152,8 @@ impl SearchProjectionCleanupReport {
             "retry_required": self.retry_required,
             "verification_rehashed_bytes": self.verification_rehashed_bytes,
             "verification_reused_bytes": self.verification_reused_bytes,
+            "verification_decoded_snapshot_bytes": self.verification_decoded_snapshot_bytes,
+            "closure_unverified": self.closure_unverified,
         })
     }
 }
@@ -174,9 +186,7 @@ impl From<&SearchProjectionCleanupReport> for SearchProjectionCleanupOutcome {
         Self {
             deleted_files: report.deleted_files,
             pending_files: report.deferred_files,
-            closure_unverified: report
-                .failure_kinds
-                .contains_key("captured_closure_unverified"),
+            closure_unverified: report.closure_unverified,
             retry_required: report.retry_required,
             verification_rehashed_bytes: report.verification_rehashed_bytes,
             verification_reused_bytes: report.verification_reused_bytes,
@@ -272,6 +282,7 @@ impl SearchProjectionCleanupState {
                     });
                 report.verification_rehashed_bytes = work.rehashed_bytes;
                 report.verification_reused_bytes = work.reused_bytes;
+                report.verification_decoded_snapshot_bytes = work.decoded_snapshot_bytes;
                 self.report = report.clone();
                 report
             })
@@ -281,6 +292,7 @@ impl SearchProjectionCleanupState {
             Err(_) => {
                 let mut report = self.defer(options, "captured_closure_unverified");
                 report.generation_discovery_failures = 1;
+                report.closure_unverified = true;
                 self.report = report.clone();
                 report
             }

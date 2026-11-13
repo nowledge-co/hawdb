@@ -558,6 +558,8 @@ pub(super) struct PublishedOutOfCoreProjection {
 
 mod artifact_reference;
 mod captured_cleanup;
+#[cfg(test)]
+pub(crate) use captured_cleanup::set_snapshot_decode_limit_for_test;
 pub(crate) use captured_cleanup::VerificationWork;
 mod scratch_directory;
 use artifact_reference::{ArtifactObject, ResidentSnapshot, SegmentObjects};

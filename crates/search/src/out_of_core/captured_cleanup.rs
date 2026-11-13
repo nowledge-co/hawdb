@@ -12,6 +12,8 @@ use std::io::{Read, Seek, SeekFrom, Write};
 
 mod resident;
 pub(super) use resident::remember_vector_count as remember_resident_vector_count;
+#[cfg(test)]
+pub(crate) use resident::set_decode_limit_for_test as set_snapshot_decode_limit_for_test;
 
 /// Physical verification ceilings, not a new memory or descriptor allowance.
 ///
@@ -35,6 +37,7 @@ pub(super) struct Source<'a> {
     admitted_files: std::cell::Cell<usize>,
     reused_bytes: std::cell::Cell<u64>,
     hashed_artifact: std::cell::Cell<bool>,
+    decoded_snapshot_bytes: std::cell::Cell<u64>,
 }
 
 /// Verification work of one captured cleanup pass.
@@ -44,6 +47,8 @@ pub(crate) struct VerificationWork {
     pub(crate) rehashed_bytes: u64,
     /// Closure bytes accepted from an earlier verification in this process.
     pub(crate) reused_bytes: u64,
+    /// Encoded bytes of a resident snapshot decoded in memory for its count.
+    pub(crate) decoded_snapshot_bytes: u64,
 }
 
 impl<'a> Source<'a> {
@@ -60,12 +65,14 @@ impl<'a> Source<'a> {
             admitted_files: std::cell::Cell::new(0),
             reused_bytes: std::cell::Cell::new(0),
             hashed_artifact: std::cell::Cell::new(false),
+            decoded_snapshot_bytes: std::cell::Cell::new(0),
         }
     }
     pub(super) fn work(&self) -> VerificationWork {
         VerificationWork {
             rehashed_bytes: self.admitted_bytes.get(),
             reused_bytes: self.reused_bytes.get(),
+            decoded_snapshot_bytes: self.decoded_snapshot_bytes.get(),
         }
     }
     /// Accepts `file` without hashing when this process already hashed this
@@ -417,15 +424,17 @@ impl<'a> Source<'a> {
             }
             return Ok(count == 0);
         }
-        // Counting decodes the whole snapshot in memory. Above the ceiling,
-        // stream-verify its identity only and leave vector absence unproven:
-        // standalone vector artifacts are then retained, never removed.
+        // Counting decodes the whole snapshot in memory. That is bounded by a
+        // fixed decode limit, independent of the streaming re-hash ceiling a
+        // host may raise. Above it, stream-verify the identity only and leave
+        // vector absence unproven: standalone vector artifacts are retained.
+        let decode_limit = resident::decode_limit(self.limits.artifact_bytes);
         let _io = admission
             .map(|admission| admission.io())
             .transpose()
             .map_err(|error| HawDBError::Execution(error.to_string()))?;
-        if receipt.object.byte_length > self.limits.artifact_bytes
-            || resident::decoded_len(&mut file, self.task)? > self.limits.artifact_bytes
+        if receipt.object.byte_length > decode_limit
+            || resident::decoded_len(&mut file, self.task)? > decode_limit
         {
             if !self.admit_verified(&file, reference)? {
                 self.hash_held(&mut file, receipt.object)?;
@@ -463,14 +472,14 @@ impl<'a> Source<'a> {
                 "resident snapshot differs from its producer receipt".into(),
             ));
         }
-        let actual =
-            resident::vector_count(&bytes, self.limits.artifact_bytes, self.task, admission)?;
+        let actual = resident::vector_count(&bytes, decode_limit, self.task, admission)?;
         if actual != receipt.vector_document_count {
             return Err(HawDBError::StorageIntegrity(
                 "resident snapshot vector count differs from producer receipt".into(),
             ));
         }
         resident::remember_vector_count(reference, actual);
+        self.decoded_snapshot_bytes.set(receipt.object.byte_length);
         if let Some(stamp) = stamp {
             record_verified_file(reference, stamp, &file);
         }

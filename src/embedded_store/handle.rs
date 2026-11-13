@@ -644,6 +644,15 @@ impl EmbeddedStoreHandle {
     /// `max_verification_bytes`. When an earlier report has
     /// `retry_required`, call this with limits that cover the active
     /// generation. Nothing is deleted unless the closure is proven intact.
+    ///
+    /// Raising `max_verification_bytes` only allows more streaming re-hash
+    /// work. A resident snapshot is decoded in memory (to check its vector
+    /// count) only under a fixed 128 MiB bound; a larger one is stream-verified
+    /// and its standalone vector artifacts are retained.
+    ///
+    /// The pass holds this handle's store write lock for its whole run, so
+    /// writes and publications wait until it finishes; with a large ceiling it
+    /// re-reads the active closure. Call it when the store is idle.
     pub fn retry_search_projection_cleanup(
         &self,
         options: crate::SearchProjectionCleanupOptions,

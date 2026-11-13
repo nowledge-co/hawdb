@@ -62,8 +62,10 @@ the same way, so verification is resumable across passes; the first file a
 pass re-hashes is admitted at any size, so an unverified closure (after a
 restart) converges over successive passes instead of refusing forever. The
 resident snapshot's vector count is remembered per content reference
-(producer count or earlier decode); a snapshot too large to decode under the
-ceiling is stream-verified and leaves vector absence unproven, which only
+(producer count or earlier decode). Decoding a snapshot in memory is bounded
+by a fixed 128 MiB limit (`MAX_SNAPSHOT_DECODE_BYTES`, never above the
+ceiling) that raising `max_verification_bytes` does not lift; a larger
+snapshot is stream-verified and leaves vector absence unproven, which only
 retains standalone vector artifacts. A pass that cannot finish still deletes
 nothing. A changed file (new inode, length or modification time) is re-hashed;
 the stamp does not detect same-tick in-place rewrites, which projection
@@ -85,7 +87,8 @@ paths) and `SearchOutOfCoreGenerationBuildReport::cleanup_closure_unverified`.
 The full report adds `verification_rehashed_bytes` and
 `verification_reused_bytes`. `EmbeddedStoreHandle::retry_search_projection_cleanup`
 runs an explicit pass with host-chosen limits under typed maintenance
-admission and returns its report.
+admission and returns its report. It holds the store write lock for the whole
+pass; hosts should call it when the store is idle.
 
 ## Incomplete closure discovery
 

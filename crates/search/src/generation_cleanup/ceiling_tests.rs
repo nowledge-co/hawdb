@@ -240,3 +240,56 @@ fn a_closure_file_changed_after_verification_is_hashed_again_and_blocks_deletion
         .contains_key("captured_closure_unverified"));
     assert!(obsolete.exists());
 }
+
+#[test]
+fn an_unbounded_explicit_pass_stream_verifies_a_snapshot_above_the_decode_bound() {
+    struct ResetDecodeLimit;
+    impl Drop for ResetDecodeLimit {
+        fn drop(&mut self) {
+            crate::out_of_core::set_snapshot_decode_limit_for_test(None);
+        }
+    }
+    let fixture = Fixture::new("decode-bound");
+    let index = index(&fixture.0, 120);
+    index.checkpoint().unwrap();
+    let current = index
+        .checkpoint_with_report()
+        .unwrap()
+        .projection_generation;
+    let snapshot = fs::metadata(fixture.0.join(crate::resident_snapshot_file(current)))
+        .unwrap()
+        .len();
+    assert!(
+        snapshot > CEILING,
+        "the snapshot must exceed the decode bound"
+    );
+    let rabitq = fixture.0.join(format!("search_rabitq.{current}.hawdb"));
+    assert!(rabitq.exists());
+
+    // A restarted process raises the re-hash ceiling to its maximum. The
+    // in-memory decode stays under its own fixed bound (lowered here).
+    let _reset = ResetDecodeLimit;
+    crate::out_of_core::set_snapshot_decode_limit_for_test(Some(CEILING));
+    let obsolete = fixture.0.join("search_projection_segment_payloads.0.hawdb");
+    fs::write(&obsolete, b"superseded").unwrap();
+    forget_verifications(&fixture.0);
+    let report = index.retry_projection_cleanup(options(u64::MAX));
+    assert!(!report.retry_required, "{report:?}");
+    assert!(!report.closure_unverified, "{report:?}");
+    assert_eq!(report.verification_decoded_snapshot_bytes, 0, "{report:?}");
+    assert!(report.verification_rehashed_bytes > snapshot, "{report:?}");
+    assert!(!obsolete.exists());
+    assert!(rabitq.exists(), "standalone vector artifacts are retained");
+
+    // Control: under the decode bound the same pass decodes the snapshot.
+    crate::out_of_core::set_snapshot_decode_limit_for_test(None);
+    fs::write(&obsolete, b"superseded").unwrap();
+    forget_verifications(&fixture.0);
+    let report = index.retry_projection_cleanup(options(u64::MAX));
+    assert!(!report.retry_required, "{report:?}");
+    assert_eq!(
+        report.verification_decoded_snapshot_bytes, snapshot,
+        "{report:?}"
+    );
+    assert!(!obsolete.exists());
+}
