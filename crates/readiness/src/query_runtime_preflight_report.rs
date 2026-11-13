@@ -375,6 +375,7 @@ pub const fn hawdb_error_class(error: &HawDBError) -> &'static str {
         | HawDBError::WalRecoveryIo { .. }
         | HawDBError::PublishOutcomeUnknown { .. }
         | HawDBError::ProjectionBusy
+        | HawDBError::SearchProjectionMismatch { .. }
         | HawDBError::AppendSequenceExhausted { .. }
         | HawDBError::BranchBusy { .. }
         | HawDBError::BranchReclamationBlocked { .. } => "storage",

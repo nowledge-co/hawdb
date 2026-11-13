@@ -532,6 +532,12 @@ path it took: `StorageError` from an autocommit statement and
 `ExecutionError` from a statement inside a transaction. Test `kind` rather
 than the message.
 
+A resident search snapshot that disagrees with its published projection
+raises `StorageError` with `kind == "search_projection_mismatch"`,
+`projection` (the directory, or `None`) and `retryable == False`. Reopening
+does not help: rebuild the search projection from the graph, which is not
+affected.
+
 Memory-ledger and spill-quota refusals, and the read ceilings described under
 [Read budgets](#read-budgets-and-query-plans), raise `exceptions.ResourceBudgetError`,
 a subclass of `ExecutionError`, with `resource`, `scope`, `owner`,

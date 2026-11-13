@@ -214,7 +214,27 @@ as absent, so it never serves the previous generation's artifacts as the new
 one. A newer binary repairs every alias on open. Registered
 Consumer checkpoints keep their previous order; their Consumer publication
 record selects the producer closure. The projection remains rebuildable and is not part of canonical
-graph WAL recovery. Snapshot publication streams the header and one encoded
+graph WAL recovery.
+
+A resident snapshot that disagrees with the selector it is opened beside, such
+as the crash state of a HawDB 0.31.0 or earlier checkpoint (#1711) or a damaged
+generation snapshot, is refused with the typed
+`HawDBError::SearchProjectionMismatch { projection, message }` (#1735). Its
+text is unchanged (`storage error: resident search snapshot does not match the
+published immutable projection; ...`); the C ABI, Bun, Go and MoonBit report
+`kind: "search_projection_mismatch"`, and the Python mapping is a `StorageError` with
+`kind == "search_projection_mismatch"`, `projection` and `retryable == False`.
+Reopening the same directory fails the same way, so it is not retryable as-is:
+rebuild the search projection from the authoritative graph (for example remove
+the refused directory and re-import). The check reads only the projection's
+own directory. `EmbeddedStore` opens and recovers the graph before the
+projection, the refusal writes nothing to it, and a graph-only open of the same
+store succeeds with an unpoisoned handle. Other projection refusals, such as a
+corrupt or partially written generation artifact, keep their `Storage` or
+`StorageIntegrity` kinds. The new variant is a breaking change for exhaustive
+`match`es on `HawDBError`.
+
+Snapshot publication streams the header and one encoded
 document record at a time through zstd into a temporary payload, then copies
 that payload behind the checksummed envelope before publication. It does not
 materialize a corpus-sized plaintext `String` or compressed `Vec` on top of the

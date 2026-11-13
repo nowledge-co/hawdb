@@ -724,6 +724,19 @@ def test_a_result_over_the_read_ceiling_names_its_option():
             connection.commit()
 
 
+def test_a_search_projection_mismatch_stays_a_database_error_with_its_kind():
+    error = hawdb.exceptions.StorageError("storage error: resident search snapshot")
+    error.kind, error.projection, error.retryable = (
+        "search_projection_mismatch", "/data/search", False
+    )
+    translated = dbapi._pep249(error, statement=False)
+    assert isinstance(translated, hawdb.exceptions.StorageError)
+    assert pep249_classes(translated) == [dbapi.DatabaseError]
+    assert (translated.kind, translated.projection, translated.retryable) == (
+        "search_projection_mismatch", "/data/search", False
+    )
+
+
 def test_built_in_errors_gain_classes_only_from_statements():
     for error, pep in [
         (TypeError("type"), dbapi.ProgrammingError),

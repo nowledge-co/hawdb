@@ -2190,6 +2190,7 @@ fn error_class(error: &HawDBError) -> &'static str {
         | HawDBError::StorageIntegrity(_)
         | HawDBError::WalRecoveryIo { .. }
         | HawDBError::PublishOutcomeUnknown { .. }
+        | HawDBError::SearchProjectionMismatch { .. }
         | HawDBError::AppendSequenceExhausted { .. }
         | HawDBError::BranchBusy { .. }
         | HawDBError::BranchReclamationBlocked { .. } => "storage",
