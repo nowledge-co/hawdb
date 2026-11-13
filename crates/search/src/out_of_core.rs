@@ -268,6 +268,8 @@ pub(crate) fn open_stationary_candidate(
     })))
 }
 pub(crate) mod artifact_key;
+mod epoch_advance;
+pub use epoch_advance::SearchProjectionEpochAdvanceReport;
 mod generation_writer;
 mod hydration;
 mod metadata_query;
@@ -578,6 +580,12 @@ struct SearchOutOfCoreManifestBody<S = String> {
     document_count: usize,
     documents_digest: u64,
     source_graph_commit_epoch: Option<u64>,
+    /// Source epoch of the last content publication, present only after a
+    /// verified metadata-only advance (#1756) moved `source_graph_commit_epoch`
+    /// past it. The resident snapshot, lexical manifests and vector artifacts
+    /// of the closure keep this stamp; segments keep their own epochs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    content_source_graph_commit_epoch: Option<u64>,
     import_source_graph_commit_epoch: Option<u64>,
     embedding_model: Option<S>,
     embedding_version: Option<S>,
@@ -986,6 +994,15 @@ impl<S: AsRef<str>> SearchOutOfCoreManifestBody<S> {
         if self.resident_snapshot_absent && self.resident_snapshot.is_some() {
             return Err(HawDBError::StorageIntegrity(
                 "conflicting resident snapshot ownership states".into(),
+            ));
+        }
+        if let Some(content) = self.content_source_graph_commit_epoch
+            && !self
+                .source_graph_commit_epoch
+                .is_some_and(|source| content < source)
+        {
+            return Err(HawDBError::StorageIntegrity(
+                "search out-of-core manifest advances its source epoch backwards".into(),
             ));
         }
         if self
@@ -4508,10 +4525,15 @@ pub(super) struct PublishedArtifactGenerations {
     pub(super) rabitq_generations: BTreeSet<u64>,
 }
 
-pub(super) fn validate_resident_snapshot_identity(index: &SearchIndex, root: &Path) -> Result<()> {
+/// Returns the advanced source epoch when the selector records a verified
+/// metadata-only advance past the snapshot's stamp (#1756).
+pub(super) fn validate_resident_snapshot_identity(
+    index: &SearchIndex,
+    root: &Path,
+) -> Result<Option<u64>> {
     let path = root.join(OUT_OF_CORE_MANIFEST_FILE);
     if !fs::try_exists(&path)? {
-        return Ok(());
+        return Ok(None);
     }
     let bytes = read_bounded_file(&path, MAX_OUT_OF_CORE_MANIFEST_BYTES)?;
     validate_resident_snapshot_manifest(index, &bytes)
@@ -4520,10 +4542,10 @@ pub(super) fn validate_resident_snapshot_identity(index: &SearchIndex, root: &Pa
 pub(super) fn validate_captured_resident_snapshot_identity(
     index: &SearchIndex,
     publication: &SearchProjectionPublishLease,
-) -> Result<()> {
+) -> Result<Option<u64>> {
     let file = match publication.open_captured_child(OUT_OF_CORE_MANIFEST_FILE) {
         Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
     let bytes = crate::bounded_file::read_bounded_open_file(
@@ -4582,8 +4604,18 @@ pub(super) fn validate_registered_artifact_closure(
     Ok(())
 }
 
-fn validate_resident_snapshot_manifest(index: &SearchIndex, bytes: &[u8]) -> Result<()> {
+/// Compares the in-memory resident projection with the published selector.
+/// Epochs compare by content stamp: the snapshot and the lexical and vector
+/// artifacts it validates were written at the selector's content epoch, which
+/// a metadata-only advance (#1756) leaves behind its source epoch.
+pub(super) fn validate_resident_snapshot_manifest(
+    index: &SearchIndex,
+    bytes: &[u8],
+) -> Result<Option<u64>> {
     let manifest = SearchOutOfCoreManifestBody::decode(bytes)?;
+    let manifest_content_epoch = manifest
+        .content_source_graph_commit_epoch
+        .or(manifest.source_graph_commit_epoch);
     let embedding = index.embedding_manifest.as_ref();
     let summary = index.vector_document_summary;
     let digest = summary.map_or_else(
@@ -4601,7 +4633,7 @@ fn validate_resident_snapshot_manifest(index: &SearchIndex, bytes: &[u8]) -> Res
     if snapshot_mismatch
         || manifest.document_count != index.document_count()
         || manifest.documents_digest != digest
-        || manifest.source_graph_commit_epoch != index.source_graph_commit_epoch
+        || manifest_content_epoch != index.artifact_source_graph_commit_epoch()
         || manifest.import_source_graph_commit_epoch != index.import_source_graph_commit_epoch
         || manifest.vector_scoring != index.vector_scoring
         || manifest.embedding_dimension != index.embedding_dimension
@@ -4619,7 +4651,9 @@ fn validate_resident_snapshot_manifest(index: &SearchIndex, bytes: &[u8]) -> Res
             message: "resident search snapshot does not match the published immutable projection; incremental catch-up cannot repair it: rebuild it from the graph into a new directory with EmbeddedStoreHandle::rebuild_out_of_core_search_projection, or rebuild a resident projection with Database::rebuild_search_projection".into(),
         });
     }
-    Ok(())
+    Ok(manifest
+        .content_source_graph_commit_epoch
+        .and(manifest.source_graph_commit_epoch))
 }
 
 #[cfg(test)]
@@ -5173,6 +5207,7 @@ fn publish_out_of_core_projection(
         document_count: index.documents.len(),
         documents_digest: lexical_documents_digest(&index.documents),
         source_graph_commit_epoch: index.source_graph_commit_epoch,
+        content_source_graph_commit_epoch: None,
         import_source_graph_commit_epoch: index.import_source_graph_commit_epoch,
         embedding_model: embedding.map(|manifest| manifest.model.clone()),
         embedding_version: embedding.and_then(|manifest| manifest.version.clone()),
@@ -5253,6 +5288,8 @@ pub(crate) enum ResidentCheckpointStep {
     AfterSelector,
     AfterAlias(&'static str),
     Cleanup,
+    EpochAdvanceBeforeSelector,
+    EpochAdvanceAfterSelector,
 }
 
 #[cfg(test)]
@@ -5317,9 +5354,15 @@ pub(super) fn recover_resident_aliases(root: &Path) -> Result<()> {
     else {
         return Ok(());
     };
-    let generation = manifest.generation;
     let [segment] = manifest.segments.as_slice() else {
         return Ok(());
+    };
+    // A metadata-only epoch advance (#1756) selects the same resident closure
+    // under a newer selector generation; its aliases still name the content's.
+    let generation = if manifest.content_source_graph_commit_epoch.is_some() {
+        segment.generation
+    } else {
+        manifest.generation
     };
     let aliases = resident_aliases(generation);
     if !manifest.mutation_runs.is_empty()

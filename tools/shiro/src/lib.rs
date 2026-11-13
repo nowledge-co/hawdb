@@ -2177,7 +2177,8 @@ fn error_class(error: &HawDBError) -> &'static str {
         | HawDBError::TransactionRetryRequired(_)
         | HawDBError::TransactionReadDependencyRefused { .. }
         | HawDBError::BranchCommandUnsupported { .. }
-        | HawDBError::SearchProjectionRebuildRefused { .. } => "execution",
+        | HawDBError::SearchProjectionRebuildRefused { .. }
+        | HawDBError::SearchProjectionEpochAdvanceRefused { .. } => "execution",
         HawDBError::Storage(_)
         | HawDBError::Constraint {
             surface: RelationalErrorSurface::Storage,

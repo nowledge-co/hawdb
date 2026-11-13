@@ -140,6 +140,36 @@ impl SearchProjectionRebuildRefusal {
     }
 }
 
+/// Why a metadata-only search projection epoch advance was refused before it
+/// published anything. The projection keeps its previous epoch; the host can
+/// fall back to an ordinary apply or catch-up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchProjectionEpochAdvanceRefusal {
+    /// A graph commit in the range changed something that maps to a search
+    /// projection document, so the projection content may differ at the target.
+    ProjectionChanged,
+    /// The retained search change log does not cover the whole range: a
+    /// commit in it could not be captured, or its entries were trimmed.
+    ChangeLogGap,
+    /// The range cannot be checked: the projection has no source epoch, or the
+    /// target is beyond the graph's current commit epoch.
+    RangeUnavailable,
+    /// The resident projection holds changes that are not checkpointed, so its
+    /// durable files do not describe the in-memory projection.
+    UncheckpointedChanges,
+}
+
+impl SearchProjectionEpochAdvanceRefusal {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ProjectionChanged => "projection_changed",
+            Self::ChangeLogGap => "change_log_gap",
+            Self::RangeUnavailable => "range_unavailable",
+            Self::UncheckpointedChanges => "uncheckpointed_changes",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HawDBError {
     Parse(String),
@@ -199,6 +229,16 @@ pub enum HawDBError {
     SearchProjectionRebuildRefused {
         reason: SearchProjectionRebuildRefusal,
         target: std::path::PathBuf,
+        message: String,
+    },
+    /// A metadata-only search projection epoch advance was refused and
+    /// published nothing: the projection keeps `source_graph_commit_epoch`.
+    /// This is not a storage failure. The graph and the projection are
+    /// unchanged; apply or catch up the range normally instead.
+    SearchProjectionEpochAdvanceRefused {
+        reason: SearchProjectionEpochAdvanceRefusal,
+        source_graph_commit_epoch: Option<u64>,
+        target_graph_commit_epoch: u64,
         message: String,
     },
     Execution(String),
@@ -284,6 +324,13 @@ impl Display for HawDBError {
             } => write!(
                 f,
                 "search projection rebuild refused ({}): {message}",
+                reason.as_str()
+            ),
+            HawDBError::SearchProjectionEpochAdvanceRefused {
+                reason, message, ..
+            } => write!(
+                f,
+                "search projection epoch advance refused ({}): {message}",
                 reason.as_str()
             ),
             HawDBError::Execution(message) => write!(f, "execution error: {message}"),

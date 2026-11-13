@@ -65,6 +65,7 @@ mod concurrent_owner;
 mod incremental_search;
 mod read_execution;
 mod resident_read;
+mod search_epoch_advance;
 mod search_projection_rebuild;
 mod search_read;
 use resident_read::ResidentProjectionRef;
@@ -2336,6 +2337,11 @@ impl EmbeddedStore {
     /// Applies a projection delta and checkpoints it before acknowledging
     /// success to the host. A checkpoint failure is returned to the caller,
     /// leaving the host free to retry its idempotent batch.
+    ///
+    /// A resident checkpoint rewrites the whole projection even for an empty
+    /// delta. To move only the source epoch past graph commits the projection
+    /// does not index, use [`Self::advance_search_projection_source_epoch`],
+    /// which writes one selector manifest after verifying the range.
     pub fn apply_search_projection_delta_and_checkpoint(
         &mut self,
         delta: SearchProjectionDelta,
@@ -2442,7 +2448,9 @@ impl EmbeddedStore {
     ///
     /// The cost is a full rewrite of the projection (lexical index, segment,
     /// metadata, and vector payload files), proportional to the corpus size,
-    /// not to the pages applied since the previous checkpoint.
+    /// not to the pages applied since the previous checkpoint. Do not use an
+    /// empty page and checkpoint only to move the source epoch; see
+    /// [`Self::advance_search_projection_source_epoch`].
     pub fn checkpoint_initial_import_projection(&mut self) -> Result<SearchCheckpointReport> {
         let projection = require_search_projection_mut(&mut self.search_projection)?;
         let report = projection.index().checkpoint_with_report()?;

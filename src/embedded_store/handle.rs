@@ -956,6 +956,8 @@ impl EmbeddedStoreHandle {
     /// Applies an externally materialized projection batch and makes it
     /// durable before returning. This is the library boundary used when Mem
     /// imports a legacy LanceDB projection without rebuilding embeddings.
+    /// An empty batch still rewrites a resident projection; use
+    /// [`Self::advance_search_projection_source_epoch`] to move only the epoch.
     pub fn apply_search_projection_delta_and_checkpoint(
         &self,
         delta: SearchProjectionDelta,
@@ -991,7 +993,8 @@ impl EmbeddedStoreHandle {
 
     /// Makes every initial-import page applied so far durable by publishing
     /// one new resident projection generation. Each call rewrites the whole
-    /// projection; schedule calls geometrically rather than per page.
+    /// projection; schedule calls geometrically rather than per page. To move
+    /// only the source epoch, use [`Self::advance_search_projection_source_epoch`].
     pub fn checkpoint_initial_import_projection(&self) -> Result<SearchCheckpointReport> {
         let _permit = self.admit_typed_maintenance(RuntimeWorkPriority::Background, 0, 1)?;
         self.write_store()?.checkpoint_initial_import_projection()

@@ -101,6 +101,9 @@ impl QueryBridge {
                     HawDBError::SearchProjectionRebuildRefused { .. } => {
                         "search_projection_rebuild_refused"
                     }
+                    HawDBError::SearchProjectionEpochAdvanceRefused { .. } => {
+                        "search_projection_epoch_advance_refused"
+                    }
                     HawDBError::BranchBusy { .. } => "branch_busy",
                     HawDBError::BranchReclamationBlocked { .. } => "branch_reclamation_blocked",
                     HawDBError::BranchEvidenceBudgetExceeded { .. } => {

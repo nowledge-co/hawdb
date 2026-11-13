@@ -226,6 +226,24 @@ pub fn format_hawdb_error(error: &HawDBError) -> PyErr {
                 attributes.err().unwrap_or(exception)
             })
         }
+        HawDBError::SearchProjectionEpochAdvanceRefused {
+            reason,
+            source_graph_commit_epoch,
+            target_graph_commit_epoch,
+            ..
+        } => Python::attach(|py| {
+            // Nothing was published: the host falls back to an ordinary apply.
+            let exception = ExecutionError::new_err(message);
+            let value = exception.value(py);
+            let attributes = (|| -> PyResult<()> {
+                value.setattr("kind", "search_projection_epoch_advance_refused")?;
+                value.setattr("reason", reason.as_str())?;
+                value.setattr("source_graph_commit_epoch", *source_graph_commit_epoch)?;
+                value.setattr("target_graph_commit_epoch", *target_graph_commit_epoch)?;
+                value.setattr("retryable", false)
+            })();
+            attributes.err().unwrap_or(exception)
+        }),
         HawDBError::Execution(_) => Python::attach(|py| {
             let exception = ExecutionError::new_err(message);
             let attributes = exception
@@ -624,6 +642,38 @@ mod tests {
             assert_eq!(text("kind"), "search_projection_rebuild_refused");
             assert_eq!(text("reason"), "target_exists");
             assert_eq!(text("target"), "/data/search-rebuilt");
+        });
+    }
+
+    #[test]
+    fn search_projection_epoch_advance_refusal_is_an_execution_error_with_its_reason() {
+        Python::initialize();
+        Python::attach(|py| {
+            let error = HawDBError::SearchProjectionEpochAdvanceRefused {
+                reason: hawdb::SearchProjectionEpochAdvanceRefusal::ProjectionChanged,
+                source_graph_commit_epoch: Some(4),
+                target_graph_commit_epoch: 9,
+                message: "commit 6 changed a projected node".into(),
+            };
+            let exception = format_hawdb_error(&error);
+            assert!(exception.is_instance_of::<ExecutionError>(py));
+            assert!(!exception.is_instance_of::<StorageError>(py));
+            let value = exception.value(py);
+            assert_eq!(
+                value.str().unwrap().to_str().unwrap(),
+                "search projection epoch advance refused (projection_changed): commit 6 changed a projected node"
+            );
+            let text = |name: &str| value.getattr(name).unwrap().extract::<String>().unwrap();
+            let number = |name: &str| value.getattr(name).unwrap().extract::<u64>().unwrap();
+            assert_eq!(text("kind"), "search_projection_epoch_advance_refused");
+            assert_eq!(text("reason"), "projection_changed");
+            assert_eq!(number("source_graph_commit_epoch"), 4);
+            assert_eq!(number("target_graph_commit_epoch"), 9);
+            assert!(!value
+                .getattr("retryable")
+                .unwrap()
+                .extract::<bool>()
+                .unwrap());
         });
     }
 }

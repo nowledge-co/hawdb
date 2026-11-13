@@ -7717,6 +7717,7 @@ mod object_reclamation_tests;
 mod schema_change_log_gap_tests;
 mod schema_maintenance_tests;
 mod search_cleanup_ceiling_tests;
+mod search_epoch_advance_tests;
 mod search_projection_rebuild_tests;
 mod storage_pressure_tests;
 mod wal_generation_reclamation_tests;

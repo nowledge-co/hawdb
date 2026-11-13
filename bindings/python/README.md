@@ -546,6 +546,14 @@ mismatch) raises `ExecutionError` with
 `retryable == False`. It is not a storage failure: the graph and the current
 projection directory are untouched; fix the reason and rebuild again.
 
+A metadata-only search projection epoch advance that published nothing raises
+`ExecutionError` with `kind == "search_projection_epoch_advance_refused"`,
+`reason` (`"projection_changed"`, `"change_log_gap"`, `"range_unavailable"` or
+`"uncheckpointed_changes"`), `source_graph_commit_epoch` (or `None`),
+`target_graph_commit_epoch` and `retryable == False`. It is not a storage
+failure: the projection keeps its previous epoch; apply or catch up the range
+normally instead.
+
 Memory-ledger and spill-quota refusals, and the read ceilings described under
 [Read budgets](#read-budgets-and-query-plans), raise `exceptions.ResourceBudgetError`,
 a subclass of `ExecutionError`, with `resource`, `scope`, `owner`,
