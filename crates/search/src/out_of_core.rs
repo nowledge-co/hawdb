@@ -6386,6 +6386,7 @@ mod tests {
     /// Exact vector-only reads larger than a reader cap or their admitted
     /// score entries are typed budget refusals, never storage faults (#1748).
     #[test]
+    #[cfg(feature = "vector-search")]
     fn out_of_core_exact_vector_window_and_hydration_caps_are_typed_budget_errors() {
         let path = test_dir("exact-vector-caps");
         let mut index = SearchIndex::open(&path).unwrap();
