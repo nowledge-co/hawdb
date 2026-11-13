@@ -60,6 +60,13 @@ pub enum StoragePressureReasonCode {
     /// Unreachable immutable objects remain after the last sweep, or the
     /// sweep was deferred or failed (#1736). The next checkpoint retries.
     ObjectReclamationDebt,
+    /// An automatic sweep retained a corrupt unreachable object without
+    /// quarantine evidence (`object_reclamation_corrupt_object`). Another
+    /// checkpoint cannot clear it; inspect the object or reclaim explicitly.
+    ObjectReclamationCorruptObject,
+    /// An automatic sweep retained quarantined sources because their archive
+    /// was over budget or failed verification; explicit reclamation decides.
+    ObjectReclamationQuarantineUnverified,
     ReaderPinnedObsoleteGenerations,
     CachePinnedPressure,
 }
@@ -79,6 +86,10 @@ impl StoragePressureReasonCode {
             Self::ProjectionDebt => "projection_debt",
             Self::GenerationReclamationDebt => "generation_reclamation_debt",
             Self::ObjectReclamationDebt => "object_reclamation_debt",
+            Self::ObjectReclamationCorruptObject => "object_reclamation_corrupt_object",
+            Self::ObjectReclamationQuarantineUnverified => {
+                "object_reclamation_quarantine_unverified"
+            }
             Self::ReaderPinnedObsoleteGenerations => "reader_pinned_obsolete_generations",
             Self::CachePinnedPressure => "cache_pinned_pressure",
         }
@@ -104,6 +115,10 @@ pub struct StoragePressureSignals {
     pub object_reclamation_retry_required: bool,
     pub object_reclamation_pending_files: u64,
     pub object_reclamation_pending_bytes: u64,
+    pub object_reclamation_skipped_files: u64,
+    pub object_reclamation_skipped_bytes: u64,
+    pub object_reclamation_corrupt_object: Option<crate::immutable_object::ObjectReference>,
+    pub object_reclamation_quarantine_unverified: bool,
     pub oldest_reader_commit_epoch: Option<u64>,
     pub obsolete_generation_bytes: u64,
     pub estimated_checkpoint_temporary_bytes: u64,
@@ -142,6 +157,13 @@ pub struct StoragePressureSnapshot {
     /// Unreachable objects the last completed sweep left for a later pass.
     pub object_reclamation_pending_files: u64,
     pub object_reclamation_pending_bytes: u64,
+    /// Unreachable objects the last automatic sweep retained and will not
+    /// remove by itself (see the two `ObjectReclamation*` reason codes).
+    pub object_reclamation_skipped_files: u64,
+    pub object_reclamation_skipped_bytes: u64,
+    /// Kind and digest of a corrupt unreachable object that was retained.
+    pub object_reclamation_corrupt_object: Option<crate::immutable_object::ObjectReference>,
+    pub object_reclamation_quarantine_unverified: bool,
     pub oldest_reader_commit_epoch: Option<u64>,
     pub oldest_reader_lag: u64,
     pub obsolete_generation_bytes: u64,
@@ -238,6 +260,12 @@ impl StorageDebtController {
         if signals.object_reclamation_retry_required {
             reasons.push(StoragePressureReasonCode::ObjectReclamationDebt);
         }
+        if signals.object_reclamation_corrupt_object.is_some() {
+            reasons.push(StoragePressureReasonCode::ObjectReclamationCorruptObject);
+        }
+        if signals.object_reclamation_quarantine_unverified {
+            reasons.push(StoragePressureReasonCode::ObjectReclamationQuarantineUnverified);
+        }
         if oldest_reader_lag > 0 && signals.obsolete_generation_bytes > 0 {
             reasons.push(StoragePressureReasonCode::ReaderPinnedObsoleteGenerations);
         }
@@ -292,6 +320,11 @@ impl StorageDebtController {
             object_reclamation_retry_required: signals.object_reclamation_retry_required,
             object_reclamation_pending_files: signals.object_reclamation_pending_files,
             object_reclamation_pending_bytes: signals.object_reclamation_pending_bytes,
+            object_reclamation_skipped_files: signals.object_reclamation_skipped_files,
+            object_reclamation_skipped_bytes: signals.object_reclamation_skipped_bytes,
+            object_reclamation_corrupt_object: signals.object_reclamation_corrupt_object,
+            object_reclamation_quarantine_unverified: signals
+                .object_reclamation_quarantine_unverified,
             oldest_reader_commit_epoch: signals.oldest_reader_commit_epoch,
             oldest_reader_lag,
             obsolete_generation_bytes: signals.obsolete_generation_bytes,

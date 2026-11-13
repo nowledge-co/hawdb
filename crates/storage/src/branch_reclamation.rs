@@ -86,6 +86,14 @@ pub struct BranchReclamationReport {
     /// (staging excluded). Zero for a deferral.
     pub object_store_objects: u64,
     pub object_store_bytes: u64,
+    /// Unreachable objects an automatic pass retained instead of removing:
+    /// corrupt ones without quarantine evidence, and quarantined sources
+    /// whose archive it could not verify. Not retryable by another pass.
+    pub skipped_corrupt_objects: u64,
+    pub skipped_quarantine_objects: u64,
+    pub skipped_bytes: u64,
+    /// The first corrupt unreachable object retained (kind and digest).
+    pub corrupt_object: Option<crate::immutable_object::ObjectReference>,
 }
 
 impl BranchReclamationReport {
@@ -278,6 +286,7 @@ pub(crate) fn reclaim_owned_project(
                 ReclamationTrigger::Explicit => limits.max_bytes,
                 ReclamationTrigger::Automatic => 0,
             },
+            skip_unverifiable: trigger == ReclamationTrigger::Automatic,
         };
         let swept = store
             .sweep_unreachable_bounded(&retained_roots, &proofs, budget, &mut barrier)
@@ -286,13 +295,16 @@ pub(crate) fn reclaim_owned_project(
                     &catalog, &branches, error,
                 ))
             })?;
-        let reclaimed_branch_directories = if swept.retry_required {
-            0
-        } else {
-            store
-                .reclaim_deleted_branch_directories(&branches)
-                .map_err(HawDBError::from_storage_error)?
-        };
+        // Retiring a deleted branch directory inspects its quarantined
+        // private remnants, which only explicit reclamation verifies.
+        let reclaimed_branch_directories =
+            if swept.retry_required || trigger == ReclamationTrigger::Automatic {
+                0
+            } else {
+                store
+                    .reclaim_deleted_branch_directories(&branches)
+                    .map_err(HawDBError::from_storage_error)?
+            };
         BranchReclamationReport {
             retained_objects: swept.retained_objects,
             reclaimed_objects: swept.reclaimed_objects,
@@ -308,6 +320,10 @@ pub(crate) fn reclaim_owned_project(
             retry_required: swept.retry_required,
             object_store_objects: swept.store_objects,
             object_store_bytes: swept.store_bytes,
+            skipped_corrupt_objects: swept.skipped_corrupt_objects,
+            skipped_quarantine_objects: swept.skipped_quarantine_objects,
+            skipped_bytes: swept.skipped_bytes,
+            corrupt_object: swept.corrupt_object,
         }
     };
     report.metadata_lock_micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);

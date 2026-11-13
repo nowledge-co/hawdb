@@ -519,3 +519,84 @@ fn abandonment_bounds_encoded_json_including_escape_expansion() {
         .to_string()
         .contains("encoding limit"));
 }
+
+/// Automatic post-checkpoint passes (#1736) verify a committed archive once
+/// per process instead of on every checkpoint, and an archive beyond the
+/// budget protects its quarantined sources instead of failing every pass.
+#[test]
+fn automatic_evidence_verifies_each_archive_once_and_protects_unverifiable_sources() {
+    let damaged_root = |fixture: &Fixture| {
+        fixture
+            .directory()
+            .join("objects/objects/sealed-root")
+            .join("8".repeat(64))
+    };
+    let abandon = |fixture: &Fixture| {
+        let metadata = fixture.initialize();
+        let plan = metadata
+            .inspect_pending_branch_abandonment(fixture.child.as_uuid(), Default::default())
+            .unwrap();
+        metadata
+            .abandon_pending_branch(plan.acknowledge_potential_data_loss())
+            .unwrap()
+    };
+
+    // Verified once, then served from the cache even after the archive bytes
+    // change; explicit reclamation still re-verifies and refuses.
+    let fixture = Fixture::new();
+    let report = abandon(&fixture);
+    let catalog = branch_catalog::read_catalog(&fixture.directory().join("catalog.hawdb")).unwrap();
+    let first =
+        automatic_reclamation_evidence(&fixture.directory(), &catalog, Default::default()).unwrap();
+    let source = damaged_root(&fixture);
+    assert!(first.preserves(&source).unwrap());
+    assert!(!first.protects(&source));
+    let evidence = report.quarantine_directory.join("file-0");
+    let mut bytes = fs::read(&evidence).unwrap();
+    bytes[0] ^= 1;
+    fs::write(&evidence, bytes).unwrap();
+    assert!(reclamation_evidence(&fixture.directory(), &catalog, Default::default()).is_err());
+    let cached =
+        automatic_reclamation_evidence(&fixture.directory(), &catalog, Default::default()).unwrap();
+    assert!(cached.preserves(&source).unwrap());
+
+    // Over budget: the automatic pass succeeds and only protects the archived
+    // source; the sweep keeps it and reports it, removing everything else.
+    let fixture = Fixture::new();
+    abandon(&fixture);
+    let catalog = branch_catalog::read_catalog(&fixture.directory().join("catalog.hawdb")).unwrap();
+    let tiny = BranchAbandonmentLimits {
+        max_bytes: 1,
+        ..Default::default()
+    };
+    assert!(reclamation_evidence(&fixture.directory(), &catalog, tiny).is_err());
+    let protected = automatic_reclamation_evidence(&fixture.directory(), &catalog, tiny).unwrap();
+    let source = damaged_root(&fixture);
+    assert!(protected.protects(&source));
+    assert!(!protected.preserves(&source).unwrap());
+    let objects = fixture.directory().join("objects");
+    let mut store = crate::immutable_object::ImmutableObjectStore::open(&objects).unwrap();
+    let garbage = crate::immutable_object::ObjectReference::for_bytes(
+        crate::immutable_object::ObjectKind::CheckpointArtifact,
+        1,
+        b"unreachable",
+    );
+    store.publish(garbage, b"unreachable").unwrap();
+    let swept = store
+        .sweep_unreachable_bounded(
+            &[],
+            &protected,
+            crate::immutable_object::ObjectSweepBudget {
+                max_objects: 100,
+                max_bytes: 1 << 20,
+                max_verified_reachable_bytes: 0,
+                skip_unverifiable: true,
+            },
+            &mut || Ok(()),
+        )
+        .unwrap();
+    assert_eq!(swept.skipped_quarantine_objects, 1, "{swept:?}");
+    assert_eq!(swept.reclaimed_objects, 1, "{swept:?}");
+    assert!(source.exists());
+    assert!(store.read(garbage).is_err());
+}

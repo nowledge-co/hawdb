@@ -377,3 +377,164 @@ fn explicit_reclamation_makes_bounded_progress_above_its_limits() {
     let main = fixture.admit(fixture.main, DurabilityPolicy::SyncOnEveryWrite);
     assert_eq!(message_rows(main.store()), 5);
 }
+
+/// One corrupt unreachable object without quarantine evidence is retained and
+/// reported by name; automatic passes keep sweeping everything else and do
+/// not turn it into permanent retry debt. Explicit reclamation still refuses.
+#[test]
+fn corrupt_unreachable_object_is_retained_reported_and_does_not_block_sweeps() {
+    let fixture = BranchFixture::new();
+    let mut main = fixture.admit(fixture.main, DurabilityPolicy::SyncOnEveryWrite);
+    write_schema_and_graph(&mut main);
+    checkpoint(&mut main).unwrap();
+    let digest = "c".repeat(64);
+    let corrupt_path = fixture
+        .objects
+        .join("objects")
+        .join("checkpoint-artifact")
+        .join(&digest);
+    fs::write(&corrupt_path, b"bytes that do not hash to their name").unwrap();
+    for round in 0..3 {
+        let superseded = main.head().sealed_root;
+        write_row(&mut main, &format!("row-{round}"));
+        checkpoint(&mut main).unwrap();
+        let names = object_names(&fixture);
+        assert!(
+            !names.contains(&("sealed-root".to_string(), superseded.sha256.to_string())),
+            "round {round}: the sweep stopped at the corrupt object"
+        );
+        assert!(corrupt_path.exists());
+        let pressure = main.store().storage_pressure_snapshot(None);
+        assert!(!pressure.object_reclamation_retry_required, "{pressure:?}");
+        assert_eq!(pressure.object_reclamation_skipped_files, 1);
+        assert_eq!(
+            pressure.object_reclamation_skipped_bytes,
+            fs::metadata(&corrupt_path).unwrap().len()
+        );
+        let corrupt = pressure.object_reclamation_corrupt_object.unwrap();
+        assert_eq!(corrupt.kind, ObjectKind::CheckpointArtifact);
+        assert_eq!(corrupt.sha256.to_string(), digest);
+        assert!(pressure
+            .reason_codes
+            .contains(&crate::pressure::StoragePressureReasonCode::ObjectReclamationCorruptObject));
+    }
+    assert!(main
+        .store_mut()
+        .reclaim_branch_storage(BranchReclamationLimits::default())
+        .is_err());
+    assert!(corrupt_path.exists());
+    // Removing the damaged file clears the report at the next pass.
+    fs::remove_file(&corrupt_path).unwrap();
+    write_row(&mut main, "clean");
+    checkpoint(&mut main).unwrap();
+    let pressure = main.store().storage_pressure_snapshot(None);
+    assert_eq!(pressure.object_reclamation_skipped_files, 0);
+    assert!(pressure.object_reclamation_corrupt_object.is_none());
+    assert_no_object_debt(main.store(), "after the corrupt object is gone");
+    assert_eq!(message_rows(main.store()), 5);
+}
+
+/// A second admitted owner (another branch) holds a reader pinned on one of
+/// its own superseded roots. Its head no longer references that root, so
+/// only its registered pin keeps it; repeated checkpoints and sweeps by the
+/// other owner must keep the closure intact and readable.
+#[test]
+fn another_owners_registered_reader_pin_survives_foreign_sweeps() {
+    let fixture = BranchFixture::new();
+    let mut main = fixture.admit(fixture.main, DurabilityPolicy::SyncOnEveryWrite);
+    write_schema_and_graph(&mut main);
+    checkpoint(&mut main).unwrap();
+    fixture.fork(&main, branch_id(2), "child");
+    let mut child = fixture.admit(branch_id(2), DurabilityPolicy::SyncOnEveryWrite);
+    write_row(&mut child, &"child-pinned".repeat(1024));
+    checkpoint(&mut child).unwrap();
+    let pinned_root = child.head().sealed_root;
+    let reader = child.store().snapshot_for_read();
+    write_row(&mut child, "child-later");
+    checkpoint(&mut child).unwrap();
+    assert_ne!(child.head().sealed_root, pinned_root);
+    assert_closure_present(&fixture, pinned_root, "after the child's own sweep");
+
+    for round in 0..4 {
+        write_row(&mut main, &format!("main-{round}-{}", "z".repeat(4096)));
+        checkpoint(&mut main).unwrap();
+        assert_no_object_debt(main.store(), &format!("main round {round}"));
+        assert_closure_present(&fixture, pinned_root, &format!("main round {round}"));
+        assert_eq!(message_rows(&reader), 2);
+    }
+    let report = main
+        .store_mut()
+        .reclaim_branch_storage(BranchReclamationLimits::default())
+        .unwrap();
+    assert!(!report.deferred_for_active_leases, "{report:?}");
+    assert_closure_present(&fixture, pinned_root, "explicit foreign sweep");
+    assert_eq!(message_rows(&reader), 2);
+
+    // Released: the next sweep by the other owner reclaims it.
+    drop(reader);
+    write_row(&mut main, "main-after-release");
+    checkpoint(&mut main).unwrap();
+    assert!(!object_names(&fixture)
+        .contains(&("sealed-root".to_string(), pinned_root.sha256.to_string())));
+    assert_eq!(message_rows(child.store()), 3);
+    drop(child);
+    let child = fixture.admit(branch_id(2), DurabilityPolicy::SyncOnEveryWrite);
+    assert_eq!(message_rows(child.store()), 3);
+}
+
+/// Two owners publish and sweep concurrently: each sweep must either defer
+/// on the other's publication lock or see its fully pinned root. No head,
+/// base or closure is ever lost, and both branches reopen intact.
+#[test]
+fn concurrent_owner_publications_and_sweeps_never_lose_a_live_closure() {
+    let fixture = BranchFixture::new();
+    let mut main = fixture.admit(fixture.main, DurabilityPolicy::SyncOnEveryWrite);
+    write_schema_and_graph(&mut main);
+    checkpoint(&mut main).unwrap();
+    fixture.fork(&main, branch_id(2), "child");
+    let child = fixture.admit(branch_id(2), DurabilityPolicy::SyncOnEveryWrite);
+    const ROUNDS: usize = 8;
+    let run = |mut branch: AdmittedBranchStore, name: &'static str| {
+        std::thread::spawn(move || {
+            for round in 0..ROUNDS {
+                write_row(&mut branch, &format!("{name}-{round}-{}", "w".repeat(2048)));
+                checkpoint(&mut branch).unwrap();
+            }
+            branch
+        })
+    };
+    let main_thread = run(main, "main");
+    let child_thread = run(child, "child");
+    let main = main_thread.join().unwrap();
+    let child = child_thread.join().unwrap();
+    for (context, root) in [
+        ("main head", main.head().sealed_root),
+        ("child head", child.head().sealed_root),
+        ("child base", base_root(&fixture, branch_id(2))),
+        ("main base", base_root(&fixture, fixture.main)),
+    ] {
+        assert_closure_present(&fixture, root, context);
+    }
+    assert_eq!(message_rows(main.store()), ROUNDS + 1);
+    assert_eq!(message_rows(child.store()), ROUNDS + 1);
+    // Whatever a deferred pass left is collected once both are quiet.
+    let mut main = main;
+    main.store_mut()
+        .reclaim_branch_storage(BranchReclamationLimits::default())
+        .unwrap();
+    let mut live = closure(&fixture, main.head().sealed_root);
+    for root in [
+        child.head().sealed_root,
+        base_root(&fixture, branch_id(2)),
+        base_root(&fixture, fixture.main),
+    ] {
+        live.extend(closure(&fixture, root));
+    }
+    assert_eq!(object_names(&fixture), live);
+    drop(main);
+    drop(child);
+    let main = fixture.admit(fixture.main, DurabilityPolicy::SyncOnEveryWrite);
+    let child = fixture.admit(branch_id(2), DurabilityPolicy::SyncOnEveryWrite);
+    assert_eq!(message_rows(main.store()), ROUNDS + 1);
+    assert_eq!(message_rows(child.store()), ROUNDS + 1);
+}

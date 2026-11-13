@@ -529,6 +529,12 @@ jobs). An active owner without a root registration defers the pass. The pass
 holds the catalog metadata lock, which serializes every object publication and
 root registration, from its catalog read to its last removal; an automatic pass
 that finds the lock held is deferred rather than waiting behind a publication.
+The one publication outside that lock is the bootstrap of `main`
+(`initialize_immutable_root_head`), which runs before `main` is a `Ready`
+catalog branch; a sweep requires a `Ready` owner, so none can run yet. A
+writer's own pre-publication revalidation of its `Ready` record waits for the
+lock, so another owner's publication or sweep cannot fail its checkpoint as
+busy (branch admission still reports a held lock as busy).
 Before the first removal it synchronizes every branch directory whose head it
 read and the catalog directory, so a head adopted after a crash with an
 unsynchronized rename is durable before anything it superseded disappears.
@@ -537,7 +543,19 @@ Each pass lists the namespace and reads only sealed roots during mark;
 reachable non-root objects are checked for presence and exact length, so the
 cost follows the number of objects and the garbage removed, not the size of the
 live data. Selected garbage is fully verified before the first unlink, with the
-existing quarantine-evidence rule. `BranchReclamationLimits` is a per-pass
+existing quarantine-evidence rule. An automatic pass keeps the structural
+quarantine checks (intent present, bound to the catalog, committed) but
+byte-verifies each committed archive once per process, cached by archive and
+manifest digest; explicit passes re-verify every archive every time. An archive
+beyond the evidence budget or failing verification never fails an automatic
+pass: its quarantined sources are retained and reported
+(`object_reclamation_quarantine_unverified`). A corrupt unreachable object
+without quarantine evidence is likewise retained, named by kind and digest in
+`object_reclamation_corrupt_object` (reason `object_reclamation_corrupt_object`,
+counted in `object_reclamation_skipped_*`), and the automatic pass keeps
+sweeping; an explicit pass still fails closed on it. Retiring deleted branch
+directories, which inspects quarantined private remnants, is left to explicit
+reclamation. `BranchReclamationLimits` is a per-pass
 budget, not a refusal threshold: at most `max_objects` objects and `max_bytes`
 bytes of garbage (always at least one object) are removed, and the remainder is
 reported as pending. An explicit pass also re-hashes up to `max_bytes` of

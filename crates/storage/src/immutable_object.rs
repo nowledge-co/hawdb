@@ -335,6 +335,10 @@ pub(crate) struct ObjectSweepBudget {
     pub max_bytes: u64,
     /// Reachable non-root bytes whose content is re-hashed during mark.
     pub max_verified_reachable_bytes: u64,
+    /// Automatic passes retain and report an unreachable object that fails
+    /// verification and is not preserved by quarantine evidence, and keep
+    /// sweeping. Explicit passes fail closed on it, as before.
+    pub skip_unverifiable: bool,
 }
 
 /// Outcome of one bounded sweep. `store_*` describe the object namespace
@@ -354,6 +358,28 @@ pub(crate) struct ObjectSweepReport {
     /// A removal or barrier failed; unlike budget-limited pending objects,
     /// the pass did not complete its selected work.
     pub retry_required: bool,
+    /// Unreachable objects retained because they failed verification without
+    /// quarantine evidence (corrupt) or because their quarantine archive
+    /// could not be verified. Never removed by an automatic pass.
+    pub skipped_corrupt_objects: u64,
+    pub skipped_quarantine_objects: u64,
+    pub skipped_bytes: u64,
+    /// The first corrupt unreachable object retained by this pass.
+    pub corrupt_object: Option<ObjectReference>,
+}
+
+/// Unreachable objects this process found corrupt, by path, length and
+/// modification time. An automatic pass reports an unchanged one again
+/// without re-hashing it.
+type CorruptObjectKey = (PathBuf, u64, Option<std::time::SystemTime>);
+static KNOWN_CORRUPT: std::sync::Mutex<BTreeSet<CorruptObjectKey>> =
+    std::sync::Mutex::new(BTreeSet::new());
+
+fn corrupt_object_key(path: PathBuf) -> CorruptObjectKey {
+    let metadata = fs::symlink_metadata(&path).ok();
+    let length = metadata.as_ref().map_or(0, |metadata| metadata.len());
+    let modified = metadata.and_then(|metadata| metadata.modified().ok());
+    (path, length, modified)
 }
 
 fn valid_staging_name(name: &str) -> bool {
@@ -980,17 +1006,34 @@ impl ImmutableObjectStore {
                         continue;
                     }
                     let length = metadata.len();
+                    let reference = ObjectReference {
+                        kind,
+                        format_version: kind.current_format_version(),
+                        byte_length: length,
+                        sha256,
+                    };
+                    if evidence.protects(&entry.path()) {
+                        report.skipped_quarantine_objects += 1;
+                        report.skipped_bytes = report.skipped_bytes.saturating_add(length);
+                        continue;
+                    }
+                    if budget.skip_unverifiable && {
+                        let known = KNOWN_CORRUPT
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner());
+                        !known.is_empty() && known.contains(&corrupt_object_key(entry.path()))
+                    } {
+                        report.skipped_corrupt_objects += 1;
+                        report.skipped_bytes = report.skipped_bytes.saturating_add(length);
+                        report.corrupt_object.get_or_insert(reference);
+                        continue;
+                    }
                     if selected.is_empty()
                         || (selected.len() < budget.max_objects
                             && selected_bytes.saturating_add(length) <= budget.max_bytes)
                     {
                         selected_bytes = selected_bytes.saturating_add(length);
-                        selected.push(ObjectReference {
-                            kind,
-                            format_version: kind.current_format_version(),
-                            byte_length: length,
-                            sha256,
-                        });
+                        selected.push(reference);
                     } else {
                         report.pending_objects += 1;
                         report.pending_bytes = report.pending_bytes.saturating_add(length);
@@ -1025,10 +1068,22 @@ impl ImmutableObjectStore {
                                 operation: "verify quarantined source before reclamation",
                                 source: io::Error::other(source),
                             })?;
-                    if !preserved {
+                    if preserved {
+                        verified.push(reference);
+                    } else if budget.skip_unverifiable {
+                        // Keep it as evidence and keep sweeping everything
+                        // else; the host sees it through the report.
+                        KNOWN_CORRUPT
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .insert(corrupt_object_key(self.object_path(reference)));
+                        report.skipped_corrupt_objects += 1;
+                        report.skipped_bytes =
+                            report.skipped_bytes.saturating_add(reference.byte_length);
+                        report.corrupt_object.get_or_insert(reference);
+                    } else {
                         return Err(error);
                     }
-                    verified.push(reference);
                 }
                 Err(error) => return Err(error),
             }

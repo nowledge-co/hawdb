@@ -54,6 +54,12 @@ fn object_debt_from_report(
         pending_bytes: report.pending_bytes,
         store_objects: report.object_store_objects,
         store_bytes: report.object_store_bytes,
+        skipped_objects: report
+            .skipped_corrupt_objects
+            .saturating_add(report.skipped_quarantine_objects),
+        skipped_bytes: report.skipped_bytes,
+        corrupt_object: report.corrupt_object,
+        quarantine_unverified: report.skipped_quarantine_objects > 0,
     }
 }
 

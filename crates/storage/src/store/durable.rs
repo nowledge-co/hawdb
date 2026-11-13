@@ -198,6 +198,13 @@ pub(super) struct ObjectReclamationDebt {
     /// Namespace size after the last completed pass.
     pub(super) store_objects: u64,
     pub(super) store_bytes: u64,
+    /// Unreachable objects the last pass retained and will not remove on its
+    /// own: corrupt without quarantine evidence, or quarantined behind an
+    /// archive it could not verify. Not part of `retry_required`.
+    pub(super) skipped_objects: u64,
+    pub(super) skipped_bytes: u64,
+    pub(super) corrupt_object: Option<hawdb_storage::immutable_object::ObjectReference>,
+    pub(super) quarantine_unverified: bool,
 }
 
 pub(super) use hawdb_storage::checkpoint::CheckpointImage;
