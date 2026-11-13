@@ -558,6 +558,9 @@ pub(super) struct PublishedOutOfCoreProjection {
 
 mod artifact_reference;
 mod captured_cleanup;
+#[cfg(test)]
+pub(crate) use captured_cleanup::set_snapshot_decode_limit_for_test;
+pub(crate) use captured_cleanup::VerificationWork;
 mod scratch_directory;
 use artifact_reference::{ArtifactObject, ResidentSnapshot, SegmentObjects};
 pub(crate) use scratch_directory::{ScratchDirectory, SpillFile};
@@ -2314,6 +2317,32 @@ impl SearchOutOfCoreReader {
 
     pub fn analyzer_lexicon(&self) -> &SearchAnalyzerLexicon {
         &self.analyzer_lexicon
+    }
+
+    /// Runs one generation cleanup pass over this reader's projection root
+    /// with explicit limits, under the root's publication exclusion.
+    ///
+    /// Publications already run a pass with their configured limits; this
+    /// call lets a host retry one that reported `retry_required`, for example
+    /// with a larger `max_verification_bytes` after a restart, when no file of
+    /// the active closure has been verified by this process yet. If another
+    /// owner is publishing, the pass is deferred and nothing is deleted. The
+    /// active closure is verified before anything is deleted.
+    pub fn retry_projection_cleanup(
+        &self,
+        options: crate::SearchProjectionCleanupOptions,
+    ) -> crate::SearchProjectionCleanupReport {
+        let mut state = crate::generation_cleanup::SearchProjectionCleanupState::default();
+        match SearchProjectionPublishLease::acquire_for_cleanup(&self.root) {
+            Ok(publication) => state.run_under_publication(
+                &self.root,
+                options,
+                &publication,
+                &self.analyzer_lexicon,
+                None,
+            ),
+            Err(_) => state.defer_for_publication(options),
+        }
     }
 
     pub fn production_qualification_identity(
@@ -4621,6 +4650,7 @@ pub(super) struct CapturedGenerations {
     pub(super) memory: Option<crate::build_memory::read::ReaderMemory>,
     pub(super) resident_vector_absence_verified: bool,
     pub(super) resident_vector_receipt_verified: bool,
+    pub(super) work: captured_cleanup::VerificationWork,
 }
 
 pub(super) fn captured_artifact_generations(
@@ -4653,6 +4683,7 @@ pub(super) fn captured_artifact_generations(
                     memory: None,
                     resident_vector_absence_verified: true,
                     resident_vector_receipt_verified: false,
+                    work: source.work(),
                 });
             };
             let bytes = admission.read_unbound_file(
@@ -4695,7 +4726,14 @@ pub(super) fn captured_artifact_generations(
                     lexical_source_policy: Default::default(),
                     previous: None,
                     admission: Some(admission),
-                    max_artifact_read_bytes: limits.artifact_bytes,
+                    // The verification ceiling bounds re-hashing, which the
+                    // source enforces (and which skips files this process
+                    // already verified). Opening the closure only needs each
+                    // artifact the manifest names; in-memory metadata reads
+                    // keep their reader-configuration maxima (#1755).
+                    max_artifact_read_bytes: limits
+                        .artifact_bytes
+                        .max(manifest.largest_closure_artifact()),
                 },
                 manifest,
             )?;
@@ -4704,6 +4742,7 @@ pub(super) fn captured_artifact_generations(
                 memory: Some(memory),
                 resident_vector_absence_verified,
                 resident_vector_receipt_verified,
+                work: source.work(),
             })
         }
         None => {
@@ -4722,6 +4761,7 @@ pub(super) fn captured_artifact_generations(
                     memory: None,
                     resident_vector_absence_verified: true,
                     resident_vector_receipt_verified: false,
+                    work: source.work(),
                 });
             };
             let manifest = SearchOutOfCoreManifestBody::decode_with_context(&bytes, Some(task))?;
@@ -4752,8 +4792,32 @@ pub(super) fn captured_artifact_generations(
                 memory: None,
                 resident_vector_absence_verified,
                 resident_vector_receipt_verified,
+                work: source.work(),
             })
         }
+    }
+}
+
+impl SearchOutOfCoreManifestBody {
+    /// Length of the largest artifact this manifest's closure names.
+    fn largest_closure_artifact(&self) -> u64 {
+        let segments = self.segments.iter().flat_map(|segment| {
+            let objects = segment.objects;
+            [
+                objects.descriptor,
+                objects.payload,
+                objects.metadata,
+                objects.vector,
+                objects.layout,
+                objects.lexical_manifest,
+                objects.lexical_payload,
+            ]
+            .into_iter()
+            .chain(objects.rabitq)
+            .map(|object| object.byte_length)
+        });
+        let runs = self.mutation_runs.iter().map(|run| run.object.byte_length);
+        segments.chain(runs).max().unwrap_or(0)
     }
 }
 
@@ -4996,6 +5060,12 @@ fn publish_out_of_core_projection(
             ArtifactObject::from_reference(snapshot.encoded_object)?,
         )?;
     }
+    // The writer counted the vectors it encoded into exactly these bytes;
+    // cleanup uses the count only for a snapshot inode verified above.
+    captured_cleanup::remember_resident_vector_count(
+        snapshot.encoded_object,
+        snapshot.vector_document_count,
+    );
     #[cfg(feature = "vector-search")]
     if let Some(artifact) = rabitq.as_ref() {
         io.verify_object(

@@ -37,6 +37,8 @@ pub(crate) struct CleanupResult {
     pub(crate) deleted_files: usize,
     pub(crate) pending_files: usize,
     pub(crate) retry_required: bool,
+    /// The active closure could not be proven intact; nothing was deleted.
+    pub(crate) closure_unverified: bool,
 }
 
 impl PreparedCleanup {
@@ -109,6 +111,7 @@ impl PreparedCleanup {
         })
         .unwrap_or(CleanupResult {
             retry_required: true,
+            closure_unverified: true,
             ..Default::default()
         })
     }

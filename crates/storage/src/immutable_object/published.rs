@@ -35,6 +35,12 @@
 //! owned and immutable objects are never written in place. Those cases are
 //! covered by demand-read page/block checksums, `scrub_storage` and full
 //! verification on the next cold open.
+//!
+//! Search projection producers and cleanup use the same registry for
+//! generation-named projection artifacts, which are also never written in
+//! place: a complete hash of a held installed file is recorded with the stamp
+//! captured before the hash, and cleanup's closure verification skips only
+//! files whose stamp is unchanged (see [`record_verified_file`]).
 
 use super::ObjectReference;
 use crate::native_file_identity::NativeIdentity;
@@ -183,6 +189,51 @@ pub(crate) fn skip_rehash(reference: ObjectReference, file: &std::fs::File) -> b
         }
         _ => false,
     }
+}
+
+/// Native stamp of one held file, captured before a caller hashes it.
+///
+/// Search projection artifacts are not immutable-store objects, but their
+/// producers hash every installed file against its producer reference before
+/// publication, and projection cleanup hashes the active closure again before
+/// it unlinks anything. A caller that captured this stamp before such a
+/// complete hash can record the result with [`record_verified_file`]; a later
+/// whole-file verification in the same process may then skip the hash through
+/// [`verified_file_unchanged`] under exactly the rules described in this
+/// module (same inode, length and modification time).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VerifiedFileStamp(WrittenStamp);
+
+impl VerifiedFileStamp {
+    /// `None` when the file has no native identity; nothing is then recorded.
+    pub fn capture(file: &crate::file_io::File) -> Option<Self> {
+        file.with_native(WrittenStamp::of_native).ok().map(Self)
+    }
+}
+
+/// Records that the caller hashed all bytes of `file` to `reference` while
+/// the file kept the `before` stamp. Nothing is recorded if the stamp changed
+/// during the hash. Returns whether a record was written.
+pub fn record_verified_file(
+    reference: ObjectReference,
+    before: VerifiedFileStamp,
+    file: &crate::file_io::File,
+) -> bool {
+    match VerifiedFileStamp::capture(file) {
+        Some(after) if after == before && before.0.length == reference.byte_length => {
+            record(reference, before.0);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Whether `file` is an inode this process hashed to `reference` (as a
+/// published immutable object or through [`record_verified_file`]) and that is
+/// unmodified since. Any inspection failure answers `false`.
+pub fn verified_file_unchanged(reference: ObjectReference, file: &crate::file_io::File) -> bool {
+    file.with_native(|native| Ok(skip_rehash(reference, native)))
+        .unwrap_or(false)
 }
 
 fn stamp_of_path(path: &Path) -> io::Result<WrittenStamp> {

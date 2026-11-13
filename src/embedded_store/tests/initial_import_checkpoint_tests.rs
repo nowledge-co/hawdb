@@ -281,6 +281,18 @@ fn initial_import_1707_deferred_checkpoint_matches_per_page_checkpoint() {
     assert_eq!(projection_state(&store, max_documents), expected);
     let report = store.checkpoint_initial_import_projection().unwrap();
     assert_eq!(report.document_count, expected_document_count(PAGES, ROWS));
+    // Only the per-page variant publishes, so only it reports cleanup.
+    for report in &mut per_page_reports {
+        let cleanup = report
+            .projection_cleanup
+            .take()
+            .expect("checkpoint cleanup");
+        assert!(!cleanup.retry_required, "{cleanup:?}");
+    }
+    assert!(deferred_reports
+        .iter()
+        .all(|report| report.projection_cleanup.is_none()));
+    assert!(!report.projection_cleanup.unwrap().retry_required);
     assert_eq!(per_page_reports, deferred_reports);
     assert_eq!(projection_state(&store, max_documents), expected);
     drop(store);

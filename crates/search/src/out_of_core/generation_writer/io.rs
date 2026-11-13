@@ -25,7 +25,9 @@ use hawdb_executor::QueryMemoryLease;
 use hawdb_integrity::Crc32cHasher;
 use hawdb_storage::durability::durable_replace_file;
 use hawdb_storage::file_io::{self as fs, File, OpenOptions};
-use hawdb_storage::immutable_object::{ObjectKind, ObjectReference, ObjectReferenceWriter};
+use hawdb_storage::immutable_object::{
+    record_verified_file, ObjectKind, ObjectReference, ObjectReferenceWriter, VerifiedFileStamp,
+};
 #[cfg(test)]
 use std::cell::Cell;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -225,17 +227,36 @@ impl<'a> GenerationIo<'a> {
         seal_reader(file, expected, self.task, None)
     }
 
+    /// Hash one installed file and, when it matches `accept`, remember that
+    /// this process verified exactly this unmodified inode. Projection cleanup
+    /// then need not hash the file again while it keeps that stamp (#1755).
+    fn seal_installed(
+        &self,
+        path: &Path,
+        accept: impl FnOnce(ArtifactSeal) -> Result<()>,
+    ) -> Result<()> {
+        let _buffer = self.memory.spool.reserve(SPOOL_BUFFER_BYTES)?;
+        let mut file = self.native(&[path], || File::open(path))??;
+        let stamp = VerifiedFileStamp::capture(&file);
+        let seal = self.seal_file_admitted(&mut file)?;
+        accept(seal)?;
+        remember_verified(seal.reference, stamp, &file);
+        Ok(())
+    }
+
     pub(in crate::out_of_core) fn verify_object(
         &self,
         path: &Path,
         object: super::super::ArtifactObject,
     ) -> Result<()> {
-        if self.seal(path)?.reference != object.reference() {
-            return Err(HawDBError::StorageIntegrity(
-                "installed Search artifact differs from its producer reference".into(),
-            ));
-        }
-        Ok(())
+        self.seal_installed(path, |seal| {
+            if seal.reference != object.reference() {
+                return Err(HawDBError::StorageIntegrity(
+                    "installed Search artifact differs from its producer reference".into(),
+                ));
+            }
+            Ok(())
+        })
     }
 
     pub(super) fn verify_seal(
@@ -244,12 +265,14 @@ impl<'a> GenerationIo<'a> {
         expected: ArtifactSeal,
         name: &str,
     ) -> Result<()> {
-        if self.seal(path)? != expected {
-            return Err(HawDBError::StorageIntegrity(format!(
-                "published search generation {name} does not match its staged byte seal"
-            )));
-        }
-        Ok(())
+        self.seal_installed(path, |seal| {
+            if seal != expected {
+                return Err(HawDBError::StorageIntegrity(format!(
+                    "published search generation {name} does not match its staged byte seal"
+                )));
+            }
+            Ok(())
+        })
     }
 
     /// Check both identities in one bounded read of the same installed file.
@@ -271,6 +294,7 @@ impl<'a> GenerationIo<'a> {
                 "published search generation {name} does not match its staged artifact"
             )));
         }
+        let stamp = VerifiedFileStamp::capture(&file);
         let mut checksum = expected_checksum.map(|_| Crc32cHasher::new());
         let seal = seal_reader(&mut file, length, self.task, checksum.as_mut())?;
         if checksum.map(|digest| digest.finish()) != expected_checksum {
@@ -283,6 +307,7 @@ impl<'a> GenerationIo<'a> {
                 "installed Search artifact differs from its producer reference".into(),
             ));
         }
+        remember_verified(seal.reference, stamp, &file);
         Ok(())
     }
 
@@ -410,6 +435,12 @@ impl Drop for Temporary {
         if self.armed {
             let _ = fs::remove_file(&self.path);
         }
+    }
+}
+
+fn remember_verified(reference: ObjectReference, stamp: Option<VerifiedFileStamp>, file: &File) {
+    if let Some(stamp) = stamp {
+        record_verified_file(reference, stamp, file);
     }
 }
 

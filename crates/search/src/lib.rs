@@ -213,7 +213,7 @@ use analyzer_stream::{document_token_fields, visit_token_list, TokenOccurrence};
 use cjk_tokenizer::is_cjk_search_char;
 use generation_cleanup::SearchProjectionCleanupState;
 pub use generation_cleanup::{
-    SearchProjectionCleanupOptions, SearchProjectionCleanupReport,
+    SearchProjectionCleanupOptions, SearchProjectionCleanupOutcome, SearchProjectionCleanupReport,
     SEARCH_PROJECTION_CLEANUP_PROTOCOL,
 };
 pub use knowledge_retrieval_pipeline::{KnowledgeRetrievalPipelineReport, KnowledgeRetrievalStage};
@@ -1628,6 +1628,9 @@ pub struct SearchProjectionDeltaReport {
     pub source_graph_commit_epoch_before: Option<u64>,
     pub source_graph_commit_epoch_after: Option<u64>,
     pub source_graph_commit_epoch_updated: bool,
+    /// Generation cleanup after the publication that made this delta
+    /// durable; `None` when the call published nothing.
+    pub projection_cleanup: Option<SearchProjectionCleanupOutcome>,
 }
 
 #[derive(Debug)]
@@ -1668,6 +1671,7 @@ pub struct SearchIndex {
     segment_payload_reader: Option<Arc<hawdb_storage::scan::FileSegmentRangeReader>>,
     range_read_config: SearchRangeReadConfig,
     cleanup_state: Mutex<SearchProjectionCleanupState>,
+    cleanup_options: SearchProjectionCleanupOptions,
     runtime_capabilities: RuntimeCapabilities,
     telemetry: Option<Arc<dyn TelemetrySink>>,
 }
@@ -2275,6 +2279,7 @@ impl SearchIndex {
             source_graph_commit_epoch_before,
             source_graph_commit_epoch_after,
             source_graph_commit_epoch_updated,
+            projection_cleanup: None,
         })
     }
 
@@ -2901,6 +2906,16 @@ impl SearchIndex {
             .max(self.documents.len())
     }
 
+    /// Limits for the generation cleanup that runs after every checkpoint.
+    /// Not persisted: a reopened index starts at the defaults.
+    pub fn set_projection_cleanup_options(&mut self, options: SearchProjectionCleanupOptions) {
+        self.cleanup_options = options;
+    }
+
+    pub fn projection_cleanup_options(&self) -> SearchProjectionCleanupOptions {
+        self.cleanup_options
+    }
+
     pub fn projection_cleanup_report(&self) -> SearchProjectionCleanupReport {
         self.cleanup_state
             .lock()
@@ -3064,8 +3079,8 @@ impl SearchIndex {
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.source_graph_commit_epoch;
             #[cfg(test)]
             out_of_core::resident_checkpoint_fault(out_of_core::ResidentCheckpointStep::Cleanup)?;
-            self.retry_projection_cleanup_under_publication(
-                SearchProjectionCleanupOptions::default(),
+            let cleanup = self.retry_projection_cleanup_under_publication(
+                self.cleanup_options,
                 publication_lease,
             );
             if let Some(binding) = &self.consumer_binding {
@@ -3082,7 +3097,11 @@ impl SearchIndex {
                         sha256: snapshot.encoded_sha256.to_string(),
                     });
             }
-            Ok(snapshot.finish(publication.generation, projection_bytes_written))
+            Ok(snapshot.finish(
+                publication.generation,
+                projection_bytes_written,
+                Some(SearchProjectionCleanupOutcome::from(&cleanup)),
+            ))
         })();
         if let Some(telemetry) = &self.telemetry {
             let (byte_count, generation) = result
@@ -5118,6 +5137,7 @@ impl Default for SearchIndex {
             segment_payload_reader: None,
             range_read_config: SearchRangeReadConfig::default(),
             cleanup_state: Mutex::new(SearchProjectionCleanupState::default()),
+            cleanup_options: SearchProjectionCleanupOptions::default(),
             runtime_capabilities: crate::compiled_runtime_capabilities(),
             telemetry: None,
         }

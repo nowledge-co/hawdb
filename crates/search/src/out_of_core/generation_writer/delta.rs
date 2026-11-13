@@ -174,6 +174,7 @@ impl SearchOutOfCoreGenerationUpdate {
                     source_graph_commit_epoch_before,
                     source_graph_commit_epoch_after,
                     source_graph_commit_epoch_updated: epoch_updated,
+                    projection_cleanup: None,
                 },
                 writer,
                 source_read_metrics,
@@ -206,6 +207,7 @@ impl SearchOutOfCoreGenerationUpdate {
                 source_graph_commit_epoch_before,
                 source_graph_commit_epoch_after,
                 source_graph_commit_epoch_updated: epoch_updated,
+                projection_cleanup: None,
             },
             writer,
             source_read_metrics: SearchOutOfCoreMetrics::default(),
@@ -294,7 +296,9 @@ impl SearchOutOfCorePreparedUpdate {
         SearchOutOfCoreMetrics,
     )> {
         let build_report = self.candidate.publish()?;
-        Ok((self.delta_report, build_report, self.source_read_metrics))
+        let mut delta_report = self.delta_report;
+        delta_report.projection_cleanup = Some(build_report.cleanup_outcome());
+        Ok((delta_report, build_report, self.source_read_metrics))
     }
 }
 

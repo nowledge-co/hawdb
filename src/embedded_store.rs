@@ -39,7 +39,8 @@ use crate::{
     PlanCacheLookup, QueryOutput, QueryStreamOptions, QueryStreamReport, ReadBudgetResource,
     ReadExecutionProfile, Result, ScheduledSearchProjectionCatchUpReport, SearchCheckpointReport,
     SearchDocument, SearchIndex, SearchProjectionCatchUpReport, SearchProjectionChangeBatch,
-    SearchProjectionChangefeedReadiness, SearchProjectionDelta, SearchProjectionDeltaReport,
+    SearchProjectionChangefeedReadiness, SearchProjectionCleanupOptions,
+    SearchProjectionCleanupReport, SearchProjectionDelta, SearchProjectionDeltaReport,
     SearchProjectionFreshness, SearchProjectionGraphDeltaRequest, SearchProjectionProbeOptions,
     SearchProjectionRelationalDelta, SearchResultSet, StorageResourceProfileLimits,
     StorageResourceProfileReport, TelemetrySink, Value, STORAGE_RESOURCE_PROFILE_PROTOCOL,
@@ -2342,15 +2343,40 @@ impl EmbeddedStore {
         if self.incremental_search_enabled() {
             let permit =
                 self.admit_incremental_search_maintenance(search_projection_delta_bytes(&delta))?;
-            return self.apply_incremental_search_delta(
-                delta,
-                permit.bind_task_context(RuntimeTaskContext::default()),
-            );
+            return self.apply_incremental_search_delta(delta, std::sync::Arc::new(permit));
         }
         let projection = require_search_projection_mut(&mut self.search_projection)?;
-        let report = projection.index_mut().apply_projection_delta(delta)?;
-        projection.index().checkpoint()?;
+        let mut report = projection.index_mut().apply_projection_delta(delta)?;
+        report.projection_cleanup = projection
+            .index()
+            .checkpoint_with_report()?
+            .projection_cleanup;
         Ok(report)
+    }
+
+    /// Runs one search-projection generation cleanup pass with explicit
+    /// limits and returns its report. See
+    /// [`EmbeddedStoreHandle::retry_search_projection_cleanup`].
+    pub fn retry_search_projection_cleanup(
+        &mut self,
+        options: SearchProjectionCleanupOptions,
+    ) -> Result<SearchProjectionCleanupReport> {
+        if let Some(projection) = &self.search_projection {
+            return Ok(projection.index().retry_projection_cleanup(options));
+        }
+        if self
+            .out_of_core_search_projection
+            .as_ref()
+            .is_some_and(|projection| projection.maintenance.is_some())
+        {
+            // Clean the durable head, which may be newer than the attached
+            // reader after a publication whose response was lost.
+            self.refresh_incremental_search_reader()?;
+        }
+        match &self.out_of_core_search_projection {
+            Some(projection) => Ok(projection.reader.retry_projection_cleanup(options)),
+            None => Err(missing_search_projection_error()),
+        }
     }
 
     /// Applies one externally materialized initial-import page to the
@@ -2446,9 +2472,11 @@ impl EmbeddedStore {
         delta: SearchProjectionDelta,
         import_source_graph_commit_epoch: u64,
     ) -> Result<SearchProjectionDeltaReport> {
-        let report =
+        let mut report =
             self.apply_initial_import_projection_delta(delta, import_source_graph_commit_epoch)?;
-        self.checkpoint_initial_import_projection()?;
+        report.projection_cleanup = self
+            .checkpoint_initial_import_projection()?
+            .projection_cleanup;
         Ok(report)
     }
 
@@ -2771,7 +2799,7 @@ impl EmbeddedStore {
                 max_projection_operations_per_batch,
                 max_batches,
                 batch_hydrator,
-                permit.bind_task_context(RuntimeTaskContext::default()),
+                std::sync::Arc::new(permit),
             );
         }
         let Self {

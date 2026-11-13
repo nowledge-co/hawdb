@@ -116,7 +116,8 @@ fn one_shot_counts_match_the_existing_retry_state_without_retaining_candidates()
                     CleanupResult {
                         deleted_files: expected.deleted_files,
                         pending_files: expected.pending_after,
-                        retry_required: expected.retry_required
+                        retry_required: expected.retry_required,
+                        closure_unverified: false,
                     }
                 );
                 assert_eq!(memory.ledger.snapshot().used_bytes, 0);

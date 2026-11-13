@@ -238,6 +238,27 @@ pub struct SearchOutOfCoreGenerationBuildReport {
     pub cleanup_pending_files: usize,
     pub cleanup_pending_stages: usize,
     pub cleanup_retry_required: bool,
+    /// Generation cleanup could not prove the active closure intact and
+    /// deleted nothing; superseded generations remain until a retry succeeds.
+    pub cleanup_closure_unverified: bool,
+}
+
+impl SearchOutOfCoreGenerationBuildReport {
+    /// The publication's generation cleanup in the shape shared with
+    /// resident checkpoints. Staging directories left for retry count as
+    /// pending files.
+    pub fn cleanup_outcome(&self) -> crate::SearchProjectionCleanupOutcome {
+        crate::SearchProjectionCleanupOutcome {
+            deleted_files: self.cleanup_deleted_files,
+            pending_files: self
+                .cleanup_pending_files
+                .saturating_add(self.cleanup_pending_stages),
+            closure_unverified: self.cleanup_closure_unverified,
+            retry_required: self.cleanup_retry_required,
+            verification_rehashed_bytes: 0,
+            verification_reused_bytes: 0,
+        }
+    }
 }
 
 /// Builds an immutable search generation without retaining the full document corpus.
@@ -1068,8 +1089,13 @@ impl SearchOutOfCoreGenerationWriter {
             cleanup_deleted_files: cleanup.as_ref().map_or(0, |cleanup| cleanup.deleted_files),
             cleanup_pending_files: cleanup.as_ref().map_or(0, |cleanup| cleanup.pending_files),
             cleanup_pending_stages,
-            cleanup_retry_required: cleanup.is_some_and(|cleanup| cleanup.retry_required)
+            cleanup_retry_required: cleanup
+                .as_ref()
+                .is_some_and(|cleanup| cleanup.retry_required)
                 || cleanup_pending_stages != 0,
+            cleanup_closure_unverified: cleanup
+                .as_ref()
+                .is_some_and(|cleanup| cleanup.closure_unverified),
         })
     }
 

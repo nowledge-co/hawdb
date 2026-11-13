@@ -4,12 +4,24 @@
 //! Synchronous closure validation borrowed from actual publication custody.
 //! Returned file readers stay inside discovery; no serving capability escapes.
 use super::*;
-use hawdb_storage::immutable_object::ObjectReferenceWriter;
+use hawdb_storage::immutable_object::{
+    record_verified_file, verified_file_unchanged, ObjectReference, ObjectReferenceWriter,
+    VerifiedFileStamp,
+};
 use std::io::{Read, Seek, SeekFrom, Write};
 
 mod resident;
+pub(super) use resident::remember_vector_count as remember_resident_vector_count;
+#[cfg(test)]
+pub(crate) use resident::set_decode_limit_for_test as set_snapshot_decode_limit_for_test;
 
 /// Physical verification ceilings, not a new memory or descriptor allowance.
+///
+/// Byte ceilings bound content this pass actually re-hashes, except that the
+/// first re-hashed artifact of a pass is always admitted. A closure file this
+/// process already hashed against the same reference (its publisher's
+/// post-install verification or an earlier cleanup pass), still the same
+/// unmodified inode, is accepted without a re-hash and is not charged (#1755).
 #[derive(Clone, Copy)]
 pub(super) struct Limits {
     pub(super) artifact_bytes: u64,
@@ -23,7 +35,22 @@ pub(super) struct Source<'a> {
     limits: Limits,
     admitted_bytes: std::cell::Cell<u64>,
     admitted_files: std::cell::Cell<usize>,
+    reused_bytes: std::cell::Cell<u64>,
+    hashed_artifact: std::cell::Cell<bool>,
+    decoded_snapshot_bytes: std::cell::Cell<u64>,
 }
+
+/// Verification work of one captured cleanup pass.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct VerificationWork {
+    /// Bytes read and hashed by this pass, charged to the ceiling.
+    pub(crate) rehashed_bytes: u64,
+    /// Closure bytes accepted from an earlier verification in this process.
+    pub(crate) reused_bytes: u64,
+    /// Encoded bytes of a resident snapshot decoded in memory for its count.
+    pub(crate) decoded_snapshot_bytes: u64,
+}
+
 impl<'a> Source<'a> {
     pub(super) fn new(
         publication: &'a SearchProjectionPublishLease,
@@ -36,7 +63,47 @@ impl<'a> Source<'a> {
             limits,
             admitted_bytes: std::cell::Cell::new(0),
             admitted_files: std::cell::Cell::new(0),
+            reused_bytes: std::cell::Cell::new(0),
+            hashed_artifact: std::cell::Cell::new(false),
+            decoded_snapshot_bytes: std::cell::Cell::new(0),
         }
+    }
+    pub(super) fn work(&self) -> VerificationWork {
+        VerificationWork {
+            rehashed_bytes: self.admitted_bytes.get(),
+            reused_bytes: self.reused_bytes.get(),
+            decoded_snapshot_bytes: self.decoded_snapshot_bytes.get(),
+        }
+    }
+    /// Accepts `file` without hashing when this process already hashed this
+    /// exact unmodified inode to `reference`. Counts the file, not its bytes.
+    fn admit_verified(&self, file: &File, reference: ObjectReference) -> Result<bool> {
+        if !verified_file_unchanged(reference, file) {
+            return Ok(false);
+        }
+        crate::build_control::checkpoint(self.task)?;
+        let files = self
+            .admitted_files
+            .get()
+            .checked_add(1)
+            .filter(|files| *files <= self.limits.files)
+            .ok_or_else(|| {
+                HawDBError::Execution(
+                    "captured cleanup verification exceeds operation ceiling".into(),
+                )
+            })?;
+        if file.metadata()?.len() != reference.byte_length {
+            return Err(HawDBError::StorageIntegrity(
+                "captured cleanup artifact length mismatch".into(),
+            ));
+        }
+        self.admitted_files.set(files);
+        self.reused_bytes.set(
+            self.reused_bytes
+                .get()
+                .saturating_add(reference.byte_length),
+        );
+        Ok(true)
     }
     pub(super) fn admit(&self, length: u64) -> Result<()> {
         crate::build_control::checkpoint(self.task)?;
@@ -58,6 +125,32 @@ impl<'a> Source<'a> {
         self.admitted_bytes.set(bytes.unwrap());
         self.admitted_files.set(files.unwrap());
         Ok(())
+    }
+    /// Charges one closure artifact that this pass must re-hash and returns
+    /// its read ceiling. The first such artifact of a pass is admitted at any
+    /// size: every completed hash is remembered, so a closure this process
+    /// never verified (after a restart) converges over successive passes
+    /// instead of refusing forever once one file exceeds the ceiling.
+    fn admit_artifact(&self, length: u64) -> Result<u64> {
+        if self.hashed_artifact.replace(true) {
+            self.admit(length)?;
+            return Ok(self.limits.artifact_bytes);
+        }
+        crate::build_control::checkpoint(self.task)?;
+        let files = self
+            .admitted_files
+            .get()
+            .checked_add(1)
+            .filter(|files| *files <= self.limits.files)
+            .ok_or_else(|| {
+                HawDBError::Execution(
+                    "captured cleanup verification exceeds operation ceiling".into(),
+                )
+            })?;
+        self.admitted_files.set(files);
+        self.admitted_bytes
+            .set(self.admitted_bytes.get().saturating_add(length));
+        Ok(length.max(self.limits.artifact_bytes))
     }
     fn require_admission(
         &self,
@@ -105,7 +198,6 @@ impl<'a> Source<'a> {
         admission: &crate::build_memory::read::ReadAdmission<'_>,
     ) -> Result<File> {
         self.require_admission(Some(admission))?;
-        self.admit(object.byte_length)?;
         let _scratch = admission.scratch(8192)?;
         let mut file = {
             let _io = admission
@@ -113,39 +205,42 @@ impl<'a> Source<'a> {
                 .map_err(|error| HawDBError::Execution(error.to_string()))?;
             self.publication.open_captured_child(name)?
         };
-        admission.with_read_scope(
-            &file,
-            object.byte_length,
-            self.limits.artifact_bytes,
-            |reader| {
-                let reference = object.reference();
-                let mut digest = ObjectReferenceWriter::new(
-                    reference.kind,
-                    reference.format_version,
-                    reference.byte_length,
-                )
-                .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
-                let mut scratch = [0u8; 8192];
-                loop {
-                    crate::build_control::checkpoint(self.task)?;
-                    let count = reader.read(&mut scratch)?;
-                    if count == 0 {
-                        break;
-                    }
-                    digest.write_all(&scratch[..count])?;
+        if self.admit_verified(&file, object.reference())? {
+            return Ok(file);
+        }
+        let read_limit = self.admit_artifact(object.byte_length)?;
+        let stamp = VerifiedFileStamp::capture(&file);
+        admission.with_read_scope(&file, object.byte_length, read_limit, |reader| {
+            let reference = object.reference();
+            let mut digest = ObjectReferenceWriter::new(
+                reference.kind,
+                reference.format_version,
+                reference.byte_length,
+            )
+            .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
+            let mut scratch = [0u8; 8192];
+            loop {
+                crate::build_control::checkpoint(self.task)?;
+                let count = reader.read(&mut scratch)?;
+                if count == 0 {
+                    break;
                 }
-                if digest
-                    .finish()
-                    .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?
-                    != reference
-                {
-                    return Err(HawDBError::StorageIntegrity(
-                        "fresh cleanup name differs from selected object".into(),
-                    ));
-                }
-                Ok(())
-            },
-        )?;
+                digest.write_all(&scratch[..count])?;
+            }
+            if digest
+                .finish()
+                .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?
+                != reference
+            {
+                return Err(HawDBError::StorageIntegrity(
+                    "fresh cleanup name differs from selected object".into(),
+                ));
+            }
+            Ok(())
+        })?;
+        if let Some(stamp) = stamp {
+            record_verified_file(object.reference(), stamp, &file);
+        }
         file.seek(SeekFrom::Start(0))?;
         Ok(file)
     }
@@ -193,7 +288,7 @@ impl<'a> Source<'a> {
     }
     pub(super) fn head(&self) -> Result<Option<Vec<u8>>> {
         self.head_file(None)?
-            .map(|file| read_file(file, MAX_OUT_OF_CORE_MANIFEST_BYTES, self.task))
+            .map(|mut file| read_file(&mut file, MAX_OUT_OF_CORE_MANIFEST_BYTES, self.task))
             .transpose()
     }
     pub(super) fn prove_no_projection_files(
@@ -228,14 +323,25 @@ impl<'a> Source<'a> {
     }
 
     pub(super) fn open(&self, name: &str, object: ArtifactObject) -> Result<File> {
-        self.admit(object.byte_length)?;
+        let reference = object.reference();
         let mut file = self.publication.open_captured_child(name)?;
+        if self.admit_verified(&file, reference)? {
+            return Ok(file);
+        }
+        self.hash_held(&mut file, object)?;
+        Ok(file)
+    }
+    /// Streams one held closure file through its producer reference, charging
+    /// it as a re-hashed artifact, and remembers the verified stamp.
+    fn hash_held(&self, file: &mut File, object: ArtifactObject) -> Result<()> {
+        let reference = object.reference();
+        self.admit_artifact(object.byte_length)?;
+        let stamp = VerifiedFileStamp::capture(file);
         if file.metadata()?.len() != object.byte_length {
             return Err(HawDBError::StorageIntegrity(
                 "captured cleanup artifact length mismatch".into(),
             ));
         }
-        let reference = object.reference();
         let mut hasher = ObjectReferenceWriter::new(
             reference.kind,
             reference.format_version,
@@ -263,9 +369,12 @@ impl<'a> Source<'a> {
                 "captured cleanup artifact identity mismatch".into(),
             ));
         }
+        if let Some(stamp) = stamp {
+            record_verified_file(reference, stamp, file);
+        }
         crate::build_control::checkpoint(self.task)?;
         file.seek(SeekFrom::Start(0))?;
-        Ok(file)
+        Ok(())
     }
     pub(super) fn verify_resident_vector_absence(
         &self,
@@ -280,7 +389,7 @@ impl<'a> Source<'a> {
             .map(|admission| admission.io())
             .transpose()
             .map_err(|error| HawDBError::Execution(error.to_string()))?;
-        let file = match self
+        let mut file = match self
             .publication
             .open_captured_child(crate::SEARCH_SNAPSHOT_FILE)
         {
@@ -301,11 +410,44 @@ impl<'a> Source<'a> {
         let Some(receipt) = receipt else {
             return Ok(false);
         };
+        let reference = receipt.object.reference();
+        // The vector count is a function of the snapshot bytes. Once this
+        // process knows it for these exact bytes (producer or earlier pass)
+        // and the held inode is the one it hashed, decoding adds nothing.
+        if let Some(count) = resident::known_vector_count(reference)
+            && self.admit_verified(&file, reference)?
+        {
+            if count != receipt.vector_document_count {
+                return Err(HawDBError::StorageIntegrity(
+                    "resident snapshot vector count differs from producer receipt".into(),
+                ));
+            }
+            return Ok(count == 0);
+        }
+        // Counting decodes the whole snapshot in memory. That is bounded by a
+        // fixed decode limit, independent of the streaming re-hash ceiling a
+        // host may raise. Above it, stream-verify the identity only and leave
+        // vector absence unproven: standalone vector artifacts are retained.
+        let decode_limit = resident::decode_limit(self.limits.artifact_bytes);
+        let _io = admission
+            .map(|admission| admission.io())
+            .transpose()
+            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+        if receipt.object.byte_length > decode_limit
+            || resident::decoded_len(&mut file, self.task)? > decode_limit
+        {
+            if !self.admit_verified(&file, reference)? {
+                self.hash_held(&mut file, receipt.object)?;
+            }
+            return Ok(false);
+        }
+        drop(_io);
         self.admit(receipt.object.byte_length)?;
+        let stamp = VerifiedFileStamp::capture(&file);
         let bytes = match admission {
             Some(admission) => admission.read_unbound_file(&file, receipt.object.byte_length)?,
             None => crate::build_memory::read::ReadBytes::unaccounted(read_file(
-                file,
+                &mut file,
                 receipt.object.byte_length,
                 self.task,
             )?),
@@ -330,12 +472,16 @@ impl<'a> Source<'a> {
                 "resident snapshot differs from its producer receipt".into(),
             ));
         }
-        let actual =
-            resident::vector_count(&bytes, self.limits.artifact_bytes, self.task, admission)?;
+        let actual = resident::vector_count(&bytes, decode_limit, self.task, admission)?;
         if actual != receipt.vector_document_count {
             return Err(HawDBError::StorageIntegrity(
                 "resident snapshot vector count differs from producer receipt".into(),
             ));
+        }
+        resident::remember_vector_count(reference, actual);
+        self.decoded_snapshot_bytes.set(receipt.object.byte_length);
+        if let Some(stamp) = stamp {
+            record_verified_file(reference, stamp, &file);
         }
         Ok(actual == 0)
     }
@@ -404,7 +550,7 @@ impl<'a> Source<'a> {
                 "captured cleanup metadata exceeds operation ceiling".into(),
             ));
         }
-        let bytes = read_file(self.open(name, object)?, maximum, self.task)?;
+        let bytes = read_file(&mut self.open(name, object)?, maximum, self.task)?;
         if checksum_bytes(&bytes) != checksum {
             return Err(HawDBError::StorageIntegrity(
                 "captured cleanup artifact checksum mismatch".into(),
@@ -414,7 +560,7 @@ impl<'a> Source<'a> {
     }
 }
 fn read_file(
-    mut file: File,
+    file: &mut File,
     maximum: u64,
     task: &hawdb_core::RuntimeTaskContext,
 ) -> Result<Vec<u8>> {

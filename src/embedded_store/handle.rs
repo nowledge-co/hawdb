@@ -631,6 +631,36 @@ impl EmbeddedStoreHandle {
             .reclaim_branch_storage(limits)
     }
 
+    /// Runs one generation cleanup pass over the open search projection
+    /// (resident or out-of-core) with explicit limits, through the admitted
+    /// embedded maintenance path, and returns its report (#1755).
+    ///
+    /// Every resident checkpoint and incremental publication already runs a
+    /// pass and reports it in `projection_cleanup` of its
+    /// [`SearchCheckpointReport`] or [`crate::SearchProjectionDeltaReport`].
+    /// A pass re-hashes the active closure before it deletes anything, except
+    /// files this process already verified unchanged; after a restart the
+    /// first pass may therefore need more than the default
+    /// `max_verification_bytes`. When an earlier report has
+    /// `retry_required`, call this with limits that cover the active
+    /// generation. Nothing is deleted unless the closure is proven intact.
+    ///
+    /// Raising `max_verification_bytes` only allows more streaming re-hash
+    /// work. A resident snapshot is decoded in memory (to check its vector
+    /// count) only under a fixed 128 MiB bound; a larger one is stream-verified
+    /// and its standalone vector artifacts are retained.
+    ///
+    /// The pass holds this handle's store write lock for its whole run, so
+    /// writes and publications wait until it finishes; with a large ceiling it
+    /// re-reads the active closure. Call it when the store is idle.
+    pub fn retry_search_projection_cleanup(
+        &self,
+        options: crate::SearchProjectionCleanupOptions,
+    ) -> Result<crate::SearchProjectionCleanupReport> {
+        let _permit = self.admit_typed_maintenance(RuntimeWorkPriority::Foreground, 0, 1)?;
+        self.write_store()?.retry_search_projection_cleanup(options)
+    }
+
     pub fn query_with_report(&self, cypher: &str) -> Result<EmbeddedQueryOutput> {
         self.query_with_params_with_report(cypher, &BTreeMap::new())
     }
@@ -934,10 +964,7 @@ impl EmbeddedStoreHandle {
             self.admit_search_projection_maintenance(search_projection_delta_bytes(&delta))?;
         let mut store = self.write_store()?;
         if store.incremental_search_enabled() {
-            store.apply_incremental_search_delta(
-                delta,
-                permit.bind_task_context(RuntimeTaskContext::default()),
-            )
+            store.apply_incremental_search_delta(delta, std::sync::Arc::new(permit))
         } else {
             store.apply_search_projection_delta_and_checkpoint(delta)
         }
@@ -1564,7 +1591,7 @@ impl EmbeddedStoreHandle {
                 max_projection_operations_per_batch,
                 max_batches,
                 batch_hydrator,
-                permit.bind_task_context(RuntimeTaskContext::default()),
+                std::sync::Arc::new(permit),
             )
         } else {
             store.catch_up_search_projection_with_batch_hydrator(

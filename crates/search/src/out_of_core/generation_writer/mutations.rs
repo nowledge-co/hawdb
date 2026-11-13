@@ -354,6 +354,7 @@ impl<'reader> SearchOutOfCoreMutationWriter<'reader> {
             source_graph_commit_epoch_before: reader.source_graph_commit_epoch(),
             source_graph_commit_epoch_after: epoch,
             source_graph_commit_epoch_updated: self.epoch_updated,
+            projection_cleanup: None,
         };
         let candidate = self.writer.prepare_publication()?;
         Ok(SearchOutOfCorePreparedUpdate::from_streamed(
