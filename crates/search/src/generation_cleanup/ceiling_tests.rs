@@ -263,8 +263,9 @@ fn an_unbounded_explicit_pass_stream_verifies_a_snapshot_above_the_decode_bound(
         snapshot > CEILING,
         "the snapshot must exceed the decode bound"
     );
+    // Standalone vector artifacts exist only with the vector feature.
     let rabitq = fixture.0.join(format!("search_rabitq.{current}.hawdb"));
-    assert!(rabitq.exists());
+    assert_eq!(rabitq.exists(), cfg!(feature = "vector-search"));
 
     // A restarted process raises the re-hash ceiling to its maximum. The
     // in-memory decode stays under its own fixed bound (lowered here).
@@ -279,7 +280,11 @@ fn an_unbounded_explicit_pass_stream_verifies_a_snapshot_above_the_decode_bound(
     assert_eq!(report.verification_decoded_snapshot_bytes, 0, "{report:?}");
     assert!(report.verification_rehashed_bytes > snapshot, "{report:?}");
     assert!(!obsolete.exists());
-    assert!(rabitq.exists(), "standalone vector artifacts are retained");
+    assert_eq!(
+        rabitq.exists(),
+        cfg!(feature = "vector-search"),
+        "standalone vector artifacts are retained"
+    );
 
     // Control: under the decode bound the same pass decodes the snapshot.
     crate::out_of_core::set_snapshot_decode_limit_for_test(None);
