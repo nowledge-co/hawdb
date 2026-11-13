@@ -11,6 +11,9 @@ below the retained start, catch-up refuses with
 `... full search projection rebuild required`, and a damaged or missing
 projection cannot be opened at all. The resident `rebuild_search_projection`
 path builds every document in memory and targets only the resident index.
+Both the trimmed-change-log refusal and the resident snapshot mismatch refusal
+name `EmbeddedStoreHandle::rebuild_out_of_core_search_projection` as the
+recovery path, because incremental catch-up is replay-only.
 
 `EmbeddedStoreHandle::rebuild_out_of_core_search_projection` rebuilds such a
 projection from the current graph with bounded working memory, into a new

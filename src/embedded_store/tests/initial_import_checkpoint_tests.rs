@@ -584,7 +584,7 @@ fn pre_1711_crash_state_is_a_typed_search_projection_mismatch() {
     );
     assert_eq!(
         error.to_string(),
-        "storage error: resident search snapshot does not match the published immutable projection; use incremental maintenance or rebuild from the authoritative source"
+        "storage error: resident search snapshot does not match the published immutable projection; incremental catch-up cannot repair it: rebuild it from the graph into a new directory with EmbeddedStoreHandle::rebuild_out_of_core_search_projection, or rebuild a resident projection with Database::rebuild_search_projection"
     );
 
     // The graph is intact and its handle is not poisoned.

@@ -344,6 +344,12 @@ fn rebuild_recovers_a_trimmed_change_log_and_matches_a_fresh_build() {
             .contains("full search projection rebuild required"),
         "{error}"
     );
+    assert!(
+        error
+            .to_string()
+            .contains("rebuild_out_of_core_search_projection"),
+        "{error}"
+    );
     let old_manifest = std::fs::read(root.join("search").join(MANIFEST)).unwrap();
 
     // A writer commits while the rebuild scans its pinned snapshot.

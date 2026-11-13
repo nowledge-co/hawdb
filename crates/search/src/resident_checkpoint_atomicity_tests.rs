@@ -369,7 +369,7 @@ fn assert_search_projection_mismatch(error: &HawDBError, projection: &Path) {
     );
     assert_eq!(
         error.to_string(),
-        "storage error: resident search snapshot does not match the published immutable projection; use incremental maintenance or rebuild from the authoritative source"
+        "storage error: resident search snapshot does not match the published immutable projection; incremental catch-up cannot repair it: rebuild it from the graph into a new directory with EmbeddedStoreHandle::rebuild_out_of_core_search_projection, or rebuild a resident projection with Database::rebuild_search_projection"
     );
 }
 
