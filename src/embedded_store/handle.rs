@@ -607,6 +607,30 @@ impl EmbeddedStoreHandle {
             .run_bounded_schema_maintenance(max_estimated_operations)
     }
 
+    /// Reclaims unreachable immutable objects and deleted branch directories
+    /// of this project through the admitted embedded maintenance path, like
+    /// [`Self::checkpoint`].
+    ///
+    /// Checkpoints already run a bounded pass automatically after each
+    /// publication (#1736); this call lets a host drain remaining debt (for
+    /// example `object_reclamation_pending_bytes` in
+    /// [`Self::storage_pressure_snapshot`]) or run a pass with its own
+    /// per-pass budget. Liveness covers every branch head, recorded creation
+    /// base root and registered reader, candidate or job root. A report with
+    /// `deferred_for_active_leases` means an unregistered owner is active;
+    /// non-zero `pending_objects` means the budget was reached or a removal
+    /// failed. Call again in either case.
+    pub fn reclaim_branch_storage(
+        &self,
+        limits: crate::BranchReclamationLimits,
+    ) -> Result<crate::BranchReclamationReport> {
+        let _permit = self.admit_typed_maintenance(RuntimeWorkPriority::Foreground, 0, 1)?;
+        self.write_store()?
+            .graph_mut()
+            .database_mut()
+            .reclaim_branch_storage(limits)
+    }
+
     pub fn query_with_report(&self, cypher: &str) -> Result<EmbeddedQueryOutput> {
         self.query_with_params_with_report(cypher, &BTreeMap::new())
     }

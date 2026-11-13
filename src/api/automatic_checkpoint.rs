@@ -2220,6 +2220,7 @@ mod tests {
     mod handoff_execution;
     mod idle_handoff;
     mod memory_progress;
+    mod object_reclamation;
     mod operation_retry;
     mod planning_recovery;
     mod planning_retry;

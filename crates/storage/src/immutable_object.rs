@@ -326,8 +326,51 @@ pub struct BranchReclamationInventory {
     pub branches: Vec<BranchReclamationEntry>,
 }
 
+/// Per-pass work bound for [`ImmutableObjectStore::sweep_unreachable_bounded`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ObjectSweepBudget {
+    /// Unreachable objects removed in one pass.
+    pub max_objects: usize,
+    /// Unreachable bytes removed in one pass.
+    pub max_bytes: u64,
+    /// Reachable non-root bytes whose content is re-hashed during mark.
+    pub max_verified_reachable_bytes: u64,
+}
+
+/// Outcome of one bounded sweep. `store_*` describe the object namespace
+/// after the pass (staging excluded); `pending_*` are unreachable objects
+/// that remain for a later pass.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ObjectSweepReport {
+    pub store_objects: u64,
+    pub store_bytes: u64,
+    pub retained_objects: u64,
+    pub reclaimed_objects: u64,
+    pub reclaimed_bytes: u64,
+    pub reclaimed_staging_files: u64,
+    pub reclaimed_staging_bytes: u64,
+    pub pending_objects: u64,
+    pub pending_bytes: u64,
+    /// A removal or barrier failed; unlike budget-limited pending objects,
+    /// the pass did not complete its selected work.
+    pub retry_required: bool,
+}
+
+fn valid_staging_name(name: &str) -> bool {
+    name.strip_suffix(".stage")
+        .and_then(|name| name.split_once('-'))
+        .is_some_and(|(pid, sequence)| {
+            !pid.is_empty()
+                && !sequence.is_empty()
+                && pid.bytes().all(|byte| byte.is_ascii_digit())
+                && sequence.bytes().all(|byte| byte.is_ascii_digit())
+        })
+}
+
+#[cfg(test)]
 pub(crate) struct ImmutableObjectInventory {
     pub objects: Vec<ObjectReference>,
+    #[allow(dead_code)]
     pub staging: Vec<(PathBuf, u64)>,
 }
 
@@ -454,6 +497,7 @@ impl ImmutableObjectStore {
 
     /// Inventory only the currently supported immutable namespace. Unknown
     /// versions, names and non-files fail closed before any sweep can start.
+    #[cfg(test)]
     pub(crate) fn inventory(
         &self,
         max_objects: usize,
@@ -498,16 +542,7 @@ impl ImmutableObjectStore {
                     io::Error::other("immutable object name is not a canonical digest")
                 })?;
                 let Some(kind) = kind else {
-                    let valid = name
-                        .strip_suffix(".stage")
-                        .and_then(|name| name.split_once('-'))
-                        .is_some_and(|(pid, sequence)| {
-                            !pid.is_empty()
-                                && !sequence.is_empty()
-                                && pid.bytes().all(|byte| byte.is_ascii_digit())
-                                && sequence.bytes().all(|byte| byte.is_ascii_digit())
-                        });
-                    if !valid {
+                    if !valid_staging_name(name) {
                         return Err(io::Error::other("unrecognized immutable staging entry"));
                     }
                     staging.push((entry.path(), metadata.len()));
@@ -776,6 +811,312 @@ impl ImmutableObjectStore {
         Ok(report)
     }
 
+    /// Resolves a sealed-root digest recorded in branch metadata to its
+    /// current reference without hashing it. `None` means no such object.
+    pub(crate) fn sealed_root_by_digest(
+        &self,
+        digest: Sha256Digest,
+    ) -> io::Result<Option<ObjectReference>> {
+        let kind = ObjectKind::SealedRoot;
+        let reference = ObjectReference {
+            kind,
+            format_version: kind.current_format_version(),
+            byte_length: 0,
+            sha256: digest,
+        };
+        match fs::symlink_metadata(self.object_path(reference)) {
+            Ok(metadata) if metadata.is_file() => Ok(Some(ObjectReference {
+                byte_length: metadata.len(),
+                ..reference
+            })),
+            Ok(_) => Err(io::Error::other("sealed root object is not a regular file")),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Confirms that a reachable object is present with its exact length and
+    /// kind directory, without hashing its content.
+    fn check_present(&self, reference: ObjectReference) -> Result<(), ImmutableObjectError> {
+        let path = self.object_path(reference);
+        let metadata = map_io(
+            "inspect reachable immutable object",
+            fs::symlink_metadata(&path),
+        )?;
+        if !metadata.is_file()
+            || metadata.len() != reference.byte_length
+            || reference.format_version == 0
+        {
+            return Err(ImmutableObjectError::ExistingObjectCorrupt { path });
+        }
+        Ok(())
+    }
+
+    /// One bounded pass of the mark/sweep collector (#1736).
+    ///
+    /// Mark is identical in scope to [`Self::reclaim_unreachable`]: every
+    /// supplied root is read and decoded, and its manifest, checkpoint and
+    /// sealed-WAL references are reachable. Liveness never depends on which
+    /// files a listing returned, so a partial sweep is as safe as a complete
+    /// one. Reachable non-root objects are content-verified up to
+    /// `budget.max_verified_reachable_bytes` and otherwise checked for
+    /// presence and exact length; a missing or mismatched reachable object
+    /// fails the pass before anything is removed.
+    ///
+    /// Sweep removes at most `budget.max_objects` unreachable objects and
+    /// `budget.max_bytes` of their bytes (always at least one candidate, so a
+    /// single object larger than the byte budget still makes progress). The
+    /// rest is reported as pending for the next pass. Every selected
+    /// candidate is fully verified before the first unlink, with the same
+    /// quarantine-evidence rule as the complete sweep. `before_first_unlink`
+    /// runs once, only when something will be removed; its failure removes
+    /// nothing and leaves every selected candidate pending. An unlink that
+    /// fails or meets an active read leaves that object pending and the pass
+    /// continues. Directory synchronization after removal is reported as
+    /// retryable; an unlink that is lost to a crash leaves only unreachable
+    /// bytes for a later pass.
+    pub(crate) fn sweep_unreachable_bounded(
+        &mut self,
+        roots: &[ObjectReference],
+        evidence: &crate::branch_abandonment::QuarantinedObjects,
+        budget: ObjectSweepBudget,
+        before_first_unlink: &mut dyn FnMut() -> io::Result<()>,
+    ) -> Result<ObjectSweepReport, ImmutableObjectError> {
+        if self.poisoned {
+            return Err(ImmutableObjectError::PublisherPoisoned);
+        }
+        let mut reachable = BTreeSet::new();
+        let mut visited = BTreeSet::new();
+        let mut verify_budget = budget.max_verified_reachable_bytes;
+        let mut pending: Vec<_> = roots.iter().copied().enumerate().collect();
+        while let Some((root_index, reference)) = pending.pop() {
+            if !visited.insert(reference) {
+                continue;
+            }
+            reachable.insert((reference.kind, reference.sha256));
+            let validation = (|| {
+                if reference.kind == ObjectKind::SealedRoot {
+                    let bytes = self.read(reference)?;
+                    let sealed = crate::sealed_root::SealedRoot::decode(&bytes)
+                        .map_err(|source| ImmutableObjectError::InvalidSealedRoot { source })?;
+                    pending.push((root_index, sealed.durable_manifest));
+                    pending.extend(
+                        sealed
+                            .checkpoint_references
+                            .into_iter()
+                            .map(|r| (root_index, r)),
+                    );
+                    pending.extend(
+                        sealed
+                            .sealed_wals
+                            .into_iter()
+                            .map(|wal| (root_index, wal.object)),
+                    );
+                } else if reference.byte_length <= verify_budget {
+                    verify_budget -= reference.byte_length;
+                    self.verify(reference)?;
+                } else {
+                    self.check_present(reference)?;
+                }
+                Ok(())
+            })();
+            validation.map_err(|source| ImmutableObjectError::ReclamationRoot {
+                root: roots[root_index],
+                source: Box::new(source),
+            })?;
+        }
+
+        let mut report = ObjectSweepReport::default();
+        let mut selected = Vec::new();
+        let mut selected_bytes = 0u64;
+        let mut staging = Vec::new();
+        let listing = (|| -> io::Result<()> {
+            crate::branch_reclamation::object_reclamation_failpoint(
+                crate::branch_reclamation::ObjectReclamationFailpoint::Listing,
+            )?;
+            let directories = [
+                ObjectKind::Checkpoint,
+                ObjectKind::SealedWal,
+                ObjectKind::SealedRoot,
+                ObjectKind::CheckpointArtifact,
+                ObjectKind::DurableManifest,
+            ]
+            .into_iter()
+            .map(|kind| (kind.directory(), Some(kind)))
+            .chain([(STAGING_DIRECTORY, None)]);
+            for (name, kind) in directories {
+                let directory = self.root.join(OBJECTS_DIRECTORY).join(name);
+                match fs::symlink_metadata(&directory) {
+                    Ok(metadata) if metadata.is_dir() => {}
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(error),
+                    Ok(_) => return Err(io::Error::other("invalid immutable object directory")),
+                }
+                for entry in fs::read_dir(&directory)? {
+                    let entry = entry?;
+                    let metadata = fs::symlink_metadata(entry.path())?;
+                    if !metadata.is_file() {
+                        return Err(io::Error::other("invalid immutable object inventory entry"));
+                    }
+                    let file_name = entry.file_name();
+                    let file_name = file_name.to_str().ok_or_else(|| {
+                        io::Error::other("immutable object name is not a canonical digest")
+                    })?;
+                    let Some(kind) = kind else {
+                        if !valid_staging_name(file_name) {
+                            return Err(io::Error::other("unrecognized immutable staging entry"));
+                        }
+                        staging.push((entry.path(), metadata.len()));
+                        continue;
+                    };
+                    let sha256: Sha256Digest = file_name.parse().map_err(io::Error::other)?;
+                    if sha256.to_string() != file_name {
+                        return Err(io::Error::other("immutable object digest is not canonical"));
+                    }
+                    report.store_objects += 1;
+                    report.store_bytes = report.store_bytes.saturating_add(metadata.len());
+                    if reachable.contains(&(kind, sha256)) {
+                        report.retained_objects += 1;
+                        continue;
+                    }
+                    let length = metadata.len();
+                    if selected.is_empty()
+                        || (selected.len() < budget.max_objects
+                            && selected_bytes.saturating_add(length) <= budget.max_bytes)
+                    {
+                        selected_bytes = selected_bytes.saturating_add(length);
+                        selected.push(ObjectReference {
+                            kind,
+                            format_version: kind.current_format_version(),
+                            byte_length: length,
+                            sha256,
+                        });
+                    } else {
+                        report.pending_objects += 1;
+                        report.pending_bytes = report.pending_bytes.saturating_add(length);
+                    }
+                }
+            }
+            Ok(())
+        })();
+        listing.map_err(|source| ImmutableObjectError::Io {
+            operation: "inventory immutable objects for reclamation",
+            source,
+        })?;
+
+        // Verify the selected candidates before the first unlink, exactly as
+        // the complete sweep verifies its inventory.
+        let mut verified = Vec::with_capacity(selected.len());
+        for reference in selected {
+            match self.verify(reference) {
+                Ok(()) => verified.push(reference),
+                Err(ImmutableObjectError::Io { source, .. })
+                    if source.kind() == io::ErrorKind::NotFound =>
+                {
+                    report.store_objects = report.store_objects.saturating_sub(1);
+                    report.store_bytes = report.store_bytes.saturating_sub(reference.byte_length);
+                }
+                Err(error @ ImmutableObjectError::ExistingObjectCorrupt { .. })
+                | Err(error @ ImmutableObjectError::ReferenceMismatch) => {
+                    let preserved =
+                        evidence
+                            .preserves(&self.object_path(reference))
+                            .map_err(|source| ImmutableObjectError::Io {
+                                operation: "verify quarantined source before reclamation",
+                                source: io::Error::other(source),
+                            })?;
+                    if !preserved {
+                        return Err(error);
+                    }
+                    verified.push(reference);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        if verified.is_empty() && staging.is_empty() {
+            return Ok(report);
+        }
+        if before_first_unlink().is_err() {
+            report.retry_required = true;
+            for reference in &verified {
+                report.pending_objects += 1;
+                report.pending_bytes = report.pending_bytes.saturating_add(reference.byte_length);
+            }
+            return Ok(report);
+        }
+
+        let mut touched = BTreeSet::new();
+        for reference in verified {
+            let path = self.object_path(reference);
+            let retired =
+                crate::file_descriptors::context_for_path(&path).and_then(|context| match context
+                    .state
+                    .existing_immutable_handles()
+                {
+                    Some(handles) => handles.retire_unreachable(reference),
+                    None => Ok(()),
+                });
+            let removed = retired.and_then(|()| {
+                crate::branch_reclamation::object_reclamation_failpoint(
+                    crate::branch_reclamation::ObjectReclamationFailpoint::Remove,
+                )?;
+                // A later publication of the same content gets a new inode;
+                // drop this process's skip-rehash record for the old one.
+                let _ = published::forget_published_object(&path);
+                match fs::remove_file(&path) {
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+                    result => result.map(|()| true),
+                }
+            });
+            match removed {
+                Ok(removed) => {
+                    if removed {
+                        touched.insert(reference.kind);
+                    }
+                    report.reclaimed_objects += 1;
+                    report.reclaimed_bytes =
+                        report.reclaimed_bytes.saturating_add(reference.byte_length);
+                    report.store_objects = report.store_objects.saturating_sub(1);
+                    report.store_bytes = report.store_bytes.saturating_sub(reference.byte_length);
+                }
+                Err(_) => {
+                    report.retry_required = true;
+                    report.pending_objects += 1;
+                    report.pending_bytes =
+                        report.pending_bytes.saturating_add(reference.byte_length);
+                }
+            }
+        }
+        for (path, bytes) in staging {
+            match fs::remove_file(&path) {
+                Ok(()) => {
+                    report.reclaimed_staging_files += 1;
+                    report.reclaimed_staging_bytes =
+                        report.reclaimed_staging_bytes.saturating_add(bytes);
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(_) => report.retry_required = true,
+            }
+        }
+        let mut directories: Vec<_> = touched
+            .into_iter()
+            .map(|kind| self.root.join(OBJECTS_DIRECTORY).join(kind.directory()))
+            .collect();
+        if report.reclaimed_staging_files > 0 {
+            directories.push(self.root.join(OBJECTS_DIRECTORY).join(STAGING_DIRECTORY));
+        }
+        for directory in directories {
+            let synced = crate::branch_reclamation::object_reclamation_failpoint(
+                crate::branch_reclamation::ObjectReclamationFailpoint::DirectorySyncAfterRemoval,
+            )
+            .and_then(|()| crate::durability::sync_directory(&directory));
+            if synced.is_err() {
+                report.retry_required = true;
+            }
+        }
+        Ok(report)
+    }
+
     /// Reclaims immutable objects and completed branch directories using a
     /// catalog/lease-owned inventory. Any branch whose root cannot be proven
     /// is retained conservatively and prevents the sweep.
@@ -833,7 +1174,19 @@ impl ImmutableObjectStore {
         }
         let mut report =
             self.reclaim_unreachable_with_evidence(&inventory.objects, &roots, evidence)?;
-        for branch in &inventory.branches {
+        report.reclaimed_branch_directories =
+            self.reclaim_deleted_branch_directories(&inventory.branches)?;
+        Ok(report)
+    }
+
+    /// Removes the private directories of unleased deleted branches after a
+    /// sweep of their objects. Returns the number of directories removed.
+    pub(crate) fn reclaim_deleted_branch_directories(
+        &mut self,
+        branches: &[BranchReclamationEntry],
+    ) -> Result<u64, ImmutableObjectError> {
+        let mut reclaimed = 0;
+        for branch in branches {
             if matches!(branch.state, crate::branch_catalog::BranchState::Deleted)
                 && !branch.active_lease
             {
@@ -842,11 +1195,11 @@ impl ImmutableObjectStore {
                 self.synchronized_kinds.clear();
                 self.namespace_synchronized = false;
                 if reclaim_deleted_directory(&branch.directory)? {
-                    report.reclaimed_branch_directories += 1;
+                    reclaimed += 1;
                 }
             }
         }
-        Ok(report)
+        Ok(reclaimed)
     }
 
     pub fn publish(

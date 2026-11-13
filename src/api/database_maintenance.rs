@@ -256,7 +256,11 @@ impl Database {
                     )
             }
             None => {
-                self.runtime.get_mut()?.store.reclaim_version_history();
+                let mut runtime = self.runtime.get_mut()?;
+                runtime.store.reclaim_version_history();
+                // Nothing new to publish: still retry object debt left by an
+                // earlier post-publication sweep (#1736).
+                runtime.store.retry_pending_object_reclamation();
                 Ok(())
             }
         };

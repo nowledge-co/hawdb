@@ -105,7 +105,7 @@ fn reclamation_verifies_archives_without_holding_the_publication_barrier() {
         .abandon_pending_branch(plan.acknowledge_potential_data_loss())
         .unwrap();
     let catalog_path = fixture.directory().join("catalog.hawdb");
-    let snapshot = prepare_reclamation_with_verifier(&catalog_path, |directory, catalog| {
+    let snapshot = prepare_reclamation_with_verifier(&catalog_path, true, |directory, catalog| {
         let project = directory.to_path_buf();
         std::thread::spawn(move || {
             let _publisher = CatalogMetadataLease::acquire(&project).unwrap();
@@ -132,7 +132,7 @@ fn catalog_changes_during_quarantine_verification_refuse_the_sweep() {
     let fixture = Fixture::new();
     fixture.initialize();
     let catalog_path = fixture.directory().join("catalog.hawdb");
-    let result = prepare_reclamation_with_verifier(&catalog_path, |directory, catalog| {
+    let result = prepare_reclamation_with_verifier(&catalog_path, true, |directory, catalog| {
         let proofs = reclamation_evidence(directory, catalog, Default::default())?;
         let mut changed = catalog.clone();
         changed.revision += 1;

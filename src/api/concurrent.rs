@@ -384,13 +384,12 @@ impl ConcurrentDatabase {
         let source = self.inner.commits.lock()?.checkpoint_source()?;
         let prepared = source.prepare()?;
         let Some(prepared) = prepared else {
-            self.inner
-                .commits
-                .lock()?
-                .runtime
-                .get_mut()?
-                .store
-                .reclaim_version_history();
+            let mut database = self.inner.commits.lock()?;
+            let mut runtime = database.runtime.get_mut()?;
+            runtime.store.reclaim_version_history();
+            // Nothing new to publish: still retry object debt left by an
+            // earlier post-publication sweep (#1736).
+            runtime.store.retry_pending_object_reclamation();
             return Ok(());
         };
         self.inner

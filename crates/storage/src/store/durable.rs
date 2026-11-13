@@ -181,6 +181,23 @@ pub(super) struct GenerationReclamationDebt {
     pub(super) retry_required: bool,
     pub(super) pending_file_count: usize,
     pub(super) pending_bytes: u64,
+    /// The project immutable-object sweep that follows the same publication
+    /// (#1736). Kept beside the generation receipt so every view of this
+    /// admitted runtime observes one maintenance result.
+    pub(super) objects: ObjectReclamationDebt,
+}
+
+/// Last observed state of the project immutable-object namespace.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct ObjectReclamationDebt {
+    /// The last pass was deferred, failed, or left unreachable objects.
+    pub(super) retry_required: bool,
+    /// Unreachable objects the last completed pass left in place.
+    pub(super) pending_objects: u64,
+    pub(super) pending_bytes: u64,
+    /// Namespace size after the last completed pass.
+    pub(super) store_objects: u64,
+    pub(super) store_bytes: u64,
 }
 
 pub(super) use hawdb_storage::checkpoint::CheckpointImage;
@@ -720,10 +737,12 @@ impl DurableStore {
     pub(super) fn defer_generation_reclamation(&self) {
         // Preserve already measured file/byte debt when execution admission
         // postpones the next scan. Unknown work is explicitly retry-required.
-        self.generation_reclamation_debt
+        let mut debt = self
+            .generation_reclamation_debt
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .retry_required = true;
+            .unwrap_or_else(|error| error.into_inner());
+        debt.retry_required = true;
+        debt.objects.retry_required = true;
     }
 
     pub(super) fn generation_reclamation_debt(&self) -> GenerationReclamationDebt {

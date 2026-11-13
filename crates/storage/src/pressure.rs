@@ -57,6 +57,9 @@ pub enum StoragePressureReasonCode {
     AdjacencyDebt,
     ProjectionDebt,
     GenerationReclamationDebt,
+    /// Unreachable immutable objects remain after the last sweep, or the
+    /// sweep was deferred or failed (#1736). The next checkpoint retries.
+    ObjectReclamationDebt,
     ReaderPinnedObsoleteGenerations,
     CachePinnedPressure,
 }
@@ -75,6 +78,7 @@ impl StoragePressureReasonCode {
             Self::AdjacencyDebt => "adjacency_debt",
             Self::ProjectionDebt => "projection_debt",
             Self::GenerationReclamationDebt => "generation_reclamation_debt",
+            Self::ObjectReclamationDebt => "object_reclamation_debt",
             Self::ReaderPinnedObsoleteGenerations => "reader_pinned_obsolete_generations",
             Self::CachePinnedPressure => "cache_pinned_pressure",
         }
@@ -95,6 +99,11 @@ pub struct StoragePressureSignals {
     pub generation_reclamation_retry_required: bool,
     pub generation_reclamation_pending_files: usize,
     pub generation_reclamation_pending_bytes: u64,
+    pub object_store_files: u64,
+    pub object_store_bytes: u64,
+    pub object_reclamation_retry_required: bool,
+    pub object_reclamation_pending_files: u64,
+    pub object_reclamation_pending_bytes: u64,
     pub oldest_reader_commit_epoch: Option<u64>,
     pub obsolete_generation_bytes: u64,
     pub estimated_checkpoint_temporary_bytes: u64,
@@ -122,6 +131,17 @@ pub struct StoragePressureSnapshot {
     pub generation_reclamation_retry_required: bool,
     pub generation_reclamation_pending_files: usize,
     pub generation_reclamation_pending_bytes: u64,
+    /// Files and bytes in the project immutable-object store (sealed roots,
+    /// manifests, sealed WALs and checkpoint artifacts of every branch) as of
+    /// the last reclamation pass, staging excluded (#1736).
+    pub object_store_files: u64,
+    pub object_store_bytes: u64,
+    /// The last object sweep was deferred, failed, or left unreachable
+    /// objects; the next checkpoint or explicit reclamation retries it.
+    pub object_reclamation_retry_required: bool,
+    /// Unreachable objects the last completed sweep left for a later pass.
+    pub object_reclamation_pending_files: u64,
+    pub object_reclamation_pending_bytes: u64,
     pub oldest_reader_commit_epoch: Option<u64>,
     pub oldest_reader_lag: u64,
     pub obsolete_generation_bytes: u64,
@@ -157,6 +177,7 @@ impl StoragePressureSnapshot {
                     | StoragePressureReasonCode::WalSoftThreshold
                     | StoragePressureReasonCode::DeltaSoftThreshold
                     | StoragePressureReasonCode::GenerationReclamationDebt
+                    | StoragePressureReasonCode::ObjectReclamationDebt
             )
         })
     }
@@ -214,6 +235,9 @@ impl StorageDebtController {
         if signals.generation_reclamation_retry_required {
             reasons.push(StoragePressureReasonCode::GenerationReclamationDebt);
         }
+        if signals.object_reclamation_retry_required {
+            reasons.push(StoragePressureReasonCode::ObjectReclamationDebt);
+        }
         if oldest_reader_lag > 0 && signals.obsolete_generation_bytes > 0 {
             reasons.push(StoragePressureReasonCode::ReaderPinnedObsoleteGenerations);
         }
@@ -263,6 +287,11 @@ impl StorageDebtController {
             generation_reclamation_retry_required: signals.generation_reclamation_retry_required,
             generation_reclamation_pending_files: signals.generation_reclamation_pending_files,
             generation_reclamation_pending_bytes: signals.generation_reclamation_pending_bytes,
+            object_store_files: signals.object_store_files,
+            object_store_bytes: signals.object_store_bytes,
+            object_reclamation_retry_required: signals.object_reclamation_retry_required,
+            object_reclamation_pending_files: signals.object_reclamation_pending_files,
+            object_reclamation_pending_bytes: signals.object_reclamation_pending_bytes,
             oldest_reader_commit_epoch: signals.oldest_reader_commit_epoch,
             oldest_reader_lag,
             obsolete_generation_bytes: signals.obsolete_generation_bytes,

@@ -94,6 +94,10 @@ impl BranchRuntimeBinding {
         &self.immutable_store_root
     }
 
+    pub(super) fn catalog_path(&self) -> &Path {
+        &self.catalog_path
+    }
+
     pub(super) fn head_path(&self) -> &Path {
         &self.head_path
     }
@@ -420,13 +424,30 @@ impl GraphStore {
         let lease = self.branch_lease.as_ref().ok_or_else(|| {
             HawDBError::StorageIntegrity("admitted branch has no ownership lease".into())
         })?;
-        crate::branch_reclamation::reclaim_owned_project(
+        let report = crate::branch_reclamation::reclaim_owned_project(
             &branch.catalog_path,
             &branch.immutable_store_root,
             lease,
             &branch.head,
             limits,
-        )
+            crate::branch_reclamation::ReclamationTrigger::Explicit,
+        )?;
+        durable.record_object_reclamation(&report);
+        Ok(report)
+    }
+
+    /// Retries the automatic immutable-object sweep when an earlier pass left
+    /// debt, for a checkpoint request that had nothing new to publish (#1736).
+    /// Like every automatic pass, a failure is recorded, never returned.
+    #[doc(hidden)]
+    pub fn retry_pending_object_reclamation(&self) {
+        if self.ensure_usable().is_err() {
+            return;
+        }
+        if let (Some(durable), Some(owner)) = (self.durable.as_ref(), self.branch_lease.as_deref())
+        {
+            durable.retry_object_reclamation(owner);
+        }
     }
 
     #[doc(hidden)]
@@ -4060,6 +4081,7 @@ mod tests {
     }
 
     mod branch_wal_reclamation;
+    mod object_reclamation;
 
     fn write_row(branch: &mut AdmittedBranchStore, body: &str) {
         let (store, catalog) = branch.store_and_catalog_mut();

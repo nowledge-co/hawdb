@@ -510,6 +510,53 @@ publication and removal leaves only an unselected file, which the next
 checkpoint after recovery removes. Each WAL directory therefore holds at most
 the current and previous generation after a checkpoint.
 
+Every checkpoint of an admitted branch also publishes its closure (durable
+manifest, relational checkpoint, canonical/adjacency/property artifacts, row
+pages, index shadow, append segments) and a sealed root into the project's
+content-addressed object store (`branches/objects/objects/<kind>/<digest>`).
+A sealed root has no parent link, so a closure no longer referenced by any
+retained root is garbage. The same post-publication pass (foreground
+`checkpoint()`, automatic candidate publication and deferred off-gate
+retirement) therefore ends with a bounded mark/sweep of that store
+([#1736](https://github.com/nowledge-co/hawdb/issues/1736)); a checkpoint with
+nothing new to publish retries it only while debt remains. Liveness is the
+project-wide mark that explicit `reclaim_branch_storage` uses: the durable head
+of every non-deleted catalog branch, every catalog creation base root (a child
+or sibling starts from a sealed parent root that may be older than the parent's
+current head), and every root registered by a live owner (each runtime's head,
+reader snapshots, prepared checkpoint candidates and handoffs, derived-artifact
+jobs). An active owner without a root registration defers the pass. The pass
+holds the catalog metadata lock, which serializes every object publication and
+root registration, from its catalog read to its last removal; an automatic pass
+that finds the lock held is deferred rather than waiting behind a publication.
+Before the first removal it synchronizes every branch directory whose head it
+read and the catalog directory, so a head adopted after a crash with an
+unsynchronized rename is durable before anything it superseded disappears.
+
+Each pass lists the namespace and reads only sealed roots during mark;
+reachable non-root objects are checked for presence and exact length, so the
+cost follows the number of objects and the garbage removed, not the size of the
+live data. Selected garbage is fully verified before the first unlink, with the
+existing quarantine-evidence rule. `BranchReclamationLimits` is a per-pass
+budget, not a refusal threshold: at most `max_objects` objects and `max_bytes`
+bytes of garbage (always at least one object) are removed, and the remainder is
+reported as pending. An explicit pass also re-hashes up to `max_bytes` of
+reachable objects as an integrity check and waits for the metadata lock. A
+deferral, a failed listing, barrier or unlink, an object still being read, or
+garbage beyond the budget is recorded as `object_reclamation_*` debt in the
+storage-pressure snapshot (`object_reclamation_retry_required`,
+`object_reclamation_pending_files`, `object_reclamation_pending_bytes`, reason
+`object_reclamation_debt`), next to `object_store_files` and
+`object_store_bytes` measured by the last pass. The next checkpoint or
+`EmbeddedStoreHandle::reclaim_branch_storage` / `Database::reclaim_branch_storage`
+retries it. A crash between head publication and removal leaves only
+unreachable objects for a later pass. After a checkpoint the store holds the
+selected head's closure, the closure of the head it superseded while the
+checkpoint source, the retired frontend or a handle's read publication still
+pins it (released by the next pass), every pinned reader and branch closure,
+and the catalog creation baseline of each branch (for `main`, the root it was
+created or bootstrapped from).
+
 `DatabaseTransaction` owns a transaction-private COW graph workspace. Each
 Cypher mutation is applied to that workspace immediately, so later Cypher reads
 and mutations observe earlier writes. The transaction retains the exact graph

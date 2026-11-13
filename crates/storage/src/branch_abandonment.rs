@@ -717,27 +717,47 @@ pub(crate) fn prepare_reclamation(
     catalog_path: &Path,
     limits: BranchAbandonmentLimits,
 ) -> Result<ReclamationSnapshot> {
-    prepare_reclamation_with_verifier(catalog_path, |directory, catalog| {
+    prepare_reclamation_with_verifier(catalog_path, true, |directory, catalog| {
+        reclamation_evidence(directory, catalog, limits)
+    })
+}
+
+/// [`prepare_reclamation`] for automatic post-checkpoint maintenance: a held
+/// metadata lock (a publication, branch transition or another sweep) returns
+/// `WouldBlock` instead of waiting, and the caller records retryable debt.
+pub(crate) fn try_prepare_reclamation(
+    catalog_path: &Path,
+    limits: BranchAbandonmentLimits,
+) -> Result<ReclamationSnapshot> {
+    prepare_reclamation_with_verifier(catalog_path, false, |directory, catalog| {
         reclamation_evidence(directory, catalog, limits)
     })
 }
 
 fn prepare_reclamation_with_verifier(
     catalog_path: &Path,
+    blocking: bool,
     verify: impl FnOnce(&Path, &Catalog) -> Result<QuarantinedObjects>,
 ) -> Result<ReclamationSnapshot> {
     let directory = catalog_path
         .parent()
         .ok_or_else(|| invalid("branch catalog has no project directory"))?;
+    let acquire = |directory: &Path| {
+        if blocking {
+            CatalogMetadataLease::acquire_blocking(directory)
+        } else {
+            CatalogMetadataLease::acquire(directory)
+        }
+    };
     let catalog = {
-        let _metadata = CatalogMetadataLease::acquire_blocking(directory)?;
+        let _metadata = acquire(directory)?;
         branch_catalog::read_catalog(catalog_path)?
     };
     // Committed quarantine archives are immutable and never swept. Retain
     // full byte verification on every call, without holding up publishers.
     // A concurrent abandonment or catalog transition invalidates this view.
     let proofs = verify(directory, &catalog);
-    let metadata = CatalogMetadataLease::acquire_blocking(directory)?;
+    let metadata = acquire(directory)?;
     if branch_catalog::read_catalog(catalog_path)? != catalog {
         return Err(HawDBError::BranchBusy {
             resource: "catalog changed during quarantine verification; retry reclamation",

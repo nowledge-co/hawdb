@@ -7713,6 +7713,7 @@ fn grouped_evidence_complete_text_preserves_graph_eligibility_and_retained_reads
 
 mod catch_up_admission_tests;
 mod initial_import_checkpoint_tests;
+mod object_reclamation_tests;
 mod schema_change_log_gap_tests;
 mod schema_maintenance_tests;
 mod search_projection_rebuild_tests;
