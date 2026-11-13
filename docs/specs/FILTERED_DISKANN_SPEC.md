@@ -276,6 +276,21 @@ window exceeds that cap, and with
 eligible set does.
 Neither path falls back to approximate candidates.
 
+Every over-budget refusal of an exact read is a typed
+`HawDBError::ResourceBudgetExceeded` (`nowledge-co/hawdb#1748`), so hosts can
+tell a request that is merely too large from a damaged store by variant. The
+resident scan and rerank refusals report `MemoryBytes` against
+`VectorSearchExecutionOptions.max_working_bytes`. Out of core, the
+duplicate-ID cap, the score-collector window and complete-map caps, and a zero
+uniqueness capacity report `MetadataEntries` against whichever option bounds
+the entries (`VectorSearchExecutionOptions.max_working_bytes` or
+`SearchOutOfCoreConfig.max_score_entries`); the reader's page and rank window
+caps report `MetadataEntries` against `SearchOutOfCoreConfig.max_score_entries`,
+and a page larger than `SearchOutOfCoreConfig.max_hydrated_documents` reports
+`MetadataEntries` against that option. Messages are unchanged; the out-of-core
+ones were `HawDBError::Storage` and now display with the `execution error:`
+prefix, and the resident ones were untyped `HawDBError::Execution`.
+
 Embedded out-of-core candidate reads (`EmbeddedReadSnapshot` and
 `EmbeddedStoreHandle`, text, vector and hybrid, exact and default) also run
 with a query-memory account (`nowledge-co/hawdb#1722`). They call

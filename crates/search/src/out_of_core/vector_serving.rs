@@ -12,7 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{BoundedScoreCollector, CandidateSet, SearchOutOfCoreMetrics, SearchOutOfCoreReader};
+use super::{
+    BoundedScoreCollector, CandidateSet, SearchOutOfCoreMetrics, SearchOutOfCoreReader,
+    MAX_SCORE_ENTRIES_OPTION,
+};
 use crate::build_memory::{checked_add as add, ID_SET_ENTRY_BYTES, ID_SET_ROOT_BYTES};
 use crate::error::{HawDBError, Result};
 use crate::lexical_projection::QueryContext;
@@ -96,6 +99,18 @@ pub(super) fn candidate_working_bytes(limit: usize) -> Result<usize> {
 
 pub(super) fn admitted_score_entries(configured_max_entries: usize, working_bytes: usize) -> usize {
     configured_max_entries.min(working_bytes / VECTOR_SCORE_ENTRY_WORKING_BYTES)
+}
+
+/// The option that bounds [`admitted_score_entries`].
+pub(super) fn admitted_score_entries_option(
+    configured_max_entries: usize,
+    working_bytes: usize,
+) -> &'static str {
+    if working_bytes / VECTOR_SCORE_ENTRY_WORKING_BYTES < configured_max_entries {
+        "VectorSearchExecutionOptions.max_working_bytes"
+    } else {
+        MAX_SCORE_ENTRIES_OPTION
+    }
 }
 
 #[cfg(feature = "vector-search")]
@@ -333,6 +348,7 @@ impl SearchOutOfCoreReader {
         let mut collector = BoundedScoreCollector::with_context(
             Some(request.top_k.get()),
             self.config.max_score_entries.get(),
+            MAX_SCORE_ENTRIES_OPTION,
             Some(query),
         )?;
         for entry in domain.distances() {
@@ -598,19 +614,26 @@ impl SearchOutOfCoreReader {
             self.config.max_score_entries.get(),
             vector_execution_options.max_working_bytes,
         ) / 2;
+        let entries_option = admitted_score_entries_option(
+            self.config.max_score_entries.get(),
+            vector_execution_options.max_working_bytes,
+        );
         if max_scored_documents == 0 {
-            return Err(HawDBError::Storage(
+            return Err(super::score_entries_refusal(
+                "search vector uniqueness check",
+                1,
+                0,
+                0,
+                entries_option,
                 "search vector uniqueness check exceeds the admitted working memory".to_string(),
             ));
         }
-        let mut collector = match context {
-            Some(context) => BoundedScoreCollector::with_context(
-                retained_limit,
-                max_scored_documents,
-                Some(context),
-            )?,
-            None => BoundedScoreCollector::new(retained_limit, max_scored_documents)?,
-        };
+        let mut collector = BoundedScoreCollector::with_context(
+            retained_limit,
+            max_scored_documents,
+            entries_option,
+            context,
+        )?;
         let query_scorer = VectorRelevanceQuery::with_work(query_embedding, metric, || {
             context.map_or_else(
                 || checkpoint_vector_task(task_context),
@@ -661,7 +684,7 @@ impl SearchOutOfCoreReader {
                             requested: 1,
                             used: max_scored_documents as u64,
                             budget: max_scored_documents as u64,
-                            budget_option: "VectorSearchExecutionOptions.max_working_bytes",
+                            budget_option: entries_option,
                             message: format!(
                                 "search vector uniqueness check requires more than {max_scored_documents} document ids"
                             ),
@@ -1008,6 +1031,7 @@ impl SearchOutOfCoreReader {
         let mut collector = BoundedScoreCollector::with_context(
             retained_limit,
             admitted_score_entries(self.config.max_score_entries.get(), scan_working_bytes),
+            admitted_score_entries_option(self.config.max_score_entries.get(), scan_working_bytes),
             policy.query,
         )?;
         let query_scorer = if selected.is_empty() {

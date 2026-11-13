@@ -47,8 +47,10 @@ resident reads the adaptive `compression_disabled` scalar scan (already exact);
 exact snapshot and handle reads must equal an independent brute-force cosine
 top-k (IDs and score bits), report `exact_vector_search`, and keep hybrid
 vector scores raw. Projection-level entry points cover the same equality and
-refuse a 4 KiB working budget with the scan's budget error; snapshot reads
-refuse a 4 KiB `query_memory_bytes`; exact plus an effective
+refuse a 4 KiB working budget, and out of core a page window above the
+admitted score entries, with a typed `ResourceBudgetExceeded` error (variant,
+resource and budget asserted, #1748); snapshot reads refuse a 4 KiB
+`query_memory_bytes` with a typed `MemoryBytes` error; exact plus an effective
 compressed mode is refused. Request admission and report guards are in
 `candidate_evidence::boundaries` (`//crates/search:hawdb_search_tests`). Replay
 with `cargo test --locked -p hawdb --lib exact_candidate_tests` or
@@ -73,10 +75,15 @@ unwindowed exact hybrid charge between 1x and 2x their live working bytes.
 1024-dimension out-of-core projections at an 8 MiB admission and requires
 `EmbeddedReadSnapshot::exact_vector_search_capacity` to equal the duplicate-ID
 cap (32,768), an exact vector-only read of exactly that many eligible
-documents to succeed and 25% more to fail with a typed budget error;
-`snapshot_exact_vector_capacity_covers_resident_reads` checks that the
-resident capacity is refused below and served once it covers the eligible
-set.
+documents to succeed and one more to fail with a typed `MetadataEntries`
+budget error;
+`snapshot_exact_vector_capacity_is_served_and_refused_above_for_resident_reads`
+picks the smallest resident admission whose snapshot capacity is exactly 1,500
+eligible documents, serves that many untruncated and refuses 1,501 with a typed
+`MemoryBytes` budget error (#1748).
+`out_of_core::tests::out_of_core_exact_vector_window_and_hydration_caps_are_typed_budget_errors`
+(`//crates/search:hawdb_search_tests`) covers the out-of-core page, rank-window,
+uniqueness and hydrated-document caps of exact reads.
 Replay with `cargo test --locked -p hawdb --lib out_of_core_working_memory`
 and `cargo test --locked -p hawdb-search --lib admitted_working`. No new lane,
 profile or timeout.

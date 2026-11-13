@@ -59,7 +59,26 @@ mod query_ranking;
 mod score_collector;
 mod vector_query;
 use candidate_set::CandidateSet;
-use score_collector::BoundedScoreCollector;
+use score_collector::{score_entries_refusal, BoundedScoreCollector};
+
+/// The reader option that bounds query score entries and windows.
+const MAX_SCORE_ENTRIES_OPTION: &str = "SearchOutOfCoreConfig.max_score_entries";
+
+/// A search page that would hydrate more hits than the reader admits.
+fn hydrated_documents_refusal(requested: usize, budget: usize, message: String) -> HawDBError {
+    ResourceBudgetError {
+        resource: ResourceBudgetKind::MetadataEntries,
+        scope: ResourceBudgetScope::Operator,
+        owner: "search hit hydration".into(),
+        memory_class: None,
+        requested: u64::try_from(requested).unwrap_or(u64::MAX),
+        used: 0,
+        budget: u64::try_from(budget).unwrap_or(u64::MAX),
+        budget_option: "SearchOutOfCoreConfig.max_hydrated_documents",
+        message,
+    }
+    .into()
+}
 
 pub(crate) struct CandidateQuery<'a> {
     pub(crate) text: &'a str,
@@ -2861,10 +2880,14 @@ impl SearchOutOfCoreReader {
         hydration: SearchHitHydration,
     ) -> Result<SearchOutOfCoreOutput> {
         if options.limit > self.config.max_hydrated_documents.get() {
-            return Err(HawDBError::Storage(format!(
-                "search hydration requested {} documents, exceeding {}",
-                options.limit, self.config.max_hydrated_documents
-            )));
+            return Err(hydrated_documents_refusal(
+                options.limit,
+                self.config.max_hydrated_documents.get(),
+                format!(
+                    "search hydration requested {} documents, exceeding {}",
+                    options.limit, self.config.max_hydrated_documents
+                ),
+            ));
         }
         self.search_with_materializer(
             query_text,
@@ -2930,20 +2953,33 @@ impl SearchOutOfCoreReader {
             .offset
             .checked_add(options.limit)
             .ok_or_else(|| HawDBError::Storage("search offset and limit overflow".to_string()))?;
-        if page_score_limit > self.config.max_score_entries.get() {
-            return Err(HawDBError::Storage(format!(
-                "search page window requires {page_score_limit} score entries, exceeding {}",
-                self.config.max_score_entries
-            )));
+        let max_score_entries = self.config.max_score_entries.get();
+        if page_score_limit > max_score_entries {
+            return Err(score_entries_refusal(
+                "search page window",
+                page_score_limit,
+                0,
+                max_score_entries,
+                MAX_SCORE_ENTRIES_OPTION,
+                format!(
+                    "search page window requires {page_score_limit} score entries, exceeding {max_score_entries}"
+                ),
+            ));
         }
-        if options
+        if let Some(window) = options
             .rank_window
-            .is_some_and(|window| window > self.config.max_score_entries.get())
+            .filter(|window| *window > max_score_entries)
         {
-            return Err(HawDBError::Storage(format!(
-                "search rank window exceeds the admitted {} score entries",
-                self.config.max_score_entries
-            )));
+            return Err(score_entries_refusal(
+                "search rank window",
+                window,
+                0,
+                max_score_entries,
+                MAX_SCORE_ENTRIES_OPTION,
+                format!(
+                    "search rank window exceeds the admitted {max_score_entries} score entries"
+                ),
+            ));
         }
 
         let metadata_filters = match access_control {
@@ -3404,11 +3440,15 @@ impl SearchOutOfCoreReader {
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<Vec<SearchHit>> {
         if candidates.len() > self.config.max_hydrated_documents.get() {
-            return Err(HawDBError::Storage(format!(
-                "search hydration requires {} documents, exceeding {}",
+            return Err(hydrated_documents_refusal(
                 candidates.len(),
-                self.config.max_hydrated_documents
-            )));
+                self.config.max_hydrated_documents.get(),
+                format!(
+                    "search hydration requires {} documents, exceeding {}",
+                    candidates.len(),
+                    self.config.max_hydrated_documents
+                ),
+            ));
         }
         if level == SearchHitHydration::ScoresOnly {
             return self.score_only_hits(candidates, &context);
@@ -6343,6 +6383,100 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
 
+    /// Exact vector-only reads larger than a reader cap or their admitted
+    /// score entries are typed budget refusals, never storage faults (#1748).
+    #[test]
+    fn out_of_core_exact_vector_window_and_hydration_caps_are_typed_budget_errors() {
+        let path = test_dir("exact-vector-caps");
+        let mut index = SearchIndex::open(&path).unwrap();
+        for number in 0..4 {
+            index.upsert(document(number, "team")).unwrap();
+        }
+        index.checkpoint().unwrap();
+        let reader = SearchOutOfCoreReader::open_with_config(
+            &path,
+            SearchOutOfCoreConfig {
+                max_score_entries: NonZeroUsize::new(8).unwrap(),
+                max_hydrated_documents: NonZeroUsize::new(2).unwrap(),
+                ..SearchOutOfCoreConfig::default()
+            },
+        )
+        .unwrap();
+        let exact = |limit: usize, rank_window: Option<usize>, working_bytes: usize| {
+            reader
+                .search_with_options_compressed_vector_projection_execution_options(
+                    "",
+                    Some(&[1.0, 0.5]),
+                    SearchMode::Vector,
+                    options(limit, rank_window),
+                    CompressedVectorSearchMode::Disabled,
+                    VectorSearchExecutionOptions::bounded(NonZeroUsize::MIN, working_bytes, None)
+                        .with_exact_search(),
+                )
+                .unwrap_err()
+        };
+        let assert_entries = |error: HawDBError, budget: u64, option: &str, text: &str| {
+            assert!(error.to_string().contains(text), "{error}");
+            match error {
+                HawDBError::ResourceBudgetExceeded(details) => {
+                    assert_eq!(details.resource, ResourceBudgetKind::MetadataEntries);
+                    assert_eq!(details.budget, budget, "{details:?}");
+                    assert_eq!(details.budget_option, option, "{details:?}");
+                }
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_entries(
+            exact(3, None, 1 << 20),
+            2,
+            "SearchOutOfCoreConfig.max_hydrated_documents",
+            "search hydration requested 3 documents, exceeding 2",
+        );
+        assert_entries(
+            exact(1, Some(9), 1 << 20),
+            8,
+            MAX_SCORE_ENTRIES_OPTION,
+            "search rank window exceeds the admitted 8 score entries",
+        );
+        // 512 working bytes admit 512 / 128 / 2 = 2 scored documents.
+        assert_entries(
+            exact(2, None, 512),
+            2,
+            "VectorSearchExecutionOptions.max_working_bytes",
+            "search vector uniqueness check requires more than 2 document ids",
+        );
+        let unhydrated = SearchOutOfCoreReader::open_with_config(
+            &path,
+            SearchOutOfCoreConfig {
+                max_score_entries: NonZeroUsize::new(2).unwrap(),
+                ..SearchOutOfCoreConfig::default()
+            },
+        )
+        .unwrap();
+        assert_entries(
+            unhydrated
+                .search_with_options("", Some(&[1.0, 0.5]), SearchMode::Vector, options(3, None))
+                .unwrap_err(),
+            2,
+            MAX_SCORE_ENTRIES_OPTION,
+            "search page window requires 3 score entries, exceeding 2",
+        );
+        // An admission below one score entry pair refuses the window itself.
+        assert_entries(
+            exact(1, None, 256),
+            1,
+            "VectorSearchExecutionOptions.max_working_bytes",
+            "search vector uniqueness check requires more than 1 document ids",
+        );
+        assert_entries(
+            exact(2, None, 256),
+            1,
+            "VectorSearchExecutionOptions.max_working_bytes",
+            "search rank window exceeds the admitted 1 score entries",
+        );
+        fs::remove_dir_all(path).unwrap();
+    }
+
     #[test]
     #[cfg(feature = "vector-search")]
     fn out_of_core_vector_execution_options_enforce_memory_and_cancellation() {
@@ -6379,6 +6513,14 @@ mod tests {
                 "{memory_error:?}"
             );
         } else {
+            assert!(
+                matches!(&memory_error, HawDBError::ResourceBudgetExceeded(details)
+                    if details.resource == hawdb_core::ResourceBudgetKind::MetadataEntries
+                        && details.budget == 0
+                        && details.budget_option
+                            == "VectorSearchExecutionOptions.max_working_bytes"),
+                "{memory_error:?}"
+            );
             assert!(memory_error
                 .to_string()
                 .contains("uniqueness check exceeds the admitted working memory"));
