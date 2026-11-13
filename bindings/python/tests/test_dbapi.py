@@ -676,6 +676,54 @@ def test_an_admission_refusal_is_operational_and_keeps_its_code():
     assert (translated.code, translated.retryable) == ("cpu_saturated", True)
 
 
+def fill_wide_rows(cursor, rows):
+    """``rows`` rows of 100 kB each, committed in batches under the WAL record limit."""
+    cursor.execute("CREATE TABLE wide (id BIGINT PRIMARY KEY, v TEXT)")
+    value = "x" * 100_000
+    for start in range(0, rows, 50):
+        cursor.executemany(
+            "INSERT INTO wide (id, v) VALUES ($1, $2)",
+            [(row, value) for row in range(start, min(start + 50, rows))],
+        )
+
+
+def test_a_large_select_keeps_the_default_read_ceiling():
+    # About 20 MB: above the runtime's 16 MiB profile default, within the
+    # 64 MiB max_read_result_payload_bytes that SQL has always had.
+    with hawdb.connect(autocommit=True) as connection:
+        cursor = connection.cursor()
+        fill_wide_rows(cursor, 200)
+        for autocommit in (True, False):
+            connection.autocommit = autocommit
+            cursor.execute("SELECT id, v FROM wide")
+            rows = cursor.fetchall()
+            assert len(rows) == 200
+            assert all(len(row[1]) == 100_000 for row in rows)
+            connection.commit()
+
+
+def test_a_result_over_the_read_ceiling_names_its_option():
+    with hawdb.connect(autocommit=True, max_read_result_payload_bytes=1_000_000) as connection:
+        cursor = connection.cursor()
+        fill_wide_rows(cursor, 20)
+        for autocommit in (True, False):
+            connection.autocommit = autocommit
+            with pytest.raises(dbapi.OperationalError) as caught:
+                cursor.execute("SELECT id, v FROM wide")
+            error = caught.value
+            assert isinstance(error, hawdb.exceptions.ResourceBudgetError)
+            assert pep249_classes(error) == [dbapi.DatabaseError, dbapi.OperationalError]
+            assert (error.resource, error.budget, error.budget_option) == (
+                "result_payload_bytes", 1_000_000, "max_read_result_payload_bytes",
+            )
+            assert (error.requested, error.used) == (None, None)
+            connection.rollback()
+            # A smaller read still succeeds within the ceiling.
+            cursor.execute("SELECT id FROM wide WHERE id < 2")
+            assert cursor.fetchall() == [(0,), (1,)]
+            connection.commit()
+
+
 def test_built_in_errors_gain_classes_only_from_statements():
     for error, pep in [
         (TypeError("type"), dbapi.ProgrammingError),

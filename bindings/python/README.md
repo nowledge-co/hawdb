@@ -84,8 +84,12 @@ misses. All five wheels have their own native installation tests before upload.
 `open`, `connect` and `Database` accept the keyword-only options
 `max_read_result_rows` and `max_read_result_payload_bytes`. They configure the
 engine's read ceilings for in-memory, file-backed and read-only databases.
-Exceeding a ceiling raises `hawdb.exceptions.ExecutionError`; the binding does
-not return a shortened result. A later read can still succeed within the budget.
+Exceeding a ceiling raises `hawdb.exceptions.ResourceBudgetError`, a subclass
+of `ExecutionError` (DB-API `OperationalError`), whose `budget_option` names
+the option (`"max_read_result_rows"` or `"max_read_result_payload_bytes"`),
+`resource` is `"result_rows"` or `"result_payload_bytes"` and `budget` is the
+effective limit; `requested` and `used` are `None`. The binding does not return
+a shortened result. A later read can still succeed within the budget.
 
 ```python
 with hawdb.open(max_read_result_rows=1000, max_read_result_payload_bytes=1048576) as db:
@@ -97,9 +101,11 @@ with hawdb.open(max_read_result_rows=1000, max_read_result_payload_bytes=1048576
 ```
 
 Omitted options and `None` preserve engine defaults: no host row ceiling and a
-64 MiB result payload ceiling. Statements that pass runtime admission (see
-[Usage](#usage)) are also held to the runtime's result budget of 16 MiB per
-statement, which a larger payload ceiling does not raise. Zero rows follows `DatabaseConfig` semantics and
+64 MiB result payload ceiling. The payload ceiling is also the per-statement
+result budget of the handle's runtime admission (see [Usage](#usage)), which
+reserves it from the runtime memory budget while the statement runs, so a
+ceiling larger than the runtime memory capacity makes admission refuse
+statements with `AdmissionError`. Zero rows follows `DatabaseConfig` semantics and
 disables the host row ceiling; zero payload bytes remains a zero-byte ceiling.
 Other engine memory and session limits still apply. These options do not expose
 the rest of `DatabaseConfig` or change durability.
@@ -522,7 +528,8 @@ path it took: `StorageError` from an autocommit statement and
 `ExecutionError` from a statement inside a transaction. Test `kind` rather
 than the message.
 
-Memory-ledger and spill-quota refusals raise `exceptions.ResourceBudgetError`,
+Memory-ledger and spill-quota refusals, and the read ceilings described under
+[Read budgets](#read-budgets-and-query-plans), raise `exceptions.ResourceBudgetError`,
 a subclass of `ExecutionError`, with `resource`, `scope`, `owner`,
 `memory_class`, `requested`, `used`, `budget`, and `budget_option` attributes.
 The message retains the existing execution diagnostic. `requested` is the

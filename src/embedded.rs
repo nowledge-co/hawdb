@@ -314,10 +314,26 @@ impl HawDBEmbedded {
     /// storage device is reported as `StorageMediaKind::Memory`; there is no
     /// device to discover and no durability policy to apply.
     pub fn open_in_memory_with_config(config: DatabaseConfig) -> Self {
+        Self::open_in_memory_with_runtime_governor_config(config, None)
+    }
+
+    /// [`Self::open_in_memory_with_config`] with an explicit runtime governor
+    /// configuration; `None` keeps the `SharedHost` default, as
+    /// [`HawDBEmbeddedOpenOptions::runtime_governor_config`] does for a path.
+    pub fn open_in_memory_with_runtime_governor_config(
+        config: DatabaseConfig,
+        runtime_governor_config: Option<RuntimeGovernorConfig>,
+    ) -> Self {
         let deployment_profile = EmbeddedDeploymentProfile::SharedHost;
         let storage_device = StorageDeviceProfile::host_provided(StorageMediaKind::Memory, None);
-        let setup =
-            embedded_runtime_setup(deployment_profile, storage_device, None, None, None, None);
+        let setup = embedded_runtime_setup(
+            deployment_profile,
+            storage_device,
+            None,
+            None,
+            runtime_governor_config,
+            None,
+        );
         let mut database = Database::new_with_config(config);
         database.set_runtime_governor(setup.runtime_governor.clone());
         Self {
@@ -1612,6 +1628,73 @@ mod tests {
             .unwrap();
         assert_eq!(published.rows.len(), 1);
         assert_eq!(published.rows[0]["qty"], Value::Int(5));
+        assert_governor_idle(&engine);
+    }
+
+    #[test]
+    fn admitted_sql_result_budget_follows_the_governor_and_names_the_read_ceiling() {
+        // About 20 MB of payload: over the 16 MiB shared-host default result
+        // budget, under a 24 MiB ceiling the host aligned the governor with.
+        const CEILING: usize = 24 * 1024 * 1024;
+        let config = DatabaseConfig {
+            max_read_result_payload_bytes: Some(CEILING),
+            ..DatabaseConfig::default()
+        };
+        let mut governor = RuntimeGovernorConfig::shared_host();
+        governor.result_budget_bytes = CEILING as u64;
+        let mut engine =
+            HawDBEmbedded::open_in_memory_with_runtime_governor_config(config, Some(governor));
+        assert_eq!(engine.admitted_result_budget_bytes(), CEILING as u64);
+        engine
+            .query_sql_request_admitted(sql("CREATE TABLE big (id BIGINT PRIMARY KEY, v TEXT)"))
+            .unwrap();
+        let value = Value::String("x".repeat(100_000));
+        for batch in 0..4 {
+            engine.begin_transaction().unwrap();
+            for id in 0..50 {
+                let parameters = [Value::Int(batch * 50 + id), value.clone()];
+                engine
+                    .transaction_query_sql_request_admitted(
+                        sql("INSERT INTO big (id, v) VALUES ($1, $2)").with_params(&parameters),
+                    )
+                    .unwrap();
+            }
+            engine.commit_transaction().unwrap();
+        }
+        const WITHIN: &str = "SELECT id, v FROM big";
+        const BEYOND: &str = "SELECT id, v, v AS w FROM big";
+        let assert_ceiling =
+            |result: std::result::Result<QueryOutput, EmbeddedQueryError>| match result {
+                Err(EmbeddedQueryError::Database(HawDBError::ReadBudgetExceeded(budget))) => {
+                    assert_eq!(budget.resource, crate::ReadBudgetResource::PayloadBytes);
+                    assert_eq!(budget.limit, CEILING);
+                    assert_eq!(
+                        budget.resource.budget_option(),
+                        "max_read_result_payload_bytes"
+                    );
+                }
+                other => panic!("expected the read payload ceiling, got {other:?}"),
+            };
+        assert_eq!(
+            engine
+                .query_sql_request_admitted(sql(WITHIN))
+                .unwrap()
+                .rows
+                .len(),
+            200
+        );
+        assert_ceiling(engine.query_sql_request_admitted(sql(BEYOND)));
+        engine.begin_transaction().unwrap();
+        assert_eq!(
+            engine
+                .transaction_query_sql_request_admitted(sql(WITHIN))
+                .unwrap()
+                .rows
+                .len(),
+            200
+        );
+        assert_ceiling(engine.transaction_query_sql_request_admitted(sql(BEYOND)));
+        engine.rollback_transaction().unwrap();
         assert_governor_idle(&engine);
     }
 

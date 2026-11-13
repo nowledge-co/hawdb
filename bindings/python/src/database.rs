@@ -17,8 +17,8 @@ use std::path::{Path, PathBuf};
 
 use hawdb::{
     DatabaseConfig, DatabaseReadTransaction, DurabilityPolicy, EmbeddedDeploymentProfile,
-    HawDBEmbedded, HawDBEmbeddedOpenOptions, QueryOutput, QueryRowRef, QueryRows, SqlQueryRequest,
-    SqlStatementResult, Value,
+    HawDBEmbedded, HawDBEmbeddedOpenOptions, QueryOutput, QueryRowRef, QueryRows,
+    RuntimeGovernorConfig, SqlQueryRequest, SqlStatementResult, Value,
 };
 use pyo3::exceptions::{PyIndexError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -73,9 +73,12 @@ impl Database {
                     "namespace_durability_anchor requires a database path",
                 ));
             }
+            let config = with_open_options(DatabaseConfig::default());
+            let governor = runtime_governor_config(&config);
             return Ok(Self {
-                inner: Some(HawDBEmbedded::open_in_memory_with_config(
-                    with_open_options(DatabaseConfig::default()),
+                inner: Some(HawDBEmbedded::open_in_memory_with_runtime_governor_config(
+                    config,
+                    Some(governor),
                 )),
                 path: None,
             });
@@ -89,18 +92,22 @@ impl Database {
             });
             HawDBEmbedded::open_with_options(HawDBEmbeddedOpenOptions {
                 path: path.clone(),
-                config,
                 durability: DurabilityPolicy::default(),
                 deployment_profile: EmbeddedDeploymentProfile::SharedHost,
                 storage_device: None,
                 storage_io: None,
                 resource_snapshot: None,
-                runtime_governor_config: None,
+                runtime_governor_config: Some(runtime_governor_config(&config)),
+                config,
             })
         } else {
             let options = HawDBEmbeddedOpenOptions::new(path.clone());
             let config = with_open_options(options.config);
-            HawDBEmbedded::open_with_options(HawDBEmbeddedOpenOptions { config, ..options })
+            HawDBEmbedded::open_with_options(HawDBEmbeddedOpenOptions {
+                runtime_governor_config: Some(runtime_governor_config(&config)),
+                config,
+                ..options
+            })
         };
         match inner {
             Ok(inner) => Ok(Self {
@@ -196,6 +203,19 @@ fn prepare_database_path(path: &Path, read_only: bool) -> PyResult<PathBuf> {
         Ok(_) => {}
     }
     Ok(path)
+}
+
+/// The handle's runtime governor, whose per-statement result budget is the
+/// database's read payload ceiling (`max_read_result_payload_bytes`, 64 MiB by
+/// default) instead of the profile's 16 MiB, as for an `EmbeddedStore`.
+/// Admitted statements reserve that budget at admission, so SQL keeps the
+/// ceiling it had before it was admitted.
+fn runtime_governor_config(config: &DatabaseConfig) -> RuntimeGovernorConfig {
+    let mut governor = RuntimeGovernorConfig::shared_host();
+    if let Some(bytes) = config.max_read_result_payload_bytes {
+        governor.result_budget_bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
+    }
+    governor
 }
 
 #[pymethods]
