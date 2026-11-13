@@ -1416,6 +1416,22 @@ Incremental search projection deltas can also run through
 uses the database-owned `LocalQosScheduler` to account for in-flight internal background
 projection work while keeping the direct delta API available for explicit
 foreground callers.
+
+Search change-log capture classifies every committed WAL batch before append,
+after direct append and during replay with the same rule
+(`projection_wal_requires_rebuild`). Additive schema commits record a complete,
+usually empty, change-log entry and keep incremental catch-up continuous:
+label, relationship-type, node/relationship table and property creation
+(including `DEFAULT`), index and constraint creation, and table/property state
+changes to `WRITE_ONLY`, `BACKFILL`, `VALIDATING` or `PUBLIC`. Descriptor state
+is catalog metadata: graph reads, the search rebuild source and graph-delta
+hydration never filter records or values by it; it only gates planner proofs,
+typed fast paths, constraint enforcement and which defaults new records receive
+at write time. A declared default reaches existing records only through schema
+maintenance backfill, whose fills are ordinary point property writes captured
+as record changes in the same commit as the state advance. Retiring transitions
+(`DELETE_ONLY`, `GC`), descriptor GC and initial-import source marks still raise
+the resume floor, so a cursor below them must rebuild.
 The metadata-only repair path follows the same boundary:
 `SearchIndex::repair_background_metadata_from_graph` uses stateless
 `LocalQosPolicy` admission, and
