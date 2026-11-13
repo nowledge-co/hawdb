@@ -6,6 +6,32 @@ authoritative; this is a map of test families, not an exhaustive list of every
 Rust test function. Update it when changing a family's scope, build profile,
 execution lane, fixture size, isolation or known failure mode.
 
+Checked candidate exhaustion ([#1713](https://github.com/nowledge-co/hawdb/issues/1713))
+is owned by `candidate_evidence::consumption::tests` in the existing Search unit
+feature matrix, including `//crates/search:hawdb_search_tests`. Text cases
+require `full-text-search`; vector/hybrid cases additionally require
+`vector-search`; typed refusal diagnostics run in every profile. Two-document
+resident and persisted out-of-core fixtures distinguish completed empty queries
+from bounded windows, offsets, restricted ranking, unavailable/unknown
+retrievers and ANN candidate generation followed by raw reranking.
+Six-document fixtures also cover lossy lexical term reduction through resident,
+retained-generation and persisted readers, unchanged `MostSelective` controls,
+exact-vector hybrid requests, and preservation of bounded results on refusal.
+The persisted cases run with and without runtime admission, retaining query
+memory metrics and typed working-memory refusal alongside the coverage checks.
+The public facade assertions extend `//:hawdb_fallible_search_contract_tests` and
+`//:hawdb_fallible_search_contract_minimal_tests` in their existing CI owners.
+Snapshot and exact-vector owners retain their existing assertions while
+explicitly choosing bounded coverage for top-k. Compile-fail documentation
+rejects direct hit-field access through the sealed output.
+The compile-fail examples also reject host assembly of a result with an
+unrelated request. They have manual ownership: replay with
+`cargo test --locked -p hawdb-search --doc SearchCandidateOutput` and
+`cargo test --locked -p hawdb --doc SearchProjection::search_candidates`.
+Replay the Search family with `--test_arg=candidate_evidence::consumption::`.
+No lane, profile, timeout or performance gate changes. See the
+[checked consumption contract](specs/CHECKED_CANDIDATE_EXHAUSTION.md).
+
 Mem query-shaped compatibility (`nowledge-co/mem#9338`) is owned by
 `api::tests::mem_query_contract` in `//:hawdb_unit_general_tests` (the existing
 required native general lane). The finite fixtures cover C1-C5 execution,

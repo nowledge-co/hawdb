@@ -243,8 +243,8 @@ impl<'a> EmbeddedReadSnapshot<'a> {
     pub fn search_candidates(
         &mut self,
         request: &SearchCandidateRequest,
-    ) -> Result<SearchResultSet> {
-        Ok(self.search_candidates_with_report(request)?.result)
+    ) -> Result<SearchCandidateOutput> {
+        self.search_candidates_with_report(request)
     }
 
     /// The largest number of eligible documents an exact vector-only
@@ -303,15 +303,17 @@ impl<'a> EmbeddedReadSnapshot<'a> {
             (Some(projection), None) => {
                 projection.try_search_candidates_with_report_context(request, execution)?
             }
-            (None, Some(projection)) => projection
-                .search_candidates_with_report_admitted(request, execution, self.permit)?
-                .into(),
+            (None, Some(projection)) => projection.search_candidates_with_report_admitted(
+                request,
+                execution,
+                self.permit,
+            )?,
             (None, None) => return Err(missing_search_projection_error()),
             (Some(_), Some(_)) => return Err(ambiguous_search_projection_error()),
         };
-        let rows = output.result.hits.len();
+        let rows = output.accept_bounded().hits.len();
         let payload_bytes = output
-            .result
+            .accept_bounded()
             .hits
             .iter()
             .map(crate::api::search_hit_payload_bytes)
@@ -1179,8 +1181,11 @@ impl EmbeddedStoreHandle {
     }
 }
 impl EmbeddedStoreHandle {
-    pub fn search_candidates(&self, request: &SearchCandidateRequest) -> Result<SearchResultSet> {
-        Ok(self.search_candidates_with_report(request)?.result)
+    pub fn search_candidates(
+        &self,
+        request: &SearchCandidateRequest,
+    ) -> Result<SearchCandidateOutput> {
+        self.search_candidates_with_report(request)
     }
 
     pub fn search_candidates_with_report(

@@ -432,11 +432,37 @@ impl SearchCandidateReport {
     }
 }
 
+/// Candidate evidence that requires an explicit coverage choice before hit access.
+///
+/// Use `require_exhaustive` for a complete-query claim, or explicitly accept
+/// bounded top-k through `accept_bounded` / `into_bounded`.
+///
+/// Raw access cannot silently discard coverage evidence:
+///
+/// ```compile_fail
+/// use hawdb_search::candidate_evidence::SearchCandidateOutput;
+/// fn unchecked(output: SearchCandidateOutput) {
+///     let _hits = output.result.hits;
+/// }
+/// ```
+///
+/// Callers cannot attach an unrelated request to a raw result:
+///
+/// ```compile_fail
+/// use hawdb_search::{CompressedVectorSearchMode, SearchResultSet};
+/// use hawdb_search::candidate_evidence::{SearchCandidateOutput, SearchCandidateRequest};
+/// fn repackage(request: &SearchCandidateRequest, result: SearchResultSet) {
+///     let _ = SearchCandidateOutput::from_search_result(
+///         request, CompressedVectorSearchMode::Disabled, result, None,
+///     );
+/// }
+/// ```
+#[must_use = "choose exhaustive or explicitly bounded candidate consumption"]
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchCandidateOutput {
-    pub result: SearchResultSet,
-    pub report: SearchCandidateReport,
-    pub out_of_core_metrics: Option<SearchOutOfCoreMetrics>,
+    pub(super) result: SearchResultSet,
+    pub(super) report: SearchCandidateReport,
+    pub(super) out_of_core_metrics: Option<SearchOutOfCoreMetrics>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

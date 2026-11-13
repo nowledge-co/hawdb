@@ -291,6 +291,8 @@ fn query_results(handle: &EmbeddedStoreHandle) -> Vec<(&'static str, Ranked)> {
         let hits = handle
             .search_candidates(&request)
             .unwrap_or_else(|error| panic!("{name}: {error}"))
+            .into_bounded()
+            .result
             .hits
             .into_iter()
             .map(|hit| (hit.id, hit.score.to_bits(), hit.text_score.to_bits()))

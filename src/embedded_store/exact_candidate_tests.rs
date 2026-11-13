@@ -122,7 +122,7 @@ fn brute_force_top_k(query: &[f32], limit: usize) -> Vec<(String, u64)> {
 
 fn hits(output: &SearchCandidateOutput) -> Vec<(String, u64)> {
     output
-        .result
+        .accept_bounded()
         .hits
         .iter()
         .map(|hit| (hit.id.clone(), hit.vector_score.to_bits()))
@@ -248,16 +248,16 @@ pub(super) fn snapshot_search(
 }
 
 fn vector_source(output: &SearchCandidateOutput) -> &str {
-    output.report.retriever_candidate_score_sources["vector"].as_str()
+    output.report().retriever_candidate_score_sources["vector"].as_str()
 }
 
 fn assert_exact_report(output: &SearchCandidateOutput, scalar_backend: &str) {
-    assert!(output.report.exact_vector_search_requested);
-    assert!(output.report.exact_vector_search);
+    assert!(output.report().exact_vector_search_requested);
+    assert!(output.report().exact_vector_search);
     assert_eq!(vector_source(output), "raw_vector");
-    assert_eq!(output.report.retriever_backends["vector"], scalar_backend);
-    assert_eq!(output.report.metadata_filter_count, 1);
-    let json = output.report.json();
+    assert_eq!(output.report().retriever_backends["vector"], scalar_backend);
+    assert_eq!(output.report().metadata_filter_count, 1);
+    let json = output.report().json();
     assert_eq!(json["exact_vector_search_requested"], true);
     assert_eq!(json["exact_vector_search"], true);
 }
@@ -285,17 +285,17 @@ fn snapshot_exact_vector_candidates_match_brute_force_bits_over_graph_projection
             let default_request = SearchCandidateRequest::vector(query.clone(), LIMIT)
                 .with_metadata_filters(memory_filter());
             let default = snapshot_search(&handle, &default_request).unwrap();
-            assert!(!default.report.exact_vector_search_requested);
+            assert!(!default.report().exact_vector_search_requested);
             assert_eq!(vector_source(&default), default_source, "{out_of_core}");
             if out_of_core {
                 // Out-of-core default execution uses approximate graph candidates.
-                assert!(!default.report.exact_vector_search);
+                assert!(!default.report().exact_vector_search);
             } else {
                 // Resident candidate reads with compression disabled already
                 // select the adaptive scalar scan, and the report says so.
-                assert!(default.report.exact_vector_search);
+                assert!(default.report().exact_vector_search);
                 assert_eq!(
-                    default.report.retriever_backend_selection_reasons["vector"],
+                    default.report().retriever_backend_selection_reasons["vector"],
                     "compression_disabled"
                 );
                 assert_eq!(hits(&default), expected);
@@ -305,7 +305,7 @@ fn snapshot_exact_vector_candidates_match_brute_force_bits_over_graph_projection
             let exact = snapshot_search(&handle, &exact_request).unwrap();
             assert_eq!(hits(&exact), expected, "out_of_core={out_of_core}");
             assert!(exact
-                .result
+                .accept_bounded()
                 .hits
                 .iter()
                 .all(|hit| hit.kind.as_deref() == Some("memory")));
@@ -335,12 +335,12 @@ fn snapshot_exact_hybrid_search_uses_the_exact_vector_leg() {
                 .with_metadata_filters(memory_filter());
             let default = snapshot_search(&handle, &request).unwrap();
             assert_eq!(vector_source(&default), default_source);
-            assert_eq!(default.report.exact_vector_search, !out_of_core);
+            assert_eq!(default.report().exact_vector_search, !out_of_core);
             let exact = snapshot_search(&handle, &request.with_exact_vector_search()).unwrap();
             assert_exact_report(&exact, scalar_backend);
-            assert!(!exact.result.hits.is_empty());
+            assert!(!exact.accept_bounded().hits.is_empty());
             let scores = memory_scores(&query);
-            for hit in &exact.result.hits {
+            for hit in &exact.accept_bounded().hits {
                 assert_eq!(hit.kind.as_deref(), Some("memory"));
                 let expected = scores.get(&hit.id).copied().unwrap_or(0.0);
                 assert_eq!(hit.vector_score.to_bits(), expected.to_bits(), "{}", hit.id);
@@ -352,7 +352,7 @@ fn snapshot_exact_hybrid_search_uses_the_exact_vector_leg() {
                 .map(|(index, (id, _))| (id, index + 1))
                 .collect::<BTreeMap<_, _>>();
             let mut ranked = 0;
-            for hit in &exact.result.hits {
+            for hit in &exact.accept_bounded().hits {
                 if let Some(rank) = hit.vector_rank {
                     assert_eq!(Some(&rank), order.get(&hit.id), "{}", hit.id);
                     ranked += 1;
@@ -410,7 +410,6 @@ fn projection_exact_entry_points_match_brute_force_and_refuse_small_budgets() {
             )
             .unwrap(),
     ] {
-        let output = SearchCandidateOutput::from(output);
         assert_eq!(hits(&output), expected);
         assert_exact_report(&output, "scalar_vector_segment_scan");
     }

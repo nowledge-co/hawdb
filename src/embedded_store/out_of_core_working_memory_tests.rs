@@ -43,8 +43,7 @@ fn store(name: &str, budget: usize) -> (Root, EmbeddedStoreHandle) {
 
 fn charged_bytes(output: &SearchCandidateOutput) -> u64 {
     output
-        .out_of_core_metrics
-        .as_ref()
+        .out_of_core_metrics()
         .expect("out-of-core metrics")
         .query_memory_peak_bytes
 }
@@ -55,7 +54,7 @@ fn snapshot_candidate_reads_charge_admitted_working_memory() {
     let mut hybrid_exact = 0;
     for (name, request) in requests() {
         let output = snapshot_search(&handle, &request).unwrap();
-        assert_eq!(output.result.hits.len(), LIMIT, "{name}");
+        assert_eq!(output.accept_bounded().hits.len(), LIMIT, "{name}");
         let charged = charged_bytes(&output);
         assert!(
             charged > 0 && charged <= LARGE_BUDGET as u64,
@@ -113,12 +112,12 @@ fn snapshot_hybrid_without_rank_window_is_refused_above_admitted_working_memory(
             // A rank window bounds both rankings and fits the same admission.
             let windowed =
                 snapshot_search(&handle, &request.with_rank_window(Some(LIMIT))).unwrap();
-            assert_eq!(windowed.result.hits.len(), LIMIT);
+            assert_eq!(windowed.accept_bounded().hits.len(), LIMIT);
             assert!(charged_bytes(&windowed) <= small as u64);
         } else if name != "hybrid" {
             // Text and vector-only reads are unaffected at this admission.
             let output = result.unwrap_or_else(|error| panic!("{name}: {error}"));
-            assert_eq!(output.result.hits.len(), LIMIT, "{name}");
+            assert_eq!(output.accept_bounded().hits.len(), LIMIT, "{name}");
             assert!(charged_bytes(&output) <= small as u64, "{name}");
         } else if let Ok(output) = result {
             // Default hybrid retains only the bounded graph window in its vector leg.
@@ -223,7 +222,11 @@ fn snapshot_exact_vector_capacity_is_served_and_refused_above() {
                 .with_exact_vector_search()
         };
         let served = snapshot_search(&handle, &request(Some("capacity"))).unwrap();
-        assert_eq!(served.result.hits.len(), LIMIT, "dimension {dimension}");
+        assert_eq!(
+            served.accept_bounded().hits.len(),
+            LIMIT,
+            "dimension {dimension}"
+        );
         assert!(charged_bytes(&served) <= BUDGET as u64);
         match snapshot_search(&handle, &request(None)) {
             Err(HawDBError::ResourceBudgetExceeded(error)) => {
@@ -320,9 +323,9 @@ fn snapshot_exact_vector_capacity_is_served_and_refused_above_for_resident_reads
         .unwrap();
     assert_eq!(snapshot_capacity, CAPACITY);
     let served = served.unwrap();
-    assert_eq!(served.result.hits.len(), LIMIT);
-    assert_eq!(served.result.candidate_set.cardinality, CAPACITY);
-    assert!(served.report.exact_vector_search);
+    assert_eq!(served.accept_bounded().hits.len(), LIMIT);
+    assert_eq!(served.accept_bounded().candidate_set.cardinality, CAPACITY);
+    assert!(served.report().exact_vector_search);
     assert_budget_refusal(
         &refused.unwrap_err(),
         ResourceBudgetKind::MemoryBytes,

@@ -1314,7 +1314,8 @@ fn embedded_handle_search_holds_governed_io_and_result_budget() {
 
     let output = handle
         .search_candidates_with_report(&SearchCandidateRequest::text("empty", 4))
-        .unwrap();
+        .unwrap()
+        .into_bounded();
 
     assert!(output.result.hits.is_empty());
     let snapshot = handle.runtime_governor_snapshot().unwrap();
@@ -4662,7 +4663,8 @@ fn assert_out_of_core_serving_backend(compressed: bool) {
 
     let candidates = handle
         .search_candidates_with_report(&SearchCandidateRequest::text("bounded serving", 1))
-        .unwrap();
+        .unwrap()
+        .into_bounded();
     assert_eq!(candidates.result.hits[0].id, "memory:mem-ooc");
     assert!(candidates.out_of_core_metrics.is_some());
 
@@ -4789,6 +4791,9 @@ fn search_projection_candidate_api_reports_metadata_pushdown() {
         ]));
 
     let output = store.search_candidates(&request).unwrap();
+    let mut accumulator = SearchCandidateShadowAccumulator::new();
+    accumulator.record_search_candidate_output(["memory:active"], &output);
+    let output = output.into_bounded();
 
     assert_eq!(output.result.total_hits, 1);
     assert_eq!(output.result.hits[0].id, "memory:active");
@@ -4809,8 +4814,6 @@ fn search_projection_candidate_api_reports_metadata_pushdown() {
         "lifecycle_state"
     );
 
-    let mut accumulator = SearchCandidateShadowAccumulator::new();
-    accumulator.record_search_candidate_output(["memory:active"], &output);
     let evidence = accumulator.json();
 
     assert_eq!(evidence["ready"], true);
@@ -5507,7 +5510,7 @@ fn embedded_store_reopens_search_projection_with_descriptor_pruning() {
             ("importance__gte".to_string(), "0.8".to_string()),
         ]));
 
-    let output = store.search_candidates(&request).unwrap();
+    let output = store.search_candidates(&request).unwrap().into_bounded();
 
     assert!(open_report.graph_opened);
     assert!(open_report.search_projection_opened);
@@ -5606,7 +5609,7 @@ fn search_projection_candidate_api_reports_vector_generation_inputs() {
             r#"["deleted","forgotten"]"#.to_string(),
         )]));
 
-    let output = store.search_candidates(&request).unwrap();
+    let output = store.search_candidates(&request).unwrap().into_bounded();
 
     assert_eq!(output.result.total_hits, 2);
     assert_eq!(output.result.offset, 1);
@@ -5795,7 +5798,7 @@ fn search_projection_candidate_api_preserves_source_chunk_identity() {
         BTreeMap::from([("kind__in".to_string(), r#"["source_chunk"]"#.to_string())]),
     );
 
-    let output = store.search_candidates(&request).unwrap();
+    let output = store.search_candidates(&request).unwrap().into_bounded();
 
     assert_eq!(output.result.total_hits, 1);
     let hit = &output.result.hits[0];
@@ -6178,7 +6181,7 @@ fn search_projection_candidate_api_reports_fail_soft_vector_fallback() {
     let store = EmbeddedStore::new(graph, Some(projection));
     let request = SearchCandidateRequest::hybrid("hybrid fallback", vec![1.0, 0.0, 0.0], 10);
 
-    let output = store.search_candidates(&request).unwrap();
+    let output = store.search_candidates(&request).unwrap().into_bounded();
 
     assert_eq!(output.result.total_hits, 1);
     assert_eq!(output.result.hits[0].id, "memory:mem-fallback");
@@ -6237,7 +6240,10 @@ fn search_projection_candidate_api_gates_compressed_vector_preference() {
     let request = SearchCandidateRequest::vector(vec![1.0, 0.0], 10)
         .with_compressed_vector_search_mode(CompressedVectorSearchMode::Preferred);
 
-    let output = projection.search_candidates_with_report(&request).unwrap();
+    let output = projection
+        .search_candidates_with_report(&request)
+        .unwrap()
+        .into_bounded();
 
     assert_eq!(
         output.report.compressed_vector_search_mode,
@@ -6308,7 +6314,7 @@ fn search_projection_candidate_api_reports_repair_markers_without_hits() {
     let store = EmbeddedStore::new(graph, Some(projection));
     let request = SearchCandidateRequest::text("not present", 10);
 
-    let output = store.search_candidates(&request).unwrap();
+    let output = store.search_candidates(&request).unwrap().into_bounded();
 
     assert_eq!(output.result.total_hits, 0);
     assert!(output.report.projection_full_reindex_needed);

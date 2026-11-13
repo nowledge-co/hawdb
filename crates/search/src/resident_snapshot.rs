@@ -346,6 +346,17 @@ impl SearchIndexReadSnapshot {
                 vector_execution_options,
             )
     }
+
+    /// Retrieve candidate evidence from this retained generation under admission.
+    pub fn try_search_candidates_with_report_context(
+        &self,
+        request: &crate::candidate_evidence::SearchCandidateRequest,
+        execution: VectorSearchExecutionOptions<'_>,
+    ) -> Result<crate::candidate_evidence::SearchCandidateOutput> {
+        self.generation
+            .index
+            .try_search_candidates_with_report_context(request, execution)
+    }
 }
 
 #[cfg(test)]

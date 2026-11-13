@@ -17,10 +17,9 @@
 use crate::search::{
     AdaptiveVectorSearchOptions, CompressedVectorSearchMode, SearchFallbackReasonCode,
     SearchLexicalProductionQualificationReport, SearchOutOfCoreConfig,
-    SearchOutOfCoreExecutionContext, SearchOutOfCoreHydrationOutput, SearchOutOfCoreMetrics,
-    SearchOutOfCoreReader, SearchQueryOptions, SearchRangeReadConfig,
-    VectorRecallProductionQualificationReport, VectorRecallValidationOptions,
-    VectorRecallValidationReport, VectorSearchExecutionOptions,
+    SearchOutOfCoreHydrationOutput, SearchOutOfCoreMetrics, SearchOutOfCoreReader,
+    SearchQueryOptions, SearchRangeReadConfig, VectorRecallProductionQualificationReport,
+    VectorRecallValidationOptions, VectorRecallValidationReport, VectorSearchExecutionOptions,
     NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS,
 };
 use crate::search_projection_evidence::{
@@ -42,8 +41,8 @@ use crate::{
     SearchProjectionChangefeedReadiness, SearchProjectionCleanupOptions,
     SearchProjectionCleanupReport, SearchProjectionDelta, SearchProjectionDeltaReport,
     SearchProjectionFreshness, SearchProjectionGraphDeltaRequest, SearchProjectionProbeOptions,
-    SearchProjectionRelationalDelta, SearchResultSet, StorageResourceProfileLimits,
-    StorageResourceProfileReport, TelemetrySink, Value, STORAGE_RESOURCE_PROFILE_PROTOCOL,
+    SearchProjectionRelationalDelta, StorageResourceProfileLimits, StorageResourceProfileReport,
+    TelemetrySink, Value, STORAGE_RESOURCE_PROFILE_PROTOCOL,
 };
 use crate::{
     graph_route_readiness::NMEM_GRAPH_ROUTE_READINESS_PROTOCOL,
@@ -173,15 +172,15 @@ mod readiness_report_facade_tests {
 }
 
 use hawdb_search::candidate_evidence::{
-    advised_compressed_vector_search_mode, effective_search_candidate_mode,
-    retrieval_projection_advisor_blocker_codes, retrieval_projection_advisor_json,
-    search_candidate_report,
+    advised_compressed_vector_search_mode, retrieval_projection_advisor_blocker_codes,
+    retrieval_projection_advisor_json,
 };
 pub use hawdb_search::candidate_evidence::{
-    search_candidate_shadow_evidence_json, RetrievalProjectionAdvisor, SearchCandidateFieldSummary,
-    SearchCandidateFilterPushdownEvidence, SearchCandidateOutput, SearchCandidateReadinessOptions,
-    SearchCandidateReadinessReport, SearchCandidateReport, SearchCandidateRequest,
-    SearchCandidateShadowAccumulator, SearchCandidateShadowEvidence,
+    search_candidate_shadow_evidence_json, BoundedSearchCandidateOutput,
+    ExhaustiveSearchCandidates, RetrievalProjectionAdvisor, SearchCandidateExhaustionError,
+    SearchCandidateFieldSummary, SearchCandidateFilterPushdownEvidence, SearchCandidateOutput,
+    SearchCandidateReadinessOptions, SearchCandidateReadinessReport, SearchCandidateReport,
+    SearchCandidateRequest, SearchCandidateShadowAccumulator, SearchCandidateShadowEvidence,
     SEARCH_CANDIDATE_EVIDENCE_ROUTE, SEARCH_CANDIDATE_EVIDENCE_SOURCE,
     SEARCH_CANDIDATE_PRIMARY_ENGINE, SEARCH_CANDIDATE_READINESS_PROTOCOL,
     SEARCH_CANDIDATE_REPORT_PROTOCOL, SEARCH_CANDIDATE_SHADOW_ENGINE,
@@ -1338,27 +1337,13 @@ pub struct OutOfCoreSearchProjection {
     maintenance: Option<(PathBuf, IncrementalSearchMaintenanceOptions)>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct OutOfCoreSearchCandidateOutput {
-    pub result: SearchResultSet,
-    pub report: SearchCandidateReport,
-    pub metrics: SearchOutOfCoreMetrics,
-}
+/// Out-of-core candidates share the same explicit coverage boundary as resident candidates.
+pub type OutOfCoreSearchCandidateOutput = SearchCandidateOutput;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchHydrationOutput {
     pub documents: Vec<SearchDocument>,
     pub out_of_core_metrics: Option<SearchOutOfCoreMetrics>,
-}
-
-impl From<OutOfCoreSearchCandidateOutput> for SearchCandidateOutput {
-    fn from(output: OutOfCoreSearchCandidateOutput) -> Self {
-        Self {
-            result: output.result,
-            report: output.report,
-            out_of_core_metrics: Some(output.metrics),
-        }
-    }
 }
 
 impl OutOfCoreSearchProjection {
@@ -1444,8 +1429,11 @@ impl OutOfCoreSearchProjection {
         self.reader.hydrate_documents(document_ids)
     }
 
-    pub fn search_candidates(&self, request: &SearchCandidateRequest) -> Result<SearchResultSet> {
-        Ok(self.search_candidates_with_report(request)?.result)
+    pub fn search_candidates(
+        &self,
+        request: &SearchCandidateRequest,
+    ) -> Result<SearchCandidateOutput> {
+        self.search_candidates_with_report(request)
     }
 
     pub fn search_candidates_with_report(
@@ -1460,7 +1448,8 @@ impl OutOfCoreSearchProjection {
         request: &SearchCandidateRequest,
         vector_execution_options: VectorSearchExecutionOptions<'_>,
     ) -> Result<OutOfCoreSearchCandidateOutput> {
-        self.search_candidates_with_report_execution(request, vector_execution_options, None)
+        self.reader
+            .search_candidates_with_report_context(request, vector_execution_options)
     }
 
     /// See [`SearchOutOfCoreReader::exact_vector_search_capacity`].
@@ -1486,65 +1475,11 @@ impl OutOfCoreSearchProjection {
         vector_execution_options: VectorSearchExecutionOptions<'_>,
         permit: &RuntimePermit,
     ) -> Result<OutOfCoreSearchCandidateOutput> {
-        self.search_candidates_with_report_execution(
+        self.reader.search_candidates_with_report_admitted(
             request,
             vector_execution_options,
-            Some(permit),
+            permit,
         )
-    }
-
-    fn search_candidates_with_report_execution(
-        &self,
-        request: &SearchCandidateRequest,
-        vector_execution_options: VectorSearchExecutionOptions<'_>,
-        permit: Option<&RuntimePermit>,
-    ) -> Result<OutOfCoreSearchCandidateOutput> {
-        let effective_compressed_vector_search_mode = effective_search_candidate_mode(request);
-        let vector_execution_options =
-            request.vector_execution_options(vector_execution_options)?;
-        let options = SearchQueryOptions {
-            limit: request.limit,
-            offset: request.offset,
-            rank_window: request.rank_window,
-            fusion_weights: request.fusion_weights,
-            metadata_filters: request.metadata_filters.clone(),
-            policy_epoch: None,
-        };
-        let output = match permit {
-            Some(permit) => self.reader.search_with_options_admitted(
-                &request.query_text,
-                request.query_embedding.as_deref(),
-                request.mode,
-                options,
-                SearchOutOfCoreExecutionContext {
-                    access_control: None,
-                    compressed_vector_search_mode: effective_compressed_vector_search_mode,
-                    vector_execution_options,
-                },
-                permit,
-            )?,
-            None => self
-                .reader
-                .search_with_options_compressed_vector_projection_execution_options(
-                    &request.query_text,
-                    request.query_embedding.as_deref(),
-                    request.mode,
-                    options,
-                    effective_compressed_vector_search_mode,
-                    vector_execution_options,
-                )?,
-        };
-        let report = search_candidate_report(
-            request,
-            effective_compressed_vector_search_mode,
-            &output.result,
-        );
-        report.ensure_requested_exact_vector_search()?;
-        Ok(OutOfCoreSearchCandidateOutput {
-            result: output.result,
-            report,
-            metrics: output.metrics,
-        })
     }
 }
 
@@ -1628,46 +1563,30 @@ impl SearchProjection {
         self.index.projection_freshness()
     }
 
-    pub fn search_candidates(&self, request: &SearchCandidateRequest) -> Result<SearchResultSet> {
+    /// Retrieve candidates while retaining the explicit coverage choice.
+    ///
+    /// The former implicit raw-result return is deliberately rejected:
+    ///
+    /// ```compile_fail
+    /// use hawdb::{Result, SearchCandidateRequest, SearchProjection, SearchResultSet};
+    /// fn unchecked(projection: &SearchProjection, request: &SearchCandidateRequest)
+    ///     -> Result<SearchResultSet>
+    /// {
+    ///     projection.search_candidates(request)
+    /// }
+    /// ```
+    pub fn search_candidates(
+        &self,
+        request: &SearchCandidateRequest,
+    ) -> Result<SearchCandidateOutput> {
         self.search_candidates_with_report(request)
-            .map(|output| output.result)
     }
 
     pub fn search_candidates_with_report(
         &self,
         request: &SearchCandidateRequest,
     ) -> Result<SearchCandidateOutput> {
-        if request.exact_vector_search {
-            // Exact search needs explicit execution options; the default
-            // working budget matches the in-memory path below.
-            return self.try_search_candidates_with_report(request);
-        }
-        let effective_compressed_vector_search_mode = effective_search_candidate_mode(request);
-        let result = self.index.search_with_options_adaptive_vector_projection(
-            &request.query_text,
-            request.query_embedding.as_deref(),
-            request.mode,
-            SearchQueryOptions {
-                limit: request.limit,
-                offset: request.offset,
-                rank_window: request.rank_window,
-                fusion_weights: request.fusion_weights,
-                metadata_filters: request.metadata_filters.clone(),
-                policy_epoch: None,
-            },
-            AdaptiveVectorSearchOptions {
-                compression_mode: effective_compressed_vector_search_mode,
-                backend_policy: request.adaptive_vector_backend_policy,
-                recall_validation_probe: request.recall_validation_probe,
-            },
-        )?;
-        let report =
-            search_candidate_report(request, effective_compressed_vector_search_mode, &result);
-        Ok(SearchCandidateOutput {
-            result,
-            report,
-            out_of_core_metrics: None,
-        })
+        self.index.search_candidates_with_report(request)
     }
 
     pub fn try_search_candidates_with_report(
@@ -1685,38 +1604,8 @@ impl SearchProjection {
         request: &SearchCandidateRequest,
         vector_execution_options: VectorSearchExecutionOptions<'_>,
     ) -> Result<SearchCandidateOutput> {
-        let effective_compressed_vector_search_mode = effective_search_candidate_mode(request);
-        let vector_execution_options =
-            request.vector_execution_options(vector_execution_options)?;
-        let result = self
-            .index
-            .try_search_with_options_adaptive_vector_projection_context(
-                &request.query_text,
-                request.query_embedding.as_deref(),
-                request.mode,
-                SearchQueryOptions {
-                    limit: request.limit,
-                    offset: request.offset,
-                    rank_window: request.rank_window,
-                    fusion_weights: request.fusion_weights,
-                    metadata_filters: request.metadata_filters.clone(),
-                    policy_epoch: None,
-                },
-                AdaptiveVectorSearchOptions {
-                    compression_mode: effective_compressed_vector_search_mode,
-                    backend_policy: request.adaptive_vector_backend_policy,
-                    recall_validation_probe: request.recall_validation_probe,
-                },
-                vector_execution_options,
-            )?;
-        let report =
-            search_candidate_report(request, effective_compressed_vector_search_mode, &result);
-        report.ensure_requested_exact_vector_search()?;
-        Ok(SearchCandidateOutput {
-            result,
-            report,
-            out_of_core_metrics: None,
-        })
+        self.index
+            .try_search_candidates_with_report_context(request, vector_execution_options)
     }
 
     pub fn search_candidate_readiness(
@@ -1946,8 +1835,7 @@ impl crate::executor::ExternalReadOperator for SearchProjectionExternalReadOpera
                 vector_execution_options,
             )?,
             (None, Some(projection)) => projection
-                .search_candidates_with_report_context(&search_request, vector_execution_options)?
-                .into(),
+                .search_candidates_with_report_context(&search_request, vector_execution_options)?,
             (None, None) => return Err(missing_search_projection_error()),
             (Some(_), Some(_)) => {
                 return Err(HawDBError::Storage(
@@ -1955,6 +1843,8 @@ impl crate::executor::ExternalReadOperator for SearchProjectionExternalReadOpera
                 ));
             }
         };
+        // This executor implements a bounded vector seed, not source exhaustion.
+        let output = output.into_bounded();
         let retriever = output
             .result
             .retrievers
@@ -2919,9 +2809,7 @@ impl EmbeddedStore {
             self.out_of_core_search_projection.as_ref(),
         ) {
             (Some(projection), None) => projection.try_search_candidates_with_report(request),
-            (None, Some(projection)) => {
-                Ok(projection.search_candidates_with_report(request)?.into())
-            }
+            (None, Some(projection)) => projection.search_candidates_with_report(request),
             (None, None) => Err(missing_search_projection_error()),
             (Some(_), Some(_)) => Err(ambiguous_search_projection_error()),
         }
@@ -2971,13 +2859,14 @@ impl EmbeddedStore {
             ),
             (None, Some(search_projection)) => {
                 let search = search_projection
-                    .search_candidates_with_report(&self.search_request_for_retrieval(request))?;
+                    .search_candidates_with_report(&self.search_request_for_retrieval(request))?
+                    .into_bounded();
                 let output = self.graph.database().try_retrieve_knowledge_from_search(
                     search.result,
                     search_projection.freshness(),
                     request,
                 )?;
-                (output, Some(search.metrics))
+                (output, search.out_of_core_metrics)
             }
             (None, None) => return Err(missing_search_projection_error()),
             (Some(_), Some(_)) => return Err(ambiguous_search_projection_error()),

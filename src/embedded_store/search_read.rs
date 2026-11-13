@@ -159,13 +159,11 @@ impl AdmittedSearchRead<'_> {
         match (&self.resident, &self.out_of_core) {
             (Some(lease), None) => ResidentProjectionRef::Snapshot(lease.snapshot())
                 .try_search_candidates_with_report_context(request, self.execution()),
-            (None, Some(projection)) => Ok(projection
-                .search_candidates_with_report_admitted(
-                    request,
-                    self.out_of_core_execution(),
-                    self.permit,
-                )?
-                .into()),
+            (None, Some(projection)) => projection.search_candidates_with_report_admitted(
+                request,
+                self.out_of_core_execution(),
+                self.permit,
+            ),
             (None, None) => Err(missing_search_projection_error()),
             (Some(_), Some(_)) => Err(ambiguous_search_projection_error()),
         }
@@ -238,12 +236,18 @@ impl AdmittedSearchRead<'_> {
                     (search, snapshot.projection_freshness().clone(), None)
                 }
                 (None, Some(projection)) => {
-                    let output = projection.search_candidates_with_report_admitted(
-                        &retrieval_request(config, &self.advisor, request),
-                        self.out_of_core_execution(),
-                        self.permit,
-                    )?;
-                    (output.result, projection.freshness(), Some(output.metrics))
+                    let output = projection
+                        .search_candidates_with_report_admitted(
+                            &retrieval_request(config, &self.advisor, request),
+                            self.out_of_core_execution(),
+                            self.permit,
+                        )?
+                        .into_bounded();
+                    (
+                        output.result,
+                        projection.freshness(),
+                        output.out_of_core_metrics,
+                    )
                 }
                 (None, None) => return Err(missing_search_projection_error()),
                 (Some(_), Some(_)) => return Err(ambiguous_search_projection_error()),
