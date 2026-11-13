@@ -86,6 +86,7 @@ pub use analytics::{
     PageRankOptions, PageRankProcedureOptions, PageRankScore, ProjectedGraph, ProjectionLayout,
     ProjectionMemoryAdmissionError, ProjectionMemoryBudget, ProjectionMemoryEstimate,
 };
+pub use api::SearchProjectionEpochAdvanceVerification;
 pub use api::{
     hawdb_lightning_initial_import_advance_checkpoint,
     hawdb_lightning_initial_import_advance_durable_state_streaming,

@@ -39,6 +39,10 @@ pub struct SearchProjectionEpochAdvanceReport {
     /// Search change-log entries in the advanced range that the caller
     /// inspected. Zero when the advance was called below the embedded store.
     pub checked_change_log_entries: usize,
+    /// Relational primary-key changes in the range allowed only because their
+    /// tables were declared non-projection tables at open. Zero below the
+    /// embedded store.
+    pub allowed_relational_change_count: usize,
 }
 
 pub(crate) fn epoch_advance_refused(
@@ -88,6 +92,7 @@ fn no_op_report(
             .unwrap_or(epoch),
         metadata_bytes_written: 0,
         checked_change_log_entries: 0,
+        allowed_relational_change_count: 0,
     }
 }
 
@@ -128,6 +133,7 @@ fn publish(
         content_source_graph_commit_epoch: content,
         metadata_bytes_written: bytes.len() as u64,
         checked_change_log_entries: 0,
+        allowed_relational_change_count: 0,
     })
 }
 

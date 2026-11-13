@@ -288,13 +288,15 @@ fn resident_advance_is_metadata_only_verified_and_durable() {
             .contains(&format!("graph commit {written}")),
         "{error}"
     );
-    let error = handle
-        .advance_search_projection_source_epoch(written + 10)
-        .unwrap_err();
-    assert_eq!(
-        refusal(&error),
-        SearchProjectionEpochAdvanceRefusal::RangeUnavailable
-    );
+    for target in [written - 1, written + 10] {
+        let error = handle
+            .advance_search_projection_source_epoch(target)
+            .unwrap_err();
+        assert_eq!(
+            refusal(&error),
+            SearchProjectionEpochAdvanceRefusal::RangeUnavailable
+        );
+    }
     assert_eq!(files(&search), unchanged);
     assert_eq!(projection_epochs(&handle), (Some(target), Some(target)));
     drop(handle);
@@ -493,6 +495,308 @@ fn advance_across_a_change_log_gap_is_refused() {
     }
     assert_eq!(files(&search), unchanged);
     assert_eq!(projection_epochs(&handle), (Some(source), Some(source)));
+    drop(handle);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// Labels are fixed at node creation: no Cypher statement relabels a node out
+/// of a projection kind, so a range cannot drop a projected document without
+/// recording its deletion. The relabel attempts below must fail without
+/// committing anything, after which the range still advances.
+#[test]
+fn relabel_out_of_a_projection_kind_cannot_commit() {
+    let (root, handle, _) = super::incremental_maintenance_fixture(
+        "epoch_advance_relabel",
+        IncrementalSearchMaintenanceOptions::default(),
+    );
+    create_memories(&handle, &["m1"]);
+    catch_up(&handle).unwrap();
+    let source = graph_epoch(&handle);
+    for statement in [
+        "MATCH (n:Memory {id: 'm1'}) REMOVE n:Memory SET n:Other",
+        "MATCH (n:Memory {id: 'm1'}) REMOVE n:Memory",
+        "MATCH (n:Memory {id: 'm1'}) SET n:Other",
+        "MATCH (n:Memory {id: 'm1'}) SET n:Other:Memory",
+    ] {
+        assert!(
+            handle.query_with_report(statement).is_err(),
+            "{statement} unexpectedly succeeded"
+        );
+        assert_eq!(graph_epoch(&handle), source, "{statement} committed");
+    }
+    let labels = handle
+        .query_with_report("MATCH (n:Memory {id: 'm1'}) RETURN count(n) AS c")
+        .unwrap();
+    assert_eq!(labels.output.rows[0].get("c"), Some(&Value::Int(1)));
+    import_state_commits(&handle, 1);
+    let report = handle
+        .advance_search_projection_source_epoch(graph_epoch(&handle))
+        .unwrap();
+    assert!(report.advanced);
+    drop(handle);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+fn sql(handle: &EmbeddedStoreHandle, statement: &str) {
+    handle
+        .with_transaction(|transaction| transaction.query_sql(statement).map(|_| ()))
+        .unwrap();
+}
+
+/// Mem's bookkeeping upsert, as one relational transaction.
+fn upsert_migration_state(handle: &EmbeddedStoreHandle, value: &str) {
+    sql(
+        handle,
+        &format!(
+            "INSERT INTO content_migration_state (key, value, updated_at) \
+             VALUES ('cursor', '{value}', 1) \
+             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at"
+        ),
+    );
+}
+
+fn relational_fixture(
+    name: &str,
+    declared: &[&str],
+) -> (std::path::PathBuf, EmbeddedStoreHandle, std::path::PathBuf) {
+    let (root, handle, _) = super::incremental_maintenance_fixture(
+        &format!("{name}_bootstrap"),
+        IncrementalSearchMaintenanceOptions::default(),
+    );
+    create_corpus(&handle);
+    create_memories(&handle, &["m1"]);
+    let search = root.join("projection");
+    handle
+        .rebuild_out_of_core_search_projection(
+            &search,
+            SearchProjectionRebuildOptions::default(),
+            &mut GraphOnlySearchProjectionRebuild,
+            RuntimeTaskContext::default(),
+        )
+        .unwrap();
+    drop(handle);
+    let options = EmbeddedStoreOpenOptions::with_search_projection(
+        root.join("graph"),
+        search.clone(),
+        GraphMode::WritableCutover,
+    )
+    .with_incremental_search_maintenance(IncrementalSearchMaintenanceOptions::default())
+    .with_non_projection_relational_tables(declared.iter().copied());
+    let (handle, _) = EmbeddedStoreHandle::open_with_options(options).unwrap();
+    sql(
+        &handle,
+        "CREATE TABLE content_migration_state (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at BIGINT NOT NULL)",
+    );
+    sql(
+        &handle,
+        "CREATE TABLE memory_sources (id TEXT PRIMARY KEY, body TEXT NOT NULL)",
+    );
+    // The schema statements are outside the ranges below.
+    catch_up(&handle).unwrap();
+    (root, handle, search)
+}
+
+/// Mem keeps import state in a relational table. A declared non-projection
+/// table lets the advance through and is counted; any other table, and the
+/// default (nothing declared), still refuse.
+#[test]
+fn declared_non_projection_relational_tables_are_allowed_and_counted() {
+    let (root, handle, search) =
+        relational_fixture("epoch_advance_relational", &["content_migration_state"]);
+    let source = projection_epochs(&handle).1.unwrap();
+    upsert_migration_state(&handle, "page-1");
+    import_state_commits(&handle, 1);
+    upsert_migration_state(&handle, "page-2");
+    let target = graph_epoch(&handle);
+    let before = files(&search);
+    let report = handle
+        .advance_search_projection_source_epoch(target)
+        .unwrap();
+    assert_metadata_only(&before, &files(&search), &report);
+    assert_eq!(report.source_graph_commit_epoch_before, source);
+    assert_eq!(report.allowed_relational_change_count, 2);
+    assert_eq!(report.checked_change_log_entries, 4);
+
+    // An undeclared table is a projection change for all HawDB knows.
+    upsert_migration_state(&handle, "page-3");
+    sql(
+        &handle,
+        "INSERT INTO memory_sources (id, body) VALUES ('s1', 'host mapped')",
+    );
+    let unchanged = files(&search);
+    let error = handle
+        .advance_search_projection_source_epoch(graph_epoch(&handle))
+        .unwrap_err();
+    assert_eq!(
+        refusal(&error),
+        SearchProjectionEpochAdvanceRefusal::ProjectionChanged
+    );
+    assert!(error.to_string().contains("memory_sources"), "{error}");
+    assert_eq!(files(&search), unchanged);
+    drop(handle);
+    std::fs::remove_dir_all(root).unwrap();
+
+    // Default-deny: without a declaration the bookkeeping table refuses.
+    let (root, handle, _) = relational_fixture("epoch_advance_relational_default", &[]);
+    upsert_migration_state(&handle, "page-1");
+    let error = handle
+        .advance_search_projection_source_epoch(graph_epoch(&handle))
+        .unwrap_err();
+    assert_eq!(
+        refusal(&error),
+        SearchProjectionEpochAdvanceRefusal::ProjectionChanged
+    );
+    assert!(
+        error.to_string().contains("content_migration_state"),
+        "{error}"
+    );
+    drop(handle);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn invalid_non_projection_relational_table_declarations_refuse_open() {
+    let root = unique_embedded_store_test_dir("epoch_advance_declaration");
+    for tables in [
+        vec![""],
+        vec!["content_migration_state", "content_migration_state"],
+        vec!["hawdb_schema_migrations"],
+    ] {
+        let options = EmbeddedStoreOpenOptions::with_search_projection(
+            root.join("graph"),
+            root.join("search"),
+            GraphMode::WritableCutover,
+        )
+        .with_non_projection_relational_tables(tables.clone());
+        assert!(
+            matches!(
+                EmbeddedStoreHandle::open_with_options(options),
+                Err(HawDBError::Semantic(_))
+            ),
+            "{tables:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// The node-state check reads the current graph, so it only proves a range
+/// that ends at the current epoch. A projected node changed inside (S, T] and
+/// deleted after T would otherwise be skipped as absent.
+#[test]
+fn advance_to_a_past_epoch_is_refused() {
+    let (root, handle, _) = relational_fixture("epoch_advance_past", &[]);
+    handle
+        .query_with_report("MATCH (m:Memory {id: 'm1'}) SET m.title = 'edited'")
+        .unwrap();
+    let edited = graph_epoch(&handle);
+    handle
+        .query_with_report("MATCH (m:Memory {id: 'm1'}) DETACH DELETE m")
+        .unwrap();
+    let error = handle
+        .advance_search_projection_source_epoch(edited)
+        .unwrap_err();
+    assert_eq!(
+        refusal(&error),
+        SearchProjectionEpochAdvanceRefusal::RangeUnavailable
+    );
+    // The current epoch sees the recorded deletion.
+    let error = handle
+        .advance_search_projection_source_epoch(graph_epoch(&handle))
+        .unwrap_err();
+    assert_eq!(
+        refusal(&error),
+        SearchProjectionEpochAdvanceRefusal::ProjectionChanged
+    );
+    drop(handle);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// Graph writers racing the advance: every commit needs the store write lock
+/// the advance holds, so each advance either proves the exact epoch it was
+/// asked for or refuses with a typed reason, never a storage error, and the
+/// projection still agrees with a rebuild afterwards.
+#[test]
+fn concurrent_writers_never_slip_past_an_advance() {
+    let (root, handle, search) = relational_fixture("epoch_advance_race", &[]);
+    let handle = std::sync::Arc::new(handle);
+    let writer = {
+        let handle = std::sync::Arc::clone(&handle);
+        std::thread::spawn(move || {
+            // The writer's statement locks and the advance's exclusive
+            // database lease can meet in the deadlock detector; a retry
+            // refusal commits nothing and is retried, as hosts do.
+            let write = |statement: String| loop {
+                match handle.query_with_report(&statement) {
+                    Ok(_) => break,
+                    Err(HawDBError::TransactionRetryRequired(_)) => continue,
+                    Err(HawDBError::Execution(message))
+                        if message.contains("runtime admission") =>
+                    {
+                        continue
+                    }
+                    Err(error) => panic!("{statement}: {error}"),
+                }
+            };
+            for number in 0..40 {
+                if number % 4 == 0 {
+                    write(format!(
+                        "CREATE (:Memory {{id: 'race{number}', title: 'race', content: 'race body', space_id: 'default'}})"
+                    ));
+                } else {
+                    write(format!(
+                        "MERGE (s:ImportState {{id: 'cursor'}}) SET s.page = {number}"
+                    ));
+                }
+            }
+        })
+    };
+    // Runtime admission may turn either side away while the other holds
+    // its I/O slot; that refusal does no work and is simply retried.
+    let admission = |error: &HawDBError| matches!(error, HawDBError::Execution(message) if message.contains("runtime admission"));
+    let mut advanced = 0usize;
+    let mut refused = 0usize;
+    while !writer.is_finished() {
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        match catch_up(&handle) {
+            Ok(_) => {}
+            Err(error) if admission(&error) => continue,
+            Err(error) => panic!("catch-up: {error}"),
+        }
+        let target = graph_epoch(&handle);
+        match handle.advance_search_projection_source_epoch(target) {
+            Err(error) if admission(&error) => {}
+            Ok(report) => {
+                assert_eq!(report.source_graph_commit_epoch_after, target);
+                assert_eq!(
+                    projection_epochs(&handle).1.map(|e| e >= target),
+                    Some(true)
+                );
+                advanced += 1;
+            }
+            Err(error) => {
+                assert!(
+                    matches!(
+                        refusal(&error),
+                        SearchProjectionEpochAdvanceRefusal::RangeUnavailable
+                            | SearchProjectionEpochAdvanceRefusal::ProjectionChanged
+                    ),
+                    "{error}"
+                );
+                refused += 1;
+            }
+        }
+    }
+    writer.join().unwrap();
+    assert!(advanced + refused > 0);
+    catch_up(&handle).unwrap();
+    let report = handle
+        .advance_search_projection_source_epoch(graph_epoch(&handle))
+        .unwrap();
+    assert_eq!(
+        Some(report.source_graph_commit_epoch_after),
+        projection_epochs(&handle).1
+    );
+    assert_agrees_with_rebuild(&handle, &search, &root.join("rebuilt"));
     drop(handle);
     std::fs::remove_dir_all(root).unwrap();
 }

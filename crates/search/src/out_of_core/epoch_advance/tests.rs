@@ -196,6 +196,7 @@ fn resident_advance_publishes_only_the_selector_and_reopens_at_the_target() {
             content_source_graph_commit_epoch: 5,
             metadata_bytes_written: selector_bytes,
             checked_change_log_entries: 0,
+            allowed_relational_change_count: 0,
         }
     );
     assert!(selector_bytes < 16 * 1024, "{selector_bytes}");

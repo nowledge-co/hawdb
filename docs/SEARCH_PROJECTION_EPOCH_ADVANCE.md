@@ -67,29 +67,87 @@ advanced generation like any other.
 
 Advancing from `S` to `T` asserts that no graph commit in `(S, T]` changed
 anything that maps to a search projection document. HawDB does not trust the
-caller. Under the store's write lock it checks the database's own search change
-log (`search_projection_capture`, the same capture incremental catch-up
-replays) and advances only if:
+caller. It checks the database's own search change log
+(`search_projection_capture`, the same capture incremental catch-up replays)
+and advances only if:
 
-1. `T` is not beyond the graph's commit epoch.
+1. `T` is the graph's current commit epoch. The node check reads current node
+   state, so it proves only a range that ends now: a projected node changed
+   inside `(S, T]` and deleted after `T` would otherwise look absent. Hosts
+   align with the current epoch, which is Mem's use.
 2. The change log covers the whole range. Its resume floor must not be above
    `S`. A commit whose capture could not be recorded raises that floor, and so
    do trimming and the reopen boundary of the retained log.
 3. Every retained capture in the range is empty for the projection:
    - it deletes no search document;
-   - it changes no relational primary key and requires no relational rebuild
-     (host-mapped rows are never assumed unaffected);
-   - every captured node that still exists has no label that maps to a search
+   - it has no relational change that cannot be attributed to tables
+     (snapshot replacement, multiple relational transactions, missing
+     capture);
+   - every relational primary-key change is to a table the host declared
+     with `EmbeddedStoreOpenOptions::with_non_projection_relational_tables`.
+     These are counted in `allowed_relational_change_count`;
+   - every captured node that exists at `T` has no label that maps to a search
      projection kind (`Memory`, `Message`, `Entity`, `Source`, `SourceChunk`,
      `Community`).
 
 Commits that create or update nodes of other labels pass, and so do
 additive schema statements, whose captures are empty since
-`nowledge-co/hawdb#1749`. Labels are fixed at node creation. A captured node that
-no longer exists is skipped, exactly as catch-up hydration skips it. If that
-node was projected, its deletion recorded the document deletion and the range
-is refused through that. If it was created and deleted inside the range, it
+`nowledge-co/hawdb#1749`.
+
+Labels are fixed at node creation. Cypher has no `REMOVE` clause or label
+`SET` item, and no WAL operation changes an existing node's labels, so a node
+cannot leave a projection kind without being deleted.
+
+A captured node that does not exist at `T` was deleted inside the range, and
+is skipped exactly as catch-up hydration skips it. If that node was
+projected, its deletion recorded the document deletion and the range is
+refused through that. If it was created and deleted inside the range, it
 never reached the projection.
+
+### No commit lands during the check
+
+The embedded store calls the check while holding its write lock. That is the
+`&mut EmbeddedStore` behind `EmbeddedStoreHandle::write_store`, which takes the
+concurrent owner's exclusive database lease and the publication owner's state
+write lock.
+
+The check itself (`Database::verify_search_projection_epoch_advance`) holds
+the branch runtime's read guard for its whole duration. That guard comes from
+`BranchRuntimeCell::get`, an `RwLock` read on `SharedBranchRuntime`, and every
+graph commit takes that lock for writing (`get_mut`). The commit epoch and node
+state it reads are therefore exactly those at `T`. The check re-reads the epoch
+at the end and refuses with `RangeUnavailable` if it moved.
+
+A writer racing the advance either commits first, in which case `T` is no
+longer current and the advance is refused, or commits after the selector
+rename. In either case the next catch-up or advance covers it.
+
+### Relational tables
+
+The change log records relational primary-key changes from every relational
+WAL batch, except HawDB's own `hawdb_schema_migrations`. Its only consumer is
+the host's catch-up hydrator, which must account for every captured key. HawDB
+keeps no record of which relational tables the host maps to projection rows
+for the embedded (unregistered) projection.
+
+The only table scope HawDB knows is a registered Consumer definition's
+`ProjectionSourceScope::Domains`. That scope is supplied per call and is not
+stored, and it does not apply to this projection.
+
+HawDB therefore cannot derive the non-projection set itself, and it refuses
+every relational change by default. A host declares its bookkeeping tables
+once, at open:
+
+```rust
+let options = options.with_non_projection_relational_tables(["content_migration_state"]);
+```
+
+Open rejects empty, duplicate and `hawdb_`-reserved names. Every commit is
+still checked, and changes to undeclared tables still refuse. The declaration
+is the host's statement about its own hydrator: HawDB cannot reject a declared
+table that the hydrator does map, because no state names one. The
+declaration affects only the advance; catch-up still passes every captured key
+to the hydrator.
 
 Otherwise nothing is published and the call returns
 `HawDBError::SearchProjectionEpochAdvanceRefused { reason,
@@ -101,7 +159,7 @@ falls back to an ordinary apply or catch-up:
 | --- | --- |
 | `ProjectionChanged` | A commit in the range touched projected data. The message names the first commit. |
 | `ChangeLogGap` | The retained change log starts after `S`. |
-| `RangeUnavailable` | The projection has no source epoch, or `T` is beyond the graph's commit epoch. |
+| `RangeUnavailable` | The projection has no source epoch, or `T` is not the graph's current commit epoch. |
 | `UncheckpointedChanges` | A resident projection has applied pages, an applied epoch or documents that are not checkpointed, so its durable files do not describe it. Checkpoint first. |
 
 Bindings report the kind `search_projection_epoch_advance_refused`. Python
@@ -163,7 +221,16 @@ selector is never read.
     across bookkeeping commits and a `DEFAULT` declaration over a 300-document
     corpus while writing only the selector;
   - a typed refusal after one `Memory` write and after one `Memory` deletion;
-  - a typed refusal across a trimmed change log, and a target beyond the graph;
+  - a typed refusal across a trimmed change log, and for a target before or
+    beyond the current epoch, including a `Memory` edit inside the range
+    that was deleted after it;
+  - declared non-projection relational tables that are allowed and counted,
+    an undeclared table and the empty default that refuse, and invalid
+    declarations that refuse open;
+  - relabel statements (`REMOVE n:Memory`, `SET n:Other`) that cannot commit;
+  - a concurrent graph writer that never slips a commit past an advance:
+    each advance proves its exact epoch or refuses, and the result agrees
+    with a rebuild;
   - reopen at the advanced epoch;
   - catch-up after the advance, whose epoch and `SearchDocumentSetDigest`
     match `rebuild_out_of_core_search_projection`.

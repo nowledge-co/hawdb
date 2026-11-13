@@ -33,21 +33,33 @@ impl EmbeddedStore {
     /// An empty apply followed by a checkpoint rewrites the whole projection
     /// instead.
     ///
-    /// **Safety contract.** HawDB does not trust the caller. Before publishing
-    /// it checks its own search change log for `(S, T]`: the log must cover
-    /// the whole range, and every commit in it must have an empty projection
-    /// capture (no live node whose label maps to a search projection kind,
-    /// no search document deletion, no relational primary-key change). Graph
-    /// commits that only touch non-projection labels, such as import
+    /// **Safety contract.** HawDB does not trust the caller. `T` must be the
+    /// current graph commit epoch. Holding the store write lock (this
+    /// `&mut self`) and, for the whole check, the database runtime's read
+    /// guard, which every graph commit needs for writing, HawDB checks its own
+    /// search change log for `(S, T]`. The log must cover the whole range, and
+    /// every commit in it must have an empty projection capture:
+    /// - no node that exists at `T` with a label that maps to a search
+    ///   projection kind;
+    /// - no search document deletion;
+    /// - no relational primary-key change, except to tables declared with
+    ///   [`EmbeddedStoreOpenOptions::with_non_projection_relational_tables`]
+    ///   (counted in `allowed_relational_change_count`);
+    /// - no relational change that cannot be attributed to tables.
+    ///
+    /// Graph commits that only touch non-projection labels, such as import
     /// bookkeeping, and additive schema statements qualify. Otherwise it
     /// publishes nothing and returns
     /// [`HawDBError::SearchProjectionEpochAdvanceRefused`], which is not a
     /// storage failure: apply or catch up the range normally instead.
-    /// Refusal reasons are `ProjectionChanged`, `ChangeLogGap` (a commit in the
-    /// range could not be captured, or the log was trimmed or begins after a
-    /// reopen), `RangeUnavailable` (no source epoch, or `T` beyond the graph's
-    /// commit epoch) and `UncheckpointedChanges` (a resident projection whose
-    /// in-memory state differs from its last checkpoint).
+    /// Refusal reasons:
+    /// - `ProjectionChanged`;
+    /// - `ChangeLogGap`: a commit in the range could not be captured, or the
+    ///   log was trimmed or begins after a reopen;
+    /// - `RangeUnavailable`: no source epoch, or `T` is not the graph's
+    ///   current commit epoch;
+    /// - `UncheckpointedChanges`: a resident projection whose in-memory state
+    ///   differs from its last checkpoint.
     ///
     /// **Crash safety.** The selector rename is the only commit point, as in
     /// every projection publication: after a crash or reopen the projection
@@ -56,8 +68,9 @@ impl EmbeddedStore {
     /// Covers the resident projection (as used by
     /// [`Self::apply_initial_import_projection_delta_and_checkpoint`] and
     /// [`Self::apply_search_projection_delta_and_checkpoint`]) and incremental
-    /// out-of-core maintenance. `T == S` returns a report with
-    /// `advanced == false` and writes nothing; `T < S` is a semantic error.
+    /// out-of-core maintenance. `T == S` (the projection is already at the
+    /// current epoch) returns a report with `advanced == false` and writes
+    /// nothing; `T < S` is a semantic error.
     pub fn advance_search_projection_source_epoch(
         &mut self,
         target_graph_commit_epoch: u64,
@@ -75,7 +88,8 @@ impl EmbeddedStore {
             // Refresh even on error: never infer rollback from an error alone.
             self.refresh_incremental_search_reader()?;
             let mut report = result?;
-            report.checked_change_log_entries = checked;
+            report.checked_change_log_entries = checked.checked_change_log_entries;
+            report.allowed_relational_change_count = checked.allowed_relational_change_count;
             return Ok(report);
         }
         let projection = require_search_projection_mut(&mut self.search_projection)?;
@@ -110,7 +124,8 @@ impl EmbeddedStore {
         let mut report = projection
             .index_mut()
             .advance_source_graph_commit_epoch(target)?;
-        report.checked_change_log_entries = checked;
+        report.checked_change_log_entries = checked.checked_change_log_entries;
+        report.allowed_relational_change_count = checked.allowed_relational_change_count;
         Ok(report)
     }
 
@@ -118,7 +133,7 @@ impl EmbeddedStore {
         &self,
         source: Option<u64>,
         target: u64,
-    ) -> Result<usize> {
+    ) -> Result<crate::SearchProjectionEpochAdvanceVerification> {
         let Some(source) = source else {
             return Err(HawDBError::SearchProjectionEpochAdvanceRefused {
                 reason: SearchProjectionEpochAdvanceRefusal::RangeUnavailable,
@@ -135,6 +150,10 @@ impl EmbeddedStore {
         }
         self.graph
             .database()
-            .verify_search_projection_epoch_advance(source, target)
+            .verify_search_projection_epoch_advance(
+                source,
+                target,
+                &self.non_projection_relational_tables,
+            )
     }
 }

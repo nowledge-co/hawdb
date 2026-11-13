@@ -400,9 +400,19 @@ length, and only the selector's bytes were written. Then:
 
 - one `Memory` write in the range (and, incrementally, one `Memory` deletion)
   is refused with the typed `SearchProjectionEpochAdvanceRefused`
-  (`ProjectionChanged`, never `Storage`), and so is a target beyond the graph
-  (`RangeUnavailable`);
+  (`ProjectionChanged`, never `Storage`), and so is a target before or beyond
+  the current epoch (`RangeUnavailable`), including a `Memory` edit inside the
+  range that was deleted after it;
 - a two-entry change log trimmed by bookkeeping is refused as `ChangeLogGap`;
+- Mem's `content_migration_state` upserts are allowed and counted
+  (`allowed_relational_change_count`) only when declared with
+  `with_non_projection_relational_tables`; an undeclared table and the empty
+  default refuse, and empty, duplicate or `hawdb_` declarations refuse open;
+- relabel statements (`REMOVE n:Memory`, `SET n:Other`) fail without
+  committing;
+- a concurrent graph writer (retrying `TransactionRetryRequired`) never slips
+  a commit past an advance: each advance proves its exact epoch or refuses
+  with a typed reason, and the final projection agrees with a rebuild;
 - reopen keeps the advanced epoch;
 - after incremental catch-up, the epoch and `SearchDocumentSetDigest` match
   `rebuild_out_of_core_search_projection`.
