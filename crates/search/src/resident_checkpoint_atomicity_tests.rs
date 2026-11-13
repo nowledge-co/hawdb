@@ -188,6 +188,25 @@ fn copy_dir(from: &Path, to: &Path) {
     }
 }
 
+#[test]
+#[cfg(any(unix, windows))]
+fn resident_alias_identity_distinguishes_hard_links_from_equal_copies() {
+    let root = Dir::new("native-identity");
+    std::fs::create_dir_all(&root.0).unwrap();
+    let source = root.0.join("generation");
+    let alias = root.0.join("alias");
+    std::fs::write(&source, b"resident generation bytes").unwrap();
+    std::fs::hard_link(&source, &alias).unwrap();
+    assert!(out_of_core::same_file(&source, &alias).unwrap());
+
+    std::fs::remove_file(&alias).unwrap();
+    std::fs::copy(&source, &alias).unwrap();
+    assert!(!out_of_core::same_file(&source, &alias).unwrap());
+
+    std::fs::remove_file(&alias).unwrap();
+    assert!(!out_of_core::same_file(&source, &alias).unwrap());
+}
+
 fn manifest_generation(path: &Path) -> u64 {
     out_of_core::published_generation_for_test(path)
 }

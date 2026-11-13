@@ -12,6 +12,79 @@ fn budget(work: usize, items: usize, bytes: usize) -> ProjectionFeedLimits {
 }
 
 #[test]
+fn whole_database_full_source_skips_sparse_ids_and_deleted_nodes() {
+    for cold in [false, true] {
+        let path = std::env::temp_dir().join(format!(
+            "hawdb-whole-database-enumeration-{}",
+            hawdb_core::generate_uuidv7().unwrap()
+        ));
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        let first = NodeId(7);
+        let deleted = NodeId(1_000_000_000);
+        let last = NodeId(2_000_000_000);
+        store
+            .import_graph_snapshot_rows(
+                &mut catalog,
+                vec![
+                    (first, "Memory".into(), BTreeMap::new()),
+                    (deleted, "Memory".into(), BTreeMap::new()),
+                    (last, "Note".into(), BTreeMap::new()),
+                ],
+                vec![],
+            )
+            .unwrap();
+        store.checkpoint(&catalog).unwrap();
+        if cold {
+            drop(store);
+            store = GraphStore::open_with_durability_and_replay_config(
+                &path,
+                &mut catalog,
+                DurabilityPolicy::default(),
+                WalReplayConfig {
+                    residency_mode: StorageResidencyMode::OutOfCore,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert!(store.canonical_base_out_of_core);
+        }
+        store
+            .delete_node_ids_with_limits(&mut catalog, &[deleted], true, MutationLimits::default())
+            .unwrap();
+        let inserted = store
+            .create_node(&mut catalog, "Note", BTreeMap::new())
+            .unwrap();
+        let mut source = store
+            .capture_full_projection_source(
+                budget(1000, 100, 8192),
+                ProjectionFullSourceLimits::default(),
+                Default::default(),
+            )
+            .unwrap();
+        let mut actual = BTreeSet::new();
+        while !source
+            .visit_next(budget(32, 1, 256), |item| {
+                if let ProjectionFullSourceItem::GraphNodeCandidate { node_id } = item {
+                    assert!(actual.insert(NodeId(node_id)));
+                }
+                Ok(())
+            })
+            .unwrap()
+            .complete
+        {}
+        assert_eq!(actual, BTreeSet::from([first, last, inserted]));
+        let usage = source.finish().unwrap();
+        assert!(
+            usage.items < 10,
+            "whole-database enumeration visited allocation holes: {usage:?}"
+        );
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}
+
+#[test]
 fn scoped_full_source_skips_sparse_ids_and_preserves_hot_cold_overlay() {
     for cold in [false, true] {
         let path = std::env::temp_dir().join(format!(

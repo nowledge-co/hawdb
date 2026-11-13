@@ -286,7 +286,9 @@ impl<'a> GenerationIo<'a> {
         Ok(())
     }
 
-    pub(super) fn link(&self, source: &Path, target: &Path) -> Result<()> {
+    /// Install `target` from `source`, preferring a hard link. Returns bytes
+    /// physically copied when the filesystem requires the bounded copy path.
+    pub(in crate::out_of_core) fn link(&self, source: &Path, target: &Path) -> Result<u64> {
         self.link_with(source, target, |source, temporary| {
             fs::hard_link(source, temporary)
         })
@@ -297,20 +299,20 @@ impl<'a> GenerationIo<'a> {
         source: &Path,
         target: &Path,
         hard_link: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
-    ) -> Result<()> {
+    ) -> Result<u64> {
         let mut temporary = Temporary::new(target, self.memory, self.task)?;
-        if self
-            .native(&[source, &temporary.path], || {
-                hard_link(source, &temporary.path)
-            })?
-            .is_err()
-        {
-            self.copy(source, &temporary.path)?;
-        }
-        self.replace(&mut temporary, target)
+        let copied = match self.native(&[source, &temporary.path], || {
+            hard_link(source, &temporary.path)
+        })? {
+            Ok(()) => 0,
+            Err(error) if hard_link_copy_fallback(&error) => self.copy(source, &temporary.path)?,
+            Err(error) => return Err(error.into()),
+        };
+        self.replace(&mut temporary, target)?;
+        Ok(copied)
     }
 
-    fn copy(&self, source: &Path, target: &Path) -> Result<()> {
+    fn copy(&self, source: &Path, target: &Path) -> Result<u64> {
         // Admit the transfer buffer before opening or truncating its output.
         let _buffer = self.memory.spool.reserve(SPOOL_BUFFER_BYTES)?;
         let mut source = self.native(&[source], || File::open(source))??;
@@ -336,7 +338,7 @@ impl<'a> GenerationIo<'a> {
         checkpoint(self.task)?;
         output.set_permissions(metadata.permissions())?;
         output.sync_all()?;
-        Ok(())
+        Ok(copied)
     }
 
     pub(super) fn write(&self, target: &Path, bytes: &[u8]) -> Result<()> {
@@ -376,6 +378,19 @@ impl<'a> GenerationIo<'a> {
         temporary.armed = false;
         Ok(())
     }
+}
+
+/// A same-directory hard link should fail over only when the filesystem or
+/// its policy does not permit links. Missing sources, destination collisions
+/// and generic I/O failures retain their original error instead of being
+/// hidden behind a second, potentially corpus-sized operation.
+fn hard_link_copy_fallback(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::CrossesDevices
+            | std::io::ErrorKind::PermissionDenied
+            | std::io::ErrorKind::Unsupported
+    )
 }
 
 pub(super) struct AdmittedBytes {
