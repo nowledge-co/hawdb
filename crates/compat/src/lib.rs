@@ -437,6 +437,7 @@ impl ExpectedErrorClass {
             | HawDBError::WalRecoveryIo { .. }
             | HawDBError::PublishOutcomeUnknown { .. }
             | HawDBError::ProjectionBusy
+            | HawDBError::SearchProjectionMismatch { .. }
             | HawDBError::AppendSequenceExhausted { .. }
             | HawDBError::BranchBusy { .. }
             | HawDBError::BranchReclamationBlocked { .. } => Self::Storage,
@@ -457,7 +458,8 @@ impl ExpectedErrorClass {
             | HawDBError::TransactionConflict { .. }
             | HawDBError::TransactionRetryRequired(_)
             | HawDBError::TransactionReadDependencyRefused { .. }
-            | HawDBError::BranchCommandUnsupported { .. } => Self::Execution,
+            | HawDBError::BranchCommandUnsupported { .. }
+            | HawDBError::SearchProjectionRebuildRefused { .. } => Self::Execution,
             HawDBError::CapabilityUnavailable { .. } => Self::CapabilityUnavailable,
         }
     }

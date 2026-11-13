@@ -4059,6 +4059,8 @@ mod tests {
             .unwrap();
     }
 
+    mod branch_wal_reclamation;
+
     fn write_row(branch: &mut AdmittedBranchStore, body: &str) {
         let (store, catalog) = branch.store_and_catalog_mut();
         store
@@ -4626,6 +4628,12 @@ mod tests {
                     candidate.catch_up(&captured).unwrap();
                     assert_eq!(candidate.commit_epoch(), branch.store().commit_epoch());
                 }
+                // Allocation skipped the uncertain name; the candidate never
+                // overwrote or removed it while no newer head was durable.
+                assert_eq!(
+                    fs::read(&orphan_path).unwrap(),
+                    b"uncertain prior checkpoint publication"
+                );
                 let epoch = branch.store().commit_epoch();
                 let expected_rows = branch
                     .store()
@@ -4678,10 +4686,11 @@ mod tests {
                 reader.ensure_usable().unwrap();
                 assert_eq!(branch.head().logical_commit_epoch, source_epoch);
                 assert!(branch.head().active_wal.generation > orphan_generation);
-                assert_eq!(
-                    fs::read(&orphan_path).unwrap(),
-                    b"uncertain prior checkpoint publication"
-                );
+                // The durable head now selects a newer generation, which
+                // resolves the earlier uncertainty: like a data-root generation
+                // below the selected checkpoint, the unselected name is
+                // reclaimed (#1727).
+                assert!(!orphan_path.exists());
                 assert!(branch.head().physical_generation > original_head.physical_generation);
                 assert_eq!(fs::read(&fixture.catalog_path).unwrap(), original_catalog);
                 let durable = branch.store().durable.as_ref().unwrap();

@@ -48,6 +48,14 @@ pub struct DatabaseConfig {
     /// and query-memory budgets remain enforced. `max_read_result_rows` and
     /// session settings continue to bound returned rows.
     pub max_read_intermediate_rows: Option<usize>,
+    /// Ceiling on the payload bytes one read returns; 64 MiB by default.
+    /// `None` removes the ceiling for `Database` calls. Through an admitted
+    /// [`crate::HawDBEmbedded`] entry point the result is also bounded by the
+    /// runtime governor's per-statement result budget (16 MiB on the
+    /// shared-host profile, 2 MiB on mobile, unless the host configures it),
+    /// so `None` there
+    /// means that budget, not unlimited. The Python binding aligns its
+    /// governor's budget with a `Some` ceiling.
     pub max_read_result_payload_bytes: Option<usize>,
     pub execution_memory: executor::ExecutionMemoryConfig,
     pub mutation_limits: hawdb_storage::mutation::MutationLimits,

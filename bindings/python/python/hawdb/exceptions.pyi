@@ -58,6 +58,11 @@ class BranchError(Error):
 class AdmissionError(Error):
     """Query admission was rejected by runtime resource governance."""
 
+    # The refused resource, for example "cpu_saturated" or "memory_saturated".
+    code: str
+    # True for a transient shortage that a later attempt can pass.
+    retryable: bool
+
 class TaskStoppedError(Error):
     """The runtime task was stopped before producing a result."""
 

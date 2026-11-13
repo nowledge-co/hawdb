@@ -301,7 +301,7 @@ impl Database {
         let change_log_start_epoch = runtime.store.search_projection_change_log_start_epoch();
         if source_commit_epoch < change_log_start_epoch {
             return Err(HawDBError::Storage(format!(
-                "search projection change log starts at commit epoch {change_log_start_epoch}; requested source commit epoch {source_commit_epoch}; full search projection rebuild required"
+                "search projection change log starts at commit epoch {change_log_start_epoch}; requested source commit epoch {source_commit_epoch}; full search projection rebuild required (EmbeddedStoreHandle::rebuild_out_of_core_search_projection rebuilds an incremental projection from the graph into a new directory)"
             )));
         }
 

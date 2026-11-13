@@ -86,6 +86,7 @@ impl QueryBridge {
                     HawDBError::Constraint { .. } => "constraint",
                     HawDBError::Schema { .. } => "schema",
                     HawDBError::ProjectionBusy => "projection_busy",
+                    HawDBError::SearchProjectionMismatch { .. } => "search_projection_mismatch",
                     HawDBError::StorageIntegrity(_) => "storage_integrity",
                     HawDBError::WalRecoveryIo { .. } => "wal_recovery_io",
                     HawDBError::PublishOutcomeUnknown { .. } => "publish_outcome_unknown",
@@ -97,6 +98,9 @@ impl QueryBridge {
                     | HawDBError::GraphExpansionCandidateLimitExceeded { .. }
                     | HawDBError::GraphExpansionPayloadLimitExceeded { .. } => "execution",
                     HawDBError::BranchCommandUnsupported { .. } => "branch_command_unsupported",
+                    HawDBError::SearchProjectionRebuildRefused { .. } => {
+                        "search_projection_rebuild_refused"
+                    }
                     HawDBError::BranchBusy { .. } => "branch_busy",
                     HawDBError::BranchReclamationBlocked { .. } => "branch_reclamation_blocked",
                     HawDBError::BranchEvidenceBudgetExceeded { .. } => {

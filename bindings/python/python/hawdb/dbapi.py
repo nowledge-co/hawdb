@@ -41,11 +41,16 @@ engine refuses inside a transaction, such as ``CREATE BRANCH`` and
 autocommits, because a read-only database cannot commit even an empty
 transaction, and turning its autocommit off raises ``NotSupportedError``.
 
-A transaction that has only run queries plans them as autocommit does, under
-the same result budgets, but reads through its own workspace. Until it ends,
-it pins the snapshot it began with, which holds back checkpoint reclamation,
-and its statements stay out of the slow-query log and statement summary.
-Neither mode applies query admission to SQL. End read-only transactions
+Both modes pass every statement through the embedded runtime admission
+before it runs: when the runtime is saturated the statement raises
+``OperationalError``, which is also ``hawdb.exceptions.AdmissionError`` with
+``retryable`` true for a transient shortage, and nothing of it runs; inside a
+transaction the earlier statements stay staged. Both modes also record each
+statement in the slow-query log and statement summary, and refuse it once a
+storage integrity failure has poisoned the handle. A transaction that has only
+run queries plans them as autocommit does, under the same result budgets, but
+reads through its own workspace. Until it ends, it pins the snapshot it began
+with, which holds back checkpoint reclamation. End read-only transactions
 promptly, or run long-lived read-only work with autocommit on.
 
 A failed ``execute`` leaves the transaction open with the earlier statements

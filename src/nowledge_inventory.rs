@@ -602,8 +602,8 @@ mod tests {
             .any(|item| item["work_class"] == "projection"
                 && item["priority"] == "background"
                 && item["admission"] == "admit"));
-        // Fixture schema DDL leaves a conservative rebuild floor. The
-        // summary must expose lag, never advertise a point delta across it.
+        // Fixture schema DDL is additive, so the retained change log covers
+        // the whole history and the summary advertises one executable delta.
         let lag_delta = bundle["background_maintenance"]["ranked"]
             .as_array()
             .unwrap()
@@ -612,10 +612,31 @@ mod tests {
             .unwrap();
         assert_eq!(
             lag_delta["has_executable_search_projection_graph_delta"],
-            false
+            true
         );
-        assert!(lag_delta["hint_source_graph_commit_lag"].as_u64().unwrap() > 0);
-        assert!(lag_delta["hint_recent_delta_operations"].as_u64().unwrap() > 0);
+        let lag = lag_delta["hint_source_graph_commit_lag"].as_u64().unwrap();
+        assert!(lag > 0);
+        let operations = lag_delta["search_projection_graph_delta_operation_count"]
+            .as_u64()
+            .unwrap();
+        assert!(operations > 0);
+        assert_eq!(
+            lag_delta["hint_recent_delta_operations"].as_u64(),
+            Some(operations)
+        );
+        assert_eq!(
+            lag_delta["search_projection_graph_delta_upsert_node_count"]
+                .as_u64()
+                .unwrap()
+                + lag_delta["search_projection_graph_delta_delete_document_count"]
+                    .as_u64()
+                    .unwrap(),
+            operations
+        );
+        assert_eq!(
+            lag_delta["search_projection_graph_delta_complete_through_graph_commit_epoch"].as_u64(),
+            Some(lag)
+        );
         assert_eq!(lag_delta["hint_active_topic"], false);
         assert_eq!(
             lag_delta["hint_query_probability_per_million"]
@@ -627,27 +648,30 @@ mod tests {
         assert!(lag_delta["hint_staleness_ttl_millis"].is_null());
         assert!(lag_delta["hint_freshness_slo_millis"].is_null());
         assert!(lag_delta["hint_tenant_budget_remaining_operations"].is_null());
-        for key in [
-            "search_projection_graph_delta_operation_count",
-            "search_projection_graph_delta_upsert_node_count",
-            "search_projection_graph_delta_delete_document_count",
-            "search_projection_graph_delta_complete_through_graph_commit_epoch",
-        ] {
-            assert!(lag_delta[key].is_null(), "{key}");
-        }
+        let maintenance = &bundle["background_maintenance"];
         for key in [
             "executable_search_projection_graph_delta_count",
             "admitted_search_projection_graph_delta_count",
+        ] {
+            assert_eq!(maintenance[key], 1, "{key}");
+        }
+        for key in [
             "deferred_search_projection_graph_delta_count",
             "rejected_search_projection_graph_delta_count",
+        ] {
+            assert_eq!(maintenance[key], 0, "{key}");
+        }
+        for key in [
             "executable_search_projection_graph_delta_operations",
             "admitted_search_projection_graph_delta_operations",
         ] {
-            assert_eq!(bundle["background_maintenance"][key], 0, "{key}");
+            assert_eq!(maintenance[key].as_u64(), Some(operations), "{key}");
         }
-        assert!(bundle["background_maintenance"]
-            ["max_search_projection_graph_delta_complete_through_graph_commit_epoch"]
-            .is_null());
+        assert_eq!(
+            maintenance["max_search_projection_graph_delta_complete_through_graph_commit_epoch"]
+                .as_u64(),
+            Some(lag)
+        );
         assert_eq!(
             bundle["background_maintenance"]["qos_snapshot"]["ready"],
             true

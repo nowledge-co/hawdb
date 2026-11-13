@@ -114,6 +114,7 @@ fn error_class(error: &HawDBError) -> &'static str {
         | HawDBError::WalRecoveryIo { .. }
         | HawDBError::PublishOutcomeUnknown { .. }
         | HawDBError::ProjectionBusy
+        | HawDBError::SearchProjectionMismatch { .. }
         | HawDBError::AppendSequenceExhausted { .. }
         | HawDBError::BranchBusy { .. }
         | HawDBError::BranchReclamationBlocked { .. } => "storage",
@@ -134,7 +135,8 @@ fn error_class(error: &HawDBError) -> &'static str {
         | HawDBError::TransactionConflict { .. }
         | HawDBError::TransactionRetryRequired(_)
         | HawDBError::TransactionReadDependencyRefused { .. }
-        | HawDBError::BranchCommandUnsupported { .. } => "execution",
+        | HawDBError::BranchCommandUnsupported { .. }
+        | HawDBError::SearchProjectionRebuildRefused { .. } => "execution",
         HawDBError::CapabilityUnavailable { .. } => "capability_unavailable",
     }
 }

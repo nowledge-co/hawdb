@@ -35,7 +35,7 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 
-pub(super) fn sql_statement_kind(statement: &SqlStatement) -> &'static str {
+pub(crate) fn sql_statement_kind(statement: &SqlStatement) -> &'static str {
     match statement {
         SqlStatement::Select(_) => "select",
         SqlStatement::Insert(_) => "insert",
@@ -538,6 +538,17 @@ impl Database {
         request: super::SqlQueryRequest<'_>,
         prepared: crate::relational_sql::PreparedRelationalSql,
     ) -> Result<QueryOutput> {
+        self.query_sql_with_prepared_request_with_result(request, prepared)
+            .map(|result| result.output)
+    }
+
+    /// Result-carrying form of [`Self::query_sql_with_prepared_request`]; see
+    /// [`Self::query_sql_with_result_and_params`] for `mutation`.
+    pub(crate) fn query_sql_with_prepared_request_with_result(
+        &mut self,
+        request: super::SqlQueryRequest<'_>,
+        prepared: crate::relational_sql::PreparedRelationalSql,
+    ) -> Result<super::SqlStatementResult> {
         super::query_runtime::query_runtime_checkpoint(request.task_context)?;
         if let Some(runtime) = self.runtime.peek() {
             runtime.store.ensure_usable()?;
@@ -549,7 +560,42 @@ impl Database {
             hawdb_core::time::Instant::now(),
             self.system_variables.clone(),
         )
-        .map(|result| result.output)
+    }
+
+    /// Completes a SQL read that ran on a snapshot of this database (the
+    /// embedded facade's admitted read path) as this database's own
+    /// autocommit read would: a storage integrity failure poisons the
+    /// handle, and the statement is recorded in the statement summary and,
+    /// over the threshold, the slow-query log.
+    pub(crate) fn finish_snapshot_sql_read(
+        &self,
+        sql_text: &str,
+        statement_kind: &'static str,
+        started: hawdb_core::time::Instant,
+        result: &Result<QueryOutput>,
+    ) {
+        if let Some(runtime) = self.runtime.peek() {
+            runtime.store.poison_on_storage_error(result);
+        }
+        self.record_statement_execution(
+            "sql",
+            sql_text,
+            statement_kind,
+            started,
+            result.as_ref(),
+            StatementExecutionContext::default(),
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn poison_storage_handle_for_test(&self) {
+        self.runtime
+            .get()
+            .unwrap()
+            .store
+            .poison_on_storage_error::<()>(&Err(HawDBError::StorageIntegrity(
+                "test-injected integrity failure".to_string(),
+            )));
     }
 
     fn query_sql_with_prepared_request_inner(

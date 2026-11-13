@@ -707,7 +707,8 @@ fn error_class(error: &crate::HawDBError) -> String {
         | crate::HawDBError::TransactionConflict { .. }
         | crate::HawDBError::TransactionRetryRequired(_)
         | crate::HawDBError::TransactionReadDependencyRefused { .. }
-        | crate::HawDBError::BranchCommandUnsupported { .. } => "execution",
+        | crate::HawDBError::BranchCommandUnsupported { .. }
+        | crate::HawDBError::SearchProjectionRebuildRefused { .. } => "execution",
         crate::HawDBError::Storage(_)
         | crate::HawDBError::Constraint {
             surface: RelationalErrorSurface::Storage,
@@ -722,6 +723,7 @@ fn error_class(error: &crate::HawDBError) -> String {
         | crate::HawDBError::WalRecoveryIo { .. }
         | crate::HawDBError::PublishOutcomeUnknown { .. }
         | crate::HawDBError::ProjectionBusy
+        | crate::HawDBError::SearchProjectionMismatch { .. }
         | crate::HawDBError::AppendSequenceExhausted { .. }
         | crate::HawDBError::BranchBusy { .. }
         | crate::HawDBError::BranchReclamationBlocked { .. } => "storage",

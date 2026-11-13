@@ -4545,9 +4545,10 @@ fn validate_resident_snapshot_manifest(index: &SearchIndex, bytes: &[u8]) -> Res
         || manifest.embedding_version.as_deref()
             != embedding.and_then(|identity| identity.version.as_deref())
     {
-        return Err(HawDBError::Storage(
-            "resident search snapshot does not match the published immutable projection; use incremental maintenance or rebuild from the authoritative source".into(),
-        ));
+        return Err(HawDBError::SearchProjectionMismatch {
+            projection: index.path.clone(),
+            message: "resident search snapshot does not match the published immutable projection; incremental catch-up cannot repair it: rebuild it from the graph into a new directory with EmbeddedStoreHandle::rebuild_out_of_core_search_projection, or rebuild a resident projection with Database::rebuild_search_projection".into(),
+        });
     }
     Ok(())
 }

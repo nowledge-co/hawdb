@@ -356,6 +356,23 @@ fn old_layout_without_generation_snapshots_reopens_and_upgrades() {
         .is_file());
 }
 
+/// The refusal is typed so a host can rebuild the projection (#1735), and
+/// its text is unchanged.
+fn assert_search_projection_mismatch(error: &HawDBError, projection: &Path) {
+    assert!(
+        matches!(
+            error,
+            HawDBError::SearchProjectionMismatch { projection: Some(path), .. }
+                if path == projection
+        ),
+        "{error:?}"
+    );
+    assert_eq!(
+        error.to_string(),
+        "storage error: resident search snapshot does not match the published immutable projection; incremental catch-up cannot repair it: rebuild it from the graph into a new directory with EmbeddedStoreHandle::rebuild_out_of_core_search_projection, or rebuild a resident projection with Database::rebuild_search_projection"
+    );
+}
+
 #[test]
 fn old_layout_mixed_snapshot_still_fails_closed() {
     // Without a generation snapshot there is no verified source to re-derive
@@ -384,12 +401,7 @@ fn old_layout_mixed_snapshot_still_fails_closed() {
     )
     .unwrap();
     let error = SearchIndex::open(&stale).err().unwrap();
-    assert!(
-        error
-            .to_string()
-            .contains("does not match the published immutable projection"),
-        "{error}"
-    );
+    assert_search_projection_mismatch(&error, &stale);
 }
 
 #[test]
@@ -411,12 +423,7 @@ fn damaged_generation_snapshot_is_never_linked() {
     std::fs::remove_file(&selected).unwrap();
     std::fs::write(&selected, bytes).unwrap();
     let error = SearchIndex::open(&path).err().unwrap();
-    assert!(
-        error
-            .to_string()
-            .contains("does not match the published immutable projection"),
-        "{error}"
-    );
+    assert_search_projection_mismatch(&error, &path);
 }
 
 #[test]

@@ -147,6 +147,19 @@ pub fn format_hawdb_error(error: &HawDBError) -> PyErr {
             })();
             attributes.err().unwrap_or(exception)
         }),
+        HawDBError::SearchProjectionMismatch { projection, .. } => Python::attach(|py| {
+            let exception = StorageError::new_err(message);
+            let value = exception.value(py);
+            let attributes = (|| -> PyResult<()> {
+                value.setattr("kind", "search_projection_mismatch")?;
+                value.setattr(
+                    "projection",
+                    projection.as_ref().map(|path| path.display().to_string()),
+                )?;
+                value.setattr("retryable", false)
+            })();
+            attributes.err().unwrap_or(exception)
+        }),
         HawDBError::UnsupportedStorageFormat(_) => Python::attach(|py| {
             let exception = StorageError::new_err(message);
             let attributes = exception
@@ -172,6 +185,24 @@ pub fn format_hawdb_error(error: &HawDBError) -> PyErr {
             // Preserve installation failures instead of returning an incomplete resource error.
             attributes.err().unwrap_or(exception)
         }),
+        HawDBError::ReadBudgetExceeded(budget) => Python::attach(|py| {
+            // A read ceiling is a typed budget refusal naming its open option;
+            // the usage at the refusal is not tracked, so `requested` and
+            // `used` are None.
+            let exception = ResourceBudgetError::new_err(message);
+            let value = exception.value(py);
+            let attributes = (|| -> PyResult<()> {
+                value.setattr("resource", budget.resource.as_str())?;
+                value.setattr("scope", "query")?;
+                value.setattr("owner", "read result")?;
+                value.setattr("memory_class", py.None())?;
+                value.setattr("requested", py.None())?;
+                value.setattr("used", py.None())?;
+                value.setattr("budget", budget.limit)?;
+                value.setattr("budget_option", budget.resource.budget_option())
+            })();
+            attributes.err().unwrap_or(exception)
+        }),
         HawDBError::ProjectionBusy => Python::attach(|py| {
             let exception = ExecutionError::new_err(message);
             let attributes = exception
@@ -180,6 +211,21 @@ pub fn format_hawdb_error(error: &HawDBError) -> PyErr {
                 .and_then(|()| exception.value(py).setattr("retryable", true));
             attributes.err().unwrap_or(exception)
         }),
+        HawDBError::SearchProjectionRebuildRefused { reason, target, .. } => {
+            Python::attach(|py| {
+                // A void rebuild attempt, not a storage failure: the graph and
+                // the current projection are untouched.
+                let exception = ExecutionError::new_err(message);
+                let value = exception.value(py);
+                let attributes = (|| -> PyResult<()> {
+                    value.setattr("kind", "search_projection_rebuild_refused")?;
+                    value.setattr("reason", reason.as_str())?;
+                    value.setattr("target", target.display().to_string())?;
+                    value.setattr("retryable", false)
+                })();
+                attributes.err().unwrap_or(exception)
+            })
+        }
         HawDBError::Execution(_) => Python::attach(|py| {
             let exception = ExecutionError::new_err(message);
             let attributes = exception
@@ -190,7 +236,6 @@ pub fn format_hawdb_error(error: &HawDBError) -> PyErr {
         }),
         HawDBError::TransactionReadDependencyRefused { .. }
         | HawDBError::BranchEvidenceBudgetExceeded { .. }
-        | HawDBError::ReadBudgetExceeded(_)
         | HawDBError::GraphExpansionCandidateLimitExceeded { .. }
         | HawDBError::GraphExpansionPayloadLimitExceeded { .. } => ExecutionError::new_err(message),
         HawDBError::TransactionConflict { .. }
@@ -225,11 +270,19 @@ fn relational_error(
     })
 }
 
-/// Maps an [`EmbeddedQueryError`] onto the matching Python exception.
+/// Maps an [`EmbeddedQueryError`] onto the matching Python exception. An
+/// admission refusal carries the refused resource as `code` and `retryable`.
 pub fn format_embedded_error(error: &EmbeddedQueryError) -> PyErr {
     match error {
         EmbeddedQueryError::Database(inner) => format_hawdb_error(inner),
-        EmbeddedQueryError::Admission(_) => AdmissionError::new_err(error.to_string()),
+        EmbeddedQueryError::Admission(admission) => Python::attach(|py| {
+            let exception = AdmissionError::new_err(error.to_string());
+            let value = exception.value(py);
+            let attributes = value
+                .setattr("code", admission.code.as_str())
+                .and_then(|()| value.setattr("retryable", admission.is_retryable()));
+            attributes.err().unwrap_or(exception)
+        }),
         EmbeddedQueryError::Stopped(_) => TaskStoppedError::new_err(error.to_string()),
     }
 }
@@ -417,6 +470,116 @@ mod tests {
     }
 
     #[test]
+    fn admission_refusal_carries_its_code_and_retryability() {
+        Python::initialize();
+        Python::attach(|py| {
+            for (code, retryable) in [
+                (hawdb::RuntimeAdmissionCode::CpuSaturated, true),
+                (hawdb::RuntimeAdmissionCode::MemorySaturated, false),
+            ] {
+                let exception = format_embedded_error(&EmbeddedQueryError::Admission(
+                    hawdb::RuntimeAdmissionError {
+                        code,
+                        requested: 2,
+                        available: 1,
+                        retryable,
+                    },
+                ));
+                assert!(exception.is_instance_of::<AdmissionError>(py));
+                let value = exception.value(py);
+                assert_eq!(
+                    value.getattr("code").unwrap().extract::<String>().unwrap(),
+                    code.as_str()
+                );
+                assert_eq!(
+                    value
+                        .getattr("retryable")
+                        .unwrap()
+                        .extract::<bool>()
+                        .unwrap(),
+                    retryable
+                );
+                assert!(value
+                    .str()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .contains(code.as_str()));
+            }
+        });
+    }
+
+    #[test]
+    fn read_ceilings_are_typed_budget_errors_naming_their_option() {
+        Python::initialize();
+        Python::attach(|py| {
+            for (resource, name, option) in [
+                (
+                    hawdb::ReadBudgetResource::PayloadBytes,
+                    "result_payload_bytes",
+                    "max_read_result_payload_bytes",
+                ),
+                (
+                    hawdb::ReadBudgetResource::Rows,
+                    "result_rows",
+                    "max_read_result_rows",
+                ),
+            ] {
+                let exception = format_hawdb_error(&HawDBError::read_budget_exceeded(
+                    resource,
+                    7,
+                    "relational SQL output exceeds the ceiling",
+                ));
+                assert!(exception.is_instance_of::<ResourceBudgetError>(py));
+                assert!(exception.is_instance_of::<ExecutionError>(py));
+                let value = exception.value(py);
+                assert_eq!(
+                    value.str().unwrap().to_str().unwrap(),
+                    "execution error: relational SQL output exceeds the ceiling"
+                );
+                let text = |field: &str| value.getattr(field).unwrap().extract::<String>().unwrap();
+                assert_eq!(text("resource"), name);
+                assert_eq!(text("budget_option"), option);
+                assert_eq!(text("scope"), "query");
+                assert_eq!(
+                    value.getattr("budget").unwrap().extract::<u64>().unwrap(),
+                    7
+                );
+                for field in ["requested", "used", "memory_class"] {
+                    assert!(value.getattr(field).unwrap().is_none(), "{field}");
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn search_projection_mismatch_keeps_storage_type_and_is_not_retryable() {
+        Python::initialize();
+        Python::attach(|py| {
+            let error = HawDBError::SearchProjectionMismatch {
+                projection: Some("/data/search".into()),
+                message: "resident search snapshot does not match".into(),
+            };
+            let exception = format_hawdb_error(&error);
+            assert!(exception.is_instance_of::<StorageError>(py));
+            assert!(!exception.is_instance_of::<IntegrityError>(py));
+            let value = exception.value(py);
+            assert_eq!(
+                value.str().unwrap().to_str().unwrap(),
+                "storage error: resident search snapshot does not match"
+            );
+            let text = |name: &str| value.getattr(name).unwrap().extract::<String>().unwrap();
+            assert_eq!(text("kind"), "search_projection_mismatch");
+            assert_eq!(text("projection"), "/data/search");
+            assert!(!value
+                .getattr("retryable")
+                .unwrap()
+                .extract::<bool>()
+                .unwrap());
+        });
+    }
+
+    #[test]
     fn projection_busy_preserves_its_retryable_kind() {
         Python::initialize();
         Python::attach(|py| {
@@ -437,6 +600,30 @@ mod tests {
                 .unwrap()
                 .extract::<bool>()
                 .unwrap());
+        });
+    }
+
+    #[test]
+    fn search_projection_rebuild_refusal_is_an_execution_error_with_its_reason() {
+        Python::initialize();
+        Python::attach(|py| {
+            let error = HawDBError::SearchProjectionRebuildRefused {
+                reason: hawdb::SearchProjectionRebuildRefusal::TargetExists,
+                target: "/data/search-rebuilt".into(),
+                message: "target already exists".into(),
+            };
+            let exception = format_hawdb_error(&error);
+            assert!(exception.is_instance_of::<ExecutionError>(py));
+            assert!(!exception.is_instance_of::<StorageError>(py));
+            let value = exception.value(py);
+            assert_eq!(
+                value.str().unwrap().to_str().unwrap(),
+                "search projection rebuild refused (target_exists): target already exists"
+            );
+            let text = |name: &str| value.getattr(name).unwrap().extract::<String>().unwrap();
+            assert_eq!(text("kind"), "search_projection_rebuild_refused");
+            assert_eq!(text("reason"), "target_exists");
+            assert_eq!(text("target"), "/data/search-rebuilt");
         });
     }
 }

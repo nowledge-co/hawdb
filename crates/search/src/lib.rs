@@ -82,6 +82,8 @@ mod diskann_identity;
 #[cfg(test)]
 mod document_decoding_tests;
 mod document_encoding;
+mod document_set_digest;
+pub use document_set_digest::SearchDocumentSetDigest;
 mod generation_cleanup;
 mod identifier;
 #[doc(hidden)]

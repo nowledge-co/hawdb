@@ -1249,6 +1249,35 @@ mod lifecycle_tests {
     }
 
     #[test]
+    fn search_projection_mismatch_reports_its_kind() {
+        let error = HawDBError::SearchProjectionMismatch {
+            projection: None,
+            message: "resident search snapshot does not match".to_owned(),
+        };
+        let expected = (
+            "search_projection_mismatch".to_owned(),
+            "storage error: resident search snapshot does not match".to_owned(),
+        );
+        assert_eq!(engine_error(&error), expected);
+        assert_eq!(query_error(&EmbeddedQueryError::Database(error)), expected);
+    }
+
+    #[test]
+    fn search_projection_rebuild_refusal_reports_its_kind() {
+        let error = HawDBError::SearchProjectionRebuildRefused {
+            reason: hawdb::SearchProjectionRebuildRefusal::TargetExists,
+            target: "/data/search-rebuilt".into(),
+            message: "target already exists".to_owned(),
+        };
+        let expected = (
+            "search_projection_rebuild_refused".to_owned(),
+            "search projection rebuild refused (target_exists): target already exists".to_owned(),
+        );
+        assert_eq!(engine_error(&error), expected);
+        assert_eq!(query_error(&EmbeddedQueryError::Database(error)), expected);
+    }
+
+    #[test]
     fn streamed_results_keep_the_tagged_transport() {
         let mut engine = HawDBEmbedded::open_in_memory();
         let output = execute_statement(

@@ -11,20 +11,23 @@ use hawdb_core::graph_rag::{
 };
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
 
 thread_local! {
     static TRACK: Cell<bool> = const { Cell::new(false) };
 }
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 static LARGEST: AtomicUsize = AtomicUsize::new(0);
+// Highest net live bytes since the window opened; frees of older blocks go negative.
+static PEAK: AtomicIsize = AtomicIsize::new(0);
 
 struct Allocator;
 
 fn allocated(bytes: usize) {
     if TRACK.try_with(Cell::get).unwrap_or(false) {
-        LIVE.fetch_add(bytes, Ordering::Relaxed);
+        let live = LIVE.fetch_add(bytes, Ordering::Relaxed).wrapping_add(bytes);
         LARGEST.fetch_max(bytes, Ordering::Relaxed);
+        PEAK.fetch_max(live as isize, Ordering::Relaxed);
     }
 }
 
@@ -69,17 +72,23 @@ unsafe impl GlobalAlloc for Allocator {
 #[global_allocator]
 static ALLOCATOR: Allocator = Allocator;
 
-struct Window;
+/// Tracks allocations on the opening thread only, until dropped.
+pub(crate) struct Window;
 
 impl Window {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         LIVE.store(0, Ordering::Relaxed);
         LARGEST.store(0, Ordering::Relaxed);
+        PEAK.store(0, Ordering::Relaxed);
         TRACK.set(true);
         Self
     }
     fn retained(&self) -> usize {
         LIVE.load(Ordering::Relaxed)
+    }
+    /// Highest net live bytes this thread allocated while the window was open.
+    pub(crate) fn peak(&self) -> usize {
+        PEAK.load(Ordering::Relaxed).max(0) as usize
     }
 }
 

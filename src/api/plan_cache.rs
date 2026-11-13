@@ -15,7 +15,7 @@
 pub(super) mod determinism;
 mod output_schema;
 #[cfg(test)]
-mod retention_allocation;
+pub(crate) mod retention_allocation;
 
 use super::query_request::{BoundScoringRequest, ScoringPlanCacheKey};
 use super::{

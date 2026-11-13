@@ -1020,6 +1020,14 @@ fn background_maintenance_ranks_hawdb_lightning_against_import_lane_budget() {
 fn schema_gap_maintenance_never_advertises_an_executable_partial_delta() {
     let mut db = Database::new();
     db.query("CREATE NODE TABLE Memory").unwrap();
+    db.query("CREATE PROPERTY ON NODE TABLE Memory(retired) TYPE ANY")
+        .unwrap();
+    // Additive declarations are complete captures and leave no floor.
+    let status = db.search_projection_changefeed_status().unwrap();
+    assert_eq!(status.resume_floor_commit_epoch, 0);
+    // Retiring a descriptor can hide stored values without a point effect.
+    db.query("ALTER PROPERTY ON NODE TABLE Memory(retired) SET STATE DELETE_ONLY")
+        .unwrap();
     db.query("CREATE (:Memory {id: 1, title: 'After schema barrier'})")
         .unwrap();
     let index = SearchIndex::in_memory();

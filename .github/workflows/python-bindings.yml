@@ -103,8 +103,8 @@ jobs:
       - name: Build the extension wheel
         run: maturin build --release --locked --out dist
 
-      - name: Test capsule unwind containment and error retry classification
-        run: cargo test --release --locked --lib -- retained::arrow::destructor_tests errors::tests --test-threads=1
+      - name: Test capsule unwind containment, error retry classification and SQL admission
+        run: cargo test --release --locked --lib -- retained::arrow::destructor_tests errors::tests database::tests --test-threads=1
 
       - name: Install the built wheel
         run: pip install dist/*.whl

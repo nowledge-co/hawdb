@@ -172,7 +172,8 @@ pub const fn nowledge_query_fuzz_error_class(error: &HawDBError) -> &'static str
         | HawDBError::GraphExpansionPayloadLimitExceeded { .. }
         | HawDBError::TransactionConflict { .. }
         | HawDBError::TransactionRetryRequired(_)
-        | HawDBError::BranchCommandUnsupported { .. } => "execution",
+        | HawDBError::BranchCommandUnsupported { .. }
+        | HawDBError::SearchProjectionRebuildRefused { .. } => "execution",
         HawDBError::Storage(_)
         | HawDBError::Constraint {
             surface: RelationalErrorSurface::Storage,
@@ -187,6 +188,7 @@ pub const fn nowledge_query_fuzz_error_class(error: &HawDBError) -> &'static str
         | HawDBError::WalRecoveryIo { .. }
         | HawDBError::PublishOutcomeUnknown { .. }
         | HawDBError::ProjectionBusy
+        | HawDBError::SearchProjectionMismatch { .. }
         | HawDBError::AppendSequenceExhausted { .. }
         | HawDBError::BranchBusy { .. }
         | HawDBError::BranchReclamationBlocked { .. } => "storage",

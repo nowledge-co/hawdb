@@ -539,6 +539,88 @@ fn initial_import_1711_crash_inside_checkpoint_reopens_previous_or_new() {
     }
 }
 
+#[test]
+fn pre_1711_crash_state_is_a_typed_search_projection_mismatch() {
+    // HawDB <= 0.31.0 replaced the resident snapshot before it renamed the
+    // selector, and wrote no generation snapshot to re-derive from. A crash
+    // between the two leaves the next snapshot beside the previous selector.
+    // Opening it is refused as a typed mismatch (#1735) and the graph, which
+    // opens first, stays usable without the projection.
+    const ROWS: usize = 10;
+    let fixture = ImportFixture::new("pre_1711_crash_state_typed_mismatch");
+    let search = fixture.root.join("search");
+    let previous = fixture.root.join("search_previous");
+    let mut store = fixture.open();
+    store
+        .apply_initial_import_projection_delta(import_page(0, ROWS), IMPORT_SOURCE_EPOCH)
+        .unwrap();
+    store.checkpoint_initial_import_projection().unwrap();
+    drop(store);
+    copy_files(&search, &previous, |_| true);
+    let mut store = fixture.open();
+    store
+        .apply_initial_import_projection_delta(import_page(1, ROWS), IMPORT_SOURCE_EPOCH)
+        .unwrap();
+    store.checkpoint_initial_import_projection().unwrap();
+    drop(store);
+
+    let torn = fixture.root.join("search_torn");
+    copy_files(&previous, &torn, |name| {
+        !name.starts_with("search_projection.")
+            || name.starts_with("search_projection.out_of_core.")
+    });
+    copy_files(&search, &torn, |name| name == "search_projection.hawdb");
+    let mut options = fixture.options.clone();
+    options.search_projection_path = Some(torn.clone());
+    let Err(error) = EmbeddedStoreHandle::open_with_options(options) else {
+        panic!("a mismatched resident projection must be refused");
+    };
+    assert!(
+        matches!(
+            &error,
+            HawDBError::SearchProjectionMismatch { projection: Some(path), .. } if *path == torn
+        ),
+        "{error:?}"
+    );
+    assert_eq!(
+        error.to_string(),
+        "storage error: resident search snapshot does not match the published immutable projection; incremental catch-up cannot repair it: rebuild it from the graph into a new directory with EmbeddedStoreHandle::rebuild_out_of_core_search_projection, or rebuild a resident projection with Database::rebuild_search_projection"
+    );
+
+    // The graph is intact and its handle is not poisoned.
+    let graph_only = EmbeddedStoreOpenOptions::graph_only(
+        fixture.root.join("graph"),
+        GraphMode::WritableCutover,
+    );
+    let (handle, _) = EmbeddedStoreHandle::open_with_options(graph_only).unwrap();
+    assert!(!handle.storage_handle_poisoned().unwrap());
+    let rows = handle
+        .write_store()
+        .unwrap()
+        .graph_mut()
+        .database_mut()
+        .query("MATCH (m:Memory) RETURN m.id AS id")
+        .unwrap()
+        .rows;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].get("id"),
+        Some(&Value::String("anchor".to_string()))
+    );
+    drop(handle);
+
+    // Rebuilding the projection from the graph replaces the refused directory.
+    std::fs::remove_dir_all(&torn).unwrap();
+    let mut options = fixture.options.clone();
+    options.search_projection_path = Some(torn);
+    let (mut store, report) = EmbeddedStore::open_with_options(options).unwrap();
+    assert!(report.search_projection_opened);
+    store
+        .apply_initial_import_projection_delta(import_page(0, ROWS), IMPORT_SOURCE_EPOCH)
+        .unwrap();
+    store.checkpoint_initial_import_projection().unwrap();
+}
+
 fn copy_files(from: &std::path::Path, to: &std::path::Path, keep: impl Fn(&str) -> bool) {
     std::fs::create_dir_all(to).unwrap();
     for entry in std::fs::read_dir(from).unwrap() {

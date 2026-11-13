@@ -665,6 +665,80 @@ pub(crate) fn execute_database_transaction_sql_request(
     result
 }
 
+/// Runs one SQL statement of an explicit transaction that `db` owns, with
+/// the fail-closed checks and statement recording of an autocommit statement.
+///
+/// Before the statement runs, `db`'s storage handle must be usable, so a
+/// handle poisoned by an earlier integrity failure refuses transaction
+/// statements as it refuses autocommit ones. A storage integrity failure of
+/// a `SELECT` or `EXPLAIN` poisons the handle, as the autocommit read path
+/// does. Every prepared statement is recorded in `db`'s statement summary
+/// and, when it succeeds over the threshold, in its slow-query log, under
+/// its own text and statement kind. The elapsed time and row count are the
+/// statement's own; its effects are staged and become visible only if the
+/// transaction commits. As in autocommit, a statement that fails to parse or
+/// meets an unusable handle is not recorded.
+///
+/// `prepared` is the already parsed `request.sql`, or `None` to parse it here.
+pub(crate) fn execute_recorded_database_transaction_sql_request(
+    db: &Database,
+    runtime: &DatabaseTransactionRuntime,
+    state: &mut DatabaseTransactionState,
+    request: SqlQueryRequest<'_>,
+    prepared: Option<crate::relational_sql::PreparedRelationalSql>,
+) -> Result<SqlStatementResult> {
+    let started = hawdb_core::time::Instant::now();
+    let result = (|| {
+        let task = query_request::bind_request_context(None, request.task_context)?;
+        query_runtime::query_runtime_checkpoint(task.as_ref())?;
+        db.runtime.get()?.store.ensure_usable()?;
+        if let Some(dependencies) = &mut state.read_dependencies {
+            dependencies.admit_sql(request.sql, request.parameters)?;
+        }
+        let prepared = match prepared {
+            Some(prepared) => prepared,
+            None => runtime
+                .relational_plan_template_cache
+                .prepare(request.sql)?,
+        };
+        let statement_kind = observability::sql_statement_kind(prepared.statement());
+        let reads = matches!(
+            prepared.statement(),
+            crate::sql::SqlStatement::Select(_) | crate::sql::SqlStatement::Explain(_)
+        );
+        let result = execute_database_transaction_prepared_sql(
+            runtime,
+            state,
+            request.sql,
+            prepared,
+            request.parameters,
+            DatabaseTransactionSqlOptions {
+                allow_system_schema_registry_write: false,
+                allow_locking_select: false,
+                task_context: task.as_ref(),
+                output_limits: request.output_limits,
+                join_planning: request.join_planning,
+            },
+        );
+        if reads && let Ok(branch_runtime) = db.runtime.get() {
+            branch_runtime.store.poison_on_storage_error(&result);
+        }
+        db.record_statement_execution(
+            "sql",
+            request.sql,
+            statement_kind,
+            started,
+            result.as_ref().map(|result| &result.output),
+            StatementExecutionContext::default(),
+        );
+        result
+    })();
+    if result.is_err() {
+        state.fail_read_dependencies();
+    }
+    result
+}
+
 pub(super) fn execute_database_transaction_sql(
     runtime: &DatabaseTransactionRuntime,
     state: &mut DatabaseTransactionState,

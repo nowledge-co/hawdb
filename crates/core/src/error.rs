@@ -78,6 +78,25 @@ pub enum ReadBudgetResource {
     PayloadBytes,
 }
 
+impl ReadBudgetResource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Rows => "result_rows",
+            Self::PayloadBytes => "result_payload_bytes",
+        }
+    }
+
+    /// The `DatabaseConfig` read ceiling that bounds this resource. A
+    /// per-request limit or an admitted runtime result budget can be smaller;
+    /// the refusal's `limit` is the effective one.
+    pub const fn budget_option(self) -> &'static str {
+        match self {
+            Self::Rows => "max_read_result_rows",
+            Self::PayloadBytes => "max_read_result_payload_bytes",
+        }
+    }
+}
+
 /// Retains budget identity independently of the execution diagnostic text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadBudgetError {
@@ -93,6 +112,33 @@ impl Display for ReadBudgetError {
 }
 
 impl std::error::Error for ReadBudgetError {}
+
+/// Why a search projection rebuild was refused before it installed anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchProjectionRebuildRefusal {
+    /// The target name already exists; the rebuild writes only to a new directory.
+    TargetExists,
+    /// The target's parent directory does not exist.
+    TargetParentMissing,
+    /// The target path has no final component.
+    TargetInvalid,
+    /// Another entry appeared at the target name before the no-replace install.
+    TargetAppeared,
+    /// The built generation differs from the pinned graph scan.
+    VerificationMismatch,
+}
+
+impl SearchProjectionRebuildRefusal {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::TargetExists => "target_exists",
+            Self::TargetParentMissing => "target_parent_missing",
+            Self::TargetInvalid => "target_invalid",
+            Self::TargetAppeared => "target_appeared",
+            Self::VerificationMismatch => "verification_mismatch",
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HawDBError {
@@ -133,6 +179,28 @@ pub enum HawDBError {
     },
     /// A registered Search target is retained by another native operation.
     ProjectionBusy,
+    /// A search projection's resident snapshot disagrees with the immutable
+    /// projection its selector publishes, for example after a crash inside a
+    /// resident checkpoint written by HawDB 0.31.0 or earlier (#1711). The
+    /// projection is refused as a whole and is not retryable as-is: rebuild it
+    /// from the authoritative graph. The check reads only the projection's own
+    /// directory; the graph opens first and is not affected. `projection` is
+    /// the projection directory when the refusing open knows it. Displays as
+    /// a `storage error`.
+    SearchProjectionMismatch {
+        projection: Option<std::path::PathBuf>,
+        message: String,
+    },
+    /// A search projection rebuild was refused and installed nothing. The
+    /// graph, the current projection directory and the target name are
+    /// unchanged; only this attempt is void. This is not a storage failure:
+    /// fix the precondition named by `reason` (or retry a verification
+    /// mismatch after investigating the host source) and rebuild again.
+    SearchProjectionRebuildRefused {
+        reason: SearchProjectionRebuildRefusal,
+        target: std::path::PathBuf,
+        message: String,
+    },
     Execution(String),
     /// Box the diagnostic so successful Result values do not grow with its fields.
     ResourceBudgetExceeded(Box<ResourceBudgetError>),
@@ -208,6 +276,16 @@ impl Display for HawDBError {
                 destination.display()
             ),
             HawDBError::ProjectionBusy => f.write_str("search projection operation is busy"),
+            HawDBError::SearchProjectionMismatch { message, .. } => {
+                write!(f, "storage error: {message}")
+            }
+            HawDBError::SearchProjectionRebuildRefused {
+                reason, message, ..
+            } => write!(
+                f,
+                "search projection rebuild refused ({}): {message}",
+                reason.as_str()
+            ),
             HawDBError::Execution(message) => write!(f, "execution error: {message}"),
             HawDBError::ResourceBudgetExceeded(error) => write!(f, "execution error: {error}"),
             HawDBError::ReadBudgetExceeded(error) => write!(f, "execution error: {error}"),

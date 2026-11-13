@@ -194,6 +194,7 @@ mod search_indexes;
 mod search_projection_delta_facade;
 mod search_projection_graph_delta;
 mod search_projection_rebuild_facade;
+mod search_projection_schema_states;
 mod set_mutations;
 mod shortest_paths;
 mod simple_case_dispatch;

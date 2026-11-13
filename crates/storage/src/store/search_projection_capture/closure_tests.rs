@@ -217,6 +217,28 @@ fn schema_gap_survives_live_wal_checkpoint_and_cold_reopen_without_changing_old_
                 true,
             )
             .unwrap();
+        // Additive declarations are complete captures; retiring a descriptor
+        // can hide stored values without a point effect and opens the gap.
+        assert_eq!(store.search_projection_change_log_start_epoch(), 0);
+        store
+            .create_property_descriptor(
+                &mut catalog,
+                TableKind::Node,
+                "Memory",
+                "retired",
+                PropertyType::String,
+                true,
+            )
+            .unwrap();
+        store
+            .alter_property_state(
+                &mut catalog,
+                TableKind::Node,
+                "Memory",
+                "retired",
+                SchemaObjectState::DeleteOnly,
+            )
+            .unwrap();
         let floor = store.commit_epoch();
         assert!(floor > before);
         assert_gap(&store, before, floor);
@@ -318,7 +340,8 @@ fn direct_schema_wal_failures_never_publish_a_live_gap_or_partial_catalog() {
                 let table = catalog.table_id(TableKind::Node, "Memory").unwrap();
                 if catalog.property_descriptor_id(table, "new_field").is_some() {
                     assert!(recovered.commit_epoch() > epoch);
-                    assert_gap(&recovered, epoch, recovered.commit_epoch());
+                    assert_eq!(recovered.search_projection_change_log_start_epoch(), floor);
+                    assert!(recovered.capture_projection_feed(epoch, limits()).is_ok());
                 } else {
                     assert_eq!(recovered.commit_epoch(), epoch);
                     assert_eq!(recovered.search_projection_change_log_start_epoch(), floor);
@@ -436,18 +459,26 @@ fn nested_schema_and_depth_exhaustion_stage_a_gap_without_mutating_the_source() 
             property: "id".into(),
             value: Value::String("uncommitted".into()),
         },
-        WalOp::Batch(vec![WalOp::CreateProperty {
+        WalOp::Batch(vec![WalOp::AlterPropertyState {
             table_kind: TableKind::Node,
             table: "Memory".into(),
-            property: "new_field".into(),
-            value_type: PropertyType::String,
-            nullable: true,
-            default: None,
+            property: "id".into(),
+            state: SchemaObjectState::Gc,
         }]),
     ];
     assert!(
         matches!(store.prepare_search_projection_changes_for_ops(&catalog,epoch+1,&ops,None).unwrap(),PreparedSearchProjectionChange::Gap(next) if next==epoch+1)
     );
+    // An additive declaration nested in the same shape is a complete capture.
+    let additive = [WalOp::Batch(vec![WalOp::CreateProperty {
+        table_kind: TableKind::Node,
+        table: "Memory".into(),
+        property: "new_field".into(),
+        value_type: PropertyType::String,
+        nullable: true,
+        default: None,
+    }])];
+    assert!(!projection_wal_requires_rebuild(&additive));
     assert_eq!(store.commit_epoch(), epoch);
     assert_eq!(store.search_projection_change_log_start_epoch(), floor);
     assert_eq!(store.search_projection_changes_after(0), changes);
@@ -476,13 +507,14 @@ fn memory_only_and_direct_single_schema_commits_obey_the_same_gap_boundary() {
     let mut catalog = Catalog::default();
     let mut store = GraphStore::default();
     store.create_node_table(&mut catalog, "Memory").unwrap();
-    assert_eq!(
-        store.search_projection_change_log_start_epoch(),
-        store.commit_epoch()
-    );
+    // Table creation is additive: it advances the epoch without a gap.
+    assert!(store.commit_epoch() > 0);
+    assert_eq!(store.search_projection_change_log_start_epoch(), 0);
     let before = store.commit_epoch();
-    let op = WalOp::CreateNodeLabel {
-        label: "New".into(),
+    let op = WalOp::AlterTableState {
+        table_kind: TableKind::Node,
+        table: "Memory".into(),
+        state: SchemaObjectState::DeleteOnly,
     };
     store.append_durable_wal_single(op.clone()).unwrap();
     store.apply_wal_op(&mut catalog, op).unwrap();
