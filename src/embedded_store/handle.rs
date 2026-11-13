@@ -554,6 +554,57 @@ impl EmbeddedStoreHandle {
             ))
     }
 
+    /// Declared property descriptors with their tables, types, states and
+    /// defaults, as reported by [`crate::Database::property_schemas`].
+    ///
+    /// Read-only: takes the store read guard and no runtime admission. Hosts
+    /// use it to observe a defaulted descriptor moving from `BACKFILL` through
+    /// `VALIDATING` to `PUBLIC`.
+    pub fn property_schemas(&self) -> Result<Vec<crate::schema::PropertySchema>> {
+        self.read_store()?.graph.database().property_schemas()
+    }
+
+    /// Read-only dry run of pending descriptor maintenance, with the same
+    /// rows as [`crate::Database::plan_schema_maintenance`]: `object_type`,
+    /// `object`, `from_state`, `to_state`, `action` and
+    /// `estimated_operations`. An empty result means no table or property
+    /// descriptor (including a `BACKFILL` default) awaits maintenance.
+    pub fn plan_schema_maintenance(&self) -> Result<QueryOutput> {
+        self.read_store()?
+            .graph
+            .database()
+            .plan_schema_maintenance()
+    }
+
+    /// Runs one bounded schema maintenance pass through the admitted embedded
+    /// maintenance path, with the semantics and result rows of
+    /// [`crate::Database::run_bounded_schema_maintenance`]: only actions that
+    /// fit `max_estimated_operations` are applied, as one WAL batch, and the
+    /// rest stay in their current state for a later call. A property default
+    /// backfill fills records lacking the key and keeps explicit NULLs; the
+    /// batch that fills the last lacking record advances the descriptor to
+    /// `VALIDATING`, and a later pass promotes it to `PUBLIC`. Fills resume
+    /// across any budget, but validation is one action per descriptor, so the
+    /// pass that promotes it needs at least the `estimated_operations` that
+    /// [`Self::plan_schema_maintenance`] reports for it.
+    ///
+    /// Like [`Self::checkpoint`], the call is admitted as foreground
+    /// maintenance and is explicit: it runs whether or not the database's
+    /// `RuntimeCapabilities::background_maintenance` is enabled, and HawDB
+    /// never runs schema maintenance on its own, so hosts that declare a
+    /// default on existing data drive this until
+    /// [`Self::plan_schema_maintenance`] is empty.
+    pub fn run_bounded_schema_maintenance(
+        &self,
+        max_estimated_operations: usize,
+    ) -> Result<QueryOutput> {
+        let _permit = self.admit_typed_maintenance(RuntimeWorkPriority::Foreground, 0, 1)?;
+        self.write_store()?
+            .graph_mut()
+            .database_mut()
+            .run_bounded_schema_maintenance(max_estimated_operations)
+    }
+
     pub fn query_with_report(&self, cypher: &str) -> Result<EmbeddedQueryOutput> {
         self.query_with_params_with_report(cypher, &BTreeMap::new())
     }

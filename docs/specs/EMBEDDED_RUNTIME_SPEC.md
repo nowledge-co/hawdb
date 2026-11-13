@@ -329,6 +329,23 @@ rather than pending reclamation debt. Hosts that disable background
 maintenance can assert, after their final explicit checkpoint, that no
 reclamation debt or reader lag remains.
 
+`EmbeddedStoreHandle::property_schemas` and
+`EmbeddedStoreHandle::plan_schema_maintenance` return the same
+`Vec<PropertySchema>` and dry-run `QueryOutput` as the `Database` methods under
+the store read guard, without runtime-governor admission.
+`EmbeddedStoreHandle::run_bounded_schema_maintenance(max_estimated_operations)`
+takes one `Foreground` `Maintenance` admission (the `checkpoint` pattern: one
+CPU slot, one I/O slot, the blocking-operator working memory), then runs
+`Database::run_bounded_schema_maintenance` under the exclusive write guard,
+which recaptures the standing read publication when it drops, as for
+`checkpoint`. It returns the same action rows. The call is explicit and
+works whether `RuntimeCapabilities::background_maintenance` is enabled or not;
+HawDB itself never schedules schema maintenance, so a host that declares a
+property DEFAULT on existing data (descriptor in `BACKFILL`) repeats it until
+the plan is empty (nowledge-co/hawdb#1739). Fills resume under any budget; the
+`VALIDATING` advance is one descriptor action and needs at least its planned
+`estimated_operations`.
+
 Allocating beyond the active WAL prevents checkpoint preparation from replacing
 acknowledged recovery bytes. A torn unpublished candidate is not an active WAL
 dependency, and successful publication retains its normal file/selector barriers.

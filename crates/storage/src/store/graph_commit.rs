@@ -503,6 +503,28 @@ impl GraphStore {
                     let table_id =
                         ensure_table_descriptor(&mut working_catalog, table_kind, &table);
                     if let Some(id) = working_catalog.property_descriptor_id(table_id, &property) {
+                        // Re-declaring an identical descriptor is idempotent;
+                        // a declaration that differs must not be dropped
+                        // silently (a DEFAULT would never be attached).
+                        if let Some(existing) = working_catalog.property_descriptor(id) {
+                            let existing_default =
+                                existing.default.as_ref().map(|declared| &declared.value);
+                            if existing.value_type != value_type
+                                || existing.nullable != nullable
+                                || existing_default != default.as_ref()
+                            {
+                                return Err(HawDBError::Storage(format!(
+                                    "property '{table}.{property}' is already declared as \
+                                     {:?}{}{}; CREATE PROPERTY cannot change an existing \
+                                     descriptor's type, nullability or default",
+                                    existing.value_type,
+                                    if existing.nullable { "" } else { " NOT NULL" },
+                                    existing_default
+                                        .map(|value| format!(" DEFAULT {value}"))
+                                        .unwrap_or_default(),
+                                )));
+                            }
+                        }
                         rows.push(BTreeMap::from([
                             ("property_id".to_string(), Value::Int(id.0 as i64)),
                             ("created".to_string(), Value::Bool(false)),
