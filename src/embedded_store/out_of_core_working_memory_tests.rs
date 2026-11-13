@@ -135,7 +135,7 @@ fn snapshot_exact_vector_capacity_is_served_and_refused_above() {
     use crate::search::{SearchProjectionKind, SearchProjectionRow};
     const BUDGET: usize = 8 << 20;
     const CAPACITY: usize = BUDGET / 256;
-    const ABOVE: usize = CAPACITY + CAPACITY / 4;
+    const ABOVE: usize = CAPACITY + 1;
     for dimension in [384, 1024] {
         let root = Root::new("ooc-exact-capacity");
         let path = root.0.join("out-of-core");
@@ -227,6 +227,11 @@ fn snapshot_exact_vector_capacity_is_served_and_refused_above() {
         assert!(charged_bytes(&served) <= BUDGET as u64);
         match snapshot_search(&handle, &request(None)) {
             Err(HawDBError::ResourceBudgetExceeded(error)) => {
+                assert_eq!(
+                    error.resource,
+                    ResourceBudgetKind::MetadataEntries,
+                    "{error}"
+                );
                 assert_eq!(error.budget, CAPACITY as u64, "{error}");
             }
             other => panic!("dimension {dimension}: {ABOVE} eligible served: {other:?}"),
@@ -235,45 +240,92 @@ fn snapshot_exact_vector_capacity_is_served_and_refused_above() {
 }
 
 /// The resident path has its own exact charges; the same snapshot method
-/// reports them. An admission whose capacity covers the eligible set serves
-/// it, and one whose capacity does not is refused.
+/// reports them. At an admission whose capacity is exactly the eligible set,
+/// the read is served untruncated; one more eligible document is refused with
+/// a typed `MemoryBytes` budget error (#1748).
 #[test]
-fn snapshot_exact_vector_capacity_covers_resident_reads() {
-    let eligible = (0..480usize)
-        .filter(|number| !number.is_multiple_of(4) && number % 17 != 5)
-        .count();
-    let id_bytes = "memory:0000".len();
-    let request = SearchCandidateRequest::vector(embedding(6_006), LIMIT)
-        .with_metadata_filters(memory_filter())
-        .with_exact_vector_search();
-    let read = |budget: usize| {
-        let root = Root::new("resident-capacity");
-        let mut config = read_config();
-        config.execution_memory.query_memory_bytes = NonZeroUsize::new(budget).unwrap();
-        let handle = handle(&root, false, config);
-        handle
-            .with_bounded_read_snapshot(
-                EmbeddedReadSnapshotBudget {
-                    max_rows: 32,
-                    max_payload_bytes: 128 * 1024,
-                },
-                |snapshot| {
-                    let capacity = snapshot.exact_vector_search_capacity(id_bytes)?;
-                    Ok((capacity, snapshot.search_candidates_with_report(&request)))
-                },
-            )
-            .unwrap()
+fn snapshot_exact_vector_capacity_is_served_and_refused_above_for_resident_reads() {
+    use super::exact_candidate_tests::{
+        assert_budget_refusal, graph, resident_projection_with_rows,
     };
-    let mut budget = 4096;
-    let (capacity, refused) = read(budget);
-    assert!(capacity < eligible, "{capacity}");
-    assert!(refused.is_err());
-    loop {
-        budget *= 2;
-        let (capacity, served) = read(budget);
-        if capacity >= eligible {
-            assert_eq!(served.unwrap().result.hits.len(), LIMIT, "budget {budget}");
-            break;
+    use crate::search::{SearchProjectionKind, SearchProjectionRow};
+    const CAPACITY: usize = 1_500;
+    let id_bytes = "memory:000000".len();
+    // `tier=capacity` selects exactly CAPACITY of the CAPACITY + 1 memories.
+    let rows = (0..=CAPACITY)
+        .map(|number| SearchProjectionRow {
+            kind: SearchProjectionKind::Memory,
+            external_id: format!("{number:06}"),
+            title: String::new(),
+            body: "vectors".into(),
+            embedding: Some(embedding(number)),
+            source_id: None,
+            metadata: BTreeMap::from([(
+                "tier".to_string(),
+                if number < CAPACITY {
+                    "capacity"
+                } else {
+                    "above"
+                }
+                .to_string(),
+            )]),
+        })
+        .collect::<Vec<_>>();
+    let root = Root::new("resident-capacity");
+    let projection = resident_projection_with_rows(&root, 1, rows);
+    // The smallest admission whose capacity covers CAPACITY eligible documents.
+    let capacity = |bytes: usize| {
+        projection
+            .index()
+            .exact_vector_search_capacity(bytes, id_bytes)
+    };
+    let (mut low, mut high) = (1usize, 1usize << 30);
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if capacity(middle) >= CAPACITY {
+            high = middle;
+        } else {
+            low = middle + 1;
         }
     }
+    let budget = low;
+    assert_eq!(capacity(budget), CAPACITY);
+    let mut config = read_config();
+    config.execution_memory.query_memory_bytes = NonZeroUsize::new(budget).unwrap();
+    let (graph, _) = graph(config);
+    let handle = EmbeddedStoreHandle::new(EmbeddedStore::new(graph, Some(projection))).unwrap();
+    let request = |tier: Option<&str>| {
+        let mut filters = memory_filter();
+        if let Some(tier) = tier {
+            filters.insert("tier".into(), tier.into());
+        }
+        SearchCandidateRequest::vector(embedding(6_006), LIMIT)
+            .with_metadata_filters(filters)
+            .with_exact_vector_search()
+    };
+    let (snapshot_capacity, served, refused) = handle
+        .with_bounded_read_snapshot(
+            EmbeddedReadSnapshotBudget {
+                max_rows: 32,
+                max_payload_bytes: 128 * 1024,
+            },
+            |snapshot| {
+                Ok((
+                    snapshot.exact_vector_search_capacity(id_bytes)?,
+                    snapshot.search_candidates_with_report(&request(Some("capacity"))),
+                    snapshot.search_candidates_with_report(&request(None)),
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(snapshot_capacity, CAPACITY);
+    let served = served.unwrap();
+    assert_eq!(served.result.hits.len(), LIMIT);
+    assert_eq!(served.result.candidate_set.cardinality, CAPACITY);
+    assert!(served.report.exact_vector_search);
+    assert_budget_refusal(
+        &refused.unwrap_err(),
+        ResourceBudgetKind::MemoryBytes,
+        budget as u64,
+    );
 }

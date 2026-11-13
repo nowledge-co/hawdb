@@ -324,6 +324,7 @@ impl SearchOutOfCoreReader {
                 BoundedScoreCollector::with_context(
                     Some(limit),
                     self.config.max_score_entries.get(),
+                    MAX_SCORE_ENTRIES_OPTION,
                     context,
                 )
             })

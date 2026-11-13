@@ -55,22 +55,28 @@ pub(super) struct BoundedScoreCollector {
     storage: Storage,
     pub(super) matching_count: usize,
     max_entries: usize,
+    budget_option: &'static str,
     memory: Option<QueryMemoryLease>,
 }
 
 impl BoundedScoreCollector {
-    pub(super) fn new(limit: Option<usize>, max_entries: usize) -> Result<Self> {
-        Self::with_context(limit, max_entries, None)
-    }
+    /// `budget_option` names the option that defines `max_entries`; exceeding
+    /// it is a typed `MetadataEntries` budget refusal.
     pub(super) fn with_context(
         limit: Option<usize>,
         max_entries: usize,
+        budget_option: &'static str,
         context: Option<QueryContext<'_>>,
     ) -> Result<Self> {
-        if limit.is_some_and(|limit| limit > max_entries) {
-            return Err(HawDBError::Storage(format!(
-                "search rank window exceeds the admitted {max_entries} score entries"
-            )));
+        if let Some(limit) = limit.filter(|limit| *limit > max_entries) {
+            return Err(score_entries_refusal(
+                "search rank window",
+                limit,
+                0,
+                max_entries,
+                budget_option,
+                format!("search rank window exceeds the admitted {max_entries} score entries"),
+            ));
         }
         // The score map's root node is funded once; entries add their nodes.
         let mut memory = context
@@ -96,6 +102,7 @@ impl BoundedScoreCollector {
             storage,
             matching_count: 0,
             max_entries,
+            budget_option,
             memory,
         })
     }
@@ -105,7 +112,17 @@ impl BoundedScoreCollector {
         match &self.storage {
             Storage::Full(values) => {
                 if values.len() >= self.max_entries {
-                    return Err(HawDBError::Storage(format!("vector query matched more than {} documents; provide a rank window or narrow the candidate set", self.max_entries)));
+                    return Err(score_entries_refusal(
+                        "search score collector",
+                        1,
+                        values.len(),
+                        self.max_entries,
+                        self.budget_option,
+                        format!(
+                            "vector query matched more than {} documents; provide a rank window or narrow the candidate set",
+                            self.max_entries
+                        ),
+                    ));
                 }
                 Ok(true)
             }
@@ -204,4 +221,29 @@ impl BoundedScoreCollector {
             memory: self.memory.take(),
         })
     }
+}
+
+/// A score window or complete score map larger than the admitted score
+/// entries. The request is over budget; the projection is not damaged.
+pub(super) fn score_entries_refusal(
+    owner: &str,
+    requested: usize,
+    used: usize,
+    budget: usize,
+    budget_option: &'static str,
+    message: String,
+) -> HawDBError {
+    let entries = |value: usize| u64::try_from(value).unwrap_or(u64::MAX);
+    ResourceBudgetError {
+        resource: ResourceBudgetKind::MetadataEntries,
+        scope: ResourceBudgetScope::Operator,
+        owner: owner.into(),
+        memory_class: None,
+        requested: entries(requested),
+        used: entries(used),
+        budget: entries(budget),
+        budget_option,
+        message,
+    }
+    .into()
 }

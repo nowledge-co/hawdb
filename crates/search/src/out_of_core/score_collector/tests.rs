@@ -14,6 +14,7 @@ fn score_heap_transfers_funded_ids_to_map_and_refunds_replaced_payloads() {
         let mut collector = BoundedScoreCollector::with_context(
             limit,
             10,
+            "test.max_entries",
             Some(QueryContext {
                 memory: &memory,
                 task: &task,
@@ -53,6 +54,7 @@ fn score_heap_map_admission_failure_drops_heap_before_refunding() {
     let mut collector = BoundedScoreCollector::with_context(
         Some(2),
         10,
+        "test.max_entries",
         Some(QueryContext {
             memory: &memory,
             task: &task,
