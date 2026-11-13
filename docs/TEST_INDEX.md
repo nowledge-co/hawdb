@@ -327,8 +327,10 @@ and present values are kept, both descriptors reach `PUBLIC`, and the label
 still accepts arbitrary undeclared properties. A reopen without a checkpoint
 and a reopen after one preserve the fills and states. A second case pins
 `CREATE PROPERTY` re-declaration: identical declarations return
-`created: false`, while a changed default, type or nullability is an error and
-leaves the descriptor unchanged. Replay with `cargo test --locked -p hawdb --lib
+`created: false`, while a changed default, type or nullability is a typed
+`HawDBError::Schema { surface: Storage, .. }` refusal (Display text
+`storage error: ...`) that leaves the descriptor unchanged and the handle
+unpoisoned. Replay with `cargo test --locked -p hawdb --lib
 schema_maintenance_tests`. No new lane, profile, fixture amplification or
 timeout is introduced.
 

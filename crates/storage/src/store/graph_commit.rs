@@ -513,16 +513,21 @@ impl GraphStore {
                                 || existing.nullable != nullable
                                 || existing_default != default.as_ref()
                             {
-                                return Err(HawDBError::Storage(format!(
-                                    "property '{table}.{property}' is already declared as \
-                                     {:?}{}{}; CREATE PROPERTY cannot change an existing \
-                                     descriptor's type, nullability or default",
-                                    existing.value_type,
-                                    if existing.nullable { "" } else { " NOT NULL" },
-                                    existing_default
-                                        .map(|value| format!(" DEFAULT {value}"))
-                                        .unwrap_or_default(),
-                                )));
+                                // A typed schema refusal, not a storage
+                                // failure: hosts must not treat it as one.
+                                return Err(HawDBError::Schema {
+                                    surface: hawdb_core::RelationalErrorSurface::Storage,
+                                    message: format!(
+                                        "property '{table}.{property}' is already declared as \
+                                         {:?}{}{}; CREATE PROPERTY cannot change an existing \
+                                         descriptor's type, nullability or default",
+                                        existing.value_type,
+                                        if existing.nullable { "" } else { " NOT NULL" },
+                                        existing_default
+                                            .map(|value| format!(" DEFAULT {value}"))
+                                            .unwrap_or_default(),
+                                    ),
+                                });
                             }
                         }
                         rows.push(BTreeMap::from([

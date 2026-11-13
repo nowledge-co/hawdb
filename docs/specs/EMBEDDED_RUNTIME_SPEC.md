@@ -344,7 +344,11 @@ HawDB itself never schedules schema maintenance, so a host that declares a
 property DEFAULT on existing data (descriptor in `BACKFILL`) repeats it until
 the plan is empty (nowledge-co/hawdb#1739). Fills resume under any budget; the
 `VALIDATING` advance is one descriptor action and needs at least its planned
-`estimated_operations`.
+`estimated_operations`. It scans the whole table under the exclusive write
+guard and therefore blocks writes for that scan, so hosts schedule it like
+`checkpoint` on large tables. A `CREATE PROPERTY` re-declaration that conflicts
+with the existing descriptor fails with `HawDBError::Schema` (storage surface),
+which does not poison the handle.
 
 Allocating beyond the active WAL prevents checkpoint preparation from replacing
 acknowledged recovery bytes. A torn unpublished candidate is not an active WAL

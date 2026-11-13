@@ -586,7 +586,9 @@ impl EmbeddedStoreHandle {
     /// `VALIDATING`, and a later pass promotes it to `PUBLIC`. Fills resume
     /// across any budget, but validation is one action per descriptor, so the
     /// pass that promotes it needs at least the `estimated_operations` that
-    /// [`Self::plan_schema_maintenance`] reports for it.
+    /// [`Self::plan_schema_maintenance`] reports for it. That validation scans
+    /// the whole table while holding the exclusive write guard and blocks
+    /// writers meanwhile, so on large tables schedule it like a checkpoint.
     ///
     /// Like [`Self::checkpoint`], the call is admitted as foreground
     /// maintenance and is explicit: it runs whether or not the database's

@@ -1229,12 +1229,21 @@ That explicit call does not require the `background_maintenance` capability, so
 an offline host with background maintenance disabled can repeat it with a small
 budget while the descriptor is in `BACKFILL`; the `VALIDATING` to `PUBLIC`
 advance is one action whose planned estimate is the table's record count, so
-the promoting call needs at least that budget.
+the promoting call needs at least that budget. That validation scans every
+record of the table while holding the handle's exclusive write guard, so it
+blocks writers for the length of a full-table scan; on large tables hosts
+should schedule the promoting call like a checkpoint (idle time, preparation
+phase) rather than on a latency-sensitive write path.
 
 `CREATE PROPERTY` on a property that already has a descriptor is idempotent only
 when type, nullability and default all match (`created: false`). A declaration
 that differs in any of them is rejected with an error naming the existing
-declaration, instead of being dropped; in particular a `DEFAULT` cannot be
+declaration, instead of being dropped. This is a behaviour change (#1739):
+such a re-declaration used to be a silent no-op returning `created: false`. The
+refusal is the typed `HawDBError::Schema { surface: Storage, .. }` (displayed
+as `storage error: ...`, like other storage-surface schema refusals), not
+`HawDBError::Storage`, so hosts can tell a rejected DDL from a storage
+failure; the database stays usable. In particular a `DEFAULT` cannot be
 attached to an existing undefaulted descriptor this way (`ALTER PROPERTY ...
 SET DEFAULT` is tracked in #1740). Schema-less writes such as
 `CREATE (:Entity {score: 0.3})` create no property descriptors, so declaring a

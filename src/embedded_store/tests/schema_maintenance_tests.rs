@@ -269,11 +269,27 @@ fn create_property_never_silently_drops_a_changed_declaration() {
         "CREATE PROPERTY ON NODE TABLE Entity(p) TYPE ANY NOT NULL",
     ] {
         let error = handle.query_with_report(statement).unwrap_err();
+        // A typed schema refusal that keeps the `storage error:` text; it is
+        // not a storage failure and must not poison the runtime.
         assert!(
-            error.to_string().contains("already declared"),
-            "{statement}: {error}"
+            matches!(
+                &error,
+                HawDBError::Schema {
+                    surface: crate::RelationalErrorSurface::Storage,
+                    message,
+                } if message.contains("already declared")
+            ),
+            "{statement}: {error:?}"
+        );
+        assert!(
+            error
+                .to_string()
+                .starts_with("storage error: property 'Entity.p' is already declared"),
+            "{error}"
         );
     }
+    assert!(!handle.storage_handle_poisoned().unwrap());
+    run(&handle, "CREATE (:Entity {id: 'after_refusal'})");
     let schemas = handle.property_schemas().unwrap();
     let entity_p = descriptor(&schemas, "Entity", "p").unwrap();
     assert_eq!(entity_p.default, None);
@@ -291,12 +307,16 @@ fn create_property_never_silently_drops_a_changed_declaration() {
         "CREATE PROPERTY ON NODE TABLE Entity(q) TYPE ANY DEFAULT 1",
     );
     assert_eq!(same.rows[0]["created"], Value::Bool(false));
-    handle
-        .query_with_report("CREATE PROPERTY ON NODE TABLE Entity(q) TYPE ANY DEFAULT 2")
-        .unwrap_err();
-    handle
-        .query_with_report("CREATE PROPERTY ON NODE TABLE Entity(q) TYPE ANY")
-        .unwrap_err();
+    for statement in [
+        "CREATE PROPERTY ON NODE TABLE Entity(q) TYPE ANY DEFAULT 2",
+        "CREATE PROPERTY ON NODE TABLE Entity(q) TYPE ANY",
+    ] {
+        let error = handle.query_with_report(statement).unwrap_err();
+        assert!(
+            matches!(error, HawDBError::Schema { .. }),
+            "{statement}: {error:?}"
+        );
+    }
     drop(handle);
     std::fs::remove_dir_all(path).unwrap();
 }
