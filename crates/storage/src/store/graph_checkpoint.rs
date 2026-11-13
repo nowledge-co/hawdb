@@ -1599,11 +1599,13 @@ impl GraphStore {
         // Generation reclamation is post-commit maintenance. It must run only
         // after every in-memory view has adopted the published generation, and
         // its failure must not change the checkpoint outcome.
+        let owner = self.branch_lease.clone();
         if let Some(durable) = self.durable.as_mut() {
             durable.reclaim_old_generations(
                 generation,
                 prepared.source_checkpoint_epoch,
                 pinned_reader_generations,
+                owner.as_deref(),
             );
         }
         self.reclaim_version_history();
@@ -1905,10 +1907,10 @@ impl GraphStore {
             generation_reclamation_retry_required,
             generation_reclamation_pending_files,
             generation_reclamation_pending_bytes,
-        ) = self
-            .durable
-            .as_ref()
-            .map_or((0, 0, None, 0, false, 0, 0), |durable| {
+            objects,
+        ) = self.durable.as_ref().map_or(
+            (0, 0, None, 0, false, 0, 0, Default::default()),
+            |durable| {
                 let reclamation = durable.generation_reclamation_debt();
                 (
                     durable.wal_bytes,
@@ -1921,8 +1923,10 @@ impl GraphStore {
                     reclamation.retry_required,
                     reclamation.pending_file_count,
                     reclamation.pending_bytes,
+                    reclamation.objects,
                 )
-            });
+            },
+        );
         let has_checkpoint_debt =
             self.durable.is_some() && self.commit_epoch > checkpoint_commit_epoch;
         let estimated_checkpoint_temporary_bytes = if has_checkpoint_debt {
@@ -1965,6 +1969,16 @@ impl GraphStore {
             generation_reclamation_retry_required,
             generation_reclamation_pending_files,
             generation_reclamation_pending_bytes,
+            object_store_files: objects.store_objects,
+            object_store_bytes: objects.store_bytes,
+            object_reclamation_retry_required: objects.retry_required,
+            object_reclamation_pending_files: objects.pending_objects,
+            object_reclamation_pending_bytes: objects.pending_bytes,
+            object_reclamation_skipped_files: objects.skipped_objects,
+            object_reclamation_skipped_bytes: objects.skipped_bytes,
+            object_reclamation_corrupt_object: objects.corrupt_object,
+            object_reclamation_quarantine_unverified: objects.quarantine_unverified,
+            object_reclamation_damaged_live_root: objects.damaged_live_root,
             oldest_reader_commit_epoch,
             obsolete_generation_bytes,
             estimated_checkpoint_temporary_bytes,

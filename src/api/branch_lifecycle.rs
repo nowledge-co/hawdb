@@ -2878,7 +2878,10 @@ impl Database {
 
     /// Reclaims unreachable immutable objects and deleted branch directories.
     /// Keep calling after readers or other branch owners retire if the report
-    /// indicates a conservative deferral. This never expires live branches.
+    /// indicates a conservative deferral, and while it reports
+    /// `pending_objects` (the per-pass `limits` budget was reached or a
+    /// removal failed). Checkpoints already run a bounded automatic pass
+    /// (#1736). This never expires live branches.
     /// Registered readers, prepared publications and jobs retain their exact
     /// immutable roots. Unregistered internal jobs still fail closed.
     pub fn reclaim_branch_storage(
