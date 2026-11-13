@@ -36,8 +36,9 @@ impl Default for ProjectionFullSourceLimits {
     }
 }
 
-/// Graph candidates include allocation holes and deleted IDs. Hydration against
-/// the same snapshot determines presence; every attempted ID consumes admission.
+/// Graph candidates enumerate actual records from the pinned canonical base and
+/// resident overlay. Deleted and replaced base records are suppressed against
+/// that same snapshot; every inspected record consumes admission.
 /// Every canonical relational table is announced, including empty tables.
 #[derive(Debug, Clone, Copy)]
 pub enum ProjectionFullSourceItem<'a> {
@@ -67,7 +68,6 @@ pub struct ProjectionFullSourceCursor {
     label_base: Option<CanonicalNodeLabelCursor>,
     label_delta_after: Option<NodeId>,
     label_nodes_complete: bool,
-    node: u64,
     table: usize,
     announced: bool,
     last: Option<RelationalKey>,
@@ -188,19 +188,13 @@ impl GraphStore {
         }
         let label_nodes_complete = labels.as_ref().is_some_and(Vec::is_empty);
         let source = Box::new(self.snapshot_for_read());
-        let label_base =
-            if labels.is_some() && !label_nodes_complete && source.canonical_base_out_of_core {
-                source
-                    .canonical_base
-                    .clone()
-                    .map(CanonicalNodeLabelCursor::new)
-            } else {
-                None
-            };
-        let node = if labels.is_some() {
-            self.next_node_id
+        let label_base = if !label_nodes_complete && source.canonical_base_out_of_core {
+            source
+                .canonical_base
+                .clone()
+                .map(CanonicalNodeLabelCursor::new)
         } else {
-            0
+            None
         };
         Ok(ProjectionFullSourceCursor {
             source,
@@ -210,7 +204,6 @@ impl GraphStore {
             label_base,
             label_delta_after: None,
             label_nodes_complete,
-            node,
             table: 0,
             announced: false,
             last: None,
@@ -433,23 +426,10 @@ impl ProjectionFullSourceCursor {
             self.task
                 .checkpoint()
                 .map_err(|e| ProjectionFeedError::Source(HawDBError::Execution(e.to_string())))?;
-            if self.labels.is_some() && !self.label_nodes_complete {
+            if !self.label_nodes_complete {
                 if !self.advance_labels(step, &mut used, visitor)? {
                     break;
                 }
-            } else if self.node < self.source.next_node_id {
-                let work = self
-                    .labels
-                    .as_ref()
-                    .map_or(1, |labels| labels.len().saturating_add(1));
-                if !self.charge(step, &mut used, work, 1, 8)? {
-                    break;
-                }
-                if self.includes_node(NodeId(self.node))? {
-                    visitor(ProjectionFullSourceItem::GraphNodeCandidate { node_id: self.node })
-                        .map_err(ProjectionFeedError::Callback)?;
-                }
-                self.node += 1;
             } else if self.table < self.tables.len() {
                 if !self.announced {
                     let bytes = self.tables[self.table].len();
@@ -528,34 +508,6 @@ impl ProjectionFullSourceCursor {
         })
     }
 
-    fn includes_node(&self, id: NodeId) -> std::result::Result<bool, ProjectionFeedError> {
-        let Some(labels) = &self.labels else {
-            return Ok(true);
-        };
-        if self.source.node_tombstones.contains(&id) {
-            return Ok(false);
-        }
-        if let Some(node) = self.source.nodes.get(&id) {
-            return Ok(labels.iter().any(|label| node.labels.contains(label)));
-        }
-        let Some(reader) = &self.source.canonical_base else {
-            return Ok(false);
-        };
-        let result = reader
-            .with_node_input(id, |input| {
-                for label in labels {
-                    if input.has_label(*label)? {
-                        return Ok(true);
-                    }
-                }
-                Ok(false)
-            })
-            .map(|present| present.unwrap_or(false))
-            .map_err(canonical_segment_error);
-        self.source.poison_on_storage_error(&result);
-        result.map_err(ProjectionFeedError::Source)
-    }
-
     /// Every descriptor, actual row and label comparison is charged before
     /// processing. Only real snapshot records are visited; allocation holes do
     /// not manufacture work. A base row replaced by the captured delta is
@@ -571,16 +523,16 @@ impl ProjectionFullSourceCursor {
             self.source.poison_on_storage_error(&action);
             match action.map_err(ProjectionFeedError::Source)? {
                 CanonicalLabelAction::Segment => {
-                    let work = 1 + self.labels.as_ref().expect("label scope").len();
+                    let work = 1 + self.labels.as_ref().map_or(0, Vec::len);
                     if !self.charge(step, used, work, 0, 0)? {
                         return Ok(false);
                     }
-                    let result = self
-                        .label_base
-                        .as_mut()
-                        .expect("base cursor")
-                        .load_segment(self.labels.as_ref().expect("label scope"), &self.task)
-                        .map_err(canonical_segment_error);
+                    let base = self.label_base.as_mut().expect("base cursor");
+                    let result = match &self.labels {
+                        Some(labels) => base.load_segment(labels, &self.task),
+                        None => base.load_segment_all(&self.task),
+                    }
+                    .map_err(canonical_segment_error);
                     self.source.poison_on_storage_error(&result);
                     result.map_err(ProjectionFeedError::Source)?;
                     return Ok(true);
@@ -596,12 +548,12 @@ impl ProjectionFullSourceCursor {
                     )? {
                         return Ok(false);
                     }
-                    let selected = self
-                        .label_base
-                        .as_mut()
-                        .expect("base cursor")
-                        .accept_record(self.labels.as_ref().expect("label scope"))
-                        .map_err(canonical_segment_error);
+                    let base = self.label_base.as_mut().expect("base cursor");
+                    let selected = match &self.labels {
+                        Some(labels) => base.accept_record(labels),
+                        None => base.accept_record_all().map(|()| true),
+                    }
+                    .map_err(canonical_segment_error);
                     self.source.poison_on_storage_error(&selected);
                     if selected.map_err(ProjectionFeedError::Source)?
                         && !self.source.node_tombstones.contains(&id)
@@ -636,12 +588,10 @@ impl ProjectionFullSourceCursor {
             )? {
                 return Ok(false);
             }
-            let selected = node.labels.iter().any(|label| {
-                self.labels
-                    .as_ref()
-                    .expect("label scope")
-                    .binary_search(label)
-                    .is_ok()
+            let selected = self.labels.as_ref().is_none_or(|selected| {
+                node.labels
+                    .iter()
+                    .any(|label| selected.binary_search(label).is_ok())
             });
             self.label_delta_after = Some(*id);
             if selected && !self.source.node_tombstones.contains(id) {
@@ -654,7 +604,9 @@ impl ProjectionFullSourceCursor {
     }
 
     fn label_membership_work(&self, labels: usize) -> usize {
-        let selected = self.labels.as_ref().expect("label scope").len();
+        let Some(selected) = self.labels.as_ref().map(Vec::len) else {
+            return 1;
+        };
         let comparisons = 1 + (usize::BITS - selected.leading_zeros()) as usize;
         1usize.saturating_add(labels.saturating_mul(comparisons))
     }

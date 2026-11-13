@@ -4924,10 +4924,8 @@ fn publish_out_of_core_projection(
             (SEARCH_SEGMENT_PAYLOAD_FILE, &payload_file),
             (MANIFEST_FILE, &lexical_manifest_file),
         ] {
-            bytes_written = bytes_written.saturating_add(publish_generation_link(
-                &root.join(current),
-                &root.join(generation_file),
-            )?);
+            bytes_written = bytes_written
+                .saturating_add(io.link(&root.join(current), &root.join(generation_file))?);
         }
     }
 
@@ -5132,10 +5130,8 @@ fn publish_out_of_core_projection(
         #[cfg(test)]
         resident_checkpoint_fault(ResidentCheckpointStep::AfterSelector)?;
         for (current, generation_file) in resident_aliases(generation) {
-            bytes_written = bytes_written.saturating_add(publish_generation_link(
-                &root.join(generation_file),
-                &root.join(current),
-            )?);
+            bytes_written = bytes_written
+                .saturating_add(io.link(&root.join(generation_file), &root.join(current))?);
             #[cfg(test)]
             resident_checkpoint_fault(ResidentCheckpointStep::AfterAlias(current))?;
         }
@@ -5266,6 +5262,9 @@ pub(super) fn recover_resident_aliases(root: &Path) -> Result<()> {
         segment.objects.descriptor,
         segment.objects.lexical_manifest,
     ];
+    let task = hawdb_core::RuntimeTaskContext::default();
+    let memory = crate::build_memory::BuildMemory::new(&task)?;
+    let io = generation_writer::io::GenerationIo::new(&memory, &task);
     for (index, ((current, generation_file), object)) in aliases.iter().zip(objects).enumerate() {
         let source = root.join(generation_file);
         let target = root.join(current);
@@ -5287,7 +5286,7 @@ pub(super) fn recover_resident_aliases(root: &Path) -> Result<()> {
             }
             continue;
         }
-        publish_generation_link(&source, &target)?;
+        io.link(&source, &target)?;
     }
     Ok(())
 }
@@ -5342,7 +5341,7 @@ fn sweep_resident_scratch(root: &Path) {
 }
 
 #[cfg(unix)]
-fn same_file(left: &Path, right: &Path) -> Result<bool> {
+pub(super) fn same_file(left: &Path, right: &Path) -> Result<bool> {
     use std::os::unix::fs::MetadataExt;
     let left = fs::metadata(left)?;
     let right = match fs::metadata(right) {
@@ -5353,10 +5352,20 @@ fn same_file(left: &Path, right: &Path) -> Result<bool> {
     Ok(left.dev() == right.dev() && left.ino() == right.ino())
 }
 
-#[cfg(not(unix))]
-fn same_file(_source: &Path, _target: &Path) -> Result<bool> {
-    // Stable std exposes no file identity on Windows (`file_index` is
-    // unstable). The caller then hashes each current name once per reopen.
+#[cfg(windows)]
+pub(super) fn same_file(left: &Path, right: &Path) -> Result<bool> {
+    let left = File::open(left)?;
+    match left.matches_native_path(right) {
+        Ok(same) => Ok(same),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(super) fn same_file(_left: &Path, _right: &Path) -> Result<bool> {
+    // Keep content verification as the conservative fallback on targets
+    // without a native file identity implementation.
     Ok(false)
 }
 
@@ -5849,22 +5858,6 @@ fn latest_recoverable_lexical_generation(root: &Path, max_manifest_bytes: u64) -
         }
     }
     Ok(latest)
-}
-
-fn publish_generation_link(source: &Path, target: &Path) -> Result<u64> {
-    let tmp = temporary_artifact_path(target);
-    let mut guard = CandidateFileGuard::new(tmp.clone());
-    let bytes_written = match fs::hard_link(source, &tmp) {
-        Ok(()) => 0,
-        Err(_) => {
-            let copied = fs::copy(source, &tmp)?;
-            File::open(&tmp)?.sync_all()?;
-            copied
-        }
-    };
-    durable_replace_file(&tmp, target)?;
-    guard.disarm();
-    Ok(bytes_written)
 }
 
 fn write_generation_artifact(target: &Path, bytes: &[u8]) -> Result<u64> {

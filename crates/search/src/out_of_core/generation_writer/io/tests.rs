@@ -116,18 +116,40 @@ fn forced_copy_preserves_bytes_and_cancelled_fallback_keeps_old_target() {
             if cancel {
                 task.cancellation().cancel();
             }
-            Err(io::Error::other("injected hard-link failure"))
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "injected hard-link refusal",
+            ))
         });
         if cancel {
             assert!(result.unwrap_err().to_string().contains("cancel"));
             assert_eq!(fs::read(&target).unwrap(), b"old generation");
         } else {
-            result.unwrap();
+            assert_eq!(result.unwrap(), bytes.len() as u64);
             assert_eq!(fs::read(&target).unwrap(), bytes);
         }
         assert_eq!(fs::read_dir(&root.0).unwrap().count(), 2);
         assert_eq!(memory.ledger.snapshot().used_bytes, 0);
     }
+}
+
+#[test]
+fn non_capability_hard_link_failure_does_not_copy_or_replace() {
+    let root = Directory::new();
+    let source = root.0.join("source");
+    let target = root.0.join("target");
+    fs::write(&source, b"new generation").unwrap();
+    fs::write(&target, b"old generation").unwrap();
+    let (memory, task) = context(256 * 1024);
+    let error = GenerationIo::new(&memory, &task)
+        .link_with(&source, &target, |_, _| {
+            Err(io::Error::other("injected hard-link I/O failure"))
+        })
+        .unwrap_err();
+    assert!(error.to_string().contains("injected hard-link I/O failure"));
+    assert_eq!(fs::read(&target).unwrap(), b"old generation");
+    assert_eq!(fs::read_dir(&root.0).unwrap().count(), 2);
+    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
 }
 
 #[test]

@@ -185,8 +185,11 @@ and vector files), each synced and renamed into place. The rename of
 snapshot's object reference, is the single commit point. Only then are
 `search_projection.hawdb`, `search_projection_segment_payloads.hawdb`,
 `search_projection_segments.hawdb` and `search_lexical.manifest.hawdb`, in that
-order, replaced by hard links (or synced copies) to the selected generation. A loss
-before the selector leaves every current name and the selector at the previous
+order, replaced by hard links (or synced copies) to the selected generation.
+Copy fallback is limited to hard-link capability or policy refusals and uses an
+admitted bounded buffer with task cancellation checkpoints; unrelated I/O errors
+fail without replacing the old alias. A loss before the selector leaves every
+current name and the selector at the previous
 checkpoint. After it, `SearchIndex::open` re-links any current name that differs
 from the selected generation, but only from a generation file whose bytes match
 the selector's object reference. The repair runs only when the selected
@@ -194,10 +197,11 @@ generation snapshot exists and matches its receipt. Older layouts and selectors
 from other writers keep the existing validation. Before the selector, every
 installed generation file, including the snapshot, is re-read and checked
 against the reference the selector records. Reopen also removes alias-link and
-generation-write temporaries left by an interrupted checkpoint. On Windows,
-which has no stable file identity in std, each reopen hashes the four current
-files once. The current and previous generation snapshots stay under the
-ordinary content-generation retention. See
+generation-write temporaries left by an interrupted checkpoint. Unix compares
+device/inode identity; Windows compares the volume serial and full 128-bit file
+ID through counted validation handles. Content hashing is needed only when an
+alias differs or native identity is unsupported. The current and previous
+generation snapshots stay under the ordinary content-generation retention. See
 [resident checkpoint qualification](SEARCH_SEGMENT_POWER_LOSS_QUALIFICATION.md#resident-checkpoint).
 
 Compatibility: a projection written before #1711 has no generation snapshot
