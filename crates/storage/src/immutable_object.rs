@@ -331,7 +331,8 @@ pub struct BranchReclamationInventory {
 pub(crate) struct ObjectSweepBudget {
     /// Unreachable objects removed in one pass.
     pub max_objects: usize,
-    /// Unreachable bytes removed in one pass.
+    /// Unreachable bytes re-hashed (verified) in one pass. Objects this
+    /// process published, with an unchanged inode, are not re-hashed.
     pub max_bytes: u64,
     /// Reachable non-root bytes whose content is re-hashed during mark.
     pub max_verified_reachable_bytes: u64,
@@ -861,6 +862,17 @@ impl ImmutableObjectStore {
         }
     }
 
+    /// Whether `reference` is an object this process published whose inode is
+    /// unchanged since (see the `published` module); its content was hashed
+    /// when written. Any doubt answers `false`.
+    fn published_and_unchanged(&self, reference: ObjectReference) -> bool {
+        File::open(self.object_path(reference))
+            .and_then(|file| {
+                file.with_native(|native| Ok(published::skip_rehash(reference, native)))
+            })
+            .unwrap_or(false)
+    }
+
     /// Confirms that a reachable object is present with its exact length and
     /// kind directory, without hashing its content.
     fn check_present(&self, reference: ObjectReference) -> Result<(), ImmutableObjectError> {
@@ -890,10 +902,11 @@ impl ImmutableObjectStore {
     /// fails the pass before anything is removed.
     ///
     /// Sweep removes at most `budget.max_objects` unreachable objects and
-    /// `budget.max_bytes` of their bytes (always at least one candidate, so a
-    /// single object larger than the byte budget still makes progress). The
-    /// rest is reported as pending for the next pass. Every selected
-    /// candidate is fully verified before the first unlink, with the same
+    /// re-hashes at most `budget.max_bytes` of them (always at least one
+    /// object); the rest is reported as pending for the next pass. An object
+    /// this process published and whose inode is unchanged is not re-hashed
+    /// and does not count against the byte budget. Every selected candidate
+    /// is verified before the first unlink, with the same
     /// quarantine-evidence rule as the complete sweep. `before_first_unlink`
     /// runs once, only when something will be removed; its failure removes
     /// nothing and leaves every selected candidate pending. An unlink that
@@ -954,7 +967,6 @@ impl ImmutableObjectStore {
 
         let mut report = ObjectSweepReport::default();
         let mut selected = Vec::new();
-        let mut selected_bytes = 0u64;
         let mut staging = Vec::new();
         let listing = (|| -> io::Result<()> {
             crate::branch_reclamation::object_reclamation_failpoint(
@@ -1028,11 +1040,7 @@ impl ImmutableObjectStore {
                         report.corrupt_object.get_or_insert(reference);
                         continue;
                     }
-                    if selected.is_empty()
-                        || (selected.len() < budget.max_objects
-                            && selected_bytes.saturating_add(length) <= budget.max_bytes)
-                    {
-                        selected_bytes = selected_bytes.saturating_add(length);
+                    if selected.len() < budget.max_objects.max(1) {
                         selected.push(reference);
                     } else {
                         report.pending_objects += 1;
@@ -1048,10 +1056,33 @@ impl ImmutableObjectStore {
         })?;
 
         // Verify the selected candidates before the first unlink, exactly as
-        // the complete sweep verifies its inventory.
+        // the complete sweep verifies its inventory. An object this process
+        // published, still the same unmodified inode, was hashed when it was
+        // written and is not hashed again; the byte budget bounds only the
+        // content actually re-hashed, so garbage a checkpoint of this process
+        // just superseded is always removable while an older backlog drains
+        // `max_bytes` per pass (always at least one object).
         let mut verified = Vec::with_capacity(selected.len());
+        let mut hashed_bytes = 0u64;
+        let mut hashed_any = false;
         for reference in selected {
-            match self.verify(reference) {
+            let trusted = self.published_and_unchanged(reference);
+            if !trusted
+                && hashed_any
+                && hashed_bytes.saturating_add(reference.byte_length) > budget.max_bytes
+            {
+                report.pending_objects += 1;
+                report.pending_bytes = report.pending_bytes.saturating_add(reference.byte_length);
+                continue;
+            }
+            let verification = if trusted {
+                Ok(())
+            } else {
+                hashed_any = true;
+                hashed_bytes = hashed_bytes.saturating_add(reference.byte_length);
+                self.verify(reference)
+            };
+            match verification {
                 Ok(()) => verified.push(reference),
                 Err(ImmutableObjectError::Io { source, .. })
                     if source.kind() == io::ErrorKind::NotFound =>

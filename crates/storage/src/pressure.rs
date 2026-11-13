@@ -67,6 +67,10 @@ pub enum StoragePressureReasonCode {
     /// An automatic sweep retained quarantined sources because their archive
     /// was over budget or failed verification; explicit reclamation decides.
     ObjectReclamationQuarantineUnverified,
+    /// An object reachable from a retained root is missing, truncated or not
+    /// decodable (`object_reclamation_damaged_live_root`): live data is
+    /// damaged. Sweeps stop until it is repaired; this is not backlog.
+    ObjectReclamationLiveObjectDamaged,
     ReaderPinnedObsoleteGenerations,
     CachePinnedPressure,
 }
@@ -90,6 +94,7 @@ impl StoragePressureReasonCode {
             Self::ObjectReclamationQuarantineUnverified => {
                 "object_reclamation_quarantine_unverified"
             }
+            Self::ObjectReclamationLiveObjectDamaged => "object_reclamation_live_object_damaged",
             Self::ReaderPinnedObsoleteGenerations => "reader_pinned_obsolete_generations",
             Self::CachePinnedPressure => "cache_pinned_pressure",
         }
@@ -119,6 +124,7 @@ pub struct StoragePressureSignals {
     pub object_reclamation_skipped_bytes: u64,
     pub object_reclamation_corrupt_object: Option<crate::immutable_object::ObjectReference>,
     pub object_reclamation_quarantine_unverified: bool,
+    pub object_reclamation_damaged_live_root: Option<crate::immutable_object::ObjectReference>,
     pub oldest_reader_commit_epoch: Option<u64>,
     pub obsolete_generation_bytes: u64,
     pub estimated_checkpoint_temporary_bytes: u64,
@@ -164,6 +170,8 @@ pub struct StoragePressureSnapshot {
     /// Kind and digest of a corrupt unreachable object that was retained.
     pub object_reclamation_corrupt_object: Option<crate::immutable_object::ObjectReference>,
     pub object_reclamation_quarantine_unverified: bool,
+    /// A retained root whose closure the last sweep found damaged.
+    pub object_reclamation_damaged_live_root: Option<crate::immutable_object::ObjectReference>,
     pub oldest_reader_commit_epoch: Option<u64>,
     pub oldest_reader_lag: u64,
     pub obsolete_generation_bytes: u64,
@@ -266,6 +274,9 @@ impl StorageDebtController {
         if signals.object_reclamation_quarantine_unverified {
             reasons.push(StoragePressureReasonCode::ObjectReclamationQuarantineUnverified);
         }
+        if signals.object_reclamation_damaged_live_root.is_some() {
+            reasons.push(StoragePressureReasonCode::ObjectReclamationLiveObjectDamaged);
+        }
         if oldest_reader_lag > 0 && signals.obsolete_generation_bytes > 0 {
             reasons.push(StoragePressureReasonCode::ReaderPinnedObsoleteGenerations);
         }
@@ -325,6 +336,7 @@ impl StorageDebtController {
             object_reclamation_corrupt_object: signals.object_reclamation_corrupt_object,
             object_reclamation_quarantine_unverified: signals
                 .object_reclamation_quarantine_unverified,
+            object_reclamation_damaged_live_root: signals.object_reclamation_damaged_live_root,
             oldest_reader_commit_epoch: signals.oldest_reader_commit_epoch,
             oldest_reader_lag,
             obsolete_generation_bytes: signals.obsolete_generation_bytes,

@@ -334,8 +334,15 @@ fn explicit_reclamation_makes_bounded_progress_above_its_limits() {
     drop(reader);
     drop(readers);
     let garbage_before = object_names(&fixture).len();
+    // Objects published by an earlier process have no publication record and
+    // must be re-hashed; only those bytes count against `max_bytes`.
+    for (kind, name) in object_names(&fixture) {
+        let _ = crate::immutable_object::forget_published_object(
+            &fixture.objects.join("objects").join(kind).join(name),
+        );
+    }
     let tiny = BranchReclamationLimits {
-        max_objects: 2,
+        max_objects: 100,
         max_bytes: 1,
         ..Default::default()
     };
@@ -537,4 +544,89 @@ fn concurrent_owner_publications_and_sweeps_never_lose_a_live_closure() {
     let child = fixture.admit(branch_id(2), DurabilityPolicy::SyncOnEveryWrite);
     assert_eq!(message_rows(main.store()), ROUNDS + 1);
     assert_eq!(message_rows(child.store()), ROUNDS + 1);
+}
+
+/// A damaged object reachable from a retained root is live-data damage, not
+/// backlog: the automatic pass removes nothing and names the root under its
+/// own reason code until the object is repaired.
+#[test]
+fn damaged_live_object_is_reported_as_integrity_not_backlog() {
+    let fixture = BranchFixture::new();
+    let mut main = fixture.admit(fixture.main, DurabilityPolicy::SyncOnEveryWrite);
+    write_schema_and_graph(&mut main);
+    checkpoint(&mut main).unwrap();
+    let base = base_root(&fixture, fixture.main);
+    assert_ne!(base, main.head().sealed_root);
+    let objects = ImmutableObjectStore::open(&fixture.objects).unwrap();
+    let base_path = objects.object_path(base);
+    let original = fs::read(&base_path).unwrap();
+    let mut damaged = original.clone();
+    let last = damaged.len() - 1;
+    damaged[last] ^= 0xff;
+    fs::write(&base_path, &damaged).unwrap();
+
+    let superseded = main.head().sealed_root;
+    write_row(&mut main, "after-damage");
+    checkpoint(&mut main).unwrap();
+    assert!(object_names(&fixture)
+        .contains(&("sealed-root".to_string(), superseded.sha256.to_string())));
+    let pressure = main.store().storage_pressure_snapshot(None);
+    assert_eq!(pressure.object_reclamation_damaged_live_root, Some(base));
+    assert!(pressure.object_reclamation_retry_required);
+    assert!(pressure
+        .reason_codes
+        .contains(&crate::pressure::StoragePressureReasonCode::ObjectReclamationLiveObjectDamaged));
+
+    fs::write(&base_path, &original).unwrap();
+    write_row(&mut main, "after-repair");
+    checkpoint(&mut main).unwrap();
+    assert_no_object_debt(main.store(), "after repair");
+    assert!(main
+        .store()
+        .storage_pressure_snapshot(None)
+        .object_reclamation_damaged_live_root
+        .is_none());
+    assert!(!object_names(&fixture)
+        .contains(&("sealed-root".to_string(), superseded.sha256.to_string())));
+    assert_eq!(message_rows(main.store()), 3);
+}
+
+/// Garbage this process just published is removed without re-hashing, so a
+/// tiny byte budget still removes it; only re-hashed bytes are budgeted.
+#[test]
+fn same_process_garbage_is_not_rehashed_against_the_byte_budget() {
+    let fixture = BranchFixture::new();
+    let mut main = fixture.admit(fixture.main, DurabilityPolicy::SyncOnEveryWrite);
+    write_schema_and_graph(&mut main);
+    checkpoint(&mut main).unwrap();
+    let reader = main.store().snapshot_for_read();
+    let readers = (0..3)
+        .map(|round| {
+            write_row(&mut main, &format!("fresh-{round}-{}", "q".repeat(8192)));
+            checkpoint(&mut main).unwrap();
+            main.store().snapshot_for_read()
+        })
+        .collect::<Vec<_>>();
+    drop(reader);
+    drop(readers);
+    let report = main
+        .store_mut()
+        .reclaim_branch_storage(BranchReclamationLimits {
+            max_bytes: 1,
+            ..Default::default()
+        })
+        .unwrap();
+    // Streamed checkpoint artifacts carry publication records; only small
+    // buffered objects (roots, manifests) without one wait for a later pass.
+    assert!(report.reclaimed_objects > 1, "{report:?}");
+    assert!(
+        report.pending_bytes * 4 < report.reclaimed_bytes,
+        "{report:?}"
+    );
+    main.store_mut()
+        .reclaim_branch_storage(BranchReclamationLimits::default())
+        .unwrap();
+    let mut live = closure(&fixture, main.head().sealed_root);
+    live.extend(closure(&fixture, base_root(&fixture, fixture.main)));
+    assert_eq!(object_names(&fixture), live);
 }

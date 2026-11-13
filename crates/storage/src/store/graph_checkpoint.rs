@@ -1978,6 +1978,7 @@ impl GraphStore {
             object_reclamation_skipped_bytes: objects.skipped_bytes,
             object_reclamation_corrupt_object: objects.corrupt_object,
             object_reclamation_quarantine_unverified: objects.quarantine_unverified,
+            object_reclamation_damaged_live_root: objects.damaged_live_root,
             oldest_reader_commit_epoch,
             obsolete_generation_bytes,
             estimated_checkpoint_temporary_bytes,

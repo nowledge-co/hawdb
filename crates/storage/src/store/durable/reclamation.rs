@@ -41,6 +41,14 @@ fn object_debt_from_report(
     report: &crate::branch_reclamation::BranchReclamationReport,
     previous: ObjectReclamationDebt,
 ) -> ObjectReclamationDebt {
+    if let Some(root) = report.damaged_live_root {
+        // Nothing was inventoried; keep the last measurement.
+        return ObjectReclamationDebt {
+            retry_required: true,
+            damaged_live_root: Some(root),
+            ..previous
+        };
+    }
     if report.deferred_for_active_leases {
         // Nothing was inventoried; keep the last measurement.
         return ObjectReclamationDebt {
@@ -60,6 +68,7 @@ fn object_debt_from_report(
         skipped_bytes: report.skipped_bytes,
         corrupt_object: report.corrupt_object,
         quarantine_unverified: report.skipped_quarantine_objects > 0,
+        damaged_live_root: None,
     }
 }
 
@@ -177,7 +186,7 @@ impl DurableStore {
             branch.immutable_store_root(),
             owner,
             &branch.head,
-            crate::branch_reclamation::BranchReclamationLimits::default(),
+            crate::branch_reclamation::BranchReclamationLimits::automatic(),
             crate::branch_reclamation::ReclamationTrigger::Automatic,
         ) {
             Ok(report) => object_debt_from_report(&report, previous),

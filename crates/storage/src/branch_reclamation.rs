@@ -17,7 +17,7 @@
 use crate::branch_catalog::{self, BranchReclamationPath};
 use crate::branch_head::BranchHead;
 use crate::error::{HawDBError, Result};
-use crate::immutable_object::{ImmutableObjectStore, ObjectSweepBudget};
+use crate::immutable_object::{ImmutableObjectError, ImmutableObjectStore, ObjectSweepBudget};
 use crate::ownership::DatabaseDirectoryLease;
 use std::io;
 use std::path::Path;
@@ -26,9 +26,13 @@ use std::time::Instant;
 /// Per-pass work budget for one reclamation pass (#1736).
 ///
 /// Liveness is always computed from every retained root; these limits only
-/// bound how much unreachable data one pass removes. A larger namespace is
-/// swept partially and the remainder is reported as pending for the next
-/// pass, instead of refusing the whole pass. An explicit pass also re-hashes
+/// bound how much unreachable data one pass handles: at most `max_objects`
+/// objects removed and at most `max_bytes` of them re-hashed before removal
+/// (objects this process published, with an unchanged inode, are not
+/// re-hashed). A larger namespace is swept partially and the remainder is
+/// reported as pending for the next pass, instead of refusing the whole pass;
+/// callers check `pending_*` and `retry_required` rather than treating `Ok`
+/// as "everything swept". An explicit pass also re-hashes
 /// up to `max_bytes` of reachable objects as an integrity check; beyond that
 /// reachable objects are checked for presence and exact length.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +69,29 @@ impl BranchReclamationLimits {
     }
 }
 
+/// Per-pass garbage byte budget of an automatic post-checkpoint sweep (#1736).
+/// Every selected unreachable object is fully re-hashed before it is removed,
+/// and the pass runs inside the checkpoint and under the project metadata
+/// lock, so a pre-existing backlog drains over several checkpoints instead of
+/// being hashed at once. Explicit reclamation keeps
+/// [`BranchReclamationLimits::default`].
+pub const AUTOMATIC_RECLAMATION_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Per-pass garbage object budget of an automatic sweep; see
+/// [`AUTOMATIC_RECLAMATION_MAX_BYTES`].
+pub const AUTOMATIC_RECLAMATION_MAX_OBJECTS: usize = 4_096;
+
+impl BranchReclamationLimits {
+    /// The budget of automatic post-checkpoint sweeps.
+    pub fn automatic() -> Self {
+        Self {
+            max_objects: AUTOMATIC_RECLAMATION_MAX_OBJECTS,
+            max_bytes: AUTOMATIC_RECLAMATION_MAX_BYTES,
+            evidence_limits: Default::default(),
+        }
+    }
+}
+
 /// Evidence from one reclamation pass, or a conservative deferral. A deferral
 /// performs no sweep and does not claim to have inventoried the object store.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -94,6 +121,10 @@ pub struct BranchReclamationReport {
     pub skipped_bytes: u64,
     /// The first corrupt unreachable object retained (kind and digest).
     pub corrupt_object: Option<crate::immutable_object::ObjectReference>,
+    /// An automatic pass found an object reachable from this retained root
+    /// missing, truncated or not decodable: live data is damaged. Nothing was
+    /// removed and the namespace was not measured.
+    pub damaged_live_root: Option<crate::immutable_object::ObjectReference>,
 }
 
 impl BranchReclamationReport {
@@ -288,13 +319,44 @@ pub(crate) fn reclaim_owned_project(
             },
             skip_unverifiable: trigger == ReclamationTrigger::Automatic,
         };
-        let swept = store
-            .sweep_unreachable_bounded(&retained_roots, &proofs, budget, &mut barrier)
-            .map_err(|error| {
-                HawDBError::from(branch_catalog::reclamation_object_error(
-                    &catalog, &branches, error,
-                ))
-            })?;
+        let swept =
+            match store.sweep_unreachable_bounded(&retained_roots, &proofs, budget, &mut barrier) {
+                Ok(swept) => swept,
+                Err(error) => {
+                    let damaged_root = match &error {
+                        ImmutableObjectError::ReclamationRoot { root, source }
+                            if live_object_damage(source) =>
+                        {
+                            Some(*root)
+                        }
+                        _ => None,
+                    };
+                    let error = HawDBError::from(branch_catalog::reclamation_object_error(
+                        &catalog, &branches, error,
+                    ));
+                    // A pending create's missing baseline keeps its typed
+                    // refusal; any other damaged live closure is reported.
+                    match damaged_root {
+                        Some(root)
+                            if trigger == ReclamationTrigger::Automatic
+                                && !matches!(
+                                    error,
+                                    HawDBError::BranchReclamationBlocked { .. }
+                                ) =>
+                        {
+                            let mut report = BranchReclamationReport {
+                                retry_required: true,
+                                damaged_live_root: Some(root),
+                                ..BranchReclamationReport::default()
+                            };
+                            report.metadata_lock_micros =
+                                u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+                            return Ok(report);
+                        }
+                        _ => return Err(error),
+                    }
+                }
+            };
         // Retiring a deleted branch directory inspects its quarantined
         // private remnants, which only explicit reclamation verifies.
         let reclaimed_branch_directories =
@@ -324,8 +386,21 @@ pub(crate) fn reclaim_owned_project(
             skipped_quarantine_objects: swept.skipped_quarantine_objects,
             skipped_bytes: swept.skipped_bytes,
             corrupt_object: swept.corrupt_object,
+            damaged_live_root: None,
         }
     };
     report.metadata_lock_micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
     Ok(report)
+}
+
+/// Whether a mark failure means a retained closure is damaged on disk, as
+/// opposed to an I/O failure that a later pass may not see.
+fn live_object_damage(error: &ImmutableObjectError) -> bool {
+    match error {
+        ImmutableObjectError::ExistingObjectCorrupt { .. }
+        | ImmutableObjectError::ReferenceMismatch
+        | ImmutableObjectError::InvalidSealedRoot { .. } => true,
+        ImmutableObjectError::Io { source, .. } => source.kind() == io::ErrorKind::NotFound,
+        _ => false,
+    }
 }

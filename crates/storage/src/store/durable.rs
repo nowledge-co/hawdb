@@ -205,6 +205,9 @@ pub(super) struct ObjectReclamationDebt {
     pub(super) skipped_bytes: u64,
     pub(super) corrupt_object: Option<hawdb_storage::immutable_object::ObjectReference>,
     pub(super) quarantine_unverified: bool,
+    /// The last pass found a live closure damaged (missing, truncated or
+    /// undecodable reachable object). Integrity, not backlog.
+    pub(super) damaged_live_root: Option<hawdb_storage::immutable_object::ObjectReference>,
 }
 
 pub(super) use hawdb_storage::checkpoint::CheckpointImage;

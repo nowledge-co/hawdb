@@ -545,8 +545,12 @@ cost follows the number of objects and the garbage removed, not the size of the
 live data. Selected garbage is fully verified before the first unlink, with the
 existing quarantine-evidence rule. An automatic pass keeps the structural
 quarantine checks (intent present, bound to the catalog, committed) but
-byte-verifies each committed archive once per process, cached by archive and
-manifest digest; explicit passes re-verify every archive every time. An archive
+byte-verifies each committed archive once per process and caches the result
+by archive directory and committed manifest digest; explicit passes re-verify
+every archive every time. The cache relies on committed quarantine archives
+being immutable: for the rest of the process, an automatic pass may remove a
+corrupt quarantined source on the strength of that earlier verification
+without re-reading the archive. An archive
 beyond the evidence budget or failing verification never fails an automatic
 pass: its quarantined sources are retained and reported
 (`object_reclamation_quarantine_unverified`). A corrupt unreachable object
@@ -555,10 +559,25 @@ without quarantine evidence is likewise retained, named by kind and digest in
 counted in `object_reclamation_skipped_*`), and the automatic pass keeps
 sweeping; an explicit pass still fails closed on it. Retiring deleted branch
 directories, which inspects quarantined private remnants, is left to explicit
-reclamation. `BranchReclamationLimits` is a per-pass
-budget, not a refusal threshold: at most `max_objects` objects and `max_bytes`
-bytes of garbage (always at least one object) are removed, and the remainder is
-reported as pending. An explicit pass also re-hashes up to `max_bytes` of
+reclamation. Automatic passes use
+`BranchReclamationLimits::automatic()`: at most
+`AUTOMATIC_RECLAMATION_MAX_OBJECTS` (4,096) objects and
+`AUTOMATIC_RECLAMATION_MAX_BYTES` (64 MiB) of re-hashed garbage per
+checkpoint, because removal verification runs inside the checkpoint while the
+metadata lock is held. An object this process published whose inode is
+unchanged was hashed when written; it is not re-hashed and does not count
+against the byte budget, so the garbage a checkpoint of this process
+supersedes is always removable. Objects published by an earlier process (for
+example a backlog left by a version without automatic reclamation) are
+re-hashed and drain at most 64 MiB per checkpoint, reported as pending.
+An object reachable from a retained root that is missing, truncated or not
+decodable stops the pass without removing anything and is reported as
+integrity damage (`object_reclamation_damaged_live_root`, reason
+`object_reclamation_live_object_damaged`), not as backlog.
+`BranchReclamationLimits` is a per-pass
+budget, not a refusal threshold: at most `max_objects` objects are removed and
+at most `max_bytes` of them re-hashed (always at least one object), and the
+remainder is reported as pending. An explicit pass also re-hashes up to `max_bytes` of
 reachable objects as an integrity check and waits for the metadata lock. A
 deferral, a failed listing, barrier or unlink, an object still being read, or
 garbage beyond the budget is recorded as `object_reclamation_*` debt in the
