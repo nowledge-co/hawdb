@@ -157,6 +157,9 @@ pub use graph_analytics::{
 mod explain_format_tests;
 mod observability;
 mod plan_cache;
+/// The unit-test binary's thread-local live-allocation oracle.
+#[cfg(test)]
+pub(crate) use plan_cache::retention_allocation as test_allocation;
 pub(crate) mod publication;
 pub use publication::{DatabasePublicationOwner, DatabasePublicationState};
 #[cfg(feature = "qualification")]
@@ -698,8 +701,19 @@ impl DatabaseReadSnapshot {
         &self,
         task_context: Option<hawdb_core::RuntimeTaskContext>,
     ) -> Result<DatabaseReadTransaction> {
-        self.ensure_usable()?;
-        let source = &self.0;
+        self.0.fork_at_same_snapshot(task_context)
+    }
+}
+
+impl DatabaseReadTransaction {
+    /// Opens an independent query context over this transaction's pinned
+    /// snapshot. The shared pin keeps the epoch until both contexts drop.
+    pub(crate) fn fork_at_same_snapshot(
+        &self,
+        task_context: Option<hawdb_core::RuntimeTaskContext>,
+    ) -> Result<DatabaseReadTransaction> {
+        self.store.ensure_usable()?;
+        let source = self;
         Ok(DatabaseReadTransaction {
             session_config: source.session_config,
             system_variables: source.system_variables.clone(),

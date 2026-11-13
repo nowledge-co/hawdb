@@ -276,6 +276,20 @@ evidence. [`SEARCH_GENERATION_BENCHMARK.md`](SEARCH_GENERATION_BENCHMARK.md)
 records the reproducible resident-versus-streaming kernel comparison and keeps
 it explicitly separate from representative Mem qualification.
 
+An incremental-maintenance projection whose change-log cursor has been trimmed,
+or whose directory is damaged or missing, is recovered with
+`EmbeddedStoreHandle::rebuild_out_of_core_search_projection`. It pins one graph
+read snapshot at epoch E, streams the canonical graph rows (plus host-hydrated
+embeddings and host-owned rows) in bounded batches through
+`SearchOutOfCoreGenerationWriter::create_unordered_replacement_with_context`,
+an external sort into a fresh directory, and stamps the generation with E. A
+complete read of the generation and a second scan of the pinned graph must have
+the same document count and order-independent content digest before a
+no-replace rename installs the private stage at a new target directory. The
+current projection directory is never written; the host switches by reopening
+on the target, and incremental catch-up resumes from E. See
+[`SEARCH_PROJECTION_REBUILD.md`](SEARCH_PROJECTION_REBUILD.md).
+
 ### WAL recovery
 
 WAL entries can represent either a single mutation or a batch commit record.

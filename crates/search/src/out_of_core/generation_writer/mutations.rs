@@ -78,6 +78,37 @@ impl<'reader> SearchOutOfCoreMutationWriter<'reader> {
         Self::create_mode(reader, options, task, memory, false, None)
     }
 
+    /// Complete sink for an absent projection: no base reader, no expected
+    /// active generation and no mutation closure. The caller supplies the
+    /// policies a base reader would otherwise provide.
+    pub(super) fn create_fresh_replacement(
+        root: &Path,
+        options: SearchOutOfCoreGenerationBuildOptions,
+        max_lexical_manifest_bytes: NonZeroU64,
+        task: RuntimeTaskContext,
+        memory: BuildMemory,
+    ) -> Result<SearchOutOfCoreMutationWriter<'static>> {
+        checkpoint(&task)?;
+        let epoch_updated = options.source_graph_commit_epoch.is_some();
+        let options = context_memory::Options::new(options, &memory, &task)?;
+        let report_memory = memory
+            .retained
+            .reserve("search_projection".len() * 2 + "incremental_mutation_publish".len())?;
+        let mut writer =
+            SearchOutOfCoreGenerationWriter::create_with_memory(root, options, task, memory)?;
+        writer.set_max_lexical_manifest_bytes(max_lexical_manifest_bytes)?;
+        Ok(SearchOutOfCoreMutationWriter {
+            reader: None,
+            writer,
+            last_id: None,
+            operations: 0,
+            deleted: 0,
+            epoch_updated,
+            metrics: Default::default(),
+            _report_memory: report_memory,
+        })
+    }
+
     pub(in crate::out_of_core) fn create_captured(
         reader: &'reader SearchOutOfCoreReader,
         options: SearchOutOfCoreGenerationBuildOptions,

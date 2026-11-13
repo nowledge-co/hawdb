@@ -354,6 +354,34 @@ embeddings), take a few seconds, and add no lane, profile or timeout. Local
 replay: `cargo test --locked -p hawdb --lib initial_import_1707 -- --test-threads=1`.
 See [the contract](SEARCH_INITIAL_IMPORT_CHECKPOINT.md).
 
+`embedded_store::tests::search_projection_rebuild_tests` (`nowledge-co/hawdb#1738`)
+belongs to the existing root `//:hawdb_unit_general_tests` owner. It covers
+`EmbeddedStoreHandle::rebuild_out_of_core_search_projection`. An old library
+whose incremental projection cursor is below a two-entry change log refuses
+catch-up; the rebuild into a new directory (with host-hydrated 8-dimensional
+embeddings, a host-owned row, `HAS_LABEL` business labels in both directions
+and a graph write committed during the scan) is stamped at the snapshot epoch,
+verified, and leaves the old manifest byte-identical. Reopening on the new
+directory catches up exactly the concurrent write, and the projection's
+document digest and text, exact-vector and exact-hybrid hits (score bits)
+equal an independent fresh build (resident full rebuild pushed through the
+ordered writer). Cancellation mid-scan, a mid-scan stage image (not
+openable), a target that appears before the no-replace install, a source that
+drifts between the build and verification scans, an existing target and a
+host-supplied epoch all leave no target and no stage, and the old projection
+reopens with its old contents; a leftover crash stage does not block a later
+rebuild. The bounded-memory case rebuilds 2,500 documents of 8 KiB (20 MB) with a
+24 MiB reservation and asserts, with the root unit binary's thread-local
+live-allocation oracle (`api::test_allocation`), that live allocations through
+the scan, external sort and build stay below the reservation and half of the
+corpus. Search-crate owner
+`out_of_core::generation_writer::unordered::replacement::tests::fresh_replacement_builds_an_absent_projection_and_refuses_an_existing_one`
+covers the fresh-root unordered writer. The fixtures are small temporary
+persistent graphs; no lane, profile or timeout is added. Local replay:
+`cargo test --locked -p hawdb --lib search_projection_rebuild_tests -- --test-threads=4`
+and `cargo test --locked -p hawdb-search --lib fresh_replacement`. See
+[the contract](SEARCH_PROJECTION_REBUILD.md).
+
 The experimental [Windows directory-custody first packet](../scripts/windows-directory-custody-probe.ps1)
 is owned by the narrowly path-filtered, same-repository
 [Directory Custody Primitive Probe](../.github/workflows/directory-custody-probe.yml)
