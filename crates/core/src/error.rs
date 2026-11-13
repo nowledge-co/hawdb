@@ -113,6 +113,33 @@ impl Display for ReadBudgetError {
 
 impl std::error::Error for ReadBudgetError {}
 
+/// Why a search projection rebuild was refused before it installed anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchProjectionRebuildRefusal {
+    /// The target name already exists; the rebuild writes only to a new directory.
+    TargetExists,
+    /// The target's parent directory does not exist.
+    TargetParentMissing,
+    /// The target path has no final component.
+    TargetInvalid,
+    /// Another entry appeared at the target name before the no-replace install.
+    TargetAppeared,
+    /// The built generation differs from the pinned graph scan.
+    VerificationMismatch,
+}
+
+impl SearchProjectionRebuildRefusal {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::TargetExists => "target_exists",
+            Self::TargetParentMissing => "target_parent_missing",
+            Self::TargetInvalid => "target_invalid",
+            Self::TargetAppeared => "target_appeared",
+            Self::VerificationMismatch => "verification_mismatch",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HawDBError {
     Parse(String),
@@ -162,6 +189,16 @@ pub enum HawDBError {
     /// a `storage error`.
     SearchProjectionMismatch {
         projection: Option<std::path::PathBuf>,
+        message: String,
+    },
+    /// A search projection rebuild was refused and installed nothing. The
+    /// graph, the current projection directory and the target name are
+    /// unchanged; only this attempt is void. This is not a storage failure:
+    /// fix the precondition named by `reason` (or retry a verification
+    /// mismatch after investigating the host source) and rebuild again.
+    SearchProjectionRebuildRefused {
+        reason: SearchProjectionRebuildRefusal,
+        target: std::path::PathBuf,
         message: String,
     },
     Execution(String),
@@ -242,6 +279,13 @@ impl Display for HawDBError {
             HawDBError::SearchProjectionMismatch { message, .. } => {
                 write!(f, "storage error: {message}")
             }
+            HawDBError::SearchProjectionRebuildRefused {
+                reason, message, ..
+            } => write!(
+                f,
+                "search projection rebuild refused ({}): {message}",
+                reason.as_str()
+            ),
             HawDBError::Execution(message) => write!(f, "execution error: {message}"),
             HawDBError::ResourceBudgetExceeded(error) => write!(f, "execution error: {error}"),
             HawDBError::ReadBudgetExceeded(error) => write!(f, "execution error: {error}"),

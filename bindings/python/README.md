@@ -538,6 +538,14 @@ raises `StorageError` with `kind == "search_projection_mismatch"`,
 does not help: rebuild the search projection from the graph, which is not
 affected.
 
+A search projection rebuild that installed nothing (existing target, missing
+parent, a target that appeared before installation, or a verification
+mismatch) raises `ExecutionError` with
+`kind == "search_projection_rebuild_refused"`, `reason` (for example
+`"target_exists"` or `"verification_mismatch"`), `target` and
+`retryable == False`. It is not a storage failure: the graph and the current
+projection directory are untouched; fix the reason and rebuild again.
+
 Memory-ledger and spill-quota refusals, and the read ceilings described under
 [Read budgets](#read-budgets-and-query-plans), raise `exceptions.ResourceBudgetError`,
 a subclass of `ExecutionError`, with `resource`, `scope`, `owner`,

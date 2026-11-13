@@ -16,6 +16,7 @@
 //! from one pinned graph snapshot into a new directory.
 
 use super::*;
+use crate::error::SearchProjectionRebuildRefusal;
 use crate::search::{
     SearchDocumentSetDigest, SearchMutationSortStepLimits, SearchOutOfCoreGenerationBuildReport,
     SearchOutOfCoreGenerationWriter, SearchProjectionScanBudget, SearchUnorderedMutationLimits,
@@ -203,6 +204,15 @@ impl EmbeddedStoreHandle {
     /// retain them; otherwise catch-up refuses and the rebuild is repeated.
     /// [`HawDBError::PublishOutcomeUnknown`] means the move may have
     /// completed without its durability barrier.
+    ///
+    /// An existing target, a missing parent, a target that appears before
+    /// installation and a verification mismatch return
+    /// [`HawDBError::SearchProjectionRebuildRefused`]. That is not a storage
+    /// failure: nothing was installed and the graph and current projection
+    /// are unchanged. Cancellation keeps the `Execution` cancellation error.
+    ///
+    /// The graph snapshot stays pinned for the whole rebuild, so versions it
+    /// needs are not reclaimed until the call returns.
     pub fn rebuild_out_of_core_search_projection(
         &self,
         target: impl AsRef<Path>,
@@ -338,10 +348,14 @@ impl EmbeddedStoreHandle {
         let projection =
             OutOfCoreSearchProjection::open_incremental(&stage.path, maintenance.clone())?;
         if projection.reader.source_graph_commit_epoch() != Some(epoch) {
-            return Err(HawDBError::StorageIntegrity(format!(
-                "rebuilt search projection is stamped at {:?}, expected graph snapshot epoch {epoch}",
-                projection.reader.source_graph_commit_epoch()
-            )));
+            return Err(refused(
+                SearchProjectionRebuildRefusal::VerificationMismatch,
+                &stage.target,
+                format!(
+                    "rebuilt search projection is stamped at {:?}, expected graph snapshot epoch {epoch}; nothing was installed",
+                    projection.reader.source_graph_commit_epoch()
+                ),
+            ));
         }
         let build_options = &maintenance.build_options;
         let budget = SearchProjectionScanBudget {
@@ -374,14 +388,18 @@ impl EmbeddedStoreHandle {
             },
         )?;
         if graph != generation || generation.document_count() != build.document_count {
-            return Err(HawDBError::StorageIntegrity(format!(
-                "rebuilt search projection differs from graph snapshot {epoch}: graph {} documents ({}), generation {} documents ({}), build reported {}",
-                graph.document_count(),
-                graph.content_digest_hex(),
-                generation.document_count(),
-                generation.content_digest_hex(),
-                build.document_count,
-            )));
+            return Err(refused(
+                SearchProjectionRebuildRefusal::VerificationMismatch,
+                &stage.target,
+                format!(
+                    "rebuilt search projection differs from graph snapshot {epoch}: graph {} documents ({}), generation {} documents ({}), build reported {}; nothing was installed",
+                    graph.document_count(),
+                    graph.content_digest_hex(),
+                    generation.document_count(),
+                    generation.content_digest_hex(),
+                    build.document_count,
+                ),
+            ));
         }
         Ok(BuiltStage {
             sorting,
@@ -449,6 +467,14 @@ fn stream_documents(
     })
 }
 
+fn refused(reason: SearchProjectionRebuildRefusal, target: &Path, message: String) -> HawDBError {
+    HawDBError::SearchProjectionRebuildRefused {
+        reason,
+        target: target.to_path_buf(),
+        message,
+    }
+}
+
 /// A sibling directory created by this call. Dropping an uninstalled stage
 /// removes exactly that directory; installation is a no-replace rename.
 struct RebuildStage {
@@ -460,26 +486,38 @@ struct RebuildStage {
 impl RebuildStage {
     fn create(target: &Path) -> Result<Self> {
         if std::fs::symlink_metadata(target).is_ok() {
-            return Err(HawDBError::Storage(format!(
-                "search projection rebuild target {} already exists; the rebuild writes only to a new directory",
-                target.display()
-            )));
+            return Err(refused(
+                SearchProjectionRebuildRefusal::TargetExists,
+                target,
+                format!(
+                    "search projection rebuild target {} already exists; the rebuild writes only to a new directory",
+                    target.display()
+                ),
+            ));
         }
         let name = target.file_name().ok_or_else(|| {
-            HawDBError::Storage(format!(
-                "search projection rebuild target {} has no final path component",
-                target.display()
-            ))
+            refused(
+                SearchProjectionRebuildRefusal::TargetInvalid,
+                target,
+                format!(
+                    "search projection rebuild target {} has no final path component",
+                    target.display()
+                ),
+            )
         })?;
         let parent = match target.parent() {
             Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
             _ => PathBuf::from("."),
         };
         if !parent.is_dir() {
-            return Err(HawDBError::Storage(format!(
-                "search projection rebuild parent directory {} does not exist",
-                parent.display()
-            )));
+            return Err(refused(
+                SearchProjectionRebuildRefusal::TargetParentMissing,
+                target,
+                format!(
+                    "search projection rebuild parent directory {} does not exist",
+                    parent.display()
+                ),
+            ));
         }
         static SEQUENCE: AtomicU64 = AtomicU64::new(0);
         let nonce = std::time::SystemTime::now()
@@ -514,10 +552,21 @@ impl RebuildStage {
         hooks::before_install(&self.path, &self.target);
         if let Err(error) = hawdb_storage::file_io::rename_directory_new(&self.path, &self.target) {
             if std::fs::symlink_metadata(&self.path).is_ok() {
-                return Err(HawDBError::Storage(format!(
+                let message = format!(
                     "search projection rebuild target {} could not be installed ({error}); nothing was installed",
                     self.target.display()
-                )));
+                );
+                // Another entry took the name: a refused attempt, not a
+                // storage failure. Other I/O errors keep their storage kind.
+                return Err(if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    refused(
+                        SearchProjectionRebuildRefusal::TargetAppeared,
+                        &self.target,
+                        message,
+                    )
+                } else {
+                    HawDBError::Storage(message)
+                });
             }
             self.installed = true;
             return Err(self.outcome_unknown(format!("the move reported {error}")));

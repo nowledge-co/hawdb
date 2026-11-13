@@ -219,14 +219,18 @@ graph WAL recovery.
 A resident snapshot that disagrees with the selector it is opened beside, such
 as the crash state of a HawDB 0.31.0 or earlier checkpoint (#1711) or a damaged
 generation snapshot, is refused with the typed
-`HawDBError::SearchProjectionMismatch { projection, message }` (#1735). Its
-text is unchanged (`storage error: resident search snapshot does not match the
-published immutable projection; ...`); the C ABI, Bun, Go and MoonBit report
+`HawDBError::SearchProjectionMismatch { projection, message }` (#1735). It
+displays as `storage error: resident search snapshot does not match the
+published immutable projection; incremental catch-up cannot repair it: ...`,
+naming `EmbeddedStoreHandle::rebuild_out_of_core_search_projection` and
+`Database::rebuild_search_projection` (#1738 changed the text after the
+`;`); the C ABI, Bun, Go and MoonBit report
 `kind: "search_projection_mismatch"`, and the Python mapping is a `StorageError` with
 `kind == "search_projection_mismatch"`, `projection` and `retryable == False`.
 Reopening the same directory fails the same way, so it is not retryable as-is:
-rebuild the search projection from the authoritative graph (for example remove
-the refused directory and re-import). The check reads only the projection's
+rebuild the search projection from the authoritative graph, for example with
+`EmbeddedStoreHandle::rebuild_out_of_core_search_projection` into a new
+directory (see [`SEARCH_PROJECTION_REBUILD.md`](SEARCH_PROJECTION_REBUILD.md)). The check reads only the projection's
 own directory. `EmbeddedStore` opens and recovers the graph before the
 projection, the refusal writes nothing to it, and a graph-only open of the same
 store succeeds with an unpoisoned handle. Other projection refusals, such as a
@@ -287,7 +291,9 @@ complete read of the generation and a second scan of the pinned graph must have
 the same document count and order-independent content digest before a
 no-replace rename installs the private stage at a new target directory. The
 current projection directory is never written; the host switches by reopening
-on the target, and incremental catch-up resumes from E. See
+on the target, and incremental catch-up resumes from E. Precondition and
+verification refusals are the typed, non-storage
+`HawDBError::SearchProjectionRebuildRefused`. See
 [`SEARCH_PROJECTION_REBUILD.md`](SEARCH_PROJECTION_REBUILD.md).
 
 ### WAL recovery

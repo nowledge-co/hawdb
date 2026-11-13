@@ -211,6 +211,21 @@ pub fn format_hawdb_error(error: &HawDBError) -> PyErr {
                 .and_then(|()| exception.value(py).setattr("retryable", true));
             attributes.err().unwrap_or(exception)
         }),
+        HawDBError::SearchProjectionRebuildRefused { reason, target, .. } => {
+            Python::attach(|py| {
+                // A void rebuild attempt, not a storage failure: the graph and
+                // the current projection are untouched.
+                let exception = ExecutionError::new_err(message);
+                let value = exception.value(py);
+                let attributes = (|| -> PyResult<()> {
+                    value.setattr("kind", "search_projection_rebuild_refused")?;
+                    value.setattr("reason", reason.as_str())?;
+                    value.setattr("target", target.display().to_string())?;
+                    value.setattr("retryable", false)
+                })();
+                attributes.err().unwrap_or(exception)
+            })
+        }
         HawDBError::Execution(_) => Python::attach(|py| {
             let exception = ExecutionError::new_err(message);
             let attributes = exception
@@ -585,6 +600,30 @@ mod tests {
                 .unwrap()
                 .extract::<bool>()
                 .unwrap());
+        });
+    }
+
+    #[test]
+    fn search_projection_rebuild_refusal_is_an_execution_error_with_its_reason() {
+        Python::initialize();
+        Python::attach(|py| {
+            let error = HawDBError::SearchProjectionRebuildRefused {
+                reason: hawdb::SearchProjectionRebuildRefusal::TargetExists,
+                target: "/data/search-rebuilt".into(),
+                message: "target already exists".into(),
+            };
+            let exception = format_hawdb_error(&error);
+            assert!(exception.is_instance_of::<ExecutionError>(py));
+            assert!(!exception.is_instance_of::<StorageError>(py));
+            let value = exception.value(py);
+            assert_eq!(
+                value.str().unwrap().to_str().unwrap(),
+                "search projection rebuild refused (target_exists): target already exists"
+            );
+            let text = |name: &str| value.getattr(name).unwrap().extract::<String>().unwrap();
+            assert_eq!(text("kind"), "search_projection_rebuild_refused");
+            assert_eq!(text("reason"), "target_exists");
+            assert_eq!(text("target"), "/data/search-rebuilt");
         });
     }
 }

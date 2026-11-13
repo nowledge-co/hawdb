@@ -109,17 +109,41 @@ it and recording which directory is current are host responsibilities.
 
 ## Failure, cancellation and crash
 
+Precondition and verification refusals return
+`HawDBError::SearchProjectionRebuildRefused { reason, target, message }`, with
+`reason` a `SearchProjectionRebuildRefusal`. It is not a storage failure: the
+graph, the current projection directory and the target name are unchanged, and
+only this attempt is void. Hosts must not treat it as runtime poisoning.
+Bindings report kind `search_projection_rebuild_refused`; Python raises
+`ExecutionError` with `kind`, `reason`, `target` and `retryable = False`, and
+the classification tables count it as `execution`. Cancellation and deadlines
+keep the existing `Execution` cancellation error.
+
 | Event | Result |
 | --- | --- |
-| Refused admission, existing target, invalid options | Error before any write; nothing created. |
-| Cancellation, deadline, input/sort/build failure | Error; the stage this call created is removed; `target` never appears. |
-| Verification mismatch | `StorageIntegrity` error; the stage is removed; nothing installed. |
-| `target` appears during the rebuild | The no-replace rename refuses; the stage is removed; the other directory is untouched. |
+| Invalid options (for example a host-supplied epoch) | `Semantic` error before any write. |
+| Existing target | `SearchProjectionRebuildRefused { reason: TargetExists }` before any write. |
+| Missing parent, or a target with no final component | `SearchProjectionRebuildRefused { reason: TargetParentMissing / TargetInvalid }` before any write. |
+| Refused admission | Admission error before any write; retryable. |
+| Cancellation or deadline | `Execution` cancellation error; the stage this call created is removed; `target` never appears. |
+| Input, sort or build failure | That error, with its own kind; the stage is removed; `target` never appears. |
+| Verification mismatch (digest, count or stamped epoch) | `SearchProjectionRebuildRefused { reason: VerificationMismatch }`; the stage is removed; nothing is installed. |
+| `target` appears during the rebuild | `SearchProjectionRebuildRefused { reason: TargetAppeared }`: the no-replace rename refuses, the stage is removed, the other entry is untouched. Other rename I/O errors keep the `Storage` kind and also install nothing. |
 | Error after the rename may have happened | `PublishOutcomeUnknown { destination }`: `target` holds this call's complete verified result, but its name may not be durable. Reopen it, or rebuild into another name. |
 | Process crash or power loss | At most a stage directory is left. It is never at `target`, never selected, and the next rebuild uses a new stage name. The host may delete `.<target name>.hawdb-search-rebuild-*` leftovers. |
 
 The current projection directory is never opened for writing, renamed or
 deleted in any of these cases.
+
+## Snapshot pin and version retention
+
+The rebuild holds one graph read snapshot for its whole duration: scan, build,
+verification and install. Measured on a loaded host this was 68 minutes at
+100,000 documents and 3.4 hours at 300,000 (see Measurements). While the pin is
+held, graph versions and generations the snapshot needs cannot be reclaimed,
+so disk use grows with the writes committed during the rebuild. Writers are not blocked. Schedule large rebuilds when write volume
+is low, or bound them with the task deadline. Dropping or cancelling the
+rebuild releases the pin.
 
 ## Memory
 

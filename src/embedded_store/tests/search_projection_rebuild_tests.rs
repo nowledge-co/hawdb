@@ -12,7 +12,7 @@ use crate::{
     DatabaseReadTransaction, GraphOnlySearchProjectionRebuild, IncrementalSearchMaintenanceOptions,
     Result, RuntimeCancellationToken, RuntimeTaskContext, SearchProjectionCatchUpReport,
     SearchProjectionRebuildOptions, SearchProjectionRebuildPhase, SearchProjectionRebuildProgress,
-    SearchProjectionRebuildReport, SearchProjectionRebuildSource,
+    SearchProjectionRebuildRefusal, SearchProjectionRebuildReport, SearchProjectionRebuildSource,
 };
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::{Path, PathBuf};
@@ -301,6 +301,23 @@ fn query_results(handle: &EmbeddedStoreHandle) -> Vec<(&'static str, Ranked)> {
     .collect()
 }
 
+/// Refusals are typed and are not storage failures.
+fn assert_refused(error: &HawDBError, expected: SearchProjectionRebuildRefusal, path: &Path) {
+    match error {
+        HawDBError::SearchProjectionRebuildRefused { reason, target, .. } => {
+            assert_eq!(*reason, expected, "{error}");
+            assert_eq!(target, path);
+        }
+        other => panic!("expected a typed rebuild refusal, got {other:?}"),
+    }
+    assert!(
+        error
+            .to_string()
+            .starts_with("search projection rebuild refused"),
+        "{error}"
+    );
+}
+
 fn stage_names(root: &Path) -> Vec<String> {
     std::fs::read_dir(root)
         .unwrap()
@@ -473,6 +490,8 @@ fn rebuild_cancellation_and_interruption_keep_the_old_projection_and_publish_not
     )
     .unwrap_err();
     assert!(error.to_string().contains("cancel"), "{error}");
+    // Cancellation keeps the existing execution-error kind, not a storage one.
+    assert!(matches!(error, HawDBError::Execution(_)), "{error:?}");
     assert!(!target.exists());
     assert!(stage_names(&root).is_empty());
 
@@ -506,6 +525,11 @@ fn rebuild_cancellation_and_interruption_keep_the_old_projection_and_publish_not
         error.to_string().contains("nothing was installed"),
         "{error}"
     );
+    assert_refused(
+        &error,
+        SearchProjectionRebuildRefusal::TargetAppeared,
+        &target,
+    );
     assert!(!crash_image.join(MANIFEST).exists());
     assert!(
         crate::SearchOutOfCoreReader::open(&crash_image).is_err(),
@@ -538,6 +562,25 @@ fn rebuild_cancellation_and_interruption_keep_the_old_projection_and_publish_not
     )
     .unwrap_err();
     assert!(error.to_string().contains("already exists"), "{error}");
+    assert_refused(
+        &error,
+        SearchProjectionRebuildRefusal::TargetExists,
+        &target,
+    );
+    // A missing parent is refused before any work, too.
+    let orphan = root.join("missing-parent").join("search");
+    let error = rebuild(
+        &handle,
+        &orphan,
+        &mut HostSource::default(),
+        RuntimeTaskContext::default(),
+    )
+    .unwrap_err();
+    assert_refused(
+        &error,
+        SearchProjectionRebuildRefusal::TargetParentMissing,
+        &orphan,
+    );
     let governor = handle.runtime_governor_snapshot().unwrap();
     assert_eq!(governor.admissions, governor.completions);
     drop(handle);
@@ -587,6 +630,11 @@ fn rebuild_refuses_to_install_a_generation_that_differs_from_the_graph() {
         )
         .unwrap_err();
     assert!(error.to_string().contains("differs from graph"), "{error}");
+    assert_refused(
+        &error,
+        SearchProjectionRebuildRefusal::VerificationMismatch,
+        &target,
+    );
     assert!(!target.exists());
     assert!(stage_names(&root).is_empty());
     // Host-supplied epochs are refused: the rebuild owns the source epoch.

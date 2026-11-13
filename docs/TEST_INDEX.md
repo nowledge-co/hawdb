@@ -368,7 +368,7 @@ equal an independent fresh build (resident full rebuild pushed through the
 ordered writer). Cancellation mid-scan, a mid-scan stage image (not
 openable), a target that appears before the no-replace install, a source that
 drifts between the build and verification scans, an existing target and a
-host-supplied epoch all leave no target and no stage, and the old projection
+host-supplied epoch all leave no target and no stage (each precondition and verification refusal is asserted to be the typed `HawDBError::SearchProjectionRebuildRefused` with its `reason`, and cancellation stays `Execution`), and the old projection
 reopens with its old contents; a leftover crash stage does not block a later
 rebuild. The bounded-memory case rebuilds 2,500 documents of 8 KiB (20 MB) with a
 24 MiB reservation and asserts, with the root unit binary's thread-local
