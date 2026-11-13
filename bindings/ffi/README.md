@@ -53,6 +53,10 @@ The on-disk format carries no compatibility promise until HawDB declares one.
   a relational constraint violation, such as a duplicate primary key or a
   NULL in a NOT NULL column, is `constraint`, and a value that does not fit
   the relational schema, such as one of the wrong type, is `schema`;
+  a resident search snapshot that disagrees with its published projection is
+  `search_projection_mismatch` (not retryable: rebuild the search projection
+  from the graph, see
+  [STORAGE.md](../../docs/STORAGE.md));
   `invalid_argument` marks caller-side contract violations,
   `transaction_open` / `no_transaction` transaction-state misuse, and `panic`
   a contained Rust panic.

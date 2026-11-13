@@ -437,6 +437,7 @@ impl ExpectedErrorClass {
             | HawDBError::WalRecoveryIo { .. }
             | HawDBError::PublishOutcomeUnknown { .. }
             | HawDBError::ProjectionBusy
+            | HawDBError::SearchProjectionMismatch { .. }
             | HawDBError::AppendSequenceExhausted { .. }
             | HawDBError::BranchBusy { .. }
             | HawDBError::BranchReclamationBlocked { .. } => Self::Storage,

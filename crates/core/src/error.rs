@@ -152,6 +152,18 @@ pub enum HawDBError {
     },
     /// A registered Search target is retained by another native operation.
     ProjectionBusy,
+    /// A search projection's resident snapshot disagrees with the immutable
+    /// projection its selector publishes, for example after a crash inside a
+    /// resident checkpoint written by HawDB 0.31.0 or earlier (#1711). The
+    /// projection is refused as a whole and is not retryable as-is: rebuild it
+    /// from the authoritative graph. The check reads only the projection's own
+    /// directory; the graph opens first and is not affected. `projection` is
+    /// the projection directory when the refusing open knows it. Displays as
+    /// a `storage error`.
+    SearchProjectionMismatch {
+        projection: Option<std::path::PathBuf>,
+        message: String,
+    },
     Execution(String),
     /// Box the diagnostic so successful Result values do not grow with its fields.
     ResourceBudgetExceeded(Box<ResourceBudgetError>),
@@ -227,6 +239,9 @@ impl Display for HawDBError {
                 destination.display()
             ),
             HawDBError::ProjectionBusy => f.write_str("search projection operation is busy"),
+            HawDBError::SearchProjectionMismatch { message, .. } => {
+                write!(f, "storage error: {message}")
+            }
             HawDBError::Execution(message) => write!(f, "execution error: {message}"),
             HawDBError::ResourceBudgetExceeded(error) => write!(f, "execution error: {error}"),
             HawDBError::ReadBudgetExceeded(error) => write!(f, "execution error: {error}"),

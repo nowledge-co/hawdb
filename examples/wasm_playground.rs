@@ -86,6 +86,7 @@ impl QueryBridge {
                     HawDBError::Constraint { .. } => "constraint",
                     HawDBError::Schema { .. } => "schema",
                     HawDBError::ProjectionBusy => "projection_busy",
+                    HawDBError::SearchProjectionMismatch { .. } => "search_projection_mismatch",
                     HawDBError::StorageIntegrity(_) => "storage_integrity",
                     HawDBError::WalRecoveryIo { .. } => "wal_recovery_io",
                     HawDBError::PublishOutcomeUnknown { .. } => "publish_outcome_unknown",

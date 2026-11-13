@@ -147,6 +147,19 @@ pub fn format_hawdb_error(error: &HawDBError) -> PyErr {
             })();
             attributes.err().unwrap_or(exception)
         }),
+        HawDBError::SearchProjectionMismatch { projection, .. } => Python::attach(|py| {
+            let exception = StorageError::new_err(message);
+            let value = exception.value(py);
+            let attributes = (|| -> PyResult<()> {
+                value.setattr("kind", "search_projection_mismatch")?;
+                value.setattr(
+                    "projection",
+                    projection.as_ref().map(|path| path.display().to_string()),
+                )?;
+                value.setattr("retryable", false)
+            })();
+            attributes.err().unwrap_or(exception)
+        }),
         HawDBError::UnsupportedStorageFormat(_) => Python::attach(|py| {
             let exception = StorageError::new_err(message);
             let attributes = exception
@@ -521,6 +534,33 @@ mod tests {
                     assert!(value.getattr(field).unwrap().is_none(), "{field}");
                 }
             }
+        });
+    }
+
+    #[test]
+    fn search_projection_mismatch_keeps_storage_type_and_is_not_retryable() {
+        Python::initialize();
+        Python::attach(|py| {
+            let error = HawDBError::SearchProjectionMismatch {
+                projection: Some("/data/search".into()),
+                message: "resident search snapshot does not match".into(),
+            };
+            let exception = format_hawdb_error(&error);
+            assert!(exception.is_instance_of::<StorageError>(py));
+            assert!(!exception.is_instance_of::<IntegrityError>(py));
+            let value = exception.value(py);
+            assert_eq!(
+                value.str().unwrap().to_str().unwrap(),
+                "storage error: resident search snapshot does not match"
+            );
+            let text = |name: &str| value.getattr(name).unwrap().extract::<String>().unwrap();
+            assert_eq!(text("kind"), "search_projection_mismatch");
+            assert_eq!(text("projection"), "/data/search");
+            assert!(!value
+                .getattr("retryable")
+                .unwrap()
+                .extract::<bool>()
+                .unwrap());
         });
     }
 

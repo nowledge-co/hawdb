@@ -506,6 +506,7 @@ fn json_error_from_hawdb(error: HawDBError) -> serde_json::Value {
         HawDBError::Semantic(message) => json_error("semantic", message),
         HawDBError::Storage(message) => json_error("storage", message),
         HawDBError::ProjectionBusy => json_error("storage", "search projection operation is busy"),
+        HawDBError::SearchProjectionMismatch { message, .. } => json_error("storage", message),
         HawDBError::StorageIntegrity(message) => json_error("storage", message),
         error @ HawDBError::WalRecoveryIo { .. } => json_error("storage", error),
         error @ HawDBError::PublishOutcomeUnknown { .. } => json_error("storage", error),

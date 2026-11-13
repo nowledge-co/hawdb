@@ -114,6 +114,7 @@ fn error_class(error: &HawDBError) -> &'static str {
         | HawDBError::WalRecoveryIo { .. }
         | HawDBError::PublishOutcomeUnknown { .. }
         | HawDBError::ProjectionBusy
+        | HawDBError::SearchProjectionMismatch { .. }
         | HawDBError::AppendSequenceExhausted { .. }
         | HawDBError::BranchBusy { .. }
         | HawDBError::BranchReclamationBlocked { .. } => "storage",
