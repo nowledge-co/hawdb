@@ -54,7 +54,12 @@ impl CheckpointCandidate {
     ) -> Result<()> {
         let (durable, generation, previous) =
             self.reclamation_durable_runtime(&mut context.durable)?;
-        durable.reclaim_old_generations(generation, previous, Some(pinned_reader_generations));
+        durable.reclaim_old_generations(
+            generation,
+            previous,
+            Some(pinned_reader_generations),
+            context._branch_lease.as_deref(),
+        );
         Ok(())
     }
 

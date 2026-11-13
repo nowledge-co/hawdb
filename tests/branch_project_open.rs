@@ -302,23 +302,34 @@ fn live_writer_reclamation_retains_readers_descendants_and_budget_retries() {
         .join("branches/objects/objects/.staging/999999-1.stage");
     std::fs::write(&staging, b"interrupted publisher").unwrap();
     let mut snapshot = database.begin_read_transaction().unwrap();
-    assert!(database
+    // Limits are a per-pass budget (#1736): a pass above them removes one
+    // bounded batch and reports the rest as pending instead of refusing.
+    let first = database
         .reclaim_branch_storage(BranchReclamationLimits {
             max_objects: 1,
             ..Default::default()
         })
-        .is_err());
-    assert!(orphan_path.exists());
-    assert!(parent_directory.exists());
-    assert!(staging.exists());
+        .unwrap();
+    assert!(!first.deferred_for_active_leases, "{first:?}");
+    assert_eq!(first.reclaimed_objects, 1, "{first:?}");
     let report = database
         .reclaim_branch_storage(BranchReclamationLimits::default())
         .unwrap();
     assert!(!report.deferred_for_active_leases, "{report:?}");
-    assert!(report.reclaimed_objects > 0);
-    assert!(report.reclaimed_bytes >= orphan.byte_length);
-    assert_eq!(report.reclaimed_branch_directories, 1);
-    assert_eq!(report.reclaimed_staging_files, 1);
+    assert_eq!(report.pending_objects, 0, "{report:?}");
+    assert_eq!(
+        report.reclaimed_objects, first.pending_objects,
+        "{report:?}"
+    );
+    assert!(first.reclaimed_bytes + report.reclaimed_bytes >= orphan.byte_length);
+    assert_eq!(
+        first.reclaimed_branch_directories + report.reclaimed_branch_directories,
+        1
+    );
+    assert_eq!(
+        first.reclaimed_staging_files + report.reclaimed_staging_files,
+        1
+    );
     assert!(!staging.exists());
     assert!(!orphan_path.exists());
     assert!(!parent_directory.exists());

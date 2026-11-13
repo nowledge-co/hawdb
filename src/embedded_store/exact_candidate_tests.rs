@@ -19,6 +19,7 @@
 use super::*;
 use crate::search::{SearchProjectionKind, SearchProjectionRow};
 use crate::{Database, DatabaseConfig, SearchIndex};
+use hawdb_core::ResourceBudgetKind;
 use std::num::NonZeroUsize;
 
 pub(super) const DIMENSION: usize = 8;
@@ -145,10 +146,18 @@ pub(super) fn governor() -> hawdb_qos::RuntimeGovernor {
 }
 
 fn resident_projection(root: &Root, commit_epoch: u64) -> SearchProjection {
+    resident_projection_with_rows(root, commit_epoch, rows())
+}
+
+pub(super) fn resident_projection_with_rows(
+    root: &Root,
+    commit_epoch: u64,
+    rows: Vec<SearchProjectionRow>,
+) -> SearchProjection {
     let mut index = SearchIndex::open(root.0.join("resident")).unwrap();
     index
         .apply_projection_delta(crate::SearchProjectionDelta {
-            upserts: rows(),
+            upserts: rows,
             source_graph_commit_epoch: Some(commit_epoch),
             ..Default::default()
         })
@@ -189,16 +198,7 @@ pub(super) fn handle(
     out_of_core: bool,
     config: DatabaseConfig,
 ) -> EmbeddedStoreHandle {
-    let mut database = Database::new_with_config(config);
-    database
-        .query("CREATE (:Memory {id: '0001', title: 'Canonical memory'})")
-        .unwrap();
-    let commit_epoch = database.commit_epoch().unwrap();
-    let graph = EmbeddedGraph::from_database_with_runtime_governor(
-        database,
-        GraphMode::ShadowReadOnly,
-        governor(),
-    );
+    let (graph, commit_epoch) = graph(config);
     let store = if out_of_core {
         EmbeddedStore::new_with_out_of_core_search(
             graph,
@@ -209,6 +209,21 @@ pub(super) fn handle(
         EmbeddedStore::new(graph, Some(resident_projection(root, commit_epoch)))
     };
     EmbeddedStoreHandle::new(store).unwrap()
+}
+
+/// A shadow graph whose single canonical memory publishes `commit_epoch`.
+pub(super) fn graph(config: DatabaseConfig) -> (EmbeddedGraph, u64) {
+    let mut database = Database::new_with_config(config);
+    database
+        .query("CREATE (:Memory {id: '0001', title: 'Canonical memory'})")
+        .unwrap();
+    let commit_epoch = database.commit_epoch().unwrap();
+    let graph = EmbeddedGraph::from_database_with_runtime_governor(
+        database,
+        GraphMode::ShadowReadOnly,
+        governor(),
+    );
+    (graph, commit_epoch)
 }
 
 pub(super) fn read_config() -> DatabaseConfig {
@@ -376,12 +391,14 @@ fn projection_exact_entry_points_match_brute_force_and_refuse_small_budgets() {
     }
     let refused = resident
         .try_search_candidates_with_report_context(&request, tiny)
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
     assert!(
-        refused.contains("exceeding admitted working memory 4096"),
+        refused
+            .to_string()
+            .contains("exceeding admitted working memory 4096"),
         "{refused}"
     );
+    assert_budget_refusal(&refused, ResourceBudgetKind::MemoryBytes, 4096);
 
     let out_of_core = out_of_core_projection(&root, 1);
     for output in [
@@ -398,12 +415,40 @@ fn projection_exact_entry_points_match_brute_force_and_refuse_small_budgets() {
     }
     let refused = out_of_core
         .search_candidates_with_report_context(&request, tiny)
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
     assert!(
-        refused.contains("search vector uniqueness check requires more than 16 document ids"),
+        refused
+            .to_string()
+            .contains("search vector uniqueness check requires more than 16 document ids"),
         "{refused}"
     );
+    assert_budget_refusal(&refused, ResourceBudgetKind::MetadataEntries, 16);
+    // A page window above the admitted score entries is refused up front.
+    let wide = SearchCandidateRequest::vector(embedding(2_024), 20)
+        .with_metadata_filters(memory_filter())
+        .with_exact_vector_search();
+    let refused = out_of_core
+        .search_candidates_with_report_context(&wide, tiny)
+        .unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains("search rank window exceeds the admitted 16 score entries"),
+        "{refused}"
+    );
+    assert_budget_refusal(&refused, ResourceBudgetKind::MetadataEntries, 16);
+}
+
+/// An over-budget exact read is a typed budget refusal, never a storage or
+/// untyped execution error that a host could mistake for a store fault (#1748).
+pub(super) fn assert_budget_refusal(error: &HawDBError, resource: ResourceBudgetKind, budget: u64) {
+    match error {
+        HawDBError::ResourceBudgetExceeded(details) => {
+            assert_eq!(details.resource, resource, "{details:?}");
+            assert_eq!(details.budget, budget, "{details:?}");
+        }
+        other => panic!("expected a typed budget refusal: {other:?}"),
+    }
 }
 
 #[test]
@@ -416,13 +461,15 @@ fn snapshot_exact_search_refuses_when_admitted_memory_cannot_hold_the_scan() {
         let request = SearchCandidateRequest::vector(embedding(3_003), LIMIT)
             .with_metadata_filters(memory_filter())
             .with_exact_vector_search();
-        let error = snapshot_search(&handle, &request).unwrap_err().to_string();
+        let error = snapshot_search(&handle, &request).unwrap_err();
         // Out of core, the query-memory account refuses first (#1722).
+        let text = error.to_string();
         assert!(
-            error.contains("exceeding admitted working memory")
-                || (out_of_core && error.contains("exceeding its 4096-byte budget")),
-            "out_of_core={out_of_core}: {error}"
+            text.contains("exceeding admitted working memory")
+                || (out_of_core && text.contains("exceeding its 4096-byte budget")),
+            "out_of_core={out_of_core}: {text}"
         );
+        assert_budget_refusal(&error, ResourceBudgetKind::MemoryBytes, 4096);
     }
 }
 

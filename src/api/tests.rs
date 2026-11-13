@@ -145,6 +145,7 @@ mod mutation_persistence;
 mod neighbor_reads;
 mod node_column_lookup_conjuncts;
 mod nowledge_graph_adapter;
+mod object_reclamation;
 mod optional_match;
 mod order_by_expressions;
 mod ordered_composite;

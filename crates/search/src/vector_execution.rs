@@ -18,6 +18,7 @@ use super::{
 };
 use crate::error::{HawDBError, Result};
 use hawdb_cascades::{OptimizerContext, QueryFamily, ResourceHints, VectorPrecision};
+use hawdb_core::{ResourceBudgetError, ResourceBudgetKind, ResourceBudgetScope};
 use hawdb_executor::{
     execute_vector_plan, VectorCandidate, VectorCandidateBatch, VectorCandidateScanMetrics,
     VectorCandidateScanRequest, VectorExecutionReport, VectorExecutionSource,
@@ -329,11 +330,17 @@ impl VectorExecutionSource for SearchVectorSource<'_, '_> {
             .len()
             .saturating_mul(std::mem::size_of::<(&str, &SearchDocument)>().saturating_mul(3));
         let required_working_bytes = candidate_bytes.saturating_add(lookup_bytes);
-        if required_working_bytes > self.vector_execution_options.max_working_bytes {
-            return Err(HawDBError::Execution(format!(
-                "raw vector rerank requires {required_working_bytes} estimated bytes, exceeding admitted working memory {}",
-                self.vector_execution_options.max_working_bytes
-            )));
+        let max_working_bytes = self.vector_execution_options.max_working_bytes;
+        if required_working_bytes > max_working_bytes {
+            return Err(working_memory_refusal(
+                "raw vector rerank",
+                required_working_bytes,
+                0,
+                max_working_bytes,
+                format!(
+                    "raw vector rerank requires {required_working_bytes} estimated bytes, exceeding admitted working memory {max_working_bytes}"
+                ),
+            ));
         }
         let documents = self
             .documents
@@ -477,6 +484,7 @@ impl<'a> SearchVectorSource<'a, '_> {
         let mut query_scorer = self.query_scorer;
         let mut candidates = Vec::new();
         let mut id_bytes = 0usize;
+        let mut admitted_bytes = 0usize;
         for document in self.documents {
             self.checkpoint()?;
             let Some(embedding) = document.embedding.as_deref() else {
@@ -504,18 +512,49 @@ impl<'a> SearchVectorSource<'a, '_> {
                 .capacity()
                 .saturating_mul(std::mem::size_of::<VectorCandidate>())
                 .saturating_add(id_bytes);
-            if candidate_bytes > self.vector_execution_options.max_working_bytes {
-                return Err(HawDBError::Execution(format!(
-                    "scalar vector candidates require {candidate_bytes} bytes, exceeding admitted working memory {}",
-                    self.vector_execution_options.max_working_bytes
-                )));
+            let max_working_bytes = self.vector_execution_options.max_working_bytes;
+            if candidate_bytes > max_working_bytes {
+                return Err(working_memory_refusal(
+                    "scalar vector candidates",
+                    candidate_bytes.saturating_sub(admitted_bytes),
+                    admitted_bytes,
+                    max_working_bytes,
+                    format!(
+                        "scalar vector candidates require {candidate_bytes} bytes, exceeding admitted working memory {max_working_bytes}"
+                    ),
+                ));
             }
+            admitted_bytes = candidate_bytes;
         }
         Ok(VectorCandidateBatch {
             score_source: VectorScoreSource::RawVector,
             candidates,
         })
     }
+}
+
+/// A resident exact or scalar vector read whose working set exceeds its
+/// admitted working memory. This is a budget refusal, not a store fault.
+fn working_memory_refusal(
+    owner: &str,
+    requested: usize,
+    used: usize,
+    budget: usize,
+    message: String,
+) -> HawDBError {
+    let bytes = |value: usize| u64::try_from(value).unwrap_or(u64::MAX);
+    ResourceBudgetError {
+        resource: ResourceBudgetKind::MemoryBytes,
+        scope: ResourceBudgetScope::Operator,
+        owner: owner.into(),
+        memory_class: None,
+        requested: bytes(requested),
+        used: bytes(used),
+        budget: bytes(budget),
+        budget_option: "VectorSearchExecutionOptions.max_working_bytes",
+        message,
+    }
+    .into()
 }
 
 fn vector_bytes(dimension: usize) -> u64 {

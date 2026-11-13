@@ -21,7 +21,7 @@
 //! one of them. Both are swept by the same post-publication pass and report
 //! failures through the same retryable debt receipt.
 
-use super::{DurableStore, GenerationReclamationDebt};
+use super::{DurableStore, GenerationReclamationDebt, ObjectReclamationDebt};
 use crate::artifact_files::parse_generation_file;
 use crate::error::{HawDBError, Result};
 use crate::file_io as fs;
@@ -34,7 +34,43 @@ use crate::store::{
 use hawdb_storage::append_table::{
     append_generation_manifest_file, AppendGenerationManifest, AppendPublicationConfig,
 };
+use hawdb_storage::ownership::DatabaseDirectoryLease;
 use std::collections::BTreeSet;
+
+fn object_debt_from_report(
+    report: &crate::branch_reclamation::BranchReclamationReport,
+    previous: ObjectReclamationDebt,
+) -> ObjectReclamationDebt {
+    if let Some(root) = report.damaged_live_root {
+        // Nothing was inventoried; keep the last measurement.
+        return ObjectReclamationDebt {
+            retry_required: true,
+            damaged_live_root: Some(root),
+            ..previous
+        };
+    }
+    if report.deferred_for_active_leases {
+        // Nothing was inventoried; keep the last measurement.
+        return ObjectReclamationDebt {
+            retry_required: true,
+            ..previous
+        };
+    }
+    ObjectReclamationDebt {
+        retry_required: report.retry_required || report.pending_objects > 0,
+        pending_objects: report.pending_objects,
+        pending_bytes: report.pending_bytes,
+        store_objects: report.object_store_objects,
+        store_bytes: report.object_store_bytes,
+        skipped_objects: report
+            .skipped_corrupt_objects
+            .saturating_add(report.skipped_quarantine_objects),
+        skipped_bytes: report.skipped_bytes,
+        corrupt_object: report.corrupt_object,
+        quarantine_unverified: report.skipped_quarantine_objects > 0,
+        damaged_live_root: None,
+    }
+}
 
 impl DurableStore {
     pub(in crate::store) fn obsolete_generation_bytes(
@@ -60,23 +96,102 @@ impl DurableStore {
             .fold(0u64, u64::saturating_add)
     }
 
+    /// Post-publication maintenance: data-root generations, superseded
+    /// branch WALs and, given the branch owner lease, unreachable project
+    /// immutable objects (#1736). Never changes the publication outcome.
     pub(in crate::store) fn reclaim_old_generations(
         &mut self,
         current_generation: u64,
         previous_checkpoint_generation: u64,
         pinned_reader_generations: Option<&BTreeSet<u64>>,
+        owner: Option<&DatabaseDirectoryLease>,
     ) {
-        let debt = self.try_reclaim_old_generations(
+        let mut debt = self.try_reclaim_old_generations(
             current_generation,
             previous_checkpoint_generation,
             pinned_reader_generations,
         );
+        debt.objects = match owner {
+            Some(owner) => self.try_reclaim_unreachable_objects(owner),
+            None => self.generation_reclamation_debt().objects,
+        };
         // Filesystem work stays outside this lock. Publish the complete debt
         // receipt atomically to all views of this admitted runtime.
         *self
             .generation_reclamation_debt
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = debt;
+    }
+
+    /// Retries only the immutable-object sweep, for a checkpoint request that
+    /// found nothing new to publish while object debt remains.
+    pub(in crate::store) fn retry_object_reclamation(&self, owner: &DatabaseDirectoryLease) {
+        if !self.generation_reclamation_debt().objects.retry_required {
+            return;
+        }
+        let objects = self.try_reclaim_unreachable_objects(owner);
+        self.generation_reclamation_debt
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .objects = objects;
+    }
+
+    /// Records the outcome of an explicit project reclamation pass.
+    pub(in crate::store) fn record_object_reclamation(
+        &self,
+        report: &crate::branch_reclamation::BranchReclamationReport,
+    ) {
+        let mut debt = self
+            .generation_reclamation_debt
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        debt.objects = object_debt_from_report(report, debt.objects);
+    }
+
+    /// One automatic, bounded pass over the project immutable-object store
+    /// after this runtime published a head (#1736).
+    ///
+    /// Liveness is the complete project mark of explicit reclamation: every
+    /// non-deleted catalog branch's durable head, every recorded creation
+    /// base root (children and siblings start from a sealed parent root), and
+    /// every root registered by a live owner (this runtime's head, reader
+    /// snapshots, prepared checkpoint candidates and handoffs, derived jobs).
+    /// An unregistered active owner defers the pass. The catalog metadata
+    /// lock that serializes every root publication and registration is held
+    /// from catalog read through the last removal; if it is busy, the pass
+    /// is deferred rather than waiting behind another publication. Every
+    /// head and the catalog are synchronized before the first removal. Any
+    /// deferral or failure keeps all objects and is recorded as retryable
+    /// debt for the next checkpoint or reclamation call.
+    fn try_reclaim_unreachable_objects(
+        &self,
+        owner: &DatabaseDirectoryLease,
+    ) -> ObjectReclamationDebt {
+        let previous = self.generation_reclamation_debt().objects;
+        if self.read_only {
+            return previous;
+        }
+        let Some(branch) = &self.branch_runtime else {
+            return previous;
+        };
+        let retry = ObjectReclamationDebt {
+            retry_required: true,
+            ..previous
+        };
+        let Ok(_descriptor_operation) = self.file_descriptor_context().internal_operation() else {
+            return retry;
+        };
+        match crate::branch_reclamation::reclaim_owned_project(
+            branch.catalog_path(),
+            branch.immutable_store_root(),
+            owner,
+            &branch.head,
+            crate::branch_reclamation::BranchReclamationLimits::automatic(),
+            crate::branch_reclamation::ReclamationTrigger::Automatic,
+        ) {
+            Ok(report) => object_debt_from_report(&report, previous),
+            Err(_) => retry,
+        }
     }
 
     fn try_reclaim_old_generations(

@@ -279,7 +279,11 @@ FAKE_NPM = """#!/usr/bin/env bash
 case "$1" in
   pack) echo '[{"shasum":"local"}]' ;;
   view) exit 1 ;;
-  publish) echo "$*" >> "$NPM_LOG" ;;
+  publish)
+    # npm reads stdin when it asks for a 2FA confirmation; this stand-in
+    # always does, so a publish that could reach the package list eats it.
+    cat > /dev/null
+    echo "$*" >> "$NPM_LOG" ;;
   *) exit 2 ;;
 esac
 """
@@ -308,6 +312,8 @@ class NpmDistTagTests(unittest.TestCase):
                 capture_output=True,
                 text=True,
                 env=environment,
+                # No controlling terminal, as in CI: /dev/tty cannot be opened.
+                start_new_session=True,
             )
             return result, log.read_text().splitlines()
 
@@ -325,6 +331,13 @@ class NpmDistTagTests(unittest.TestCase):
             self.assertEqual(len(published), 1, version)
             self.assertIn(f"--tag {tag}", published[0])
             self.assertNotIn("--dry-run", published[0])
+
+    def test_publish_assembled_keeps_the_package_list_from_npm(self):
+        # npm reading the loop's stdin (as it does for a 2FA prompt) once
+        # swallowed every later package and failed a local publish with EOTP.
+        result, published = self.run_publish(["0.31.0", "0.31.0", "0.31.0"], "--tag", "latest")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(published), 3, published)
 
     def test_publish_assembled_refuses_latest_for_a_prerelease_and_channel_mismatches(self):
         for version, tag in (
