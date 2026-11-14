@@ -131,6 +131,7 @@ fn expression_names(expression: &ProjectionExpression, names: &mut BTreeSet<Stri
         ProjectionExpression::Coalesce(_)
         | ProjectionExpression::VectorDistance { .. }
         | ProjectionExpression::JsonValue { .. }
+        | ProjectionExpression::JsonString { .. }
         | ProjectionExpression::Left { .. }
         | ProjectionExpression::Lower(_)
         | ProjectionExpression::Case { .. }

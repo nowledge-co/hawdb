@@ -48,3 +48,27 @@ memory before parsing, and the ordinary result row and payload budgets still
 apply. The limit is per evaluated document, so callers should use a selective
 predicate when possible. This expression does not add an index on JSON members
 or alter stored property bytes.
+
+## String-only selection
+
+[`json_string(document, path)`](https://github.com/nowledge-co/hawdb/issues/1759)
+uses the same dotted literal or parameter path, but returns only the selected
+JSON string. Missing paths, JSON null, and all selected non-string kinds return
+`NULL`. Numbers are not converted to Cypher scalars first: a selected
+`18446744073709551615` is absent string state, not a signed-integer overflow.
+Decoded strings retain whitespace, case and escapes; normalization remains the
+caller's choice. Escaped JSON keys are decoded before exact field lookup.
+
+```cypher
+MATCH (m:Memory)
+WHERE coalesce(json_string(m.metadata, '$.state'), 'active') = 'active'
+RETURN COUNT(*) AS total
+```
+
+The function works in the ordinary expression path, including predicates,
+`CASE`, `COALESCE`, `WITH` and aggregate keys. It has the same 1 MiB document
+limit, parse-memory admission and result budgets as `json_value`. Malformed
+JSON, non-string documents, invalid paths, memory/result limits and cancellation
+remain errors. It does not accept error-suppression clauses or change either
+existing `json_value` mode. This additive query capability changes no stored
+bytes and does not authorize a host data-plane cutover.

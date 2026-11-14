@@ -1840,6 +1840,7 @@ fn reads_only_group_keys(expression: &ProjectionExpression, keys: &[Projection])
         | ProjectionExpression::Lower(_)
         | ProjectionExpression::Left { .. }
         | ProjectionExpression::JsonValue { .. }
+        | ProjectionExpression::JsonString { .. }
         | ProjectionExpression::Coalesce(_)
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListFunction { .. }

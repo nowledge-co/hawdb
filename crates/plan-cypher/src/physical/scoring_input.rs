@@ -350,6 +350,7 @@ fn public_expression_at(expression: &ProjectionExpression, depth: usize) -> bool
         ProjectionExpression::Literal(_)
         | ProjectionExpression::Coalesce(_)
         | ProjectionExpression::JsonValue { .. }
+        | ProjectionExpression::JsonString { .. }
         | ProjectionExpression::Left { .. }
         | ProjectionExpression::Lower(_)
         | ProjectionExpression::Case { .. }

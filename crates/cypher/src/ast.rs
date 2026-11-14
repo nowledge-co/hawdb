@@ -532,6 +532,10 @@ pub enum ScalarExpressionKind {
         left: Box<ScalarExpression>,
         right: Box<ScalarExpression>,
     },
+    JsonString {
+        expression: Box<ScalarExpression>,
+        path: ValueExpression,
+    },
     JsonValue {
         expression: Box<ScalarExpression>,
         path: ValueExpression,
@@ -890,6 +894,7 @@ impl ScalarExpressionKind {
             | Self::Lower(expression)
             | Self::Left { expression, .. }
             | Self::JsonValue { expression, .. }
+            | Self::JsonString { expression, .. }
             | Self::PropertyAccess { expression, .. }
             | Self::Conversion {
                 argument: expression,

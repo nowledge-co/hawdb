@@ -276,6 +276,184 @@ fn json_value_distinguishes_missing_invalid_and_non_string_documents() {
 }
 
 #[test]
+fn json_string_selects_decoded_strings_before_numeric_conversion() {
+    let mut db = Database::new();
+    let cases = [
+        (Value::Null, "$.state", Value::Null),
+        (Value::String("null".into()), "$.state", Value::Null),
+        (Value::String("{}".into()), "$.state", Value::Null),
+        (
+            Value::String(r#"{"state":" active "}"#.into()),
+            "$.state",
+            Value::String(" active ".into()),
+        ),
+        (
+            Value::String(r#"{"\u0073tate":"a\n\"b\\c\u2603","nested":{"state":"nested"}}"#.into()),
+            "$.state",
+            Value::String("a\n\"b\\c\u{2603}".into()),
+        ),
+        (
+            Value::String(r#"{"state":"top","nested":{"state":"nested"}}"#.into()),
+            "$.nested.state",
+            Value::String("nested".into()),
+        ),
+        (
+            Value::String(r#"{"state":"","other":"bound"}"#.into()),
+            "$.state",
+            Value::String(String::new()),
+        ),
+        (
+            Value::String(r#"{"state":"wrong","other":"bound"}"#.into()),
+            "$.other",
+            Value::String("bound".into()),
+        ),
+    ];
+    let non_strings = [
+        "null",
+        "true",
+        "false",
+        "0",
+        "-9223372036854775808",
+        "9223372036854775807",
+        "9223372036854775808",
+        "18446744073709551615",
+        "1.25",
+        "-1.25e100",
+        "[]",
+        "{}",
+    ];
+    let cases = cases
+        .into_iter()
+        .chain(non_strings.into_iter().map(|value| {
+            (
+                Value::String(format!(r#"{{"state":{value}}}"#)),
+                "$.state",
+                Value::Null,
+            )
+        }));
+    db.query("CREATE (:Memory {id: 1})").unwrap();
+    for (metadata, path, expected) in cases {
+        db.query_with_params(
+            "MATCH (m:Memory) SET m.metadata = $metadata",
+            &BTreeMap::from([("metadata".into(), metadata.clone())]),
+        )
+        .unwrap();
+        let result = db
+            .query_with_params(
+                "MATCH (m:Memory) RETURN json_string(m.metadata, $path) AS value",
+                &BTreeMap::from([("path".into(), Value::String(path.into()))]),
+            )
+            .unwrap();
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0].get("value"),
+            Some(&expected),
+            "{metadata:?}, {path}"
+        );
+    }
+}
+
+#[test]
+fn json_string_filters_and_aggregates_preserve_non_string_absence() {
+    let mut db = Database::new();
+    for (id, metadata) in [
+        (1, r#"{"state":"active"}"#),
+        (2, r#"{"state":18446744073709551615}"#),
+        (3, r#"{"state":[]}"#),
+        (4, r#"{"state":"archived"}"#),
+        (5, r#"{"nested":{"state":"archived"}}"#),
+    ] {
+        db.query_with_params(
+            "CREATE (:Memory {id: $id, metadata: $metadata})",
+            &BTreeMap::from([
+                ("id".into(), Value::Int(id)),
+                ("metadata".into(), Value::String(metadata.into())),
+            ]),
+        )
+        .unwrap();
+    }
+    let parameters = BTreeMap::from([("path".into(), Value::String("$.state".into()))]);
+    let filtered = db.query_with_params("MATCH (m:Memory) WHERE coalesce(json_string(m.metadata, $path), 'active') = 'active' RETURN COUNT(*) AS total", &parameters).unwrap();
+    assert_eq!(filtered.rows[0].get("total"), Some(&Value::Int(4)));
+    for aggregate in ["COUNT(*)", "COUNT(DISTINCT m.id)"] {
+        let result = db.query_with_params(&format!("MATCH (m:Memory) WITH json_string(m.metadata, $path) AS state, {aggregate} AS total RETURN state, total"), &parameters).unwrap();
+        assert_eq!(result.rows.len(), 3);
+        for (state, count) in [
+            (Value::Null, 3),
+            (Value::String("active".into()), 1),
+            (Value::String("archived".into()), 1),
+        ] {
+            let row = result
+                .rows
+                .iter()
+                .find(|row| row.get("state") == Some(&state))
+                .unwrap();
+            assert_eq!(row.get("total"), Some(&Value::Int(count)));
+        }
+    }
+    let result = db.query_with_params("MATCH (m:Memory) WHERE m.id = 2 RETURN CASE WHEN json_string(m.metadata, $path) IS NULL THEN 'absent' ELSE 'present' END AS state", &parameters).unwrap();
+    assert_eq!(
+        result.rows[0].get("state"),
+        Some(&Value::String("absent".into()))
+    );
+}
+
+#[test]
+fn json_string_preserves_strict_document_path_and_cancellation_errors() {
+    let mut db = Database::new();
+    for (metadata, expected) in [
+        (Value::String("{invalid".into()), "invalid JSON"),
+        (Value::Int(12), "string document"),
+        (
+            Value::String(format!(r#"{{"state":"{}"}}"#, "a".repeat(1024 * 1024))),
+            "1 MiB input limit",
+        ),
+    ] {
+        db.query("MATCH (m:Memory) DELETE m").unwrap();
+        db.query_with_params(
+            "CREATE (:Memory {id: 1, metadata: $metadata})",
+            &BTreeMap::from([("metadata".into(), metadata)]),
+        )
+        .unwrap();
+        for query in [
+            "MATCH (m:Memory) RETURN json_string(m.metadata, '$.state') AS value",
+            "MATCH (m:Memory) WHERE coalesce(json_string(m.metadata, '$.state'), '') = '' RETURN COUNT(*) AS total",
+            "MATCH (m:Memory) WITH json_string(m.metadata, '$.state') AS value, COUNT(*) AS total RETURN value, total",
+            "MATCH (m:Memory) WITH json_string(m.metadata, '$.state') AS value, COUNT(DISTINCT m.id) AS total RETURN value, total",
+        ] {
+            let error = db.query(query).unwrap_err();
+            assert!(matches!(&error, hawdb::HawDBError::Execution(message) if message.contains(expected)), "{query}: {error}");
+        }
+    }
+    for path in [
+        Value::Int(1),
+        Value::Null,
+        Value::String("$[0]".into()),
+        Value::String("$.".into()),
+        Value::String("$.a..b".into()),
+        Value::String(format!("$.{}", "a".repeat(255))),
+    ] {
+        let error = db
+            .query_with_params(
+                "MATCH (m:Memory) RETURN json_string(m.metadata, $path)",
+                &BTreeMap::from([("path".into(), path)]),
+            )
+            .unwrap_err();
+        assert!(matches!(error, hawdb::HawDBError::Semantic(_)), "{error}");
+    }
+    let error = db
+        .query_with_context(
+            "MATCH (m:Memory) RETURN json_string(m.metadata, '$.state')",
+            &RuntimeTaskContext::with_timeout(Duration::ZERO),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(&error, hawdb::HawDBError::Execution(message) if message.contains("runtime task stopped: deadline_exceeded")),
+        "{error}"
+    );
+}
+
+#[test]
 fn json_value_null_on_nonscalar_maps_only_selected_arrays_and_objects_to_null() {
     let mut db = Database::new();
     for (id, metadata) in [
@@ -540,6 +718,21 @@ fn json_expression_positions_share_configured_and_runtime_memory_admission() {
         ("MATCH (m:Memory) RETURN m.id AS id ORDER BY json_value(m.metadata, $path)", "$.rank", vec![vec![Value::Int(2)], vec![Value::Int(1)]], "blocking_state"),
         ("MATCH (m:Memory) RETURN m.id AS id ORDER BY json_value(m.metadata, $path) LIMIT 1", "$.rank", vec![vec![Value::Int(2)]], "blocking_state"),
     ];
+    let cases: Vec<_> = cases
+        .into_iter()
+        .flat_map(|(query, path, expected, memory_class)| {
+            let mut variants = vec![(query.to_owned(), path, expected.clone(), memory_class)];
+            if path == "$.source" {
+                variants.push((
+                    query.replace("json_value(", "json_string("),
+                    path,
+                    expected,
+                    memory_class,
+                ));
+            }
+            variants
+        })
+        .collect();
     for (configured, runtime) in [
         (8192, None),
         (65536, Some(8192)),
