@@ -697,6 +697,14 @@ Engine errors stay `hawdb.exceptions`.
 is a separate package with a LlamaIndex `PropertyGraphStore` over a
 `hawdb.Database`. Install it from that directory.
 
+## Dify plugin
+
+[`integrations/dify-plugin-hawdb`](../../integrations/dify-plugin-hawdb/README.md)
+is a Dify tool plugin that runs parameterized Cypher and SQL against a
+database the plugin opens in-process, with an optional external knowledge
+`POST /retrieval` endpoint. Package it from that directory with the Dify
+plugin CLI.
+
 ## Test
 
 ```bash

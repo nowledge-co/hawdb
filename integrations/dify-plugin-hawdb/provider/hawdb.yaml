@@ -1,0 +1,75 @@
+identity:
+  author: nowledge
+  name: hawdb
+  label:
+    en_US: HawDB
+    zh_Hans: HawDB
+  description:
+    en_US: Run parameterized Cypher or SQL against an embedded HawDB database.
+    zh_Hans: 对嵌入式 HawDB 数据库执行参数化 Cypher 或 SQL。
+  icon: icon.svg
+  tags:
+    - rag
+    - utilities
+credentials_for_provider:
+  database_path:
+    type: text-input
+    required: true
+    label:
+      en_US: Database path
+      zh_Hans: 数据库路径
+    placeholder:
+      en_US: /data/hawdb/graph
+      zh_Hans: /data/hawdb/graph
+    help:
+      en_US: Absolute path of the HawDB database directory on the plugin daemon's host. In read-write mode a path that does not exist yet is created as an empty database; its parent directory must exist.
+      zh_Hans: 插件守护进程所在主机上 HawDB 数据库目录的绝对路径。读写模式下，不存在的路径会被创建为空数据库，但其父目录必须已存在。
+  access_mode:
+    type: select
+    required: false
+    default: read_write
+    options:
+      - value: read_write
+        label:
+          en_US: Read and write
+          zh_Hans: 读写
+      - value: read_only
+        label:
+          en_US: Read only
+          zh_Hans: 只读
+    label:
+      en_US: Access mode
+      zh_Hans: 访问模式
+    help:
+      en_US: Read only opens the database read-only, so the engine refuses statements that write. The database must already exist.
+      zh_Hans: 只读模式以只读方式打开数据库，引擎会拒绝写入语句。数据库必须已存在。
+  max_read_result_rows:
+    type: text-input
+    required: false
+    label:
+      en_US: Row budget
+      zh_Hans: 行数预算
+    placeholder:
+      en_US: Engine default (no row ceiling)
+      zh_Hans: 引擎默认值（不限行数）
+    help:
+      en_US: The engine's max_read_result_rows. A statement that returns more rows fails, and the tool returns no rows. Empty or 0 means no row ceiling.
+      zh_Hans: 引擎的 max_read_result_rows。返回行数超过该值的语句会失败，工具不返回任何行。留空或 0 表示不限行数。
+  max_read_result_payload_bytes:
+    type: text-input
+    required: false
+    label:
+      en_US: Payload budget (bytes)
+      zh_Hans: 结果大小预算（字节）
+    placeholder:
+      en_US: Engine default (67108864)
+      zh_Hans: 引擎默认值（67108864）
+    help:
+      en_US: The engine's max_read_result_payload_bytes. A statement whose result is larger fails, and the tool returns no rows. Empty keeps the 64 MiB default; the smallest budget is 1.
+      zh_Hans: 引擎的 max_read_result_payload_bytes。结果超过该大小的语句会失败，工具不返回任何行。留空使用 64 MiB 默认值；最小为 1。
+tools:
+  - tools/cypher_query.yaml
+  - tools/sql_query.yaml
+extra:
+  python:
+    source: provider/hawdb.py

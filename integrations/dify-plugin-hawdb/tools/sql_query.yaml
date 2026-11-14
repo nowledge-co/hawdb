@@ -1,0 +1,37 @@
+identity:
+  name: sql_query
+  author: nowledge
+  label:
+    en_US: Run SQL
+    zh_Hans: 执行 SQL
+description:
+  human:
+    en_US: Run one parameterized SQL statement against the HawDB database and return its rows as JSON.
+    zh_Hans: 对 HawDB 数据库执行一条参数化 SQL 语句，并以 JSON 返回结果行。
+  llm: Run one SQL statement against the HawDB database. Put values in the parameters JSON array and refer to them as $1, $2, ... in the statement instead of writing them into the statement text. Returns {"columns", "rows", "affected_rows"}.
+parameters:
+  - name: statement
+    type: string
+    required: true
+    label:
+      en_US: SQL statement
+      zh_Hans: SQL 语句
+    human_description:
+      en_US: One SQL statement. Refer to parameter values as $1, $2, ...
+      zh_Hans: 一条 SQL 语句，用 $1、$2 等引用参数值。
+    llm_description: One SQL statement, such as SELECT id, body FROM notes WHERE id = $1. Refer to values as $1, $2, ... parameters.
+    form: llm
+  - name: parameters
+    type: string
+    required: false
+    label:
+      en_US: Parameters
+      zh_Hans: 参数
+    human_description:
+      en_US: 'A JSON array of the $1, $2, ... values, such as [7, "hello"].'
+      zh_Hans: '由 $1、$2 等参数值组成的 JSON 数组，例如 [7, "hello"]。'
+    llm_description: 'A JSON array whose first item is $1, second item $2 and so on, such as [7, "hello"]. HawDB requires exactly as many items as the statement uses. Omit it when the statement has no parameters.'
+    form: llm
+extra:
+  python:
+    source: tools/sql_query.py
