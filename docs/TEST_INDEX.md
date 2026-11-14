@@ -4007,6 +4007,13 @@ only in the row-page root, no relational index generation). It opens it in all
 `UnsupportedStorageFormat` whose `format()` is
 `RELATIONAL_CHECKPOINT_LAYOUT_FORMAT` and leaves every durable byte unchanged
 (lock files and the disposable branch `runtime/` mount excluded).
+`newer_row_root_layout_with_index_generation_opens_out_of_core_authoritative`
+unpacks the zstd-compressed `tests/fixtures/row_root_shadow_index_checkpoint.bundle.zst`
+(the same #1778 writer with `Shadow` indexes, so it binds a relational index
+generation) and checks the one configuration that must keep working:
+`OutOfCore` + `Authoritative` opens it read-only and writable with every row,
+enforces the primary key, checkpoints an insert and reopens, while a default
+open still refuses with the typed error.
 `api::tests::system_schema_registry::writable_metadata_only_transaction_checkpoints_rows_and_indexes`
 checks the same typed refusal on an `OutOfCore` + `Authoritative` checkpoint
 reopened with defaults. FFI `error_tests::newer_relational_checkpoint_layout_reports_unsupported_storage_format`

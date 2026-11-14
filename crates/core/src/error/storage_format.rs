@@ -27,12 +27,12 @@ pub const RELATIONAL_SCHEMA_FORMAT: &str = "relational schema";
 /// Relational row-page publications.
 pub const RELATIONAL_ROW_PAGE_FORMAT: &str =
     "relational row-page format (recreate the development database)";
-/// Embedded append WAL records.
 /// Relational checkpoint layouts this reader cannot open in the requested
 /// residency or index configuration, such as checkpoints written without a
 /// full-row relational file (#1737) or without a persistent relational index
 /// generation required by Authoritative indexes.
 pub const RELATIONAL_CHECKPOINT_LAYOUT_FORMAT: &str = "relational checkpoint layout";
+/// Embedded append WAL records.
 pub const APPEND_WAL_FORMAT: &str = "append WAL";
 /// Logical dumps (`docs/LOGICAL_DUMP.md`).
 pub const LOGICAL_DUMP_FORMAT: &str = "logical dump";

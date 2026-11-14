@@ -171,6 +171,7 @@ _HAWDB_SRCS = glob(
 _HAWDB_COMPILE_DATA = [
     "tests/fixtures/pre_1683_property_descriptors.bundle",
     "tests/fixtures/row_root_relational_checkpoint.bundle",
+    "tests/fixtures/row_root_shadow_index_checkpoint.bundle.zst",
 ]
 
 _HAWDB_COMMON_BASE_DEPS = [

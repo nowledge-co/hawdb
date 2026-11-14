@@ -28,6 +28,13 @@ use hawdb_storage::config::{RelationalIndexMode, StorageResidencyMode};
 const ROW_ROOT_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/row_root_relational_checkpoint.bundle");
 
+/// The same layout written with `Shadow` relational indexes (#1778, head
+/// `17499379f`, 20 `docs` rows, one checkpoint), so it binds a persistent
+/// relational index generation. Its index pages are mostly zero padding, so
+/// the bundle is zstd-compressed.
+const SHADOW_INDEX_FIXTURE: &[u8] =
+    include_bytes!("../../../tests/fixtures/row_root_shadow_index_checkpoint.bundle.zst");
+
 /// Every durable file below `root`. Lock files and each branch's disposable
 /// `runtime/` mount, which writable admission rebuilds from the sealed head
 /// before it loads the checkpoint, are not database content.
@@ -119,4 +126,67 @@ fn newer_row_root_layout_is_a_typed_refusal_in_every_configuration() {
         }
     }
     assert_eq!(checked, 24);
+}
+
+/// The one configuration this reader serves for the newer layout:
+/// `OutOfCore` residency with `Authoritative` relational indexes, on a
+/// database that published a relational index generation.
+#[test]
+fn newer_row_root_layout_with_index_generation_opens_out_of_core_authoritative() {
+    let bundle = zstd::decode_all(SHADOW_INDEX_FIXTURE).unwrap();
+    let config = |read_only: bool| DatabaseConfig {
+        storage_residency_mode: StorageResidencyMode::OutOfCore,
+        relational_index_mode: RelationalIndexMode::Authoritative,
+        read_only,
+        recovery_mode: if read_only {
+            crate::RecoveryMode::Strict
+        } else {
+            crate::RecoveryMode::default()
+        },
+        ..DatabaseConfig::default()
+    };
+    let rows = |db: &mut Database| {
+        db.query_sql("SELECT id, body FROM docs ORDER BY id")
+            .unwrap()
+            .rows
+            .iter()
+            .map(|row| (row["id"].clone(), row["body"].clone()))
+            .collect::<Vec<_>>()
+    };
+    let expected = (0..20i64)
+        .map(|id| (Value::Int(id), Value::String(format!("body {id}"))))
+        .collect::<Vec<_>>();
+
+    let path = unique_test_dir("relational_checkpoint_layout_shadow_index");
+    super::property_defaults::unpack_fixture(&bundle, &path);
+    {
+        let mut db = Database::open_with_config(&path, config(true)).unwrap();
+        assert_eq!(rows(&mut db), expected);
+    }
+    {
+        let mut db = Database::open_with_config(&path, config(false)).unwrap();
+        assert_eq!(rows(&mut db), expected);
+        assert!(db
+            .query_sql("INSERT INTO docs (id, body) VALUES (3, 'duplicate')")
+            .is_err());
+        db.query_sql("INSERT INTO docs (id, body) VALUES (20, 'body 20')")
+            .unwrap();
+        db.checkpoint().unwrap();
+    }
+    let mut expected = expected;
+    expected.push((Value::Int(20), Value::String("body 20".into())));
+    {
+        let mut db = Database::open_with_config(&path, config(false)).unwrap();
+        assert_eq!(rows(&mut db), expected);
+    }
+    // Every other configuration still refuses with the typed error.
+    let error = Database::open(&path)
+        .and_then(|mut db| db.query_sql("SELECT COUNT(*) FROM docs"))
+        .unwrap_err();
+    assert!(
+        matches!(&error, HawDBError::UnsupportedStorageFormat(format)
+            if format.format() == RELATIONAL_CHECKPOINT_LAYOUT_FORMAT),
+        "{error:?}"
+    );
+    std::fs::remove_dir_all(&path).unwrap();
 }
