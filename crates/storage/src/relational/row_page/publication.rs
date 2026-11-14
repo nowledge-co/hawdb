@@ -38,11 +38,17 @@ const RELATIONAL_ROW_PAGE_PUBLICATION_LOCK_FILE: &str = "relational-row-pages.lo
 
 pub const DEFAULT_RELATIONAL_ROW_PAGE_MANIFEST_BYTES: usize = 8 * 1024 * 1024;
 pub const DEFAULT_RELATIONAL_ROW_PAGE_TABLES: usize = 4096;
-pub const DEFAULT_RELATIONAL_ROW_PAGE_DIRTY_PAGES: usize = 4096;
+/// Dirty pages one publication may write. With length-packed v2 pages the
+/// encoded dirty-byte budget is the binding bound; this cap bounds descriptor
+/// bookkeeping only.
+pub const DEFAULT_RELATIONAL_ROW_PAGE_DIRTY_PAGES: usize = 65_536;
 pub const DEFAULT_RELATIONAL_ROW_PAGE_DIRTY_BYTES: u64 = 512 * 1024 * 1024;
 pub const DEFAULT_RELATIONAL_ROW_PAGE_ROOT_PAGES: u64 = 16 * 1024 * 1024;
 pub const DEFAULT_RELATIONAL_ROW_PAGE_ROOT_KEY_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const DEFAULT_RELATIONAL_ROW_PAGE_TABLE_NAME_BYTES: usize = 1024;
+/// Default page target of the v2 row-page format (see the row-page spec for
+/// the measurement behind it).
+pub const DEFAULT_RELATIONAL_ROW_PAGE_TARGET_BYTES: usize = 32 * 1024;
 
 pub fn relational_row_page_artifact_file(generation: u64) -> String {
     format!("relational-row-pages-{generation}.pages.hawdb")
@@ -66,8 +72,21 @@ pub struct RelationalRowPagePublicationConfig {
     pub max_manifest_bytes: NonZeroUsize,
     pub max_tables: NonZeroUsize,
     pub max_table_name_bytes: NonZeroUsize,
+    /// Dirty pages one publication may write. Readers validate a manifest's
+    /// dirty page count against `max_root_pages`, not this writer limit.
     pub max_dirty_pages: NonZeroUsize,
+    /// Encoded dirty-page bytes one publication may write before its fsync.
+    ///
+    /// The charge is each page's encoded length (#1593), which is exactly the
+    /// bytes the v2 page artifact writes for it: pages are packed back to
+    /// back without slot padding. The budget bounds written page payload; it
+    /// never bounded memory (planned rows share their values).
     pub max_dirty_bytes: NonZeroU64,
+    /// The size at which the packer closes a page. A page holds at least one
+    /// row; a single row larger than the target makes a page of its own, up
+    /// to `page_limits.max_page_bytes`. This is writer policy: readers accept
+    /// any page within the codec limits.
+    pub target_page_bytes: NonZeroUsize,
     pub max_root_pages: NonZeroU64,
     pub max_root_key_bytes: NonZeroU64,
 }
@@ -86,6 +105,8 @@ impl Default for RelationalRowPagePublicationConfig {
                 .expect("default row-page dirty-page limit is non-zero"),
             max_dirty_bytes: NonZeroU64::new(DEFAULT_RELATIONAL_ROW_PAGE_DIRTY_BYTES)
                 .expect("default row-page dirty-byte limit is non-zero"),
+            target_page_bytes: NonZeroUsize::new(DEFAULT_RELATIONAL_ROW_PAGE_TARGET_BYTES)
+                .expect("default row-page target size is non-zero"),
             max_root_pages: NonZeroU64::new(DEFAULT_RELATIONAL_ROW_PAGE_ROOT_PAGES)
                 .expect("default row-page root-page limit is non-zero"),
             max_root_key_bytes: NonZeroU64::new(DEFAULT_RELATIONAL_ROW_PAGE_ROOT_KEY_BYTES)
@@ -96,6 +117,7 @@ impl Default for RelationalRowPagePublicationConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationalRowPageTableDelta {
+    pub last_row_id: i64,
     pub table: String,
     /// Required when the table has no selected base root. Incremental deltas
     /// may omit it because the immutable base manifest already owns the exact
@@ -106,6 +128,11 @@ pub struct RelationalRowPageTableDelta {
     pub next_page_id: NonZeroU64,
     pub dirty_pages: Vec<ImmutableRelationalRowPage>,
     pub deleted_page_ids: Vec<RelationalRowPageId>,
+    /// Replaces the base table's schema and every base page (#1593). The
+    /// delta then carries the complete table: its schema, all of its rows in
+    /// `dirty_pages` and no `deleted_page_ids`. Its page ids continue the
+    /// base table's allocator, so no id of a pinned base root is reused.
+    pub replaces_base: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,27 +142,32 @@ pub struct RelationalRowPageArtifactMetadata {
     pub encoded_sha256: Sha256Digest,
 }
 
+/// The exact length and internal digest of one encoded row page. The digest
+/// is the page header's own CRC32C/SHA-256 (format v2), so a read verifies the
+/// page once and compares the result with its descriptor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RelationalRowPageSlotIntegrity {
+pub struct RelationalRowPageIntegrity {
     pub encoded_len: u32,
-    pub slot_crc32c: u32,
-    pub slot_sha256: Sha256Digest,
+    pub page_crc32c: u32,
+    pub page_sha256: Sha256Digest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationalRowPageRootDescriptor {
     pub logical_page_id: RelationalRowPageId,
     pub physical_generation: u64,
-    pub physical_slot: u64,
+    /// Byte offset of the page in its physical generation's page artifact.
+    pub physical_offset: u64,
     pub source_commit_epoch: u64,
     pub row_count: u32,
     pub lower_bound: Vec<u8>,
     pub upper_bound: Vec<u8>,
-    pub slot_integrity: RelationalRowPageSlotIntegrity,
+    pub page_integrity: RelationalRowPageIntegrity,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationalRowPageTableRoot {
+    pub last_row_id: i64,
     pub table: String,
     pub schema: RelationalTableSchema,
     pub schema_digest: Sha256Digest,
@@ -152,7 +184,11 @@ pub struct RelationalRowPageTableRoot {
 pub struct RelationalRowPagePhysicalGeneration {
     pub generation: u64,
     pub allocated_pages: u64,
+    /// Exact page-artifact length of this generation.
+    pub allocated_bytes: u64,
     pub live_pages: u64,
+    /// Encoded bytes of the pages this root still references.
+    pub live_bytes: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -160,7 +196,10 @@ pub struct RelationalRowPageRootManifest {
     pub generation: u64,
     pub source_commit_epoch: u64,
     pub previous_generation: Option<u64>,
-    pub page_bytes: u64,
+    /// Packer target of the publication that wrote this generation.
+    pub target_page_bytes: u64,
+    /// Largest encoded page the writer admitted.
+    pub max_page_bytes: u64,
     pub dirty_page_count: u64,
     pub relocated_page_count: u64,
     pub root_page_count: u64,

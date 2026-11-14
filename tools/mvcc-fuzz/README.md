@@ -165,18 +165,23 @@ existing node takes an exclusive node lock. A request waits for a conflicting
 lock held by, or a conflicting request queued by, the other transaction. The
 waiter whose new wait closes a cycle is the deadlock victim and is aborted. A
 newly granted, previously uncovered SQL lock refreshes a stale snapshot when
-the transaction has no successful statement yet and otherwise aborts with the
-retryable serialization error; a graph statement aborts on any stale new lock.
+the transaction has no successful statement yet. After a prior statement, the
+model checks committed logical-key versions in that resource, including deleted
+keys and ABA, and aborts only on overlap while retaining its original snapshot.
+A non-key predicate write retains the existing database version barrier even
+when no rows match; explicit point intents also version missing keys.
+A graph statement aborts on any stale new lock.
 Commit rebases the successful writes onto current visible state.
 
 Every step checks the statement or terminal outcome class (rows, success,
 duplicate primary key, serialization abort, deadlock victim, call on an
 aborted transaction), visible table rows and graph nodes through autocommit
-reads, and the pinned initial snapshot. Eleven families cycle through same-key
+reads, and the pinned initial snapshot. Twelve families cycle through same-key
 waits, disjoint keys, duplicate inserts, table versus point writers, a shared
 upgrade deadlock, a locking range versus insert, delete versus delete/insert,
-rollback release, same and disjoint graph nodes, and a graph/SQL deadlock. An
-optional leading plain read decides whether a later wait refreshes or aborts.
+rollback release, same and disjoint graph nodes, a graph/SQL deadlock, and
+incremental disjoint SQL locks. An optional leading plain read decides whether
+a later SQL wait refreshes or validates the original snapshot.
 
 Pessimistic mode does not cover lock timeouts, three or more transactions,
 relationship or label locks, uniqueness constraints on graph labels, Strict
@@ -196,3 +201,45 @@ cargo clippy --locked --manifest-path tools/mvcc-fuzz/Cargo.toml --all-targets -
 The Bazel target is a manual `rust_binary` using existing dependencies; it is
 not registered in test suites or CI. Root workspace membership, release publishing
 and library features remain independent of this tool.
+
+## Composite, secondary and keyless range models
+
+The separate `ranges` entry point adds ten bounded families without changing the
+existing `.mvcc` grammar or version-1 JSON cases. It covers composite primary
+prefixes and inclusive/exclusive intervals, secondary gaps including NULL suffixes,
+old/new secondary rekeys, primary/secondary coordination, reversed lock ownership,
+keyless duplicate bags, stale snapshots (including conservative table validation for
+nullable secondary indexes), bounded-discovery table escalation and
+stale validation after incremental escalation.
+
+```sh
+cargo run --locked --manifest-path tools/mvcc-fuzz/Cargo.toml -- \
+  ranges run --seed 42 --seconds 30 --print-report
+cargo run --quiet --locked --manifest-path tools/mvcc-fuzz/Cargo.toml -- \
+  ranges generate --seed 42 --index 3 > /tmp/range.json
+cargo run --locked --manifest-path tools/mvcc-fuzz/Cargo.toml -- \
+  ranges replay /tmp/range.json --explain
+cargo run --locked --manifest-path tools/mvcc-fuzz/Cargo.toml -- \
+  ranges shrink /tmp/range.json --attempts 64 --explain
+```
+
+`hawdb-mvcc-ranges-v1` JSON stores the complete initial bag, typed selection bounds,
+mutation/read operation and commit/rollback choice. Every SQL statement and typed
+parameter appears in the trace. The independent reference derives conflicts from
+logical intervals, selected primary identities and both mutation images; it does
+not inspect the engine's chosen locks. Records are compared as typed bags, including
+duplicates and NULLs. Pinned reads and visible state are checked after release and
+a fresh retry. Reducers remove initial rows only when the case remains valid and
+the same failure kind recurs. Replay accepts saved artifacts or a bare case.
+
+These probes use `Duration::ZERO`: expected overlap must produce a lock timeout,
+and disjoint controls must succeed. This gives deterministic lock-footprint
+coverage, not proof of waiting, fairness, deadlock scheduling, general serializability
+or power-loss safety. The existing threaded pessimistic campaign owns wait/deadlock
+checks. Current range fixtures are in-memory; durable index/recovery behavior is
+covered separately by Shiro and engine regressions. Reports count attempted cases
+and separately verified conflict/disjoint outcomes. Only full successful cases
+contribute to verified counts. Unexpected errors never count as agreement.
+
+The tool remains manual-only; no CI target or scheduled campaign is added. Local
+model checks: `cargo test --locked --manifest-path tools/mvcc-fuzz/Cargo.toml ranges`.

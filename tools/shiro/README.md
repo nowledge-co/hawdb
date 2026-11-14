@@ -3,6 +3,19 @@
 `shiro` is a development-only correctness harness over HawDB's public embedded API. The
 production `hawdb` crate does not depend on it.
 
+Opt-in `shiro sqlsmith` compares bounded template and recursive SQL generation
+on a fixed fixture. It shares the unpublished [query-workloads](../query-workloads/README.md)
+generator and [query-lab](../query-lab/README.md) freeze/compare/replay runner.
+`shiro sqlsmith --help` lists commands. Existing default campaigns and seed/index
+mappings remain unchanged; SQLsmith is a separate execution/repeatability
+experiment, not additional semantic oracle coverage.
+
+Opt-in optimizer qualification compares one identical statement/parameter set
+on a pinned snapshot with optional rule disabling, Applied-event assertions and
+bounded seeded ranking changes. It records the actual executed trace, preserves
+errors and distinguishes different-plan agreement from same-plan agreement.
+See the [API, rule scope and replay command](../../docs/specs/OPTIMIZER_PROOFS_SPEC.md).
+
 The local process-memory state-machine campaign exercises 32 seeds with 512
 sample/reserve/release/resource-refresh steps each through two shared governors.
 An independent interval-debt model checks admission, hysteresis, missing and
@@ -31,8 +44,10 @@ campaign runs the original nine complementary oracles plus the operator relation
 - The plan-differential oracle applies mutations once, pins one read snapshot, and executes the
   same parameterized Cypher query through memo child resolution and deterministic direct child
   resolution. Both modes now share the physical lowerer; this checks child wiring and directive
-  handling, not independent lowering implementations. Agreement cannot detect a shared lowering
-  bug, so the TLP, predicate-rewrite, and metamorphic oracles remain necessary.
+  handling, not independent lowering implementations. Its typed query shapes include nested
+  `LOWER(COALESCE(property, '')) =~ pattern` predicates with alternating literal and parameter
+  patterns. Agreement cannot detect a shared lowering bug, so the TLP, predicate-rewrite, and
+  metamorphic oracles remain necessary.
 - The Graph TLP oracle evaluates `Q`, `Q WHERE p`, `Q WHERE NOT p`, and a constrained
   `Q WHERE nullable_operand IS NULL` partition on one pinned snapshot. The generated predicate is
   a single comparison against a non-null parameter, so the null-operand partition is exactly the
@@ -96,6 +111,15 @@ rendered query AST metadata, all query variants, result semantics, plan fingerpr
 stages, predicate rewrites, metamorphic transforms, and a direct reproduction command. Every
 failure carries a stable oracle-specific signature; reducers retain only candidates that
 reproduce that signature.
+Cypher differential execution uses a deterministic semantic statement clock
+(`2026-10-30T12:00:00Z` by default), preserving an explicit caller pin. Replay
+and qualification evidence retain the clock, and qualification variants retain
+their named bounded-order choice. Monotonic execution deadlines remain real.
+The generated `temporal_case` capability also derives replayable clocks from
+its seed/variant and compares ordinary, TopN and Sort-plus-Limit results with
+an independent model covering runtime timezone reads, NULL/duplicate sort
+keys, reversed candidate order, pagination and empty results. Matching errors
+still fail differential qualification rather than count as plan agreement.
 Plan-fingerprint novelty is reported as coverage telemetry and never changes a correctness verdict.
 The differential reducer first minimizes graph mutations and then typed query AST nodes. It accepts
 a candidate only when the same failure signature still triggers, so a setup, parse, or execution
@@ -130,7 +154,7 @@ separately. Plan counters describe the initial fixture, not every later step.
 Failures retain typed rows, queries/parameters, plans for result mismatches,
 the transaction step, complete setup and operation sequence. Reduction removes
 whole transactions on fresh databases and retains only the same failure
-signature. The campaign protocol is `shiro-multi-oracle-fuzz-v4`; older progress
+signature. The campaign protocol is `shiro-multi-oracle-fuzz-v6`; older progress
 files cannot resume with the stronger oracle. Maintenance replay bundles use
 `shiro-sql-maintenance-v2` and describe explicit commit/rollback boundaries.
 
@@ -240,12 +264,63 @@ The companion executables are `shiro-storage`, `shiro-append`, and `shiro-parser
 are manual/local only. Neither tool belongs in CI or scheduled workflows; the
 normal CI smoke dependency graph excludes the local fuzz executables.
 
+The `capabilities` oracle rotates five bounded generated models through every
+ordinary query campaign. `capability_coverage` counts executed and successfully
+verified families; a generated family name alone is not a passing observation.
+The report retains exact statements, typed parameters, expected/actual rows and
+phase-specific failure signatures.
+
+- Decimal: independent `i128` coefficient arithmetic, signed midpoint rounding,
+  values beyond binary64 integer precision, defaults, scale-varying range
+  parameters, arithmetic, division/precision refusals, rollback and pinned reads.
+- Cypher pipelines: row-dependent nested `list_append`/`UNWIND`, multi-`WITH`,
+  `DISTINCT`, nullable/empty/duplicate aliases, parameter rebinding, normalized
+  `regexp_replace`/`LOWER` grouping, and scalar-expression regex matching against a small host
+  reference. Literal/parameter patterns, invalid regexes, non-string patterns, and non-string
+  evaluated left operands are checked with phase- and class-specific refusals.
+- Cypher mutations: distinct/aliased/missing bindings in multi-binding `SET`,
+  assignment ordering, Unicode whitespace `trim` and `CASE` isolation.
+- Temporal: typed date min/max `CASE SET`, NULL preservation, parameter rebinding
+  and equal instants with different offsets. Native SQL timestamps remain outside
+  this generator.
+- Keyless SQL: duplicate-preserving bag state, implicit/default inserts, index
+  backfill, aliased updates/deletes, indexed ranges, rollback and pinned reads.
+
+Decimal and keyless cases rotate memory, file Shadow and file DemandPaged index
+profiles. WAL reopen and checkpoint reopen compare to independent pre-close model
+state, including exact Decimal scale. These are orderly reopen checks, not process
+kill or power-loss qualification. Failed file fixtures are retained at the path in
+the trace. The bounded model is complementary to DQP/TLP and is not a general SQL
+or Cypher interpreter; SQL CASE, arbitrary temporal arithmetic, list nesting and
+mutation expressions remain outside its generated domain.
+
+Capability replay uses its own `shiro-capabilities-v1` JSON format. Extract a
+case's `capabilities.case` object from a campaign report, or generate one:
+
+```sh
+cargo run --quiet --locked --manifest-path tools/shiro/Cargo.toml -- \
+  capabilities generate --seed 42 --index 0 > /tmp/capability.json
+cargo run --quiet --locked --manifest-path tools/shiro/Cargo.toml -- \
+  capabilities replay /tmp/capability.json
+cargo run --quiet --locked --manifest-path tools/shiro/Cargo.toml -- \
+  capabilities shrink /tmp/capability.json --attempts 32
+```
+
+Replay and shrink emit the full report to stdout. Shrinking deletes input values
+and then tries zero values, rebuilding a fresh fixture and retaining only the
+same failure signature. Passing cases cannot be shrunk. A reproduced mismatch
+returns exit 1; malformed/unsupported replay returns exit 2. Legacy campaign
+seed/index replay remains available; v5 progress cannot resume as v6 coverage.
+
 The parser byte campaign uses a corpus derived from the Cypher, relational SQL, and SQL/PGQ test
 suites. It keeps the non-ASCII keyword-probe and excessive-nesting regressions as exact seeds, then
 alternates arbitrary byte strings with deterministic byte mutations of the corpus. Every input is
 bounded and runs all four frontend entry points on an explicitly bounded worker stack. Parser
-acceptance and rejection are both valid; a panic or stack overflow fails the campaign. The stable
-seed and case index reproduce the exact bytes under `shiro-parser-v1`:
+acceptance and rejection are both valid for mutations; the exact positive capability seeds,
+including scalar-expression regex matching, must be accepted by their intended frontend. A panic
+or stack overflow fails the campaign. The stable seed and case index reproduce the exact bytes
+under `shiro-parser-v4`. The keyword-shaped scalar-regex identifier seed changes the seed/index
+mapping from v3; replay an old report with its original source revision:
 
 ```console
 make fuzz-parser FUZZ_SEED=7 FUZZ_CASES=256

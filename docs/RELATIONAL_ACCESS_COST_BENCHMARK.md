@@ -172,16 +172,17 @@ existing fuzz targets are not added to CI by this work.
 
 The value-specific planner uses unchanged checkpoint metadata for complete
 secondary keys. The harness independently composes the documented logical
-policy from the fixture's exact matching count and default 256-row page bound:
+policy from the fixture's exact matching count and its published row-page
+count, read once by a full scan on a separate handle before the measured cold
+handle opens (row-page format v2 packs pages by bytes, so the count depends on
+the payload width, #1521):
 scan scalar `3*rows + 4 + 6*pages`, noncovering secondary scalar
 `matches*(8 + 7*(floor(log2(pages)) + 1)) + 2`. Each checked descriptor reads
 its fixed record and both nonempty bound keys: scans charge those three accesses
 sequentially and point-fetch searches charge them randomly. The unchanged
 random weight of two is applied once, alongside the existing CPU setup/search
 work. These are logical operations, not measured device pages or nanoseconds.
-Both payload widths fit the
-page-byte limit before that row-count bound; full-scan reports assert the
-expected page geometry. A primary-key point keeps its direct point operator.
+Full-scan reports assert that every published row page is read exactly once. A primary-key point keeps its direct point operator.
 Sparse prefixes select an index; medium prefixes select an index at the
 256-row smoke scale and a scan at the 8192-row optimized scale. Broad/all-row
 prefixes select a scan. Complete ID/payload and actual-access-row assertions

@@ -16,11 +16,12 @@ use super::{
     access_path::index_seek_from_filter,
     costing::{
         estimate_node_cartesian_product_cost, estimate_physical_plan_cost,
+        estimate_physical_plan_cost_with_context, estimate_physical_plan_cost_with_row_goal,
         push_optional_relationship_count_sum_cost_decision,
     },
-    logical_rewrite::{rewrite_logical_plan, LogicalRewriteOutput},
+    logical_rewrite::{rewrite_logical_plan_with_catalog, LogicalRewriteOutput},
     properties::satisfies_ordering,
-    selected_trace::selected_plan_trace,
+    selected_trace::selected_plan_trace_with_diagnostics,
     stages::{
         ACCESS_PATH_SELECTION_STAGE, DIRECT_PHYSICAL_FALLBACK_STAGE, LOGICAL_GROUPING_STAGE,
         PHYSICAL_SEARCH_STAGE, PLAN_FINALIZATION_STAGE, SELECTED_PLAN_COSTING_STAGE,
@@ -43,9 +44,14 @@ use std::collections::{BTreeMap, BTreeSet};
 mod access;
 mod ddl;
 mod join;
+mod match_order;
+mod match_predicates;
+pub(super) use match_predicates::predicate_variables;
+mod meeting_join;
 mod mutation;
 mod ordered;
 mod procedure;
+mod seeded_union;
 mod simple;
 mod traversal;
 
@@ -86,7 +92,13 @@ impl CascadesOptimizer {
         plan: &PhysicalPlan,
         catalog: &OptimizerCatalog,
     ) {
-        refresh_selected_plan_trace(trace, selected_plan_trace(plan, catalog, &self.context));
+        let (selected, widths) = selected_plan_trace_with_diagnostics(plan, catalog, &self.context);
+        refresh_selected_plan_trace(trace, selected);
+        trace.decisions.retain(|decision| {
+            !decision.starts_with("physical width cost: ")
+                && !decision.starts_with("cardinality statistics: ")
+        });
+        trace.decisions.extend(widths);
     }
 
     pub fn optimize(&self, logical: &LogicalPlan) -> PhysicalPlan {
@@ -158,7 +170,11 @@ impl CascadesOptimizer {
         catalog: &OptimizerCatalog,
         directive: OptimizerSearchDirective,
     ) -> Result<PhysicalPlanRoot, OptimizerSearchDirectiveError> {
-        let rewrite = rewrite_logical_plan(root.plan());
+        let rewrite = rewrite_logical_plan_with_catalog(
+            root.plan(),
+            catalog,
+            self.context.qualification_options(),
+        );
         let logical = rewrite.plan();
         let required_groups = logical_group_count(logical);
         let max_groups = self.context.optimizer_config().max_groups;
@@ -188,6 +204,7 @@ impl CascadesOptimizer {
                 OptimizationSearchReport::direct_fallback(required_groups, max_groups)
             };
             record_logical_rewrite(&mut report, &rewrite);
+            record_qualification(&mut report, &self.context);
             report.push_stage_event(
                 LOGICAL_GROUPING_STAGE.trace(StageStats::new(1, required_groups)),
             );
@@ -198,7 +215,9 @@ impl CascadesOptimizer {
                 DIRECT_PHYSICAL_FALLBACK_STAGE.trace(StageStats::new(required_groups, 1)),
             );
             report.extend_decisions(decisions);
-            let selected = selected_plan_trace(&plan, catalog, &self.context);
+            let (selected, widths) =
+                selected_plan_trace_with_diagnostics(&plan, catalog, &self.context);
+            report.extend_decisions(widths);
             report.push_stage_event(SELECTED_PLAN_COSTING_STAGE.trace(StageStats::new(1, 1)));
             report.record_selected_plan_cost(selected.cost);
             return Ok(PhysicalPlanRoot::new(plan, report.into_trace(selected)));
@@ -218,6 +237,7 @@ impl CascadesOptimizer {
         let plan = finalize_physical_plan(plan, &mut decisions, &mut stage_events);
         let mut report = OptimizationSearchReport::memo(memo.group_count());
         record_logical_rewrite(&mut report, &rewrite);
+        record_qualification(&mut report, &self.context);
         report
             .push_stage_event(LOGICAL_GROUPING_STAGE.trace(StageStats::new(1, memo.group_count())));
         let (applied_rules, skipped_rules) = stage_rule_counts(&stage_events);
@@ -228,13 +248,27 @@ impl CascadesOptimizer {
             StageStats::new(memo.group_count(), 1).with_rule_counts(applied_rules, skipped_rules),
         ));
         report.extend_decisions(decisions);
-        let selected = selected_plan_trace(&plan, catalog, &self.context);
+        let (selected, widths) =
+            selected_plan_trace_with_diagnostics(&plan, catalog, &self.context);
+        report.extend_decisions(widths);
         report.push_stage_event(SELECTED_PLAN_COSTING_STAGE.trace(StageStats::new(1, 1)));
         report.record_selected_plan_cost(selected.cost);
         if directive == OptimizerSearchDirective::Memo {
             report.push_decision("selected memo search: explicit optimizer search directive");
         }
         Ok(PhysicalPlanRoot::new(plan, report.into_trace(selected)))
+    }
+}
+
+fn record_qualification(report: &mut OptimizationSearchReport, context: &OptimizerContext) {
+    let options = context.qualification_options();
+    if options.is_active() {
+        let disabled = crate::OptionalOptimizerRule::ALL
+            .into_iter()
+            .filter(|rule| !options.rule_enabled(*rule))
+            .map(crate::OptionalOptimizerRule::as_str)
+            .collect::<Vec<_>>();
+        report.push_rule_event(RuleEvent::selected("optimizer qualification", format!("disabled={disabled:?} perturbation={:?} bounded_order_alternative={:?}; legality/resource checks remain mandatory; reported costs are unperturbed", options.cost_perturbation(), options.bounded_order_alternative())));
     }
 }
 
@@ -308,27 +342,79 @@ fn best_physical(
         .to_physical(memo, catalog, optimizer_context, decisions, stage_events)
 }
 
+fn finalized_cost_input(input: &PhysicalPlan) -> Option<PhysicalPlan> {
+    if let PhysicalPlan::ProjectExec { items, input } = input {
+        select_node_projection_scan(items, input, &mut Vec::new(), &mut Vec::new())
+    } else {
+        None
+    }
+}
+
+fn ranking_cost(plan: &PhysicalPlan, cost: u64, context: &OptimizerContext) -> u64 {
+    context
+        .qualification_options()
+        .cost_perturbation()
+        .map_or(cost, |perturbation| {
+            perturbation.ranking_cost(cost, &plan.fingerprint())
+        })
+}
+
 fn ordered_alternative(
     input: PhysicalPlan,
     items: &[SortItem],
     catalog: &OptimizerCatalog,
+    context: &OptimizerContext,
+    row_goal: Option<u64>,
     decisions: &mut Vec<String>,
 ) -> PhysicalPlan {
     let Some(candidate) = ordered::candidate(&input, items, catalog) else {
         return input;
     };
-    let ordered_cost = estimate_physical_plan_cost(&candidate, catalog);
-    let sort_cost = estimate_physical_plan_cost(
-        &PhysicalPlan::SortExec {
-            items: items.to_vec(),
-            input: Box::new(input.clone()),
-        },
-        catalog,
-    );
-    if satisfies_ordering(&candidate, items, catalog) && ordered_cost.cost <= sort_cost.cost {
+    // Compare the same projection-fused producer on both access paths.
+    let finalized = finalized_cost_input(&input);
+    let cost_input = finalized.as_ref().unwrap_or(&input);
+    let cost = |plan: &PhysicalPlan| match row_goal {
+        Some(rows) => estimate_physical_plan_cost_with_row_goal(plan, catalog, context, rows),
+        None => estimate_physical_plan_cost_with_context(plan, catalog, context),
+    };
+    let ordered_goal =
+        row_goal.filter(|rows| *rows == 0 || ordered::prefix_consumption_is_proven(&candidate));
+    if row_goal.is_some() && ordered_goal.is_none() {
         decisions.push(format!(
-            "choose composite ordered seek: ordered_cost={} sort_cost={}",
-            ordered_cost.cost, sort_cost.cost
+            "retain full ordered alternative work: unproven residual distribution row_goal={row_goal:?}"
+        ));
+    }
+    let ordered_cost = match ordered_goal {
+        Some(rows) => estimate_physical_plan_cost_with_row_goal(&candidate, catalog, context, rows),
+        None => estimate_physical_plan_cost_with_context(&candidate, catalog, context),
+    };
+    let mut unordered = PhysicalPlan::SortExec {
+        items: items.to_vec(),
+        input: Box::new(cost_input.clone()),
+    };
+    let mut unordered_cost = cost(&unordered);
+    if let Some(retained) = row_goal.and_then(|rows| usize::try_from(rows).ok()) {
+        let top_n = PhysicalPlan::TopNExec {
+            items: items.to_vec(),
+            offset: 0,
+            limit: retained,
+            input: Box::new(cost_input.clone()),
+        };
+        let top_n_cost = cost(&top_n);
+        if ranking_cost(&top_n, top_n_cost.cost, context)
+            <= ranking_cost(&unordered, unordered_cost.cost, context)
+        {
+            unordered = top_n;
+            unordered_cost = top_n_cost;
+        }
+    }
+    if satisfies_ordering(&candidate, items, catalog)
+        && ranking_cost(&candidate, ordered_cost.cost, context)
+            <= ranking_cost(&unordered, unordered_cost.cost, context)
+    {
+        decisions.push(format!(
+            "choose composite ordered seek: ordered_cost={} unordered_cost={} row_goal={ordered_goal:?}",
+            ordered_cost.cost, unordered_cost.cost
         ));
         candidate
     } else {
@@ -342,9 +428,15 @@ fn select_bounded_sort_plan(
     limit: usize,
     input: PhysicalPlan,
     catalog: &OptimizerCatalog,
+    context: &OptimizerContext,
     decisions: &mut Vec<String>,
 ) -> PhysicalPlan {
-    let input = ordered_alternative(input, &items, catalog, decisions);
+    let row_goal = if limit == 0 {
+        0
+    } else {
+        offset.saturating_add(limit) as u64
+    };
+    let input = ordered_alternative(input, &items, catalog, context, Some(row_goal), decisions);
     if satisfies_ordering(&input, &items, catalog) {
         decisions.push("elide bounded sort: access path satisfies required ordering".to_string());
         return PhysicalPlan::LimitExec {
@@ -353,34 +445,82 @@ fn select_bounded_sort_plan(
             input: Box::new(input),
         };
     }
+    // Compare the shape that finalization will execute. Generic Project
+    // retains graph bindings; a fused projection scan can emit values only.
+    let finalized = finalized_cost_input(&input);
+    let cost_input = finalized.as_ref().unwrap_or(&input);
     let top_n = PhysicalPlan::TopNExec {
         items: items.clone(),
         offset,
         limit,
-        input: Box::new(input.clone()),
+        input: Box::new(cost_input.clone()),
     };
     let sort_limit = PhysicalPlan::LimitExec {
         offset,
         limit: Some(limit),
         input: Box::new(PhysicalPlan::SortExec {
-            items,
-            input: Box::new(input),
+            items: items.clone(),
+            input: Box::new(cost_input.clone()),
         }),
     };
-    let top_n_cost = estimate_physical_plan_cost(&top_n, catalog);
-    let sort_limit_cost = estimate_physical_plan_cost(&sort_limit, catalog);
-    if top_n_cost.cost < sort_limit_cost.cost {
+    let top_n_cost = estimate_physical_plan_cost_with_context(&top_n, catalog, context);
+    let sort_limit_cost = estimate_physical_plan_cost_with_context(&sort_limit, catalog, context);
+    if let Some(alternative) = context.qualification_options().bounded_order_alternative() {
+        decisions.push(
+            RuleEvent::applied(
+                crate::BOUNDED_ORDER_QUALIFICATION_RULE,
+                format!(
+                    "alternative={} top_n_cost={} sort_then_limit_cost={}",
+                    alternative.as_str(),
+                    top_n_cost.cost,
+                    sort_limit_cost.cost
+                ),
+            )
+            .into_decision(),
+        );
+        return match alternative {
+            crate::OptimizerBoundedOrderAlternative::TopN => PhysicalPlan::TopNExec {
+                items,
+                offset,
+                limit,
+                input: Box::new(input),
+            },
+            crate::OptimizerBoundedOrderAlternative::SortThenLimit => PhysicalPlan::LimitExec {
+                offset,
+                limit: Some(limit),
+                input: Box::new(PhysicalPlan::SortExec {
+                    items,
+                    input: Box::new(input),
+                }),
+            },
+        };
+    }
+    if ranking_cost(&top_n, top_n_cost.cost, context)
+        <= ranking_cost(&sort_limit, sort_limit_cost.cost, context)
+    {
         decisions.push(format!(
             "choose TopN for bounded sort: offset={offset} limit={limit} top_n_cost={} sort_limit_cost={}",
             top_n_cost.cost, sort_limit_cost.cost
         ));
-        top_n
+        PhysicalPlan::TopNExec {
+            items,
+            offset,
+            limit,
+            input: Box::new(input),
+        }
     } else {
         decisions.push(format!(
             "keep Sort + Limit for bounded sort: offset={offset} limit={limit} top_n_cost={} sort_limit_cost={}",
             top_n_cost.cost, sort_limit_cost.cost
         ));
-        sort_limit
+        PhysicalPlan::LimitExec {
+            offset,
+            limit: Some(limit),
+            input: Box::new(PhysicalPlan::SortExec {
+                items,
+                input: Box::new(input),
+            }),
+        }
     }
 }
 
@@ -436,7 +576,10 @@ impl GroupExpr {
             | LogicalPlan::TextSeed { .. }
             | LogicalPlan::GraphSeed { .. }
             | LogicalPlan::CreateNode { .. }
+            | LogicalPlan::Unwind { .. }
             | LogicalPlan::UnwindMutation { .. }
+            | LogicalPlan::LoadCsvMutation { .. }
+            | LogicalPlan::LoadCsv { .. }
             | LogicalPlan::MergeNode { .. }
             | LogicalPlan::MergeRelationship { .. }
             | LogicalPlan::MergeMatchedRelationship { .. }
@@ -485,6 +628,7 @@ impl GroupExpr {
                 }
             }
             LogicalPlan::Expand { input, .. }
+            | LogicalPlan::UnwindRows { input, .. }
             | LogicalPlan::NodeColumnLookup { input, .. }
             | LogicalPlan::OptionalDegree { input, .. }
             | LogicalPlan::Filter { input, .. }
@@ -651,7 +795,13 @@ fn seed_metadata_value(value: &Value) -> Option<String> {
         Value::Int(value) => Some(value.to_string()),
         Value::Float(value) if value.is_finite() => Some(value.to_string()),
         Value::Uuid(value) => Some(value.to_string()),
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => Some(value.to_string()),
         Value::Null
+        | Value::Decimal(_)
         | Value::Float(_)
         | Value::Binary(_)
         | Value::Vector(_)
@@ -713,6 +863,7 @@ fn logical_group_count(logical: &LogicalPlan) -> usize {
             1 + logical_group_count(input)
         }
         LogicalPlan::Expand { input, .. }
+        | LogicalPlan::UnwindRows { input, .. }
         | LogicalPlan::NodeColumnLookup { input, .. }
         | LogicalPlan::OptionalDegree { input, .. }
         | LogicalPlan::Filter { input, .. }
@@ -746,7 +897,10 @@ fn logical_group_count(logical: &LogicalPlan) -> usize {
         | LogicalPlan::TextSeed { .. }
         | LogicalPlan::GraphSeed { .. }
         | LogicalPlan::CreateNode { .. }
+        | LogicalPlan::Unwind { .. }
         | LogicalPlan::UnwindMutation { .. }
+        | LogicalPlan::LoadCsvMutation { .. }
+        | LogicalPlan::LoadCsv { .. }
         | LogicalPlan::MergeNode { .. }
         | LogicalPlan::MergeRelationship { .. }
         | LogicalPlan::MergeMatchedRelationship { .. }
@@ -847,9 +1001,8 @@ fn lower_logical(
                 )
             })))
         }
-        LogicalPlan::GraphMatch { program, input } => PhysicalPlan::GraphMatchExec {
-            program: program.clone(),
-            input: input.as_ref().map(|input| {
+        LogicalPlan::GraphMatch { program, input } => {
+            let input = input.as_ref().map(|input| {
                 Box::new(children.lower(
                     input,
                     0,
@@ -858,8 +1011,18 @@ fn lower_logical(
                     decisions,
                     stage_events,
                 ))
-            }),
-        },
+            });
+            PhysicalPlan::GraphMatchExec {
+                program: meeting_join::lower_graph_match_program(
+                    program,
+                    input.as_deref(),
+                    catalog,
+                    optimizer_context,
+                    decisions,
+                ),
+                input,
+            }
+        }
         LogicalPlan::NodeCartesianProduct { left, right } => {
             let left = children.lower(left, 0, catalog, optimizer_context, decisions, stage_events);
             let right = children.lower(
@@ -870,9 +1033,20 @@ fn lower_logical(
                 decisions,
                 stage_events,
             );
-            let (left, right) =
-                order_single_row_cartesian_product_children(catalog, decisions, left, right);
-            push_cartesian_product_cost_decision(catalog, decisions, &left, &right);
+            let (left, right) = order_single_row_cartesian_product_children(
+                catalog,
+                optimizer_context,
+                decisions,
+                left,
+                right,
+            );
+            push_cartesian_product_cost_decision(
+                catalog,
+                optimizer_context,
+                decisions,
+                &left,
+                &right,
+            );
             PhysicalPlan::NodeCartesianProductExec {
                 left: Box::new(left),
                 right: Box::new(right),
@@ -948,6 +1122,19 @@ fn lower_logical(
                     payload_byte_limit: usize::MAX,
                 }
             });
+            let input = relationship_seeded_source(
+                input,
+                RelationshipSeedCandidate {
+                    source_variable,
+                    rel_type,
+                    rel_properties,
+                    direction: *direction,
+                    single_hop: *min_hops == 1 && *max_hops == 1,
+                    optional: *optional,
+                },
+                catalog,
+                decisions,
+            );
             PhysicalPlan::AdjacencyExpandExec {
                 source_variable: source_variable.clone(),
                 source_label: source_label.clone(),
@@ -1055,6 +1242,7 @@ fn lower_logical(
                     decisions,
                     stage_events,
                 );
+                input = relationship_seeded_in(input, predicate, catalog, decisions);
                 push_seed_metadata_filter(&mut input, predicate, decisions);
                 input = join::lower_property_join(input, predicate, decisions);
                 PhysicalPlan::FilterExec {
@@ -1063,6 +1251,24 @@ fn lower_logical(
                 }
             }
         }
+        LogicalPlan::UnwindRows {
+            expression,
+            variable,
+            input,
+        } => PhysicalPlan::UnwindRowsExec {
+            expression: expression.clone(),
+            variable: variable.clone(),
+            // Set by the column-read pass on the finished plan.
+            consumes_source: false,
+            input: Box::new(children.lower(
+                input,
+                0,
+                catalog,
+                optimizer_context,
+                decisions,
+                stage_events,
+            )),
+        },
         LogicalPlan::Project { items, input } => PhysicalPlan::ProjectExec {
             items: items.clone(),
             input: Box::new(children.lower(
@@ -1077,6 +1283,7 @@ fn lower_logical(
         LogicalPlan::Aggregate {
             group_keys,
             items,
+            graph_keys,
             input,
         } => {
             let input = children.lower(
@@ -1098,6 +1305,7 @@ fn lower_logical(
             PhysicalPlan::AggregateExec {
                 group_keys: group_keys.clone(),
                 items: items.clone(),
+                graph_keys: *graph_keys,
                 input: Box::new(input),
             }
         }
@@ -1120,7 +1328,8 @@ fn lower_logical(
                 decisions,
                 stage_events,
             );
-            let input = ordered_alternative(input, items, catalog, decisions);
+            let input =
+                ordered_alternative(input, items, catalog, optimizer_context, None, decisions);
             if satisfies_ordering(&input, items, catalog) {
                 decisions
                     .push("elide SortExec: access path satisfies required ordering".to_string());
@@ -1150,7 +1359,15 @@ fn lower_logical(
                     decisions,
                     stage_events,
                 );
-                select_bounded_sort_plan(items.clone(), *offset, *limit, input, catalog, decisions)
+                select_bounded_sort_plan(
+                    items.clone(),
+                    *offset,
+                    *limit,
+                    input,
+                    catalog,
+                    optimizer_context,
+                    decisions,
+                )
             } else {
                 PhysicalPlan::LimitExec {
                     offset: *offset,
@@ -1168,6 +1385,42 @@ fn lower_logical(
         }
         _ => unreachable!("leaf logical plans are lowered before child planning"),
     }
+}
+
+/// Starts each pattern path at a bound node when one exists, so the per-row
+/// nested loop expands from it instead of scanning for the path's first node,
+/// or at an index-seekable node when statistics show it is clearly cheaper.
+fn anchored_graph_match_program(
+    program: &hawdb_plan_cypher::GraphMatchProgram,
+    costing: match_order::StartCosting<'_>,
+    decisions: &mut Vec<String>,
+) -> hawdb_plan_cypher::GraphMatchProgram {
+    let mut program = program.clone();
+    if let Some(anchored) = match_order::anchor_graph_match_steps(&program, costing) {
+        decisions.extend(anchored.events.into_iter().map(RuleEvent::into_decision));
+        if let Some(steps) = anchored.steps {
+            if !anchored.anchors.is_empty() {
+                decisions.push(format!(
+                    "anchor GraphMatchExec at bound variable(s) [{}]: expand from the bound node instead of scanning per input row",
+                    anchored.anchors.join(", ")
+                ));
+            }
+            program.steps = steps;
+        }
+    }
+    program
+}
+
+/// Places WHERE conjuncts after the step that binds their last variable.
+/// It reads the final step order, so it runs after any step reordering.
+fn placed_graph_match_program(
+    mut program: hawdb_plan_cypher::GraphMatchProgram,
+    decisions: &mut Vec<String>,
+) -> hawdb_plan_cypher::GraphMatchProgram {
+    if let Some(decision) = match_predicates::place_graph_match_predicates(&mut program) {
+        decisions.push(decision);
+    }
+    program
 }
 
 fn select_exact_count_fast_path(
@@ -1190,6 +1443,7 @@ fn select_node_count_fast_path(
         group_keys,
         items,
         input,
+        ..
     } = logical
     else {
         return None;
@@ -1200,6 +1454,11 @@ fn select_node_count_fast_path(
     let LogicalPlan::NodeScan { variable, label } = input.as_ref() else {
         return None;
     };
+    // A repeated-label pattern such as `:Post:Comment` matches any of its
+    // labels; the per-label count cannot answer it, so scan instead.
+    if label.contains(':') {
+        return None;
+    }
     let exact_node_count = group_keys.is_empty()
         && item.function == AggregateFunction::Count
         && match &item.target {
@@ -1235,6 +1494,7 @@ fn select_relationship_count_fast_path(
         group_keys,
         items,
         input,
+        ..
     } = logical
     else {
         return None;
@@ -1308,6 +1568,7 @@ fn finalize_physical_plan(
 ) -> PhysicalPlan {
     let event_count_before = stage_events.len();
     let finalized = finalize_required_node_properties(plan, decisions, stage_events);
+    let finalized = super::match_reads::project_graph_match_reads(finalized, decisions);
     if !stage_events[event_count_before..]
         .iter()
         .any(|event| event.name() == PLAN_FINALIZATION_STAGE.name())
@@ -1330,6 +1591,7 @@ fn finalize_required_node_properties(
         PhysicalPlan::AggregateExec {
             group_keys,
             items,
+            graph_keys,
             input,
         } => {
             let input = select_node_aggregate_required_scan(
@@ -1344,6 +1606,7 @@ fn finalize_required_node_properties(
             PhysicalPlan::AggregateExec {
                 group_keys,
                 items,
+                graph_keys,
                 input,
             }
         }
@@ -1730,6 +1993,9 @@ fn collect_predicate_properties(
             collect_projection_properties(expression, variable, required)
                 && collect_projection_properties(value, variable, required)
         }
+        Predicate::ExpressionRegexMatch { expression, .. } => {
+            collect_projection_properties(expression, variable, required)
+        }
         Predicate::ExpressionIn { expression, .. } => {
             collect_projection_properties(expression, variable, required)
         }
@@ -1753,17 +2019,41 @@ fn collect_projection_properties(
         | ProjectionExpression::VectorDistance { .. }
         | ProjectionExpression::Binary { .. }
         | ProjectionExpression::Not(_)
-        | ProjectionExpression::IsNull { .. } => expression
+        | ProjectionExpression::IsNull { .. }
+        | ProjectionExpression::ListFunction { .. }
+        | ProjectionExpression::StringFunction { .. }
+        | ProjectionExpression::ListComprehension(_)
+        | ProjectionExpression::List(_)
+        | ProjectionExpression::ListIndex { .. }
+        | ProjectionExpression::Conversion { .. }
+        | ProjectionExpression::NumericFunction { .. }
+        | ProjectionExpression::Reduce(_)
+        | ProjectionExpression::ListSlice { .. }
+        | ProjectionExpression::TemporalFunction { .. }
+        | ProjectionExpression::PropertyAccess { .. }
+        | ProjectionExpression::RelationshipValueEndpoint { .. }
+        | ProjectionExpression::MapLiteral(_) => expression
             .all_children(|child| collect_projection_properties(child, variable, required)),
+        // Comprehension elements are values, never graph bindings.
+        ProjectionExpression::LocalVariable { .. } => true,
         ProjectionExpression::Variable { .. }
         | ProjectionExpression::RelationshipType { .. }
+        // The endpoint is a whole node value the expression does not name.
+        | ProjectionExpression::RelationshipEndpoint { .. }
         | ProjectionExpression::Column(_)
         | ProjectionExpression::ColumnProperty { .. }
+        | ProjectionExpression::Path { .. }
         | ProjectionExpression::ColumnDefaultIfNullOrEq { .. }
         | ProjectionExpression::ColumnValueDefaultIfNull { .. }
         | ProjectionExpression::ColumnValueCasePropertyNotNullOrEq { .. }
-        | ProjectionExpression::CaseColumnSearchRank(_) => false,
-        ProjectionExpression::Id { variable: current } => current == variable,
+        | ProjectionExpression::CaseColumnSearchRank(_)
+        // A pattern matches whole records of the variables it copies.
+        | ProjectionExpression::Pattern(_) => false,
+        // A projected node keeps its identity and labels.
+        ProjectionExpression::Id { variable: current }
+        | ProjectionExpression::Label {
+            variable: current, ..
+        } => current == variable,
         ProjectionExpression::Literal(_) => true,
         ProjectionExpression::Property {
             variable: current,
@@ -1891,12 +2181,13 @@ fn push_expand_estimate_decision(
 
 fn order_single_row_cartesian_product_children(
     catalog: &OptimizerCatalog,
+    context: &OptimizerContext,
     decisions: &mut Vec<String>,
     left: PhysicalPlan,
     right: PhysicalPlan,
 ) -> (PhysicalPlan, PhysicalPlan) {
-    let left_cost = estimate_physical_plan_cost(&left, catalog);
-    let right_cost = estimate_physical_plan_cost(&right, catalog);
+    let left_cost = estimate_physical_plan_cost_with_context(&left, catalog, context);
+    let right_cost = estimate_physical_plan_cost_with_context(&right, catalog, context);
     if !cartesian_product_leaves_are_single_row(catalog, &left)
         || !cartesian_product_leaves_are_single_row(catalog, &right)
     {
@@ -1914,7 +2205,7 @@ fn order_single_row_cartesian_product_children(
     let mut keyed_leaves = leaves
         .into_iter()
         .map(|plan| {
-            let cost = estimate_physical_plan_cost(&plan, catalog);
+            let cost = estimate_physical_plan_cost_with_context(&plan, catalog, context);
             let fingerprint = plan.instance_fingerprint();
             (cost, fingerprint, plan)
         })
@@ -1993,12 +2284,13 @@ fn rebuild_cartesian_product(plans: impl IntoIterator<Item = PhysicalPlan>) -> P
 
 fn push_cartesian_product_cost_decision(
     catalog: &OptimizerCatalog,
+    context: &OptimizerContext,
     decisions: &mut Vec<String>,
     left: &PhysicalPlan,
     right: &PhysicalPlan,
 ) {
-    let left_cost = estimate_physical_plan_cost(left, catalog);
-    let right_cost = estimate_physical_plan_cost(right, catalog);
+    let left_cost = estimate_physical_plan_cost_with_context(left, catalog, context);
+    let right_cost = estimate_physical_plan_cost_with_context(right, catalog, context);
     let cost = estimate_node_cartesian_product_cost(left_cost, right_cost);
     decisions.push(format!(
         "estimate NodeCartesianProduct: left_rows={} right_rows={} output_rows={} left_cost={} right_cost={} cost={}",
@@ -2009,4 +2301,148 @@ fn push_cartesian_product_cost_decision(
         right_cost.cost,
         cost.cost
     ));
+}
+
+struct RelationshipSeedCandidate<'a> {
+    source_variable: &'a str,
+    rel_type: &'a str,
+    rel_properties: &'a BTreeMap<String, Value>,
+    direction: RelationshipDirection,
+    single_hop: bool,
+    optional: bool,
+}
+
+/// Replace a plain source label scan (an unlabeled scan included) under a
+/// mandatory single-hop expand with relationship constraints by the
+/// relationship-seeded scan when fewer relationships are estimated to match
+/// than the scan visits nodes (#1548). The expand drops every source without a
+/// matching relationship, so only the seeded sources can produce rows.
+fn relationship_seeded_source(
+    input: PhysicalPlan,
+    candidate: RelationshipSeedCandidate<'_>,
+    catalog: &OptimizerCatalog,
+    decisions: &mut Vec<String>,
+) -> PhysicalPlan {
+    let PhysicalPlan::SeqNodeScan { variable, label } = &input else {
+        return input;
+    };
+    if variable != candidate.source_variable
+        || !candidate.single_hop
+        || candidate.optional
+        || candidate.rel_type.is_empty()
+        || candidate.rel_properties.is_empty()
+    {
+        return input;
+    }
+    let Some(matching) = seeding_estimate(
+        catalog,
+        label,
+        candidate.rel_type,
+        candidate.rel_properties,
+        None,
+    ) else {
+        return input;
+    };
+    decisions.push(format!(
+        "seed {variable}:{label} from {} relationship properties ({matching})",
+        candidate.rel_type
+    ));
+    PhysicalPlan::RelationshipSeededNodeScan {
+        variable: variable.clone(),
+        label: label.clone(),
+        rel_type: candidate.rel_type.to_owned(),
+        rel_properties: candidate.rel_properties.clone(),
+        rel_property_in: None,
+        direction: candidate.direction,
+    }
+}
+
+/// The estimate text when seeding beats scanning the source, else `None`.
+fn seeding_estimate(
+    catalog: &OptimizerCatalog,
+    label: &str,
+    rel_type: &str,
+    rel_properties: &BTreeMap<String, Value>,
+    rel_property_in: Option<(&str, &[Value])>,
+) -> Option<String> {
+    let matching = catalog.estimate_seeded_relationships(rel_type, rel_properties, rel_property_in);
+    let nodes = catalog.scan_population(label);
+    (matching < nodes).then(|| format!("{matching} estimated of {nodes} nodes"))
+}
+
+/// A relationship-property `IN` in the filter directly above a mandatory
+/// single-hop expand also seeds the expand's source (#1548). The filter stays
+/// above the expand and keeps its semantics; seeding only drops sources that
+/// have no relationship with a listed value.
+fn relationship_seeded_in(
+    mut input: PhysicalPlan,
+    predicate: &Predicate,
+    catalog: &OptimizerCatalog,
+    decisions: &mut Vec<String>,
+) -> PhysicalPlan {
+    let PhysicalPlan::AdjacencyExpandExec {
+        source_variable,
+        rel_variable: Some(rel_variable),
+        rel_type,
+        rel_properties,
+        direction,
+        min_hops: 1,
+        max_hops: 1,
+        optional: false,
+        input: source,
+        ..
+    } = &mut input
+    else {
+        return input;
+    };
+    if rel_type.is_empty() {
+        return input;
+    }
+    let conjuncts = match predicate {
+        Predicate::And(predicates) => predicates.iter().collect::<Vec<_>>(),
+        predicate => vec![predicate],
+    };
+    let Some((property, values)) = conjuncts.into_iter().find_map(|predicate| match predicate {
+        Predicate::PropertyIn {
+            variable,
+            property,
+            values,
+        } if variable == rel_variable => Some((property, values)),
+        _ => None,
+    }) else {
+        return input;
+    };
+    let (variable, label) = match source.as_ref() {
+        PhysicalPlan::SeqNodeScan { variable, label } if variable == source_variable => {
+            (variable.clone(), label.clone())
+        }
+        PhysicalPlan::RelationshipSeededNodeScan {
+            variable,
+            label,
+            rel_property_in: None,
+            ..
+        } if variable == source_variable => (variable.clone(), label.clone()),
+        _ => return input,
+    };
+    let Some(matching) = seeding_estimate(
+        catalog,
+        &label,
+        rel_type,
+        rel_properties,
+        Some((property, values)),
+    ) else {
+        return input;
+    };
+    decisions.push(format!(
+        "seed {variable}:{label} from {rel_type} relationship property {property} IN ({matching})"
+    ));
+    **source = PhysicalPlan::RelationshipSeededNodeScan {
+        variable,
+        label,
+        rel_type: rel_type.clone(),
+        rel_properties: rel_properties.clone(),
+        rel_property_in: Some((property.clone(), values.clone())),
+        direction: *direction,
+    };
+    input
 }

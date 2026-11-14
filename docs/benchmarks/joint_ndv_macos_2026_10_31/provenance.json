@@ -1,0 +1,97 @@
+{
+  "base": "22e98c2547fe8b5a800992da886686ecefa1437e",
+  "candidate": "6e6d3066f29a1e72f4ecb958845a2b55a847072a",
+  "warmups": 1,
+  "repeats": 11,
+  "process_rounds": 3,
+  "cells": [
+    [
+      "group-correlated",
+      400
+    ],
+    [
+      "group-correlated",
+      100000
+    ],
+    [
+      "group-independent",
+      100000
+    ],
+    [
+      "group-noindex",
+      400
+    ],
+    [
+      "group-noindex",
+      100000
+    ],
+    [
+      "join",
+      200
+    ],
+    [
+      "join",
+      3000
+    ]
+  ],
+  "start": {
+    "utc": "2026-10-30T22:53:37.035226+00:00",
+    "loadavg": [
+      23.11474609375,
+      42.89697265625,
+      58.54833984375
+    ],
+    "rustc_processes": 0,
+    "cargo_processes": 0
+  },
+  "end": {
+    "utc": "2026-10-30T22:54:02.147357+00:00",
+    "loadavg": [
+      17.97314453125,
+      40.09423828125,
+      57.083984375
+    ],
+    "rustc_processes": 0,
+    "cargo_processes": 0
+  },
+  "uname": "Darwin <host> 27.0.0 Darwin Kernel Version 27.0.0: Tue Aug 11 21:05:42 PDT 2026; root:xnu-13432.1.9~1/RELEASE_ARM64_T6031 arm64",
+  "cpu": "Apple M3 Max",
+  "memory_bytes": 137438953472,
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "profile_config": "# Repository-wide profiles, including independent developer tools and bindings.\n# Run Cargo from within this repository so its hierarchical config is loaded.\n# Keep every profile unstripped: Rust 1.97.1 stripping can corrupt Mach-O\n# LINKEDIT string pools, rejected by macOS 27 (rust-lang/rust#157750).\n\n[profile.dev]\nopt-level = 1\ndebug = 0\nstrip = \"none\"\ncodegen-units = 256\nlto = \"off\"\nincremental = true\npanic = \"unwind\"\ndebug-assertions = true\noverflow-checks = true\nrpath = false\n\n[profile.release]\nopt-level = 3\ndebug = false\nstrip = \"none\"\ncodegen-units = 1\nlto = \"thin\"\nincremental = false\npanic = \"unwind\"\ndebug-assertions = false\noverflow-checks = false\nrpath = false\n\n[profile.test]\nopt-level = 1\ndebug = 0\nstrip = \"none\"\ncodegen-units = 16\nlto = \"off\"\nincremental = true\ndebug-assertions = true\noverflow-checks = true\nrpath = false\n\n[profile.bench]\nopt-level = 3\ndebug = false\nstrip = \"none\"\ncodegen-units = 1\nlto = \"thin\"\nincremental = false\ndebug-assertions = false\noverflow-checks = false\nrpath = false\n",
+  "binaries": {
+    "baseline": {
+      "executable": "/private/tmp/hawdb-joint-ndv-binaries/baseline-final",
+      "sha256": "9874e6f1d32900f489dec965906bfffcf089c5bbb226afe92970202b2d4671d8"
+    },
+    "candidate": {
+      "executable": "/private/tmp/hawdb-joint-ndv-binaries/candidate-final",
+      "sha256": "a16e68d72a1e75ab039f6eda6567a42cd60ef7ad6c2a87f9c1ffb179484ae80f"
+    }
+  },
+  "source_files": {
+    "Cargo.toml": "0d31b78d468e84f81a0cd7ba7049ab1f8016167a5ad052298b629a4abe8c25f1",
+    "benches/joint_ndv_planning.rs": "e7e64827286eb6a26ba5c9e193fcd4aa9bf65fbc95d08d0aba849c4bb0552f00",
+    "crates/executor/src/transform.rs": "1edd23a75feb51100262269281be7323ffcd87fcb741ae6eebef7d2137a6419e",
+    "crates/executor/src/transform/tests.rs": "22002bb573b6bbb63d6ba757e57ca227ac28e00fd92455489baff8ded7fbf40f",
+    "crates/executor/src/transform/tests/limit_admission.rs": "78be3b5fcbd5a45b9702c1eedac11701cbc0842ff69d07a8116fc6fe22608eb0",
+    "crates/optimizer-graph/src/graph/cardinality.rs": "924a43e10c7267ba5c5ff387f85623c97c6aa6340770187314483091a566e4a2",
+    "crates/optimizer-graph/src/graph/cardinality/bindings.rs": "ee8e849a560214900728d8bea1cf7a7118da5ebda8feb0fb5b133c5f8420b906",
+    "crates/optimizer-graph/src/graph/cardinality/bindings/lineage.rs": "edb130b5892cf65b339b8c32724834a804d075e3062449f91ad1c264ebe88b18",
+    "crates/optimizer-graph/src/graph/cardinality/bindings/oracle.rs": "ffd07ec8d5bac764bbfc88067afcc7b9d4be2c5bce535c57ce1f801b2a9ddc70",
+    "crates/optimizer-graph/src/graph/cardinality/estimate.rs": "d0b46a61f5a6c57bbf060af5e5fdbd5d61e7c5315d4968b3807700f8aa486f8b",
+    "crates/optimizer-graph/src/graph/cardinality/joint.rs": "51e7969e521b0860084e6c84ae6b2aa0a00f241dcaf0e8c1a220fb10202339ec",
+    "crates/optimizer-graph/src/graph/cardinality/joint/tests.rs": "ae6e23f691768f83d6ef090f6626184e31e89ca06c5e59484cb7268b0784028e",
+    "crates/optimizer-graph/src/graph/catalog.rs": "c0201efea2650420ae758f5c37f8a074074dc56dcb5aae9970a90c601dd5b92e",
+    "crates/optimizer-graph/src/graph/catalog/joint.rs": "50da17405a97577a48eac13dad47f850ce448922b80f749bcfe0d9cea7357a00",
+    "crates/optimizer-graph/src/graph/costing.rs": "eabdbcaeb5e621f01560281c84d11f76c9009fe55e0f59bcd0625c3246c16811",
+    "crates/optimizer-graph/src/graph/lowering.rs": "978dab271413a16fc32b37ba61630310c8f2491764b45ff2dc1921229e2a631b",
+    "crates/optimizer-graph/src/graph/lowering/tests.rs": "d568ca0bdad51cdf0af95afad3f5b29f697aea976643bc2ca270d0bf968418a3",
+    "crates/optimizer-graph/src/graph/selected_trace.rs": "eec5c118bae2615b996464b312bcef3179fe3ce779dc18a72758233c870fb9c0",
+    "crates/optimizer-graph/src/graph/tests/cardinality_defaults.rs": "03215b9e689747e198c686a1ea84cfb013959a1f6206219ee4a003b4315cefd2",
+    "docs/QUERY_JOINT_STATISTICS.md": "f3c8c2faa402d1bd07b0b7c11cab2ea96f57d9278bcc77d9dc3ca65ba454da6b",
+    "docs/TEST_INDEX.md": "761bdeddeb18bde39b29be7762276a094dbdba74791b95fa042052bb1205d1bd",
+    "src/api/tests.rs": "61e632fa6cf7b9b5c8cebb39728aeaf79c224fda6662a7160dad8c6ce0d385c9",
+    "src/api/tests/joint_ndv_statistics.rs": "46176a732c34cb3418885b31206c2f50c2ae0241a21dfaa0cb610103998c2036"
+  }
+}

@@ -1101,11 +1101,17 @@ mod tests {
             &path,
             "production-content-store-test",
         );
-        seed.base_message_count = 48;
-        seed.message_payload_bytes = 8 * 1024;
-        seed.base_chunk_count = 48;
-        seed.chunk_payload_bytes = 8 * 1024;
-        seed.segment_cache_capacity_bytes = 2 * 1024 * 1024;
+        // Row-page format v2 stores exact-length pages, so the canonical row
+        // artifact is no longer inflated by 1 MiB slots. Inline payloads just
+        // below the 4 KiB overflow threshold keep the row pages above the
+        // 1 MiB cache, so the run still proves out-of-core reads with warm
+        // cache hits, while every read stays within its 256-row budget.
+        // (Synthetic overflow payloads compress to almost nothing.)
+        seed.base_message_count = 160;
+        seed.message_payload_bytes = 3584;
+        seed.base_chunk_count = 160;
+        seed.chunk_payload_bytes = 3584;
+        seed.segment_cache_capacity_bytes = 1024 * 1024;
         super::super::fixture::bootstrap_checkpoint(
             &seed,
             &nowledge_content_store_sql_corpus().unwrap(),
@@ -1206,7 +1212,7 @@ mod tests {
                 measurement_runs: 2,
                 open_payload_cache_limits: ProductionContentStoreOpenCacheLimits {
                     max_requests: 16,
-                    max_resident_bytes: 2 * 1024 * 1024,
+                    max_resident_bytes: 1024 * 1024,
                 },
                 resource_limits: ProductionContentStoreResourceLimits {
                     max_steady_resident_bytes: CONTENT_STORE_512_MIB_CAPABILITY_BYTES,
@@ -1222,8 +1228,8 @@ mod tests {
 
         assert!(
             report.ready,
-            "unexpected blockers: {:?}",
-            report.blocker_codes
+            "unexpected blockers: {:?}, initial: {:?}",
+            report.blocker_codes, report.initial_residency
         );
         let release = crate::evaluate_production_release_qualification_bundle(
             crate::ProductionReleaseQualificationArtifacts {

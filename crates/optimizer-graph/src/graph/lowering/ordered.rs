@@ -5,6 +5,59 @@ use super::*;
 use hawdb_core::PropertyType;
 use hawdb_plan_cypher::{ComparisonOp, CompositeOrderedSeek, SortDirection};
 
+/// Marginal NDV cannot distinguish uniform matches from a rejected prefix.
+/// Only discount an ordered alternative when its residual cannot reject access
+/// rows. This is a local exact implication, not a statistical uniqueness proof.
+pub(super) fn prefix_consumption_is_proven(plan: &PhysicalPlan) -> bool {
+    let PhysicalPlan::NodeProjectionScanExec {
+        variable,
+        access: NodeProjectionAccess::CompositeOrdered { seek },
+        predicate,
+        ..
+    } = plan
+    else {
+        return false;
+    };
+    fn implied(predicate: &Predicate, variable: &str, seek: &CompositeOrderedSeek) -> bool {
+        match predicate {
+            Predicate::ConstantBool(true) => true,
+            Predicate::And(parts) => parts.iter().all(|part| implied(part, variable, seek)),
+            Predicate::PropertyEq {
+                variable: source,
+                property,
+                value,
+            } => {
+                source == variable
+                    && seek
+                        .equality_prefix
+                        .iter()
+                        .any(|(key, expected)| key == property && expected == value)
+            }
+            _ => {
+                let Some(after) = &seek.after else {
+                    return false;
+                };
+                let Some([first, second]) = seek.index_properties.get(seek.equality_prefix.len()..)
+                else {
+                    return false;
+                };
+                let op = if seek.descending {
+                    ComparisonOp::Lt
+                } else {
+                    ComparisonOp::Gt
+                };
+                // The native seek already enforces this exact strict cursor.
+                // Other residuals must still be proved independently.
+                continuation(predicate, variable, first, second, op)
+                    .is_some_and(|values| &values == after)
+            }
+        }
+    }
+    predicate
+        .as_ref()
+        .is_none_or(|predicate| implied(predicate, variable, seek))
+}
+
 fn conjuncts<'a>(predicate: &'a Predicate, output: &mut Vec<&'a Predicate>) {
     if let Predicate::And(parts) = predicate {
         for part in parts {
@@ -141,9 +194,15 @@ fn access_predicates(access: &NodeProjectionAccess, variable: &str) -> Option<Ve
         };
     Some(match access {
         NodeProjectionAccess::LabelScan => vec![],
-        NodeProjectionAccess::PropertyValues { property, values } => vec![Predicate::Or(
-            values.iter().map(|value| eq(property, value)).collect(),
-        )],
+        NodeProjectionAccess::PropertyValues { property, values } => {
+            if let [value] = values.as_slice() {
+                vec![eq(property, value)]
+            } else {
+                vec![Predicate::Or(
+                    values.iter().map(|value| eq(property, value)).collect(),
+                )]
+            }
+        }
         NodeProjectionAccess::CompositeEquality { predicates } => predicates
             .iter()
             .map(|(property, value)| eq(property, value))
@@ -199,6 +258,13 @@ pub(super) fn candidate(
     let second = property(&order[1].key, items, variable)?;
     let mut predicates = access_predicates(access, variable)?;
     if let Some(predicate) = predicate {
+        // An access constraint can also remain in the residual filter. Keep
+        // one exact syntactic copy: changing access must not make costing
+        // multiply the same selectivity twice. These synthesized constraints
+        // are pure property comparisons; no errorful expression is reordered.
+        let mut residual_parts = Vec::new();
+        conjuncts(predicate, &mut residual_parts);
+        predicates.retain(|part| !residual_parts.contains(&part));
         predicates.push(predicate.clone());
     }
     let predicate = Predicate::And(predicates);
@@ -367,6 +433,92 @@ mod tests {
                     }),
                 }),
             }),
+        }
+    }
+
+    #[test]
+    fn bounded_ordered_keyset_proof_matches_the_exact_native_cursor() {
+        for descending in [false, true] {
+            for reversed in [false, true] {
+                let eq = |property: &str, value| Predicate::PropertyEq {
+                    variable: "n".into(),
+                    property: property.into(),
+                    value,
+                };
+                let compare = |property: &str, value| Predicate::PropertyCompare {
+                    variable: "n".into(),
+                    property: property.into(),
+                    op: if descending {
+                        ComparisonOp::Lt
+                    } else {
+                        ComparisonOp::Gt
+                    },
+                    value,
+                };
+                let mut tie = vec![
+                    eq("rank", Value::Int(12)),
+                    compare("id", Value::String("after-id".into())),
+                ];
+                if reversed {
+                    tie.reverse();
+                }
+                let mut branches = vec![compare("rank", Value::Int(12)), Predicate::And(tie)];
+                if reversed {
+                    branches.reverse();
+                }
+                let plan = PhysicalPlan::NodeProjectionScanExec {
+                    variable: "n".into(),
+                    label: "Item".into(),
+                    access: NodeProjectionAccess::CompositeOrdered {
+                        seek: CompositeOrderedSeek {
+                            index_properties: vec!["kind".into(), "rank".into(), "id".into()],
+                            equality_prefix: vec![("kind".into(), Value::String("note".into()))],
+                            after: Some(vec![Value::Int(12), Value::String("after-id".into())]),
+                            descending,
+                        },
+                    },
+                    required_properties: vec!["kind".into(), "rank".into(), "id".into()],
+                    predicate: Some(Predicate::And(vec![
+                        eq("kind", Value::String("note".into())),
+                        Predicate::Or(branches),
+                    ])),
+                    items: vec![],
+                };
+                assert!(prefix_consumption_is_proven(&plan));
+                for mismatch in 0..4 {
+                    let mut rejected = plan.clone();
+                    let PhysicalPlan::NodeProjectionScanExec {
+                        access: NodeProjectionAccess::CompositeOrdered { seek },
+                        ..
+                    } = &mut rejected
+                    else {
+                        unreachable!()
+                    };
+                    match mismatch {
+                        0 => seek.after = None,
+                        1 => {
+                            seek.after =
+                                Some(vec![Value::Int(13), Value::String("after-id".into())])
+                        }
+                        2 => {
+                            seek.after =
+                                Some(vec![Value::Int(12), Value::String("other-id".into())])
+                        }
+                        3 => seek.descending = !descending,
+                        _ => unreachable!(),
+                    }
+                    assert!(!prefix_consumption_is_proven(&rejected));
+                }
+                let mut rejecting = plan.clone();
+                let PhysicalPlan::NodeProjectionScanExec { predicate, .. } = &mut rejecting else {
+                    unreachable!()
+                };
+                *predicate = Some(Predicate::And(vec![
+                    predicate.take().unwrap(),
+                    eq("visible", Value::Bool(true)),
+                ]));
+                assert!(!prefix_consumption_is_proven(&rejecting));
+            }
         }
     }
 

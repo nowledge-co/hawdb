@@ -382,7 +382,19 @@ fn default_unlimited_and_explicit_read_row_limits_preserve_complete_delivery() {
 
 #[test]
 fn configured_sql_row_limits_refuse_work_instead_of_returning_partial_aggregates() {
-    use hawdb::{Database, DatabaseConfig, HawDBError};
+    use hawdb::{Database, DatabaseConfig, HawDBError, ResourceBudgetKind, ResourceBudgetScope};
+
+    let assert_work_refusal = |error: &HawDBError| {
+        assert!(
+            matches!(error, HawDBError::ResourceBudgetExceeded(cause)
+                if cause.resource == ResourceBudgetKind::WorkUnits
+                    && cause.scope == ResourceBudgetScope::Query
+                    && cause.owner == "relational SQL"
+                    && cause.budget_option == "max_intermediate_rows"
+                    && cause.budget == 2),
+            "unexpected refusal: {error:?}"
+        );
+    };
 
     let mut database = Database::new_with_config(DatabaseConfig {
         max_read_result_rows: Some(2),
@@ -398,18 +410,13 @@ fn configured_sql_row_limits_refuse_work_instead_of_returning_partial_aggregates
     }
     let epoch = database.commit_epoch().unwrap();
     let selected = database.query_sql("SELECT id FROM row_limit").unwrap_err();
-    assert!(
-        matches!(&selected, HawDBError::Execution(message)
-        if message == "relational SQL exceeds max_intermediate_rows 2"),
-        "unexpected refusal: {selected:?}"
-    );
+    assert_work_refusal(&selected);
     // SQL also has an intermediate-work cap derived from the database limit.
     // An aggregate can use a complete fast path or refuse that bounded work;
     // a successful aggregate must never silently count just the first two rows.
     match database.query_sql("SELECT COUNT(*) AS total FROM row_limit") {
         Ok(output) => assert_eq!(output.rows[0].get("total"), Some(&Value::Int(3))),
-        Err(error) => assert!(matches!(error, HawDBError::Execution(message)
-            if message == "relational SQL exceeds max_intermediate_rows 2")),
+        Err(error) => assert_work_refusal(&error),
     }
     let selected = database
         .query_sql("SELECT id FROM row_limit WHERE id = 2")

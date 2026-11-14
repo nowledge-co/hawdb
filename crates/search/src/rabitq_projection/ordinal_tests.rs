@@ -161,7 +161,7 @@ fn seeded_resident_and_file_candidates_match_independently_numbered_vectors() {
                             .into_iter()
                             .map(|hit| RaBitQCandidate {
                                 id: vectors[hit.id as usize].0.to_owned(),
-                                score: f64::from(hit.score),
+                                score: hit.score,
                             })
                             .collect::<Vec<_>>();
                         tied_outputs += usize::from(
@@ -598,6 +598,7 @@ fn descriptor_exhaustion_is_a_retryable_resource_error_and_never_quarantines_pro
             &index.documents,
             identity.clone(),
             Default::default(),
+            index.vector_metric(),
         )
         .unwrap(),
     );
@@ -637,7 +638,8 @@ fn descriptor_exhaustion_is_a_retryable_resource_error_and_never_quarantines_pro
             &rejected,
             &index.documents,
             identity,
-            Default::default()
+            Default::default(),
+            index.vector_metric(),
         ),
         Err(HawDBError::FileDescriptors(_))
     ));

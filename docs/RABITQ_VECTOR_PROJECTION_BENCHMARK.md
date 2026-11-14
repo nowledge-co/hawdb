@@ -1,7 +1,10 @@
 # RaBitQ Vector Projection Benchmark
 
 RaBitQ remains an explicitly selectable compressed candidate backend; the
-default DiskANN engine has separate scoring. The existing RaBitQ memory and file scan paths select AVX2 automatically on capable
+default DiskANN engine has separate scoring. An explicitly selected RaBitQ
+codec is also honored by the ordinary default search entrypoint. Historical
+measurements below describe the artifact version and source recorded with each
+run; they do not qualify the new version-2 inverse-alignment or L2 estimator. The existing RaBitQ memory and file scan paths select AVX2 automatically on capable
 x86/x86_64 CPUs. AArch64 also has a NEON scorer, selected explicitly with
 `KernelPreference::Neon`; automatic selection remains scalar there until native
 qualification is complete. Other CPUs retain the portable scalar scorer. Both

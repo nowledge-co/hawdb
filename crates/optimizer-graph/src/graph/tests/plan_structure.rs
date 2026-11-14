@@ -28,6 +28,8 @@ use hawdb_plan_cypher::{
 };
 use std::collections::BTreeMap;
 
+mod union_residual;
+
 #[test]
 fn physical_plan_metadata_describes_kind_class_and_children() {
     let plan = PhysicalPlan::ProjectExec {
@@ -360,6 +362,7 @@ fn different_exact_properties_lower_to_one_bounded_union_seek() {
 #[test]
 fn unfiltered_node_count_uses_exact_count_store() {
     let logical = LogicalPlan::Aggregate {
+        graph_keys: Default::default(),
         group_keys: Vec::new(),
         items: vec![Aggregation {
             function: AggregateFunction::Count,
@@ -409,6 +412,7 @@ fn unfiltered_node_count_uses_exact_count_store() {
 #[test]
 fn unfiltered_relationship_count_uses_exact_count_store() {
     let logical = LogicalPlan::Aggregate {
+        graph_keys: Default::default(),
         group_keys: Vec::new(),
         items: vec![Aggregation {
             function: AggregateFunction::Count,
@@ -469,6 +473,7 @@ fn filtered_node_aggregate_decodes_only_predicate_and_argument_properties() {
         value: Value::String("note".to_string()),
     };
     let logical = LogicalPlan::Aggregate {
+        graph_keys: Default::default(),
         group_keys: Vec::new(),
         items: vec![Aggregation {
             function: AggregateFunction::Count,
@@ -1223,7 +1228,7 @@ fn sort_with_bounded_limit_lowers_to_top_n() {
 }
 
 #[test]
-fn bounded_sort_keeps_full_sort_when_limit_covers_the_input() {
+fn bounded_sort_prefers_top_n_when_estimate_fits_the_window() {
     let logical = LogicalPlan::Limit {
         offset: 0,
         limit: Some(20),
@@ -1248,19 +1253,21 @@ fn bounded_sort_keeps_full_sort_when_limit_covers_the_input() {
 
     let (plan, trace) = CascadesOptimizer::default().optimize_with_catalog(&logical, &catalog);
 
-    assert_eq!(plan.kind(), PhysicalPlanKind::LimitExec);
-    assert_eq!(trace.selected_plan_operator_counts["SortExec"], 1);
-    assert_eq!(trace.selected_plan_operator_counts["LimitExec"], 1);
-    assert!(!trace.selected_plan_operator_counts.contains_key("TopNExec"));
+    assert_eq!(plan.kind(), PhysicalPlanKind::TopNExec);
+    assert_eq!(trace.selected_plan_operator_counts["TopNExec"], 1);
+    assert!(!trace.selected_plan_operator_counts.contains_key("SortExec"));
+    assert!(!trace
+        .selected_plan_operator_counts
+        .contains_key("LimitExec"));
     assert!(trace.decisions.iter().any(|decision| {
-        decision.starts_with("keep Sort + Limit for bounded sort: offset=0 limit=20")
+        decision.starts_with("choose TopN for bounded sort: offset=0 limit=20")
     }));
 
     let (fallback_plan, fallback_trace) = CascadesOptimizer::new(OptimizerConfig { max_groups: 1 })
         .optimize_with_catalog(&logical, &catalog);
-    assert_eq!(fallback_plan.kind(), PhysicalPlanKind::LimitExec);
+    assert_eq!(fallback_plan.kind(), PhysicalPlanKind::TopNExec);
     assert!(fallback_trace.decisions.iter().any(|decision| {
-        decision.starts_with("keep Sort + Limit for bounded sort: offset=0 limit=20")
+        decision.starts_with("choose TopN for bounded sort: offset=0 limit=20")
     }));
 }
 

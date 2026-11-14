@@ -29,6 +29,57 @@ fn options() -> SearchQueryOptions {
 }
 
 #[test]
+fn empty_default_requests_do_not_construct_a_cold_diskann_cache() {
+    let mut index = SearchIndex::in_memory();
+    index.upsert(document(0, Some(vec![1.0, 0.0]))).unwrap();
+    for options in [
+        SearchQueryOptions {
+            limit: 0,
+            ..options()
+        },
+        SearchQueryOptions {
+            metadata_filters: BTreeMap::from([("group".into(), "missing".into())]),
+            ..options()
+        },
+    ] {
+        let result = index
+            .search_with_options("", Some(&[1.0, 0.0]), SearchMode::Vector, options)
+            .unwrap();
+        assert!(result.hits.is_empty());
+        assert_eq!(result.retrievers[0].backend, "scalar_vector_scan");
+        assert!(!index.resident_diskann.has_cached_projection(None).unwrap());
+    }
+    assert_default(&index);
+    let cached = index
+        .resident_diskann
+        .snapshot(&index, 2, Default::default())
+        .unwrap();
+    let result = index
+        .search_with_options(
+            "",
+            Some(&[1.0, 0.0]),
+            SearchMode::Vector,
+            SearchQueryOptions {
+                limit: 0,
+                ..options()
+            },
+        )
+        .unwrap();
+    assert!(result.hits.is_empty());
+    assert_eq!(
+        result.retrievers[0].backend,
+        "hawdb_diskann_candidate_projection"
+    );
+    assert!(Arc::ptr_eq(
+        &cached,
+        &index
+            .resident_diskann
+            .snapshot(&index, 2, Default::default())
+            .unwrap(),
+    ));
+}
+
+#[test]
 fn oversized_default_resident_graph_falls_back_and_checkpoints_complete_source() {
     let root = std::env::temp_dir().join(format!(
         "hawdb-resident-graph-over-cap-{}",
@@ -43,7 +94,8 @@ fn oversized_default_resident_graph_falls_back_and_checkpoints_complete_source()
         row.content = "oversized graph fallback".into();
         index.upsert(row).unwrap();
     }
-    let (_, _, required) = Projection::memory_bound(&index.documents, dimension, None).unwrap();
+    let (_, _, required) =
+        Projection::memory_bound(&index.documents, dimension, index.vector_metric(), None).unwrap();
     assert!(
         required > CACHE_BYTES,
         "fixture must exceed the real graph cap"
@@ -1083,4 +1135,63 @@ fn explicit_rabitq_checkpoint_choice_survives_reopen_and_replacement() {
     assert_eq!(projection.manifest().bit_width, 1);
     assert_eq!(projection.manifest().requested_segment_rows, 7);
     assert_eq!(projection.manifest().transform_seed, 42);
+}
+
+/// The per-query navigation beam and candidate window reach the resident
+/// graph (#1470).
+#[test]
+fn resident_graph_navigation_beam_is_per_query() {
+    let mut index = SearchIndex::in_memory();
+    for id in 0..512 {
+        index
+            .upsert(document(id, Some(vec![1.0, id as f32 / 1024.0])))
+            .unwrap();
+    }
+    let options = SearchQueryOptions {
+        limit: 10,
+        rank_window: Some(64),
+        metadata_filters: BTreeMap::new(),
+        ..options()
+    };
+    let search = |execution: VectorSearchExecutionOptions<'_>| {
+        index
+            .try_search_with_options_context(
+                "",
+                Some(&[1.0, 0.0]),
+                SearchMode::Vector,
+                options.clone(),
+                execution,
+            )
+            .unwrap()
+    };
+    let bounded =
+        || VectorSearchExecutionOptions::bounded(std::num::NonZeroUsize::MIN, CACHE_BYTES, None);
+    let default = search(bounded());
+    let explicit =
+        search(bounded().with_navigation_beam(std::num::NonZeroUsize::new(1024).unwrap()));
+    assert_eq!(explicit.hits, default.hits);
+    assert_eq!(
+        explicit.retrievers[0].candidate_scan_payload_bytes_read,
+        default.retrievers[0].candidate_scan_payload_bytes_read
+    );
+    // A narrow beam does less graph work; it is raised to the 64 candidates.
+    assert_eq!(default.retrievers[0].generated_candidate_count, 128);
+    let narrow = search(
+        bounded()
+            .with_navigation_beam(std::num::NonZeroUsize::MIN)
+            .with_candidate_window(std::num::NonZeroUsize::new(16).unwrap()),
+    );
+    assert_eq!(narrow.hits.len(), 10);
+    // The window replaces the 128 floor but never goes below the rank window.
+    assert_eq!(narrow.retrievers[0].generated_candidate_count, 64);
+    assert!(
+        narrow.retrievers[0].candidate_scan_payload_bytes_read
+            < default.retrievers[0].candidate_scan_payload_bytes_read
+    );
+    let sixty_four = search(
+        bounded()
+            .with_navigation_beam(std::num::NonZeroUsize::new(64).unwrap())
+            .with_candidate_window(std::num::NonZeroUsize::new(16).unwrap()),
+    );
+    assert_eq!(narrow.hits, sixty_four.hits);
 }

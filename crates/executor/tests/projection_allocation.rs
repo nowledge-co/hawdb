@@ -1,5 +1,17 @@
 // Copyright 2026 Nowledge
-// Licensed under the Apache License, Version 2.0.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //!
 //! Public transform and optimized-producer contracts with real owning sources.
 //! Allocation observations cover execution on this test thread, after fixtures
@@ -315,6 +327,7 @@ fn run_refused(items: Vec<Projection>, external_id: String, watched_bytes: usize
         memory_ledger: &ledger,
         task_context: None,
         observer: &observer,
+        graph: None,
     };
     let callbacks = Cell::new(0);
     let result = stream_projection_batches(
@@ -1114,6 +1127,7 @@ fn text_projection_shrinks_borrowed_payload_and_skips_unused_branches() {
         memory_ledger: &ledger,
         task_context: None,
         observer: &observer,
+        graph: None,
     };
     let rows = Cell::new(0);
     let result = stream_projection_batches(
@@ -1190,6 +1204,7 @@ fn text_projection_batches_actual_payload_with_exact_rows_and_stop() {
             memory_ledger: &ledger,
             task_context: None,
             observer: &observer,
+            graph: None,
         };
         let rows = Cell::new(0);
         let result = stream_projection_batches(
@@ -1374,6 +1389,7 @@ fn projection_cancel_guard(optimized: bool) {
                 memory_ledger: &ledger,
                 task_context: Some(&task),
                 observer: &observer,
+                graph: None,
             },
             ExecutionLimit::unlimited(),
             &mut emit,
@@ -2396,9 +2412,16 @@ fn run_point_read_admission(persisted: bool, case: PointReadCase) {
                 kind: hawdb_plan_cypher::GraphEntityKind::Node,
             }],
             introduced: Vec::new(),
+            projected_nodes: BTreeMap::new(),
+            projected_relationships: BTreeMap::new(),
             steps: Vec::new(),
             predicate: None,
+            predicate_steps: Vec::new(),
+            edge_predicates: Vec::new(),
             optional: false,
+            hash_join: None,
+            id_set_conjuncts: Vec::new(),
+            seeded_union: Vec::new(),
         },
         input: Some(Box::new(PhysicalPlan::ProjectExec {
             items: vec![Projection {
@@ -2835,12 +2858,17 @@ fn relationship_owned_read_typed_window_streams_without_degree_sized_key_buffer(
             residency_mode: hawdb_storage::store::StorageResidencyMode::OutOfCore,
             ..Default::default()
         };
+        // The 1,000 single-relationship commits below would otherwise each
+        // sync the WAL, which dominates this test on a contended disk. The
+        // test checks read allocation, not durability, and the checkpoint
+        // still syncs before the reopen.
+        let durability = hawdb_storage::config::DurabilityPolicy::SyncOnCheckpoint;
         let mut catalog = Catalog::default();
         let mut store = match &directory {
             Some(directory) => GraphStore::open_with_durability_and_replay_config(
                 &directory.0,
                 &mut catalog,
-                Default::default(),
+                durability,
                 replay,
             )
             .unwrap(),
@@ -2872,7 +2900,7 @@ fn relationship_owned_read_typed_window_streams_without_degree_sized_key_buffer(
             store = GraphStore::open_with_durability_and_replay_config(
                 &directory.0,
                 &mut catalog,
-                Default::default(),
+                durability,
                 replay,
             )
             .unwrap();
@@ -3102,13 +3130,21 @@ fn full_node_lookup_key_copy_admitted_before_parameter_clone() {
     }
 }
 
-fn run_count_sum_source_admission(persisted: bool) {
-    run_blocking_source_admission(persisted, BlockingSource::CountSum);
+fn run_count_sum_source_admission(persisted: bool, requested: bool) {
+    run_blocking_source_admission(
+        persisted,
+        if requested {
+            BlockingSource::CountSumRequested
+        } else {
+            BlockingSource::CountSum
+        },
+    );
 }
 
 #[derive(Clone, Copy, Debug)]
 enum BlockingSource {
     CountSum,
+    CountSumRequested,
     ThreadRepair,
     ThreadCountTarget,
     ShortestPath,
@@ -3294,18 +3330,29 @@ fn run_blocking_source_admission(persisted: bool, source: BlockingSource) {
     }
     assert_eq!(store.is_out_of_core(), persisted);
     let plan = match source {
-        BlockingSource::CountSum => PhysicalPlan::OptionalRelationshipCountSumExec {
-            variable: "n".into(),
-            label: "Memory".into(),
-            properties: BTreeMap::new(),
-            legs: vec![hawdb_plan_cypher::RelationshipCountLeg {
-                rel_type: "RELATES_TO".into(),
-                direction: hawdb_core::RelationshipDirection::Outgoing,
-                distinct: true,
-                filter: None,
-            }],
-            output: "count".into(),
-        },
+        BlockingSource::CountSum | BlockingSource::CountSumRequested => {
+            PhysicalPlan::OptionalRelationshipCountSumExec {
+                variable: "n".into(),
+                label: if matches!(source, BlockingSource::CountSumRequested) {
+                    "Other"
+                } else {
+                    "Memory"
+                }
+                .into(),
+                properties: if matches!(source, BlockingSource::CountSumRequested) {
+                    BTreeMap::from([("body".into(), Value::String("not-present".into()))])
+                } else {
+                    BTreeMap::new()
+                },
+                legs: vec![hawdb_plan_cypher::RelationshipCountLeg {
+                    rel_type: "RELATES_TO".into(),
+                    direction: hawdb_core::RelationshipDirection::Outgoing,
+                    distinct: true,
+                    filter: None,
+                }],
+                output: "count".into(),
+            }
+        }
         BlockingSource::ThreadRepair
         | BlockingSource::ThreadCountTarget
         | BlockingSource::ThreadKey
@@ -3428,6 +3475,10 @@ fn run_blocking_source_admission(persisted: bool, source: BlockingSource) {
         },
         ExecutionLimit::unlimited(),
         &mut |batch| {
+            if matches!(source, BlockingSource::CountSum) {
+                assert_eq!(batch.len(), 1);
+                assert_eq!(batch[0].values["count"], Value::Int(0));
+            }
             if matches!(source, BlockingSource::ThreadCountTarget) {
                 assert_eq!(batch.len(), 1);
                 assert_eq!(batch[0].values["legacy_messages"], Value::Int(1));
@@ -3447,7 +3498,7 @@ fn run_blocking_source_admission(persisted: bool, source: BlockingSource) {
     drop(window);
     if matches!(
         source,
-        BlockingSource::ThreadRepair | BlockingSource::ThreadCountTarget
+        BlockingSource::CountSum | BlockingSource::ThreadRepair | BlockingSource::ThreadCountTarget
     ) {
         assert!(
             result.is_ok(),
@@ -3461,7 +3512,10 @@ fn run_blocking_source_admission(persisted: bool, source: BlockingSource) {
     }
     assert_eq!(
         rows.get(),
-        usize::from(matches!(source, BlockingSource::ThreadCountTarget))
+        usize::from(matches!(
+            source,
+            BlockingSource::CountSum | BlockingSource::ThreadCountTarget
+        ))
     );
     assert_eq!(external.calls.get(), 0);
     assert_eq!(ledger.snapshot().used_bytes, 0);
@@ -3469,13 +3523,23 @@ fn run_blocking_source_admission(persisted: bool, source: BlockingSource) {
 }
 
 #[test]
-fn count_sum_admits_native_unused_payload_before_copy() {
-    run_count_sum_source_admission(false);
+fn count_sum_ignores_native_unused_payload_before_copy() {
+    run_count_sum_source_admission(false, false);
 }
 
 #[test]
-fn count_sum_admits_cold_unused_payload_before_decode() {
-    run_count_sum_source_admission(true);
+fn count_sum_ignores_cold_unused_payload_before_decode() {
+    run_count_sum_source_admission(true, false);
+}
+
+#[test]
+fn count_sum_admits_native_requested_payload_before_copy() {
+    run_count_sum_source_admission(false, true);
+}
+
+#[test]
+fn count_sum_admits_cold_requested_payload_before_decode() {
+    run_count_sum_source_admission(true, true);
 }
 
 #[test]
@@ -4468,6 +4532,7 @@ fn grouped_evidence_admits_id_copies_before_allocation_and_keeps_output_owned() 
                 memory_ledger: &ledger,
                 task_context: None,
                 observer: &observer,
+                graph: None,
             },
             ExecutionLimit::unlimited(),
             &mut |rows| {
@@ -4534,6 +4599,7 @@ fn grouped_evidence_checks_final_callback_cancellation_and_preserves_consumer_er
                 memory_ledger: &ledger,
                 task_context: Some(&task),
                 observer: &observer,
+                graph: None,
             },
             ExecutionLimit::unlimited(),
             &mut |rows| {
@@ -4605,6 +4671,7 @@ fn grouped_evidence_reuses_a_wide_scalar_group_key_without_recopying_it() {
             memory_ledger: &ledger,
             task_context: None,
             observer: &observer,
+            graph: None,
         },
         ExecutionLimit::unlimited(),
         &mut |rows| {

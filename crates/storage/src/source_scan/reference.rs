@@ -38,12 +38,21 @@ pub(super) fn value(value: &Value) -> String {
         Value::Bool(value) => format!("b{}", u8::from(*value)),
         Value::Int(value) => format!("i{value}"),
         Value::Float(value) => format!("f{}", value.to_bits()),
+        Value::Decimal(value) => format!("d{value}"),
         Value::String(value) => format!("s{}", hex(value)),
         Value::Binary(value) => format!(
             "x{}",
             value.iter().map(|b| format!("{b:02x}")).collect::<String>()
         ),
         Value::Uuid(value) => format!("u{value}"),
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => format!(
+            "{}{value}",
+            crate::text::temporal_text_tag(value).expect("temporal value")
+        ),
         Value::Vector(value) => format!(
             "v{}",
             value

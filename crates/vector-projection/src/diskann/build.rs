@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
+use std::num::NonZeroUsize;
 
 /// Sampled local radii and the LS exponent affect construction, never queries.
 /// Radii are the mean Euclidean distances to the closest sampled neighbors.
@@ -30,6 +31,12 @@ pub struct DiskAnnBuildConfig {
     pub alpha: f64,
     pub lsg: Option<LsgBuildConfig>,
     pub max_working_bytes: usize,
+    /// Upper bound on construction worker threads. The build uses at most the
+    /// CPU parallelism its task was admitted with (one without a task), within
+    /// the task's executor-thread limit and `max_working_bytes`. One worker
+    /// inserts sequentially; several workers insert in batches and build the
+    /// same graph for every worker count.
+    pub max_build_threads: NonZeroUsize,
 }
 
 impl Default for DiskAnnBuildConfig {
@@ -40,6 +47,7 @@ impl Default for DiskAnnBuildConfig {
             alpha: 1.2,
             lsg: None,
             max_working_bytes: 64 << 20,
+            max_build_threads: NonZeroUsize::MAX,
         }
     }
 }
@@ -132,7 +140,8 @@ impl DiskAnnIndex {
         if entries.len() > u32::MAX as usize {
             return Err(configuration("DiskANN node count exceeds u32"));
         }
-        require_memory(build_bytes(&entries, config)?, config.max_working_bytes)?;
+        let required = build_bytes(&entries, config)?;
+        require_memory(required, config.max_working_bytes)?;
         for (_, vector) in &entries {
             validate_query(dimension, metric, vector, task)?;
         }
@@ -193,41 +202,91 @@ impl DiskAnnIndex {
         if let Some(lsg) = config.lsg {
             index.compute_radii(lsg, task)?;
         }
-        let mut scratch = Scratch::new(count, config.build_beam.min(count), count)?;
-        scratch.collect_visited = true;
-        scratch.visited = Vec::with_capacity(count);
+        let threads = build_threads(count, config, task, required)?;
+        if threads == 1 {
+            index.insert_sequentially(config, task)?;
+            return Ok(index);
+        }
+        let mut scratches = (0..threads)
+            .map(|_| {
+                let mut scratch = Scratch::new(count, config.build_beam.min(count), count)?;
+                scratch.collect_visited = true;
+                scratch.visited = Vec::with_capacity(count);
+                Ok(scratch)
+            })
+            .collect::<Result<Vec<_>>>()?;
         // Vamana first removes redundant short edges with alpha=1, then adds
-        // longer alternatives using the requested relaxation.
+        // longer alternatives using the requested relaxation. With more than one
+        // worker, insertions run in batches whose sizes depend only on the node
+        // count: each batch searches and prunes against the graph as of the
+        // batch start, then applies its forward lists and the pruned reverse
+        // links (#1472). The result is the same for every thread count above
+        // one; a single worker keeps the sequential insertion order above.
         for alpha in [1.0, config.alpha] {
-            for position in 0..count {
-                checkpoint(task)?;
-                let ordinal = index.order[position];
-                traverse(
-                    &index,
-                    &mut scratch,
-                    DiskAnnSearchOptions {
-                        beam_width: config.build_beam,
-                        max_visited: count,
-                        max_working_bytes: config.max_working_bytes,
-                        task,
+            let mut start = 0;
+            while start < count {
+                let end = start + batch_size(start, count);
+                let forward = index.map_parallel(
+                    &mut scratches,
+                    start..end,
+                    task,
+                    |index, scratch, position| {
+                        let ordinal = index.order[position];
+                        traverse(
+                            index,
+                            scratch,
+                            DiskAnnSearchOptions {
+                                beam_width: config.build_beam,
+                                max_visited: count,
+                                max_working_bytes: config.max_working_bytes,
+                                task,
+                            },
+                            |_| Ok(true),
+                            |other| index.construction_distance(ordinal, other, task),
+                        )?;
+                        index.prune(ordinal, &scratch.visited, alpha, task)
                     },
-                    |_| Ok(true),
-                    |other| index.construction_distance(ordinal, other, task),
                 )?;
-                let neighbors = index.prune(ordinal, &scratch.visited, alpha, task)?;
-                index.nodes[ordinal as usize].neighbors = neighbors;
-                // Reverse links are pruned under the same metric and degree cap.
-                for position in 0..index.nodes[ordinal as usize].neighbors.len() {
-                    let other = index.nodes[ordinal as usize].neighbors[position];
-                    let mut candidates = Vec::with_capacity(config.max_degree + 1);
-                    candidates.extend_from_slice(&index.nodes[other as usize].neighbors);
-                    if candidates.contains(&ordinal) {
-                        continue;
-                    }
-                    candidates.push(ordinal);
-                    index.nodes[other as usize].neighbors =
-                        index.prune(other, &candidates, alpha, task)?;
+                for (position, neighbors) in (start..end).zip(forward) {
+                    let ordinal = index.order[position];
+                    index.nodes[ordinal as usize].neighbors = neighbors;
                 }
+                // Reverse links are pruned under the same metric and degree cap,
+                // once per target with every new source of this batch.
+                let mut reverse = Vec::new();
+                for position in start..end {
+                    checkpoint(task)?;
+                    let ordinal = index.order[position];
+                    for &other in &index.nodes[ordinal as usize].neighbors {
+                        if !index.nodes[other as usize].neighbors.contains(&ordinal) {
+                            reverse.push((other, ordinal));
+                        }
+                    }
+                }
+                reverse.sort_unstable();
+                let mut targets: Vec<(u32, Vec<u32>)> = Vec::new();
+                for (other, ordinal) in reverse {
+                    match targets.last_mut() {
+                        Some((target, sources)) if *target == other => sources.push(ordinal),
+                        _ => targets.push((other, vec![ordinal])),
+                    }
+                }
+                let pruned = index.map_parallel(
+                    &mut scratches,
+                    0..targets.len(),
+                    task,
+                    |index, _, slot| {
+                        let (other, sources) = &targets[slot];
+                        let mut candidates = Vec::with_capacity(config.max_degree + sources.len());
+                        candidates.extend_from_slice(&index.nodes[*other as usize].neighbors);
+                        candidates.extend_from_slice(sources);
+                        index.prune(*other, &candidates, alpha, task)
+                    },
+                )?;
+                for ((other, _), neighbors) in targets.into_iter().zip(pruned) {
+                    index.nodes[other as usize].neighbors = neighbors;
+                }
+                start = end;
             }
         }
         Ok(index)
@@ -261,6 +320,108 @@ impl DiskAnnIndex {
                         + node.neighbors.capacity() * size_of::<u32>()
                 })
                 .sum::<usize>()
+    }
+
+    /// The single-worker construction: each insertion sees every earlier one.
+    fn insert_sequentially(
+        &mut self,
+        config: DiskAnnBuildConfig,
+        task: Option<&RuntimeTaskContext>,
+    ) -> Result<()> {
+        let count = self.nodes.len();
+        let mut scratch = Scratch::new(count, config.build_beam.min(count), count)?;
+        scratch.collect_visited = true;
+        scratch.visited = Vec::with_capacity(count);
+        for alpha in [1.0, config.alpha] {
+            for position in 0..count {
+                checkpoint(task)?;
+                let ordinal = self.order[position];
+                traverse(
+                    &*self,
+                    &mut scratch,
+                    DiskAnnSearchOptions {
+                        beam_width: config.build_beam,
+                        max_visited: count,
+                        max_working_bytes: config.max_working_bytes,
+                        task,
+                    },
+                    |_| Ok(true),
+                    |other| self.construction_distance(ordinal, other, task),
+                )?;
+                let neighbors = self.prune(ordinal, &scratch.visited, alpha, task)?;
+                self.nodes[ordinal as usize].neighbors = neighbors;
+                // Reverse links are pruned under the same metric and degree cap.
+                for position in 0..self.nodes[ordinal as usize].neighbors.len() {
+                    let other = self.nodes[ordinal as usize].neighbors[position];
+                    let mut candidates = Vec::with_capacity(config.max_degree + 1);
+                    candidates.extend_from_slice(&self.nodes[other as usize].neighbors);
+                    if candidates.contains(&ordinal) {
+                        continue;
+                    }
+                    candidates.push(ordinal);
+                    self.nodes[other as usize].neighbors =
+                        self.prune(other, &candidates, alpha, task)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Runs `work` for every item of `items` against this frozen graph, on up
+    /// to `scratches.len()` threads, and returns the results in item order.
+    /// Small batches run inline. The first error in item order is returned.
+    fn map_parallel<T: Send>(
+        &self,
+        scratches: &mut [Scratch],
+        items: std::ops::Range<usize>,
+        task: Option<&RuntimeTaskContext>,
+        work: impl Fn(&Self, &mut Scratch, usize) -> Result<T> + Sync,
+    ) -> Result<Vec<T>> {
+        let threads = scratches
+            .len()
+            .min(items.len().div_ceil(MIN_ITEMS_PER_THREAD))
+            .max(1);
+        if threads == 1 {
+            let scratch = &mut scratches[0];
+            return items
+                .map(|item| {
+                    checkpoint(task)?;
+                    work(self, scratch, item)
+                })
+                .collect();
+        }
+        let chunk = items.len().div_ceil(threads);
+        let work = &work;
+        let parts = std::thread::scope(|scope| {
+            let handles = scratches[..threads]
+                .iter_mut()
+                .enumerate()
+                .map(|(thread, scratch)| {
+                    let first = items.start + thread * chunk;
+                    let last = (first + chunk).min(items.end);
+                    scope.spawn(move || {
+                        (first..last)
+                            .map(|item| {
+                                checkpoint(task)?;
+                                work(self, scratch, item)
+                            })
+                            .collect::<Result<Vec<T>>>()
+                    })
+                })
+                .collect::<Vec<_>>();
+            handles
+                .into_iter()
+                .map(|handle| match handle.join() {
+                    Ok(result) => result,
+                    Err(payload) => std::panic::resume_unwind(payload),
+                })
+                .collect::<Vec<_>>()
+        });
+        let mut results = Vec::with_capacity(items.len());
+        for part in parts {
+            results.extend(part?);
+        }
+        Ok(results)
     }
 
     fn construction_distance(
@@ -467,6 +628,87 @@ pub(super) fn validate_config(dimension: usize, config: DiskAnnBuildConfig) -> R
         ));
     }
     Ok(())
+}
+
+/// Batches start at one insertion and double up to 1% of the nodes (at least
+/// one), as in parallel Vamana implementations. The schedule depends only on
+/// the node count, so the graph does not depend on the thread count.
+const MAX_BATCH_DIVISOR: usize = 100;
+
+fn batch_size(start: usize, count: usize) -> usize {
+    let largest = (count / MAX_BATCH_DIVISOR).max(1);
+    start.clamp(1, largest).min(count - start)
+}
+
+#[cfg(test)]
+pub(super) fn batch_size_for_test(start: usize, count: usize) -> usize {
+    batch_size(start, count)
+}
+
+#[cfg(test)]
+pub(super) fn batch_bytes_for_test(count: usize, config: DiskAnnBuildConfig) -> usize {
+    batch_bytes(count, config).unwrap()
+}
+
+#[cfg(test)]
+pub(super) fn build_threads_for_test(
+    count: usize,
+    config: DiskAnnBuildConfig,
+    task: Option<&RuntimeTaskContext>,
+    base_bytes: usize,
+) -> usize {
+    build_threads(count, config, task, base_bytes).unwrap()
+}
+
+/// Each thread below this many items costs more to start than it saves.
+const MIN_ITEMS_PER_THREAD: usize = 8;
+
+/// Worker threads: the configured cap, the task's admitted CPU parallelism
+/// (one without a task) and executor-thread limit, and the threads whose
+/// private traversal scratch and the batch buffers still fit in
+/// `max_working_bytes` beyond the sequential bound.
+fn build_threads(
+    count: usize,
+    config: DiskAnnBuildConfig,
+    task: Option<&RuntimeTaskContext>,
+    base_bytes: usize,
+) -> Result<usize> {
+    let mut threads = config
+        .max_build_threads
+        .get()
+        .min(task.map_or(1, |task| task.admitted_parallelism().get()));
+    if let Some(limit) = task.and_then(RuntimeTaskContext::executor_thread_limit) {
+        threads = threads.min(limit.get());
+    }
+    let per_thread = scratch_bytes(count, config.build_beam.min(count), count)?
+        .checked_add(
+            count
+                .checked_mul(size_of::<u32>())
+                .ok_or_else(|| configuration("DiskANN build memory bound overflow"))?,
+        )
+        .ok_or_else(|| configuration("DiskANN build memory bound overflow"))?;
+    // Several workers also hold the largest batch's forward lists and
+    // reverse-link buffers; one sequential worker needs neither.
+    let batch = batch_bytes(count, config)
+        .ok_or_else(|| configuration("DiskANN build memory bound overflow"))?;
+    let spare = config
+        .max_working_bytes
+        .saturating_sub(base_bytes)
+        .saturating_sub(batch);
+    let fitting = 1 + spare / per_thread.max(1);
+    Ok(if fitting < 2 {
+        1
+    } else {
+        threads.min(fitting).max(1)
+    })
+}
+
+/// Forward lists and reverse-link buffers of the largest insertion batch.
+fn batch_bytes(count: usize, config: DiskAnnBuildConfig) -> Option<usize> {
+    (count / MAX_BATCH_DIVISOR)
+        .max(1)
+        .checked_mul(config.max_degree)?
+        .checked_mul(2 * size_of::<(u32, u32)>() + size_of::<u32>() + size_of::<(u32, Vec<u32>)>())
 }
 
 fn build_bytes(entries: &Vec<(u64, Vec<f32>)>, config: DiskAnnBuildConfig) -> Result<usize> {

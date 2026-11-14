@@ -487,6 +487,7 @@ impl DiskAnnArtifactMetadata {
                 alpha: metadata.alpha,
                 lsg,
                 max_working_bytes: 0,
+                max_build_threads: std::num::NonZeroUsize::MAX,
             },
         )
         .map_err(|_| corrupt("invalid DiskANN construction settings"))?;

@@ -143,7 +143,17 @@ fn invalid(message: &str) -> HawDBError {
 
 fn scalar_payload_bytes(value: &Value) -> usize {
     match value {
-        Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Uuid(_) => 0,
+        Value::Null
+        | Value::Bool(_)
+        | Value::Int(_)
+        | Value::Float(_)
+        | Value::Decimal(_)
+        | Value::Uuid(_)
+        | Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_) => 0,
+        Value::Duration(_) => std::mem::size_of::<hawdb_core::temporal::Duration>(),
         Value::String(text) => text.len(),
         Value::Binary(bytes) => bytes.len(),
         Value::Vector(vector) => vector.encoded().len(),
@@ -233,6 +243,7 @@ pub(super) fn stream(
         "collect_top expressions",
         "collect_top group keys",
     );
+    let graph = context.expression_graph();
     let mut groups = BTreeMap::<Vec<Value>, Group>::new();
     let mut input_rows = 0usize;
     let mut borrowed_group_key_rows = 0usize;
@@ -261,6 +272,7 @@ pub(super) fn stream(
                     context.catalog,
                     &binding,
                     context.task_context,
+                    graph.as_ref(),
                 )?;
                 if key.iter().any(|value| {
                     !matches!(
@@ -329,6 +341,7 @@ pub(super) fn stream(
             context.catalog,
             &Binding::values(BTreeMap::new()),
             context.task_context,
+            graph.as_ref(),
         )?;
         groups.insert(values, new_group(&mut allocation, items, &account)?);
     }

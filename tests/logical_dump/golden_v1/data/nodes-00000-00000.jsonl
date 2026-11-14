@@ -1,0 +1,2 @@
+{"id":0,"label":"Doc","properties":{"blob":{"$binary":"AAH+/w=="},"title":"甲","vec":{"$vector":[1.0,-2.5]}}}
+{"id":1,"label":"Doc","properties":{"title":"乙"}}

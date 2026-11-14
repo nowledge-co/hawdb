@@ -69,7 +69,7 @@ as production-unready because it has no release binding.
 
 The preferred executable contract is
 `run_production_graph_storage_qualification`. It opens the representative copy
-through `NowledgeMemEmbeddedStoreHandle`, applies an explicit out-of-core
+through `EmbeddedStoreHandle`, applies an explicit out-of-core
 `DatabaseConfig`, acquires a runtime-governor permit for every measurement,
 and emits `hawdb-production-graph-storage-qualification-v1`. The report stores
 only query and parameter digests, retains every raw cold and warm resource run,
@@ -518,8 +518,8 @@ admission-safe path is only one input to production qualification and MUST NOT
 replace revision-, dataset-, and workload-bound evidence.
 
 The Nowledge production facade follows the same boundary. Its parameterized
-query and bounded streaming-read entrypoints on `NowledgeMemGraph`,
-`NowledgeMemEmbeddedStore`, and `NowledgeMemEmbeddedStoreHandle` MUST acquire a
+query and bounded streaming-read entrypoints on `EmbeddedGraph`,
+`EmbeddedStore`, and `EmbeddedStoreHandle` MUST acquire a
 `RuntimeGovernor` permit before execution. Streaming reads MUST admit the
 minimum of the governor result budget, database result limit, and route payload
 limit, and MUST retain the permit until the consumer returns. Task-context
@@ -534,7 +534,7 @@ I/O limits.
 
 The real Mem runtime MUST publish
 `hawdb-nowledge-mem-serving-path-readiness-v1` from its long-lived
-`NowledgeMemEmbeddedStoreHandle`. The report MUST bind a non-empty host runtime
+`EmbeddedStoreHandle`. The report MUST bind a non-empty host runtime
 identity and prove shared-governor admission for foreground parameterized
 Cypher, bounded streaming reads, typed mutation, typed analytics, and typed
 maintenance. An unbound handle is admission-safe but is not production-path
@@ -543,7 +543,7 @@ host identity is present.
 
 Parallel morsel qualification uses `run_production_morsel_profile` and
 `evaluate_production_morsel_matrix`. Each profile MUST run through the
-read-only `NowledgeMemEmbeddedStoreHandle`, contain at least 100 measured
+read-only `EmbeddedStoreHandle`, contain at least 100 measured
 samples after at least three warmups, observe the requested 4, 8, or 16 active
 workers, execute the typed columnar morsel fragment, and prove that completed
 outputs and ordinal reorder entries remain within the admitted worker window.
@@ -707,7 +707,7 @@ RaBitQ artifact and the active manifest; either corruption MUST be rejected
 during open.
 
 The embedded serving entrypoint is
-`NowledgeMemOpenOptions::with_qualified_out_of_core_search_projection`. It MUST
+`EmbeddedStoreOpenOptions::with_qualified_out_of_core_search_projection`. It MUST
 receive the raw lexical qualification report, the exact current release
 identity, and explicit out-of-core budgets. Open MUST reject a graph whose
 canonical commit epoch differs from the bound release identity and MUST expose

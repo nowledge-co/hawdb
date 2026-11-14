@@ -18,6 +18,44 @@ use super::scan::stream_node_access_batches;
 use super::*;
 use hawdb_plan_cypher::NodeProjectionAccess;
 
+mod count_source;
+
+pub(super) fn stream_unwind_batches(
+    rows: &[Value],
+    variable: &str,
+    context: BatchReadContext<'_>,
+    execution_limit: ExecutionLimit,
+    emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+) -> Result<BatchControl> {
+    let mut output = AccountedBindingBatch::with_ledger(
+        "UnwindExec",
+        context.memory.batch_rows.get(),
+        context.memory.batch_payload_bytes,
+        context.memory_ledger,
+    );
+    let empty = Binding::values(BTreeMap::new());
+    for (index, value) in rows.iter().enumerate() {
+        runtime_checkpoint(context.task_context)?;
+        if execution_limit.is_reached(index) {
+            break;
+        }
+        let bytes = crate::binding::binding_memory_bytes_with_values(
+            &empty,
+            std::iter::once((variable, value)),
+        );
+        if output.push_generated(
+            bytes,
+            || Binding::values(BTreeMap::from([(variable.to_owned(), value.clone())])),
+            emit,
+        )? == BatchControl::Stop
+            || (output.is_full() && output.emit(emit)? == BatchControl::Stop)
+        {
+            return Ok(BatchControl::Stop);
+        }
+    }
+    output.emit(emit)
+}
+
 fn admit_access_copy<'a>(
     context: BatchReadContext<'_>,
     properties: impl Iterator<Item = &'a str>,
@@ -163,51 +201,28 @@ pub(super) fn stream_optional_relationship_count_sum_batches(
     _execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
-    let label_ids = label_ids_for_pattern(context.catalog, label);
     let count_account = context
         .kernel_context()
         .source_account("OptionalRelationshipCountSumExec");
     let mut total = 0usize;
-    let mut nodes_since_checkpoint = 0usize;
-    let mut admit = |bytes| {
-        crate::store::admit_graph_read(&count_account, context.task_context, bytes).map(Some)
-    };
-    context.store.visit_nodes_with_allocation(
-        None,
-        &mut hawdb_storage::read_view::ControlledGraphReadAllocator::new(
-            &mut admit,
-            context.task_context,
-        ),
-        &mut |input| {
-            let (node, _allocation) = input.into_parts();
-            nodes_since_checkpoint += 1;
-            if nodes_since_checkpoint == context.memory.batch_rows.get() {
-                nodes_since_checkpoint = 0;
-                runtime_checkpoint(context.task_context)?;
-            }
-            if !node_matches_label_pattern(&node, label_ids.as_deref())
-                || !node_properties_match(&node, properties)
-            {
-                return Ok(ScanControl::Continue);
-            }
-            for leg in legs {
-                let count = relationship_count_sum_leg(
-                    context.catalog,
-                    context.store,
-                    node.id,
-                    leg,
-                    crate::store::AdjacencyReadMemory {
-                        budget_bytes: context.memory.query_memory_bytes.get(),
-                        account: Some(&count_account),
-                    },
-                    context.observer,
-                    context.task_context,
-                )?;
-                total = total.saturating_add(count);
-            }
-            Ok(ScanControl::Continue)
-        },
-    )?;
+    count_source::visit(label, properties, context, &count_account, &mut |id| {
+        for leg in legs {
+            let count = relationship_count_sum_leg(
+                context.catalog,
+                context.store,
+                id,
+                leg,
+                crate::store::AdjacencyReadMemory {
+                    budget_bytes: context.memory.query_memory_bytes.get(),
+                    account: Some(&count_account),
+                },
+                context.observer,
+                context.task_context,
+            )?;
+            total = total.saturating_add(count);
+        }
+        Ok(())
+    })?;
     emit(vec![Binding {
         values: BTreeMap::from([(output.to_owned(), Value::Int(total as i64))]),
         nodes: BTreeMap::new().into(),

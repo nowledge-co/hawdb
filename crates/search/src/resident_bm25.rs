@@ -5,6 +5,10 @@
 //! the corpus; ordinary search keeps its existing filtered-document domain.
 
 use crate::analyzer_stream::Control;
+use crate::lexical_projection::{
+    retain_most_selective_terms, LexicalProjectionConfig, LexicalQueryTermPolicy,
+    QueryTermSelection,
+};
 use crate::resident_text_seed::count_document_tokens;
 use crate::{Result, SearchAnalyzerLexicon, SearchDocument, BM25_B, BM25_K1};
 use std::collections::{BTreeMap, BTreeSet};
@@ -15,6 +19,47 @@ pub(super) struct Scorer<'a> {
     frequencies: Vec<usize>,
     document_count: usize,
     average_document_len: f64,
+}
+
+/// Fits a resident query to the analyzed and scored-term caps. Document
+/// frequencies come from the same corpus `Scorer` will use, so the kept terms
+/// score exactly as the resident text seed scores them.
+pub(super) fn select_query_terms<'d>(
+    terms: &mut BTreeSet<String>,
+    documents: impl Iterator<Item = &'d SearchDocument>,
+    analyzer: &SearchAnalyzerLexicon,
+    config: &LexicalProjectionConfig,
+) -> Result<QueryTermSelection> {
+    let limit = config.max_query_terms;
+    if terms.len() > config.analyzed_query_term_limit() {
+        return Err(config.analyzed_query_term_error());
+    }
+    if terms.len() <= limit.get() {
+        return Ok(QueryTermSelection::unchanged(terms.len(), limit));
+    }
+    if config.query_term_policy == LexicalQueryTermPolicy::Exact {
+        // Snapshot-free resident search scores every analyzed term, as it did
+        // before the scored-term cap existed: Exact stays complete BM25 here.
+        return Ok(QueryTermSelection::unchanged(terms.len(), limit));
+    }
+    let mut selected = terms.clone();
+    let selection = {
+        let scorer = Scorer::from_documents(terms, documents, analyzer)?;
+        retain_most_selective_terms(
+            &mut selected,
+            limit,
+            config.query_term_policy,
+            |term| {
+                scorer
+                    .query_terms
+                    .get(term)
+                    .map_or(0, |index| scorer.document_frequency[*index] as u64)
+            },
+            None,
+        )?
+    };
+    *terms = selected;
+    Ok(selection)
 }
 
 impl<'a> Scorer<'a> {

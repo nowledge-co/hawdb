@@ -67,13 +67,19 @@ Files:
 
 ### Reader compatibility refusals
 
-Relational WAL and full-checkpoint envelopes currently use codec version 2;
+Relational WAL and full-checkpoint envelopes currently use codec version 3;
 embedded append WAL records (including checkpoint schema records) use version 3.
 A reader accepts its supported version exactly. An intact envelope requiring a
 different version returns `HawDBError::UnsupportedStorageFormat` with
 `StorageFormatError::UnsupportedVersion { format, found, supported }`.
 An unknown materialized-view expression tag returns `UnsupportedFeature` with
-the schema format, feature name, and numeric tag. Current relational schema tags
+the schema format, feature name, and numeric tag. `StorageFormatError::format()`
+is always one of the constants exported from `hawdb` and `hawdb_core`:
+`STORAGE_MANIFEST_FORMAT`, `RELATIONAL_DURABLE_CODEC_FORMAT`,
+`RELATIONAL_SCHEMA_FORMAT`, `RELATIONAL_ROW_PAGE_FORMAT`, `APPEND_WAL_FORMAT`,
+`LOGICAL_DUMP_FORMAT` or `SEARCH_PROJECTION_MANIFEST_FORMAT`. Hosts compare
+against these constants instead of matching message text. They are recorded in
+`docs/persistent-format.lock`. Current relational schema tags
 0 through 5 represent column, COUNT(*), COUNT(column), SUM, MIN, and MAX.
 This change does not add a feature bitmap or change any encoded bytes.
 
@@ -93,6 +99,11 @@ WAL doctor planning, apply revalidation, and automatic repair require the same
 capabilities, including when resuming an interrupted repair. An unsupported
 record followed by a torn tail never authorizes truncation or quarantine.
 
+The storage manifest and checkpoint `version` line (`hawdb-storage-v<N>`)
+follows the same rule: an intact version of that family other than the
+supported one returns `StorageFormatError::UnsupportedVersion { format:
+"storage manifest", found: N, supported }`; any other text is malformed.
+
 Upgrade the reader to a release that supports the writer's codecs and features;
 do not downgrade a database containing features that the older reader lacks.
 Older binaries cannot acquire this classification retroactively and may still
@@ -101,6 +112,20 @@ their baseline changes, but an open or doctor refusal must not do that implicitl
 No compatibility migration, stable Mem inclusion, or production activation is
 authorized by this error-classification change. Retain the original database and
 recovery evidence when a reader refuses it.
+
+### Persistent format version
+
+`PERSISTENT_FORMAT_VERSION` (`crates/storage/src/persistent_format.rs`,
+re-exported as `hawdb::PERSISTENT_FORMAT_VERSION` and returned by the C ABI's
+`hawdb_format_version()`) summarizes every codec above in one integer: equal
+values open each other's databases, and a change that makes an existing
+database unreadable bumps it. It is not stored in the database; each codec's
+own version and refusal stay authoritative. `docs/persistent-format.lock`
+pins it together with the persistent codec constants, and the `Persistent
+Format` workflow fails while they disagree and states in each release's notes
+whether it changed. Development formats still break without migrations;
+embedding hosts carry data across a change with a logical dump (export with
+the old release, import with the new one). See [LOGICAL_DUMP.md](LOGICAL_DUMP.md).
 
 Recovery:
 
@@ -156,8 +181,70 @@ does not mutate graph records or increase WAL replay work.
 Search projection snapshots use the same temporary-file, file sync, atomic
 rename, and parent-directory sync boundary when `SearchIndex::checkpoint`
 publishes `search_projection.hawdb`; the snapshot uses the same zstd envelope
-by default. The projection remains rebuildable and is not part of canonical
-graph WAL recovery. Snapshot publication streams the header and one encoded
+by default. An unregistered resident checkpoint is crash-atomic (#1711). It
+first synchronizes the projection directory's ancestry, so a directory that
+`SearchIndex::open` created cannot lose its entry after a durable selector. It
+then writes every artifact under a generation name (the snapshot as
+`search_projection.<g>.hawdb`, plus the descriptor, payload, lexical, sidecar
+and vector files), each synced and renamed into place. The rename of
+`search_projection.out_of_core.manifest.hawdb`, whose receipt already binds the
+snapshot's object reference, is the single commit point. Only then are
+`search_projection.hawdb`, `search_projection_segment_payloads.hawdb`,
+`search_projection_segments.hawdb` and `search_lexical.manifest.hawdb`, in that
+order, replaced by hard links (or synced copies) to the selected generation. A loss
+before the selector leaves every current name and the selector at the previous
+checkpoint. After it, `SearchIndex::open` re-links any current name that differs
+from the selected generation, but only from a generation file whose bytes match
+the selector's object reference. The repair runs only when the selected
+generation snapshot exists and matches its receipt. Older layouts and selectors
+from other writers keep the existing validation. Before the selector, every
+installed generation file, including the snapshot, is re-read and checked
+against the reference the selector records. Reopen also removes alias-link and
+generation-write temporaries left by an interrupted checkpoint. On Windows,
+which has no stable file identity in std, each reopen hashes the four current
+files once. The current and previous generation snapshots stay under the
+ordinary content-generation retention. See
+[resident checkpoint qualification](SEARCH_SEGMENT_POWER_LOSS_QUALIFICATION.md#resident-checkpoint).
+
+Compatibility: a projection written before #1711 has no generation snapshot
+and opens unchanged. The first new checkpoint adds one. After a completed
+checkpoint, older binaries see the same current names and selector as before
+and open normally. They ignore and never clean up the extra
+`search_projection.<g>.hawdb` links. A crash can leave a projection between
+its selector and its aliases. If its snapshot alias is still stale, an older
+binary refuses it with the existing "resident search snapshot does not match
+the published immutable projection" error. Once the snapshot alias has landed,
+the older binary's existing identity checks reject any stale descriptor or
+lexical alias. It then rebuilds the descriptor or treats the lexical projection
+as absent, so it never serves the previous generation's artifacts as the new
+one. A newer binary repairs every alias on open. Registered
+Consumer checkpoints keep their previous order; their Consumer publication
+record selects the producer closure. The projection remains rebuildable and is not part of canonical
+graph WAL recovery.
+
+A resident snapshot that disagrees with the selector it is opened beside, such
+as the crash state of a HawDB 0.31.0 or earlier checkpoint (#1711) or a damaged
+generation snapshot, is refused with the typed
+`HawDBError::SearchProjectionMismatch { projection, message }` (#1735). It
+displays as `storage error: resident search snapshot does not match the
+published immutable projection; incremental catch-up cannot repair it: ...`,
+naming `EmbeddedStoreHandle::rebuild_out_of_core_search_projection` and
+`Database::rebuild_search_projection` (#1738 changed the text after the
+`;`); the C ABI, Bun, Go and MoonBit report
+`kind: "search_projection_mismatch"`, and the Python mapping is a `StorageError` with
+`kind == "search_projection_mismatch"`, `projection` and `retryable == False`.
+Reopening the same directory fails the same way, so it is not retryable as-is:
+rebuild the search projection from the authoritative graph, for example with
+`EmbeddedStoreHandle::rebuild_out_of_core_search_projection` into a new
+directory (see [`SEARCH_PROJECTION_REBUILD.md`](SEARCH_PROJECTION_REBUILD.md)). The check reads only the projection's
+own directory. `EmbeddedStore` opens and recovers the graph before the
+projection, the refusal writes nothing to it, and a graph-only open of the same
+store succeeds with an unpoisoned handle. Other projection refusals, such as a
+corrupt or partially written generation artifact, keep their `Storage` or
+`StorageIntegrity` kinds. The new variant is a breaking change for exhaustive
+`match`es on `HawDBError`.
+
+Snapshot publication streams the header and one encoded
 document record at a time through zstd into a temporary payload, then copies
 that payload behind the checksummed envelope before publication. It does not
 materialize a corpus-sized plaintext `String` or compressed `Vec` on top of the
@@ -198,6 +285,42 @@ profile and its RSS, page-fault, spool, descriptor, payload, and peak-segment
 evidence. [`SEARCH_GENERATION_BENCHMARK.md`](SEARCH_GENERATION_BENCHMARK.md)
 records the reproducible resident-versus-streaming kernel comparison and keeps
 it explicitly separate from representative Mem qualification.
+
+An incremental-maintenance projection whose change-log cursor has been trimmed,
+or whose directory is damaged or missing, is recovered with
+`EmbeddedStoreHandle::rebuild_out_of_core_search_projection`. It pins one graph
+read snapshot at epoch E, streams the canonical graph rows (plus host-hydrated
+embeddings and host-owned rows) in bounded batches through
+`SearchOutOfCoreGenerationWriter::create_unordered_replacement_with_context`,
+an external sort into a fresh directory, and stamps the generation with E. A
+complete read of the generation and a second scan of the pinned graph must have
+the same document count and order-independent content digest before a
+no-replace rename installs the private stage at a new target directory. The
+current projection directory is never written; the host switches by reopening
+on the target, and incremental catch-up resumes from E. Precondition and
+verification refusals are the typed, non-storage
+`HawDBError::SearchProjectionRebuildRefused`. See
+[`SEARCH_PROJECTION_REBUILD.md`](SEARCH_PROJECTION_REBUILD.md).
+
+A projection whose source epoch must catch up with graph commits that changed
+nothing it indexes (import bookkeeping, additive schema statements) is moved
+with `EmbeddedStoreHandle::advance_search_projection_source_epoch`. It
+publishes only a new selector manifest over the active closure, in both the
+resident and the incremental out-of-core mode, after proving from the
+database's own search change log that every commit in the range has an empty
+projection capture. A range with projected changes, a change-log gap or an
+unavailable range is refused with the typed, non-storage
+`HawDBError::SearchProjectionEpochAdvanceRefused`. See
+[`SEARCH_PROJECTION_EPOCH_ADVANCE.md`](SEARCH_PROJECTION_EPOCH_ADVANCE.md).
+
+The search projection selector carries `min_reader_version` when it holds a
+field that version-1 readers do not know. A reader refuses a selector that
+needs a newer reader before decoding its fields, with
+`HawDBError::UnsupportedStorageFormat` (`format() ==
+SEARCH_PROJECTION_MANIFEST_FORMAT`) instead of `Storage`. Writers refuse to
+publish over such a selector. Version-1 selectors omit the version fields
+and keep their earlier bytes. The bump policy is in
+[`SEARCH_PROJECTION_MANIFEST_VERSION.md`](SEARCH_PROJECTION_MANIFEST_VERSION.md).
 
 ### WAL recovery
 
@@ -322,6 +445,57 @@ being admitted to cache. `Database::scrub_storage` is the explicit full scan:
 it streams every canonical artifact through CRC32C and SHA-256, validates WAL
 framing and LSN continuity, and poisons the open handle on any integrity error.
 
+Immutable branch objects are not re-hashed when this same process has just
+produced them. A streamed object publication hashes the exact bytes it writes
+into a new staging inode, syncs it, links it into `objects/` and syncs the
+directories; only then does it record that inode's native identity, length and
+modification time in a process-local registry, and it skips the staged
+read-back. Later in the same process, selector dependency checks, branch mount
+and cold immutable-handle validation skip the whole-object identity hash when
+the opened descriptor still has exactly that identity, length and modification
+time. Everything else still hashes the complete object: objects found on disk
+(cold open, another process, any open after a crash or restart, since the
+registry is memory-only), reuse of an existing object, reclamation, recovery
+dependency checks, `doctor` WAL repair and derived-artifact health checks
+(`verify_stored`), and `scrub_storage`. Content-level checks against manifest
+digests and all page/block checks on reads are unchanged. The stamp detects a
+replaced inode and ordinary later writes. It does not detect media corruption,
+a rewrite within one coarse timestamp tick, or a writer that restores the
+modification time. Such damage in this exclusively owned directory is refused by
+format checksums when read, reported by `scrub_storage`, and refused by
+the full identity check on the next cold open; it is never served as valid
+data.
+
+Branch mount of an object this process did not publish (including every
+object on a new-process open) always hashes the complete object, so each branch
+admission still authenticates its whole checkpoint closure before use
+([#1440](https://github.com/nowledge-co/hawdb/issues/1440)). Admission then opens the
+mounted artifacts through the immutable-handle cache. The next cold handle open
+of a mounted object does not hash the same inode a second time: the mount
+leaves a one-shot, per-project record of the hashed descriptor's native
+identity, length and modification time, and that open skips the hash only when
+its descriptor still matches that stamp. The mount takes the stamp before
+reading the first payload byte and records it only if it is unchanged once the
+hash completes, so a write that races the hash leaves no record. The record has
+no time limit: if the object is not opened right after admission it waits for
+the next cold open, however late, and the stamp alone then decides. It is
+consumed by that open whether or not it matches, cleared before every remount
+(so a refused remount leaves none) and dropped on reclamation; any later cold
+open of the object, for example after descriptor-cache eviction, hashes it in
+full again. Unconsumed records are optional performance state and are capped at
+4,096 per project (`MOUNT_VERIFICATION_RECORDS_PER_PROJECT`), evicting the
+oldest-inserted record first; an eviction only restores that object's full
+hash on its next cold open and is counted in
+`FileDescriptorMetrics::mount_verification_evictions`. Each record's payload is
+160 bytes on 64-bit targets (reference and stamp plus the insertion-order
+entry), so the cap bounds the payload at 640 KiB per project plus `BTreeMap`
+node overhead. One admission mounts each object of its checkpoint closure once
+(about 50 objects on LDBC SF0.1), well within the cap. The stamp's limits are those
+of the publication record above, and page/block checks on reads are unchanged.
+`FileDescriptorMetrics::identity_verified_bytes` and
+`mount_verification_reuses` report the whole-object identity bytes verified
+and the cold opens that reused a mount's verification.
+
 `max_wal_replay_entries` counts these top-level WAL records, not the child
 operations inside a batch, so a budgeted recovery either applies a complete
 batch record or rejects the open before applying the next record.
@@ -331,6 +505,120 @@ physical generation pinned by an active read transaction. Unpinned intermediate
 generations are reclaimed even while an older reader remains active. Reclamation
 also follows retained row-page, overflow-extent, and append manifests so shared
 physical artifacts outlive every reader that can still reference them.
+
+An admitted branch keeps its private WAL beside `branch.head`
+(`branches/<id>/wal.<generation>.hawdb`), outside the data root. Each
+checkpoint or seal copies the active WAL's records into immutable objects (or
+covers them with the new checkpoint), then publishes a head selecting a fresh
+successor WAL. Recovery opens only `wal.<head.active_wal.generation>`; child
+and sibling branches are created from the sealed parent root, own their own
+directory and never read a parent's private WAL. The same reclamation pass
+therefore also removes branch WALs with a generation below the selected one
+([#1727](https://github.com/nowledge-co/hawdb/issues/1727)). It runs only
+after the selecting head is published; it re-reads that head, requires it to
+match the runtime's head and synchronizes the branch directory before the
+first removal, so a head adopted after a crash with an unsynchronized rename
+becomes durable first. Names at or above the selected generation (prepared
+successors, in-flight checkpoint candidates, interrupted-publication evidence)
+and reader-pinned generations are kept. The branch sweep does not use the
+data-root retention of the current and previous checkpoint generations, which
+number data-root artifacts; readers never open a branch WAL, so a reader pin
+that matches a branch WAL number only delays its removal. The branch sweep also runs when an
+open reader without a known pin set defers data-root reclamation, because no
+reader opens a branch WAL. An interrupted-publication name below
+the selected generation is reclaimed like a data-root generation below the
+selected checkpoint: the durable head selecting a newer generation resolves its
+uncertainty. The writer's exclusive branch-directory
+lease excludes concurrent admission of the same branch. A failed removal or
+directory synchronization is reported as `generation_reclamation_pending_*`
+debt and retried by the next reclamation pass; a crash between head
+publication and removal leaves only an unselected file, which the next
+checkpoint after recovery removes. Each WAL directory therefore holds at most
+the current and previous generation after a checkpoint.
+
+Every checkpoint of an admitted branch also publishes its closure (durable
+manifest, relational checkpoint, canonical/adjacency/property artifacts, row
+pages, index shadow, append segments) and a sealed root into the project's
+content-addressed object store (`branches/objects/objects/<kind>/<digest>`).
+A sealed root has no parent link, so a closure no longer referenced by any
+retained root is garbage. The same post-publication pass (foreground
+`checkpoint()`, automatic candidate publication and deferred off-gate
+retirement) therefore ends with a bounded mark/sweep of that store
+([#1736](https://github.com/nowledge-co/hawdb/issues/1736)); a checkpoint with
+nothing new to publish retries it only while debt remains. Liveness is the
+project-wide mark that explicit `reclaim_branch_storage` uses: the durable head
+of every non-deleted catalog branch, every catalog creation base root (a child
+or sibling starts from a sealed parent root that may be older than the parent's
+current head), and every root registered by a live owner (each runtime's head,
+reader snapshots, prepared checkpoint candidates and handoffs, derived-artifact
+jobs). An active owner without a root registration defers the pass. The pass
+holds the catalog metadata lock, which serializes every object publication and
+root registration, from its catalog read to its last removal; an automatic pass
+that finds the lock held is deferred rather than waiting behind a publication.
+The one publication outside that lock is the bootstrap of `main`
+(`initialize_immutable_root_head`), which runs before `main` is a `Ready`
+catalog branch; a sweep requires a `Ready` owner, so none can run yet. A
+writer's own pre-publication revalidation of its `Ready` record waits for the
+lock, so another owner's publication or sweep cannot fail its checkpoint as
+busy (branch admission still reports a held lock as busy).
+Before the first removal it synchronizes every branch directory whose head it
+read and the catalog directory, so a head adopted after a crash with an
+unsynchronized rename is durable before anything it superseded disappears.
+
+Each pass lists the namespace and reads only sealed roots during mark;
+reachable non-root objects are checked for presence and exact length, so the
+cost follows the number of objects and the garbage removed, not the size of the
+live data. Selected garbage is fully verified before the first unlink, with the
+existing quarantine-evidence rule. An automatic pass keeps the structural
+quarantine checks (intent present, bound to the catalog, committed) but
+byte-verifies each committed archive once per process and caches the result
+by archive directory and committed manifest digest; explicit passes re-verify
+every archive every time. The cache relies on committed quarantine archives
+being immutable: for the rest of the process, an automatic pass may remove a
+corrupt quarantined source on the strength of that earlier verification
+without re-reading the archive. An archive
+beyond the evidence budget or failing verification never fails an automatic
+pass: its quarantined sources are retained and reported
+(`object_reclamation_quarantine_unverified`). A corrupt unreachable object
+without quarantine evidence is likewise retained, named by kind and digest in
+`object_reclamation_corrupt_object` (reason `object_reclamation_corrupt_object`,
+counted in `object_reclamation_skipped_*`), and the automatic pass keeps
+sweeping; an explicit pass still fails closed on it. Retiring deleted branch
+directories, which inspects quarantined private remnants, is left to explicit
+reclamation. Automatic passes use
+`BranchReclamationLimits::automatic()`: at most
+`AUTOMATIC_RECLAMATION_MAX_OBJECTS` (4,096) objects and
+`AUTOMATIC_RECLAMATION_MAX_BYTES` (64 MiB) of re-hashed garbage per
+checkpoint, because removal verification runs inside the checkpoint while the
+metadata lock is held. An object this process published whose inode is
+unchanged was hashed when written; it is not re-hashed and does not count
+against the byte budget, so the garbage a checkpoint of this process
+supersedes is always removable. Objects published by an earlier process (for
+example a backlog left by a version without automatic reclamation) are
+re-hashed and drain at most 64 MiB per checkpoint, reported as pending.
+An object reachable from a retained root that is missing, truncated or not
+decodable stops the pass without removing anything and is reported as
+integrity damage (`object_reclamation_damaged_live_root`, reason
+`object_reclamation_live_object_damaged`), not as backlog.
+`BranchReclamationLimits` is a per-pass
+budget, not a refusal threshold: at most `max_objects` objects are removed and
+at most `max_bytes` of them re-hashed (always at least one object), and the
+remainder is reported as pending. An explicit pass also re-hashes up to `max_bytes` of
+reachable objects as an integrity check and waits for the metadata lock. A
+deferral, a failed listing, barrier or unlink, an object still being read, or
+garbage beyond the budget is recorded as `object_reclamation_*` debt in the
+storage-pressure snapshot (`object_reclamation_retry_required`,
+`object_reclamation_pending_files`, `object_reclamation_pending_bytes`, reason
+`object_reclamation_debt`), next to `object_store_files` and
+`object_store_bytes` measured by the last pass. The next checkpoint or
+`EmbeddedStoreHandle::reclaim_branch_storage` / `Database::reclaim_branch_storage`
+retries it. A crash between head publication and removal leaves only
+unreachable objects for a later pass. After a checkpoint the store holds the
+selected head's closure, the closure of the head it superseded while the
+checkpoint source, the retired frontend or a handle's read publication still
+pins it (released by the next pass), every pinned reader and branch closure,
+and the catalog creation baseline of each branch (for `main`, the root it was
+created or bootstrapped from).
 
 `DatabaseTransaction` owns a transaction-private COW graph workspace. Each
 Cypher mutation is applied to that workspace immediately, so later Cypher reads
@@ -380,10 +668,29 @@ be proven acquire the database target conservatively. The fallback is part of
 correctness, not a silent unlocked path.
 
 A pessimistic transaction that waits before its first successful statement
-refreshes its private snapshot after the lock is granted. Acquiring a new lock
-after an earlier successful statement fails with a retryable serialization
-error if the published epoch changed, avoiding execution against a resource
-that changed before it was protected. Lock-complete disjoint writes may rebase
+refreshes its private snapshot after the lock is granted. After an earlier
+successful statement, Snapshot Isolation keeps the original snapshot. A new
+relational lock validates the retained versions in its primary-key interval,
+or the payload-sensitive summaries in a supported declared secondary-index
+interval, under the commit sequencer after lock acquisition. Inserts into empty
+intervals, deletes, rekeys and ABA changes require a retry; disjoint commits do
+not. Table locks validate their table domain. Unrepresented secondary keys stamp
+an index barrier; nullable/unsupported index types and constraint-only indexes
+use the table domain. Schema changes, database/read barriers, unavailable
+history and validation admission failures retain a conservative retry. Graph
+lock discovery retains its existing epoch fence.
+
+Each pessimistic Snapshot Isolation transaction registers a source-history pin
+and read-summary lease at begin. This enables additional bounded summary work
+for concurrent writers; history uses the existing version-memory budgets. One
+validation admits at most 4,096 requests, 64 KiB of copied key metadata and
+65,536 visited stamps, seeking ordered version pages rather than scanning
+unrelated identities. These limits exclude allocator overhead and existing
+schema metadata. Validation failures appear in the existing read-dependency
+failure counters. Ordinary snapshot reads do not acquire serializable read
+dependencies, and Serializable retains its separate collector and commit check.
+
+Lock-complete disjoint writes may rebase
 their exact staged operations onto the current store at commit; constraint
 validation and the durable publication order still run against current state.
 Both transaction modes retain one WAL order, durable-before-publish, and one
@@ -401,7 +708,7 @@ remaining #231/#232 work: version-memory and reclamation qualification, narrower
 domains, and workload qualification. Checkpoints now clean eligible version
 tombstones using a separate registry of every storage snapshot, including
 sources that could start a later transaction. A new pessimistic lock
-acquisition after snapshot drift still uses the conservative retry rule above.
+acquisition after snapshot drift uses the bounded dependency validation above.
 
 Coordinator waits record every blocker in a multi-owner wait-for graph. Adding
 dependencies that close a cycle aborts the current waiter as the deterministic
@@ -500,6 +807,20 @@ Physical corruption poisons the handle, while admission rejection does not.
 Explicit deep scrub bypasses the cache and verifies the complete descriptor and
 adjacency closure. Backup, restore, repair, and reclamation retain the data,
 descriptor pages, and root together.
+
+Query batch execution opens a `DescriptorLeafScope` on its thread, next to
+the canonical point-read scope (#1615). Inside it, adjacency endpoint seeks
+keep the last few verified descriptor leaves they reached, each with the page
+reference that selected it, its tree root and the codec limits it was
+validated under (only cache-resident pages, at most eight and an eighth of the
+cache capacity, pinned until the outermost scope closes). A later endpoint
+prefix whose complete key range lies strictly inside a retained leaf of the
+same tree root and codec limits is answered from that leaf without the root
+traversal or any cache lookup; prefixes touching a leaf edge or spanning
+leaves use the ordinary traversal. Results, order, poison and limits are
+unchanged: the retained leaf counts as one visited page against the page and
+page-byte limits. Read reports then show one visited page, no cache hit or
+miss, and `descriptor_retained_leaf_hits = 1`.
 
 Persistent property projections use the same descriptor demand boundary for
 equality, range, full-text, composite-equality, relationship-equality, and
@@ -944,6 +1265,79 @@ are supported through
 validation. Promoting a property descriptor to `PUBLIC` validates existing
 records before appending the WAL batch.
 
+Property defaults (#1683) use
+`CREATE PROPERTY ON NODE|RELATIONSHIP TABLE Name(property) TYPE Type [NOT NULL] DEFAULT value`.
+`value` is a non-NULL literal (`BOOL`, integer, float, string, or a list of
+those, including `[]`) or `current_timestamp()`. NULL, parameters, property
+references, temporal constructors such as `date('...')`, and other expressions
+are rejected by the parser. The default must satisfy the declared `TYPE` and
+`NOT NULL` at DDL time; `TYPE ANY DEFAULT value` declares a default without
+constraining later writes. A default is applied **only when a record is
+created without the property**: Cypher `CREATE` of nodes and relationships
+(including `UNWIND ... CREATE` and patterns that create both endpoints),
+MERGE-created nodes and relationships, explicit transactions, the direct
+`GraphStore` creation APIs, and `GraphStore::import_graph_snapshot_rows`. The
+default is written into the WAL record before validation, so recovery,
+checkpoints and readers see an ordinary stored value. Defaults are never filled
+at read time.
+
+| Write (table `E(p DOUBLE DEFAULT 0.0)`) | `p` reads back |
+|---|---|
+| `CREATE (:E {id: 'a'})` | `0.0` |
+| `CREATE (:E {id: 'b', p: NULL})` | `NULL` |
+| `CREATE (:E {id: 'c', p: $v})` with `$v = NULL` | `NULL` |
+| `MERGE (e:E {id: 'd'}) ON CREATE SET e.p = NULL` | `NULL` (default first, then `ON CREATE SET`) |
+| `CREATE (:E {id: 'e'})` then `SET e.p = NULL` | `NULL` |
+| `UNWIND $rows AS row CREATE (:E {p: row.p})`, row without key `p` / with `p: NULL` | `0.0` / `NULL` |
+| `GraphStore::import_graph_snapshot_rows` row without key `p` / with `p: NULL` | `0.0` / `NULL` |
+| `LOAD CSV ... CREATE (:E {p: row.p})` with an empty field | `0.0` (openCypher: CREATE omits NULL properties) |
+| record that existed before the declaration, after maintenance | `0.0` |
+
+HawDB storage distinguishes a property that was never written from one written
+as NULL: `CREATE (:E {p: NULL})`, `SET n.p = NULL` and `ON CREATE SET n.p = NULL`
+store an explicit NULL entry that survives WAL replay and checkpoints. A
+row-sourced CREATE or MERGE create branch whose row map lacks the referenced key
+(`row.p` with no `p` in `row`) now leaves the property out instead of storing
+NULL, so it receives the default; `UNWIND ... MATCH ... CREATE` relationships
+keep an explicit NULL row value instead of dropping it. This differs from
+openCypher, where a missing map key reads as NULL, and from Kùzu/Ladybug, which
+type a `$rows` list of maps as a fixed-field STRUCT list and refuse the whole
+statement when a row lacks a key (measured on Kùzu 0.11.3 and Ladybug 0.15.3).
+Statements accepted by those engines therefore store the same values here; only
+rows lacking a key, which they refuse, receive the default in HawDB.
+`current_timestamp()` defaults use exactly the representation of HawDB's own
+Cypher `current_timestamp()`, `timestamp('...')` and `CAST(... AS TIMESTAMP)`:
+an `INT` of epoch nanoseconds, so defaulted and explicitly written timestamps
+compare and sort together. The value is truncated to whole milliseconds (a
+multiple of 1,000,000 ns, matching Kùzu's precision) and is one value per
+writing transaction: every record of one auto-commit statement or of one
+explicit transaction shares it, matching Kùzu, whereas the Cypher function is
+pinned per statement. Declare such properties `TYPE INT` or `TYPE ANY`.
+Adding a label to an existing node does not apply defaults.
+
+Declare properties before importing data. Declaring a defaulted property on a
+table that already has records lacking it puts the descriptor in `BACKFILL`;
+records lacking the property (key absent) are filled by schema maintenance,
+while explicitly stored NULLs and other present values are kept. The backfill
+value is resolved once at declaration time and persisted with the descriptor,
+so a `current_timestamp()` backfill writes the declaration instant to every
+pre-existing record even across several bounded maintenance runs. Records
+created while the descriptor is in `BACKFILL` already follow the creation rule.
+Each maintenance run writes its fills as one WAL batch, and the batch that
+fills the last lacking record also advances the descriptor to `VALIDATING`, so
+a crash leaves either a resumable `BACKFILL` or a completed one. Existing
+present values must already satisfy the descriptor at DDL time; `NOT NULL`
+defaulted properties therefore reject tables with stored NULLs.
+
+`Database::property_schemas` reports every descriptor with its table, type,
+nullability, state and declared default (`PropertySchema::default`, including
+the resolved backfill value). Defaults persist through binary WAL op code 29
+(`CreatePropertyWithDefault`; undefaulted descriptors keep op code 5 and their
+exact pre-default bytes) and a `property_default` checkpoint catalog line.
+Databases written before defaults reopen with no defaults. Binaries that
+predate defaults reject a database that declares one (`unknown WAL op code 29`
+or `invalid checkpoint line`) instead of silently dropping the default.
+
 Schema maintenance is explicit. `Database::run_schema_maintenance` scans table
 and property descriptors, validates the next state before appending WAL, and
 then writes all selected maintenance operations as one grouped WAL batch.
@@ -970,6 +1364,42 @@ budget model. For per-tick low-resource loops,
 operation budget to both QoS admission and descriptor-level bounded execution.
 WAL replay applies descriptor GC before the database is exposed, while record
 pages and index artifacts remain separately rebuildable or reclaimable.
+
+HawDB never runs schema maintenance on its own: `BackgroundMaintenanceOptions`
+with `include_schema_maintenance` only reports a `SchemaMaintenance` candidate,
+so a `BACKFILL` descriptor stays in `BACKFILL` until a caller runs maintenance,
+whatever `RuntimeCapabilities::background_maintenance` says. Hosts on the
+admitted embedded handle (#1739) use `EmbeddedStoreHandle::property_schemas` and
+`EmbeddedStoreHandle::plan_schema_maintenance` (read-only, same results as the
+`Database` methods, no runtime admission) and
+`EmbeddedStoreHandle::run_bounded_schema_maintenance`, which takes one
+foreground maintenance admission like `EmbeddedStoreHandle::checkpoint` and then
+runs `Database::run_bounded_schema_maintenance` under the handle's write guard.
+That explicit call does not require the `background_maintenance` capability, so
+an offline host with background maintenance disabled can repeat it with a small
+budget while the descriptor is in `BACKFILL`; the `VALIDATING` to `PUBLIC`
+advance is one action whose planned estimate is the table's record count, so
+the promoting call needs at least that budget. That validation scans every
+record of the table while holding the handle's exclusive write guard, so it
+blocks writers for the length of a full-table scan; on large tables hosts
+should schedule the promoting call like a checkpoint (idle time, preparation
+phase) rather than on a latency-sensitive write path.
+
+`CREATE PROPERTY` on a property that already has a descriptor is idempotent only
+when type, nullability and default all match (`created: false`). A declaration
+that differs in any of them is rejected with an error naming the existing
+declaration, instead of being dropped. This is a behaviour change (#1739):
+such a re-declaration used to be a silent no-op returning `created: false`. The
+refusal is the typed `HawDBError::Schema { surface: Storage, .. }` (displayed
+as `storage error: ...`, like other storage-surface schema refusals), not
+`HawDBError::Storage`, so hosts can tell a rejected DDL from a storage
+failure; the database stays usable. In particular a `DEFAULT` cannot be
+attached to an existing undefaulted descriptor this way (`ALTER PROPERTY ...
+SET DEFAULT` is tracked in #1740). Schema-less writes such as
+`CREATE (:Entity {score: 0.3})` create no property descriptors, so declaring a
+defaulted property on a label that was only written schema-lessly creates a
+fresh descriptor (implicit table descriptor included) and enters `BACKFILL`; a
+`TYPE ANY` declaration constrains no other property of that label.
 
 Checkpoint files include a statistics snapshot for observability and future
 costing: total node count, total relationship count, per-label counts,
@@ -1017,7 +1447,10 @@ database-owned `LocalQosScheduler` path. Shared scheduler handles track running
 background operation budgets between start and finish, including optional
 per-class budgets for projection, import, analytics, and shadow lanes; it does
 not own worker threads, reorder jobs, or gate foreground explicit rebuild
-requests.
+requests. Checkpoint builders use `LocalQosBatchPermit` to cover up to 64
+bounded units with one admission; an idle batch is not counted as running and
+is reclaimed by any background admission it would refuse (see the pressure
+checkpoint spec, #1616).
 Callers that maintain their own background loop can build a
 `BackgroundWorkPlan` with `BackgroundWorkHint` signals for active topic,
 recent delta size, query probability, staleness TTL, freshness SLO, and tenant
@@ -1113,6 +1546,22 @@ Incremental search projection deltas can also run through
 uses the database-owned `LocalQosScheduler` to account for in-flight internal background
 projection work while keeping the direct delta API available for explicit
 foreground callers.
+
+Search change-log capture classifies every committed WAL batch before append,
+after direct append and during replay with the same rule
+(`projection_wal_requires_rebuild`). Additive schema commits record a complete,
+usually empty, change-log entry and keep incremental catch-up continuous:
+label, relationship-type, node/relationship table and property creation
+(including `DEFAULT`), index and constraint creation, and table/property state
+changes to `WRITE_ONLY`, `BACKFILL`, `VALIDATING` or `PUBLIC`. Descriptor state
+is catalog metadata: graph reads, the search rebuild source and graph-delta
+hydration never filter records or values by it; it only gates planner proofs,
+typed fast paths, constraint enforcement and which defaults new records receive
+at write time. A declared default reaches existing records only through schema
+maintenance backfill, whose fills are ordinary point property writes captured
+as record changes in the same commit as the state advance. Retiring transitions
+(`DELETE_ONLY`, `GC`), descriptor GC and initial-import source marks still raise
+the resume floor, so a cursor below them must rebuild.
 The metadata-only repair path follows the same boundary:
 `SearchIndex::repair_background_metadata_from_graph` uses stateless
 `LocalQosPolicy` admission, and
@@ -1257,6 +1706,82 @@ entry counts, and explicit compressed and uncompressed segment limits fail
 closed on mismatches. Decompression itself is limited to the admitted byte
 count rather than trusting the envelope length.
 
+### Binary vector sidecar (layout V2)
+
+Layout `HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V2` stores each vector sidecar range
+uncompressed as one binary segment (`out_of_core::vector_segment`): an 8-byte
+`HDVSEG02` magic; little-endian row count, dimension, head length and ID-blob
+length; cumulative ID end offsets; the strictly increasing UTF-8 document IDs
+(zero-padded to four bytes); one CRC32C per row; and a CRC32C over the whole
+head. Fixed-stride rows of little-endian `f32` values follow. Row ordinals are
+implicit (`vector_ordinal_base + index`). The writers store the input `f32`
+bits exactly, reject non-finite values, and keep the layout range checksum over
+the complete segment.
+
+Serving reads and verifies the head (normally one positioned read), then only
+the rows it needs: graph/RaBitQ reranks read just their selected candidates,
+coalescing adjacent rows, and full scans read rows in bounded 256 KiB runs.
+Every byte that is read is covered by the head CRC or its row CRC, so a corrupt
+head or selected row fails closed, while unselected rows are never read or
+decoded. Query-admitted reads charge the head, run buffer and decoded row to the
+query memory account and observe cancellation between runs. Mapping graph or
+RaBitQ ordinals to document IDs for layered visibility reads only the head.
+
+Layout V1 stored zstd-compressed decimal text and required decompressing and
+parsing every row of every touched segment on each query (#1469). Out-of-core
+search generations are rebuildable projections and HawDB has no persisted
+compatibility obligation for development generations (see `AGENTS.md`), so
+readers do not decode V1: opening a V1 generation fails closed with a storage
+error naming the superseded layout and asking for a projection rebuild. Rebuild
+it from canonical data, for example with `SearchOutOfCoreGenerationWriter`, or
+let the next resident `SearchIndex::checkpoint` publish a fresh V4 generation;
+neither path decodes the superseded sidecars.
+
+### Metadata value postings (layout V4)
+
+Layout `HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V4` adds an optional `postings` range per
+segment, stored in the metadata artifact right after that segment's metadata
+sidecar range and validated like it (contiguous offset, exact document count,
+compressed-segment limit, range checksum). The uncompressed payload
+(`out_of_core::postings`, magic `HDPOST02`) holds the segment's document IDs in
+order, one vector flag per document (ordinals are `vector_ordinal_base` plus
+the preceding flagged documents), and for every supported scalar field each
+value, normalized exactly as filters compare it, with the ascending indexes of
+the documents holding it. Ordinary metadata uses trimmed, case-folded values;
+`kind` uses its canonical projection aliases; and a missing or empty `space_id`
+is indexed as `default`. Multi-valued `labels` and `metadata.*`, plus
+`document_id`, remain residual fields. A
+field with more than 4,096 distinct values, or a normalized value longer than
+256 bytes, in the segment is recorded as not indexed, so free-text metadata is
+not copied uncompressed. A segment whose payload would exceed the segment byte limit has no
+postings range.
+
+The candidate build compiles every supported `Eq` or `In` predicate into a
+postings plan. It intersects those predicates' value lists. With no residual
+predicate, the selected documents pass directly, in segment order, through the
+same visibility, eligibility and candidate encoding as the scan. With residual
+predicates, the metadata sidecar is still read and validated sequentially, but
+only posting-selected records decode the residual fields and reach residual
+matching. A segment without postings, whose
+postings do not index a predicate's field, or whose postings range exceeds
+the reader's segment byte budget, uses the metadata scan. Opening does not
+apply that budget to postings ranges, so a reader configured tighter than the
+writer still opens the projection. The read is
+checksummed and, on the query path, charged to the query memory account. The
+document table, field and value order, and every document index are validated,
+so corrupt postings fail with a storage error. A filter with no posting-supported
+predicate keeps the scan, which decodes only the predicates' metadata keys.
+`SearchPredicatePushdownReport::postings_segment_count` counts the segments
+that used postings without metadata decoding;
+`postings_prefiltered_segment_count` counts segments that used postings before
+residual metadata matching. The report also records the compiled postings and
+residual predicate counts.
+
+Readers still open V2 generations (no postings) and V3 generations (plain
+metadata postings). V3 postings fall back to the metadata scan for `kind` and
+`space_id`, because their payload lacks the V4 semantic capability. Readers
+from before V4 refuse V4 layouts explicitly by their format string.
+
 `SearchOutOfCoreReader` opens only these manifests and descriptors, not the
 complete document snapshot. Metadata and ACL predicates prune descriptors,
 decode only metadata sidecar ranges, and write matching ordered document IDs
@@ -1270,10 +1795,21 @@ are not touched until final-page hydration. `SearchOutOfCoreReader::hydrate_docu
 provides the same row and payload budgets for projection-owned source chunks or
 other payloads.
 
+Final-page hit hydration has two levels (`SearchHitHydration`). The default
+`Documents` level returns metadata fields, matched terms/spans and the vector
+score recomputed from the stored embedding. Vector-only requests without query
+terms have no matched spans, so they read only the hit's metadata sidecar
+segment and its own binary vector row instead of the full document payload;
+the hits are identical. This covers Knowledge Retrieval and Cypher vector seeds
+in vector mode. `SearchOutOfCoreReader::search_with_hydration(..,
+SearchHitHydration::ScoresOnly)` skips hydration entirely for callers that only
+consume IDs and scores; its hits carry the ranking scores and no metadata or
+matched terms.
+
 The read report separates metadata-sidecar, vector-sidecar, and hydration
 payload bytes, and also exposes range reads, peak decoded sidecar and full
 segment bytes, candidate spill and reread bytes, vector bytes, and final
-hydration rows and bytes. `NowledgeMemOutOfCoreSearchProjection` is the typed Mem
+hydration rows and bytes. `OutOfCoreSearchProjection` is the typed Mem
 read facade over this path. It uses exact scalar vector segment scans; callers
 that require a compressed vector projection receive an error rather than a
 silent fallback.
@@ -1281,7 +1817,7 @@ silent fallback.
 The mutable compatibility `SearchIndex::open()` still materializes the complete
 snapshot because its rebuild, incremental mutation, and borrowed-document APIs
 require stable references. It is a maintenance owner, not the larger-than-memory
-production read owner. `NowledgeMemOpenOptions::with_qualified_out_of_core_search_projection`
+production read owner. `EmbeddedStoreOpenOptions::with_qualified_out_of_core_search_projection`
 is the production read-owner boundary: it accepts explicit reader budgets and
 opens through the production qualification constructor only after the release
 identity, projection generation, source graph epoch, and opened graph commit
@@ -1328,5 +1864,5 @@ not implicit storage-completion tasks.
 
 Production Search activation is governed by
 `specs/PRODUCTION_READINESS_SPEC.md`. Routes may move to
-`NowledgeMemOutOfCoreSearchProjection` only after generation-bound differential
+`OutOfCoreSearchProjection` only after generation-bound differential
 parity and representative resource qualification pass.

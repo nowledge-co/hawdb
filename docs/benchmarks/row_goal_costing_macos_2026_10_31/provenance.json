@@ -1,0 +1,92 @@
+{
+  "baseline_commit": "0f611b6decbebd8354f2a30889e03c48287d18d2",
+  "runtime_commit": "c052829ea9771364dcefb176c9815f6fd487cfb8",
+  "harness_sha256": "9048873900bee9e120f245f883b844dcd06de7ede2f928aea97dabe2e2267c62",
+  "binary_sha256": {
+    "baseline": "fb41d7cd6310ba812ef68f22ce104c1ff72f8eb8580df30b2a36e74e2bfae3d6",
+    "candidate": "c3cba0d5e130c0cdeb148312121adde05ab28fbb9030b179f339a78ad9d3fd53"
+  },
+  "source_sha256": {
+    "Cargo.toml": "c01f5c8f4ee3e2827fdcc0762e867c918167d6755bbd88378ed2705d6eabcf4c",
+    ".cargo/config.toml": "06c7ca26d39223bd90a6412acd8609c380ce2d1650a72b70c90171656ca89819",
+    "benches/row_goal_planning.rs": "9048873900bee9e120f245f883b844dcd06de7ede2f928aea97dabe2e2267c62",
+    "crates/optimizer-graph/src/graph/costing.rs": "86bd13ccc1135316c4b6201dfda4ce3ffffbdcc5f5a513ab6090e339b9cd2fd5",
+    "crates/optimizer-graph/src/graph/costing/row_goal.rs": "dcd272c493d3d4525212c78059b7884ed4b696675631a7dae25c00aed702ce02",
+    "crates/optimizer-graph/src/graph/lowering.rs": "c6f999fe47f4e67dfa313daeb143c98c5436eba56db1889b39f370a2a747c5b7",
+    "crates/optimizer-graph/src/graph/lowering/ordered.rs": "c8a9ed3163d92fae5425b7c04b10c419acae2ef67849502114a66d3cb9e81dd1"
+  },
+  "host": {
+    "cpu": "Apple M3 Max",
+    "memory_bytes": 137438953472,
+    "os": "Darwin 27, arm64",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6\n"
+  },
+  "profile": "repository release: opt-level=3, thin LTO, codegen-units=1, unstripped, overflow/debug assertions off; no per-target overrides",
+  "features": [
+    "default",
+    "qualification"
+  ],
+  "measurement_start": {
+    "utc": "2026-10-30T20:45:36.534054+00:00",
+    "loadavg": [
+      3.95556640625,
+      5.9072265625,
+      14.3251953125
+    ],
+    "rustc_processes": 0
+  },
+  "measurement_end": {
+    "utc": "2026-10-30T20:49:55.104571+00:00",
+    "loadavg": [
+      4.5625,
+      4.7900390625,
+      11.62744140625
+    ],
+    "rustc_processes": 0
+  },
+  "method": {
+    "cells": [
+      [
+        100000,
+        0,
+        "uniform",
+        "filtered"
+      ],
+      [
+        1000000,
+        0,
+        "uniform",
+        "filtered"
+      ],
+      [
+        1000000,
+        0,
+        "skewed",
+        "filtered"
+      ],
+      [
+        1000000,
+        0,
+        "uniform",
+        "prefix"
+      ]
+    ],
+    "process_rounds": 3,
+    "revisions_per_cell": 2,
+    "warmup_calls_per_query": 1,
+    "warm_samples_per_process_query": 31,
+    "query_calls": 1344,
+    "fully_checked_output_rows": 4047360,
+    "counterbalanced_revision_order": true,
+    "all_task_builds_and_tests_retired_before_measurement": true
+  },
+  "scope": {
+    "backend": "Database::new resident in-memory, no persistent I/O",
+    "timing": "embedded streaming call including output collection and execution reports; setup/explain/read creation/assertions/drop excluded",
+    "query_memory": "query ledger admission; excludes caller-owned collected rows/fixture heap; not actual allocator traffic or RSS",
+    "rss": "per-process /usr/bin/time -l maximum RSS including fixture/setup/reads",
+    "preparation": "qualification timers; parse and plan preparation reported separately; preparation includes cache/binding/optimization on misses",
+    "cache": "one reused read handle per query shape, one first call discarded as warmup; metadata/explain already warm",
+    "claim": "no established query latency improvement; safer consumed-work diagnostics and ordered-discount boundary"
+  }
+}

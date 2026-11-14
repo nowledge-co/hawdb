@@ -12,7 +12,7 @@ Baseline: `ec457ecd80c9a0470b76258d0803d5519ecfa8ec`. The `src/` tree contains
 299,362 lines, including tests, developer binaries and large compatibility
 fixtures. These are source-size observations, not production-code or compile-time
 measurements. Representative mixed files are `api/mod.rs` (22,095),
-`nowledge_mem.rs` (17,649), `store.rs` (12,850), `mem_integration_readiness.rs`
+`embedded_store.rs` (17,649), `store.rs` (12,850), `mem_integration_readiness.rs`
 (12,382), `relational_sql.rs` (6,140), and `blackbox.rs` (1,635).
 
 Reproduce the size inventory from that revision with:

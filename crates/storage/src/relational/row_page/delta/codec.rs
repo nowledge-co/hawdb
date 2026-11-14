@@ -26,14 +26,14 @@ use std::path::Path;
 
 const MANIFEST_MAGIC: &[u8; 8] = b"SKRDMF01";
 const RUN_MAGIC: &[u8; 8] = b"SKRDLT01";
-const FORMAT_VERSION: u16 = 1;
+const FORMAT_VERSION: u16 = 2;
 pub(super) const MANIFEST_HEADER_BYTES: usize = 304;
 const MANIFEST_INTEGRITY_OFFSET: usize = 268;
 pub(super) const RUN_HEADER_BYTES: usize = 176;
 const RUN_INTEGRITY_OFFSET: usize = 140;
 pub(super) const ENTRY_DESCRIPTOR_BYTES: usize = 80;
 const ENTRY_BINDING_OFFSET: usize = 48;
-const TABLE_DESCRIPTOR_BYTES: usize = 48;
+const TABLE_DESCRIPTOR_BYTES: usize = 56;
 const RUN_DESCRIPTOR_BYTES: usize = 100;
 const DIRTY_ENTRY_OVERHEAD_BYTES: usize = 96;
 
@@ -87,6 +87,9 @@ fn validate_table_against_base(
     if table.table != base.table
         || table.schema_digest != base.schema_digest
         || table.column_count != base.column_count
+        || table.last_row_id < base.last_row_id
+        || (base.schema.primary_key.is_empty() && table.row_count > table.last_row_id as u64)
+        || (!base.schema.primary_key.is_empty() && table.last_row_id != 0)
     {
         return Err(RelationalRowDeltaError::Admission(format!(
             "row delta schema for table {} does not match the selected row root",
@@ -570,6 +573,7 @@ fn encode_table_metadata(
     encoded.extend_from_slice(&table.column_count.get().to_le_bytes());
     encoded.extend_from_slice(&table.row_count.to_le_bytes());
     encoded.extend_from_slice(table.schema_digest.as_bytes());
+    encoded.extend_from_slice(&table.last_row_id.to_le_bytes());
     encoded.extend_from_slice(table.table.as_bytes());
     Ok(())
 }
@@ -598,6 +602,7 @@ fn decode_table_metadata(
     })?;
     admit_manifest_allocation(memory, name.len(), work)?;
     let table = RelationalRowDeltaTableMetadata {
+        last_row_id: i64::from_le_bytes(fixed[48..56].try_into().expect("fixed width")),
         table: name.to_string(),
         schema_digest: Sha256Digest::from_bytes(
             fixed[16..48]
@@ -841,7 +846,8 @@ fn validate_table_schema(
     class: ErrorClass,
 ) -> Result<(), RelationalRowDeltaError> {
     let fail = |message| class.error(message);
-    if table.table.is_empty()
+    if table.last_row_id < 0
+        || table.table.is_empty()
         || table.table.len() > config.row_limits.max_key_bytes.get()
         || table.column_count.get() as usize > config.row_limits.max_columns.get()
     {

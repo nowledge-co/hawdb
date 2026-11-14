@@ -77,3 +77,12 @@ impl SchemaObjectState {
         }
     }
 }
+
+// Retained query ownership: SchemaTableKind.
+hawdb_core::impl_retained_heap_for_copy!(SchemaTableKind);
+
+// Retained query ownership: SchemaPropertyType.
+hawdb_core::impl_retained_heap_for_copy!(SchemaPropertyType);
+
+// Retained query ownership: SchemaObjectState.
+hawdb_core::impl_retained_heap_for_copy!(SchemaObjectState);

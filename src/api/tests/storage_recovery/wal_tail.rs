@@ -509,7 +509,7 @@ fn automatic_repair_preserves_quarantine_and_acknowledged_commits() {
         .evidence_directory
         .join(&repair.repair_record_file)
         .exists());
-    let readiness = crate::NowledgeMemStorageRecoveryReport::from_storage_report(&report);
+    let readiness = crate::EmbeddedStorageRecoveryReport::from_storage_report(&report);
     assert_eq!(readiness.wal_repair, report.wal_repair);
     assert!(readiness.json()["wal_repair"]["evidence_directory"].is_string());
     assert!(!report.torn_tail_ignored);

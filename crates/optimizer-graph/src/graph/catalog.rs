@@ -21,6 +21,14 @@ use hawdb_core::{Catalog, GraphStatistics, IndexKind, Value};
 use hawdb_plan_cypher::ComparisonOp;
 use std::collections::{BTreeMap, BTreeSet};
 
+mod distribution;
+mod joint;
+
+/// Hop estimates stop here. The executor enumerates at most this many hops of
+/// one trail, and an unbounded pattern (`max_hops == usize::MAX`) is refused
+/// beyond it (#1489), so deeper hops contribute no rows.
+const MAX_ESTIMATED_HOPS: usize = 256;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ExpandEstimate {
     pub(super) path_count: Option<u64>,
@@ -47,7 +55,11 @@ pub struct OptimizerIndexStatistics {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct OptimizerCatalog {
+    // Catalog containers are COW snapshots. Keep the source identity without
+    // copying descriptor maps or collecting values from the graph at planning time.
+    pub(super) source_schema: Option<Catalog>,
     pub(super) parameter_scalar_types: BTreeMap<Value, hawdb_core::PropertyType>,
+    statistics_parameter_values: BTreeMap<Value, Value>,
     pub(super) assume_all_indexes: bool,
     pub(super) equality_property_indexes: BTreeSet<(String, String)>,
     pub(super) composite_property_indexes: BTreeSet<(String, Vec<String>)>,
@@ -56,26 +68,10 @@ pub struct OptimizerCatalog {
     pub(super) ordered_composite_indexes:
         BTreeMap<(String, Vec<String>), Vec<hawdb_core::PropertyType>>,
     pub(super) full_text_property_indexes: BTreeSet<(String, String)>,
-    pub(super) label_counts: BTreeMap<String, u64>,
-    pub(super) rel_type_counts: BTreeMap<String, u64>,
-    pub(super) rel_type_source_counts: BTreeMap<String, u64>,
-    pub(super) rel_type_target_counts: BTreeMap<String, u64>,
-    pub(super) path_counts: BTreeMap<(String, String, String), u64>,
-    pub(super) path_source_distinct_counts: BTreeMap<(String, String, String), u64>,
-    pub(super) path_target_distinct_counts: BTreeMap<(String, String, String), u64>,
-    pub(super) bounded_path_counts: BTreeMap<(String, String, String, usize), u64>,
-    pub(super) bounded_path_source_distinct_counts: BTreeMap<(String, String, String, usize), u64>,
-    pub(super) bounded_path_target_distinct_counts: BTreeMap<(String, String, String, usize), u64>,
-    pub(super) property_index_statistics: BTreeMap<(String, String), OptimizerIndexStatistics>,
     property_equality_row_count: Option<((String, String), u64)>,
-    pub(super) composite_index_statistics:
-        BTreeMap<(String, Vec<String>), OptimizerIndexStatistics>,
-    pub(super) property_distinct_counts: BTreeMap<(String, String), u64>,
-    pub(super) rel_property_distinct_counts: BTreeMap<(String, String), u64>,
-    pub(super) property_histograms: BTreeMap<(String, String), Vec<Value>>,
-    pub(super) rel_property_histograms: BTreeMap<(String, String), Vec<Value>>,
-    pub(super) sampled_property_histograms: BTreeMap<(String, String), bool>,
-    pub(super) sampled_rel_property_histograms: BTreeMap<(String, String), bool>,
+    joint_statistics: std::sync::Arc<joint::Statistics>,
+
+    statistics: std::sync::Arc<OptimizerCatalogStatistics>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -96,6 +92,7 @@ pub struct OptimizerCatalogStatistics {
     pub(super) path_source_distinct_counts: BTreeMap<(String, String, String), u64>,
     pub(super) path_target_distinct_counts: BTreeMap<(String, String, String), u64>,
     pub(super) bounded_path_counts: BTreeMap<(String, String, String, usize), u64>,
+    pub(super) bounded_path_complete_through_hop: Option<usize>,
     pub(super) bounded_path_source_distinct_counts: BTreeMap<(String, String, String, usize), u64>,
     pub(super) bounded_path_target_distinct_counts: BTreeMap<(String, String, String, usize), u64>,
     pub(super) property_index_statistics: BTreeMap<(String, String), OptimizerIndexStatistics>,
@@ -107,6 +104,12 @@ pub struct OptimizerCatalogStatistics {
     pub(super) rel_property_histograms: BTreeMap<(String, String), Vec<Value>>,
     pub(super) sampled_property_histograms: BTreeMap<(String, String), bool>,
     pub(super) sampled_rel_property_histograms: BTreeMap<(String, String), bool>,
+    pub(super) property_distributions:
+        std::sync::Arc<BTreeMap<(String, String), hawdb_core::CompressedHistogram>>,
+    pub(super) rel_property_distributions:
+        std::sync::Arc<BTreeMap<(String, String), hawdb_core::CompressedHistogram>>,
+    /// Every node, labeled or not; `None` falls back to the label counts.
+    pub(super) node_count: Option<u64>,
 }
 
 /// Converts storage-neutral schema and statistics into optimizer cost inputs.
@@ -370,17 +373,72 @@ pub fn optimizer_catalog_from_graph_statistics(
         .with_path_target_distinct_counts(path_target_distinct_counts)
         .with_bounded_path_source_distinct_counts(bounded_path_source_distinct_counts)
         .with_bounded_path_target_distinct_counts(bounded_path_target_distinct_counts)
+        .with_bounded_path_complete_through_hop(
+            advanced_statistics.and_then(|statistics| statistics.bounded_path_complete_through_hop),
+        )
         .with_relationship_property_distinct_counts(rel_property_distinct_counts)
         .with_relationship_property_histograms(rel_property_histograms)
         .with_sampled_property_histograms(sampled_property_histograms)
-        .with_sampled_relationship_property_histograms(sampled_rel_property_histograms),
+        .with_sampled_relationship_property_histograms(sampled_rel_property_histograms)
+        .with_distributions(
+            advanced_statistics
+                .into_iter()
+                .flat_map(|statistics| statistics.property_distributions.iter())
+                .filter_map(|((label, property), histogram)| {
+                    Some((
+                        (catalog.label_name(*label)?.to_owned(), property.clone()),
+                        histogram.clone(),
+                    ))
+                }),
+            advanced_statistics
+                .into_iter()
+                .flat_map(|statistics| statistics.rel_property_distributions.iter())
+                .filter_map(|((rel_type, property), histogram)| {
+                    Some((
+                        (
+                            catalog.rel_type_name(*rel_type)?.to_owned(),
+                            property.clone(),
+                        ),
+                        histogram.clone(),
+                    ))
+                }),
+        )
+        .with_node_count(statistics.node_count),
     )
+    .with_source_schema(catalog)
+}
+
+// Query-local parameter proofs and point overrides share every statistics map.
+// Mutation is only used while constructing catalogs and in synthetic fixtures.
+impl std::ops::Deref for OptimizerCatalog {
+    type Target = OptimizerCatalogStatistics;
+
+    fn deref(&self) -> &Self::Target {
+        &self.statistics
+    }
+}
+
+impl std::ops::DerefMut for OptimizerCatalog {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        std::sync::Arc::make_mut(&mut self.statistics)
+    }
 }
 
 impl OptimizerCatalog {
+    fn with_source_schema(mut self, schema: &Catalog) -> Self {
+        self.source_schema = Some(schema.clone());
+        self
+    }
+
     pub fn new(indexes: OptimizerCatalogIndexes, statistics: OptimizerCatalogStatistics) -> Self {
+        let joint_statistics = joint::canonical_statistics(
+            &statistics.composite_index_statistics,
+            &indexes.composite_property_indexes,
+        );
         Self {
+            source_schema: None,
             parameter_scalar_types: BTreeMap::new(),
+            statistics_parameter_values: BTreeMap::new(),
             assume_all_indexes: false,
             equality_property_indexes: indexes.equality_property_indexes,
             composite_property_indexes: indexes.composite_property_indexes,
@@ -388,25 +446,9 @@ impl OptimizerCatalog {
             ordered_range_indexes: BTreeSet::new(),
             ordered_composite_indexes: BTreeMap::new(),
             full_text_property_indexes: indexes.full_text_property_indexes,
-            label_counts: statistics.label_counts,
-            rel_type_counts: statistics.rel_type_counts,
-            rel_type_source_counts: statistics.rel_type_source_counts,
-            rel_type_target_counts: statistics.rel_type_target_counts,
-            path_counts: statistics.path_counts,
-            path_source_distinct_counts: statistics.path_source_distinct_counts,
-            path_target_distinct_counts: statistics.path_target_distinct_counts,
-            bounded_path_counts: statistics.bounded_path_counts,
-            bounded_path_source_distinct_counts: statistics.bounded_path_source_distinct_counts,
-            bounded_path_target_distinct_counts: statistics.bounded_path_target_distinct_counts,
-            property_index_statistics: statistics.property_index_statistics,
             property_equality_row_count: None,
-            composite_index_statistics: statistics.composite_index_statistics,
-            property_distinct_counts: statistics.property_distinct_counts,
-            rel_property_distinct_counts: statistics.rel_property_distinct_counts,
-            property_histograms: statistics.property_histograms,
-            rel_property_histograms: statistics.rel_property_histograms,
-            sampled_property_histograms: statistics.sampled_property_histograms,
-            sampled_rel_property_histograms: statistics.sampled_rel_property_histograms,
+            joint_statistics: std::sync::Arc::new(joint_statistics),
+            statistics: std::sync::Arc::new(statistics),
         }
     }
 
@@ -424,7 +466,7 @@ impl OptimizerCatalog {
         self
     }
 
-    fn query_local_property_eq_rows(&self, label: &str, property: &str) -> Option<u64> {
+    pub(super) fn query_local_property_eq_rows(&self, label: &str, property: &str) -> Option<u64> {
         self.property_equality_row_count
             .as_ref()
             .filter(|((local_label, local_property), _)| {
@@ -556,12 +598,78 @@ impl OptimizerCatalog {
         self.label_counts.get(label).copied().unwrap_or(1).max(1)
     }
 
+    /// Nodes a scan of `label` visits: the label's nodes, or every node for
+    /// an empty label.
+    pub(super) fn scan_population(&self, label: &str) -> u64 {
+        if !label.is_empty() {
+            return self.label_count(label);
+        }
+        self.node_count
+            .unwrap_or_else(|| {
+                self.label_counts
+                    .values()
+                    .fold(0u64, |total, count| total.saturating_add(*count))
+            })
+            .max(1)
+    }
+
+    /// Relationships of `rel_type` whose properties equal `rel_properties`
+    /// and, with `rel_property_in`, whose property is one of the distinct
+    /// non-NULL listed values (#1548). The relationship property index
+    /// answers for the type whatever the endpoint labels, so these bound the
+    /// seeds of any source.
+    pub(super) fn estimate_seeded_relationships(
+        &self,
+        rel_type: &str,
+        rel_properties: &BTreeMap<String, Value>,
+        rel_property_in: Option<(&str, &[Value])>,
+    ) -> u64 {
+        let mut properties = rel_properties.clone();
+        let mut listed = 1u64;
+        if let Some((property, values)) = rel_property_in {
+            let mut distinct = Vec::with_capacity(values.len());
+            for value in values {
+                if !matches!(value, Value::Null) && !distinct.contains(&value) {
+                    distinct.push(value);
+                }
+            }
+            if distinct.is_empty() {
+                return 0;
+            }
+            if !properties.contains_key(property) {
+                listed = distinct.len() as u64;
+                properties.insert(property.to_string(), distinct[0].clone());
+            }
+        }
+        let product = properties
+            .keys()
+            .map(|property| self.rel_property_distinct_count(rel_type, property).max(1))
+            .fold(1u64, |total, count| total.saturating_mul(count));
+        self.traversable_relationship_count(rel_type)
+            .div_ceil(product.max(1))
+            .max(1)
+            .saturating_mul(listed)
+    }
+
     pub(super) fn relationship_count(&self, rel_type: &str) -> u64 {
         self.rel_type_counts
             .get(rel_type)
             .copied()
             .unwrap_or(1)
             .max(1)
+    }
+
+    /// Relationships a traversal of `rel_type` may visit; an untyped pattern
+    /// (empty type) may visit every relationship.
+    pub(super) fn traversable_relationship_count(&self, rel_type: &str) -> u64 {
+        if rel_type.is_empty() {
+            self.rel_type_counts
+                .values()
+                .fold(0u64, |total, count| total.saturating_add(*count))
+                .max(1)
+        } else {
+            self.relationship_count(rel_type)
+        }
     }
 
     pub(super) fn path_source_distinct_count(
@@ -641,7 +749,13 @@ impl OptimizerCatalog {
     ) -> Option<u64> {
         let mut total = 0_u64;
         let mut found = false;
-        for hop in min_hops..=max_hops.max(min_hops) {
+        // Not `clamp`: `min_hops` may exceed the estimate limit.
+        let last_hop = if max_hops > MAX_ESTIMATED_HOPS {
+            MAX_ESTIMATED_HOPS.max(min_hops)
+        } else {
+            max_hops.max(min_hops)
+        };
+        for hop in min_hops..=last_hop {
             if let Some(count) = counts.get(&(
                 source_label.to_string(),
                 rel_type.to_string(),
@@ -832,6 +946,32 @@ impl OptimizerCatalog {
         if values.is_empty() {
             return 0;
         }
+        if let Some(histogram) = self.rel_property_distribution(rel_type, property) {
+            let values = values
+                .iter()
+                .map(|value| self.statistics_value(value))
+                .collect::<BTreeSet<_>>();
+            if values
+                .iter()
+                .all(|value| distribution::compatible(histogram, value))
+            {
+                return values
+                    .into_iter()
+                    .fold(0_u64, |rows, value| {
+                        rows.saturating_add(
+                            histogram
+                                .equality(
+                                    value,
+                                    input_rows,
+                                    self.known_rel_property_distinct_count(rel_type, property),
+                                )
+                                .rows,
+                        )
+                    })
+                    .min(input_rows)
+                    .max(1);
+            }
+        }
         let distinct_count = self.rel_property_distinct_count(rel_type, property).max(1);
         let value_count = values
             .iter()
@@ -865,6 +1005,10 @@ impl OptimizerCatalog {
         property: &str,
         input_rows: u64,
     ) -> u64 {
+        if let Some(histogram) = self.rel_property_distribution(rel_type, property) {
+            return histogram.nulls(input_rows).rows.max(1);
+        }
+
         let distinct_count = self.rel_property_distinct_count(rel_type, property).max(1);
         input_rows
             .div_ceil(distinct_count.min(NULL_SELECTIVITY_DIVISOR_CAP))
@@ -890,6 +1034,12 @@ impl OptimizerCatalog {
         value: &Value,
         input_rows: u64,
     ) -> u64 {
+        if let Some(rows) =
+            self.distribution_comparison_rows(rel_type, property, op, value, input_rows, true)
+        {
+            return rows;
+        }
+
         let key = (rel_type.to_string(), property.to_string());
         let Some(histogram) = self
             .rel_property_histograms
@@ -920,6 +1070,17 @@ impl OptimizerCatalog {
         op: ComparisonOp,
         value: &Value,
     ) -> u64 {
+        if let Some(rows) = self.distribution_comparison_rows(
+            label,
+            property,
+            op,
+            value,
+            self.label_count(label),
+            false,
+        ) {
+            return rows;
+        }
+
         let label_count = self.label_count(label);
         let key = (label.to_string(), property.to_string());
         let Some(histogram) = self
@@ -974,6 +1135,10 @@ impl OptimizerCatalog {
         values: &[Value],
         input_rows: u64,
     ) -> u64 {
+        if let Some(rows) = self.distribution_in_rows(label, property, values, input_rows) {
+            return rows;
+        }
+
         if values.is_empty() {
             return 0;
         }
@@ -1010,6 +1175,10 @@ impl OptimizerCatalog {
         property: &str,
         input_rows: u64,
     ) -> u64 {
+        if let Some(histogram) = self.property_distribution(label, property) {
+            return histogram.nulls(input_rows).rows.max(1);
+        }
+
         let distinct_count = self.distinct_count(label, property).max(1);
         input_rows
             .div_ceil(distinct_count.min(NULL_SELECTIVITY_DIVISOR_CAP))
@@ -1035,6 +1204,12 @@ impl OptimizerCatalog {
         value: &Value,
         input_rows: u64,
     ) -> u64 {
+        if let Some(rows) =
+            self.distribution_comparison_rows(label, property, op, value, input_rows, false)
+        {
+            return rows;
+        }
+
         let key = (label.to_string(), property.to_string());
         let Some(histogram) = self
             .property_histograms
@@ -1065,6 +1240,17 @@ impl OptimizerCatalog {
         lower: Option<&ValueRangeBound>,
         upper: Option<&ValueRangeBound>,
     ) -> u64 {
+        if let Some(rows) = self.distribution_range_rows(
+            label,
+            property,
+            lower.map(|(value, inclusive)| (value, *inclusive)),
+            upper.map(|(value, inclusive)| (value, *inclusive)),
+            self.label_count(label),
+            false,
+        ) {
+            return rows;
+        }
+
         let label_count = self.label_count(label);
         let key = (label.to_string(), property.to_string());
         let Some(histogram) = self
@@ -1087,6 +1273,36 @@ impl OptimizerCatalog {
                 .copied()
                 .unwrap_or(false),
         )
+    }
+
+    /// Positive facts remain usable without coverage. Absence is a zero only
+    /// when the publisher completed every label/type pair through this hop.
+    pub(super) fn bounded_path_count(
+        &self,
+        source_label: &str,
+        rel_type: &str,
+        target_label: &str,
+        hop: usize,
+    ) -> Option<u64> {
+        if self
+            .bounded_path_complete_through_hop
+            .is_some_and(|horizon| hop > horizon)
+        {
+            return None;
+        }
+        self.bounded_path_counts
+            .get(&(
+                source_label.to_owned(),
+                rel_type.to_owned(),
+                target_label.to_owned(),
+                hop,
+            ))
+            .copied()
+            .or_else(|| {
+                self.bounded_path_complete_through_hop
+                    .filter(|horizon| hop > 0 && hop <= *horizon)
+                    .map(|_| 0)
+            })
     }
 
     pub(super) fn estimate_expand_rows(
@@ -1126,16 +1342,12 @@ impl OptimizerCatalog {
         let mut estimated_rows = 0_u64;
         let mut hop_rows = one_hop.max(1);
         let mut hop_estimates = Vec::new();
-        for hop in 1..=max_hops.max(1) {
+        for hop in 1..=max_hops.clamp(1, MAX_ESTIMATED_HOPS) {
+            // A zero match count does not erase the failed traversal work represented
+            // by this shared planning estimate. Preserve its conservative fallback.
             let exact_hop_rows = self
-                .bounded_path_counts
-                .get(&(
-                    source_label.to_string(),
-                    rel_type.to_string(),
-                    target_label.to_string(),
-                    hop,
-                ))
-                .copied();
+                .bounded_path_count(source_label, rel_type, target_label, hop)
+                .filter(|count| *count > 0);
             let current_hop_rows = exact_hop_rows
                 .unwrap_or(hop_rows)
                 .div_ceil(property_distinct_product)
@@ -1220,6 +1432,7 @@ impl OptimizerCatalogStatistics {
             path_source_distinct_counts: BTreeMap::new(),
             path_target_distinct_counts: BTreeMap::new(),
             bounded_path_counts: bounded_path_counts.into_iter().collect(),
+            bounded_path_complete_through_hop: None,
             bounded_path_source_distinct_counts: BTreeMap::new(),
             bounded_path_target_distinct_counts: BTreeMap::new(),
             property_index_statistics: BTreeMap::new(),
@@ -1230,7 +1443,22 @@ impl OptimizerCatalogStatistics {
             rel_property_histograms: BTreeMap::new(),
             sampled_property_histograms: BTreeMap::new(),
             sampled_rel_property_histograms: BTreeMap::new(),
+            property_distributions: Default::default(),
+            rel_property_distributions: Default::default(),
+            node_count: None,
         }
+    }
+
+    pub fn with_node_count(mut self, node_count: u64) -> Self {
+        self.node_count = Some(node_count);
+        self
+    }
+
+    /// Declares complete directed bounded-path enumeration. None preserves
+    /// the unknown-coverage fallback for legacy, truncated or synthetic maps.
+    pub fn with_bounded_path_complete_through_hop(mut self, horizon: Option<usize>) -> Self {
+        self.bounded_path_complete_through_hop = horizon;
+        self
     }
 
     pub fn with_property_index_statistics(
@@ -1303,6 +1531,26 @@ impl OptimizerCatalogStatistics {
         self
     }
 
+    pub fn with_distributions(
+        mut self,
+        nodes: impl IntoIterator<Item = ((String, String), hawdb_core::CompressedHistogram)>,
+        relationships: impl IntoIterator<Item = ((String, String), hawdb_core::CompressedHistogram)>,
+    ) -> Self {
+        self.property_distributions = std::sync::Arc::new(
+            nodes
+                .into_iter()
+                .filter(|(_, histogram)| histogram.is_valid())
+                .collect(),
+        );
+        self.rel_property_distributions = std::sync::Arc::new(
+            relationships
+                .into_iter()
+                .filter(|(_, histogram)| histogram.is_valid())
+                .collect(),
+        );
+        self
+    }
+
     pub fn with_relationship_property_histograms(
         mut self,
         rel_property_histograms: impl IntoIterator<Item = ((String, String), Vec<Value>)>,
@@ -1339,6 +1587,7 @@ mod tests {
         let memory = source_catalog.get_or_create_label("Memory");
         let mut statistics = GraphStatistics {
             advanced_statistics_complete: false,
+            bounded_path_complete_through_hop: Some(3),
             label_counts: BTreeMap::from([(memory, 64)]),
             property_distinct_counts: BTreeMap::from([((memory, "kind".to_string()), 4)]),
             property_histograms: BTreeMap::from([(
@@ -1352,10 +1601,12 @@ mod tests {
         assert_eq!(incomplete.label_count("Memory"), 64);
         assert_eq!(incomplete.known_distinct_count("Memory", "kind"), None);
         assert!(incomplete.property_histograms.is_empty());
+        assert_eq!(incomplete.bounded_path_complete_through_hop, None);
 
         statistics.advanced_statistics_complete = true;
         let complete = optimizer_catalog_from_graph_statistics(&source_catalog, &statistics);
         assert_eq!(complete.label_count("Memory"), 64);
+        assert_eq!(complete.bounded_path_complete_through_hop, Some(3));
         assert_eq!(complete.known_distinct_count("Memory", "kind"), Some(4));
         assert_eq!(
             complete.property_histograms,

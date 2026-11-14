@@ -14,7 +14,7 @@
 
 //! Portable contracts for deterministic Nowledge query fuzz harnesses.
 
-use hawdb_core::{HawDBError, Value};
+use hawdb_core::{HawDBError, RelationalErrorSurface, Value};
 use std::collections::BTreeMap;
 
 pub const NOWLEDGE_QUERY_FUZZ_HARNESS_PROTOCOL: &str = "hawdb-nowledge-query-fuzz-harness-v1";
@@ -156,6 +156,14 @@ pub const fn nowledge_query_fuzz_error_class(error: &HawDBError) -> &'static str
         HawDBError::Parse(_) => "parse",
         HawDBError::Semantic(_) => "semantic",
         HawDBError::Execution(_)
+        | HawDBError::Constraint {
+            surface: RelationalErrorSurface::Execution,
+            ..
+        }
+        | HawDBError::Schema {
+            surface: RelationalErrorSurface::Execution,
+            ..
+        }
         | HawDBError::TransactionReadDependencyRefused { .. }
         | HawDBError::BranchEvidenceBudgetExceeded { .. }
         | HawDBError::ReadBudgetExceeded(_)
@@ -164,12 +172,24 @@ pub const fn nowledge_query_fuzz_error_class(error: &HawDBError) -> &'static str
         | HawDBError::GraphExpansionPayloadLimitExceeded { .. }
         | HawDBError::TransactionConflict { .. }
         | HawDBError::TransactionRetryRequired(_)
-        | HawDBError::BranchCommandUnsupported { .. } => "execution",
+        | HawDBError::BranchCommandUnsupported { .. }
+        | HawDBError::SearchProjectionRebuildRefused { .. }
+        | HawDBError::SearchProjectionEpochAdvanceRefused { .. } => "execution",
         HawDBError::Storage(_)
+        | HawDBError::Constraint {
+            surface: RelationalErrorSurface::Storage,
+            ..
+        }
+        | HawDBError::Schema {
+            surface: RelationalErrorSurface::Storage,
+            ..
+        }
         | HawDBError::FileDescriptors(_)
         | HawDBError::StorageIntegrity(_)
         | HawDBError::WalRecoveryIo { .. }
+        | HawDBError::PublishOutcomeUnknown { .. }
         | HawDBError::ProjectionBusy
+        | HawDBError::SearchProjectionMismatch { .. }
         | HawDBError::AppendSequenceExhausted { .. }
         | HawDBError::BranchBusy { .. }
         | HawDBError::BranchReclamationBlocked { .. } => "storage",

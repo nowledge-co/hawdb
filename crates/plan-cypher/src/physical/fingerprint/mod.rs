@@ -15,9 +15,9 @@
 use super::{NodeProjectionAccess, PhysicalPlan, PlanChildren};
 use crate::{
     AggregateFunction, AggregateTarget, Aggregation, BatchMutationOperation, BatchMutationValue,
-    ComparisonOp, GraphAlgorithmKind, Predicate, Projection, ProjectionExpression,
-    RelationshipCountFilter, RelationshipCountLeg, RelationshipOnCreateValue, SetAssignment,
-    SetNodePropertiesReturnMode, SetValue, SortDirection, SortItem, SortKey,
+    ComparisonOp, GraphAlgorithmKind, GraphGroupKeys, PathFunction, Predicate, Projection,
+    ProjectionExpression, RelationshipCountFilter, RelationshipCountLeg, RelationshipOnCreateValue,
+    SetAssignment, SetNodePropertiesReturnMode, SetValue, SortDirection, SortItem, SortKey,
 };
 use hawdb_core::Value;
 use hawdb_cypher::RelationshipDirection;
@@ -56,6 +56,18 @@ impl PhysicalPlan {
             output.push('[');
             output.push_str(access.physical_operator_name());
             output.push(']');
+        }
+        // The execution strategy of a correlated match is a different plan.
+        if let PhysicalPlan::GraphMatchExec { program, .. } = self {
+            if program.hash_join.is_some() {
+                output.push_str("[hash_join]");
+            }
+            if !program.id_set_conjuncts.is_empty() {
+                output.push_str("[id_set]");
+            }
+            if !program.seeded_union.is_empty() {
+                output.push_str("[seeded_union]");
+            }
         }
         match self.children() {
             PlanChildren::None => {}
@@ -102,6 +114,7 @@ impl PhysicalPlan {
                 property,
                 value_type,
                 nullable,
+                default,
             } => {
                 output.push_str("CreateProperty(");
                 output.push_str(table_kind.as_str());
@@ -111,6 +124,10 @@ impl PhysicalPlan {
                 write_identifier(output, property);
                 output.push_str(&value_type.fingerprint_suffix());
                 output.push_str(if *nullable { ":nullable" } else { ":not_null" });
+                if let Some(default) = default {
+                    output.push_str(":default=");
+                    write_identifier(output, &default.to_string());
+                }
                 output.push(')');
             }
             PhysicalPlan::AlterTableState {
@@ -349,6 +366,31 @@ impl PhysicalPlan {
                 write_properties(output, properties);
                 output.push(')');
             }
+            PhysicalPlan::UnwindExec { rows, variable } => {
+                output.push_str("Unwind(");
+                write_identifier(output, variable);
+                for row in rows {
+                    output.push(',');
+                    write_value(output, row);
+                }
+                output.push(')');
+            }
+            PhysicalPlan::UnwindRowsExec {
+                expression,
+                variable,
+                consumes_source,
+                input,
+            } => {
+                output.push_str("UnwindRows(");
+                write_identifier(output, variable);
+                output.push(',');
+                write_projection_expression(output, expression);
+                if *consumes_source {
+                    output.push_str(",consumes_source");
+                }
+                input.write_instance_fingerprint(output);
+                output.push(')');
+            }
             PhysicalPlan::UnwindMutation {
                 rows,
                 variable,
@@ -365,6 +407,13 @@ impl PhysicalPlan {
                     write_value(output, row);
                 }
                 output.push_str("],");
+                write_batch_mutation_operation(output, operation);
+                output.push(')');
+            }
+            PhysicalPlan::LoadCsvMutation { source, operation } => {
+                output.push_str("LoadCsvMutation(");
+                write_load_csv_source(output, source);
+                output.push(',');
                 write_batch_mutation_operation(output, operation);
                 output.push(')');
             }
@@ -801,11 +850,52 @@ impl PhysicalPlan {
                 output.push(')');
             }
             PhysicalPlan::EmptyExec => output.push_str("EmptyExec"),
+            PhysicalPlan::LoadCsvExec { source } => {
+                output.push_str("LoadCsvExec(");
+                write_load_csv_source(output, source);
+                output.push(')');
+            }
             PhysicalPlan::SeqNodeScan { variable, label } => {
                 output.push_str("SeqNodeScan(");
                 write_identifier(output, variable);
                 output.push(':');
                 write_identifier(output, label);
+                output.push(')');
+            }
+            PhysicalPlan::RelationshipSeededNodeScan {
+                variable,
+                label,
+                rel_type,
+                rel_properties,
+                rel_property_in,
+                direction,
+            } => {
+                output.push_str("RelationshipSeededNodeScan(");
+                write_identifier(output, variable);
+                output.push(':');
+                write_identifier(output, label);
+                output.push(':');
+                write_identifier(output, rel_type);
+                output.push(':');
+                output.push_str(match direction {
+                    RelationshipDirection::Outgoing => "out",
+                    RelationshipDirection::Incoming => "in",
+                    RelationshipDirection::Undirected => "both",
+                });
+                output.push(',');
+                write_properties(output, rel_properties);
+                if let Some((property, values)) = rel_property_in {
+                    output.push(',');
+                    write_identifier(output, property);
+                    output.push_str(" IN [");
+                    for (index, value) in values.iter().enumerate() {
+                        if index > 0 {
+                            output.push(',');
+                        }
+                        write_value(output, value);
+                    }
+                    output.push(']');
+                }
                 output.push(')');
             }
             PhysicalPlan::NodeProjectionScanExec {
@@ -1303,12 +1393,20 @@ impl PhysicalPlan {
             PhysicalPlan::AggregateExec {
                 group_keys,
                 items,
+                graph_keys,
                 input,
             } => {
                 output.push_str("AggregateExec(groups=");
                 write_projection_list(output, group_keys);
                 output.push_str(",aggs=");
                 write_aggregation_list(output, items);
+                // The output form of graph keys changes the rows, so it is
+                // part of the plan identity.
+                match graph_keys {
+                    GraphGroupKeys::Values => {}
+                    GraphGroupKeys::Slots => output.push_str(",graph_keys=slots"),
+                    GraphGroupKeys::DistinctSlots => output.push_str(",graph_keys=distinct_slots"),
+                }
                 output.push_str(",input=");
                 input.write_instance_fingerprint(output);
                 output.push(')');
@@ -1402,6 +1500,50 @@ impl PhysicalPlan {
 
 fn write_batch_mutation_operation(output: &mut String, operation: &BatchMutationOperation) {
     match operation {
+        BatchMutationOperation::MergeRelationship(merge) => {
+            output.push_str("MergeRelationship(");
+            for name in [
+                &merge.source_variable,
+                &merge.source_label,
+                &merge.target_variable,
+                &merge.target_label,
+                &merge.rel_type,
+            ] {
+                write_identifier(output, name);
+                output.push(',');
+            }
+            for properties in [
+                &merge.source_properties,
+                &merge.target_properties,
+                &merge.rel_match_properties,
+                &merge.on_create_properties,
+            ] {
+                write_batch_mutation_properties(output, properties);
+                output.push(',');
+            }
+            if let Some(returns) = &merge.returns {
+                write_projection_list(output, returns);
+            } else {
+                output.push_str("no_return");
+            }
+            output.push(')');
+        }
+        BatchMutationOperation::SetMatchedNodes(nodes) => {
+            output.push_str("set_matched_nodes[");
+            for node in nodes {
+                write_identifier(output, &node.label);
+                write_properties(output, &node.properties);
+                output.push('[');
+                for (property, value) in &node.assignments {
+                    write_identifier(output, property);
+                    output.push('=');
+                    write_value(output, value);
+                    output.push(';');
+                }
+                output.push(']');
+            }
+            output.push(']');
+        }
         BatchMutationOperation::CreateNode { label, properties } => {
             output.push_str("CreateNode(");
             write_identifier(output, label);
@@ -1422,6 +1564,21 @@ fn write_batch_mutation_operation(output: &mut String, operation: &BatchMutation
             write_batch_mutation_properties(output, on_create_properties);
             output.push(')');
         }
+        BatchMutationOperation::CreateMatchedRelationship(relationship) => {
+            output.push_str("CreateMatchedRelationship(");
+            write_identifier(output, &relationship.source_label);
+            output.push(',');
+            write_batch_mutation_properties(output, &relationship.source_properties);
+            output.push(',');
+            write_identifier(output, &relationship.rel_type);
+            output.push(',');
+            write_batch_mutation_properties(output, &relationship.rel_properties);
+            output.push(',');
+            write_identifier(output, &relationship.target_label);
+            output.push(',');
+            write_batch_mutation_properties(output, &relationship.target_properties);
+            output.push(')');
+        }
     }
 }
 
@@ -1436,15 +1593,46 @@ fn write_batch_mutation_properties(
         }
         write_identifier(output, key);
         output.push('=');
-        match value {
-            BatchMutationValue::Static(value) => write_value(output, value),
-            BatchMutationValue::RowProperty(property) => {
-                output.push_str("row.");
-                write_identifier(output, property);
-            }
-        }
+        write_batch_mutation_value(output, value);
     }
     output.push('}');
+}
+
+fn write_batch_mutation_value(output: &mut String, value: &BatchMutationValue) {
+    match value {
+        BatchMutationValue::Static(value) => write_value(output, value),
+        BatchMutationValue::Row => output.push_str("row"),
+        BatchMutationValue::RowProperty(property) => {
+            output.push_str("row.");
+            write_identifier(output, property);
+        }
+        BatchMutationValue::RowIndex(index) => output.push_str(&format!("row[{index}]")),
+        BatchMutationValue::Converted { function, input } => {
+            output.push_str(function.function_name());
+            output.push('(');
+            write_batch_mutation_value(output, input);
+            output.push(')');
+        }
+    }
+}
+
+fn write_load_csv_source(output: &mut String, source: &crate::LoadCsvSource) {
+    output.push_str("source=");
+    match &source.location {
+        crate::CsvLocation::Literal(location) => {
+            write_value(output, &hawdb_core::Value::String(location.clone()))
+        }
+        crate::CsvLocation::Parameter(name) => {
+            output.push('$');
+            write_identifier(output, name);
+        }
+    }
+    output.push_str(&format!(
+        ",headers={},terminator={}",
+        source.with_headers, source.field_terminator
+    ));
+    output.push_str(",variable=");
+    write_identifier(output, &source.variable);
 }
 
 fn write_node_projection_access(output: &mut String, access: &NodeProjectionAccess) {

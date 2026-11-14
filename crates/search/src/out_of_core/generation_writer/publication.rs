@@ -72,6 +72,7 @@ pub(super) struct PublishGenerationInput<'a> {
     pub(super) import_source_graph_commit_epoch: Option<u64>,
     pub(super) embedding_manifest: Option<&'a SearchEmbeddingManifest>,
     pub(super) vector_index_descriptor: Option<&'a hawdb_core::VectorIndexDescriptor>,
+    pub(super) vector_scoring: crate::SearchVectorScoring,
     pub(super) embedding_dimension: Option<usize>,
     pub(super) layout: &'a SearchOutOfCoreLayoutBody,
     pub(super) lexical_artifact_name: &'a str,
@@ -601,8 +602,10 @@ pub(super) fn install_generation(
                 .reserve(hawdb_core::vector_index::MAX_VECTOR_INDEX_DESCRIPTOR_BYTES * 4)
         })
         .transpose()?;
-    let manifest = SearchOutOfCoreManifestBody {
+    let mut manifest = SearchOutOfCoreManifestBody {
         format: OUT_OF_CORE_FORMAT.to_string(),
+        format_version: super::super::manifest_version::BASE_VERSION,
+        min_reader_version: super::super::manifest_version::BASE_VERSION,
         generation,
         resident_snapshot,
         resident_snapshot_absent,
@@ -611,6 +614,7 @@ pub(super) fn install_generation(
         document_count,
         documents_digest,
         source_graph_commit_epoch: input.source_graph_commit_epoch,
+        content_source_graph_commit_epoch: None,
         import_source_graph_commit_epoch: input.import_source_graph_commit_epoch,
         embedding_model: input
             .embedding_manifest
@@ -622,11 +626,13 @@ pub(super) fn install_generation(
             .embedding_manifest
             .map(|manifest| manifest.dimension)
             .or(input.embedding_dimension),
+        vector_scoring: input.vector_scoring,
         vector_index_binding: input
             .vector_index_descriptor
             .map(crate::vector_index::encode),
     };
     let _validation = memory.spool.reserve(3 * 128)?;
+    manifest.stamp_reader_version();
     manifest.validate_names()?;
     let lexical_generation = manifest
         .segments

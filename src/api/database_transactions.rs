@@ -204,8 +204,10 @@ impl Database {
                 optimizer: runtime.optimizer.clone(),
                 plan_cache: plan_cache.map_or_else(
                     || {
-                        ReadPlanCache::Private(SharedState::new(PlanCache::new(
+                        ReadPlanCache::Private(SharedState::new(PlanCache::with_byte_limits(
                             self.config.max_plan_cache_entries,
+                            Some(self.config.max_physical_plan_cache_bytes),
+                            Some(self.config.max_physical_plan_cache_entry_bytes),
                         )))
                     },
                     ReadPlanCache::Shared,
@@ -221,6 +223,7 @@ impl Database {
                 task_context,
                 _pin: Arc::new(pin),
                 retained_runtime: Arc::clone(&self.retained_runtime),
+                sql_clock: hawdb_core::temporal::statement_now(),
             }
         })
     }

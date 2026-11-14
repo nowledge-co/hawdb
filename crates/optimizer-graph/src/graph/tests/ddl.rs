@@ -129,6 +129,7 @@ fn check_variant(case: usize, gap: &str, table: &str, property: &str, counts: &m
                         property: property.to_owned(),
                         value_type,
                         nullable,
+                        default: None,
                     },
                     PhysicalPlan::CreateProperty {
                         table_kind,
@@ -136,6 +137,7 @@ fn check_variant(case: usize, gap: &str, table: &str, property: &str, counts: &m
                         property: property.to_owned(),
                         value_type,
                         nullable,
+                        default: None,
                     },
                     &format!(
                         "CreateProperty({kind_name}:{table_key}.{property_key}:{type_name}:{null_name})"

@@ -42,6 +42,9 @@ pub struct SearchCheckpointReport {
     pub projection_bytes_written: u64,
     /// Whether the snapshot avoided corpus-sized uncompressed and compressed buffers.
     pub snapshot_streamed: bool,
+    /// Generation cleanup run after publication; `None` for in-memory indexes.
+    /// A `retry_required` outcome leaves superseded generations on disk.
+    pub projection_cleanup: Option<crate::SearchProjectionCleanupOutcome>,
 }
 
 impl SearchCheckpointReport {
@@ -54,6 +57,7 @@ impl SearchCheckpointReport {
             projection_generation: 0,
             projection_bytes_written: 0,
             snapshot_streamed: false,
+            projection_cleanup: None,
         }
     }
 }
@@ -75,6 +79,7 @@ impl SearchSnapshotWriteReport {
         self,
         projection_generation: u64,
         projection_bytes_written: u64,
+        projection_cleanup: Option<crate::SearchProjectionCleanupOutcome>,
     ) -> SearchCheckpointReport {
         SearchCheckpointReport {
             document_count: self.document_count,
@@ -84,6 +89,7 @@ impl SearchSnapshotWriteReport {
             projection_generation,
             projection_bytes_written,
             snapshot_streamed: true,
+            projection_cleanup,
         }
     }
 }
@@ -96,6 +102,7 @@ pub(super) struct SearchSnapshotMetadata<'a> {
     pub embedding_dimension: Option<usize>,
     pub consumer_binding: Option<&'a super::consumer::ConsumerBinding>,
     pub vector_index_descriptor: Option<&'a hawdb_core::VectorIndexDescriptor>,
+    pub vector_scoring: crate::SearchVectorScoring,
     pub vector_document_summary: Option<crate::vector_index::VectorDocumentSummary>,
     pub canonical_vector_source_epoch: Option<u64>,
     pub rabitq_checkpoint: Option<(u8, usize, u64)>,
@@ -159,6 +166,7 @@ pub(crate) fn write_search_snapshot_with_context<'a>(
         embedding_dimension,
         consumer_binding,
         vector_index_descriptor,
+        vector_scoring,
         vector_document_summary,
         canonical_vector_source_epoch,
         rabitq_checkpoint,
@@ -214,6 +222,15 @@ pub(crate) fn write_search_snapshot_with_context<'a>(
             &mut uncompressed_checksum,
             &mut uncompressed_bytes,
             line.as_bytes(),
+        )?;
+    }
+    if vector_scoring == crate::SearchVectorScoring::LinearSquaredL2 {
+        write_body_chunk(
+            &mut encoder,
+            &mut body_checksum,
+            &mut uncompressed_checksum,
+            &mut uncompressed_bytes,
+            b"vector_scoring\tlinear_squared_l2\n",
         )?;
     }
     if let Some(descriptor) = vector_index_descriptor {

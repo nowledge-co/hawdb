@@ -137,7 +137,7 @@ fn point_projection_hydrates_only_selected_overflow_and_reuses_cache() {
         .row_root
         .read_table_page_descriptor("documents", 0)
         .expect("read cached page descriptor")
-        .slot_integrity
+        .page_integrity
         .encoded_len as u64;
     assert_eq!(cached.pinned_bytes, 0);
     assert_eq!(cached.resident_bytes, encoded_page_bytes);
@@ -477,8 +477,14 @@ fn admission_rejects_before_unbounded_io_without_poisoning() {
     ));
     assert_eq!(fixture.cache.snapshot().resident_bytes, 0);
 
+    let page_bytes = fixture
+        .row_root
+        .read_table_page_descriptor("documents", 0)
+        .unwrap()
+        .page_integrity
+        .encoded_len as usize;
     let low_bytes = RelationalRowPageDemandReadLimits {
-        max_bytes: NonZeroUsize::new(PAGE_BYTES - 1).unwrap(),
+        max_bytes: NonZeroUsize::new(page_bytes - 1).unwrap(),
         ..RelationalRowPageDemandReadLimits::default()
     };
     assert!(matches!(
@@ -583,9 +589,10 @@ fn cancellation_and_callback_panic_release_page_pins() {
 #[test]
 fn corrupted_page_poison_is_sticky_but_admission_is_not() {
     let fixture = DemandFixture::new("corruption");
+    // A payload byte of the first page, past its 140-byte header.
     flip_byte(
         &fixture.directory.join(relational_row_page_artifact_file(1)),
-        0,
+        145,
     );
     let cold = RelationalRowPageDemandReader::new(
         Arc::clone(&fixture.row_root),
@@ -644,6 +651,7 @@ fn table_root_column_count_must_match_every_demand_loaded_page() {
     let page = RelationalRowPageView::open(&encoded, row_publication_config().page_limits)
         .expect("open encoded page");
     let table = super::super::RelationalRowPageTableRoot {
+        last_row_id: 0,
         table: "documents".to_string(),
         schema: crate::relational::row_page::test_row_page_schema("documents", 3),
         schema_digest: schema_digest(),
@@ -750,6 +758,8 @@ fn row_publication_config() -> RelationalRowPagePublicationConfig {
 
 fn table_delta(dirty_pages: Vec<ImmutableRelationalRowPage>) -> RelationalRowPageTableDelta {
     RelationalRowPageTableDelta {
+        replaces_base: false,
+        last_row_id: 0,
         table: "documents".to_string(),
         schema: Some(crate::relational::row_page::test_row_page_schema(
             "documents",
@@ -1298,6 +1308,8 @@ fn controlled_point_with_wide_table_bounds_denies_without_cloning_root_metadata(
             10,
             None,
             vec![RelationalRowPageTableDelta {
+                replaces_base: false,
+                last_row_id: 0,
                 table: "documents".into(),
                 schema: Some(schema),
                 schema_digest: digest,

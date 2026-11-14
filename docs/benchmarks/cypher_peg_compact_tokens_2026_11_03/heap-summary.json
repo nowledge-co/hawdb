@@ -1,0 +1,164 @@
+{
+  "platform": "aarch64-apple-darwin, pinned Rust1.97.1, default Cargo release",
+  "runtime_tree": "b1441e2e7e3800e5b0e016e36a465d859562d76e",
+  "parent_commit": "520d3e968e96025a0435db49e0903a7559d699f6",
+  "reference_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e",
+  "source_sha256": {
+    "crates/cypher/src/parser/frontend.rs": "5bdbc0aaef8a28f77c802fa1f456ae7afd5fdd643862550e1664e3d1be5fa49d",
+    "crates/cypher/src/parser/frontend/data.rs": "7bbc57e4dc8e39bd56944e8919332190957c0b77b78df7712c716a4c32259346",
+    "crates/cypher/src/parser/frontend/expressions.rs": "173efaea519755cc097d2f9d9fc050f6c420008f95c1a113840dba3836573144",
+    "crates/cypher/src/parser/frontend/lexer.rs": "35b536318d5db483288dc5dfde4c29c70215c577a0a0189098242dc7761357fe",
+    "crates/cypher/src/parser/frontend/patterns.rs": "0d3c0f5ffa5241c2bd92c817cfd4ab89fa559acfe4cc2dffaa4148c67cf5dbf8",
+    "crates/cypher/src/parser/frontend/predicates.rs": "44288801c661471555b099a8d2c8fa567c4ce2c76ed36ed104e498530895db9a",
+    "crates/cypher/src/parser/frontend/procedures.rs": "ca599c081ba100fe176f86b27550397ebfadcc5f498f2e0733e9fd0d4f6ead8e",
+    "crates/cypher/src/parser/frontend/projection.rs": "34ea4638dae1148a6ed7bc56c31acca7701e3df82fbdfbfda5a47f55e17ecf38",
+    "crates/cypher/src/parser/frontend/rust_peg.rs": "747e7b93ec4c688237e2bbc95a6c6d7167ddd792f83047063c1bf86a45151089",
+    "crates/cypher/src/parser/frontend/schema.rs": "3ae4b9986be7482f16e090ee0d6b5476683275196cfd4795881b1df523ced1f2",
+    "crates/cypher/src/parser/frontend/temporal.rs": "c6494ac61da23ed04f0e9fe242a118271c0dd3d595fde0b5432549d1e25755fe",
+    "crates/cypher/src/parser/frontend/tests.rs": "a9f2fe861dd9383a5c2103c137d64d7d6b0f19afd4a9b4275e85f1ff829f820b",
+    "crates/cypher/src/parser/frontend/transform.rs": "b0369028c3771747d461f7bc812219bb54b195a99a29f10c3f8238f2db9a0b75",
+    "crates/cypher/src/parser/frontend/tree.rs": "7eba632bf44b7f10e4bf7576ec0ce452ca748b953d3caf9ab95afcc3fe31dae9",
+    "crates/cypher/src/parser/frontend/values.rs": "2ae33a0634786f3b5bce483b15fbfd9468d2532968680605f99c4b928c3d6fdb"
+  },
+  "controls": 163,
+  "parent_regressions": {
+    "allocation": [],
+    "refusal-allocation": [],
+    "wide-allocation": [],
+    "late-allocation": []
+  },
+  "former_wide_regressions": [
+    {
+      "case": "3",
+      "field": "total_bytes",
+      "baseline": 132622,
+      "candidate": 141892
+    },
+    {
+      "case": "3",
+      "field": "peak_live_bytes",
+      "baseline": 68104,
+      "candidate": 68564
+    },
+    {
+      "case": "4",
+      "field": "allocations",
+      "baseline": 569,
+      "candidate": 578
+    },
+    {
+      "case": "7",
+      "field": "total_bytes",
+      "baseline": 26239,
+      "candidate": 30445
+    },
+    {
+      "case": "7",
+      "field": "peak_live_bytes",
+      "baseline": 15153,
+      "candidate": 16637
+    }
+  ],
+  "boolean_controls": 32,
+  "boolean_parent_regressions": [],
+  "boolean_former_regressions": [
+    {
+      "case": "16",
+      "field": "total_bytes",
+      "former": 19176,
+      "candidate": 19786
+    },
+    {
+      "case": "17",
+      "field": "total_bytes",
+      "former": 20270,
+      "candidate": 20866
+    },
+    {
+      "case": "18",
+      "field": "total_bytes",
+      "former": 19176,
+      "candidate": 19786
+    },
+    {
+      "case": "19",
+      "field": "total_bytes",
+      "former": 20270,
+      "candidate": 20866
+    },
+    {
+      "case": "20",
+      "field": "total_bytes",
+      "former": 20047,
+      "candidate": 23601
+    },
+    {
+      "case": "21",
+      "field": "total_bytes",
+      "former": 21357,
+      "candidate": 24897
+    },
+    {
+      "case": "22",
+      "field": "total_bytes",
+      "former": 20047,
+      "candidate": 23601
+    },
+    {
+      "case": "23",
+      "field": "total_bytes",
+      "former": 21357,
+      "candidate": 24897
+    },
+    {
+      "case": "24",
+      "field": "total_bytes",
+      "former": 20918,
+      "candidate": 25368
+    },
+    {
+      "case": "25",
+      "field": "total_bytes",
+      "former": 25516,
+      "candidate": 28416
+    },
+    {
+      "case": "26",
+      "field": "total_bytes",
+      "former": 20918,
+      "candidate": 25368
+    },
+    {
+      "case": "27",
+      "field": "total_bytes",
+      "former": 25516,
+      "candidate": 28416
+    },
+    {
+      "case": "28",
+      "field": "total_bytes",
+      "former": 24861,
+      "candidate": 28671
+    },
+    {
+      "case": "29",
+      "field": "total_bytes",
+      "former": 26603,
+      "candidate": 34495
+    },
+    {
+      "case": "30",
+      "field": "total_bytes",
+      "former": 24861,
+      "candidate": 28671
+    },
+    {
+      "case": "31",
+      "field": "total_bytes",
+      "former": 26603,
+      "candidate": 34495
+    }
+  ],
+  "ast_retained_all_11_equal_former": true,
+  "scope": "Allocator requests and live requested bytes, not RSS. Remaining5wide+16booleanregressions are not waived. Diagnostic/admission/final-headE2E/full-suite readiness remain incomplete."
+}

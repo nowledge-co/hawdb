@@ -41,6 +41,10 @@ impl Checksum {
                 self.bytes(&[3]);
                 self.bytes(&value.to_bits().to_le_bytes());
             }
+            Value::Decimal(value) => {
+                self.bytes(&[11]);
+                self.bytes(&value.to_le_bytes());
+            }
             Value::String(value) => {
                 self.bytes(&[4]);
                 self.length(value.len());
@@ -54,6 +58,16 @@ impl Checksum {
             Value::Uuid(value) => {
                 self.bytes(&[6]);
                 self.bytes(value.as_bytes());
+            }
+            Value::Date(_)
+            | Value::LocalTime(_)
+            | Value::LocalDateTime(_)
+            | Value::DateTime(_)
+            | Value::Duration(_) => {
+                let payload = hawdb::temporal::codec::payload(value).expect("temporal value");
+                self.bytes(&[10]);
+                self.length(payload.len());
+                self.bytes(&payload);
             }
             Value::Vector(value) => {
                 self.bytes(&[9]);

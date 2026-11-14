@@ -29,12 +29,6 @@ fn legacy_text(documents: &[SearchDocument], kind: SegmentKind) -> String {
             String::from("HAWDB_SEARCH_METADATA_SEGMENT_V1\n"),
             vector_ordinal_base,
         ),
-        SegmentKind::Vectors {
-            vector_ordinal_base,
-        } => (
-            String::from("HAWDB_SEARCH_VECTOR_SEGMENT_V1\n"),
-            vector_ordinal_base,
-        ),
     };
     for document in documents {
         match kind {
@@ -55,17 +49,6 @@ fn legacy_text(documents: &[SearchDocument], kind: SegmentKind) -> String {
                 )
                 .unwrap();
             }
-            SegmentKind::Vectors { .. } => {
-                if let Some(embedding) = document.embedding.as_deref() {
-                    writeln!(
-                        text,
-                        "vector\t{ordinal}\t{}\t{}",
-                        crate::encode_string(&document.id),
-                        crate::encode_embedding(Some(embedding))
-                    )
-                    .unwrap();
-                }
-            }
         }
         if document.embedding.is_some() {
             ordinal = ordinal.saturating_add(1);
@@ -78,9 +61,6 @@ fn check(documents: &[SearchDocument], base: u64) {
     for kind in [
         SegmentKind::Documents,
         SegmentKind::Metadata {
-            vector_ordinal_base: base,
-        },
-        SegmentKind::Vectors {
             vector_ordinal_base: base,
         },
     ] {

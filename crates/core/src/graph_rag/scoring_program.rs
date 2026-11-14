@@ -58,6 +58,20 @@ pub struct ScoringProgramShape {
     decay: Vec<ScoreFeature>,
 }
 
+crate::impl_retained_heap_for_copy!(ScoringCombination, MissingScoringFeature);
+crate::impl_retained_heap_for_struct!(ScoringProgram {
+    combination,
+    missing,
+    spec
+});
+crate::impl_retained_heap_for_struct!(ScoringProgramShape {
+    version,
+    combination,
+    missing,
+    terms,
+    decay,
+});
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScoringProgramError {
     InvalidSpecification(ScoringSpecError),

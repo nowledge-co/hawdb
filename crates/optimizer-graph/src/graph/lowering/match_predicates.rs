@@ -1,0 +1,211 @@
+// Copyright 2026 Nowledge
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//! Places each top-level WHERE conjunct of a `GraphMatchExec` right after the
+//! step that binds the last variable it reads (#1424).
+//!
+//! The executor runs the steps as a per-row nested loop. A conjunct that only
+//! reads early variables can then prune a partial candidate before the later
+//! steps expand it. The WHERE of a MATCH is a conjunction that keeps a
+//! candidate only when every conjunct is true, so dropping a candidate as soon
+//! as one conjunct is false or NULL removes exactly the complete matches the
+//! final evaluation would have removed. OPTIONAL MATCH still pads a row only
+//! when no complete match survives.
+//!
+//! A placed conjunct that reads only the relationship a one-hop step binds is
+//! also marked in [`GraphMatchProgram::edge_predicates`] (#1483). The executor
+//! evaluates it on each relationship it reads, before it reads the step's
+//! target node, so a relationship the conjunct rejects costs no node read.
+//! It drops exactly the candidates the conjunct would drop after the step.
+//! Variable-length steps bind no relationship variable, so nothing is pushed
+//! into them.
+//!
+//! The placement reads the final step order, so it must run after any step
+//! reordering at lowering.
+
+use hawdb_plan_cypher::{GraphMatchProgram, GraphMatchStep, Predicate};
+use std::collections::{BTreeMap, BTreeSet};
+
+/// Splits `program.predicate` into conjuncts and records where each one runs.
+/// Returns the decision text when at least one conjunct runs before the end.
+pub(super) fn place_graph_match_predicates(program: &mut GraphMatchProgram) -> Option<String> {
+    program.predicate_steps.clear();
+    program.edge_predicates.clear();
+    let end = program.steps.len();
+    let (steps, edge) = {
+        let mut conjuncts = Vec::new();
+        conjunction_parts(program.predicate.as_ref()?, &mut conjuncts);
+        let bound_after = bound_after_steps(program);
+        let steps = conjuncts
+            .iter()
+            .map(|conjunct| conjunct_step(conjunct, &bound_after, end))
+            .collect::<Vec<_>>();
+        let edge = conjuncts
+            .iter()
+            .zip(&steps)
+            .enumerate()
+            .filter(|(_, (conjunct, step))| {
+                reads_only_relationship_of_step(conjunct, program, &bound_after, **step)
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        (steps, edge)
+    };
+    let placed = steps.iter().filter(|step| **step < end).count();
+    if placed == 0 && edge.is_empty() {
+        // Keep the bound predicate unchanged when everything runs at the end.
+        return None;
+    }
+    let mut conjuncts = Vec::with_capacity(steps.len());
+    flatten_conjunction(program.predicate.take()?, &mut conjuncts);
+    program.predicate = Some(if conjuncts.len() == 1 {
+        conjuncts.pop()?
+    } else {
+        Predicate::And(conjuncts)
+    });
+    let mut decision = format!(
+        "evaluate {placed} of {} GraphMatchExec WHERE conjunct(s) before the last step: after steps {steps:?} of {end}",
+        steps.len()
+    );
+    if !edge.is_empty() {
+        decision.push_str(&format!(
+            "; evaluate conjunct(s) {edge:?} on each relationship before reading its target node"
+        ));
+    }
+    program.predicate_steps = steps;
+    program.edge_predicates = edge;
+    Some(decision)
+}
+
+/// Whether `conjunct`, placed after `step` steps, reads nothing but the
+/// relationship variable that the one-hop step `step - 1` introduces.
+/// Constants and parameters are bound values, not names, so they qualify.
+fn reads_only_relationship_of_step(
+    conjunct: &Predicate,
+    program: &GraphMatchProgram,
+    bound_after: &BTreeMap<&str, usize>,
+    step: usize,
+) -> bool {
+    let Some(GraphMatchStep::Expand {
+        relationship: Some(relationship),
+        min_hops: 1,
+        max_hops: 1,
+        ..
+    }) = step
+        .checked_sub(1)
+        .and_then(|index| program.steps.get(index))
+    else {
+        return false;
+    };
+    // A relationship bound before this step is compared by id, not read.
+    if bound_after.get(relationship.as_str()) != Some(&step) {
+        return false;
+    }
+    let mut names = BTreeSet::new();
+    predicate_names(conjunct, &mut names);
+    names.len() == 1 && names.contains(relationship)
+}
+
+fn conjunction_parts<'a>(predicate: &'a Predicate, output: &mut Vec<&'a Predicate>) {
+    match predicate {
+        Predicate::And(children) => {
+            for child in children {
+                conjunction_parts(child, output);
+            }
+        }
+        predicate => output.push(predicate),
+    }
+}
+
+/// Nested conjunctions evaluate in the same order and short-circuit at the
+/// same conjunct when flattened.
+fn flatten_conjunction(predicate: Predicate, output: &mut Vec<Predicate>) {
+    match predicate {
+        Predicate::And(children) => {
+            for child in children {
+                flatten_conjunction(child, output);
+            }
+        }
+        predicate => output.push(predicate),
+    }
+}
+
+/// For every variable this program introduces, the number of steps after
+/// which it is bound. Imports and variables bound before the clause are
+/// available before the first step and are absent from the map.
+fn bound_after_steps(program: &GraphMatchProgram) -> BTreeMap<&str, usize> {
+    let imported = program
+        .imports
+        .iter()
+        .map(|import| import.variable.as_str())
+        .collect::<BTreeSet<_>>();
+    let introduced = program
+        .introduced
+        .iter()
+        .map(String::as_str)
+        .filter(|name| !imported.contains(name))
+        .collect::<BTreeSet<_>>();
+    let mut bound = BTreeMap::new();
+    for (index, step) in program.steps.iter().enumerate() {
+        let names: Vec<&str> = match step {
+            GraphMatchStep::Node(node) => vec![&node.variable],
+            // A variable-length step binds its target only when a whole trail
+            // is found; it cannot bind a relationship variable.
+            GraphMatchStep::Expand {
+                relationship,
+                target,
+                ..
+            } => relationship
+                .iter()
+                .map(String::as_str)
+                .chain([target.variable.as_str()])
+                .collect(),
+            GraphMatchStep::ShortestPath(path) => vec![&path.path],
+        };
+        for name in names {
+            if introduced.contains(name) {
+                bound.entry(name).or_insert(index + 1);
+            }
+        }
+    }
+    // An introduced name that no step binds stays unknown: conjuncts that
+    // read it keep their end-of-match position.
+    for name in introduced {
+        bound.entry(name).or_insert(usize::MAX);
+    }
+    bound
+}
+
+fn conjunct_step(conjunct: &Predicate, bound_after: &BTreeMap<&str, usize>, end: usize) -> usize {
+    let mut names = BTreeSet::new();
+    predicate_names(conjunct, &mut names);
+    names
+        .iter()
+        .map(|name| bound_after.get(name.as_str()).copied().unwrap_or(0))
+        .max()
+        .unwrap_or(0)
+        .min(end)
+}
+
+/// Every row variable or column `predicate` reads.
+pub(in crate::graph) fn predicate_variables(predicate: &Predicate) -> BTreeSet<String> {
+    hawdb_plan_cypher::predicate_variables(predicate)
+}
+
+fn predicate_names(predicate: &Predicate, names: &mut BTreeSet<String>) {
+    names.extend(hawdb_plan_cypher::predicate_variables(predicate));
+}
+
+#[cfg(test)]
+mod tests;

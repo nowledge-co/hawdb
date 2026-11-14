@@ -36,11 +36,11 @@ or query-language contract is introduced.
 | `Database` | `retrieve_knowledge` | `Result<KnowledgeRetrievalOutput>` |
 | `DatabaseReadTransaction` | `retrieve_knowledge` | `Result<KnowledgeRetrievalOutput>` |
 | `NowledgeGraphAdapter<'a>` | `retrieve_knowledge` | `Result<KnowledgeRetrievalOutput>` |
-| `NowledgeMemSearchProjection` | `search_candidates` | `Result<SearchResultSet>` |
-| `NowledgeMemSearchProjection` | `search_candidates_with_report` | `Result<NowledgeMemSearchCandidateOutput>` |
-| `NowledgeMemSearchProjection` | `search_candidate_readiness` | `Result<NowledgeMemSearchCandidateReadinessReport>` |
-| `NowledgeMemSearchProjection` | `search_candidate_shadow_evidence<I, S>` | `Result<NowledgeMemSearchCandidateShadowEvidence>` |
-| `NowledgeMemSearchProjection` | `search_candidate_shadow_evidence_json<I, S>` | `Result<serde_json::Value>` |
+| `SearchProjection` | `search_candidates` | `Result<SearchResultSet>` |
+| `SearchProjection` | `search_candidates_with_report` | `Result<SearchCandidateOutput>` |
+| `SearchProjection` | `search_candidate_readiness` | `Result<SearchCandidateReadinessReport>` |
+| `SearchProjection` | `search_candidate_shadow_evidence<I, S>` | `Result<SearchCandidateShadowEvidence>` |
+| `SearchProjection` | `search_candidate_shadow_evidence_json<I, S>` | `Result<serde_json::Value>` |
 
 The owner wrappers return their existing fallible backend result directly. The
 private `KnowledgeRetrievalGraphContext` propagates both search and graph/pipeline

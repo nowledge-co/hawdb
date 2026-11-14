@@ -37,6 +37,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 mod checkpoint;
+mod leaf_scope;
+use leaf_scope::RetainedLeaf;
+pub use leaf_scope::{descriptor_retained_leaf_hits_for_test, DescriptorLeafScope};
 
 const DEFAULT_MAX_READ_PAGES: u64 = 4_096;
 const DEFAULT_MAX_READ_BYTES: u64 = 64 * 1024 * 1024;
@@ -78,6 +81,10 @@ pub(crate) struct GraphDescriptorTreeReadReport {
     pub(crate) cache_misses: u64,
     pub(crate) cache_admission_rejections: u64,
     pub(crate) maximum_depth: u32,
+    /// 1 when a [`DescriptorLeafScope`] answered the scan from a retained
+    /// leaf: `pages_visited` then counts that one leaf, which needed neither
+    /// a cache lookup nor storage I/O.
+    pub(crate) retained_leaf_hits: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -178,6 +185,36 @@ impl GraphDescriptorTreeDemandReader {
         self.scan_bound(
             GraphDescriptorTreeScanStart::Prefix(prefix),
             limits,
+            false,
+            consumer,
+        )
+    }
+
+    /// [`Self::scan_prefix`] that, inside a [`DescriptorLeafScope`], answers
+    /// a prefix lying strictly inside a leaf retained by an earlier scan from
+    /// that leaf, and retains the leaf this scan reaches. Results, order,
+    /// limits and failure handling equal [`Self::scan_prefix`]; only the read
+    /// report differs on a retained hit (one page, no cache lookup).
+    pub(crate) fn scan_prefix_retained(
+        &self,
+        prefix: &[u8],
+        limits: GraphDescriptorTreeReadLimits,
+        consumer: impl FnMut(
+            &[u8],
+            &[u8],
+        )
+            -> Result<GraphDescriptorTreeScanControl, GraphDescriptorTreeError>,
+    ) -> Result<
+        (
+            GraphDescriptorTreeReadReport,
+            GraphDescriptorTreeScanControl,
+        ),
+        GraphDescriptorTreeError,
+    > {
+        self.scan_bound(
+            GraphDescriptorTreeScanStart::Prefix(prefix),
+            limits,
+            true,
             consumer,
         )
     }
@@ -201,6 +238,7 @@ impl GraphDescriptorTreeDemandReader {
         self.scan_bound(
             GraphDescriptorTreeScanStart::LowerBound(lower_bound),
             limits,
+            false,
             consumer,
         )
     }
@@ -225,6 +263,7 @@ impl GraphDescriptorTreeDemandReader {
         self.scan_bound(
             GraphDescriptorTreeScanStart::UpperBound(upper_bound),
             limits,
+            false,
             consumer,
         )
     }
@@ -233,6 +272,7 @@ impl GraphDescriptorTreeDemandReader {
         &self,
         start: GraphDescriptorTreeScanStart<'_>,
         limits: GraphDescriptorTreeReadLimits,
+        retain: bool,
         mut consumer: impl FnMut(
             &[u8],
             &[u8],
@@ -268,18 +308,41 @@ impl GraphDescriptorTreeDemandReader {
             )));
         }
         let mut state = TraversalState::new(limits, self.root.page_count, false)?;
-        let result = match &self.root.root {
-            Some(root) if start.range_may_match(root) => self.scan_page(
-                root,
-                self.root.height,
-                start,
-                true,
-                &mut state,
-                &mut consumer,
-            ),
-            Some(_) | None => Ok(GraphDescriptorTreeScanControl::Continue),
+        let retained_prefix = match start {
+            GraphDescriptorTreeScanStart::Prefix(prefix) if retain && leaf_scope::is_open() => {
+                Some(prefix)
+            }
+            _ => None,
+        };
+        let retained = retained_prefix.and_then(|prefix| {
+            leaf_scope::retained_leaf(&self.root, self.config.page_limits, prefix)
+        });
+        let result = match (&retained, &self.root.root) {
+            (Some(leaf), _) => self.scan_retained_leaf(leaf, start, &mut state, &mut consumer),
+            (None, Some(root)) if start.range_may_match(root) => {
+                state.capture_leaf = retained_prefix.is_some();
+                self.scan_page(
+                    root,
+                    self.root.height,
+                    start,
+                    true,
+                    &mut state,
+                    &mut consumer,
+                )
+            }
+            (None, Some(_) | None) => Ok(GraphDescriptorTreeScanControl::Continue),
         };
         self.poison_on_physical_failure(&result);
+        if result.is_ok()
+            && let Some(leaf) = state.captured_leaf.take()
+        {
+            leaf_scope::retain_leaf(
+                &self.root,
+                self.config.page_limits,
+                leaf,
+                self.cache.capacity_bytes(),
+            );
+        }
         result.map(|control| (state.report, control))
     }
 
@@ -406,6 +469,57 @@ impl GraphDescriptorTreeDemandReader {
             .report
             .maximum_depth
             .max(self.root.height.saturating_sub(remaining_height));
+        self.scan_loaded_page(
+            (reference, &page),
+            remaining_height,
+            start,
+            use_cache,
+            state,
+            consumer,
+        )
+    }
+
+    /// A retained leaf was reached by a complete verified read of this root
+    /// under the same codec limits; it stands in for the root traversal and
+    /// still counts against the page and page-byte limits.
+    fn scan_retained_leaf(
+        &self,
+        leaf: &RetainedLeaf,
+        start: GraphDescriptorTreeScanStart<'_>,
+        state: &mut TraversalState,
+        consumer: &mut impl FnMut(
+            &[u8],
+            &[u8],
+        )
+            -> Result<GraphDescriptorTreeScanControl, GraphDescriptorTreeError>,
+    ) -> Result<GraphDescriptorTreeScanControl, GraphDescriptorTreeError> {
+        state.admit_page(&leaf.reference)?;
+        state.report.retained_leaf_hits = 1;
+        state.report.maximum_depth = state.report.maximum_depth.max(self.root.height);
+        self.scan_loaded_page(
+            (&leaf.reference, &leaf.page),
+            0,
+            start,
+            true,
+            state,
+            consumer,
+        )
+    }
+
+    /// Scan a page already admitted and read (or retained) for `reference`.
+    fn scan_loaded_page(
+        &self,
+        (reference, page): (&GraphDescriptorPageRef, &GraphDescriptorPageView),
+        remaining_height: u32,
+        start: GraphDescriptorTreeScanStart<'_>,
+        use_cache: bool,
+        state: &mut TraversalState,
+        consumer: &mut impl FnMut(
+            &[u8],
+            &[u8],
+        )
+            -> Result<GraphDescriptorTreeScanControl, GraphDescriptorTreeError>,
+    ) -> Result<GraphDescriptorTreeScanControl, GraphDescriptorTreeError> {
         let (first, last, reverse, comparisons) = match start {
             GraphDescriptorTreeScanStart::All => (0, page.len(), false, 0),
             GraphDescriptorTreeScanStart::Prefix(key)
@@ -433,6 +547,14 @@ impl GraphDescriptorTreeDemandReader {
                 .leaf_pages
                 .checked_add(1)
                 .ok_or_else(|| corrupt("graph descriptor leaf page count overflow"))?;
+            if state.capture_leaf {
+                // The last verified leaf reached is the likeliest to hold the
+                // next ascending prefix.
+                state.captured_leaf = Some(RetainedLeaf {
+                    reference: Arc::new(reference.clone()),
+                    page: page.clone(),
+                });
+            }
             for offset in 0..last - first {
                 let index = if reverse {
                     last - 1 - offset
@@ -710,6 +832,9 @@ struct TraversalState {
     leaf_pages: u64,
     previous_key: Option<Vec<u8>>,
     verify_global_key_order: bool,
+    // Retained-prefix scans inside an open leaf scope keep the last leaf.
+    capture_leaf: bool,
+    captured_leaf: Option<RetainedLeaf>,
 }
 
 impl TraversalState {
@@ -729,6 +854,8 @@ impl TraversalState {
             leaf_pages: 0,
             previous_key: None,
             verify_global_key_order: false,
+            capture_leaf: false,
+            captured_leaf: None,
         })
     }
 

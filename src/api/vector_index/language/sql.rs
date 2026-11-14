@@ -75,8 +75,7 @@ impl VectorIndexReadTransaction {
             return Err(invalid("vector index SQL streaming requires SELECT").into());
         };
         let search = select
-            .vector_index
-            .as_ref()
+            .vector_index()
             .ok_or_else(|| invalid("SQL source must be vector_index_search"))?;
         let hawdb_core::Value::String(index) = bind(&search.index, request.parameters)? else {
             return Err(invalid("vector index name must be a string").into());
@@ -229,6 +228,9 @@ fn bind<'a>(
 ) -> Result<&'a hawdb_core::Value> {
     match value {
         SqlValue::Literal(value) => Ok(value),
+        SqlValue::Expression(_) => Err(invalid(
+            "SQL vector index arguments require literal or parameter values",
+        )),
         SqlValue::Parameter(position) => position
             .checked_sub(1)
             .and_then(|position| parameters.get(position))

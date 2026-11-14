@@ -17,7 +17,7 @@
 use hawdb_core::{Catalog, LabelId, RelTypeId, Result};
 use hawdb_plan_cypher::{CompositeRangeSeek, NodeProjectionAccess};
 use hawdb_storage::{
-    adjacency::AdjacencyDirection,
+    adjacency::{AdjacencyDirection, OrderedAdjacencyEntry},
     mutation::{GraphMutation, MutationLimits, MutationSummary, NodeSetAssignment, PropertyFilter},
     projection::ProjectedGraphDefinition,
     scan::{ScanPredicate, ScanPruningReport, ScanSegmentFallback, SegmentReadExecutionReport},
@@ -51,7 +51,7 @@ pub struct PrunedNodeScan<'a> {
 struct QueryGraphReadAllocation {
     allocation: crate::QueryMemoryLease,
     task_context: Option<hawdb_core::RuntimeTaskContext>,
-    retained_state: Option<QueryMemoryAccount>,
+    retained_state: Option<std::sync::Arc<QueryMemoryAccount>>,
 }
 
 impl hawdb_storage::read_view::GraphReadAllocation for QueryGraphReadAllocation {
@@ -93,7 +93,7 @@ pub fn admit_graph_read(
     Ok(Box::new(QueryGraphReadAllocation {
         allocation: account.reserve(bytes)?,
         task_context: task_context.cloned(),
-        retained_state: account.retained_state().cloned(),
+        retained_state: account.retained_state_shared(),
     }))
 }
 
@@ -226,6 +226,27 @@ pub trait GraphExecutionRead {
         ))
     }
 
+    /// Endpoint ids of `rel_type` relationships satisfying `constraints`
+    /// (property equalities and an optional `IN` list), from a resident
+    /// relationship property index or a persisted relationship equality
+    /// projection (#1548). `None` keeps the
+    /// caller's node-first path; readers without such an index use this
+    /// default.
+    fn relationship_property_endpoint_candidates(
+        &self,
+        _rel_type: RelTypeId,
+        _constraints: hawdb_storage::store::RelationshipSeedConstraints<'_>,
+        _endpoints: hawdb_storage::store::RelationshipEndpoints,
+        _max_relationships: usize,
+        _admit: &mut dyn FnMut(
+            usize,
+        ) -> Result<
+            Option<Box<dyn hawdb_storage::read_view::GraphReadAllocation>>,
+        >,
+    ) -> Result<Option<hawdb_storage::store::EndpointCandidates>> {
+        Ok(None)
+    }
+
     /// Full relationship point ownership with a transferable before-copy permit.
     fn relationship_with_allocation(
         &self,
@@ -235,6 +256,25 @@ pub trait GraphExecutionRead {
         Err(hawdb_core::HawDBError::Execution(
             "storage reader does not support admitted relationship point reads".into(),
         ))
+    }
+
+    /// [`Self::relationship_with_allocation`] whose record keeps only
+    /// `required_properties` beside its endpoints and type. Readers that
+    /// cannot skip properties read the whole record, under its full
+    /// admission, and drop the rest.
+    fn projected_relationship_with_allocation(
+        &self,
+        id: hawdb_storage::RelId,
+        required_properties: &BTreeSet<String>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+    ) -> Result<hawdb_storage::read_view::AdmittedRelationshipRead> {
+        let mut read = self.relationship_with_allocation(id, admit)?;
+        if let hawdb_storage::read_view::AdmittedRelationshipRead::Relationship(relationship) =
+            &mut read
+        {
+            relationship.retain_properties(|name| required_properties.contains(name));
+        }
+        Ok(read)
     }
 
     /// Selected-column point read. Implementations must call admission before
@@ -557,6 +597,65 @@ pub trait GraphExecutionRead {
         Err(hawdb_core::HawDBError::Execution(
             "storage reader does not support admitted ordered relationship reads".into(),
         ))
+    }
+
+    /// [`Self::visit_ordered_adjacent_relationships_with_allocation`] whose
+    /// records keep only `required_properties` beside their endpoints and
+    /// type. Readers that cannot skip properties read whole records, under
+    /// their full admission, and drop the rest.
+    fn visit_ordered_projected_relationships_with_allocation(
+        &self,
+        adjacency: (NodeId, Option<RelTypeId>, AdjacencyDirection),
+        required_properties: &BTreeSet<String>,
+        memory: AdjacencyReadMemory<'_>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(
+            hawdb_storage::read_view::AdmittedRelationshipRecord,
+        ) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        let (node_id, rel_type, direction) = adjacency;
+        self.visit_ordered_adjacent_relationships_with_allocation(
+            node_id,
+            rel_type,
+            direction,
+            memory,
+            admit,
+            &mut |mut input| {
+                input.retain_properties(|name| required_properties.contains(name));
+                consumer(input)
+            },
+        )
+    }
+
+    /// The `(neighbor, relationship)` entries of
+    /// [`Self::visit_ordered_adjacent_relationships_with_allocation`], in the
+    /// same order, for callers that need no relationship record. Readers that
+    /// cannot skip the record derive the entries from it.
+    fn visit_ordered_adjacency_entries_with_allocation(
+        &self,
+        adjacency: (NodeId, Option<RelTypeId>, AdjacencyDirection),
+        memory: AdjacencyReadMemory<'_>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(OrderedAdjacencyEntry) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        let (node_id, rel_type, direction) = adjacency;
+        self.visit_ordered_adjacent_relationships_with_allocation(
+            node_id,
+            rel_type,
+            direction,
+            memory,
+            admit,
+            &mut |input| {
+                let relationship = input.relationship();
+                consumer(OrderedAdjacencyEntry {
+                    neighbor_id: match direction {
+                        AdjacencyDirection::Outgoing => relationship.target,
+                        AdjacencyDirection::Incoming => relationship.source,
+                    },
+                    relationship_id: relationship.id,
+                })
+            },
+        )
     }
 
     /// Filtered ordered sources preserve the allocation and live task at the

@@ -15,10 +15,10 @@
 
 ## Mem Release Modes and Full Verification
 
-- During the current development phase, HawDB code must not appear in any stable or GA release. Stable release artifacts and the public release dependency graph must exclude HawDB crates, features, binaries, bundled source, and transitive HawDB dependencies.
+- During the current development phase, HawDB code must not appear in any stable or GA Mem release. Mem's stable release artifacts and its public release dependency graph must exclude HawDB crates, features, binaries, bundled source, and transitive HawDB dependencies. This rule governs Mem, the product that embeds HawDB, not HawDB's own release artifacts: HawDB crates, PyPI wheels, npm packages, and prebuilt C ABI libraries may be published as stable releases, and their documentation must state that the on-disk format carries no compatibility promise until HawDB declares one.
 - Every Mem App persistence-schema change must update the HawDB integration contract in the same delivery. Canonical data changes require matching HawDB DDL, import or dual-write mapping, and full-verification coverage. Source-only migration or operational tables must be named explicitly with a rationale and an exclusion test; they must not disappear from the contract merely because HawDB does not store them.
 - HawDB has not entered production and has no persisted production compatibility obligation. Until that changes, App schema evolution may replace the greenfield HawDB baseline destructively and require development databases to be recreated. Do not add compatibility migrations solely for earlier development-only HawDB schemas, and do not apply this exception to any authoritative legacy or Cloud datastore.
-- Only nightly or development builds may compile, bundle, or execute HawDB during this phase. The stable dual-write and full-activation rules below remain inactive until a separate explicit release-policy decision authorizes HawDB code in stable artifacts.
+- Only nightly or development Mem builds may compile, bundle, or execute HawDB during this phase. The stable dual-write and full-activation rules below remain inactive until a separate explicit release-policy decision authorizes HawDB code in stable Mem artifacts.
 - Nightly or development builds may support three explicit storage modes:
   1. dual-write to the legacy stores and HawDB while legacy reads remain authoritative;
   2. dual-write and dual-read from the legacy stores and HawDB, with mismatches surfaced as verification evidence;
@@ -63,6 +63,8 @@
 ## PR and Branch Workflow
 
 - Follow `CONTRIBUTING.md` and the templates in `.github/ISSUE_TEMPLATE/` and `.github/PULL_REQUEST_TEMPLATE.md` for issue and PR content, titles, validation evidence, and review dispositions.
+- Before creating or updating a PR body, read the current `.github/PULL_REQUEST_TEMPLATE.md` and fill it in directly. Treat that file as the source of truth for the body structure: preserve its headings and order, replace placeholders, and follow its inline guidance. Keep PR-body prompts pointed at the template instead of duplicating its sections or inventing another format.
+- Write the completed body to a Markdown file and pass it to `gh pr create --base main --body-file <path>` or `gh pr edit <number> --body-file <path>`. Explicit CLI/API bodies must follow the template too; re-read it when updating the PR and preserve still-valid evidence and review dispositions.
 - Every PR, including documentation and mechanical maintenance changes, must link an existing, relevant issue in an `Issue Number:` line. Create the issue first if none fits. Use `close #123` only when the PR fully resolves the issue and completes all acceptance criteria; otherwise use `ref #123` and describe the remaining work. `None`, missing references, and unreplaced placeholders are not allowed. Verify the issue and relationship before approving a PR.
 - Every PR must target `main` directly. Do not stack a PR's branch on top of another PR's branch as its base.
 - Stacking causes real problems in this repo's merge flow: a PR merged into a non-`main` base only lands in that feature branch, not in `main`, even though it shows as `MERGED`. If the upstream PR later gets retargeted straight to `main` and merges there, the downstream branch is silently orphaned — it no longer has any path back to `main` until someone notices and retargets it by hand.
@@ -110,7 +112,11 @@
 
 - Keep checkpoint headroom timing/phase tests in the required isolated
   `//:hawdb_unit_checkpoint_headroom_tests` lane, using the ordinary checked root
-  binary. Joined-read default/minimal targets shard the complete discovered case
+  binary. Whole-envelope large-commit cases (`relational_live_overlay::large_commit`)
+  run in the separate `//:hawdb_unit_checkpoint_large_commit_tests` lane, and
+  their interrupted cases (`large_commit::interrupted`) in
+  `//:hawdb_unit_checkpoint_large_commit_interrupted_tests`, so each lane stays
+  well within its deadline. Joined-read default/minimal targets shard the complete discovered case
   inventory over one executable per mode; retain every scenario and refuse empty
   shards. See `docs/TEST_INDEX.md` for scheduling evidence and replay.
 

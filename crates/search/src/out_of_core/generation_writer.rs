@@ -98,7 +98,7 @@ pub use prepared::{PreparedSearchPublication, SearchOutOfCorePreparedGeneration}
 const STAGE_METADATA_FILE: &str = "search_projection_metadata_payloads.stage.hawdb";
 const STAGE_VECTOR_FILE: &str = "search_projection_vector_payloads.stage.hawdb";
 
-fn generation_changed(expected: u64, actual: u64) -> HawDBError {
+pub(super) fn generation_changed(expected: u64, actual: u64) -> HawDBError {
     if actual > expected {
         HawDBError::TransactionConflict {
             read_epoch: expected,
@@ -158,6 +158,7 @@ pub struct SearchOutOfCoreGenerationBuildOptions {
     pub import_source_graph_commit_epoch: Option<u64>,
     pub embedding_manifest: Option<SearchEmbeddingManifest>,
     pub vector_index_descriptor: Option<hawdb_core::VectorIndexDescriptor>,
+    pub vector_scoring: crate::SearchVectorScoring,
     pub analyzer_lexicon: SearchAnalyzerLexicon,
     pub cleanup_options: SearchProjectionCleanupOptions,
 }
@@ -195,6 +196,7 @@ impl Default for SearchOutOfCoreGenerationBuildOptions {
             import_source_graph_commit_epoch: None,
             embedding_manifest: None,
             vector_index_descriptor: None,
+            vector_scoring: crate::SearchVectorScoring::default(),
             analyzer_lexicon: SearchAnalyzerLexicon::default(),
             cleanup_options: SearchProjectionCleanupOptions::default(),
         }
@@ -236,6 +238,27 @@ pub struct SearchOutOfCoreGenerationBuildReport {
     pub cleanup_pending_files: usize,
     pub cleanup_pending_stages: usize,
     pub cleanup_retry_required: bool,
+    /// Generation cleanup could not prove the active closure intact and
+    /// deleted nothing; superseded generations remain until a retry succeeds.
+    pub cleanup_closure_unverified: bool,
+}
+
+impl SearchOutOfCoreGenerationBuildReport {
+    /// The publication's generation cleanup in the shape shared with
+    /// resident checkpoints. Staging directories left for retry count as
+    /// pending files.
+    pub fn cleanup_outcome(&self) -> crate::SearchProjectionCleanupOutcome {
+        crate::SearchProjectionCleanupOutcome {
+            deleted_files: self.cleanup_deleted_files,
+            pending_files: self
+                .cleanup_pending_files
+                .saturating_add(self.cleanup_pending_stages),
+            closure_unverified: self.cleanup_closure_unverified,
+            retry_required: self.cleanup_retry_required,
+            verification_rehashed_bytes: 0,
+            verification_reused_bytes: 0,
+        }
+    }
 }
 
 /// Builds an immutable search generation without retaining the full document corpus.
@@ -975,6 +998,7 @@ impl SearchOutOfCoreGenerationWriter {
                 import_source_graph_commit_epoch: self.options.import_source_graph_commit_epoch,
                 embedding_manifest: self.options.embedding_manifest.as_ref(),
                 vector_index_descriptor: self.options.vector_index_descriptor.as_ref(),
+                vector_scoring: self.options.vector_scoring,
                 embedding_dimension: self.embedding_dimension,
                 layout: &segment_output.layout,
                 lexical_artifact_name: &lexical_artifact_name,
@@ -1065,8 +1089,13 @@ impl SearchOutOfCoreGenerationWriter {
             cleanup_deleted_files: cleanup.as_ref().map_or(0, |cleanup| cleanup.deleted_files),
             cleanup_pending_files: cleanup.as_ref().map_or(0, |cleanup| cleanup.pending_files),
             cleanup_pending_stages,
-            cleanup_retry_required: cleanup.is_some_and(|cleanup| cleanup.retry_required)
+            cleanup_retry_required: cleanup
+                .as_ref()
+                .is_some_and(|cleanup| cleanup.retry_required)
                 || cleanup_pending_stages != 0,
+            cleanup_closure_unverified: cleanup
+                .as_ref()
+                .is_some_and(|cleanup| cleanup.closure_unverified),
         })
     }
 
@@ -1511,6 +1540,9 @@ fn rabitq_error(error: hawdb_vector_projection::ProjectionError) -> HawDBError {
 }
 
 fn validate_options(options: &SearchOutOfCoreGenerationBuildOptions) -> Result<()> {
+    options
+        .vector_scoring
+        .validate(options.vector_index_descriptor.is_some())?;
     if let Some(binding) = &options.vector_index_descriptor {
         crate::compiled_capabilities::effective_runtime_capabilities(Default::default())
             .require(hawdb_core::RuntimeCapability::VectorSearch)?;

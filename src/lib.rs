@@ -30,14 +30,15 @@ pub mod compat;
 mod compatibility_facades;
 mod compiled_capabilities;
 pub mod embedded;
+pub mod embedded_store;
 #[cfg(feature = "tokio-runtime")]
 pub mod embedded_tokio;
 pub mod executor;
 pub mod graph_route_evidence;
+pub mod logical_dump;
 pub mod mem_library_readiness;
 pub mod nowledge_fuzz;
 pub mod nowledge_inventory;
-pub mod nowledge_mem;
 pub mod query_runtime_preflight;
 mod relational_sql;
 pub mod replacement_summary;
@@ -85,6 +86,7 @@ pub use analytics::{
     PageRankOptions, PageRankProcedureOptions, PageRankScore, ProjectedGraph, ProjectionLayout,
     ProjectionMemoryAdmissionError, ProjectionMemoryBudget, ProjectionMemoryEstimate,
 };
+pub use api::SearchProjectionEpochAdvanceVerification;
 pub use api::{
     hawdb_lightning_initial_import_advance_checkpoint,
     hawdb_lightning_initial_import_advance_durable_state_streaming,
@@ -154,10 +156,10 @@ pub use api::{
     KnowledgeSourceCandidateScanOutput, KnowledgeSourceCandidateScanRequest,
     KnowledgeTruncationReasonCode, MissingScoringFeature, NowledgeGraphAdapter,
     NowledgeGraphExplainOutput, NowledgeGraphStatement, NowledgeGraphTransactionOutput,
-    OwnedHostScoringRequest, OwnedQueryRequest, OwnedSqlQueryRequest, PlanCacheBypassReason,
-    PlanCacheLookup, PlanCacheStats, PreparedGraphAnalytics, PreparedProjectionFeed,
-    PreparedProjectionFullSource, PreparedRead, PreparedReadDependencies, PreparedReadLimits,
-    ProfiledRelationalSqlQueryOutput, ProjectionBaselineComparisonConfig,
+    OptimizerQualificationOutput, OwnedHostScoringRequest, OwnedQueryRequest, OwnedSqlQueryRequest,
+    PlanCacheBypassReason, PlanCacheLookup, PlanCacheStats, PreparedGraphAnalytics,
+    PreparedProjectionFeed, PreparedProjectionFullSource, PreparedRead, PreparedReadDependencies,
+    PreparedReadLimits, ProfiledRelationalSqlQueryOutput, ProjectionBaselineComparisonConfig,
     ProjectionBaselineComparisonSession, ProjectionBaselineComparisonStep,
     ProjectionBaselineMappingContext, ProjectionBaselineMappingFunction,
     ProjectionBaselineMappingLimits, ProjectionConsumerCatchUpConfig,
@@ -186,9 +188,9 @@ pub use api::{
     RelationalSqlReadProfile, RelationalSqlRowReadProfile, RelationalSqlStageTimings,
     ScheduledSearchProjectionCatchUpReport, ScoreFeature, ScoringCombination, ScoringEvaluation,
     ScoringFeatureSource, ScoringProgram, ScoringProgramError, ScoringProgramShape, ScoringRequest,
-    ScoringSpec, ScoringSpecError, ScoringTerm, SearchProjectionCatchUpReport,
-    SearchProjectionCatchUpStopReason, SearchProjectionChangeBatch, SearchProjectionConsumer,
-    SearchProjectionConsumerCatchUpReport, SearchProjectionConsumerError,
+    ScoringSpec, ScoringSpecError, ScoringTerm, SearchIndexScanEvidence,
+    SearchProjectionCatchUpReport, SearchProjectionCatchUpStopReason, SearchProjectionChangeBatch,
+    SearchProjectionConsumer, SearchProjectionConsumerCatchUpReport, SearchProjectionConsumerError,
     SearchProjectionConsumerId, SearchProjectionConsumerOptions, SearchProjectionConsumerReadPin,
     SearchProjectionConsumerReadiness, SearchProjectionConsumerRebuildReason,
     SearchProjectionConsumerResult, SearchProjectionConsumerState, SearchProjectionConsumerStatus,
@@ -201,11 +203,11 @@ pub use api::{
     WalGroupCommitAdaptiveColdStartEvidence, WalGroupCommitAdaptivePolicyEvidence,
     WalGroupCommitAdaptiveSteadyStateEvidence, WalGroupCommitConfig, WalGroupCommitDelayPolicy,
     WalGroupCommitEvidence, WalGroupCommitSnapshot, WalGroupCommitTailLatencyEvidence,
-    WalGroupCommitWaitDecision, DEFAULT_MAX_READ_RESULT_PAYLOAD_BYTES,
-    DEFAULT_MAX_READ_RESULT_ROWS, DEFAULT_PESSIMISTIC_LOCK_TIMEOUT,
-    DEFAULT_WAL_GROUP_COMMIT_MAX_BYTES, DEFAULT_WAL_GROUP_COMMIT_MAX_DELAY,
-    DEFAULT_WAL_GROUP_COMMIT_MAX_ENTRIES, HAWDB_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION,
-    HAWDB_LIGHTNING_GRAPH_STREAM_FORMAT_VERSION,
+    WalGroupCommitWaitDecision, DEFAULT_MAX_READ_INTERMEDIATE_ROWS,
+    DEFAULT_MAX_READ_RESULT_PAYLOAD_BYTES, DEFAULT_MAX_READ_RESULT_ROWS,
+    DEFAULT_PESSIMISTIC_LOCK_TIMEOUT, DEFAULT_WAL_GROUP_COMMIT_MAX_BYTES,
+    DEFAULT_WAL_GROUP_COMMIT_MAX_DELAY, DEFAULT_WAL_GROUP_COMMIT_MAX_ENTRIES,
+    HAWDB_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION, HAWDB_LIGHTNING_GRAPH_STREAM_FORMAT_VERSION,
     HAWDB_LIGHTNING_INITIAL_IMPORT_DURABLE_STATE_PROTOCOL,
     HAWDB_LIGHTNING_RELATIONAL_STREAM_FORMAT_VERSION, SLOW_QUERY_LOG_EVENT_PROTOCOL,
     STORAGE_RESOURCE_PROFILE_PROTOCOL,
@@ -222,6 +224,12 @@ pub use api::{
     RetainedNodeLabels, RetainedNodeSnapshotCursor, RetainedNodeTaskCursor, RetainedNodeView,
     RetainedQueryBatch, RetainedQueryCursor, RetainedQueryError, RetainedQueryOptions,
     RetainedQueryProfile, RetainedQueryStatus,
+};
+pub use api::{
+    OptimizerQualificationAttemptLimits, OptimizerQualificationCandidateKind,
+    OptimizerQualificationCandidateOutput, OptimizerQualificationCandidateRequest,
+    OptimizerQualificationCandidateSetOutput, OptimizerQualificationResultError,
+    OPTIMIZER_QUALIFICATION_CANDIDATE_LIMIT,
 };
 pub use api::{
     VectorIndexBuildError, VectorIndexBuildOptions, VectorIndexField, VectorIndexLanguageBudget,
@@ -278,14 +286,68 @@ pub use embedded::{
     EmbeddedDeploymentProfile, EmbeddedQueryError, EmbeddedRuntimeResources, HawDBEmbedded,
     HawDBEmbeddedOpenOptions,
 };
+pub use embedded_store::{
+    bounded_read_evidence_json, bounded_read_evidence_json_with_route_readiness,
+    bounded_read_evidence_json_with_routes, graph_config, graph_config_with_search_mode,
+    graph_read_route_catalog_digest, graph_read_route_spec, graph_read_route_spec_json,
+    graph_read_route_specs_json, required_query_families_for_route,
+    search_candidate_shadow_evidence_json, source_mutation_dual_write_evidence_all_ready,
+    source_mutation_dual_write_readiness, source_mutation_family_requirements,
+    BackgroundMaintenanceReport, BoundedSearchCandidateOutput, CutoverControls,
+    CutoverControlsReport, DefinedSearchProjectionConsumer, EmbeddedGraph,
+    EmbeddedProductionStatus, EmbeddedQueryExecutionPath, EmbeddedQueryOutput, EmbeddedQueryReport,
+    EmbeddedQueryReportOptions, EmbeddedReadOptions, EmbeddedReadOutput, EmbeddedReadReport,
+    EmbeddedReadSnapshot, EmbeddedReadSnapshotBudget, EmbeddedReadSnapshotReport,
+    EmbeddedRuntimeStatus, EmbeddedServingEntrypoint, EmbeddedServingPathReadiness,
+    EmbeddedStorageRecoveryReport, EmbeddedStore, EmbeddedStoreHandle, EmbeddedStoreOpenOptions,
+    EmbeddedStoreOpenReport, ExhaustiveSearchCandidates, GraphMode,
+    GraphOnlySearchProjectionRebuild, GraphReadRouteEvidenceKind, GraphReadRouteOwner,
+    GraphReadRouteSpec, IncrementalSearchMaintenanceOptions, InitialImportProjectionPending,
+    LibraryProductionPathSummary, LibraryReadinessReport, NowledgeQueryRuntimePreflightProbe,
+    NowledgeQueryRuntimePreflightProbeReport, NowledgeQueryRuntimePreflightReport,
+    OperationsReadinessReport, OutOfCoreSearchCandidateOutput, OutOfCoreSearchProjection,
+    PreparedSearchProjectionConsumerUpdate, QualifiedOutOfCoreSearchOptions, ReadControl,
+    ReadinessAreaMap, ReadinessAreaSummary, ReadinessDashboard, ReadinessOptions,
+    ReadinessRedactionSummary, RegisteredSearchProjectionConsumer, RetrievalOutput,
+    RetrievalReport, RouteReadinessSummary, SearchCandidateExhaustionError,
+    SearchCandidateFieldSummary, SearchCandidateFilterPushdownEvidence, SearchCandidateOutput,
+    SearchCandidateReadinessOptions, SearchCandidateReadinessReport, SearchCandidateReport,
+    SearchCandidateRequest, SearchCandidateShadowAccumulator, SearchCandidateShadowEvidence,
+    SearchHydrationOutput, SearchProjection, SearchProjectionOpenMode,
+    SearchProjectionRebuildOptions, SearchProjectionRebuildPhase, SearchProjectionRebuildProgress,
+    SearchProjectionRebuildReport, SearchProjectionRebuildSource,
+    SearchProjectionRebuildVerification, SearchProjectionRole, SlowQueryReport,
+    SlowQueryReportRecord, SourceMutationDualWriteEvidence, SourceMutationDualWriteReadinessReport,
+    SourceMutationFamilyRequirement, StorageLifecycleActionKind, StorageLifecycleDecision,
+    WorkControl, BOUNDED_READ_EVIDENCE_PROTOCOL, CUTOVER_CONTROLS_PROTOCOL,
+    GRAPH_READ_ROUTE_CATALOG_VERSION, LIBRARY_READINESS_PROTOCOL,
+    NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL, OPEN_REPORT_PROTOCOL, OPERATIONS_READINESS_PROTOCOL,
+    PRODUCTION_STATUS_PROTOCOL, QUERY_REPORT_PROTOCOL, READINESS_DASHBOARD_PROTOCOL,
+    READ_REPORT_PROTOCOL, READ_SNAPSHOT_REPORT_PROTOCOL, REQUIRED_BOUNDED_READ_ROUTES,
+    REQUIRED_SOURCE_MUTATION_FAMILIES, RETRIEVAL_REPORT_PROTOCOL, RUNTIME_STATUS_PROTOCOL,
+    SEARCH_CANDIDATE_EVIDENCE_ROUTE, SEARCH_CANDIDATE_EVIDENCE_SOURCE,
+    SEARCH_CANDIDATE_PRIMARY_ENGINE, SEARCH_CANDIDATE_READINESS_PROTOCOL,
+    SEARCH_CANDIDATE_REPORT_PROTOCOL, SEARCH_CANDIDATE_SHADOW_ENGINE,
+    SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL, SEARCH_CANDIDATE_TRACE_EVIDENCE_SOURCE,
+    SEARCH_CANDIDATE_TRACE_PRIMARY_ENGINE, SEARCH_CANDIDATE_TRACE_SHADOW_ENGINE, SEARCH_ROUTE,
+    SERVING_PATH_READINESS_PROTOCOL, SLOW_QUERY_REPORT_PROTOCOL,
+    SOURCE_MUTATION_DUAL_WRITE_READINESS_PROTOCOL, SOURCE_MUTATION_FAMILY_CONTENT_REFRESH_REPARSE,
+    SOURCE_MUTATION_FAMILY_GRAPH_DELETE, SOURCE_MUTATION_FAMILY_INDEXED_TRANSITION,
+    SOURCE_MUTATION_FAMILY_INGEST_CREATE, SOURCE_MUTATION_FAMILY_LIFECYCLE,
+    SOURCE_MUTATION_FAMILY_PATCH_DELETE, SOURCE_MUTATION_FAMILY_REVISION_EDGES,
+    SOURCE_MUTATION_FAMILY_SEARCH_PROJECTION_EFFECTS, STORAGE_LIFECYCLE_DECISION_PROTOCOL,
+};
 #[cfg(feature = "tokio-runtime")]
 pub use embedded_tokio::{
     HawDBTokioEmbedded, HawDBTokioEmbeddedError, TokioQueryBatchStream, TokioQueryStreamOptions,
 };
 pub use error::{
-    FileDescriptorError, HawDBError, ReadBudgetError, ReadBudgetResource, ResourceBudgetError,
-    ResourceBudgetKind, ResourceBudgetScope, Result, StorageFormatError, TransactionRetryError,
-    TransactionRetryReason,
+    FileDescriptorError, HawDBError, ReadBudgetError, ReadBudgetResource, RelationalErrorKind,
+    RelationalErrorSurface, ResourceBudgetError, ResourceBudgetKind, ResourceBudgetScope, Result,
+    SearchProjectionEpochAdvanceRefusal, SearchProjectionRebuildRefusal, StorageFormatError,
+    TransactionRetryError, TransactionRetryReason, APPEND_WAL_FORMAT, LOGICAL_DUMP_FORMAT,
+    RELATIONAL_DURABLE_CODEC_FORMAT, RELATIONAL_ROW_PAGE_FORMAT, RELATIONAL_SCHEMA_FORMAT,
+    SEARCH_PROJECTION_MANIFEST_FORMAT, STORAGE_MANIFEST_FORMAT,
 };
 pub use executor::{
     ProjectedRowRef, QueryRow, QueryRowRef, QueryRows, QuerySchema, ReadExecutionProfile, Row,
@@ -316,7 +378,15 @@ pub use hawdb_bootstrap::{
     verify_hawdb_lightning_staging_catalog, write_bootstrap_atomic_file,
     HawDBLightningPublishOptions, HAWDB_LIGHTNING_STAGING_CATALOG_PROTOCOL_VERSION,
 };
-pub use hawdb_core::{time, Uuid};
+pub use hawdb_core::{temporal, time, TemporalDuration, Uuid};
+pub use hawdb_core::{
+    CompressedHistogram, HistogramBucket, MostCommonValue, PropertyCardinalityEstimate,
+    PropertyEstimateSource,
+};
+pub use hawdb_core::{
+    Decimal, DecimalError, DecimalType, LogicalType, Vector, VectorDimension, VectorDistance,
+    VectorRef,
+};
 pub use hawdb_core::{
     GraphRagCommonPathSummary, GraphRagGeneratedQuery, GraphRagLabelSummary,
     GraphRagPropertySubject, GraphRagPropertySummary, GraphRagQueryBinding, GraphRagQueryDraft,
@@ -332,7 +402,6 @@ pub use hawdb_core::{
     DEFAULT_GRAPH_RAG_MAX_PROPERTIES_PER_SUBJECT, DEFAULT_GRAPH_RAG_MAX_RELATIONSHIP_TYPES,
     DEFAULT_GRAPH_RAG_MAX_ROUTES, GRAPH_RAG_SCHEMA_CONTEXT_PROTOCOL, MAX_GRAPH_RAG_QUERY_LIMIT,
 };
-pub use hawdb_core::{LogicalType, Vector, VectorDimension, VectorDistance, VectorRef};
 pub use hawdb_core::{
     VectorIndexBackend, VectorIndexDescriptor, VectorIndexLsg, VectorIndexTarget,
 };
@@ -396,40 +465,44 @@ pub use hawdb_vector_projection::{
     ProjectionManifest as RaBitQCandidateProjectionManifest,
     ProjectionSearchReport as RaBitQCandidateScanReport, ScanKernel as RaBitQScanKernel,
 };
-pub use mem_integration_bundle::{nowledge_mem_integration_bundle_json, IntegrationBundleInputs};
+pub use logical_dump::{
+    confirm_logical_dump_publication, persistent_format_version, verify_logical_dump,
+    LogicalDumpExportReport, LogicalDumpImportReport, LogicalDumpOptions, LogicalDumpVerifyReport,
+    LOGICAL_DUMP_FORMAT_VERSION, PERSISTENT_FORMAT_VERSION,
+};
+pub use mem_integration_bundle::{integration_bundle_json, IntegrationBundleInputs};
 pub use mem_integration_readiness::{
     background_maintenance_cutover_readiness, bounded_read_alignment_cutover_readiness,
     bounded_read_cutover_readiness, content_store_boundary_cutover_readiness,
-    graph_replacement_cutover_readiness, graph_route_alignment_cutover_readiness,
-    graph_route_cutover_readiness, graph_route_parity_alignment_cutover_readiness,
-    hawdb_submodule_cutover_readiness, integration_bundle_protocol_cutover_readiness,
-    legacy_coexistence_cutover_readiness, library_readiness_cutover_readiness,
-    nowledge_mem_final_cutover_preflight, nowledge_mem_final_cutover_preflight_json,
-    nowledge_mem_integration_readiness, nowledge_mem_integration_readiness_json,
-    previous_wrapper_preflight_cutover_readiness, query_family_replacement_cutover_readiness,
+    final_cutover_preflight, final_cutover_preflight_json, graph_replacement_cutover_readiness,
+    graph_route_alignment_cutover_readiness, graph_route_cutover_readiness,
+    graph_route_parity_alignment_cutover_readiness, hawdb_submodule_cutover_readiness,
+    integration_bundle_protocol_cutover_readiness, integration_readiness,
+    integration_readiness_json, legacy_coexistence_cutover_readiness,
+    library_readiness_cutover_readiness, previous_wrapper_preflight_cutover_readiness,
+    query_family_replacement_cutover_readiness,
     query_runtime_preflight_alignment_cutover_readiness, query_runtime_preflight_cutover_readiness,
     replacement_summary_protocol_cutover_readiness, route_ownership_cutover_readiness,
     search_candidate_cutover_readiness, search_projection_cutover_readiness,
     storage_recovery_cutover_readiness, BackgroundMaintenanceCutoverReadiness,
     BoundedReadAlignmentCutoverReadiness, BoundedReadCutoverReadiness,
-    ContentStoreBoundaryCutoverReadiness, GraphReplacementCutoverReadiness,
-    GraphRouteAlignmentCutoverReadiness, GraphRouteCutoverReadiness,
-    GraphRouteParityAlignmentCutoverReadiness, HawDBSubmoduleCutoverReadiness,
-    IntegrationBundleProtocolCutoverReadiness, LegacyCoexistenceCutoverReadiness,
-    LibraryReadinessCutoverReadiness, NowledgeMemFinalCutoverPreflightReport,
-    NowledgeMemIntegrationCheckReport, NowledgeMemIntegrationNextAction,
-    NowledgeMemIntegrationReadinessReport, PreviousWrapperPreflightCutoverReadiness,
-    QueryFamilyReplacementCutoverReadiness, QueryRuntimePreflightAlignmentCutoverReadiness,
-    QueryRuntimePreflightCutoverReadiness, ReplacementSummaryProtocolCutoverReadiness,
-    RouteOwnershipCutoverReadiness, SearchCandidateCutoverReadiness,
-    SearchProjectionCutoverReadiness, StorageRecoveryCutoverReadiness,
-    NOWLEDGE_MEM_FINAL_CUTOVER_PREFLIGHT_PROTOCOL, NOWLEDGE_MEM_HAWDB_INTEGRATION_BUNDLE_PROTOCOL,
-    NOWLEDGE_MEM_INTEGRATION_READINESS_PROTOCOL,
+    ContentStoreBoundaryCutoverReadiness, FinalCutoverPreflightReport,
+    GraphReplacementCutoverReadiness, GraphRouteAlignmentCutoverReadiness,
+    GraphRouteCutoverReadiness, GraphRouteParityAlignmentCutoverReadiness,
+    HawDBSubmoduleCutoverReadiness, IntegrationBundleProtocolCutoverReadiness,
+    IntegrationCheckReport, IntegrationNextAction, IntegrationReadinessReport,
+    LegacyCoexistenceCutoverReadiness, LibraryReadinessCutoverReadiness,
+    PreviousWrapperPreflightCutoverReadiness, QueryFamilyReplacementCutoverReadiness,
+    QueryRuntimePreflightAlignmentCutoverReadiness, QueryRuntimePreflightCutoverReadiness,
+    ReplacementSummaryProtocolCutoverReadiness, RouteOwnershipCutoverReadiness,
+    SearchCandidateCutoverReadiness, SearchProjectionCutoverReadiness,
+    StorageRecoveryCutoverReadiness, FINAL_CUTOVER_PREFLIGHT_PROTOCOL,
+    HAWDB_INTEGRATION_BUNDLE_PROTOCOL, INTEGRATION_READINESS_PROTOCOL,
 };
 pub use mem_library_readiness::{
     parse_bounded_probe_json, parse_mem_library_covered_routes_json,
     parse_mem_library_graph_route_readiness_json, parse_mem_library_readiness_mode,
-    parse_parameters_json, value_from_json, NowledgeMemLibraryReadinessRunReport,
+    parse_parameters_json, value_from_json, LibraryReadinessRunReport,
 };
 pub use nowledge_fuzz::{
     nowledge_query_fuzz_harness, NowledgeQueryFuzzCaseReport, NowledgeQueryFuzzHarnessOptions,
@@ -448,73 +521,6 @@ pub use nowledge_inventory::{
     BackgroundMaintenanceEvidenceHealth, NowledgeCypherMigrationGateJsonOptions,
     NowledgeInventoryScanOptions, ReplacementReadinessFamilyEvidenceHealth,
     StorageRecoveryEvidenceHealth, REQUIRED_NOWLEDGE_REPLACEMENT_QUERY_FAMILIES,
-};
-pub use nowledge_mem::{
-    nowledge_mem_bounded_read_evidence_json,
-    nowledge_mem_bounded_read_evidence_json_with_route_readiness,
-    nowledge_mem_bounded_read_evidence_json_with_routes, nowledge_mem_graph_config,
-    nowledge_mem_graph_config_with_search_mode, nowledge_mem_graph_read_route_catalog_digest,
-    nowledge_mem_graph_read_route_spec, nowledge_mem_graph_read_route_spec_json,
-    nowledge_mem_graph_read_route_specs_json, nowledge_mem_required_query_families_for_route,
-    nowledge_mem_search_candidate_shadow_evidence_json,
-    nowledge_mem_source_mutation_dual_write_evidence_all_ready,
-    nowledge_mem_source_mutation_dual_write_readiness,
-    nowledge_mem_source_mutation_family_requirements, NowledgeMemBackgroundMaintenanceReport,
-    NowledgeMemCutoverControls, NowledgeMemCutoverControlsReport,
-    NowledgeMemDefinedSearchProjectionConsumer, NowledgeMemEmbeddedStore,
-    NowledgeMemEmbeddedStoreHandle, NowledgeMemGraph, NowledgeMemGraphMode,
-    NowledgeMemGraphReadRouteEvidenceKind, NowledgeMemGraphReadRouteOwner,
-    NowledgeMemGraphReadRouteSpec, NowledgeMemIncrementalSearchMaintenanceOptions,
-    NowledgeMemLibraryProductionPathSummary, NowledgeMemLibraryReadinessReport,
-    NowledgeMemOpenOptions, NowledgeMemOpenReport, NowledgeMemOperationsReadinessReport,
-    NowledgeMemOutOfCoreSearchCandidateOutput, NowledgeMemOutOfCoreSearchProjection,
-    NowledgeMemPreparedConsumerUpdate, NowledgeMemProductionStatus,
-    NowledgeMemQualifiedOutOfCoreSearchOptions, NowledgeMemQueryExecutionPath,
-    NowledgeMemQueryOutput, NowledgeMemQueryReport, NowledgeMemQueryReportOptions,
-    NowledgeMemReadControl, NowledgeMemReadOptions, NowledgeMemReadOutput, NowledgeMemReadReport,
-    NowledgeMemReadSnapshot, NowledgeMemReadSnapshotBudget, NowledgeMemReadSnapshotReport,
-    NowledgeMemReadinessAreaMap, NowledgeMemReadinessAreaSummary, NowledgeMemReadinessDashboard,
-    NowledgeMemReadinessOptions, NowledgeMemReadinessRedactionSummary, NowledgeMemRetrievalOutput,
-    NowledgeMemRetrievalReport, NowledgeMemRouteReadinessSummary, NowledgeMemRuntimeStatus,
-    NowledgeMemSearchCandidateFieldSummary, NowledgeMemSearchCandidateFilterPushdownEvidence,
-    NowledgeMemSearchCandidateOutput, NowledgeMemSearchCandidateReadinessOptions,
-    NowledgeMemSearchCandidateReadinessReport, NowledgeMemSearchCandidateReport,
-    NowledgeMemSearchCandidateRequest, NowledgeMemSearchCandidateShadowAccumulator,
-    NowledgeMemSearchCandidateShadowEvidence, NowledgeMemSearchHydrationOutput,
-    NowledgeMemSearchProjection, NowledgeMemSearchProjectionConsumer,
-    NowledgeMemSearchProjectionOpenMode, NowledgeMemSearchProjectionRole,
-    NowledgeMemServingEntrypoint, NowledgeMemServingPathReadiness, NowledgeMemSlowQueryRecord,
-    NowledgeMemSlowQueryReport, NowledgeMemSourceMutationDualWriteEvidence,
-    NowledgeMemSourceMutationDualWriteReadinessReport, NowledgeMemSourceMutationFamilyRequirement,
-    NowledgeMemStorageLifecycleActionKind, NowledgeMemStorageLifecycleDecision,
-    NowledgeMemStorageRecoveryReport, NowledgeMemWorkControl, NowledgeQueryRuntimePreflightProbe,
-    NowledgeQueryRuntimePreflightProbeReport, NowledgeQueryRuntimePreflightReport,
-    NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL, NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL,
-    NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION, NOWLEDGE_MEM_LIBRARY_READINESS_PROTOCOL,
-    NOWLEDGE_MEM_OPEN_REPORT_PROTOCOL, NOWLEDGE_MEM_OPERATIONS_READINESS_PROTOCOL,
-    NOWLEDGE_MEM_PRODUCTION_STATUS_PROTOCOL, NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL,
-    NOWLEDGE_MEM_READINESS_DASHBOARD_PROTOCOL, NOWLEDGE_MEM_READ_REPORT_PROTOCOL,
-    NOWLEDGE_MEM_READ_SNAPSHOT_REPORT_PROTOCOL, NOWLEDGE_MEM_RETRIEVAL_REPORT_PROTOCOL,
-    NOWLEDGE_MEM_RUNTIME_STATUS_PROTOCOL, NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_ROUTE,
-    NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_SOURCE, NOWLEDGE_MEM_SEARCH_CANDIDATE_PRIMARY_ENGINE,
-    NOWLEDGE_MEM_SEARCH_CANDIDATE_READINESS_PROTOCOL,
-    NOWLEDGE_MEM_SEARCH_CANDIDATE_REPORT_PROTOCOL, NOWLEDGE_MEM_SEARCH_CANDIDATE_SHADOW_ENGINE,
-    NOWLEDGE_MEM_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
-    NOWLEDGE_MEM_SEARCH_CANDIDATE_TRACE_EVIDENCE_SOURCE,
-    NOWLEDGE_MEM_SEARCH_CANDIDATE_TRACE_PRIMARY_ENGINE,
-    NOWLEDGE_MEM_SEARCH_CANDIDATE_TRACE_SHADOW_ENGINE, NOWLEDGE_MEM_SEARCH_ROUTE,
-    NOWLEDGE_MEM_SERVING_PATH_READINESS_PROTOCOL, NOWLEDGE_MEM_SLOW_QUERY_REPORT_PROTOCOL,
-    NOWLEDGE_MEM_SOURCE_MUTATION_DUAL_WRITE_READINESS_PROTOCOL,
-    NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_CONTENT_REFRESH_REPARSE,
-    NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_GRAPH_DELETE,
-    NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_INDEXED_TRANSITION,
-    NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_INGEST_CREATE,
-    NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_LIFECYCLE,
-    NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_PATCH_DELETE,
-    NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_REVISION_EDGES,
-    NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_SEARCH_PROJECTION_EFFECTS,
-    NOWLEDGE_MEM_STORAGE_LIFECYCLE_DECISION_PROTOCOL, NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL,
-    REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES, REQUIRED_NOWLEDGE_MEM_SOURCE_MUTATION_FAMILIES,
 };
 pub use previous_wrapper_preflight::{
     nowledge_previous_wrapper_preflight_check, nowledge_previous_wrapper_preflight_check_json,
@@ -537,33 +543,33 @@ pub use replacement_summary::{
     GraphRouteReadinessSummary, NowledgeReplacementSummaryOptions,
 };
 pub use route_ownership::{
-    nowledge_mem_route_ownership_all_hawdb, nowledge_mem_route_ownership_all_legacy,
-    nowledge_mem_route_ownership_for_engine, nowledge_mem_route_ownership_readiness,
-    NowledgeMemRouteOwnership, NowledgeMemRouteOwnershipPolicy,
-    NowledgeMemRouteOwnershipReadinessReport, NowledgeMemRouteReadEngine,
-    NOWLEDGE_MEM_ROUTE_OWNERSHIP_PROTOCOL,
+    route_ownership_all_hawdb, route_ownership_all_legacy, route_ownership_for_engine,
+    route_ownership_readiness, RouteOwnership, RouteOwnershipPolicy, RouteOwnershipReadinessReport,
+    RouteReadEngine, ROUTE_OWNERSHIP_PROTOCOL,
 };
 pub use schema::{
     AdvancedStatisticsFreshness, BasicGraphStatistics, CompositeIndexDescriptor,
-    ConstraintDescriptor, ConstraintId, ConstraintKind, ConstraintSubject, GraphStatistics,
-    IndexDescriptor, IndexId, IndexKind, IndexStatisticsSample, PropertyDescriptor, PropertyId,
-    PropertyType, SchemaObjectState, TableDescriptor, TableId, TableKind,
+    ConstraintDescriptor, ConstraintId, ConstraintKind, ConstraintSubject, DeclaredPropertyDefault,
+    GraphStatistics, IndexDescriptor, IndexId, IndexKind, IndexStatisticsSample, PropertyDefault,
+    PropertyDescriptor, PropertyId, PropertySchema, PropertyType, SchemaObjectState,
+    TableDescriptor, TableId, TableKind,
 };
 #[cfg(feature = "vector-search")]
 pub use search::rabitq_projection::{
-    RaBitQCandidate, RaBitQCandidateOutput, RaBitQCandidateProjection,
+    RaBitQBitWidth, RaBitQCandidate, RaBitQCandidateOutput, RaBitQCandidateProjection,
     RaBitQCandidateProjectionBuildOptions, RaBitQCandidateScanOptions,
 };
 #[doc(hidden)]
 pub use search::PreparedSearchPublication;
 pub use search::{
     AdaptiveVectorSearchOptions, CompressedVectorSearchMode, GovernedSearchGenerationUpdate,
-    GovernedSearchGenerationWriter, MetadataRepairOptions, MetadataRepairSummary,
-    SearchAccessControlContext, SearchAnalyzerLexicon, SearchBaselineComparisonLimits,
-    SearchBaselineComparisonReport, SearchBodyReadOptions, SearchCandidateSetReport,
-    SearchCheckpointReport, SearchDerivedArtifactReport, SearchDocument, SearchDocumentBody,
-    SearchDocumentHeader, SearchEmbeddingManifest, SearchEmptyReasonCode, SearchFallbackReasonCode,
-    SearchFusionWeights, SearchGenerationAdmission, SearchHit, SearchIndex,
+    GovernedSearchGenerationWriter, LexicalQueryTermPolicy, MetadataRepairOptions,
+    MetadataRepairSummary, SearchAccessControlContext, SearchAnalyzerLexicon,
+    SearchBaselineComparisonLimits, SearchBaselineComparisonReport, SearchBodyReadOptions,
+    SearchCandidateSetReport, SearchCheckpointReport, SearchDerivedArtifactReport, SearchDocument,
+    SearchDocumentBody, SearchDocumentHeader, SearchDocumentSetDigest, SearchEmbeddingManifest,
+    SearchEmptyReasonCode, SearchFallbackReasonCode, SearchFusionWeights,
+    SearchGenerationAdmission, SearchHit, SearchHitHydration, SearchIndex,
     SearchLexicalFeasibilityCoverage, SearchLexicalFeasibilityMetrics,
     SearchLexicalProductionQualificationReport, SearchLexicalSourcePolicy, SearchLexicalTermPolicy,
     SearchMatchedBaseline, SearchMode, SearchMutationInspectionInput, SearchMutationInspectionStep,
@@ -578,14 +584,15 @@ pub use search::{
     SearchOutOfCoreSegmentCompactionPolicy, SearchOutOfCoreSegmentCompactionReport,
     SearchOutOfCoreUnorderedMutationWriter, SearchOutOfCoreUnorderedReplacementWriter,
     SearchPredicateFieldPruningReport, SearchPredicatePushdownReport,
-    SearchProjectionCleanupOptions, SearchProjectionCleanupReport, SearchProjectionDelta,
-    SearchProjectionDeltaReport, SearchProjectionFreshness, SearchProjectionKind,
-    SearchProjectionProbeOptions, SearchProjectionQualificationIdentity, SearchProjectionRow,
-    SearchProjectionScanBudget, SearchProjectionScanReport, SearchQueryOptions,
-    SearchRangeReadConfig, SearchRebuildOptions, SearchRebuildSummary, SearchResultSet,
-    SearchRetrieverCandidateSetReport, SearchScoredCandidate, SearchStagingCleanupReport,
-    SearchTextSeedOutput, SearchTextSeedReport, SearchTopKScoreParity, SearchTruncationReasonCode,
-    SearchUnorderedMutationLimits, SearchUnorderedMutationReport, SearchVerifiedBody,
+    SearchProjectionCleanupOptions, SearchProjectionCleanupOutcome, SearchProjectionCleanupReport,
+    SearchProjectionDelta, SearchProjectionDeltaReport, SearchProjectionEpochAdvanceReport,
+    SearchProjectionFreshness, SearchProjectionKind, SearchProjectionProbeOptions,
+    SearchProjectionQualificationIdentity, SearchProjectionRow, SearchProjectionScanBudget,
+    SearchProjectionScanReport, SearchQueryOptions, SearchRangeReadConfig, SearchRebuildOptions,
+    SearchRebuildSummary, SearchResultSet, SearchRetrieverCandidateSetReport,
+    SearchScoredCandidate, SearchStagingCleanupReport, SearchTextSeedOutput, SearchTextSeedReport,
+    SearchTopKScoreParity, SearchTruncationReasonCode, SearchUnorderedMutationLimits,
+    SearchUnorderedMutationReport, SearchVectorScoring, SearchVerifiedBody,
     VectorProjectionQualificationIdentity, VectorProjectionResourceEvidence,
     VectorRecallProductionQualificationReport, VectorRecallValidationBlocker,
     VectorRecallValidationOptions, VectorRecallValidationReport, VectorSearchExecutionOptions,
@@ -602,31 +609,23 @@ pub use search_projection_evidence::{
     nowledge_search_projection_probe_contract_json, NowledgeSearchProjectionEvidenceReport,
 };
 pub use search_route_ownership::{
-    active_search_route_read_requirement, nowledge_mem_active_search_route_ownership_all_hawdb,
-    nowledge_mem_active_search_route_ownership_all_lancedb,
-    nowledge_mem_active_search_route_ownership_for_engine,
-    nowledge_mem_active_search_route_ownership_readiness,
-    nowledge_mem_active_search_route_read_evidence_all_hawdb_ready,
-    nowledge_mem_active_search_route_read_requirements, nowledge_mem_active_search_route_readiness,
-    nowledge_mem_search_route_ownership_all_hawdb, nowledge_mem_search_route_ownership_all_lancedb,
-    nowledge_mem_search_route_ownership_for_engine, nowledge_mem_search_route_ownership_readiness,
-    required_projection_route_for_active_search_route, NowledgeMemActiveSearchRouteOwnership,
-    NowledgeMemActiveSearchRouteOwnershipReadinessReport, NowledgeMemActiveSearchRouteReadEvidence,
-    NowledgeMemActiveSearchRouteReadRequirement, NowledgeMemActiveSearchRouteReadinessReport,
-    NowledgeMemSearchReadEngine, NowledgeMemSearchRouteOwnership,
-    NowledgeMemSearchRouteOwnershipPolicy, NowledgeMemSearchRouteOwnershipReadinessReport,
-    NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_COMMUNITY_DISCOVERY,
-    NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_DEEP_SEARCH_GRAPH_EXPANSION,
-    NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_ENTITY_DISCOVERY, NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_FS_RECALL,
-    NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_MCP_SEARCH,
-    NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_READINESS_PROTOCOL,
-    NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_SOURCE_CHUNK_RECALL,
-    NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_SOURCE_RECALL,
-    NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_THREAD_MESSAGE_FTS, NOWLEDGE_MEM_SEARCH_ROUTE_COMMUNITY,
-    NOWLEDGE_MEM_SEARCH_ROUTE_ENTITY, NOWLEDGE_MEM_SEARCH_ROUTE_MEMORY,
-    NOWLEDGE_MEM_SEARCH_ROUTE_MESSAGE, NOWLEDGE_MEM_SEARCH_ROUTE_OWNERSHIP_PROTOCOL,
-    NOWLEDGE_MEM_SEARCH_ROUTE_SOURCE, NOWLEDGE_MEM_SEARCH_ROUTE_SOURCE_CHUNK,
-    REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES, REQUIRED_NOWLEDGE_MEM_SEARCH_ROUTES,
+    active_search_route_ownership_all_hawdb, active_search_route_ownership_all_lancedb,
+    active_search_route_ownership_for_engine, active_search_route_ownership_readiness,
+    active_search_route_read_evidence_all_hawdb_ready, active_search_route_read_requirement,
+    active_search_route_read_requirements, active_search_route_readiness,
+    required_projection_route_for_active_search_route, search_route_ownership_all_hawdb,
+    search_route_ownership_all_lancedb, search_route_ownership_for_engine,
+    search_route_ownership_readiness, ActiveSearchRouteOwnership,
+    ActiveSearchRouteOwnershipReadinessReport, ActiveSearchRouteReadEvidence,
+    ActiveSearchRouteReadRequirement, ActiveSearchRouteReadinessReport, SearchReadEngine,
+    SearchRouteOwnership, SearchRouteOwnershipPolicy, SearchRouteOwnershipReadinessReport,
+    ACTIVE_SEARCH_ROUTE_COMMUNITY_DISCOVERY, ACTIVE_SEARCH_ROUTE_DEEP_SEARCH_GRAPH_EXPANSION,
+    ACTIVE_SEARCH_ROUTE_ENTITY_DISCOVERY, ACTIVE_SEARCH_ROUTE_FS_RECALL,
+    ACTIVE_SEARCH_ROUTE_MCP_SEARCH, ACTIVE_SEARCH_ROUTE_READINESS_PROTOCOL,
+    ACTIVE_SEARCH_ROUTE_SOURCE_CHUNK_RECALL, ACTIVE_SEARCH_ROUTE_SOURCE_RECALL,
+    ACTIVE_SEARCH_ROUTE_THREAD_MESSAGE_FTS, REQUIRED_ACTIVE_SEARCH_ROUTES, REQUIRED_SEARCH_ROUTES,
+    SEARCH_ROUTE_COMMUNITY, SEARCH_ROUTE_ENTITY, SEARCH_ROUTE_MEMORY, SEARCH_ROUTE_MESSAGE,
+    SEARCH_ROUTE_OWNERSHIP_PROTOCOL, SEARCH_ROUTE_SOURCE, SEARCH_ROUTE_SOURCE_CHUNK,
 };
 pub use storage_recovery_evidence::nowledge_storage_recovery_evidence_json;
 pub use store::{

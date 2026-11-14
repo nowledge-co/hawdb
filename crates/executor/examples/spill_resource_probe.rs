@@ -163,6 +163,7 @@ fn query(
             memory_ledger: &ledger,
             task_context: task.as_ref(),
             observer: &observer,
+            graph: None,
         },
         ExecutionLimit::unlimited(),
         &mut |batch| {

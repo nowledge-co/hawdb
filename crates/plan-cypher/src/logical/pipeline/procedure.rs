@@ -1,3 +1,17 @@
+// Copyright 2026 Nowledge
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use super::*;
 use hawdb_cypher::{OrderExpression as CypherOrderExpression, ProcedureCallKind, YieldItem};
 
@@ -443,6 +457,9 @@ fn graph_algorithm_requested_columns(yields: &[YieldItem], tail: &[Clause]) -> B
                 CypherOrderExpression::Value(value) => {
                     collect_scalar_expression_variables(value, &mut additional)
                 }
+                CypherOrderExpression::Projection(expression) => {
+                    collect_algorithm_return_columns(expression, &mut additional)
+                }
                 CypherOrderExpression::Column(name)
                 | CypherOrderExpression::Property { variable: name, .. }
                 | CypherOrderExpression::Id { variable: name } => {
@@ -471,6 +488,11 @@ fn collect_algorithm_return_columns(
         ReturnExpressionKind::Arithmetic { first, rest } => {
             collect_algorithm_return_columns(first, names);
             for (_, expression) in rest {
+                collect_algorithm_return_columns(expression, names);
+            }
+        }
+        ReturnExpressionKind::ListFunction { arguments, .. } => {
+            for expression in arguments {
                 collect_algorithm_return_columns(expression, names);
             }
         }

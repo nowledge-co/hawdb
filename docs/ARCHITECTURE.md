@@ -69,6 +69,11 @@ be registered or replaced; existing unfiltered list forms keep their capacity.
 
 ## Crate Layout
 
+Host-facing types use capability names such as `SearchCandidateRequest` and
+`EmbeddedStoreHandle`. See [embedded API naming](PUBLIC_API_NAMING.md) for the
+source migration and the distinction between Rust names and serialized protocol
+identifiers.
+
 HawDB follows a RisingWave/Chryso-style workspace-and-facade layout. The root
 crate remains the stable embedded facade, while implementation crates are split
 out as interfaces harden and dependency direction becomes acyclic. The current
@@ -101,13 +106,13 @@ integration API or dependency from evidence back to search.
 The internal `hawdb-search::candidate_evidence` module owns candidate requests,
 reports and readiness assessment, compressed-retrieval advice, and shadow
 accumulation/probe decoding. These contracts consume search-owned result and
-recall models without depending on the database facade. Root `nowledge_mem`
-and `search_candidate_shadow_evidence` preserve their existing public paths;
+recall models without depending on the database facade. Root `embedded_store`
+and `search_candidate_shadow_evidence` re-export those same contracts;
 query execution, CLI file reads, and overall activation/readiness assembly
 remain in the root. Private model methods are not promoted to new host APIs.
 
 Library/operations readiness report models, reduction and JSON serialization
-belong to `hawdb-readiness::nowledge_mem_reports`. The `hawdb::nowledge_mem`
+belong to `hawdb-readiness::embedded_store_reports`. The `hawdb::embedded_store`
 and crate-root paths re-export the owner types without conversion. The facade
 retains live database/search sampling, runtime admission and activation control.
 Internal snapshot constructors are hidden from the public API documentation.
@@ -218,7 +223,7 @@ tests live with storage; checkpoint/reopen snapshot coverage stays at the facade
 Source mutation dual-write evidence models and readiness evaluation belong to
 `hawdb-readiness::source_mutation`. The owner retains the eight-family inventory,
 independent ACK/watermark and replay checks, projection-payload requirements,
-stable evidence ordering, and v1 report serialization. Root `nowledge_mem`
+stable evidence ordering, and v1 report serialization. Root `embedded_store`
 re-exports the same concrete types and functions; replacement-summary and host
 integration remain at the facade. This evaluates supplied evidence, not actual
 dual-write execution or bootstrap verification, and cannot authorize activation
@@ -428,7 +433,7 @@ Graph route catalog metadata and ownership readiness belong to the existing
 owns required routes, execution/evidence roles, query-family requirements, and
 its ordered v1 digest. Ownership checks consume a typed readiness summary; they
 do not open a database, execute probes, publish ownership, or activate cutover.
-The root `route_ownership` and `nowledge_mem` paths retain re-exports of the same
+The root `route_ownership` and `embedded_store` paths retain re-exports of the same
 types and functions. Database-running readiness, full verification, and cutover
 integration tests remain at the root boundary.
 
@@ -575,8 +580,8 @@ The `hawdb` crate remains the host integration boundary. Its `api` module keeps
 public types/configuration and delegates implementations within the same crate:
 `database_lifecycle`, `database_query`, `database_transactions`,
 `database_projection`, `database_maintenance`, `transactions`, `read`,
-`graph_adapter`, and `retrieval`. `nowledge_mem/handle.rs` owns the embedded
-publication handle and its pinned snapshots; `nowledge_mem/registered_search.rs`
+`graph_adapter`, and `retrieval`. `embedded_store/handle.rs` owns the embedded
+publication handle and its pinned snapshots; `embedded_store/registered_search.rs`
 connects that same owner to registered Search consumers. These modules create no
 additional crate or host control plane.
 
@@ -623,7 +628,9 @@ HawDB stores a property graph:
 - `RelId`: stable internal relationship identity
 - `LabelId`: catalog identity for node labels
 - `RelTypeId`: catalog identity for relationship types
-- `Value`: null, bool, integer, float, string, bytes, list, map, temporal values
+- `Value`: null, bool, integer, float, string, bytes, UUID, vector, list, map,
+  and the openCypher temporal types date, local time, local datetime, zoned
+  datetime (fixed offset) and duration ([Cypher temporal types](CYPHER_TEMPORAL.md))
 - `NodeRecord`: node id, label set, property map
 - `RelRecord`: relationship id, source id, target id, type id, property map
 
@@ -737,11 +744,11 @@ context snapshots and invalid parameter maps before submitting the generated
 Cypher through the normal query runtime.
 
 Application-bound hosts use the same contract through
-`NowledgeMemEmbeddedStoreHandle::graph_rag_schema_context` and
+`EmbeddedStoreHandle::graph_rag_schema_context` and
 `read_generated_graph_rag`. The handle releases its read lock while the host or
 LLM prepares a draft, then opens a fresh pinned read transaction for execution.
 An intervening graph commit therefore fails closed as a stale schema context.
-The generated query remains subject to `NowledgeMemReadOptions` row and payload
+The generated query remains subject to `EmbeddedReadOptions` row and payload
 budgets.
 
 Typed two-hop generation validates both one-hop legs independently, including
@@ -918,6 +925,7 @@ properties kept as separate contracts:
 Core physical operators:
 
 - `SeqNodeScan`
+- `RelationshipSeededNodeScan`
 - `IndexNodeSeek`
 - `IndexNodeCompositeSeek`
 - `IndexNodeTextSeek`
@@ -1008,6 +1016,14 @@ Implementation rules:
 - `NodeScan` to `SeqNodeScan`
 - `NodeScan + property predicate` to `IndexNodeSeek`
 - `Expand` to `AdjacencyExpand`
+- the source `SeqNodeScan` (labeled or unlabeled) of a mandatory single-hop
+  `AdjacencyExpand` with relationship property equalities, or with a
+  relationship-property `IN` in the filter directly above it (the filter
+  stays), to `RelationshipSeededNodeScan` when fewer relationships are
+  estimated to match than the scan visits nodes; resident stores seed from
+  the relationship property index, out-of-core stores from the persisted
+  relationship equality projection merged with the delta, and an `IN` list
+  unions its values' postings
 - selective pattern fragment to `HashJoin`
 - correlated pattern fragment to `NestedLoopApply`
 - mutation logical nodes to `MutationExec`
@@ -1152,7 +1168,7 @@ gate decision is blocked. With `--require-cutover-evidence`, the command also
 runs the ready preflight and requires previous-wrapper shadow evidence, making it
 suitable for isolated release or nightly cutover evidence generation. Production
 Mem should consume typed Rust library gates such as
-`nowledge_mem_final_cutover_preflight` instead of invoking this CLI path.
+`final_cutover_preflight` instead of invoking this CLI path.
 External shadow adapter smoke reports include a `dual_engine_evidence` object
 that records the HawDB primary side, the previous-wrapper shadow side, matched
 check count, primary-only count, and readiness. Preflight consumes this field
@@ -1291,10 +1307,10 @@ BM25 consumes that set through fallible membership checks, vector scoring reads
 only vector ranges, and full document ranges are touched only for final-page
 hydration. Explicit budgets cover compressed and decompressed segments,
 candidate spill and block reads, retained score entries, hydrated rows, and
-hydrated bytes. The typed `NowledgeMemOutOfCoreSearchProjection` facade exposes
+hydrated bytes. The typed `OutOfCoreSearchProjection` facade exposes
 this read path to Mem.
 
-Production callers must use `NowledgeMemOutOfCoreSearchProjection::open_production`
+Production callers must use `OutOfCoreSearchProjection::open_production`
 or `open_production_with_config`. These constructors require a
 generation-bound `SearchLexicalProductionQualificationReport` and recompute the
 admission decision from raw evidence instead of trusting its `ready` field. The
@@ -1496,6 +1512,16 @@ operations and source graph commit lag from the caller-owned projection, letting
 the QoS ranker prioritize stale graph-derived projection maintenance by expected
 value. This keeps FTS/vector projection maintenance incremental without writing
 search state into the graph WAL.
+
+An initial import of an existing search corpus applies pages with
+`apply_initial_import_projection_delta`, which changes only the resident
+projection. It makes them durable with `checkpoint_initial_import_projection`,
+which publishes one complete generation. A crash discards un-checkpointed pages
+and reopens at the last checkpoint. The host advances its page cursor only after
+a checkpoint succeeds and replays idempotently from there. Because each
+checkpoint rewrites the whole projection, hosts checkpoint on a doubling
+schedule, optionally capped, instead of once per page. See
+[initial import checkpoints](SEARCH_INITIAL_IMPORT_CHECKPOINT.md).
 
 HawDB Lightning bootstrap export follows the same resource boundary for
 embedded deployments. One export pins a shared database commit epoch and emits

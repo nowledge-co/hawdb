@@ -1,5 +1,5 @@
 // Copyright 2026 Nowledge
-// Licensed under the Apache License, Version 2.0.
+// SPDX-License-Identifier: Apache-2.0
 
 //! Immutable Consumer generation metadata. A decoded description is not a
 //! publication, source authority, completed receipt or serving capability.

@@ -77,12 +77,63 @@ pub(crate) fn evaluate_predicate_with_context(
     Ok(evaluate_predicate_truth(predicate, binding, &context)?.is_true())
 }
 
+/// Evaluates `conjuncts` exactly as `Predicate::And` over them: in order,
+/// stopping at the first false conjunct, true only when every one is true.
+pub(crate) fn evaluate_conjunction_with_context(
+    conjuncts: &[&Predicate],
+    catalog: &Catalog,
+    store: &dyn GraphExecutionRead,
+    binding: &Binding,
+    observer: &dyn ExecutionObserver,
+    adjacency_memory: AdjacencyReadMemory<'_>,
+    task_context: Option<&RuntimeTaskContext>,
+) -> Result<bool> {
+    crate::pipeline::runtime_checkpoint(task_context)?;
+    if let Some(task) = task_context {
+        task.charge_work(1)?;
+    }
+    let context = PredicateEvaluationContext {
+        catalog,
+        store,
+        observer,
+        adjacency_memory,
+        task_context,
+    };
+    let mut truth = PredicateTruth::True;
+    for conjunct in conjuncts {
+        truth = truth.and(evaluate_predicate_truth(conjunct, binding, &context)?);
+        if truth == PredicateTruth::False {
+            break;
+        }
+    }
+    Ok(truth.is_true())
+}
+
 struct PredicateEvaluationContext<'a> {
     catalog: &'a Catalog,
     store: &'a dyn GraphExecutionRead,
     observer: &'a dyn ExecutionObserver,
     adjacency_memory: AdjacencyReadMemory<'a>,
     task_context: Option<&'a RuntimeTaskContext>,
+}
+
+impl<'a> PredicateEvaluationContext<'a> {
+    /// The same store and budgets for pattern expressions in the predicate.
+    fn expression_graph(&self) -> ExpressionGraph<'a> {
+        let budget = std::num::NonZeroUsize::new(self.adjacency_memory.budget_bytes)
+            .unwrap_or(std::num::NonZeroUsize::MIN);
+        ExpressionGraph {
+            store: self.store,
+            context: crate::graph_match::MatchContext {
+                catalog: self.catalog,
+                observer: self.observer,
+                task_context: self.task_context,
+                query_memory_bytes: budget,
+                blocking_operator_bytes: budget,
+            },
+            account: self.adjacency_memory.account,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,6 +194,23 @@ pub(super) fn predicate_comparison_truth(
     }
 }
 
+/// `<`, `<=`, `>` and `>=`: NULL for a NULL operand and for a pair without
+/// an order (two durations), otherwise HawDB's comparison. Every comparison
+/// form (property, parameter, folded literal or general expression) uses this,
+/// so `NOT` sees the same truth whether or not planning folded the operand.
+fn predicate_ordering_truth(
+    actual: Option<&Value>,
+    op: ComparisonOp,
+    expected: &Value,
+) -> PredicateTruth {
+    if actual.is_some_and(|actual| hawdb_core::temporal::ordering_is_null(actual, expected)) {
+        return PredicateTruth::Unknown;
+    }
+    predicate_comparison_truth(actual, expected, |actual, expected| {
+        compare_property_values(actual, op, expected)
+    })
+}
+
 fn predicate_in_truth(actual: Option<&Value>, values: &[Value]) -> PredicateTruth {
     let Some(actual) = actual.filter(|actual| *actual != &Value::Null) else {
         return PredicateTruth::Unknown;
@@ -165,12 +233,14 @@ fn evaluate_predicate_truth(
     context: &PredicateEvaluationContext<'_>,
 ) -> Result<PredicateTruth> {
     let catalog = context.catalog;
+    let graph = context.expression_graph();
     let evaluate = |expression| {
-        evaluate_projection_borrowed(
+        evaluate_projection_in_graph(
             expression,
             catalog,
             binding,
             context.adjacency_memory.account,
+            Some(&graph),
         )
     };
     Ok(match predicate {
@@ -240,9 +310,7 @@ fn evaluate_predicate_truth(
             value,
         } => {
             let actual = binding_id(binding, variable);
-            predicate_comparison_truth(actual.as_ref(), value, |actual, expected| {
-                compare_property_values(actual, *op, expected)
-            })
+            predicate_ordering_truth(actual.as_ref(), *op, value)
         }
         Predicate::IdIn { variable, values } => {
             let actual = binding_id(binding, variable);
@@ -271,11 +339,7 @@ fn evaluate_predicate_truth(
             property,
             op,
             value,
-        } => predicate_comparison_truth(
-            binding_property(binding, variable, property),
-            value,
-            |actual, expected| compare_property_values(actual, *op, expected),
-        ),
+        } => predicate_ordering_truth(binding_property(binding, variable, property), *op, value),
         Predicate::ExpressionEq { expression, value } => {
             let actual = evaluate(expression)?;
             let expected = evaluate(value)?;
@@ -301,11 +365,7 @@ fn evaluate_predicate_truth(
         } => {
             let actual = evaluate(expression)?;
             let expected = evaluate(value)?;
-            predicate_comparison_truth(
-                Some(actual.as_ref()),
-                expected.as_ref(),
-                |actual, expected| compare_property_values(actual, *op, expected),
-            )
+            predicate_ordering_truth(Some(actual.as_ref()), *op, expected.as_ref())
         }
         Predicate::ExpressionContains { expression, value } => {
             let actual = evaluate(expression)?;
@@ -316,6 +376,21 @@ fn evaluate_predicate_truth(
                     PredicateTruth::from_bool(actual.contains(expected.as_str()))
                 }
                 _ => PredicateTruth::False,
+            }
+        }
+        Predicate::ExpressionRegexMatch {
+            expression,
+            pattern,
+        } => {
+            let actual = evaluate(expression)?;
+            match actual.as_ref() {
+                Value::Null => PredicateTruth::Unknown,
+                Value::String(actual) => PredicateTruth::from_bool(pattern.is_match(actual)),
+                actual => {
+                    return Err(HawDBError::Execution(format!(
+                        "regex match predicate requires a string left operand, got {actual:?}"
+                    )))
+                }
             }
         }
         Predicate::ExpressionIn { expression, values } => {
@@ -536,6 +611,7 @@ pub fn property_filter_from_predicate(predicate: &Predicate) -> Result<PropertyF
         }
         Predicate::ExpressionCompare { .. }
         | Predicate::ExpressionContains { .. }
+        | Predicate::ExpressionRegexMatch { .. }
         | Predicate::ExpressionIn { .. }
         | Predicate::ConstantBool(_)
         | Predicate::RelationshipExists { .. }
@@ -653,7 +729,8 @@ pub fn predicate_references_only_variable(predicate: &Predicate, variable: &str)
         | Predicate::ExpressionEq { .. }
         | Predicate::ExpressionNotEq { .. }
         | Predicate::ExpressionCompare { .. }
-        | Predicate::ExpressionContains { .. } => false,
+        | Predicate::ExpressionContains { .. }
+        | Predicate::ExpressionRegexMatch { .. } => false,
         Predicate::ExpressionIn { .. } => false,
     }
 }

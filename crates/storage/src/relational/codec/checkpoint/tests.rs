@@ -262,7 +262,10 @@ fn checkpoint_units_relational_image_matches_ordinary_bytes_for_inline_and_file_
             actual == fixture.checkpoint,
             "complete legacy checkpoint bytes differ"
         );
-        assert!(probe.completed.load(Ordering::SeqCst) > 6000);
+        // Payload units are per written block (#1520), not per field.
+        let units = probe.completed.load(Ordering::SeqCst);
+        assert!(units >= (actual.len() - HEADER_BYTES).div_ceil(PAYLOAD_BLOCK_BYTES));
+        assert!(units < 512, "{units} units for 512 rows");
         assert_eq!(probe.peak_units.load(Ordering::SeqCst), 1);
         probe.assert_released(&local);
         let decoded =
@@ -474,7 +477,9 @@ fn checkpoint_units_relational_image_cancels_each_read_wave_and_cpu_then_retries
             std::fs::read(fixture.directory.join("source.hawdb")).unwrap() == fixture.checkpoint
         );
     }
-    for limit in [1, 17, 511, 1025, units / 2, units - 1, units] {
+    // Units are per block rather than per field (#1520), so every cut is
+    // enumerated.
+    for limit in 1..=units {
         // Each measured cold cut retains a fresh native-handle lookup.
         let state = fixture.file_state();
         let probe = Arc::new(CheckpointWorkProbe::default());
@@ -824,4 +829,389 @@ fn checkpoint_units_relational_mount_denies_before_io_and_retries_after_release(
     retry.assert_released(&local);
     fixture.assert_rows(&recovered.state);
     assert!(std::fs::read(&path).unwrap() == fixture.checkpoint);
+}
+
+const NUMERIC_COLUMNS: usize = 12;
+
+/// Many small fields per row: the shape whose per-field writes made #1520.
+fn numeric_state(rows: i64) -> RelationalState {
+    let store = RelationalStore::with_overflow_config(
+        RelationalMutationLimits::default(),
+        RelationalOverflowConfig::default(),
+    );
+    let column = |name: String, scalar_type| RelationalColumnSchema {
+        name,
+        scalar_type,
+        nullable: true,
+        default: None,
+    };
+    let mut columns = vec![RelationalColumnSchema {
+        nullable: false,
+        ..column("id".into(), RelationalScalarType::BigInt)
+    }];
+    columns.extend((0..6).map(|index| column(format!("i{index}"), RelationalScalarType::BigInt)));
+    columns.extend(
+        (0..3).map(|index| column(format!("d{index}"), RelationalScalarType::DoublePrecision)),
+    );
+    columns.push(column("flag".into(), RelationalScalarType::Boolean));
+    columns.push(column("note".into(), RelationalScalarType::Text));
+    assert_eq!(columns.len(), NUMERIC_COLUMNS);
+    let mut writes = vec![RelationalWrite::CreateTable(RelationalTableSchema {
+        materialized_view: None,
+        name: "lines".into(),
+        columns,
+        primary_key: vec!["id".into()],
+        unique_constraints: Vec::new(),
+        foreign_keys: Vec::new(),
+        indexes: Vec::new(),
+    })];
+    for start in (0..rows).step_by(1000) {
+        let rows =
+            (start..(start + 1000).min(rows))
+                .map(|id| {
+                    let mut values = vec![RelationalValue::BigInt(id)];
+                    values.extend((0..6).map(|index| RelationalValue::BigInt(id * 7 + index)));
+                    values.extend((0..3).map(|index| {
+                        RelationalValue::DoublePrecision(id as f64 / (index + 2) as f64)
+                    }));
+                    values.push(if id % 5 == 0 {
+                        RelationalValue::Null
+                    } else {
+                        RelationalValue::Boolean(id % 2 == 0)
+                    });
+                    values.push(RelationalValue::Text(format!("n{id}")));
+                    RelationalRow::new(values)
+                })
+                .collect();
+        writes.push(RelationalWrite::Insert {
+            table: "lines".into(),
+            rows,
+            mode: RelationalInsertMode::Error,
+        });
+        store
+            .commit(
+                RelationalTransaction {
+                    writes: std::mem::take(&mut writes),
+                },
+                |_, _| Ok(()),
+            )
+            .unwrap();
+    }
+    store.snapshot().unwrap().value().clone()
+}
+
+/// Test-only physical write counter: one `write` call per payload block.
+#[derive(Default)]
+struct CountingWriter {
+    inner: Cursor<Vec<u8>>,
+    writes: usize,
+    fail_from_write: Option<usize>,
+    live_memory: Option<Arc<std::sync::atomic::AtomicU64>>,
+    live_at_write: Vec<u64>,
+}
+
+impl Write for CountingWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.writes += 1;
+        if let Some(live) = &self.live_memory {
+            self.live_at_write.push(live.load(Ordering::SeqCst));
+        }
+        if self
+            .fail_from_write
+            .is_some_and(|first| self.writes >= first)
+        {
+            return Err(std::io::Error::other("injected checkpoint write failure"));
+        }
+        self.inner.write(bytes)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Seek for CountingWriter {
+    fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+        self.inner.seek(position)
+    }
+}
+
+fn encode_counted(
+    state: &RelationalState,
+    work: &CheckpointWorkContext,
+    mut writer: CountingWriter,
+) -> (Result<u64, RelationalError>, CountingWriter) {
+    let result = encode_relational_checkpoint_with_work_context(
+        &mut writer,
+        41,
+        state,
+        RelationalDecodeLimits::checkpoint().max_record_bytes,
+        CheckpointOutputIo::Memory,
+        work,
+    );
+    (result, writer)
+}
+
+#[test]
+fn checkpoint_buffered_payload_writes_and_units_scale_with_bytes_not_fields() {
+    let local = scheduler();
+    let measure = |rows: i64| {
+        let state = numeric_state(rows);
+        let expected = encode_relational_checkpoint(41, &state).unwrap();
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        let (result, writer) = encode_counted(
+            &state,
+            &probe.context(local.clone()),
+            CountingWriter::default(),
+        );
+        assert_eq!(result.unwrap(), expected.len() as u64);
+        assert!(
+            *writer.inner.get_ref() == expected,
+            "buffered checkpoint bytes differ from the ordinary encoder"
+        );
+        let payload = expected.len() - HEADER_BYTES;
+        // Full blocks, the final partial block, the written-through overflow
+        // section and the header.
+        assert!(
+            writer.writes <= payload.div_ceil(PAYLOAD_BLOCK_BYTES) + 3,
+            "{} writes for {payload} payload bytes",
+            writer.writes
+        );
+        assert_eq!(probe.peak_units.load(Ordering::SeqCst), 1);
+        probe.assert_released(&local);
+        let fields = rows as usize * NUMERIC_COLUMNS;
+        (
+            expected.len(),
+            fields,
+            writer.writes,
+            probe.completed.load(Ordering::SeqCst),
+        )
+    };
+    let (small_bytes, small_fields, small_writes, small_units) = measure(1_000);
+    let (large_bytes, large_fields, large_writes, large_units) = measure(9_000);
+    let blocks = (large_bytes - small_bytes).div_ceil(PAYLOAD_BLOCK_BYTES);
+    let groups = (large_fields - small_fields).div_ceil(REACHABILITY_VALUES_PER_UNIT);
+    let (writes, units, fields) = (
+        large_writes - small_writes,
+        large_units - small_units,
+        large_fields - small_fields,
+    );
+    eprintln!(
+        "{fields} extra fields / {} extra bytes: {writes} extra writes, {units} extra units",
+        large_bytes - small_bytes
+    );
+    assert!(writes <= blocks + 1, "{writes} writes for {blocks} blocks");
+    // One unit per written block and one per reachability value group.
+    assert!(
+        units <= blocks + groups + 2,
+        "{units} units for {blocks} blocks and {groups} value groups"
+    );
+    // The unbuffered encoder took at least two units and one write per field.
+    assert!(fields > 500 * writes && fields > 100 * units);
+}
+
+#[test]
+fn checkpoint_buffered_payload_surfaces_write_errors_at_flush() {
+    let local = scheduler();
+    let assert_write_error = |error: RelationalError| {
+        assert!(
+            matches!(
+                error,
+                RelationalError::Durability(ref text)
+                    if text.contains("failed to stream relational checkpoint payload")
+                        && text.contains("injected checkpoint write failure")
+            ),
+            "{error:?}"
+        );
+    };
+    // The whole payload fits one block: the first physical write is the
+    // final flush, so the error must surface there rather than be dropped.
+    let small = numeric_state(10);
+    assert!(encode_relational_checkpoint(41, &small).unwrap().len() < PAYLOAD_BLOCK_BYTES);
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    let (result, writer) = encode_counted(
+        &small,
+        &probe.context(local.clone()),
+        CountingWriter {
+            fail_from_write: Some(1),
+            ..CountingWriter::default()
+        },
+    );
+    assert_write_error(result.unwrap_err());
+    assert_eq!(
+        writer.writes, 1,
+        "nothing is written after the failed flush"
+    );
+    assert!(writer.inner.get_ref().is_empty());
+    probe.assert_released(&local);
+
+    // A mid-stream block failure stops the stream before the header.
+    let large = numeric_state(9_000);
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    let (result, writer) = encode_counted(
+        &large,
+        &probe.context(local.clone()),
+        CountingWriter {
+            fail_from_write: Some(3),
+            ..CountingWriter::default()
+        },
+    );
+    assert_write_error(result.unwrap_err());
+    assert_eq!(writer.writes, 3);
+    assert_eq!(
+        writer.inner.get_ref().len(),
+        HEADER_BYTES + 2 * PAYLOAD_BLOCK_BYTES
+    );
+    assert!(writer.inner.get_ref()[..HEADER_BYTES]
+        .iter()
+        .all(|byte| *byte == 0));
+    probe.assert_released(&local);
+}
+
+#[test]
+fn checkpoint_buffered_payload_observes_cancellation_at_every_unit() {
+    let local = scheduler();
+    let state = numeric_state(9_000);
+    let expected = encode_relational_checkpoint(41, &state).unwrap();
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    let (result, _) = encode_counted(
+        &state,
+        &probe.context(local.clone()),
+        CountingWriter::default(),
+    );
+    result.unwrap();
+    let units = probe.completed.load(Ordering::SeqCst);
+    for limit in 1..=units {
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        probe.cancel_after.store(limit, Ordering::SeqCst);
+        let (result, writer) = encode_counted(
+            &state,
+            &probe.context(local.clone()),
+            CountingWriter::default(),
+        );
+        let error = result.unwrap_err();
+        assert!(
+            matches!(error, RelationalError::Admission(ref text) if text.contains("cancelled")),
+            "cut {limit}: {error:?}"
+        );
+        assert_eq!(probe.completed.load(Ordering::SeqCst), limit);
+        // Every physical write is its own unit: none follows the stop.
+        assert!(
+            writer.writes <= limit,
+            "cut {limit}: {} writes",
+            writer.writes
+        );
+        probe.assert_released(&local);
+    }
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    let (result, writer) = encode_counted(
+        &state,
+        &probe.context(local.clone()),
+        CountingWriter::default(),
+    );
+    result.unwrap();
+    assert!(
+        *writer.inner.get_ref() == expected,
+        "retry after cancellation differs"
+    );
+    probe.assert_released(&local);
+}
+
+#[derive(Debug, Default)]
+struct RecordingMemory {
+    deny: bool,
+    reserved: std::sync::Mutex<Vec<u64>>,
+    live: Arc<std::sync::atomic::AtomicU64>,
+}
+
+#[derive(Debug)]
+struct RecordingLease(u64, Arc<std::sync::atomic::AtomicU64>);
+
+impl hawdb_core::RuntimeMemoryPermit for RecordingLease {
+    fn bytes(&self) -> u64 {
+        self.0
+    }
+}
+
+impl Drop for RecordingLease {
+    fn drop(&mut self) {
+        self.1.fetch_sub(self.0, Ordering::SeqCst);
+    }
+}
+
+impl hawdb_core::RuntimeMemoryController for RecordingMemory {
+    fn reserve(
+        &self,
+        bytes: u64,
+        _ceiling: u64,
+    ) -> Result<Box<dyn hawdb_core::RuntimeMemoryPermit>, hawdb_core::RuntimeMemoryError> {
+        self.reserved.lock().unwrap().push(bytes);
+        if self.deny {
+            return Err(hawdb_core::RuntimeMemoryError::AdmissionDenied {
+                requested_bytes: bytes,
+                available_bytes: 0,
+                retryable: true,
+            });
+        }
+        self.live.fetch_add(bytes, Ordering::SeqCst);
+        Ok(Box::new(RecordingLease(bytes, self.live.clone())))
+    }
+}
+
+#[test]
+fn checkpoint_buffered_payload_admits_its_staging_block_and_falls_back_when_denied() {
+    let local = scheduler();
+    let state = numeric_state(2_000);
+    let expected = encode_relational_checkpoint(41, &state).unwrap();
+    for deny in [false, true] {
+        let memory = Arc::new(RecordingMemory {
+            deny,
+            ..RecordingMemory::default()
+        });
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        local.set_telemetry_sink(Some(probe.clone()));
+        let task = hawdb_core::RuntimeTaskContext::without_deadline(probe.cancellation.clone())
+            .with_io_wave_controller(probe.clone())
+            .with_memory_controller(memory.clone());
+        let work = CheckpointWorkContext::new(task).with_scheduler(local.clone());
+        let mut writer = CountingWriter {
+            live_memory: Some(memory.live.clone()),
+            ..CountingWriter::default()
+        };
+        // A refused staging lease must not be recorded as the work's failure.
+        let result = work.classify(|work| {
+            encode_relational_checkpoint_with_work_context(
+                &mut writer,
+                41,
+                &state,
+                RelationalDecodeLimits::checkpoint().max_record_bytes,
+                CheckpointOutputIo::Memory,
+                work,
+            )
+        });
+        assert!(result.is_ok(), "deny={deny}: {result:?}");
+        assert!(
+            *writer.inner.get_ref() == expected,
+            "deny={deny}: bytes differ"
+        );
+        assert_eq!(
+            *memory.reserved.lock().unwrap(),
+            [PAYLOAD_BLOCK_BYTES as u64]
+        );
+        assert_eq!(memory.live.load(Ordering::SeqCst), 0);
+        let fields = 2_000 * NUMERIC_COLUMNS;
+        if deny {
+            // Unadmitted: the original write-through path, one write per call.
+            assert!(writer.writes > fields);
+            assert!(writer.live_at_write.iter().all(|live| *live == 0));
+        } else {
+            let payload = expected.len() - HEADER_BYTES;
+            assert!(writer.writes <= payload.div_ceil(PAYLOAD_BLOCK_BYTES) + 3);
+            // The lease is charged while blocks are written and released
+            // before the overflow section and the header.
+            assert_eq!(writer.live_at_write[0], PAYLOAD_BLOCK_BYTES as u64);
+            assert_eq!(writer.live_at_write.last(), Some(&0));
+        }
+        probe.assert_released(&local);
+    }
 }

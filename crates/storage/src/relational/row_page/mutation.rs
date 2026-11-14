@@ -15,8 +15,9 @@
 //! Deterministic copy-on-write mutation planning for relational row pages.
 
 use super::{
-    ImmutableRelationalRowPage, RelationalRowPageEntry, RelationalRowPageError,
-    RelationalRowPageId, RelationalRowPagePublicationConfig, RelationalRowPagePublicationError,
+    encoding::encoded_row_len, ImmutableRelationalRowPage, RelationalRowPageEntry,
+    RelationalRowPageError, RelationalRowPageId, RelationalRowPageLimits,
+    RelationalRowPagePublicationConfig, RelationalRowPagePublicationError,
     RelationalRowPageRootDescriptor, RelationalRowPageRootReader, RelationalRowPageTableDelta,
 };
 use crate::relational::{
@@ -234,6 +235,7 @@ impl<'a> RelationalRowPageMutationPlanner<'a> {
         }
 
         let mut dirty_pages = Vec::new();
+        let mut dirty_bytes = 0u64;
         let mut deleted_page_ids = BTreeSet::new();
         let mut base_pages_read = 0usize;
         let mut split_pages = 0usize;
@@ -263,7 +265,9 @@ impl<'a> RelationalRowPageMutationPlanner<'a> {
                 &mut allocator,
                 rows,
                 |page| {
-                    admit_dirty_pages(dirty_pages.len().saturating_add(1), self.config)?;
+                    let bytes = charge_dirty_page(dirty_bytes, &page, self.config)?;
+                    admit_dirty_pages(dirty_pages.len().saturating_add(1), bytes, self.config)?;
+                    dirty_bytes = bytes;
                     dirty_pages.push(page);
                     Ok(())
                 },
@@ -287,7 +291,9 @@ impl<'a> RelationalRowPageMutationPlanner<'a> {
                 &mut allocator,
                 rows,
                 |page| {
-                    admit_dirty_pages(dirty_pages.len().saturating_add(1), self.config)?;
+                    let bytes = charge_dirty_page(dirty_bytes, &page, self.config)?;
+                    admit_dirty_pages(dirty_pages.len().saturating_add(1), bytes, self.config)?;
+                    dirty_bytes = bytes;
                     dirty_pages.push(page);
                     Ok(())
                 },
@@ -306,6 +312,11 @@ impl<'a> RelationalRowPageMutationPlanner<'a> {
         let dirty_page_count = dirty_pages.len();
         Ok(RelationalRowPageMutationPlan {
             delta: RelationalRowPageTableDelta {
+                replaces_base: false,
+                last_row_id: self
+                    .base
+                    .and_then(|base| base.table_root(table).ok())
+                    .map_or(0, |root| root.last_row_id),
                 table: table.to_string(),
                 schema: None,
                 schema_digest,
@@ -584,8 +595,17 @@ fn validate_base_page(
     Ok(())
 }
 
+/// Admits `pages` dirty pages whose encoded lengths total `bytes`.
+///
+/// The byte budget charges encoded page bytes, not the fixed slot each v1
+/// page occupies in the page artifact (#1593). It bounds the encoded page
+/// payload a publication writes before its fsync; it never bounded memory.
+/// Until v2 packs pages by length, physical page-artifact writes can exceed
+/// the charge by up to the slot size over the encoded length (about 20x for
+/// narrow rows).
 fn admit_dirty_pages(
     pages: usize,
+    bytes: u64,
     config: RelationalRowPagePublicationConfig,
 ) -> Result<(), RelationalRowPageMutationError> {
     if pages > config.max_dirty_pages.get() {
@@ -594,20 +614,100 @@ fn admit_dirty_pages(
             config.max_dirty_pages
         )));
     }
-    let bytes = (pages as u64)
-        .checked_mul(config.page_limits.max_page_bytes.get() as u64)
-        .ok_or_else(|| {
-            RelationalRowPageMutationError::Admission(
-                "row-page mutation dirty-byte reservation overflow".to_string(),
-            )
-        })?;
     if bytes > config.max_dirty_bytes.get() {
         return Err(RelationalRowPageMutationError::Admission(format!(
-            "row-page mutation reserves {bytes} dirty bytes, exceeding limit {}",
+            "row-page mutation reserves {bytes} encoded dirty bytes, exceeding limit {}",
             config.max_dirty_bytes
         )));
     }
     Ok(())
+}
+
+/// Running size of a pending page, mirroring every size check of the page
+/// codec. With `n` rows, encoded keys `k_i`, encoded rows `r_i` and running
+/// payload totals `K_i`, `R_i`, the codec accepts the page exactly when each
+/// row fits the key, row and `u32` offset limits and
+/// `header + k_0 + 16 n + max_i (k_i + K_i + R_i) <= max_page_bytes`. The
+/// `i = n` term is the final page length; earlier terms are the codec's
+/// per-row projections, which use the complete directory length.
+#[derive(Debug, Clone, Copy, Default)]
+struct PendingPageSize {
+    lower_key_bytes: usize,
+    key_bytes: usize,
+    row_bytes: usize,
+    max_row_extent: usize,
+}
+
+impl PendingPageSize {
+    /// Returns the size after appending one row as row number `rows`, or
+    /// `None` when the codec would reject the page or the row, or when a page
+    /// that already holds a row would grow past `target_page_bytes`.
+    fn with_row(
+        self,
+        rows: usize,
+        key_len: usize,
+        row_len: Option<usize>,
+        limits: RelationalRowPageLimits,
+        target_page_bytes: usize,
+    ) -> Option<Self> {
+        let row_len = row_len?;
+        if rows > limits.max_rows.get()
+            || key_len > limits.max_key_bytes.get()
+            || row_len > limits.max_row_bytes.get()
+            || u32::try_from(rows).is_err()
+            || u32::try_from(self.key_bytes).is_err()
+            || u32::try_from(key_len).is_err()
+            || u32::try_from(self.row_bytes).is_err()
+            || u32::try_from(row_len).is_err()
+            || limits.max_page_bytes.get() < super::ROW_PAGE_HEADER_BYTES
+        {
+            return None;
+        }
+        let lower_key_bytes = if rows == 1 {
+            key_len
+        } else {
+            self.lower_key_bytes
+        };
+        let key_bytes = self.key_bytes.checked_add(key_len)?;
+        let row_bytes = self.row_bytes.checked_add(row_len)?;
+        let row_extent = key_len.checked_add(key_bytes)?.checked_add(row_bytes)?;
+        let max_row_extent = self.max_row_extent.max(row_extent);
+        let directory_bytes = rows.checked_mul(super::ROW_SLOT_BYTES)?;
+        u32::try_from(directory_bytes).ok()?;
+        let page_bytes = super::ROW_PAGE_HEADER_BYTES
+            .checked_add(lower_key_bytes)?
+            .checked_add(directory_bytes)?
+            .checked_add(max_row_extent)?;
+        // The `i = n` projection is the exact encoded page length.
+        let encoded_bytes = super::ROW_PAGE_HEADER_BYTES
+            .checked_add(lower_key_bytes)?
+            .checked_add(directory_bytes)?
+            .checked_add(row_extent)?;
+        if rows > 1 && encoded_bytes > target_page_bytes {
+            return None;
+        }
+        (page_bytes <= limits.max_page_bytes.get()).then_some(Self {
+            lower_key_bytes,
+            key_bytes,
+            row_bytes,
+            max_row_extent,
+        })
+    }
+}
+
+/// Adds one page's encoded length to a running dirty-byte charge.
+fn charge_dirty_page(
+    charged: u64,
+    page: &ImmutableRelationalRowPage,
+    config: RelationalRowPagePublicationConfig,
+) -> Result<u64, RelationalRowPageMutationError> {
+    charged
+        .checked_add(page.encoded_len(config.page_limits)?)
+        .ok_or_else(|| {
+            RelationalRowPageMutationError::Admission(
+                "row-page mutation dirty-byte reservation overflow".to_string(),
+            )
+        })
 }
 
 struct PagePackState {
@@ -618,9 +718,11 @@ struct PagePackState {
     first_page_id: Option<RelationalRowPageId>,
     config: RelationalRowPagePublicationConfig,
     pending: Option<ImmutableRelationalRowPage>,
+    pending_size: PendingPageSize,
     previous_key: Option<Vec<u8>>,
     emitted_rows: usize,
     emitted_pages: usize,
+    emitted_bytes: u64,
     peak_buffered_rows: usize,
 }
 
@@ -641,9 +743,11 @@ impl PagePackState {
             first_page_id,
             config,
             pending: None,
+            pending_size: PendingPageSize::default(),
             previous_key: None,
             emitted_rows: 0,
             emitted_pages: 0,
+            emitted_bytes: 0,
             peak_buffered_rows: 0,
         }
     }
@@ -668,35 +772,67 @@ impl PagePackState {
                 "row-page pack input is not strictly ordered".to_string(),
             ));
         }
+        // Size the candidate arithmetically instead of encoding the whole
+        // page per row, which made packing quadratic in the rows per page.
+        // `PendingPageSize` admits exactly the pages `encode` accepts. A
+        // single-row page that does not fit is encoded once so the caller
+        // receives the codec's own error.
+        let limits = self.config.page_limits;
+        let page_admissible = self.generation != 0
+            && self.source_commit_epoch != 0
+            && self.column_count != 0
+            && self.column_count <= limits.max_columns.get();
+        let row_len = encoded_row_len(&entry.row, self.column_count, limits)
+            .ok()
+            .filter(|_| page_admissible);
         if self.pending.is_none() {
             self.pending = Some(self.empty_page(self.peek_page_id(allocator)));
+            self.pending_size = PendingPageSize::default();
         }
         let pending = self.pending.as_mut().expect("pending page was initialized");
         pending.rows.push(entry);
         self.peak_buffered_rows = self.peak_buffered_rows.max(pending.rows.len());
-        match pending.encode(self.config.page_limits) {
-            Ok(_) => {
-                self.previous_key = Some(encoded_key);
-                Ok(())
-            }
-            Err(error) => {
-                let entry = pending
-                    .rows
-                    .pop()
-                    .expect("candidate page contains the pushed row");
-                if pending.rows.is_empty() {
-                    return Err(error.into());
-                }
-                pending.encode(self.config.page_limits)?;
-                self.emit_pending(allocator, &mut emit)?;
-                let mut next = self.empty_page(self.peek_page_id(allocator));
-                next.rows.push(entry);
-                next.encode(self.config.page_limits)?;
-                self.pending = Some(next);
-                self.previous_key = Some(encoded_key);
-                Ok(())
-            }
+        if let Some(size) = self.pending_size.with_row(
+            pending.rows.len(),
+            encoded_key.len(),
+            row_len,
+            limits,
+            self.config.target_page_bytes.get(),
+        ) {
+            self.pending_size = size;
+            self.previous_key = Some(encoded_key);
+            return Ok(());
         }
+        if pending.rows.len() == 1 {
+            // The codec rejects this row in any page; report its error.
+            pending.encode(self.config.page_limits)?;
+            return Err(RelationalRowPageMutationError::Corrupt(
+                "row-page pack sizing rejected a row the codec accepts".to_string(),
+            ));
+        }
+        let entry = pending
+            .rows
+            .pop()
+            .expect("candidate page contains the pushed row");
+        self.emit_pending(allocator, &mut emit)?;
+        let mut next = self.empty_page(self.peek_page_id(allocator));
+        next.rows.push(entry);
+        let Some(size) = PendingPageSize::default().with_row(
+            1,
+            encoded_key.len(),
+            row_len,
+            limits,
+            self.config.target_page_bytes.get(),
+        ) else {
+            next.encode(self.config.page_limits)?;
+            return Err(RelationalRowPageMutationError::Corrupt(
+                "row-page pack sizing rejected a row the codec accepts".to_string(),
+            ));
+        };
+        self.pending = Some(next);
+        self.pending_size = size;
+        self.previous_key = Some(encoded_key);
+        Ok(())
     }
 
     fn finish(
@@ -727,6 +863,7 @@ impl PagePackState {
             ));
         }
         let row_count = page.rows.len();
+        let emitted_bytes = charge_dirty_page(self.emitted_bytes, &page, self.config)?;
         emit(page)?;
         *allocator = next_allocator;
         self.first_page_id = next_first_page_id;
@@ -740,7 +877,8 @@ impl PagePackState {
                 "row-page bootstrap row count overflow".to_string(),
             )
         })?;
-        admit_dirty_pages(self.emitted_pages, self.config)
+        self.emitted_bytes = emitted_bytes;
+        admit_dirty_pages(self.emitted_pages, self.emitted_bytes, self.config)
     }
 
     fn peek_page_id(&self, allocator: &RelationalRowPageIdAllocator) -> RelationalRowPageId {

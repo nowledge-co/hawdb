@@ -47,6 +47,10 @@ struct RecordingStore {
     scan_error_at: Option<usize>,
     cancel_at: Option<(usize, RuntimeCancellationToken)>,
     write_error: bool,
+    projected_scans: std::cell::Cell<usize>,
+    projected_visits: std::cell::Cell<usize>,
+    index_lookups: std::cell::Cell<usize>,
+    index_available: bool,
 }
 
 fn sentinel() -> HawDBError {
@@ -162,7 +166,88 @@ fn unwind_mutations_preflight_every_row_and_publish_one_batch() {
     assert!(store.writes.is_empty());
 }
 
+impl RecordingStore {
+    fn projected_scan(
+        &self,
+        label: Option<LabelId>,
+        equality: Option<(&str, &[Value])>,
+        required: &BTreeSet<String>,
+        allocator: &mut hawdb_storage::read_view::GraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(ProjectedNodeRecord) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        for (index, node) in self.nodes.iter().enumerate() {
+            if self.scan_error_at == Some(index) {
+                return Err(sentinel());
+            }
+            if let Some((at, token)) = &self.cancel_at
+                && *at == index
+            {
+                token.cancel();
+            }
+            if !label.is_none_or(|label| node.labels.contains(&label))
+                || !equality.is_none_or(|(property, values)| {
+                    node.properties
+                        .get(property)
+                        .is_some_and(|value| values.contains(value))
+                })
+            {
+                continue;
+            }
+            let _allocation =
+                allocator.reserve(crate::binding::map_memory_bytes(&node.properties))?;
+            self.projected_visits.set(self.projected_visits.get() + 1);
+            let projected = ProjectedNodeRecord {
+                id: node.id,
+                labels: node.labels.clone(),
+                properties: node
+                    .properties
+                    .iter()
+                    .filter(|(name, _)| required.contains(*name))
+                    .map(|(name, value)| (name.clone(), value.clone()))
+                    .collect(),
+            };
+            if consumer(projected)? == ScanControl::Stop {
+                return Ok(ScanControl::Stop);
+            }
+        }
+        Ok(ScanControl::Continue)
+    }
+}
+
 impl GraphExecutionRead for RecordingStore {
+    fn visit_projected_nodes_admitted(
+        &self,
+        label: Option<LabelId>,
+        required: &BTreeSet<String>,
+        allocator: &mut hawdb_storage::read_view::GraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(ProjectedNodeRecord) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        self.projected_scans.set(self.projected_scans.get() + 1);
+        self.projected_scan(label, None, required, allocator, consumer)
+    }
+
+    fn visit_indexed_projected_nodes_by_property_admitted(
+        &self,
+        label: LabelId,
+        property: &str,
+        values: &[Value],
+        required: &BTreeSet<String>,
+        allocator: &mut hawdb_storage::read_view::GraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(ProjectedNodeRecord) -> Result<ScanControl>,
+    ) -> Result<Option<ScanControl>> {
+        if !self.index_available {
+            return Ok(None);
+        }
+        self.index_lookups.set(self.index_lookups.get() + 1);
+        self.projected_scan(
+            Some(label),
+            Some((property, values)),
+            required,
+            allocator,
+            consumer,
+        )
+        .map(Some)
+    }
     fn is_out_of_core(&self) -> bool {
         false
     }
@@ -650,6 +735,7 @@ fn explicit_return_output_limits_precede_the_storage_write() {
                 &mut store,
                 MutationLimits::default(),
                 limits,
+                &crate::ExecutionMemoryConfig::default(),
                 None,
             )
             .unwrap_err();
@@ -670,6 +756,7 @@ fn explicit_return_output_limits_precede_the_storage_write() {
                 max_rows: Some(row_count),
                 max_payload_bytes: Some(row_count * 13),
             },
+            &crate::ExecutionMemoryConfig::default(),
             None,
         )
         .unwrap();
@@ -869,4 +956,187 @@ fn staged_return_rejects_invalid_or_missing_node_ids() {
         assert!(matches!(error, HawDBError::Execution(message) if message == expected));
     }
     assert!(store.writes.is_empty());
+}
+
+fn endpoint_merge(source: Option<PropertyFilter>, target: Option<PropertyFilter>) -> GraphMutation {
+    GraphMutation::MergeRelationshipsBetweenMatches(
+        hawdb_storage::mutation::MatchedRelationshipMerge {
+            source_label: "Item".into(),
+            source_filter: source,
+            target_label: "Item".into(),
+            target_filter: target,
+            rel_type: "LINK".into(),
+            rel_match_properties: BTreeMap::new(),
+            on_create_properties: BTreeMap::new(),
+        },
+    )
+}
+
+fn score_filter(score: i64) -> Option<PropertyFilter> {
+    Some(PropertyFilter::Eq {
+        property: "score".into(),
+        value: Value::Int(score),
+    })
+}
+
+#[test]
+fn relationship_endpoints_resolve_each_pattern_once_with_and_without_index() {
+    for indexed in [false, true] {
+        let (mut catalog, mut store) = fixture(3_000);
+        if indexed {
+            catalog.get_or_create_property_index_with_kind(
+                catalog.label_id("Item").unwrap(),
+                "score",
+                hawdb_core::IndexKind::Equality,
+            );
+            store.index_available = true;
+        }
+        let mut mutations = (0..100)
+            .map(|index| endpoint_merge(score_filter(0), score_filter(index * 3)))
+            .collect::<Vec<_>>();
+        let lease = resolve_relationship_merge_endpoints(
+            &mut mutations,
+            &catalog,
+            &store,
+            MutationLimits::default(),
+            &crate::ExecutionMemoryConfig::default(),
+            None,
+        )
+        .unwrap();
+        assert!(lease.is_some());
+        assert_eq!(store.projected_scans.get(), usize::from(!indexed));
+        assert_eq!(store.index_lookups.get(), usize::from(indexed));
+        assert_eq!(
+            store.projected_visits.get(),
+            if indexed { 100 } else { 2_000 }
+        );
+        for (index, mutation) in mutations.iter().enumerate() {
+            let GraphMutation::MergeRelationshipsBetweenMatches(request) = mutation else {
+                panic!()
+            };
+            assert_eq!(
+                endpoints::resolved_ids(&request.source_filter),
+                &[Value::Int(0)]
+            );
+            assert_eq!(
+                endpoints::resolved_ids(&request.target_filter),
+                &[Value::Int((index * 3) as i64)]
+            );
+        }
+        assert!(store.writes.is_empty());
+    }
+}
+
+#[test]
+fn relationship_endpoints_refuse_fanout_before_rewriting_rows() {
+    let (catalog, store) = fixture(3_000);
+    let mut mutations = (0..5_000)
+        .map(|_| endpoint_merge(None, score_filter(0)))
+        .collect::<Vec<_>>();
+    let limits = MutationLimits {
+        max_affected_rows: NonZeroUsize::new(2_000).unwrap(),
+        ..MutationLimits::default()
+    };
+    let error = resolve_relationship_merge_endpoints(
+        &mut mutations,
+        &catalog,
+        &store,
+        limits,
+        &crate::ExecutionMemoryConfig::default(),
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("max_mutation_affected_rows"),
+        "{error:?}"
+    );
+    assert!(mutations.iter().all(|mutation| matches!(mutation, GraphMutation::MergeRelationshipsBetweenMatches(request) if request.source_filter.is_none())));
+    assert_eq!(store.projected_scans.get(), 2);
+    assert!(store.writes.is_empty());
+}
+
+#[test]
+fn relationship_endpoints_skip_empty_pairs_and_refuse_memory_or_cancellation() {
+    let (catalog, store) = fixture(3_000);
+    let mut mutations = vec![endpoint_merge(None, score_filter(-1))];
+    resolve_relationship_merge_endpoints(
+        &mut mutations,
+        &catalog,
+        &store,
+        MutationLimits::default(),
+        &crate::ExecutionMemoryConfig::default(),
+        None,
+    )
+    .unwrap();
+    let GraphMutation::MergeRelationshipsBetweenMatches(request) = &mutations[0] else {
+        panic!()
+    };
+    assert!(endpoints::resolved_ids(&request.source_filter).is_empty());
+    assert!(endpoints::resolved_ids(&request.target_filter).is_empty());
+    let mut mutations = vec![endpoint_merge(None, score_filter(0))];
+    let memory = crate::ExecutionMemoryConfig {
+        query_memory_bytes: NonZeroUsize::new(64).unwrap(),
+        ..crate::ExecutionMemoryConfig::default()
+    };
+    let error = resolve_relationship_merge_endpoints(
+        &mut mutations,
+        &catalog,
+        &store,
+        MutationLimits::default(),
+        &memory,
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&error, HawDBError::ResourceBudgetExceeded(budget) if budget.budget_option == "ExecutionMemoryConfig.query_memory_bytes"),
+        "{error:?}"
+    );
+    let token = RuntimeCancellationToken::new();
+    token.cancel();
+    let task = RuntimeTaskContext::without_deadline(token);
+    assert!(resolve_relationship_merge_endpoints(
+        &mut mutations,
+        &catalog,
+        &store,
+        MutationLimits::default(),
+        &crate::ExecutionMemoryConfig::default(),
+        Some(&task)
+    )
+    .is_err());
+    assert!(store.writes.is_empty());
+}
+
+#[test]
+fn relationship_endpoints_keep_unlabelled_matches_distinct_from_empty_named_labels() {
+    let (mut catalog, store) = fixture(3);
+    catalog.get_or_create_label("");
+    let mut mutation = endpoint_merge(score_filter(0), score_filter(1));
+    let GraphMutation::MergeRelationshipsBetweenMatches(request) = &mut mutation else {
+        panic!()
+    };
+    request.source_label.clear();
+    request.target_label.clear();
+    let mut mutations = vec![mutation];
+    resolve_relationship_merge_endpoints(
+        &mut mutations,
+        &catalog,
+        &store,
+        MutationLimits::default(),
+        &crate::ExecutionMemoryConfig::default(),
+        None,
+    )
+    .unwrap();
+    let GraphMutation::MergeRelationshipsBetweenMatches(request) = &mutations[0] else {
+        panic!()
+    };
+    assert_eq!(
+        endpoints::resolved_ids(&request.source_filter),
+        &[Value::Int(0)]
+    );
+    assert_eq!(
+        endpoints::resolved_ids(&request.target_filter),
+        &[Value::Int(1)]
+    );
+    assert_eq!(store.projected_scans.get(), 1);
+    assert_eq!(store.projected_visits.get(), 3);
 }

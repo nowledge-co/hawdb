@@ -38,8 +38,10 @@ impl Database {
                     ),
                     store,
                     optimizer,
-                    plan_cache: Arc::new(SharedState::new(PlanCache::new(
+                    plan_cache: Arc::new(SharedState::new(PlanCache::with_byte_limits(
                         config.max_plan_cache_entries,
+                        Some(config.max_physical_plan_cache_bytes),
+                        Some(config.max_physical_plan_cache_entry_bytes),
                     ))),
                     relational_plan_template_cache:
                         relational_plan_template_cache_from_database_config(&config),
@@ -183,8 +185,10 @@ impl Database {
                     ),
                     store,
                     optimizer: optimizer_from_database_config(&config),
-                    plan_cache: Arc::new(SharedState::new(PlanCache::new(
+                    plan_cache: Arc::new(SharedState::new(PlanCache::with_byte_limits(
                         config.max_plan_cache_entries,
+                        Some(config.max_physical_plan_cache_bytes),
+                        Some(config.max_physical_plan_cache_entry_bytes),
                     ))),
                     relational_plan_template_cache:
                         relational_plan_template_cache_from_database_config(&config),
@@ -486,7 +490,7 @@ impl Database {
     /// Threads the engine's runtime governor into the storage layer so
     /// background columnar-shadow work can request admission. Called by the
     /// embedding layers that own the governor (`HawDBEmbedded`,
-    /// `NowledgeMemGraph`); a second governor is never constructed here.
+    /// `EmbeddedGraph`); a second governor is never constructed here.
     pub fn set_runtime_governor(&mut self, governor: hawdb_qos::RuntimeGovernor) {
         self.retained_runtime.configure(governor.clone());
         if let Err(error) = self.runtime.set_automatic_governor(governor.clone())

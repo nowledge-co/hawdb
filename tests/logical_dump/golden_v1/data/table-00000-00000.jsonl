@@ -1,0 +1,4 @@
+[-9223372036854775808,"最小",null,{"$decimal":"-9999999999999999.9999"},{"$float":"-Infinity"},{"$binary":""},null,{"$datetime":"1970-01-01T00:00:00Z"},{"$localdatetime":"2024-01-02T03:04:05.123"}]
+[1,"日志 🚀","line\nbreak \"quoted\" \\ tab\t",{"$decimal":"12345.6789"},{"$float":-0.0},{"$binary":"AP8K"},{"$vector":[0.5,-1.25]},{"$datetime":"2026-11-11T08:30:00.123456Z"},{"$localdatetime":"2024-01-02T03:04:05.123"}]
+[2,"Ünïcødé","ok",null,{"$float":"NaN"},null,{"$vector":[3.0,4.0]},null,{"$localdatetime":"1999-12-31T23:59:59.999"}]
+[9223372036854775807,"最大",null,{"$decimal":"0.0001"},{"$float":1e+300},{"$binary":"aGF3ZGI="},null,null,{"$localdatetime":"2024-01-02T03:04:05.123"}]

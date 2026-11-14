@@ -454,6 +454,8 @@ fn relational_row_residency_json(
         "recovery_delta_runs": report.recovery_delta_runs,
         "recovery_delta_checkpoint_runs": report.recovery_delta_checkpoint_runs,
         "recovery_delta_checkpoint_recommended": report.recovery_delta_checkpoint_recommended,
+        "schema_checkpoint_pending": report.schema_checkpoint_pending,
+        "schema_checkpoint_pending_reason": report.schema_checkpoint_pending_reason,
         "recovery_delta_entries": report.recovery_delta_entries,
         "recovery_delta_artifact_bytes": report.recovery_delta_artifact_bytes,
         "live_batches": report.live_batches,

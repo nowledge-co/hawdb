@@ -13,11 +13,12 @@
 // limitations under the License.
 
 use super::{
-    CosineQuery, SearchDocument, SearchFallbackReasonCode, VectorSearchBackend,
+    SearchDocument, SearchFallbackReasonCode, VectorRelevanceQuery, VectorSearchBackend,
     VectorSearchExecutionOptions,
 };
 use crate::error::{HawDBError, Result};
 use hawdb_cascades::{OptimizerContext, QueryFamily, ResourceHints, VectorPrecision};
+use hawdb_core::{ResourceBudgetError, ResourceBudgetKind, ResourceBudgetScope};
 use hawdb_executor::{
     execute_vector_plan, VectorCandidate, VectorCandidateBatch, VectorCandidateScanMetrics,
     VectorCandidateScanRequest, VectorExecutionReport, VectorExecutionSource,
@@ -32,7 +33,34 @@ use std::collections::BTreeSet;
 // A single large graph needs more navigation state than its reranked output.
 // Keep the ordinary 128-candidate window independent of this search workspace.
 #[cfg(feature = "vector-search")]
-pub(crate) const DISKANN_NAVIGATION_BEAM: usize = 1024;
+pub(crate) const DISKANN_NAVIGATION_BEAM: usize = crate::DEFAULT_NAVIGATION_BEAM;
+
+pub(super) fn query_can_generate_candidates(
+    embedding: Option<&[f32]>,
+    dimension: Option<usize>,
+    metric: hawdb_core::VectorDistance,
+    options: VectorSearchExecutionOptions<'_>,
+) -> Result<bool> {
+    if let Some(task) = options.task_context {
+        crate::build_control::checkpoint(task)?;
+    }
+    let Some(embedding) =
+        embedding.filter(|query| !query.is_empty() && Some(query.len()) == dimension)
+    else {
+        return Ok(false);
+    };
+    let mut nonzero = metric != hawdb_core::VectorDistance::Cosine;
+    for chunk in embedding.chunks(4096) {
+        if let Some(task) = options.task_context {
+            crate::build_control::checkpoint(task)?;
+        }
+        if chunk.iter().any(|coordinate| !coordinate.is_finite()) {
+            return Ok(false);
+        }
+        nonzero |= chunk.iter().any(|coordinate| *coordinate != 0.0);
+    }
+    Ok(nonzero)
+}
 
 pub(super) struct SearchVectorExecution {
     pub scores: BTreeMap<String, f64>,
@@ -42,6 +70,9 @@ pub(super) struct SearchVectorExecution {
 
 pub(super) struct SearchVectorExecutionRequest<'a, 'b> {
     pub query_embedding: &'a [f32],
+    /// Final raw scores use the index's own metric, never a cosine default.
+    pub metric: hawdb_core::VectorDistance,
+    pub scoring: crate::SearchVectorScoring,
     pub documents: &'a [&'a SearchDocument],
     pub backend: VectorSearchBackend<'a>,
     pub filter_fields: Vec<String>,
@@ -58,6 +89,8 @@ pub(super) fn execute_search_vector_plan(
 ) -> Result<SearchVectorExecution> {
     let SearchVectorExecutionRequest {
         query_embedding,
+        metric,
+        scoring,
         documents,
         backend,
         filter_fields,
@@ -73,7 +106,7 @@ pub(super) fn execute_search_vector_plan(
         #[cfg(feature = "vector-search")]
         VectorSearchBackend::DiskAnn { .. } => limit
             .max(rank_window.unwrap_or(0))
-            .max(hawdb_vector_projection::diskann::DiskAnnSearchOptions::default().beam_width),
+            .max(vector_execution_options.resident_candidate_window()),
         _ => limit.max(rank_window.unwrap_or(0)).max(1),
     };
     let logical = VectorSearchLogicalPlan {
@@ -118,6 +151,8 @@ pub(super) fn execute_search_vector_plan(
     let mut source = SearchVectorSource {
         query_scorer: None,
         query_embedding,
+        metric,
+        scoring,
         documents,
         backend,
         fallback_reason_codes,
@@ -146,8 +181,10 @@ pub(super) fn execute_search_vector_plan(
 }
 
 struct SearchVectorSource<'a, 'b> {
-    query_scorer: Option<CosineQuery<'a>>,
+    query_scorer: Option<VectorRelevanceQuery<'a>>,
     query_embedding: &'a [f32],
+    metric: hawdb_core::VectorDistance,
+    scoring: crate::SearchVectorScoring,
     documents: &'a [&'a SearchDocument],
     backend: VectorSearchBackend<'a>,
     fallback_reason_codes: &'b mut Vec<SearchFallbackReasonCode>,
@@ -244,16 +281,7 @@ impl VectorExecutionSource for SearchVectorSource<'_, '_> {
                     }
                     Err(error) => {
                         if required {
-                            self.fallback_reason_codes.push(
-                                SearchFallbackReasonCode::CompressedVectorProjectionUnavailable,
-                            );
-                            self.fallback_reasons.push(format!(
-                                "HawDB RaBitQ projection is required but candidate scan failed: {error}"
-                            ));
-                            Ok(VectorCandidateBatch {
-                                score_source: VectorScoreSource::Unavailable,
-                                candidates: Vec::new(),
-                            })
+                            Err(error)
                         } else {
                             self.fallback_reason_codes
                                 .push(SearchFallbackReasonCode::VectorIndexEmpty);
@@ -302,11 +330,17 @@ impl VectorExecutionSource for SearchVectorSource<'_, '_> {
             .len()
             .saturating_mul(std::mem::size_of::<(&str, &SearchDocument)>().saturating_mul(3));
         let required_working_bytes = candidate_bytes.saturating_add(lookup_bytes);
-        if required_working_bytes > self.vector_execution_options.max_working_bytes {
-            return Err(HawDBError::Execution(format!(
-                "raw vector rerank requires {required_working_bytes} estimated bytes, exceeding admitted working memory {}",
-                self.vector_execution_options.max_working_bytes
-            )));
+        let max_working_bytes = self.vector_execution_options.max_working_bytes;
+        if required_working_bytes > max_working_bytes {
+            return Err(working_memory_refusal(
+                "raw vector rerank",
+                required_working_bytes,
+                0,
+                max_working_bytes,
+                format!(
+                    "raw vector rerank requires {required_working_bytes} estimated bytes, exceeding admitted working memory {max_working_bytes}"
+                ),
+            ));
         }
         let documents = self
             .documents
@@ -372,11 +406,14 @@ impl VectorExecutionSource for SearchVectorSource<'_, '_> {
 }
 
 impl<'a> SearchVectorSource<'a, '_> {
-    fn prepare_query(&mut self) -> Result<CosineQuery<'a>> {
+    fn prepare_query(&mut self) -> Result<VectorRelevanceQuery<'a>> {
         if let Some(scorer) = self.query_scorer {
             return Ok(scorer);
         }
-        let scorer = CosineQuery::with_work(self.query_embedding, || self.checkpoint())?;
+        let scorer = VectorRelevanceQuery::with_work(self.query_embedding, self.metric, || {
+            self.checkpoint()
+        })?
+        .with_scoring(self.scoring);
         self.query_scorer = Some(scorer);
         Ok(scorer)
     }
@@ -447,6 +484,7 @@ impl<'a> SearchVectorSource<'a, '_> {
         let mut query_scorer = self.query_scorer;
         let mut candidates = Vec::new();
         let mut id_bytes = 0usize;
+        let mut admitted_bytes = 0usize;
         for document in self.documents {
             self.checkpoint()?;
             let Some(embedding) = document.embedding.as_deref() else {
@@ -474,18 +512,49 @@ impl<'a> SearchVectorSource<'a, '_> {
                 .capacity()
                 .saturating_mul(std::mem::size_of::<VectorCandidate>())
                 .saturating_add(id_bytes);
-            if candidate_bytes > self.vector_execution_options.max_working_bytes {
-                return Err(HawDBError::Execution(format!(
-                    "scalar vector candidates require {candidate_bytes} bytes, exceeding admitted working memory {}",
-                    self.vector_execution_options.max_working_bytes
-                )));
+            let max_working_bytes = self.vector_execution_options.max_working_bytes;
+            if candidate_bytes > max_working_bytes {
+                return Err(working_memory_refusal(
+                    "scalar vector candidates",
+                    candidate_bytes.saturating_sub(admitted_bytes),
+                    admitted_bytes,
+                    max_working_bytes,
+                    format!(
+                        "scalar vector candidates require {candidate_bytes} bytes, exceeding admitted working memory {max_working_bytes}"
+                    ),
+                ));
             }
+            admitted_bytes = candidate_bytes;
         }
         Ok(VectorCandidateBatch {
             score_source: VectorScoreSource::RawVector,
             candidates,
         })
     }
+}
+
+/// A resident exact or scalar vector read whose working set exceeds its
+/// admitted working memory. This is a budget refusal, not a store fault.
+fn working_memory_refusal(
+    owner: &str,
+    requested: usize,
+    used: usize,
+    budget: usize,
+    message: String,
+) -> HawDBError {
+    let bytes = |value: usize| u64::try_from(value).unwrap_or(u64::MAX);
+    ResourceBudgetError {
+        resource: ResourceBudgetKind::MemoryBytes,
+        scope: ResourceBudgetScope::Operator,
+        owner: owner.into(),
+        memory_class: None,
+        requested: bytes(requested),
+        used: bytes(used),
+        budget: bytes(budget),
+        budget_option: "VectorSearchExecutionOptions.max_working_bytes",
+        message,
+    }
+    .into()
 }
 
 fn vector_bytes(dimension: usize) -> u64 {

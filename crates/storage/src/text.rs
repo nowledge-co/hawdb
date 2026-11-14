@@ -104,15 +104,28 @@ pub fn decode_properties(input: &str) -> Result<BTreeMap<String, Value>> {
     Ok(properties)
 }
 
+pub(crate) use value_decode::temporal_text_tag;
+
 pub fn encode_value(value: &Value) -> String {
     match value {
         Value::Null => "n".to_string(),
         Value::Bool(false) => "b0".to_string(),
         Value::Bool(true) => "b1".to_string(),
         Value::Int(value) => format!("i{value}"),
+        Value::Decimal(value) => format!("d{value}"),
         Value::Float(value) => format!("f{}", value.to_bits()),
         Value::String(value) => format!("s{}", encode_string(value)),
         Value::Uuid(value) => format!("u{value}"),
+        // Temporal values use their canonical ISO 8601 rendering; decoding
+        // re-renders and requires the identical text.
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => format!(
+            "{}{value}",
+            temporal_text_tag(value).expect("temporal value")
+        ),
         Value::Vector(value) => format!(
             "v{}",
             value
@@ -444,3 +457,24 @@ pub fn decode_schema_object_state(input: &str) -> Result<SchemaObjectState> {
 
 #[cfg(test)]
 mod tests;
+
+/// Text form of a declared property default: `ts` for `current_timestamp()`,
+/// otherwise `v` followed by the encoded constant value.
+pub fn encode_property_default(default: &hawdb_core::PropertyDefault) -> String {
+    match default {
+        hawdb_core::PropertyDefault::CurrentTimestamp => "ts".to_string(),
+        hawdb_core::PropertyDefault::Value(value) => format!("v{}", encode_value(value)),
+    }
+}
+
+pub fn decode_property_default(input: &str) -> Result<hawdb_core::PropertyDefault> {
+    if input == "ts" {
+        return Ok(hawdb_core::PropertyDefault::CurrentTimestamp);
+    }
+    match input.strip_prefix('v') {
+        Some(value) => Ok(hawdb_core::PropertyDefault::Value(decode_value(value)?)),
+        None => Err(HawDBError::Storage(format!(
+            "invalid property default encoding: {input}"
+        ))),
+    }
+}

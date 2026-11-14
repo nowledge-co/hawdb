@@ -36,7 +36,7 @@ fn live_changes(
 fn overlay_children_at_exhausted_page_envelope(borrowed: bool, bytes: bool) {
     let fixture = Fixture::new();
     let task = RuntimeTaskContext::default();
-    let slot = usize::try_from(fixture.root.manifest().page_bytes).unwrap();
+    let slot = fixture.page_bytes("docs");
     let mut limits = RelationalRowPageSnapshotReadLimits::default();
     limits.demand.max_rows = NonZeroUsize::new(16).unwrap();
     if bytes {

@@ -4,6 +4,8 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -108,7 +110,7 @@ fn checkpoint_units_memory_buffer_cancels_each_copy_boundary_and_retries_without
     baseline.append(&source, &seed).unwrap();
     let probe = Arc::new(CheckpointWorkProbe::default());
     let work = CheckpointWorkContext::new(
-        permit.bind_task_context(probe.context(local.clone()).task.clone()),
+        permit.bind_task_context(probe.context(local.clone()).task_context().clone()),
     )
     .with_scheduler(local.clone());
     baseline.append(&[7], &work).unwrap();
@@ -133,7 +135,7 @@ fn checkpoint_units_memory_buffer_cancels_each_copy_boundary_and_retries_without
             .cancel_after
             .store(limit, std::sync::atomic::Ordering::SeqCst);
         let work = CheckpointWorkContext::new(
-            permit.bind_task_context(probe.context(local.clone()).task.clone()),
+            permit.bind_task_context(probe.context(local.clone()).task_context().clone()),
         )
         .with_scheduler(local.clone());
         assert!(matches!(
@@ -228,7 +230,7 @@ fn checkpoint_units_shared_copy_overlap_denied_by_one_byte_preserves_complete_re
     let first = work.arc_bytes(&expected).unwrap();
     // Query through the shared controller, within the static task ceiling.
     // A larger request returns that static ceiling before consulting usage.
-    let available = match work.task.reserve_working_memory(ceiling) {
+    let available = match work.task_context().reserve_working_memory(ceiling) {
         Err(RuntimeMemoryError::ReservationExceeded {
             available_bytes, ..
         }) => available_bytes,

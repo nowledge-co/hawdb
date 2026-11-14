@@ -20,6 +20,7 @@ pub mod batch;
 pub mod binding;
 #[doc(hidden)]
 pub mod blocking;
+pub mod bm25;
 pub mod columnar;
 pub mod concurrent;
 #[doc(hidden)]
@@ -37,6 +38,7 @@ pub mod graph_seed;
 #[doc(hidden)]
 pub mod kernel;
 pub mod limit;
+pub mod load_csv;
 pub mod memory;
 pub mod memory_ledger;
 pub mod morsel;

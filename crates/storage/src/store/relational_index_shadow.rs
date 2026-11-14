@@ -173,6 +173,10 @@ fn hash_relational_value(hasher: &mut IntegrityHasher, value: &RelationalValue) 
     match value {
         RelationalValue::Null => hasher.update(&[0]),
         RelationalValue::Boolean(value) => hasher.update(&[1, u8::from(*value)]),
+        RelationalValue::Decimal(value) => {
+            hasher.update(&[9]);
+            hasher.update(&value.to_ordered_bytes());
+        }
         RelationalValue::BigInt(value) => {
             hasher.update(&[2]);
             hasher.update(&value.to_le_bytes());
@@ -197,6 +201,14 @@ fn hash_relational_value(hasher: &mut IntegrityHasher, value: &RelationalValue) 
             hasher.update(&[7]);
             hasher.update(value.as_bytes());
         }
+        RelationalValue::Timestamp(value) => {
+            hasher.update(&[10]);
+            hasher.update(&value.to_le_bytes());
+        }
+        RelationalValue::TimestampTz(value) => {
+            hasher.update(&[11]);
+            hasher.update(&value.to_le_bytes());
+        }
         RelationalValue::Overflow(reference) => {
             hasher.update(&[6, relational_scalar_type_tag(reference.scalar_type)]);
             hash_bounded_bytes(hasher, reference.digest.as_bytes());
@@ -215,6 +227,9 @@ const fn relational_scalar_type_tag(scalar_type: RelationalScalarType) -> u8 {
         RelationalScalarType::Bytea => 4,
         RelationalScalarType::Uuid => 5,
         RelationalScalarType::Vector(_) => 6,
+        RelationalScalarType::Decimal(_) => 7,
+        RelationalScalarType::Timestamp(_) => 8,
+        RelationalScalarType::TimestampTz(_) => 9,
     }
 }
 
@@ -3073,7 +3088,7 @@ mod tests {
                 },
             );
             assert!(
-                matches!(duplicate, Err(HawDBError::Storage(message)) if message.contains("duplicate key"))
+                matches!(duplicate, Err(HawDBError::Constraint { surface: hawdb_core::RelationalErrorSurface::Storage, message }) if message.contains("duplicate key"))
             );
             assert_eq!(store.commit_epoch, base_epoch);
             assert_eq!(
@@ -3096,7 +3111,7 @@ mod tests {
                 },
             );
             assert!(
-                matches!(missing_foreign_key, Err(HawDBError::Storage(message)) if message.contains("no visible target"))
+                matches!(missing_foreign_key, Err(HawDBError::Constraint { surface: hawdb_core::RelationalErrorSurface::Storage, message }) if message.contains("no visible target"))
             );
             assert_eq!(store.commit_epoch, base_epoch);
             assert_eq!(

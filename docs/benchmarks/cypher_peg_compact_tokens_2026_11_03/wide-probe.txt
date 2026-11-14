@@ -1,0 +1,26 @@
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::atomic::{AtomicBool,AtomicUsize,Ordering::Relaxed};
+struct Probe;
+static ACTIVE:AtomicBool=AtomicBool::new(false);
+static CALLS:AtomicUsize=AtomicUsize::new(0);
+static BYTES:AtomicUsize=AtomicUsize::new(0);
+static LIVE:AtomicUsize=AtomicUsize::new(0);
+static PEAK:AtomicUsize=AtomicUsize::new(0);
+fn added(size:usize){CALLS.fetch_add(1,Relaxed);BYTES.fetch_add(size,Relaxed);let current=LIVE.fetch_add(size,Relaxed)+size;PEAK.fetch_max(current,Relaxed);}
+unsafe impl GlobalAlloc for Probe{
+ unsafe fn alloc(&self,layout:Layout)->*mut u8{let p=unsafe{System.alloc(layout)};if !p.is_null()&&ACTIVE.load(Relaxed){added(layout.size());}p}
+ unsafe fn alloc_zeroed(&self,layout:Layout)->*mut u8{let p=unsafe{System.alloc_zeroed(layout)};if !p.is_null()&&ACTIVE.load(Relaxed){added(layout.size());}p}
+ unsafe fn dealloc(&self,p:*mut u8,layout:Layout){if ACTIVE.load(Relaxed){LIVE.fetch_sub(layout.size(),Relaxed);}unsafe{System.dealloc(p,layout)}}
+ unsafe fn realloc(&self,p:*mut u8,layout:Layout,size:usize)->*mut u8{let q=unsafe{System.realloc(p,layout,size)};if !q.is_null()&&ACTIVE.load(Relaxed){LIVE.fetch_sub(layout.size(),Relaxed);added(size);}q}
+}
+#[global_allocator]static ALLOCATOR:Probe=Probe;
+fn main(){
+ let cases=include_str!("hawdb-peg-valid-wide-input.txt");
+ for line in cases.lines(){drop(hawdb_cypher::parse(line).unwrap());}
+ println!("case,allocations,total_bytes,peak_live_bytes,completion_bytes");
+ for (index,line) in cases.lines().enumerate(){
+  CALLS.store(0,Relaxed);BYTES.store(0,Relaxed);LIVE.store(0,Relaxed);PEAK.store(0,Relaxed);
+  ACTIVE.store(true,Relaxed);let result=hawdb_cypher::parse(std::hint::black_box(line));drop(result.unwrap());ACTIVE.store(false,Relaxed);
+  println!("{index},{},{},{},{}",CALLS.load(Relaxed),BYTES.load(Relaxed),PEAK.load(Relaxed),LIVE.load(Relaxed));
+ }
+}

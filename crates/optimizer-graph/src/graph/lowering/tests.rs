@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use super::*;
+use crate::graph::selected_trace::selected_plan_trace;
 use hawdb_plan_cypher::{Aggregation, SortDirection};
 
 fn scan(variable: &str) -> LogicalPlan {
@@ -142,6 +143,7 @@ fn generated_plan(seed: u64, depth: usize) -> LogicalPlan {
             input,
         },
         6 => LogicalPlan::Aggregate {
+            graph_keys: Default::default(),
             group_keys: Vec::new(),
             items: vec![Aggregation {
                 function: AggregateFunction::Count,

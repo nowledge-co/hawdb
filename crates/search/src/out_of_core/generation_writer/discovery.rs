@@ -19,8 +19,8 @@ use crate::build_control::{checkpoint, json};
 use crate::build_memory::{checked_mul as mul, directory, BuildMemory};
 use crate::lexical_projection::admitted_manifest_generation;
 use crate::out_of_core::{
-    SearchOutOfCoreManifestBody, SearchOutOfCoreManifestEnvelope, MAX_OUT_OF_CORE_MANIFEST_BYTES,
-    OUT_OF_CORE_MANIFEST_FILE,
+    manifest_version, SearchOutOfCoreManifestBody, SearchOutOfCoreManifestEnvelope,
+    MAX_OUT_OF_CORE_MANIFEST_BYTES, OUT_OF_CORE_MANIFEST_FILE,
 };
 use crate::{HawDBError, Result};
 use hawdb_core::RuntimeTaskContext;
@@ -57,6 +57,9 @@ pub(super) fn active_identity(
     let bytes = io.read(&manifest, MAX_OUT_OF_CORE_MANIFEST_BYTES)?;
     let capacity = SearchOutOfCoreManifestBody::decode_capacity(&bytes.bytes, task)?;
     let _decode = memory.spool.reserve(capacity)?;
+    // A selector written for a newer reader is refused before the strict
+    // decode, as on every other selector read (#1763).
+    manifest_version::check_reader_version(&bytes.bytes, manifest_version::READER_VERSION)?;
     let envelope: SearchOutOfCoreManifestEnvelope =
         serde_json::from_slice(&bytes.bytes).map_err(|error| {
             HawDBError::Storage(format!("invalid search out-of-core manifest: {error}"))
@@ -86,10 +89,14 @@ pub(super) fn next(
     let active = match active(root, memory, task) {
         Ok(None) => return Ok(1),
         Ok(Some(generation)) => generation,
+        // A selector this reader cannot read because it is too new is
+        // intact: never derive the next generation around it, which would
+        // publish over it (#1763).
         Err(
             error @ (HawDBError::Execution(_)
             | HawDBError::ResourceBudgetExceeded(_)
-            | HawDBError::FileDescriptors(_)),
+            | HawDBError::FileDescriptors(_)
+            | HawDBError::UnsupportedStorageFormat(_)),
         ) => return Err(error),
         Err(_) => {
             checkpoint(task)?;

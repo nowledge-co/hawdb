@@ -112,6 +112,7 @@ pub(crate) fn row_pages(
     let mut pages = Vec::new();
     let mut page = BTreeMap::new();
     let mut page_bytes = 0usize;
+    let mut total_entry_bytes = 0u128;
     for (key, row) in rows {
         let mut entry_bytes = std::mem::size_of::<RelationalKey>()
             .saturating_add(std::mem::size_of::<RelationalRow>())
@@ -135,6 +136,7 @@ pub(crate) fn row_pages(
             page_bytes = 0;
         }
         page_bytes = page_bytes.saturating_add(entry_bytes);
+        total_entry_bytes += entry_bytes as u128;
         page.insert(key, row);
         unit.finish();
     }
@@ -142,10 +144,7 @@ pub(crate) fn row_pages(
     if !page.is_empty() {
         pages.push(crate::cow::CowSegment::from(page));
     }
-    let result = RelationalRowPages {
-        pages: pages.into(),
-        len,
-    };
+    let result = RelationalRowPages::from_ordered_pages(pages, len, total_entry_bytes);
     unit.finish();
     work.checkpoint().map_err(work_error)?;
     Ok(result)
@@ -330,6 +329,7 @@ pub(crate) fn rebuild_indexes(
         unit.finish();
     }
     let replacement = RelationalTableSegment {
+        last_row_id: segment.last_row_id,
         rows: segment.rows.clone(),
         indexes,
         _memory: Default::default(),
@@ -368,7 +368,7 @@ fn references_unique(
     columns: &[String],
     work: &CheckpointWorkContext,
 ) -> Result<bool, RelationalError> {
-    if same_columns(columns, &schema.primary_key, work)? {
+    if !columns.is_empty() && same_columns(columns, &schema.primary_key, work)? {
         return Ok(true);
     }
     for unique in &schema.unique_constraints {

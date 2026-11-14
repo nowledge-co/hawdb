@@ -1,0 +1,33 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//tools:__subpackages__"])
+
+rust_library(
+    name = "query_workloads",
+    crate_name = "query_workloads",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    tags = ["manual"],
+    deps = [
+        "//crates/core:hawdb_core",
+        "@crate_index//:serde",
+        "@crate_index//:serde_json",
+    ],
+)
+
+rust_test(
+    name = "query_workloads_tests",
+    crate = ":query_workloads",
+    edition = "2024",
+    tags = ["manual"],
+)
+
+rust_test(
+    name = "legacy_tests",
+    crate_root = "tests/legacy.rs",
+    srcs = ["tests/legacy.rs"],
+    deps = [":query_workloads"],
+    edition = "2024",
+    tags = ["manual"],
+)

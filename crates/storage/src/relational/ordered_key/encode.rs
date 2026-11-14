@@ -117,9 +117,21 @@ pub(super) fn value<S: Output>(output: &mut S, value: &RelationalValue) -> Resul
                 output.raw(&[3])?;
                 output.raw(&ordered.to_be_bytes())
             }
+            RelationalValue::Decimal(value) => {
+                output.raw(&[9])?;
+                output.raw(&value.to_ordered_bytes())
+            }
             RelationalValue::Uuid(value) => {
                 output.raw(&[6])?;
                 output.raw(value.as_bytes())
+            }
+            RelationalValue::Timestamp(value) => {
+                output.raw(&[10])?;
+                output.raw(&((*value as u64) ^ (1_u64 << 63)).to_be_bytes())
+            }
+            RelationalValue::TimestampTz(value) => {
+                output.raw(&[11])?;
+                output.raw(&((*value as u64) ^ (1_u64 << 63)).to_be_bytes())
             }
             RelationalValue::Vector(_) => Err(OrderedRelationalKeyError::UnsupportedVector.into()),
             RelationalValue::Overflow(_) => {

@@ -733,6 +733,9 @@ impl RelationalIndexShadowState {
         >,
     > {
         let view = self.current_read_view(current_epoch)?;
+        let shortfall = capture.as_ref().and_then(|capture| {
+            view.live_headroom_shortfall(next_epoch, capture, self.live_limits)
+        });
         Some(
             view.advance(next_epoch, capture, self.live_limits)
                 .map(std::sync::Arc::new)
@@ -740,6 +743,7 @@ impl RelationalIndexShadowState {
                     identity: view.identity(),
                     failed_commit_epoch: next_epoch,
                     reason,
+                    shortfall,
                 }),
         )
     }
@@ -750,6 +754,9 @@ pub struct RelationalIndexLiveUnavailable {
     pub identity: crate::relational_index_view::RelationalIndexReadViewIdentity,
     pub failed_commit_epoch: u64,
     pub reason: String,
+    /// Set when only the remaining headroom, not the envelope, rejected the
+    /// commit: a drain can make room for it (#1479).
+    pub shortfall: Option<super::RelationalLiveOverlayShortfall>,
 }
 
 #[derive(Debug)]
@@ -2485,6 +2492,14 @@ pub(super) fn relational_schema_digest(
         if let RelationalScalarType::Vector(dimension) = column.scalar_type {
             encoded.extend_from_slice(&dimension.get().to_le_bytes());
         }
+        if let RelationalScalarType::Decimal(kind) = column.scalar_type {
+            encoded.extend_from_slice(&[kind.precision(), kind.scale()]);
+        }
+        if let RelationalScalarType::Timestamp(precision)
+        | RelationalScalarType::TimestampTz(precision) = column.scalar_type
+        {
+            encoded.push(precision.get());
+        }
         encoded.push(u8::from(column.nullable));
         match &column.default {
             None => encoded.push(0),
@@ -2498,6 +2513,10 @@ pub(super) fn relational_schema_digest(
                 }
             }
             Some(RelationalColumnDefault::UuidV7) => encoded.push(2),
+            Some(RelationalColumnDefault::CurrentTimestamp(kind)) => {
+                encoded.push(3);
+                encoded.extend_from_slice(&crate::relational::clock_default_bytes(*kind));
+            }
         }
     }
     encode_string_list(&mut encoded, &schema.primary_key)?;
@@ -2735,6 +2754,9 @@ fn scalar_type_tag(scalar_type: RelationalScalarType) -> u8 {
         RelationalScalarType::Bytea => 5,
         RelationalScalarType::Uuid => 6,
         RelationalScalarType::Vector(_) => 7,
+        RelationalScalarType::Decimal(_) => 8,
+        RelationalScalarType::Timestamp(_) => 9,
+        RelationalScalarType::TimestampTz(_) => 10,
     }
 }
 

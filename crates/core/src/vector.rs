@@ -657,3 +657,6 @@ mod work_tests {
         assert!(Vector::from_encoded(encoded).is_err());
     }
 }
+
+// Retained query ownership: VectorDistance.
+crate::impl_retained_heap_for_copy!(VectorDistance);

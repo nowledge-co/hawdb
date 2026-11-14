@@ -1,0 +1,9 @@
+{"error":"parse error: expected node in procedure RETURN at byte 32 line 1 column 33 near `, pagerank_score`","query":"CALL page_rank('g') RETURN other, pagerank_score"}
+{"error":"parse error: expected ',' at byte 33 line 1 column 34 near `agerank_score`","query":"CALL page_rank('g') RETURN node pagerank_score"}
+{"error":"parse error: unexpected procedure RETURN column at byte 38 line 1 column 39 near ``","query":"CALL page_rank('g') RETURN node, wrong"}
+{"error":"parse error: expected node_label after node_id at byte 47 line 1 column 48 near `, rank`","query":"CALL page_rank('g') RETURN node, node_id, wrong, rank"}
+{"error":"parse error: expected identifier at byte 42 line 1 column 43 near `, rank`","query":"CALL page_rank('g') RETURN node, node_id, , rank"}
+{"error":"parse error: unexpected trailing input at byte 37 line 1 column 38 near `,`","query":"CALL page_rank('g') RETURN node, rank,"}
+{"error":"parse error: unexpected trailing input at byte 39 line 1 column 40 near `AS node_labels`","query":"CALL page_rank('g') RETURN node, rank; AS node_labels"}
+{"error":"parse error: unexpected procedure RETURN column at byte 43 line 1 column 44 near ``","query":"CALL louvain('g') RETURN node, level, wrong"}
+{"error":"parse error: expected identifier at byte 51 line 1 column 52 near ``","query":"CALL louvain('g') RETURN node, node_id, node_label,"}

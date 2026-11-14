@@ -120,6 +120,282 @@ fn lower_expression_predicates_cover_nowledge_grep_filters() {
 }
 
 #[test]
+fn scalar_expression_regex_predicates_validate_execute_and_cache_patterns() {
+    let mut db = Database::new();
+    db.query("CREATE (:Memory {id: 1, content: 'Graph foundations'})")
+        .unwrap();
+    db.query("CREATE (:Memory {id: 2, content: 'Runtime strategy'})")
+        .unwrap();
+    db.query("CREATE (:Memory {id: 3})").unwrap();
+
+    let query = "MATCH (m:Memory) WHERE LOWER(COALESCE(m.content, '')) =~ $pattern RETURN m.id AS id ORDER BY id";
+    let parameters = |pattern: &str| {
+        BTreeMap::from([("pattern".to_string(), Value::String(pattern.to_string()))])
+    };
+    for (pattern, expected) in [
+        ("^graph", Value::Int(1)),
+        ("^runtime", Value::Int(2)),
+        ("^$", Value::Int(3)),
+    ] {
+        let output = db.query_with_params(query, &parameters(pattern)).unwrap();
+        assert_eq!(output.rows, vec![BTreeMap::from([("id".into(), expected)])]);
+    }
+    assert_eq!(
+        db.query(
+            "MATCH (m:Memory) WHERE LOWER(COALESCE(m.content, '')) =~ '^graph' RETURN m.id AS id"
+        )
+        .unwrap()
+        .rows,
+        vec![BTreeMap::from([("id".into(), Value::Int(1))])]
+    );
+    for (query, parameters, expected) in [
+        (
+            "MATCH (m:Memory) WHERE trim(m.content) =~ '^Graph' RETURN m.id AS id",
+            BTreeMap::new(),
+            vec![BTreeMap::from([("id".into(), Value::Int(1))])],
+        ),
+        (
+            "MATCH (m:Memory) WHERE regexp_replace(m.content, 'foundations', 'runtime') =~ 'runtime$' RETURN m.id AS id",
+            BTreeMap::new(),
+            vec![BTreeMap::from([("id".into(), Value::Int(1))])],
+        ),
+        (
+            "UNWIND [1] AS row WITH row WHERE $value =~ '^a' RETURN row",
+            BTreeMap::from([("value".into(), Value::String("abc".into()))]),
+            vec![BTreeMap::from([("row".into(), Value::Int(1))])],
+        ),
+        (
+            "UNWIND [1] AS row WITH row WHERE $order =~ '^a' RETURN row",
+            BTreeMap::from([("order".into(), Value::String("alpha".into()))]),
+            vec![BTreeMap::from([("row".into(), Value::Int(1))])],
+        ),
+        (
+            "UNWIND [1] AS row WITH row WHERE $contains =~ '^a' RETURN row",
+            BTreeMap::from([("contains".into(), Value::String("alpha".into()))]),
+            vec![BTreeMap::from([("row".into(), Value::Int(1))])],
+        ),
+        (
+            "UNWIND [1] AS row WITH row WHERE $value.order =~ '^a' RETURN row",
+            BTreeMap::from([(
+                "value".into(),
+                Value::Map(BTreeMap::from([(
+                    "order".into(),
+                    Value::String("alpha".into()),
+                )])),
+            )]),
+            vec![BTreeMap::from([("row".into(), Value::Int(1))])],
+        ),
+        (
+            "UNWIND [1] AS row WITH row WHERE ($order) =~ '^a' RETURN row",
+            BTreeMap::from([("order".into(), Value::String("alpha".into()))]),
+            vec![BTreeMap::from([("row".into(), Value::Int(1))])],
+        ),
+        (
+            "UNWIND [1] AS row WITH row WHERE ($value.order) =~ '^a' RETURN row",
+            BTreeMap::from([(
+                "value".into(),
+                Value::Map(BTreeMap::from([(
+                    "order".into(),
+                    Value::String("alpha".into()),
+                )])),
+            )]),
+            vec![BTreeMap::from([("row".into(), Value::Int(1))])],
+        ),
+        (
+            "MATCH (m:Memory) WHERE (m.content) =~ '^Graph' RETURN m.id AS id",
+            BTreeMap::new(),
+            vec![BTreeMap::from([("id".into(), Value::Int(1))])],
+        ),
+        (
+            "UNWIND [1] AS row WITH row WHERE ('abc') =~ '^a' RETURN row",
+            BTreeMap::new(),
+            vec![BTreeMap::from([("row".into(), Value::Int(1))])],
+        ),
+    ] {
+        assert_eq!(
+            db.query_with_params(query, &parameters).unwrap().rows,
+            expected,
+            "{query}"
+        );
+    }
+
+    for (query, expected) in [
+        (
+            "MATCH (m:Memory) WHERE LOWER(m.content) =~ '^graph' RETURN m.id AS id ORDER BY id",
+            vec![BTreeMap::from([("id".into(), Value::Int(1))])],
+        ),
+        (
+            "MATCH (m:Memory) WHERE NOT LOWER(m.content) =~ '^graph' RETURN m.id AS id ORDER BY id",
+            vec![BTreeMap::from([("id".into(), Value::Int(2))])],
+        ),
+        (
+            "MATCH (m:Memory) WHERE (LOWER(m.content) =~ '^graph') AND m.id = 3 RETURN m.id AS id ORDER BY id",
+            vec![],
+        ),
+        (
+            "MATCH (m:Memory) WHERE (LOWER(m.content) =~ '^graph') OR m.id = 3 RETURN m.id AS id ORDER BY id",
+            vec![
+                BTreeMap::from([("id".into(), Value::Int(1))]),
+                BTreeMap::from([("id".into(), Value::Int(3))]),
+            ],
+        ),
+    ] {
+        assert_eq!(db.query(query).unwrap().rows, expected, "{query}");
+    }
+
+    let rebound_query = "UNWIND [1] AS row WITH row WHERE $value =~ $pattern RETURN row";
+    let rebound_parameters =
+        |value, pattern| BTreeMap::from([("value".into(), value), ("pattern".into(), pattern)]);
+    let row = vec![BTreeMap::from([("row".into(), Value::Int(1))])];
+    assert_eq!(
+        db.query_with_params(
+            rebound_query,
+            &rebound_parameters(Value::String("alpha".into()), Value::String("^a".into())),
+        )
+        .unwrap()
+        .rows,
+        row
+    );
+    assert!(db
+        .query_with_params(
+            rebound_query,
+            &rebound_parameters(Value::String("beta".into()), Value::String("^a".into())),
+        )
+        .unwrap()
+        .rows
+        .is_empty());
+    assert!(db
+        .query_with_params(
+            rebound_query,
+            &rebound_parameters(Value::Null, Value::String("^a".into())),
+        )
+        .unwrap()
+        .rows
+        .is_empty());
+    let rebound_non_string_left = db
+        .query_with_params(
+            rebound_query,
+            &rebound_parameters(Value::Int(7), Value::String("^a".into())),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(rebound_non_string_left, HawDBError::Execution(_)),
+        "{rebound_non_string_left:?}"
+    );
+    let rebound_invalid_pattern = db
+        .query_with_params(
+            rebound_query,
+            &rebound_parameters(Value::String("alpha".into()), Value::String("[".into())),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(rebound_invalid_pattern, HawDBError::Semantic(_)),
+        "{rebound_invalid_pattern:?}"
+    );
+    let rebound_non_string_pattern = db
+        .query_with_params(
+            rebound_query,
+            &rebound_parameters(Value::String("alpha".into()), Value::Int(7)),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(rebound_non_string_pattern, HawDBError::Semantic(_)),
+        "{rebound_non_string_pattern:?}"
+    );
+    assert_eq!(
+        db.query_with_params(
+            rebound_query,
+            &rebound_parameters(Value::String("again".into()), Value::String("^a".into())),
+        )
+        .unwrap()
+        .rows,
+        row
+    );
+
+    let graph = db
+        .explain_query_with_params(query, &parameters("^graph"))
+        .unwrap();
+    let runtime = db
+        .explain_query_with_params(query, &parameters("^runtime"))
+        .unwrap();
+    assert_eq!(graph.plan_cache_lookup, PlanCacheLookup::Hit);
+    assert_eq!(runtime.plan_cache_lookup, PlanCacheLookup::Hit);
+    assert_ne!(
+        graph.physical_plan.instance_fingerprint(),
+        runtime.physical_plan.instance_fingerprint()
+    );
+
+    let invalid = db
+        .query("MATCH (m:Memory) WHERE LOWER(COALESCE(m.content, '')) =~ '[' RETURN m.id")
+        .unwrap_err();
+    assert!(matches!(invalid, HawDBError::Semantic(_)), "{invalid:?}");
+    let non_string_pattern = db
+        .query_with_params(
+            query,
+            &BTreeMap::from([("pattern".to_string(), Value::Int(7))]),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(non_string_pattern, HawDBError::Semantic(_)),
+        "{non_string_pattern:?}"
+    );
+    let non_string_left = db
+        .query("MATCH (m:Memory) WHERE COALESCE(m.id, '') =~ '^1$' RETURN m.id")
+        .unwrap_err();
+    assert!(
+        matches!(non_string_left, HawDBError::Execution(_)),
+        "{non_string_left:?}"
+    );
+    assert!(db
+        .query("MATCH (m:Memory) WHERE m.id =~ '^1$' RETURN m.id")
+        .unwrap()
+        .rows
+        .is_empty());
+}
+
+#[test]
+fn scalar_expression_regex_survives_reopen_and_concurrent_reads() {
+    let path = super::unique_test_dir("scalar_expression_regex");
+    {
+        let mut db = Database::open(&path).unwrap();
+        db.query("CREATE (:Memory {id: 1, content: 'Graph foundations'})")
+            .unwrap();
+        db.query("CREATE (:Memory {id: 2, content: 'Runtime strategy'})")
+            .unwrap();
+    }
+
+    let db = Database::open(&path).unwrap().into_concurrent();
+    let handles = [("^graph", 1), ("^runtime", 2)]
+        .into_iter()
+        .map(|(pattern, id)| {
+            let db = db.clone();
+            std::thread::spawn(move || {
+                let query = format!(
+                    "MATCH (m:Memory) WHERE LOWER(COALESCE(m.content, '')) =~ '{pattern}' RETURN m.id AS id"
+                );
+                (db.query(&query).unwrap().rows, id)
+            })
+        })
+        .collect::<Vec<_>>();
+    for handle in handles {
+        let (rows, id) = handle.join().unwrap();
+        assert_eq!(rows, vec![BTreeMap::from([("id".into(), Value::Int(id))])]);
+    }
+    drop(db);
+
+    let mut reopened = Database::open(&path).unwrap();
+    assert_eq!(
+        reopened
+            .query("MATCH (m:Memory) WHERE LOWER(COALESCE(m.content, '')) =~ '^graph' RETURN m.id AS id")
+            .unwrap()
+            .rows,
+        vec![BTreeMap::from([("id".into(), Value::Int(1))])]
+    );
+    drop(reopened);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn generic_case_executes_branch_expressions_with_changed_parameters() {
     let mut db = Database::new();
     db.query("CREATE (:Item {id: 1, name: 'FIRST', enabled: true})")

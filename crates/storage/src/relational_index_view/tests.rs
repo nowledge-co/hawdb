@@ -557,6 +557,8 @@ fn live_relational_index_overlay_fails_closed_at_its_cumulative_budget() {
     assert!(matches!(
         result,
         Err(reason) if reason.contains("max_entries=1")
+            && reason.contains("a single commit adds 2 entries/128 encoded bytes")
+            && reason.contains("even when empty")
     ));
 }
 

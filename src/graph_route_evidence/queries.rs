@@ -16,8 +16,8 @@ pub(super) const ROUTE_STATEMENT_OUTPUT_LIMITS: crate::QueryStreamOptions =
         max_payload_bytes: Some(16 * 1024 * 1024),
     };
 
-const NOWLEDGE_MEM_GRAPH_OVERVIEW_ROUTE: &str = "/graph/overview";
-const NOWLEDGE_MEM_GRAPH_OVERVIEW_MEMORY_RANKING_QUERY: &str = "\
+const GRAPH_OVERVIEW_ROUTE: &str = "/graph/overview";
+const GRAPH_OVERVIEW_MEMORY_RANKING_QUERY: &str = "\
 MATCH (m:Memory) \
 RETURN m.id AS memory_id, \
 id(m) AS node_id, \
@@ -35,8 +35,8 @@ m.event_end AS event_end, \
 m.importance AS importance \
 ORDER BY COALESCE(m.pagerank_score, m.importance, 0.5) DESC, m.id ASC \
 LIMIT $limit";
-const NOWLEDGE_MEM_GRAPH_SAMPLE_ROUTE: &str = "/graph/sample";
-const NOWLEDGE_MEM_GRAPH_SAMPLE_MEMORY_QUERY: &str = "\
+const GRAPH_SAMPLE_ROUTE: &str = "/graph/sample";
+const GRAPH_SAMPLE_MEMORY_QUERY: &str = "\
 MATCH (m:Memory) \
 RETURN m.id AS memory_id, \
 id(m) AS node_id, \
@@ -54,8 +54,8 @@ m.event_end AS event_end, \
 m.importance AS importance \
 ORDER BY m.id ASC \
 LIMIT $limit";
-const NOWLEDGE_MEM_GRAPH_NODE_DETAILS_ROUTE: &str = "/graph/node-details/{node_id}";
-const NOWLEDGE_MEM_GRAPH_NODE_DETAILS_MEMORY_QUERY: &str = "\
+const GRAPH_NODE_DETAILS_ROUTE: &str = "/graph/node-details/{node_id}";
+const GRAPH_NODE_DETAILS_MEMORY_QUERY: &str = "\
 MATCH (m:Memory) \
 WHERE id(m) = $node_id \
 RETURN id(m) AS node_id, \
@@ -78,8 +78,8 @@ m.confidence AS confidence, \
 m.is_latest AS is_latest, \
 m.is_deleted AS is_deleted \
 LIMIT 1";
-const NOWLEDGE_MEM_GRAPH_COMMUNITY_MEMBERS_ROUTE: &str = "/graph/community-members/{community_id}";
-const NOWLEDGE_MEM_GRAPH_COMMUNITY_MEMBERS_MEMORY_QUERY: &str = "\
+const GRAPH_COMMUNITY_MEMBERS_ROUTE: &str = "/graph/community-members/{community_id}";
+const GRAPH_COMMUNITY_MEMBERS_MEMORY_QUERY: &str = "\
 MATCH (m:Memory) \
 WHERE m.community_id = $community_id \
 RETURN m.id AS memory_id, \
@@ -98,9 +98,9 @@ m.event_end AS event_end, \
 m.importance AS importance \
 ORDER BY COALESCE(m.pagerank_score, m.importance, 0.5) DESC, m.id ASC \
 LIMIT $limit";
-const NOWLEDGE_MEM_GRAPH_COMMUNITY_RECENT_MEMORIES_ROUTE: &str =
+const GRAPH_COMMUNITY_RECENT_MEMORIES_ROUTE: &str =
     "/library/community/{community_id}/recent-memories";
-const NOWLEDGE_MEM_GRAPH_COMMUNITY_RECENT_MEMORIES_QUERY: &str = "\
+const GRAPH_COMMUNITY_RECENT_MEMORIES_QUERY: &str = "\
 MATCH (m:Memory)-[:MENTIONS]->(e:Entity) \
 WHERE e.community_id = $community_id \
 WITH m.id AS memory_id, \
@@ -127,9 +127,8 @@ created_at AS created_at, \
 updated_at AS updated_at, \
 is_crystal AS is_crystal, \
 mention_breadth AS mention_breadth";
-const NOWLEDGE_MEM_GRAPH_COMMUNITY_SUBGRAPH_ROUTE: &str =
-    "/library/community/{community_id}/subgraph";
-const NOWLEDGE_MEM_GRAPH_COMMUNITY_SUBGRAPH_ENTITY_QUERY: &str = "\
+const GRAPH_COMMUNITY_SUBGRAPH_ROUTE: &str = "/library/community/{community_id}/subgraph";
+const GRAPH_COMMUNITY_SUBGRAPH_ENTITY_QUERY: &str = "\
 MATCH (e:Entity) \
 WHERE e.community_id = $community_id \
 OPTIONAL MATCH (:Memory)-[r:MENTIONS]->(e) \
@@ -142,7 +141,7 @@ e.confidence AS confidence, \
 COUNT(r) AS mention_count \
 ORDER BY mention_count DESC, e.name ASC \
 LIMIT $max_entities";
-const NOWLEDGE_MEM_GRAPH_COMMUNITY_SUBGRAPH_EDGE_QUERY: &str = "\
+const GRAPH_COMMUNITY_SUBGRAPH_EDGE_QUERY: &str = "\
 MATCH (e1:Entity)-[r:RELATES_TO]-(e2:Entity) \
 WHERE e1.id IN $entity_ids \
 AND e2.id IN $entity_ids \
@@ -153,8 +152,8 @@ id(r) AS relationship_id, \
 r.confidence AS confidence, \
 r.relation_type AS relation_type \
 LIMIT $max_edges";
-const NOWLEDGE_MEM_GRAPH_AUGMENTATION_STATE_ROUTE: &str = "/graph/augmentation/state";
-const NOWLEDGE_MEM_GRAPH_AUGMENTATION_STATE_QUERY: &str = "\
+const GRAPH_AUGMENTATION_STATE_ROUTE: &str = "/graph/augmentation/state";
+const GRAPH_AUGMENTATION_STATE_QUERY: &str = "\
 MATCH (m:GraphMeta {meta_id: 'main'}) \
 RETURN m.community_detection_applied AS community_detection_applied, \
 m.pagerank_applied AS pagerank_applied, \
@@ -169,28 +168,26 @@ m.schema_version AS schema_version, \
 m.community_detection_computed_at AS community_detection_computed_at, \
 m.pagerank_computed_at AS pagerank_computed_at \
 LIMIT 1";
-const NOWLEDGE_MEM_GRAPH_PAGERANK_PLAN_ROUTE: &str = "/graph/augmentation/pagerank/plan";
-const NOWLEDGE_MEM_GRAPH_PAGERANK_PLAN_GRAPH_META_QUERY: &str = "\
+const GRAPH_PAGERANK_PLAN_ROUTE: &str = "/graph/augmentation/pagerank/plan";
+const GRAPH_PAGERANK_PLAN_GRAPH_META_QUERY: &str = "\
 MATCH (m:GraphMeta {meta_id: 'main'}) \
 RETURN m.pagerank_applied AS pagerank_applied, \
 m.pagerank_computed_at AS pagerank_computed_at \
 LIMIT 1";
-const NOWLEDGE_MEM_GRAPH_PAGERANK_PLAN_MEMORY_COUNT_QUERY: &str =
-    "MATCH (m:Memory) RETURN count(m) AS total";
-const NOWLEDGE_MEM_GRAPH_PAGERANK_PLAN_ENTITY_COUNT_QUERY: &str =
-    "MATCH (e:Entity) RETURN count(e) AS total";
-const NOWLEDGE_MEM_GRAPH_PAGERANK_PLAN_ENTITY_RELATION_COUNT_QUERY: &str =
+const GRAPH_PAGERANK_PLAN_MEMORY_COUNT_QUERY: &str = "MATCH (m:Memory) RETURN count(m) AS total";
+const GRAPH_PAGERANK_PLAN_ENTITY_COUNT_QUERY: &str = "MATCH (e:Entity) RETURN count(e) AS total";
+const GRAPH_PAGERANK_PLAN_ENTITY_RELATION_COUNT_QUERY: &str =
     "MATCH (:Entity)-[r:RELATES_TO]->(:Entity) RETURN count(r) AS total";
-const NOWLEDGE_MEM_GRAPH_PAGERANK_PLAN_MENTION_EDGE_COUNT_QUERY: &str =
+const GRAPH_PAGERANK_PLAN_MENTION_EDGE_COUNT_QUERY: &str =
     "MATCH (:Memory)-[r:MENTIONS]->(:Entity) RETURN count(r) AS total";
-const NOWLEDGE_MEM_GRAPH_PAGERANK_PLAN_ACTIVE_MEMORY_RELATION_COUNT_QUERY: &str = "MATCH (:Memory)-[r:MEMORY_RELATES_TO]->(:Memory) WHERE r.status = 'active' RETURN count(r) AS total";
-const NOWLEDGE_MEM_GRAPH_PAGERANK_PLAN_CHANGED_MEMORY_COUNT_QUERY: &str = "MATCH (m:Memory) WHERE m.created_at > $cutoff OR m.updated_at > $cutoff RETURN count(m) AS total";
-const NOWLEDGE_MEM_GRAPH_PAGERANK_PLAN_CHANGED_ENTITY_COUNT_QUERY: &str = "MATCH (e:Entity) WHERE e.created_at > $cutoff OR e.updated_at > $cutoff RETURN count(e) AS total";
-const NOWLEDGE_MEM_GRAPH_PAGERANK_PLAN_CHANGED_MENTION_EDGE_COUNT_QUERY: &str = "MATCH (:Memory)-[r:MENTIONS]->(:Entity) WHERE r.created_at > $cutoff OR r.updated_at > $cutoff RETURN count(r) AS total";
-const NOWLEDGE_MEM_GRAPH_PAGERANK_PLAN_CHANGED_ENTITY_RELATION_COUNT_QUERY: &str = "MATCH (:Entity)-[r:RELATES_TO]->(:Entity) WHERE r.created_at > $cutoff OR r.updated_at > $cutoff RETURN count(r) AS total";
-const NOWLEDGE_MEM_GRAPH_PAGERANK_PLAN_CHANGED_MEMORY_RELATION_COUNT_QUERY: &str = "MATCH (:Memory)-[r:MEMORY_RELATES_TO]->(:Memory) WHERE r.status = 'active' AND (r.created_at > $cutoff OR r.updated_at > $cutoff) RETURN count(r) AS total";
-const NOWLEDGE_MEM_GRAPH_ORPHANS_ROUTE: &str = "/graph/orphans";
-const NOWLEDGE_MEM_GRAPH_ORPHAN_ENTITIES_QUERY: &str = "\
+const GRAPH_PAGERANK_PLAN_ACTIVE_MEMORY_RELATION_COUNT_QUERY: &str = "MATCH (:Memory)-[r:MEMORY_RELATES_TO]->(:Memory) WHERE r.status = 'active' RETURN count(r) AS total";
+const GRAPH_PAGERANK_PLAN_CHANGED_MEMORY_COUNT_QUERY: &str = "MATCH (m:Memory) WHERE m.created_at > $cutoff OR m.updated_at > $cutoff RETURN count(m) AS total";
+const GRAPH_PAGERANK_PLAN_CHANGED_ENTITY_COUNT_QUERY: &str = "MATCH (e:Entity) WHERE e.created_at > $cutoff OR e.updated_at > $cutoff RETURN count(e) AS total";
+const GRAPH_PAGERANK_PLAN_CHANGED_MENTION_EDGE_COUNT_QUERY: &str = "MATCH (:Memory)-[r:MENTIONS]->(:Entity) WHERE r.created_at > $cutoff OR r.updated_at > $cutoff RETURN count(r) AS total";
+const GRAPH_PAGERANK_PLAN_CHANGED_ENTITY_RELATION_COUNT_QUERY: &str = "MATCH (:Entity)-[r:RELATES_TO]->(:Entity) WHERE r.created_at > $cutoff OR r.updated_at > $cutoff RETURN count(r) AS total";
+const GRAPH_PAGERANK_PLAN_CHANGED_MEMORY_RELATION_COUNT_QUERY: &str = "MATCH (:Memory)-[r:MEMORY_RELATES_TO]->(:Memory) WHERE r.status = 'active' AND (r.created_at > $cutoff OR r.updated_at > $cutoff) RETURN count(r) AS total";
+const GRAPH_ORPHANS_ROUTE: &str = "/graph/orphans";
+const GRAPH_ORPHAN_ENTITIES_QUERY: &str = "\
 MATCH (e:Entity) \
 WHERE NOT (e)<-[:MENTIONS]-(:Memory) \
 AND NOT (e)-[:RELATES_TO]-() \
@@ -206,7 +203,7 @@ e.confidence AS confidence, \
 e.pagerank_score AS pagerank_score \
 ORDER BY e.id ASC \
 LIMIT $limit";
-pub(crate) fn nowledge_mem_graph_overview_route_query(limit: usize) -> Result<RouteQuery> {
+pub(crate) fn graph_overview_route_query(limit: usize) -> Result<RouteQuery> {
     let limit = i64::try_from(limit).map_err(|_| {
         HawDBError::Semantic(
             "graph overview route evidence limit exceeds supported range".to_string(),
@@ -218,7 +215,7 @@ pub(crate) fn nowledge_mem_graph_overview_route_query(limit: usize) -> Result<Ro
         ));
     }
     Ok(RouteQuery {
-        route: NOWLEDGE_MEM_GRAPH_OVERVIEW_ROUTE.to_string(),
+        route: GRAPH_OVERVIEW_ROUTE.to_string(),
         shadow_compare_ready: false,
         primary_read_routing_enabled: true,
         primary_ready: false,
@@ -228,13 +225,13 @@ pub(crate) fn nowledge_mem_graph_overview_route_query(limit: usize) -> Result<Ro
             query_family: Some("memory_lookup".to_string()),
             require_scan_pruning: true,
             require_pruned: false,
-            cypher: NOWLEDGE_MEM_GRAPH_OVERVIEW_MEMORY_RANKING_QUERY.to_string(),
+            cypher: GRAPH_OVERVIEW_MEMORY_RANKING_QUERY.to_string(),
             parameters: BTreeMap::from([("limit".to_string(), Value::Int(limit))]),
         }],
     })
 }
 
-pub(crate) fn nowledge_mem_graph_sample_route_query(limit: usize) -> Result<RouteQuery> {
+pub(crate) fn graph_sample_route_query(limit: usize) -> Result<RouteQuery> {
     let limit = i64::try_from(limit).map_err(|_| {
         HawDBError::Semantic(
             "graph sample route evidence limit exceeds supported range".to_string(),
@@ -246,7 +243,7 @@ pub(crate) fn nowledge_mem_graph_sample_route_query(limit: usize) -> Result<Rout
         ));
     }
     Ok(RouteQuery {
-        route: NOWLEDGE_MEM_GRAPH_SAMPLE_ROUTE.to_string(),
+        route: GRAPH_SAMPLE_ROUTE.to_string(),
         shadow_compare_ready: false,
         primary_read_routing_enabled: true,
         primary_ready: false,
@@ -256,20 +253,20 @@ pub(crate) fn nowledge_mem_graph_sample_route_query(limit: usize) -> Result<Rout
             query_family: Some("memory_lookup".to_string()),
             require_scan_pruning: false,
             require_pruned: false,
-            cypher: NOWLEDGE_MEM_GRAPH_SAMPLE_MEMORY_QUERY.to_string(),
+            cypher: GRAPH_SAMPLE_MEMORY_QUERY.to_string(),
             parameters: BTreeMap::from([("limit".to_string(), Value::Int(limit))]),
         }],
     })
 }
 
-pub(crate) fn nowledge_mem_graph_node_details_route_query(node_id: u64) -> Result<RouteQuery> {
+pub(crate) fn graph_node_details_route_query(node_id: u64) -> Result<RouteQuery> {
     let node_id = i64::try_from(node_id).map_err(|_| {
         HawDBError::Semantic(
             "graph node details route evidence node_id exceeds supported range".to_string(),
         )
     })?;
     Ok(RouteQuery {
-        route: NOWLEDGE_MEM_GRAPH_NODE_DETAILS_ROUTE.to_string(),
+        route: GRAPH_NODE_DETAILS_ROUTE.to_string(),
         shadow_compare_ready: false,
         primary_read_routing_enabled: true,
         primary_ready: false,
@@ -279,13 +276,13 @@ pub(crate) fn nowledge_mem_graph_node_details_route_query(node_id: u64) -> Resul
             query_family: Some("memory_lookup".to_string()),
             require_scan_pruning: true,
             require_pruned: false,
-            cypher: NOWLEDGE_MEM_GRAPH_NODE_DETAILS_MEMORY_QUERY.to_string(),
+            cypher: GRAPH_NODE_DETAILS_MEMORY_QUERY.to_string(),
             parameters: BTreeMap::from([("node_id".to_string(), Value::Int(node_id))]),
         }],
     })
 }
 
-pub(crate) fn nowledge_mem_graph_community_members_route_query(
+pub(crate) fn graph_community_members_route_query(
     community_id: i64,
     limit: usize,
 ) -> Result<RouteQuery> {
@@ -300,7 +297,7 @@ pub(crate) fn nowledge_mem_graph_community_members_route_query(
         ));
     }
     Ok(RouteQuery {
-        route: NOWLEDGE_MEM_GRAPH_COMMUNITY_MEMBERS_ROUTE.to_string(),
+        route: GRAPH_COMMUNITY_MEMBERS_ROUTE.to_string(),
         shadow_compare_ready: false,
         primary_read_routing_enabled: true,
         primary_ready: false,
@@ -310,7 +307,7 @@ pub(crate) fn nowledge_mem_graph_community_members_route_query(
             query_family: Some("memory_lookup".to_string()),
             require_scan_pruning: true,
             require_pruned: false,
-            cypher: NOWLEDGE_MEM_GRAPH_COMMUNITY_MEMBERS_MEMORY_QUERY.to_string(),
+            cypher: GRAPH_COMMUNITY_MEMBERS_MEMORY_QUERY.to_string(),
             parameters: BTreeMap::from([
                 ("community_id".to_string(), Value::Int(community_id)),
                 ("limit".to_string(), Value::Int(limit)),
@@ -319,7 +316,7 @@ pub(crate) fn nowledge_mem_graph_community_members_route_query(
     })
 }
 
-pub(crate) fn nowledge_mem_graph_community_recent_memories_route_query(
+pub(crate) fn graph_community_recent_memories_route_query(
     community_id: i64,
     limit: usize,
 ) -> Result<RouteQuery> {
@@ -336,7 +333,7 @@ pub(crate) fn nowledge_mem_graph_community_recent_memories_route_query(
         ));
     }
     Ok(RouteQuery {
-        route: NOWLEDGE_MEM_GRAPH_COMMUNITY_RECENT_MEMORIES_ROUTE.to_string(),
+        route: GRAPH_COMMUNITY_RECENT_MEMORIES_ROUTE.to_string(),
         shadow_compare_ready: false,
         primary_read_routing_enabled: true,
         primary_ready: false,
@@ -346,7 +343,7 @@ pub(crate) fn nowledge_mem_graph_community_recent_memories_route_query(
             query_family: Some("memory_lookup".to_string()),
             require_scan_pruning: true,
             require_pruned: false,
-            cypher: NOWLEDGE_MEM_GRAPH_COMMUNITY_RECENT_MEMORIES_QUERY.to_string(),
+            cypher: GRAPH_COMMUNITY_RECENT_MEMORIES_QUERY.to_string(),
             parameters: BTreeMap::from([
                 ("community_id".to_string(), Value::Int(community_id)),
                 ("limit".to_string(), Value::Int(limit)),
@@ -355,7 +352,7 @@ pub(crate) fn nowledge_mem_graph_community_recent_memories_route_query(
     })
 }
 
-pub(crate) fn nowledge_mem_graph_community_subgraph_route_query<I, S>(
+pub(crate) fn graph_community_subgraph_route_query<I, S>(
     community_id: i64,
     max_entities: usize,
     edge_entity_ids: I,
@@ -392,7 +389,7 @@ where
         .map(|entity_id| Value::String(entity_id.into()))
         .collect::<Vec<_>>();
     Ok(RouteQuery {
-        route: NOWLEDGE_MEM_GRAPH_COMMUNITY_SUBGRAPH_ROUTE.to_string(),
+        route: GRAPH_COMMUNITY_SUBGRAPH_ROUTE.to_string(),
         shadow_compare_ready: false,
         primary_read_routing_enabled: true,
         primary_ready: false,
@@ -403,7 +400,7 @@ where
                 query_family: Some("graph_traversal".to_string()),
                 require_scan_pruning: true,
                 require_pruned: false,
-                cypher: NOWLEDGE_MEM_GRAPH_COMMUNITY_SUBGRAPH_ENTITY_QUERY.to_string(),
+                cypher: GRAPH_COMMUNITY_SUBGRAPH_ENTITY_QUERY.to_string(),
                 parameters: BTreeMap::from([
                     ("community_id".to_string(), Value::Int(community_id)),
                     ("max_entities".to_string(), Value::Int(max_entities)),
@@ -414,7 +411,7 @@ where
                 query_family: Some("graph_traversal".to_string()),
                 require_scan_pruning: false,
                 require_pruned: false,
-                cypher: NOWLEDGE_MEM_GRAPH_COMMUNITY_SUBGRAPH_EDGE_QUERY.to_string(),
+                cypher: GRAPH_COMMUNITY_SUBGRAPH_EDGE_QUERY.to_string(),
                 parameters: BTreeMap::from([
                     ("entity_ids".to_string(), Value::List(entity_ids)),
                     ("max_edges".to_string(), Value::Int(max_edges)),
@@ -424,9 +421,9 @@ where
     })
 }
 
-pub(crate) fn nowledge_mem_graph_augmentation_state_route_query() -> RouteQuery {
+pub(crate) fn graph_augmentation_state_route_query() -> RouteQuery {
     RouteQuery {
-        route: NOWLEDGE_MEM_GRAPH_AUGMENTATION_STATE_ROUTE.to_string(),
+        route: GRAPH_AUGMENTATION_STATE_ROUTE.to_string(),
         shadow_compare_ready: false,
         primary_read_routing_enabled: true,
         primary_ready: false,
@@ -436,49 +433,49 @@ pub(crate) fn nowledge_mem_graph_augmentation_state_route_query() -> RouteQuery 
             query_family: Some("projected_graph".to_string()),
             require_scan_pruning: true,
             require_pruned: false,
-            cypher: NOWLEDGE_MEM_GRAPH_AUGMENTATION_STATE_QUERY.to_string(),
+            cypher: GRAPH_AUGMENTATION_STATE_QUERY.to_string(),
             parameters: BTreeMap::new(),
         }],
     }
 }
 
-pub(crate) fn nowledge_mem_graph_pagerank_plan_route_query(
+pub(crate) fn graph_pagerank_plan_route_query(
     changed_since_epoch_nanos: Option<i64>,
 ) -> RouteQuery {
     let mut queries = vec![
         pagerank_plan_route_query(
             "pagerank-plan-graph-meta",
-            NOWLEDGE_MEM_GRAPH_PAGERANK_PLAN_GRAPH_META_QUERY,
+            GRAPH_PAGERANK_PLAN_GRAPH_META_QUERY,
             BTreeMap::new(),
             true,
         ),
         pagerank_plan_route_query(
             "pagerank-plan-memory-count",
-            NOWLEDGE_MEM_GRAPH_PAGERANK_PLAN_MEMORY_COUNT_QUERY,
+            GRAPH_PAGERANK_PLAN_MEMORY_COUNT_QUERY,
             BTreeMap::new(),
             false,
         ),
         pagerank_plan_route_query(
             "pagerank-plan-entity-count",
-            NOWLEDGE_MEM_GRAPH_PAGERANK_PLAN_ENTITY_COUNT_QUERY,
+            GRAPH_PAGERANK_PLAN_ENTITY_COUNT_QUERY,
             BTreeMap::new(),
             false,
         ),
         pagerank_plan_route_query(
             "pagerank-plan-entity-relation-count",
-            NOWLEDGE_MEM_GRAPH_PAGERANK_PLAN_ENTITY_RELATION_COUNT_QUERY,
+            GRAPH_PAGERANK_PLAN_ENTITY_RELATION_COUNT_QUERY,
             BTreeMap::new(),
             false,
         ),
         pagerank_plan_route_query(
             "pagerank-plan-mention-edge-count",
-            NOWLEDGE_MEM_GRAPH_PAGERANK_PLAN_MENTION_EDGE_COUNT_QUERY,
+            GRAPH_PAGERANK_PLAN_MENTION_EDGE_COUNT_QUERY,
             BTreeMap::new(),
             false,
         ),
         pagerank_plan_route_query(
             "pagerank-plan-active-memory-relation-count",
-            NOWLEDGE_MEM_GRAPH_PAGERANK_PLAN_ACTIVE_MEMORY_RELATION_COUNT_QUERY,
+            GRAPH_PAGERANK_PLAN_ACTIVE_MEMORY_RELATION_COUNT_QUERY,
             BTreeMap::new(),
             false,
         ),
@@ -488,38 +485,38 @@ pub(crate) fn nowledge_mem_graph_pagerank_plan_route_query(
         queries.extend([
             pagerank_plan_route_query(
                 "pagerank-plan-changed-memory-count",
-                NOWLEDGE_MEM_GRAPH_PAGERANK_PLAN_CHANGED_MEMORY_COUNT_QUERY,
+                GRAPH_PAGERANK_PLAN_CHANGED_MEMORY_COUNT_QUERY,
                 parameters.clone(),
                 true,
             ),
             pagerank_plan_route_query(
                 "pagerank-plan-changed-entity-count",
-                NOWLEDGE_MEM_GRAPH_PAGERANK_PLAN_CHANGED_ENTITY_COUNT_QUERY,
+                GRAPH_PAGERANK_PLAN_CHANGED_ENTITY_COUNT_QUERY,
                 parameters.clone(),
                 true,
             ),
             pagerank_plan_route_query(
                 "pagerank-plan-changed-mention-edge-count",
-                NOWLEDGE_MEM_GRAPH_PAGERANK_PLAN_CHANGED_MENTION_EDGE_COUNT_QUERY,
+                GRAPH_PAGERANK_PLAN_CHANGED_MENTION_EDGE_COUNT_QUERY,
                 parameters.clone(),
                 false,
             ),
             pagerank_plan_route_query(
                 "pagerank-plan-changed-entity-relation-count",
-                NOWLEDGE_MEM_GRAPH_PAGERANK_PLAN_CHANGED_ENTITY_RELATION_COUNT_QUERY,
+                GRAPH_PAGERANK_PLAN_CHANGED_ENTITY_RELATION_COUNT_QUERY,
                 parameters.clone(),
                 false,
             ),
             pagerank_plan_route_query(
                 "pagerank-plan-changed-memory-relation-count",
-                NOWLEDGE_MEM_GRAPH_PAGERANK_PLAN_CHANGED_MEMORY_RELATION_COUNT_QUERY,
+                GRAPH_PAGERANK_PLAN_CHANGED_MEMORY_RELATION_COUNT_QUERY,
                 parameters,
                 false,
             ),
         ]);
     }
     RouteQuery {
-        route: NOWLEDGE_MEM_GRAPH_PAGERANK_PLAN_ROUTE.to_string(),
+        route: GRAPH_PAGERANK_PLAN_ROUTE.to_string(),
         shadow_compare_ready: false,
         primary_read_routing_enabled: true,
         primary_ready: false,
@@ -544,7 +541,7 @@ fn pagerank_plan_route_query(
     }
 }
 
-pub(crate) fn nowledge_mem_graph_orphans_route_query(limit: usize) -> Result<RouteQuery> {
+pub(crate) fn graph_orphans_route_query(limit: usize) -> Result<RouteQuery> {
     let limit = i64::try_from(limit).map_err(|_| {
         HawDBError::Semantic(
             "graph orphans route evidence limit exceeds supported range".to_string(),
@@ -556,7 +553,7 @@ pub(crate) fn nowledge_mem_graph_orphans_route_query(limit: usize) -> Result<Rou
         ));
     }
     Ok(RouteQuery {
-        route: NOWLEDGE_MEM_GRAPH_ORPHANS_ROUTE.to_string(),
+        route: GRAPH_ORPHANS_ROUTE.to_string(),
         shadow_compare_ready: false,
         primary_read_routing_enabled: true,
         primary_ready: false,
@@ -566,7 +563,7 @@ pub(crate) fn nowledge_mem_graph_orphans_route_query(limit: usize) -> Result<Rou
             query_family: Some("graph_traversal".to_string()),
             require_scan_pruning: false,
             require_pruned: false,
-            cypher: NOWLEDGE_MEM_GRAPH_ORPHAN_ENTITIES_QUERY.to_string(),
+            cypher: GRAPH_ORPHAN_ENTITIES_QUERY.to_string(),
             parameters: BTreeMap::from([("limit".to_string(), Value::Int(limit))]),
         }],
     })

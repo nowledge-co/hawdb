@@ -240,6 +240,15 @@ impl<'a> RelationalSparseLiveHydrator<'a> {
     }
 
     fn hydrate_table(&mut self, table: &str) -> Result<(), RelationalError> {
+        self.hydrate_range(table, Bound::Unbounded, Bound::Unbounded)
+    }
+
+    fn hydrate_range(
+        &mut self,
+        table: &str,
+        lower: Bound<&crate::relational::RelationalKey>,
+        upper: Bound<&crate::relational::RelationalKey>,
+    ) -> Result<(), RelationalError> {
         self.range_reads = self.range_reads.checked_add(1).ok_or_else(|| {
             RelationalError::Admission(
                 "sparse relational live range-read counter overflow".to_string(),
@@ -254,8 +263,8 @@ impl<'a> RelationalSparseLiveHydrator<'a> {
         let read_result = self.reader.visit_projected_range_resolving(
             RelationalRowPageProjectedRange {
                 table,
-                lower: Bound::Unbounded,
-                upper: Bound::Unbounded,
+                lower,
+                upper,
                 requested_fields: &fields,
             },
             limits,
@@ -313,16 +322,23 @@ impl<'a> RelationalSparseLiveHydrator<'a> {
                 "monotonic append hydration contains no primary keys".to_string(),
             ));
         };
-        let proven_absent = self
+        // A page straddling the partition's end costs one real page read.
+        // It runs under this hydration's remaining limits and shared budget,
+        // and is charged on the hit and the fallback path alike.
+        let limits = self.remaining_limits()?;
+        let proof = self
             .reader
             .prove_partition_absent_at_or_after(
                 &append.table,
                 &append.partition_prefix,
                 first_key,
+                limits.demand,
+                &mut self.hydration,
                 &self.task,
             )
             .map_err(map_sparse_live_snapshot_error)?;
-        if !proven_absent {
+        self.record_snapshot_read(proof.identity, &proof.demand, 0, 0, 0)?;
+        if !proof.absent {
             self.monotonic_append_fallbacks = self
                 .monotonic_append_fallbacks
                 .checked_add(1)
@@ -721,6 +737,9 @@ pub fn hydrate_sparse_relational_workspace(
     }
     for table in plan.scan_tables() {
         hydrator.hydrate_table(table)?;
+    }
+    for (table, range) in plan.ranges() {
+        hydrator.hydrate_range(table, range.lower.as_ref(), range.upper.as_ref())?;
     }
     for probe in plan.index_probes() {
         hydrator.resolve_probe(probe, constraint_index)?;

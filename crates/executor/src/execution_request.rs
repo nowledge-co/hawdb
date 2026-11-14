@@ -29,6 +29,8 @@ pub struct ExecutionRequest<'a> {
     memory: &'a ExecutionMemoryConfig,
     task_context: Option<&'a RuntimeTaskContext>,
     host_scorer: Option<&'a dyn crate::scoring::HostScorerProvider>,
+    statement_clock: Option<hawdb_core::temporal::DateTime<hawdb_core::temporal::Utc>>,
+    csv_import: Option<&'a crate::load_csv::CsvImportPolicy>,
 }
 
 impl<'a> ExecutionRequest<'a> {
@@ -45,7 +47,22 @@ impl<'a> ExecutionRequest<'a> {
             memory,
             task_context: None,
             host_scorer: None,
+            statement_clock: None,
+            csv_import: None,
         }
+    }
+
+    /// Allows `LOAD CSV` sources beneath the policy's import directory.
+    pub fn with_csv_import(
+        mut self,
+        csv_import: Option<&'a crate::load_csv::CsvImportPolicy>,
+    ) -> Self {
+        self.csv_import = csv_import;
+        self
+    }
+
+    pub fn csv_import(self) -> Option<&'a crate::load_csv::CsvImportPolicy> {
+        self.csv_import
     }
 
     /// Preserve the logical projection independently of physical rewrites.
@@ -81,6 +98,23 @@ impl<'a> ExecutionRequest<'a> {
     pub fn with_task_context(mut self, task_context: &'a RuntimeTaskContext) -> Self {
         self.task_context = Some(task_context);
         self
+    }
+
+    /// The statement instant that planning observed. Execution pins it, so
+    /// that clock reads evaluated per row (`datetime({timezone: '+01:00'})`)
+    /// observe the same instant as clock reads bound during planning.
+    pub fn with_statement_clock(
+        mut self,
+        instant: hawdb_core::temporal::DateTime<hawdb_core::temporal::Utc>,
+    ) -> Self {
+        self.statement_clock = Some(instant);
+        self
+    }
+
+    pub fn statement_clock(
+        self,
+    ) -> Option<hawdb_core::temporal::DateTime<hawdb_core::temporal::Utc>> {
+        self.statement_clock
     }
 
     pub fn plan(self) -> &'a PhysicalPlan {

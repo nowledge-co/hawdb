@@ -83,17 +83,16 @@ fn namespace_durability_anchor_round_trips_the_embedded_graph_sql_and_search_sto
     let anchor = std::env::temp_dir();
     let path = project.0.join("new/graph");
     let search = project.0.join("new/search");
-    let options = hawdb::NowledgeMemOpenOptions::with_search_projection(
+    let options = hawdb::EmbeddedStoreOpenOptions::with_search_projection(
         &path,
         &search,
-        hawdb::NowledgeMemGraphMode::WritableCutover,
+        hawdb::GraphMode::WritableCutover,
     )
     .with_database_config(DatabaseConfig {
         namespace_durability_anchor: Some(anchor),
         ..Default::default()
     });
-    let (handle, report) =
-        hawdb::NowledgeMemEmbeddedStoreHandle::open_with_options(options.clone()).unwrap();
+    let (handle, report) = hawdb::EmbeddedStoreHandle::open_with_options(options.clone()).unwrap();
     assert!(report.graph_opened && report.search_projection_opened);
     let search_conflict =
         hawdb_storage::file_descriptors::ProjectFileDescriptors::acquire_with_namespace_anchor(
@@ -122,8 +121,7 @@ fn namespace_durability_anchor_round_trips_the_embedded_graph_sql_and_search_sto
         .to_string()
         .contains("namespace durability anchor conflicts"));
     drop(handle);
-    let (reopened, report) =
-        hawdb::NowledgeMemEmbeddedStoreHandle::open_with_options(options).unwrap();
+    let (reopened, report) = hawdb::EmbeddedStoreHandle::open_with_options(options).unwrap();
     assert!(report.graph_opened && report.search_projection_opened);
     reopened
         .with_read_transaction(64 * 1024, |transaction| {
@@ -148,17 +146,17 @@ fn namespace_durability_anchor_round_trips_the_embedded_graph_sql_and_search_sto
 fn namespace_durability_anchor_does_not_create_an_absent_incremental_projection() {
     let project = Project::new();
     let search = project.0.join("missing-search");
-    let options = hawdb::NowledgeMemOpenOptions::with_search_projection(
+    let options = hawdb::EmbeddedStoreOpenOptions::with_search_projection(
         project.0.join("graph"),
         &search,
-        hawdb::NowledgeMemGraphMode::WritableCutover,
+        hawdb::GraphMode::WritableCutover,
     )
     .with_database_config(DatabaseConfig {
         namespace_durability_anchor: Some(std::env::temp_dir()),
         ..Default::default()
     })
     .with_incremental_search_maintenance(Default::default());
-    assert!(hawdb::NowledgeMemEmbeddedStoreHandle::open_with_options(options).is_err());
+    assert!(hawdb::EmbeddedStoreHandle::open_with_options(options).is_err());
     assert!(!search.exists());
 }
 
@@ -304,23 +302,34 @@ fn live_writer_reclamation_retains_readers_descendants_and_budget_retries() {
         .join("branches/objects/objects/.staging/999999-1.stage");
     std::fs::write(&staging, b"interrupted publisher").unwrap();
     let mut snapshot = database.begin_read_transaction().unwrap();
-    assert!(database
+    // Limits are a per-pass budget (#1736): a pass above them removes one
+    // bounded batch and reports the rest as pending instead of refusing.
+    let first = database
         .reclaim_branch_storage(BranchReclamationLimits {
             max_objects: 1,
             ..Default::default()
         })
-        .is_err());
-    assert!(orphan_path.exists());
-    assert!(parent_directory.exists());
-    assert!(staging.exists());
+        .unwrap();
+    assert!(!first.deferred_for_active_leases, "{first:?}");
+    assert_eq!(first.reclaimed_objects, 1, "{first:?}");
     let report = database
         .reclaim_branch_storage(BranchReclamationLimits::default())
         .unwrap();
     assert!(!report.deferred_for_active_leases, "{report:?}");
-    assert!(report.reclaimed_objects > 0);
-    assert!(report.reclaimed_bytes >= orphan.byte_length);
-    assert_eq!(report.reclaimed_branch_directories, 1);
-    assert_eq!(report.reclaimed_staging_files, 1);
+    assert_eq!(report.pending_objects, 0, "{report:?}");
+    assert_eq!(
+        report.reclaimed_objects, first.pending_objects,
+        "{report:?}"
+    );
+    assert!(first.reclaimed_bytes + report.reclaimed_bytes >= orphan.byte_length);
+    assert_eq!(
+        first.reclaimed_branch_directories + report.reclaimed_branch_directories,
+        1
+    );
+    assert_eq!(
+        first.reclaimed_staging_files + report.reclaimed_staging_files,
+        1
+    );
     assert!(!staging.exists());
     assert!(!orphan_path.exists());
     assert!(!parent_directory.exists());

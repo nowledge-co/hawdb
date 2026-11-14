@@ -3,7 +3,8 @@
 ## Status
 
 This document defines the v1 eligibility boundary for graph property optimizer
-statistics. It covers property distinct counts, value histograms, histogram
+statistics. It covers property distinct counts, distinct-value samples, compressed
+frequency histograms, histogram
 sampling markers, external refresh spill records, checkpoint recovery, and
 optimizer consumption. It does not change property indexes, full-text indexes,
 canonical records, basic graph counters, or path-cardinality statistics.
@@ -50,6 +51,7 @@ for that group:
 - distinct count
 - histogram values
 - exact-versus-sampled marker
+- compressed frequency distribution
 
 This rule applies to mixed-type properties. Publishing statistics for only the
 compact subset would undercount NDV and could make the cost model select an
@@ -94,6 +96,15 @@ path statistics remain intact.
 `advanced_statistics_complete` means the bounded refresh completed for all
 supported statistics families at one source epoch. It does not mean that every
 property type has NDV or histogram data.
+
+The optional [compressed histogram](../COMPRESSED_HISTOGRAMS.md) has its own
+frequency-preserving row sample, counts and byte admission. It does not require
+the legacy NDV/histogram/marker triple: a bounded materialized distinct set may
+be refused while the row distribution remains useful. In that case equality
+uses a conservative population prior instead of treating sample NDV as exact.
+An unsupported value excludes both families; resource refusal may omit either
+whole family. `advanced_statistics_complete` also does not promise that every
+eligible property fit the collector's byte budget.
 
 ## Observability
 

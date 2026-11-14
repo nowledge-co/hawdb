@@ -25,6 +25,7 @@ pub mod field_plan;
 pub mod index_access;
 #[doc(hidden)]
 pub mod index_runtime;
+mod literal_coercion;
 mod materialized_view;
 mod read_profile;
 #[doc(hidden)]
@@ -55,6 +56,8 @@ pub use append::{
 pub use system_schema::{SystemSchemaMigration, SystemSchemaRegistry, SystemSchemaUpgradeReport};
 
 // These are internal ownership seams. Hosts continue to use the embedded facade.
+#[doc(hidden)]
+pub use query::text_search::SearchIndexScanEvidence;
 #[doc(hidden)]
 pub use read_profile::{
     ProfiledRelationalSqlQueryOutput, RelationalSqlIndexReadProfile, RelationalSqlReadProfile,
@@ -183,28 +186,7 @@ use hawdb_storage::relational::{
 
 #[doc(hidden)]
 pub fn bind_relational_value(value: SqlValue, parameters: &[Value]) -> Result<RelationalValue> {
-    let value = match value {
-        SqlValue::Literal(value) => value,
-        SqlValue::Parameter(position) => parameters
-            .get(position.saturating_sub(1))
-            .cloned()
-            .ok_or_else(|| {
-                HawDBError::Semantic(format!("missing PostgreSQL parameter ${position}"))
-            })?,
-    };
-    match value {
-        Value::Null => Ok(RelationalValue::Null),
-        Value::Bool(value) => Ok(RelationalValue::Boolean(value)),
-        Value::Int(value) => Ok(RelationalValue::BigInt(value)),
-        Value::Float(value) => Ok(RelationalValue::DoublePrecision(value)),
-        Value::String(value) => Ok(RelationalValue::Text(value)),
-        Value::Binary(value) => Ok(RelationalValue::Bytea(value)),
-        Value::Uuid(value) => Ok(RelationalValue::Uuid(value)),
-        Value::Vector(value) => Ok(RelationalValue::Vector(value)),
-        Value::List(_) | Value::Map(_) => Err(HawDBError::Semantic(
-            "relational SQL parameters must be scalar".to_string(),
-        )),
-    }
+    query_value::value_to_relational(hawdb_expression::sql::bind_sql_value(&value, parameters)?)
 }
 
 #[doc(hidden)]
@@ -221,6 +203,9 @@ pub fn compile_column(column: SqlColumnDefinition) -> Result<RelationalColumnSch
                     compile_schema_value(value, scalar_type).map(RelationalColumnDefault::Literal)
                 }
                 SqlColumnDefault::UuidV7 => Ok(RelationalColumnDefault::UuidV7),
+                SqlColumnDefault::CurrentTimestamp(kind) => {
+                    Ok(RelationalColumnDefault::CurrentTimestamp(kind))
+                }
             })
             .transpose()?,
     })
@@ -231,10 +216,15 @@ fn compile_data_type(data_type: SqlDataType) -> RelationalScalarType {
         SqlDataType::Boolean => RelationalScalarType::Boolean,
         SqlDataType::BigInt => RelationalScalarType::BigInt,
         SqlDataType::DoublePrecision => RelationalScalarType::DoublePrecision,
+        SqlDataType::Decimal(kind) => RelationalScalarType::Decimal(kind),
         SqlDataType::Text => RelationalScalarType::Text,
         SqlDataType::Bytea => RelationalScalarType::Bytea,
         SqlDataType::Uuid => RelationalScalarType::Uuid,
         SqlDataType::Vector(dimension) => RelationalScalarType::Vector(dimension),
+        SqlDataType::Timestamp(kind) if kind.zoned => {
+            RelationalScalarType::TimestampTz(kind.precision)
+        }
+        SqlDataType::Timestamp(kind) => RelationalScalarType::Timestamp(kind.precision),
     }
 }
 
@@ -242,25 +232,90 @@ fn compile_schema_value(
     value: SqlValue,
     scalar_type: RelationalScalarType,
 ) -> Result<RelationalValue> {
-    let SqlValue::Literal(value) = value else {
-        return Err(HawDBError::Semantic(
-            "schema defaults cannot contain parameters".to_string(),
-        ));
+    let value = hawdb_expression::sql::bind_sql_value(&value, &[])?;
+    // SQL string constants in a default acquire the declared column type at DDL
+    // binding. Keep typed runtime parameters on their existing conversion path.
+    let value = if let Value::String(text) = &value {
+        let invalid = || HawDBError::Semantic(format!("invalid {scalar_type:?} default {text:?}"));
+        match scalar_type {
+            RelationalScalarType::BigInt => Value::Int(text.trim().parse().map_err(|_| invalid())?),
+            RelationalScalarType::DoublePrecision => {
+                Value::Float(text.trim().parse().map_err(|_| invalid())?)
+            }
+            RelationalScalarType::Decimal(_) => {
+                Value::Decimal(text.trim().parse().map_err(|_| invalid())?)
+            }
+            RelationalScalarType::Boolean => {
+                let text = text.trim().to_ascii_lowercase();
+                let boolean = match text.as_str() {
+                    "1" => true,
+                    "0" => false,
+                    _ if !text.is_empty()
+                        && ["true", "yes", "on"]
+                            .iter()
+                            .any(|word| word.starts_with(&text))
+                        && !"off".starts_with(&text) =>
+                    {
+                        true
+                    }
+                    _ if !text.is_empty()
+                        && ["false", "no", "off"]
+                            .iter()
+                            .any(|word| word.starts_with(&text))
+                        && !"on".starts_with(&text) =>
+                    {
+                        false
+                    }
+                    _ => return Err(invalid()),
+                };
+                Value::Bool(boolean)
+            }
+            _ => value,
+        }
+    } else {
+        value
     };
-    match value {
-        Value::Null => Ok(RelationalValue::Null),
-        Value::Bool(value) => Ok(RelationalValue::Boolean(value)),
-        Value::Int(value) => Ok(RelationalValue::BigInt(value)),
-        Value::Float(value) => Ok(RelationalValue::DoublePrecision(value)),
-        Value::String(value) => Ok(RelationalValue::Text(value)),
-        Value::Binary(value) => Ok(RelationalValue::Bytea(value)),
-        Value::Uuid(value) => Ok(RelationalValue::Uuid(value)),
-        Value::Vector(value) => Ok(RelationalValue::Vector(value)),
-        Value::List(_) | Value::Map(_) => Err(HawDBError::Semantic(
-            "relational schema defaults must be scalar".to_string(),
-        )),
+    query_value::value_to_relational(value)
+        .and_then(|value| coerce_relational_value(value, scalar_type))
+}
+
+fn insert_column_positions(
+    names: &[String],
+    rows: &[Vec<SqlValue>],
+    table: &str,
+    columns: &[RelationalColumnSchema],
+) -> Result<Vec<usize>> {
+    let arity = rows.first().map_or(0, Vec::len);
+    if rows.is_empty()
+        || rows.iter().any(|row| row.len() != arity)
+        || (!names.is_empty() && names.len() != arity)
+        || (names.is_empty() && arity > columns.len())
+    {
+        return Err(HawDBError::Semantic(format!(
+            "INSERT VALUES arity does not match columns of table {table}"
+        )));
     }
-    .and_then(|value| coerce_relational_value(value, scalar_type))
+    if names.is_empty() {
+        return Ok((0..arity).collect());
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    names
+        .iter()
+        .map(|name| {
+            let position = columns
+                .iter()
+                .position(|column| column.name == *name)
+                .ok_or_else(|| {
+                    HawDBError::Semantic(format!("table {table} has no column {name}"))
+                })?;
+            if !seen.insert(position) {
+                return Err(HawDBError::Semantic(format!(
+                    "INSERT column {name} is specified more than once"
+                )));
+            }
+            Ok(position)
+        })
+        .collect()
 }
 
 #[doc(hidden)]
@@ -269,6 +324,28 @@ pub fn coerce_relational_value(
     scalar_type: RelationalScalarType,
 ) -> Result<RelationalValue> {
     match (scalar_type, value) {
+        (RelationalScalarType::Decimal(kind), RelationalValue::BigInt(value)) => kind
+            .coerce(value.into())
+            .map(RelationalValue::Decimal)
+            .map_err(|error| HawDBError::Semantic(error.to_string())),
+        (RelationalScalarType::Decimal(kind), RelationalValue::Decimal(value)) => kind
+            .coerce(value)
+            .map(RelationalValue::Decimal)
+            .map_err(|error| HawDBError::Semantic(error.to_string())),
+        (RelationalScalarType::Decimal(_), RelationalValue::DoublePrecision(_)) => Err(
+            HawDBError::Semantic("DOUBLE PRECISION assignment to Decimal requires CAST".into()),
+        ),
+        (RelationalScalarType::DoublePrecision, RelationalValue::Decimal(value)) => {
+            hawdb_core::numeric::cast_numeric(
+                hawdb_core::ValueRef::Decimal(value),
+                hawdb_core::numeric::NumericType::DoublePrecision,
+            )
+            .and_then(query_value::value_to_relational)
+        }
+        (RelationalScalarType::BigInt, RelationalValue::Decimal(value)) => value
+            .to_i64()
+            .map(RelationalValue::BigInt)
+            .map_err(|error| HawDBError::Semantic(error.to_string())),
         (RelationalScalarType::Uuid, RelationalValue::Text(value)) => {
             hawdb_core::Uuid::parse_str(&value)
                 .map(RelationalValue::Uuid)
@@ -276,6 +353,33 @@ pub fn coerce_relational_value(
         }
         (RelationalScalarType::Uuid, RelationalValue::Uuid(value)) => {
             Ok(RelationalValue::Uuid(value))
+        }
+        (
+            RelationalScalarType::Timestamp(precision)
+            | RelationalScalarType::TimestampTz(precision),
+            value @ (RelationalValue::Text(_)
+            | RelationalValue::Timestamp(_)
+            | RelationalValue::TimestampTz(_)),
+        ) => {
+            // Assignment parses text, converts between TIMESTAMP and
+            // TIMESTAMPTZ through UTC and rounds to the declared precision.
+            let kind = hawdb_core::sql_timestamp::TimestampType {
+                zoned: matches!(scalar_type, RelationalScalarType::TimestampTz(_)),
+                precision,
+            };
+            let micros = match value {
+                RelationalValue::Text(text) => kind.convert(&Value::String(text))?,
+                RelationalValue::Timestamp(micros) | RelationalValue::TimestampTz(micros) => {
+                    Some(precision.round(micros)?)
+                }
+                _ => unreachable!("matched timestamp assignment operand"),
+            }
+            .expect("non-NULL timestamp assignment");
+            Ok(if kind.zoned {
+                RelationalValue::TimestampTz(micros)
+            } else {
+                RelationalValue::Timestamp(micros)
+            })
         }
         (_, value) => Ok(value),
     }

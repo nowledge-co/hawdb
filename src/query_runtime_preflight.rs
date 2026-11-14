@@ -13,9 +13,9 @@
 // limitations under the License.
 
 use crate::{
-    nowledge_mem_graph_read_route_catalog_digest, DatabaseConfig, HawDBError,
-    NowledgeMemEmbeddedStore, NowledgeMemGraph, NowledgeQueryRuntimePreflightProbe, Result,
-    NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION,
+    graph_read_route_catalog_digest, DatabaseConfig, EmbeddedGraph, EmbeddedStore, HawDBError,
+    NowledgeQueryRuntimePreflightProbe, RelationalErrorSurface, Result,
+    GRAPH_READ_ROUTE_CATALOG_VERSION,
 };
 pub use hawdb_readiness::query_runtime_preflight_cli::nowledge_query_runtime_preflight_usage;
 use hawdb_readiness::query_runtime_preflight_cli::parse_query_runtime_preflight_cli_inputs;
@@ -32,7 +32,7 @@ pub fn query_runtime_preflight_json(
     database_path: &str,
     probes: &[NowledgeQueryRuntimePreflightProbe],
 ) -> serde_json::Value {
-    let graph = match NowledgeMemGraph::open_with_config(
+    let graph = match EmbeddedGraph::open_with_config(
         database_path,
         DatabaseConfig {
             read_only: true,
@@ -57,8 +57,8 @@ pub fn query_runtime_preflight_json(
                 "required_routes_covered": false,
                 "unknown_routes": [],
                 "duplicate_routes": [],
-                "route_catalog_version": NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION,
-                "route_catalog_digest": nowledge_mem_graph_read_route_catalog_digest(),
+                "route_catalog_version": GRAPH_READ_ROUTE_CATALOG_VERSION,
+                "route_catalog_digest": graph_read_route_catalog_digest(),
                 "route_coverage_ready": false,
                 "route_coverage_blocker_codes": [],
                 "blocker_codes": database_open_blocker_codes(
@@ -70,7 +70,7 @@ pub fn query_runtime_preflight_json(
             });
         }
     };
-    let mut store = NowledgeMemEmbeddedStore::new(graph, None);
+    let mut store = EmbeddedStore::new(graph, None);
     store.query_runtime_preflight_json(probes)
 }
 
@@ -101,14 +101,32 @@ fn error_class(error: &HawDBError) -> &'static str {
         HawDBError::Parse(_) => "parse",
         HawDBError::Semantic(_) => "semantic",
         HawDBError::Storage(_)
+        | HawDBError::Constraint {
+            surface: RelationalErrorSurface::Storage,
+            ..
+        }
+        | HawDBError::Schema {
+            surface: RelationalErrorSurface::Storage,
+            ..
+        }
         | HawDBError::FileDescriptors(_)
         | HawDBError::StorageIntegrity(_)
         | HawDBError::WalRecoveryIo { .. }
+        | HawDBError::PublishOutcomeUnknown { .. }
         | HawDBError::ProjectionBusy
+        | HawDBError::SearchProjectionMismatch { .. }
         | HawDBError::AppendSequenceExhausted { .. }
         | HawDBError::BranchBusy { .. }
         | HawDBError::BranchReclamationBlocked { .. } => "storage",
         HawDBError::Execution(_)
+        | HawDBError::Constraint {
+            surface: RelationalErrorSurface::Execution,
+            ..
+        }
+        | HawDBError::Schema {
+            surface: RelationalErrorSurface::Execution,
+            ..
+        }
         | HawDBError::BranchEvidenceBudgetExceeded { .. }
         | HawDBError::ReadBudgetExceeded(_)
         | HawDBError::ResourceBudgetExceeded(_)
@@ -117,7 +135,9 @@ fn error_class(error: &HawDBError) -> &'static str {
         | HawDBError::TransactionConflict { .. }
         | HawDBError::TransactionRetryRequired(_)
         | HawDBError::TransactionReadDependencyRefused { .. }
-        | HawDBError::BranchCommandUnsupported { .. } => "execution",
+        | HawDBError::BranchCommandUnsupported { .. }
+        | HawDBError::SearchProjectionRebuildRefused { .. }
+        | HawDBError::SearchProjectionEpochAdvanceRefused { .. } => "execution",
         HawDBError::CapabilityUnavailable { .. } => "capability_unavailable",
     }
 }
@@ -125,7 +145,7 @@ fn error_class(error: &HawDBError) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::run_nowledge_query_runtime_preflight;
-    use crate::{Database, REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES};
+    use crate::{Database, REQUIRED_BOUNDED_READ_ROUTES};
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -148,7 +168,7 @@ mod tests {
             .unwrap();
         }
         drop(db);
-        let probes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+        let probes = REQUIRED_BOUNDED_READ_ROUTES
             .iter()
             .map(|route| {
                 serde_json::json!({
@@ -187,21 +207,18 @@ mod tests {
             "hawdb-nowledge-query-runtime-preflight-v1"
         );
         assert_eq!(report["ready"], true);
-        assert_eq!(
-            report["probe_count"],
-            REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len()
-        );
+        assert_eq!(report["probe_count"], REQUIRED_BOUNDED_READ_ROUTES.len());
         assert_eq!(
             report["passed_probe_count"],
-            REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len()
+            REQUIRED_BOUNDED_READ_ROUTES.len()
         );
         assert_eq!(
             report["required_route_count"],
-            REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len()
+            REQUIRED_BOUNDED_READ_ROUTES.len()
         );
         assert_eq!(
             report["covered_route_count"],
-            REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len()
+            REQUIRED_BOUNDED_READ_ROUTES.len()
         );
         assert_eq!(report["required_routes_covered"], true);
         assert_eq!(report["missing_required_routes"], serde_json::json!([]));
@@ -266,7 +283,7 @@ mod tests {
         db.query("CREATE (:Memory {id: 'mem-b', kind: 'task', title: 'B'})")
             .unwrap();
         drop(db);
-        let routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+        let routes = REQUIRED_BOUNDED_READ_ROUTES
             .iter()
             .map(|route| {
                 serde_json::json!({
@@ -305,18 +322,15 @@ mod tests {
         .unwrap();
 
         assert_eq!(report["ready"], true);
-        assert_eq!(
-            report["probe_count"],
-            REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len()
-        );
+        assert_eq!(report["probe_count"], REQUIRED_BOUNDED_READ_ROUTES.len());
         assert_eq!(
             report["passed_probe_count"],
-            REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len()
+            REQUIRED_BOUNDED_READ_ROUTES.len()
         );
         assert_eq!(report["route_coverage_ready"], true);
         assert_eq!(
             report["probes"][0]["route"],
-            REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES[0]
+            REQUIRED_BOUNDED_READ_ROUTES[0]
         );
         assert_eq!(report["probes"][0]["query_family"], "memory_lookup");
         assert_eq!(report["probes"][0]["ready"], true);
@@ -372,7 +386,7 @@ mod tests {
         db.query("CREATE (:Memory {id: 'mem-a', kind: 'note', title: 'A'})")
             .unwrap();
         drop(db);
-        let mut probes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+        let mut probes = REQUIRED_BOUNDED_READ_ROUTES
             .iter()
             .map(|route| ready_probe(route))
             .collect::<Vec<_>>();
@@ -424,7 +438,7 @@ mod tests {
         db.query("CREATE (:Memory {id: 'mem-a', kind: 'note', title: 'A'})")
             .unwrap();
         drop(db);
-        let mut probes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+        let mut probes = REQUIRED_BOUNDED_READ_ROUTES
             .iter()
             .map(|route| ready_probe(route))
             .collect::<Vec<_>>();

@@ -59,13 +59,13 @@ fn pending_id_relationship_scaling_probe() {
                                 source_filter: Some(if direct {
                                     filter
                                 } else {
-                                    PropertyFilter::And(vec![filter])
+                                    PropertyFilter::Or(vec![filter])
                                 }),
                                 target_label: "Memory".into(),
                                 target_filter: Some(if direct {
                                     id_eq(target)
                                 } else {
-                                    PropertyFilter::And(vec![id_eq(target)])
+                                    PropertyFilter::Or(vec![id_eq(target)])
                                 }),
                                 rel_type: "LINKS".into(),
                                 rel_properties: properties([]),

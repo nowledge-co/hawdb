@@ -1,3 +1,6 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
 use super::*;
 
 pub type QueryPipeline = AstNode<QueryPipelineKind>;
@@ -22,6 +25,13 @@ pub enum ClauseKind {
         source: ValueExpression,
         variable: String,
     },
+    /// Computed read-side list expression, evaluated once per incoming row.
+    UnwindExpression {
+        source: ScalarExpression,
+        variable: String,
+    },
+    /// `LOAD CSV [WITH HEADERS] FROM <source> AS <variable> [FIELDTERMINATOR <c>]`.
+    LoadCsv(LoadCsvClause),
     Match {
         optional: bool,
         patterns: Vec<MatchPattern>,
@@ -44,6 +54,18 @@ pub enum ClauseKind {
         detach: bool,
         variables: Vec<String>,
     },
+}
+
+/// A CSV row source. Each record binds `variable` to a list of strings, or to
+/// a map keyed by the header record when `with_headers` is set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadCsvClause {
+    pub with_headers: bool,
+    /// A string literal or `$parameter` naming a local file.
+    pub source: ValueExpression,
+    pub variable: String,
+    /// A single ASCII field separator; `,` unless `FIELDTERMINATOR` is given.
+    pub field_terminator: char,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,10 +124,15 @@ pub struct NodePatternKind {
     pub properties: BTreeMap<String, ValueExpression>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct RelationshipPatternKind {
     pub variable: Option<String>,
+    /// The single type, or the first type of a disjunction; empty for an
+    /// untyped pattern.
     pub rel_type: String,
+    /// Every type of a disjunction `[:A|B]`, in source order and without
+    /// duplicates; empty unless the pattern names two or more types.
+    pub rel_type_disjunction: Vec<String>,
     pub properties: BTreeMap<String, ValueExpression>,
     pub direction: RelationshipDirection,
     pub min_hops: usize,
@@ -113,8 +140,63 @@ pub struct RelationshipPatternKind {
     pub search: PathSearch,
 }
 
+// Written by hand so a pattern without a disjunction keeps the derived output:
+// frozen parser corpora digest the AST's `Debug` text.
+impl std::fmt::Debug for RelationshipPatternKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = f.debug_struct("RelationshipPatternKind");
+        debug
+            .field("variable", &self.variable)
+            .field("rel_type", &self.rel_type);
+        if !self.rel_type_disjunction.is_empty() {
+            debug.field("rel_type_disjunction", &self.rel_type_disjunction);
+        }
+        debug
+            .field("properties", &self.properties)
+            .field("direction", &self.direction)
+            .field("min_hops", &self.min_hops)
+            .field("max_hops", &self.max_hops)
+            .field("search", &self.search)
+            .finish()
+    }
+}
+
+/// Path-selection mode of a relationship pattern.
+///
+/// `AnyShortest` is written `shortestPath(...)` or `* ANY SHORTEST`, and
+/// `AllShortest` is written `allShortestPaths(...)` or `* ALL SHORTEST`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PathSearch {
     All,
+    AnyShortest,
     AllShortest,
+}
+
+impl PathSearch {
+    pub fn is_shortest(self) -> bool {
+        matches!(self, Self::AnyShortest | Self::AllShortest)
+    }
+}
+
+/// `max_hops` of a shortest-path pattern written without an upper bound, such
+/// as `[:KNOWS*]` or `[:KNOWS*1..]`. Only shortest-path patterns may be
+/// unbounded; the binder replaces it with an explicit execution hop cap.
+pub const UNBOUNDED_MAX_HOPS: usize = usize::MAX;
+
+impl QueryPipeline {
+    pub(crate) fn into_unwind_statement(self: Box<QueryPipeline>) -> Statement {
+        if self.clauses.iter().any(|clause| {
+            matches!(
+                clause.kind,
+                ClauseKind::Create(_)
+                    | ClauseKind::Merge { .. }
+                    | ClauseKind::Set(_)
+                    | ClauseKind::Delete { .. }
+            )
+        }) {
+            Statement::UnwindMutation(self)
+        } else {
+            Statement::Pipeline(self)
+        }
+    }
 }

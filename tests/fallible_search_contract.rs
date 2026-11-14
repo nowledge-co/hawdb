@@ -80,11 +80,10 @@ fn retrieval_facades_return_capability_errors_before_pipeline_admission() {
 
 #[test]
 fn projection_candidate_readiness_and_shadow_methods_fail_closed() {
-    let projection = NowledgeMemSearchProjection::from_index(disabled_index());
-    let readiness =
-        NowledgeMemSearchCandidateReadinessOptions::lancedb_replacement_candidate_read();
+    let projection = SearchProjection::from_index(disabled_index());
+    let readiness = SearchCandidateReadinessOptions::lancedb_replacement_candidate_read();
     for mode in [SearchMode::Text, SearchMode::Vector, SearchMode::Hybrid] {
-        let mut request = NowledgeMemSearchCandidateRequest::text("graph", 5);
+        let mut request = SearchCandidateRequest::text("graph", 5);
         request.mode = mode;
         request.query_embedding = Some(vec![1.0, 0.0]);
         unavailable(projection.search_candidates(&request), mode);
@@ -106,16 +105,11 @@ fn projection_candidate_readiness_and_shadow_methods_fail_closed() {
 
 #[test]
 fn embedded_store_and_handle_propagate_errors_and_release_admission() {
-    let graph =
-        NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
-    let store = NowledgeMemEmbeddedStore::new(
-        graph,
-        Some(NowledgeMemSearchProjection::from_index(disabled_index())),
-    );
-    let readiness =
-        NowledgeMemSearchCandidateReadinessOptions::lancedb_replacement_candidate_read();
+    let graph = EmbeddedGraph::from_database(Database::new(), GraphMode::WritableCutover);
+    let store = EmbeddedStore::new(graph, Some(SearchProjection::from_index(disabled_index())));
+    let readiness = SearchCandidateReadinessOptions::lancedb_replacement_candidate_read();
     for mode in [SearchMode::Text, SearchMode::Vector, SearchMode::Hybrid] {
-        let mut candidate = NowledgeMemSearchCandidateRequest::text("graph", 5);
+        let mut candidate = SearchCandidateRequest::text("graph", 5);
         candidate.mode = mode;
         candidate.query_embedding = Some(vec![1.0, 0.0]);
         unavailable(store.search_candidates(&candidate), mode);
@@ -130,9 +124,9 @@ fn embedded_store_and_handle_propagate_errors_and_release_admission() {
         unavailable(store.retrieve_knowledge(&request(mode)), mode);
         unavailable(store.retrieve_knowledge_with_report(&request(mode)), mode);
     }
-    let handle = NowledgeMemEmbeddedStoreHandle::new(store).unwrap();
+    let handle = EmbeddedStoreHandle::new(store).unwrap();
     for mode in [SearchMode::Text, SearchMode::Vector, SearchMode::Hybrid] {
-        let mut candidate = NowledgeMemSearchCandidateRequest::text("graph", 5);
+        let mut candidate = SearchCandidateRequest::text("graph", 5);
         candidate.mode = mode;
         candidate.query_embedding = Some(vec![1.0, 0.0]);
         unavailable(handle.search_candidates(&candidate), mode);
@@ -206,8 +200,7 @@ fn retrieval_facades_propagate_pipeline_errors_after_successful_search() {
 #[test]
 fn enabled_facades_preserve_complete_results_and_reports() {
     let (mut db, index) = fixture(DatabaseConfig::default());
-    let readiness =
-        NowledgeMemSearchCandidateReadinessOptions::lancedb_replacement_candidate_read();
+    let readiness = SearchCandidateReadinessOptions::lancedb_replacement_candidate_read();
     for mode in [SearchMode::Text, SearchMode::Vector, SearchMode::Hybrid] {
         if mode != SearchMode::Text && !cfg!(feature = "vector-search") {
             continue;
@@ -229,8 +222,8 @@ fn enabled_facades_preserve_complete_results_and_reports() {
             expected
         );
     }
-    let projection = NowledgeMemSearchProjection::from_index(index);
-    let request = NowledgeMemSearchCandidateRequest::text("graph", 5);
+    let projection = SearchProjection::from_index(index);
+    let request = SearchCandidateRequest::text("graph", 5);
     let expected = projection
         .try_search_candidates_with_report(&request)
         .unwrap();
@@ -238,10 +231,10 @@ fn enabled_facades_preserve_complete_results_and_reports() {
         projection.search_candidates_with_report(&request).unwrap(),
         expected
     );
-    assert_eq!(
-        projection.search_candidates(&request).unwrap(),
-        expected.result
-    );
+    let checked: ExhaustiveSearchCandidates<'_> = expected.require_exhaustive().unwrap();
+    assert_eq!(checked.hits(), expected.accept_bounded().hits.as_slice());
+    assert_eq!(checked.report(), expected.report());
+    assert_eq!(projection.search_candidates(&request).unwrap(), expected);
     assert_eq!(
         projection
             .search_candidate_readiness(&request, &readiness)
@@ -249,12 +242,12 @@ fn enabled_facades_preserve_complete_results_and_reports() {
         expected.readiness_report(&readiness)
     );
     let ids: Vec<_> = expected
-        .result
+        .accept_bounded()
         .hits
         .iter()
         .map(|hit| hit.id.as_str())
         .collect();
-    let mut accumulator = NowledgeMemSearchCandidateShadowAccumulator::new();
+    let mut accumulator = SearchCandidateShadowAccumulator::new();
     accumulator.record_search_candidate_output(ids.clone(), &expected);
     let evidence = accumulator.evidence();
     assert_eq!(
@@ -269,4 +262,31 @@ fn enabled_facades_preserve_complete_results_and_reports() {
             .unwrap(),
         evidence.json()
     );
+}
+
+#[cfg(feature = "full-text-search")]
+#[test]
+fn checked_candidate_consumption_is_available_through_the_public_facade() {
+    let (_, index) = fixture(DatabaseConfig::default());
+    let projection = SearchProjection::from_index(index);
+    let bounded = projection
+        .search_candidates_with_report(&SearchCandidateRequest::text("graph", 0))
+        .unwrap();
+    assert_eq!(bounded.accept_bounded().hits.len(), 0);
+    assert!(matches!(
+        bounded.require_exhaustive(),
+        Err(SearchCandidateExhaustionError::ResultWindowLimited)
+    ));
+    let accepted: BoundedSearchCandidateOutput = bounded.into_bounded();
+    assert_eq!(accepted.result.hits.len(), 0);
+    assert!(accepted.report.truncated);
+    assert_eq!(accepted.report.returned_hit_count, 0);
+    let absent = projection
+        .search_candidates_with_report(&SearchCandidateRequest::text("unmatchedzz", 16))
+        .unwrap();
+    assert!(absent.require_exhaustive().unwrap().hits().is_empty());
+    let ordinary = projection
+        .search_candidates(&SearchCandidateRequest::text("graph", 16))
+        .unwrap();
+    assert_eq!(ordinary.require_exhaustive().unwrap().hits().len(), 1);
 }

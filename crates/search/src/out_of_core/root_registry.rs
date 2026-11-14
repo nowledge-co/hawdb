@@ -1,5 +1,5 @@
 // Copyright 2026 Nowledge
-// Licensed under the Apache License, Version 2.0.
+// SPDX-License-Identifier: Apache-2.0
 
 //! Private native custody, separate from publication exclusion and artifact pins.
 //! A cooperating producer/GC protocol is still required before serving activation.

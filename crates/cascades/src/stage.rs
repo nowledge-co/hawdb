@@ -167,6 +167,20 @@ impl StageStats {
 }
 
 impl StageTrace {
+    /// Requested owned heap, excluding the containing vector/inline layout.
+    #[doc(hidden)]
+    pub fn retained_heap_bytes(&self) -> Option<usize> {
+        let Self {
+            name,
+            apply_order,
+            stats,
+        } = self;
+        fn leaf<T: Copy>(_: &T) {}
+        leaf(apply_order);
+        leaf(stats);
+        Some(name.capacity())
+    }
+
     pub fn name(&self) -> &str {
         &self.name
     }

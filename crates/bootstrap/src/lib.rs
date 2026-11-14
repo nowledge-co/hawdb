@@ -3413,6 +3413,7 @@ fn append_canonical_value(body: &mut String, value: &Value) {
         Value::Null => body.push_str("null"),
         Value::Bool(value) => body.push_str(if *value { "bool:true" } else { "bool:false" }),
         Value::Int(value) => body.push_str(&format!("int:{value}")),
+        Value::Decimal(value) => body.push_str(&format!("decimal:{value}")),
         Value::Float(value) => body.push_str(&format!("float:{:016x}", value.to_bits())),
         Value::String(value) => {
             body.push_str("string:");
@@ -3427,6 +3428,14 @@ fn append_canonical_value(body: &mut String, value: &Value) {
             append_hex(body, value);
         }
         Value::Uuid(value) => body.push_str(&format!("uuid:{value}")),
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => {
+            let tag = hawdb_core::temporal::json_tag(value).expect("temporal value");
+            body.push_str(&format!("{}:{value}", &tag[1..]));
+        }
         Value::Vector(value) => {
             body.push_str("vector:");
             body.push_str(&value.encoded().len().to_string());

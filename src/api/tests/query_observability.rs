@@ -20,6 +20,39 @@ use crate::{QueryAccessControlContext, RuntimeCapabilities, RuntimeCapability};
 mod query_identity;
 
 #[test]
+fn physical_plan_cache_retains_regex_sources_without_displacing_hot_plan() {
+    let mut db = Database::new_with_config(DatabaseConfig {
+        max_plan_cache_entries: Some(2),
+        ..Default::default()
+    });
+    db.query("CREATE (:Item {id: 0, name: 'alpha'})").unwrap();
+    let mut read = db.begin_read_transaction().unwrap();
+    let hot = "MATCH (n:Item) RETURN n.id AS id";
+    read.explain_query(hot).unwrap();
+    assert_eq!(
+        read.explain_query(hot).unwrap().plan_cache_lookup,
+        PlanCacheLookup::Hit
+    );
+    let before = read.plan_cache_stats();
+    let regex = "MATCH (n:Item) WHERE n.name =~ '(a|b).*' RETURN n.id AS id";
+    for expected in [PlanCacheLookup::Miss, PlanCacheLookup::Hit] {
+        let explain = read.explain_query(regex).unwrap();
+        assert_eq!(explain.plan_cache_lookup, expected);
+        let output = read.query(regex).unwrap();
+        assert_eq!(output.rows.len(), 1);
+        assert_eq!(output.rows[0]["id"], Value::Int(0));
+    }
+    let after = read.plan_cache_stats();
+    assert_eq!(after.entries, before.entries + 1);
+    assert!(after.charged_bytes.unwrap() > before.charged_bytes.unwrap());
+    assert_eq!(after.rejected_admissions, before.rejected_admissions);
+    assert_eq!(
+        read.explain_query(hot).unwrap().plan_cache_lookup,
+        PlanCacheLookup::Hit
+    );
+}
+
+#[test]
 fn explain_reports_memo_allocation_limits_without_plan_degradation_warnings() {
     for (max_groups, exceeded) in [(0, true), (128, false)] {
         let mut db = Database::new_with_config(DatabaseConfig {
@@ -1402,6 +1435,25 @@ fn order_by_limit_uses_top_n_and_preserves_stable_order() {
         db.query(&format!("CREATE (:Memory {{id: '{id}', score: {score}}})"))
             .unwrap();
     }
+    // Keep this a TopN implementation test under comparison-aware costing;
+    // sorting only four rows is now legitimately cheaper than maintaining K=3.
+    db.query_with_params(
+        "UNWIND $rows AS r CREATE (:Memory {id:r.id, score:0})",
+        &BTreeMap::from([(
+            "rows".into(),
+            Value::List(
+                (0..256)
+                    .map(|id| {
+                        Value::Map(BTreeMap::from([(
+                            "id".into(),
+                            Value::String(format!("extra-{id}")),
+                        )]))
+                    })
+                    .collect(),
+            ),
+        )]),
+    )
+    .unwrap();
     let query = "MATCH (m:Memory) RETURN m.id AS id, m.score AS score \
                  ORDER BY m.score DESC, m.id ASC SKIP 1 LIMIT 2";
 
@@ -2217,18 +2269,36 @@ fn pipeline_plan_cache_bypasses_vector_procedure() {
         Value::List(vec![Value::Float(1.0), Value::Float(0.0)]),
     )]);
     for _ in 0..2 {
-        let output = db.explain_query_with_params(query, &params).unwrap();
-        assert_eq!(
-            output.plan_cache_lookup,
-            PlanCacheLookup::Bypass(PlanCacheBypassReason::StatementNotCacheable)
-        );
+        let result = db.explain_query_with_params(query, &params);
+        if cfg!(feature = "vector-search") {
+            assert_eq!(
+                result.unwrap().plan_cache_lookup,
+                PlanCacheLookup::Bypass(PlanCacheBypassReason::StatementNotCacheable)
+            );
+        } else {
+            // Minimal builds refuse the unavailable producer before planning;
+            // this must not perform a cache lookup or record a bypass.
+            assert!(matches!(
+                result,
+                Err(HawDBError::CapabilityUnavailable {
+                    capability: crate::RuntimeCapability::VectorSearch,
+                })
+            ));
+        }
     }
     let stats = db.plan_cache_stats().unwrap();
     assert_eq!(stats.entries, 0);
     assert_eq!(stats.misses, 0);
     assert_eq!(stats.hits, 0);
     assert_eq!(stats.admissions, 0);
-    assert_eq!(stats.bypasses, 2);
+    assert_eq!(
+        stats.bypasses,
+        if cfg!(feature = "vector-search") {
+            2
+        } else {
+            0
+        }
+    );
 }
 
 #[test]
@@ -2241,10 +2311,12 @@ fn pipeline_plan_cache_reuses_reads_with_fresh_parameters() {
         crate::cypher::parse(query).unwrap(),
         crate::cypher::Statement::Pipeline(_)
     ));
-    for id in [1, 2] {
+    // Two-WITH reads are normalized like other reads (#1425): `$id` is a
+    // template slot, so a fresh value reuses the entry and binds its own key.
+    for (id, first_lookup) in [(1, PlanCacheLookup::Miss), (2, PlanCacheLookup::Hit)] {
         let params = BTreeMap::from([("id".to_string(), Value::Int(id))]);
         let explain = db.explain_query_with_params(query, &params).unwrap();
-        assert_eq!(explain.plan_cache_lookup, PlanCacheLookup::Miss);
+        assert_eq!(explain.plan_cache_lookup, first_lookup);
         let reused = db.explain_query_with_params(query, &params).unwrap();
         assert_eq!(reused.plan_cache_lookup, PlanCacheLookup::Hit);
         let output = db.query_with_params(query, &params).unwrap();
@@ -2253,5 +2325,5 @@ fn pipeline_plan_cache_reuses_reads_with_fresh_parameters() {
             vec![BTreeMap::from([("id".to_string(), Value::Int(id))])]
         );
     }
-    assert_eq!(db.plan_cache_stats().unwrap().entries, 2);
+    assert_eq!(db.plan_cache_stats().unwrap().entries, 1);
 }

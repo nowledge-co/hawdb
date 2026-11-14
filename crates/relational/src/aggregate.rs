@@ -47,6 +47,19 @@ fn evaluate_row_expression<'a>(
 ) -> Result<RelationalValue> {
     match expression {
         Expr {
+            kind: ExprKind::Arithmetic { .. } | ExprKind::Negate(_) | ExprKind::Cast { .. },
+            ..
+        } => crate::query_value::evaluate_numeric_with(expression, &|child| {
+            evaluate_row_expression(child, row).map(std::borrow::Cow::Owned)
+        }),
+        Expr {
+            kind: ExprKind::Value(SqlValue::Expression(expression)),
+            ..
+        } => value_to_relational(hawdb_expression::sql::bind_constant_numeric(
+            expression,
+            &[],
+        )?),
+        Expr {
             kind: ExprKind::Column(column),
             ..
         } => Ok(resolve_column(row, column)?.clone()),

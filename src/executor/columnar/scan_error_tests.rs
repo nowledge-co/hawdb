@@ -585,6 +585,7 @@ fn mutation_scan_predicate_errors_do_not_commit_partial_writes() {
                 task_context: None,
                 observer: &observer,
                 host_scorer: None,
+                csv_import: None,
             };
             // The legacy plain SET path accepts storage predicates only and
             // does not use the callback being refactored here.

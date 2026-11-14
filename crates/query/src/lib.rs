@@ -36,6 +36,34 @@ impl QueryIdentity {
             Cow::Borrowed(query_language)
         };
         let normalized_query = normalize_query(&query_language, query_text);
+        Self::from_normalized(&query_language, query_text, normalized_query)
+    }
+
+    /// Computes query identity and its value-preserving plan-cache key together.
+    /// The outputs match `new` and `normalize_query_for_plan_cache` respectively.
+    pub fn new_with_plan_cache_key(query_language: &str, query_text: &str) -> (Self, String) {
+        // `new` trims the language; the standalone plan-cache API does not.
+        // Retain both established interpretations for noncanonical callers.
+        if query_language != query_language.trim() {
+            return (
+                Self::new(query_language, query_text),
+                normalize_query_for_plan_cache(query_language, query_text),
+            );
+        }
+        let language = if query_language.bytes().any(|byte| byte.is_ascii_uppercase()) {
+            Cow::Owned(query_language.to_ascii_lowercase())
+        } else {
+            Cow::Borrowed(query_language)
+        };
+        let (identity, plan_cache_key) =
+            Normalizer::new(&language, query_text, NormalizationMode::PlanCache).normalize_pair();
+        (
+            Self::from_normalized(&language, query_text, identity),
+            plan_cache_key,
+        )
+    }
+
+    fn from_normalized(query_language: &str, query_text: &str, normalized_query: String) -> Self {
         let query_digest = versioned_hash(
             "hawdb-query-digest",
             QUERY_DIGEST_PROTOCOL_VERSION,
@@ -103,6 +131,7 @@ fn hash_field(hasher: &mut Sha256, value: &[u8]) {
     hasher.update(value);
 }
 
+#[derive(Clone, Copy)]
 enum NormalizedToken<'a> {
     Keyword(&'a str),
     Identifier(&'a str),
@@ -221,6 +250,35 @@ impl<'a> Normalizer<'a> {
     }
 
     fn normalize(mut self) -> String {
+        self.scan();
+        Self::render(&self.tokens)
+    }
+
+    fn normalize_pair(mut self) -> (String, String) {
+        self.scan();
+        let plan_cache_key = Self::render(&self.tokens);
+        for token in &mut self.tokens {
+            *token = match *token {
+                NormalizedToken::ParameterName(name) => {
+                    let next = self.parameters.len();
+                    let ordinal = *self.parameters.entry(name).or_insert(next);
+                    NormalizedToken::ParameterOrdinal(ordinal)
+                }
+                NormalizedToken::LiteralValue(value) => {
+                    NormalizedToken::LiteralShape(if value.contains('.') { "float" } else { "int" })
+                }
+                NormalizedToken::LowercaseLiteralValue(_) => NormalizedToken::LiteralShape("bool"),
+                NormalizedToken::SingleQuotedLiteral(_)
+                | NormalizedToken::DoubleQuotedLiteral(_) => {
+                    NormalizedToken::LiteralShape("string")
+                }
+                token => token,
+            };
+        }
+        (Self::render(&self.tokens), plan_cache_key)
+    }
+
+    fn scan(&mut self) {
         while let Some(ch) = self.peek() {
             if ch.is_whitespace() {
                 self.advance();
@@ -246,15 +304,17 @@ impl<'a> Normalizer<'a> {
         {
             self.tokens.pop();
         }
-        let byte_len = self
-            .tokens
+    }
+
+    fn render(tokens: &[NormalizedToken<'_>]) -> String {
+        let byte_len = tokens
             .iter()
-            .try_fold(self.tokens.len().saturating_sub(1), |length, token| {
+            .try_fold(tokens.len().saturating_sub(1), |length, token| {
                 length.checked_add(token.serialized_len())
             })
             .expect("normalized query length overflow");
         let mut output = String::with_capacity(byte_len);
-        for (index, token) in self.tokens.into_iter().enumerate() {
+        for (index, token) in tokens.iter().copied().enumerate() {
             if index != 0 {
                 output.push(' ');
             }
@@ -744,5 +804,44 @@ mod tests {
             )
         );
         assert_eq!(cache_key.capacity(), cache_key.len());
+    }
+
+    #[test]
+    fn combined_identity_and_plan_key_preserve_both_contracts() {
+        let queries = [
+            "",
+            "; ; ;\n",
+            "MATCH (n:Memory) WHERE n.id = $id RETURN n.title LIMIT 1",
+            "MATCH (n) RETURN $a, $b, $a, $c, $b",
+            "RETURN $1, $2, $1, $01, $, $_, $A, $a",
+            "RETURN 1, -1, 1.0, 1., -0.5, 1e2, 1.2e-3",
+            "RETURN true, FALSE, null, NULL, n.true, n.false",
+            r#"RETURN 'one', "two", 'symbol:1:;', 'it\'s'"#,
+            r#"SELECT "Quoted", 'it''s', 42 FROM table_name WHERE id = $id"#,
+            "RETURN 'unterminated",
+            "RETURN \"unterminated",
+            "RETURN '\\",
+            "RETURN 日本語, '你好é', $id, 🙂;;;",
+            "RETURN (1 + 2), [1, 2], {a: 3}; ;",
+            "MATCH (n) // $not_a_binding\nRETURN n",
+            "RETURN `quoted name`, '\\n', '\\\\', 'a\nb'",
+        ];
+        for language in [
+            "cypher", "CyPhEr", " cypher ", "sql", "SQL", " sql ", "", "other",
+        ] {
+            for query in queries {
+                let (identity, plan_key) = QueryIdentity::new_with_plan_cache_key(language, query);
+                assert_eq!(
+                    identity,
+                    QueryIdentity::new(language, query),
+                    "{language:?}: {query}"
+                );
+                assert_eq!(
+                    plan_key,
+                    normalize_query_for_plan_cache(language, query),
+                    "{language:?}: {query}"
+                );
+            }
+        }
     }
 }

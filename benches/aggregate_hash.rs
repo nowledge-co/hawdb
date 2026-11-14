@@ -159,6 +159,7 @@ fn main() {
                     memory_ledger: &ledger,
                     task_context: None,
                     observer: &report,
+                    graph: None,
                 },
                 ExecutionLimit::unlimited(),
                 &mut |batch| {

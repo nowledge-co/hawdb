@@ -41,6 +41,25 @@ impl Budget {
         }
         let Some(bytes) = relational_index_prefix_read_key_bytes(table, index, values.clone())
         else {
+            // Equality collectors cannot admit this prefix, but an admitted
+            // range can still contain it. Preserve a bounded per-index barrier
+            // rather than silently omitting its membership/payload change.
+            self.bytes = self.bytes.saturating_add(
+                std::mem::size_of::<VersionKey>()
+                    .saturating_add(table.len())
+                    .saturating_add(index.len()),
+            );
+            if self.bytes > MAX_METADATA_BYTES {
+                return Ok(false);
+            }
+            record_stamp(
+                stamps,
+                VersionKey::ReadRelationalIndexPrefix {
+                    table: table.into(),
+                    index: index.into(),
+                    prefix: crate::relational::RelationalKey(Vec::new()),
+                },
+            )?;
             return Ok(true);
         };
         self.bytes = self.bytes.saturating_add(bytes);

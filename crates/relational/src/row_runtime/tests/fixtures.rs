@@ -162,6 +162,8 @@ impl Fixture {
                     })
                     .collect::<Vec<_>>();
                 RelationalRowPageTableDelta {
+                    replaces_base: false,
+                    last_row_id: 0,
                     table: table.into(),
                     schema: Some(schema.clone()),
                     schema_digest,
@@ -202,6 +204,19 @@ impl Fixture {
         }
     }
 
+    /// The encoded length of the largest page of `table`: the bytes a demand
+    /// read charges for it (row-page format v2 pages have exact lengths).
+    pub fn page_bytes(&self, table: &str) -> usize {
+        let mut largest = 0;
+        self.root
+            .visit_table_pages(table, |descriptor| {
+                largest = largest.max(descriptor.page_integrity.encoded_len as usize);
+                Ok(())
+            })
+            .unwrap();
+        largest
+    }
+
     pub fn snapshot(&self) -> RelationalRowPageSnapshotReader {
         self.snapshot_from(RelationalRowPageReadView::from_base(Arc::clone(&self.root)))
     }
@@ -238,6 +253,7 @@ impl Fixture {
             1,
             None,
             vec![RelationalRowDeltaTableMetadata {
+                last_row_id: 0,
                 table: "docs".into(),
                 schema_digest: self.state.table_schema_digest("docs").unwrap().unwrap(),
                 column_count: NonZeroU32::new(3).unwrap(),

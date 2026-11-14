@@ -1,3 +1,6 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
 use super::*;
 use hawdb_cypher::ArithmeticOp;
 
@@ -64,6 +67,26 @@ pub(super) fn bind_aggregate_argument(
     .bind(argument)
 }
 
+/// Binds an aggregate-free composed expression, such as an `ORDER BY` key.
+pub(super) fn bind_composed_expression(
+    scope: &BTreeSet<String>,
+    columns: &BTreeSet<String>,
+    expression: &ReturnExpression,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<ProjectionExpression> {
+    ComposedReturnBinder {
+        scope,
+        columns,
+        parameters,
+        aggregate: false,
+        literal_names: false,
+        group_keys: Vec::new(),
+        aggregations: Vec::new(),
+    }
+    .bind(expression)
+    .map(|(expression, _)| expression)
+}
+
 fn literal_name(value: &ValueExpression) -> Option<String> {
     Some(match &value.kind {
         ValueExpressionKind::Parameter(name) => format!("${name}"),
@@ -83,6 +106,9 @@ pub(super) fn contains_aggregate(expression: &ReturnExpression) -> bool {
         ReturnExpressionKind::Aggregate(_) => true,
         ReturnExpressionKind::Arithmetic { first, rest } => {
             contains_aggregate(first) || rest.iter().any(|(_, child)| contains_aggregate(child))
+        }
+        ReturnExpressionKind::ListFunction { arguments, .. } => {
+            arguments.iter().any(contains_aggregate)
         }
         ReturnExpressionKind::Value(_) | ReturnExpressionKind::Path(_) => false,
     }
@@ -122,6 +148,25 @@ impl ComposedReturnBinder<'_> {
                     name = format!("({name} {symbol} {right_name})");
                 }
                 Ok((bound, name))
+            }
+            ReturnExpressionKind::ListFunction {
+                function,
+                arguments,
+            } => {
+                let mut bound = Vec::with_capacity(arguments.len());
+                let mut names = Vec::with_capacity(arguments.len());
+                for argument in arguments {
+                    let (argument, name) = self.bind(argument)?;
+                    bound.push(argument);
+                    names.push(name);
+                }
+                Ok((
+                    ProjectionExpression::ListFunction {
+                        function: *function,
+                        arguments: bound,
+                    },
+                    format!("{}({})", function.function_name(), names.join(", ")),
+                ))
             }
             ReturnExpressionKind::Aggregate(_) => {
                 let item = AstNode::synthetic(ReturnItemKind {
@@ -165,9 +210,13 @@ impl ComposedReturnBinder<'_> {
                     Ok((projection.expression, name))
                 }
             }
-            ReturnExpressionKind::Path(_) => Err(HawDBError::Semantic(
-                "path projection requires a bound path".to_string(),
-            )),
+            ReturnExpressionKind::Path(path) => self.bind(&AstNode {
+                kind: ReturnExpressionKind::Value(AstNode {
+                    kind: ScalarExpressionKind::Path(path.clone()),
+                    span: expression.span,
+                }),
+                span: expression.span,
+            }),
         }
     }
 }
@@ -192,9 +241,47 @@ pub(super) fn scalar_expression_is_scoped(
         | ScalarExpressionKind::VectorDistance { .. }
         | ScalarExpressionKind::Binary { .. }
         | ScalarExpressionKind::Not(_)
-        | ScalarExpressionKind::IsNull { .. } => expression
+        | ScalarExpressionKind::IsNull { .. }
+        | ScalarExpressionKind::ListFunction { .. }
+        | ScalarExpressionKind::StringFunction { .. }
+        | ScalarExpressionKind::List(_)
+        | ScalarExpressionKind::ListIndex { .. }
+        | ScalarExpressionKind::Conversion { .. }
+        | ScalarExpressionKind::NumericFunction { .. }
+        | ScalarExpressionKind::ListSlice { .. }
+        | ScalarExpressionKind::TemporalFunction { .. }
+        | ScalarExpressionKind::PropertyAccess { .. }
+        | ScalarExpressionKind::MapLiteral(_) => expression
             .kind
             .all_children(|child| scalar_expression_is_scoped(child, scope, column_names)),
+        ScalarExpressionKind::Reduce {
+            accumulator,
+            initial,
+            variable,
+            list,
+            expression,
+        } => {
+            let mut body_columns = column_names.clone();
+            body_columns.insert(accumulator.clone());
+            body_columns.insert(variable.clone());
+            scalar_expression_is_scoped(initial, scope, column_names)
+                && scalar_expression_is_scoped(list, scope, column_names)
+                && scalar_expression_is_scoped(expression, scope, &body_columns)
+        }
+        ScalarExpressionKind::ListComprehension {
+            variable,
+            list,
+            predicate,
+            projection,
+        } => {
+            let mut body_columns = column_names.clone();
+            body_columns.insert(variable.clone());
+            scalar_expression_is_scoped(list, scope, column_names)
+                && predicate
+                    .iter()
+                    .chain(projection.iter())
+                    .all(|child| scalar_expression_is_scoped(child, scope, &body_columns))
+        }
         ScalarExpressionKind::Value(_) => true,
         ScalarExpressionKind::Coalesce(expressions) => expressions
             .iter()
@@ -204,9 +291,14 @@ pub(super) fn scalar_expression_is_scoped(
         | ScalarExpressionKind::JsonValue { expression, .. } => {
             scalar_expression_is_scoped(expression, scope, column_names)
         }
+        ScalarExpressionKind::Path(path) => column_names.contains(path.path_variable()),
         ScalarExpressionKind::Id(_)
         | ScalarExpressionKind::RelationshipType(_)
-        | ScalarExpressionKind::DatePart { .. } => false,
+        | ScalarExpressionKind::Label { .. }
+        | ScalarExpressionKind::RelationshipEndpoint { .. }
+        | ScalarExpressionKind::DatePart { .. }
+        | ScalarExpressionKind::PatternPredicate(_)
+        | ScalarExpressionKind::PatternComprehension { .. } => false,
     }
 }
 

@@ -69,7 +69,12 @@ observed impact rather than from the amount of code involved.
      example `Issue Number: close #123, ref #456`.
 
    `None`, missing references, and unreplaced placeholders are not accepted.
-3. Keep changes focused and fill in the [PR template](.github/PULL_REQUEST_TEMPLATE.md).
+3. Keep changes focused. Before creating or updating a PR body, read and fill in
+   the current [PR template](.github/PULL_REQUEST_TEMPLATE.md) directly. It is
+   the source of truth for the body structure, including assistant-generated
+   bodies and explicit CLI/API submissions. Preserve its headings and order,
+   replace placeholders, and follow its inline guidance. PR-body prompts should
+   reference this file rather than duplicate its sections or define another format.
    Explain the problem, mechanism, important tradeoffs, tests, and compatibility
    impact. Large public API or persistent-format proposals should be discussed
    in the issue before implementation.
@@ -163,16 +168,24 @@ HawkEye file/style rules. The wrapper retries rejected files with the short
 template; only a clean alternative passes. Missing, foreign, or incomplete
 headers fail. `prek run hawkeye-format --files path/to/file.rs` checks an explicit set.
 Markdown has no built-in rule and is unsupported (not checked); Python and
-Shell are checked, including their shebangs. TOML/YAML/JSON/lock/SQL/BUILD/bzl
-exclusions remain defined by `licenserc.toml`.
+Shell are checked, including their shebangs. Go uses line-comment headers;
+keep a blank line before any build constraints. MoonBit `.mbt`, `.mbti`,
+`moon.mod` and `moon.pkg` files use the same line-comment header rules.
+TOML/YAML/JSON/lock/SQL/BUILD/bzl exclusions remain defined by `licenserc.toml`.
+Generated build output, downloaded MoonBit dependencies and historical
+`docs/benchmarks/` evidence are excluded. Historical evidence must retain its
+recorded bytes, including reproduction snapshots and generated JUnit XML.
 Run `python scripts/check-license-headers.test.py` with pinned HawkEye on PATH
-for the positive/negative read-only fixture checks.
-Full-tree `prek run --all-files` currently exposes historical license-header
-debt beyond the accepted SPDX form (missing and conflicting headers); do not
-interpret a staged-file pass as a clean full-tree audit or replace existing copyright notices mechanically.
+for the positive/negative read-only fixture checks. The `License Headers`
+GitHub Actions workflow runs these fixtures and the full-tree wrapper check
+on pull requests to `main` and pushes to `main`, using the same HawkEye version.
+Use `prek run hawkeye-format --all-files` to audit all tracked files under
+this policy. A staged-file pass covers only the selected files. Preserve
+existing copyright notices and separate the license header from ordinary
+comments with a blank line.
 
 Use the toolchain pinned in [rust-toolchain.toml](rust-toolchain.toml), locked
-dependencies, and the default Bazel configuration. The [README](README.md#building)
+dependencies, and the default Bazel configuration. The [README](README.md#build)
 documents the build and feature surfaces. Register new tests in the appropriate
 existing Cargo/Bazel target; a source file alone does not prove test discovery.
 

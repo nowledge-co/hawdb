@@ -5,6 +5,7 @@ mod case;
 mod engine;
 mod oracle;
 mod pessimistic;
+mod ranges;
 mod shrink;
 mod text;
 
@@ -18,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::{Duration, Instant};
 
-const HELP: &str = "hawdb-mvcc-fuzz: standalone local MVCC campaign\n\nCommands:\n  run [--mode optimistic|pessimistic] [--seed N] [--cases N] [--seconds N] [--explain | --print-report]\n  generate [--mode optimistic|pessimistic] [--seed N] [--index N]\n  replay FILE [--explain | --print-report]\n  shrink FILE [--attempts N] [--explain | --print-report]\n\nrun/replay/shrink accept --log-directory DIR (default target/mvcc-fuzz) and\n--wait-probe-ms N (pessimistic wait probe, default 200).\ngenerate prints an editable text case to stdout. FILE accepts .mvcc text,\nversioned JSON cases and saved JSON artifacts. --explain shows human-readable\nsteps and expected/actual results; --print-report prints a JSON summary.\nDefaults: seed=1, index=0, cases=1000, attempts=256. With --seconds alone,\nrun until the time budget or 1000000 cases; stop between complete cases.\nSuccess is otherwise quiet. Mismatch: exit 1; invalid input or I/O: exit 2.\nThis tool controls statement order, not internal thread scheduling.\nPessimistic mode runs each transaction on its own thread and also checks\nwhich statements wait for a lock, deadlock victims and serialization aborts.\n";
+const HELP: &str = "hawdb-mvcc-fuzz: standalone local MVCC campaign\n\nCommands:\n  run [--mode optimistic|pessimistic] [--seed N] [--cases N] [--seconds N] [--explain | --print-report]\n  generate [--mode optimistic|pessimistic] [--seed N] [--index N]\n  replay FILE [--explain | --print-report]\n  shrink FILE [--attempts N] [--explain | --print-report]\n\nrun/replay/shrink accept --log-directory DIR (default target/mvcc-fuzz) and\n--wait-probe-ms N (pessimistic wait probe, default 200).\ngenerate prints an editable text case to stdout. FILE accepts .mvcc text,\nversioned JSON cases and saved JSON artifacts. --explain shows human-readable\nsteps and expected/actual results; --print-report prints a JSON summary.\nDefaults: seed=1, index=0, cases=1000, attempts=256. With --seconds alone,\nrun until the time budget or 1000000 cases; stop between complete cases.\nSuccess is otherwise quiet. Mismatch: exit 1; invalid input or I/O: exit 2.\nThe independent range-lock model uses: ranges run|generate|replay|shrink.\nRange cases are editable versioned JSON; legacy .mvcc cases are unchanged.\nThis tool controls statement order, not internal thread scheduling.\nPessimistic mode runs each transaction on its own thread and also checks\nwhich statements wait for a lock, deadlock victims and serialization aborts.\n";
 
 type ToolResult<T> = Result<T, Box<dyn Error>>;
 
@@ -371,6 +372,16 @@ fn main() -> ExitCode {
     if args.len() == 1 && matches!(args[0].as_str(), "--help" | "-h") {
         print!("{HELP}");
         return ExitCode::SUCCESS;
+    }
+    if args.first().is_some_and(|arg| arg == "ranges") {
+        return match ranges::cli(&args[1..]) {
+            Ok(false) => ExitCode::SUCCESS,
+            Ok(true) => ExitCode::FAILURE,
+            Err(error) => {
+                eprintln!("hawdb-mvcc-fuzz ranges: {error}");
+                ExitCode::from(2)
+            }
+        };
     }
     match options(&args)
         .map_err(|e| -> Box<dyn Error> { e.into() })

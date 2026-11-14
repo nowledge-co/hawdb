@@ -47,6 +47,23 @@ fn relational_index_read_row_budget_matches_intermediate_limit() {
 }
 
 #[test]
+fn relational_row_read_byte_budget_uses_the_hard_page_maximum() {
+    let config = DatabaseConfig {
+        max_read_result_rows: Some(4_097),
+        ..DatabaseConfig::default()
+    };
+
+    let limits = relational_query_limits_with_payload(&config, Some(1), None);
+    let expected_pages = 4_097usize.saturating_add(1).saturating_add(1);
+
+    assert_eq!(limits.row_read.demand.max_pages.get(), expected_pages);
+    assert_eq!(
+        limits.row_read.demand.max_bytes.get(),
+        expected_pages.saturating_mul(hawdb_storage::relational::DEFAULT_RELATIONAL_ROW_PAGE_BYTES)
+    );
+}
+
+#[test]
 fn numeric_scan_filter_project_is_default_morsel_eligible() {
     let mut db = Database::new();
     db.query("CREATE NODE TABLE Item").unwrap();
@@ -597,6 +614,26 @@ fn multi_label_match_reads_any_listed_label() {
         .query("MATCH (n:MissingLabel) RETURN n.id AS id")
         .unwrap();
     assert!(output.rows.is_empty());
+
+    // Counting must agree with the any-of scan, including the count fast
+    // path that otherwise answers single-label counts from statistics.
+    for query in [
+        "MATCH (n:Entity:Memory) RETURN count(n) AS n",
+        "MATCH (n:Entity:Memory) RETURN count(*) AS n",
+        "MATCH (n:Memory:Source:Entity) RETURN count(n) AS n",
+    ] {
+        let expected = if query.contains("Source") { 3 } else { 2 };
+        let output = db.query(query).unwrap();
+        assert_eq!(
+            output.rows[0].get("n"),
+            Some(&Value::Int(expected)),
+            "{query}"
+        );
+    }
+    let output = db
+        .query("MATCH (n:Entity:MissingLabel) RETURN count(n) AS n")
+        .unwrap();
+    assert_eq!(output.rows[0].get("n"), Some(&Value::Int(1)));
 }
 
 #[test]

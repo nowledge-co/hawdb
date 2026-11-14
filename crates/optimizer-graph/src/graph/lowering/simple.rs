@@ -22,6 +22,12 @@ pub(super) fn lower_simple_logical(
     logical: &LogicalPlan,
     optimizer_context: &OptimizerContext,
 ) -> Option<PhysicalPlan> {
+    if let LogicalPlan::Unwind { rows, variable } = logical {
+        return Some(PhysicalPlan::UnwindExec {
+            rows: rows.clone(),
+            variable: variable.clone(),
+        });
+    }
     ddl::lower(logical)
         .or_else(|| mutation::lower(logical))
         .or_else(|| access::lower(logical))

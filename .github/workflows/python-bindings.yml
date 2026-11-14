@@ -5,6 +5,7 @@ on:
   pull_request:
     paths:
       - "bindings/python/**"
+      - "integrations/llama-index-graph-stores-hawdb/**"
       - "crates/core/src/error.rs"
       - "MODULE.bazel"
       - "BUILD.bazel"
@@ -16,6 +17,7 @@ on:
     branches: [main]
     paths:
       - "bindings/python/**"
+      - "integrations/llama-index-graph-stores-hawdb/**"
       - "crates/core/src/error.rs"
       - "MODULE.bazel"
       - "BUILD.bazel"
@@ -101,8 +103,8 @@ jobs:
       - name: Build the extension wheel
         run: maturin build --release --locked --out dist
 
-      - name: Test capsule unwind containment and error retry classification
-        run: cargo test --release --locked --lib -- retained::arrow::destructor_tests errors::tests --test-threads=1
+      - name: Test capsule unwind containment, error retry classification and SQL admission
+        run: cargo test --release --locked --lib -- retained::arrow::destructor_tests errors::tests database::tests --test-threads=1
 
       - name: Install the built wheel
         run: pip install dist/*.whl
@@ -135,3 +137,23 @@ jobs:
         run: |
           python -c 'import pandas; print(pandas.__version__)'
           pytest tests/test_dbapi.py -k pandas
+
+      - name: Provision the optional LlamaIndex consumer
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          pip install "llama-index-core==0.14.25"
+          # Keep the wheel built above instead of a hawdb release from PyPI.
+          pip install --no-deps ../../integrations/llama-index-graph-stores-hawdb
+          pip check
+
+      - name: Test the LlamaIndex property graph store against the installed wheel
+        if: matrix.os == 'ubuntu-24.04'
+        run: pytest ../../integrations/llama-index-graph-stores-hawdb/tests
+
+      - name: Retain the tested native wheel for host verification
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-wheel-${{ runner.os }}-${{ github.sha }}
+          path: bindings/python/dist/*.whl
+          if-no-files-found: error
+          retention-days: 7

@@ -215,4 +215,65 @@ mod tests {
         transaction.commit().unwrap();
         assert_published_mutations(&mut database);
     }
+
+    #[test]
+    fn cached_mutations_rebind_parameters_and_current_schema_after_rollback() {
+        let cache = RelationalPlanTemplateCache::new(Some(8));
+        let upsert = "INSERT INTO items (id, body) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET body = EXCLUDED.body";
+        let mut database = Database::new();
+        database
+            .query_sql("CREATE TABLE items (id BIGINT PRIMARY KEY, body TEXT)")
+            .unwrap();
+        for (id, body) in [(1, "first"), (2, "second"), (1, "replacement")] {
+            database
+                .query_sql_with_prepared_request(
+                    SqlQueryRequest::new(DIAGNOSTIC_SQL)
+                        .with_params(&[Value::Int(id), Value::String(body.into())]),
+                    cache.prepare(upsert).unwrap(),
+                )
+                .unwrap();
+        }
+        let mut transaction = database.begin_transaction().unwrap();
+        super::super::execute_database_transaction_prepared_sql(
+            &transaction.runtime,
+            &mut transaction.state,
+            DIAGNOSTIC_SQL,
+            cache.prepare(upsert).unwrap(),
+            &[Value::Int(1), Value::String("rolled back".into())],
+            super::super::DatabaseTransactionSqlOptions {
+                allow_system_schema_registry_write: false,
+                allow_locking_select: false,
+                task_context: None,
+                output_limits: QueryStreamOptions::default(),
+                join_planning: crate::RelationalJoinPlanningDirective::Auto,
+            },
+        )
+        .unwrap();
+        transaction.rollback();
+        let rows = database
+            .query_sql("SELECT id, body FROM items ORDER BY id")
+            .unwrap()
+            .rows;
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["body"], Value::String("replacement".into()));
+        assert_eq!(rows[1]["body"], Value::String("second".into()));
+
+        let mut other = Database::new();
+        other
+            .query_sql("CREATE TABLE items (id TEXT PRIMARY KEY, body TEXT)")
+            .unwrap();
+        other
+            .query_sql_with_prepared_request(
+                SqlQueryRequest::new(DIAGNOSTIC_SQL).with_params(&[
+                    Value::String("current-schema".into()),
+                    Value::String("text key".into()),
+                ]),
+                cache.prepare(upsert).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            other.query_sql("SELECT id FROM items").unwrap().rows[0]["id"],
+            Value::String("current-schema".into())
+        );
+    }
 }

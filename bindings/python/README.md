@@ -23,6 +23,9 @@ can build the source distribution with the repository-pinned Rust toolchain.
 The default wheel includes the engine's default features; `lite` remains an
 explicit source build. Pydantic stays optional: `pip install 'hawdb[pydantic]'`.
 
+HawDB's on-disk format carries no compatibility promise until HawDB declares
+one, so a database may need to be recreated after an upgrade.
+
 ## Publishing
 
 [Publish Python to PyPI](../../.github/workflows/pypi.yaml) runs whenever a
@@ -81,8 +84,12 @@ misses. All five wheels have their own native installation tests before upload.
 `open`, `connect` and `Database` accept the keyword-only options
 `max_read_result_rows` and `max_read_result_payload_bytes`. They configure the
 engine's read ceilings for in-memory, file-backed and read-only databases.
-Exceeding a ceiling raises `hawdb.exceptions.ExecutionError`; the binding does
-not return a shortened result. A later read can still succeed within the budget.
+Exceeding a ceiling raises `hawdb.exceptions.ResourceBudgetError`, a subclass
+of `ExecutionError` (DB-API `OperationalError`), whose `budget_option` names
+the option (`"max_read_result_rows"` or `"max_read_result_payload_bytes"`),
+`resource` is `"result_rows"` or `"result_payload_bytes"` and `budget` is the
+effective limit; `requested` and `used` are `None`. The binding does not return
+a shortened result. A later read can still succeed within the budget.
 
 ```python
 with hawdb.open(max_read_result_rows=1000, max_read_result_payload_bytes=1048576) as db:
@@ -94,7 +101,15 @@ with hawdb.open(max_read_result_rows=1000, max_read_result_payload_bytes=1048576
 ```
 
 Omitted options and `None` preserve engine defaults: no host row ceiling and a
-64 MiB result payload ceiling. Zero rows follows `DatabaseConfig` semantics and
+64 MiB result payload ceiling. For the payload option, `None` means that
+64 MiB default, not an unbounded result, both before and since SQL became
+admitted. Only a Rust host that sets `DatabaseConfig::max_read_result_payload_bytes`
+to `None` gets no ceiling on raw `Database` calls; its admitted statements are
+then bounded by the runtime's own 16 MiB per-statement result budget. The payload ceiling is also the per-statement
+result budget of the handle's runtime admission (see [Usage](#usage)), which
+reserves it from the runtime memory budget while the statement runs, so a
+ceiling larger than the runtime memory capacity makes admission refuse
+statements with `AdmissionError`. Zero rows follows `DatabaseConfig` semantics and
 disables the host row ceiling; zero payload bytes remains a zero-byte ceiling.
 Other engine memory and session limits still apply. These options do not expose
 the rest of `DatabaseConfig` or change durability.
@@ -351,6 +366,18 @@ with db.transaction() as tx:
     tx.rollback()      # abandons both statements; omit it to commit
 ```
 
+A `QueryResult` holds the engine's rows, materialized when the statement
+returns, and converts them to Python only as they are fetched: each
+`fetchone`, `fetchmany`, `fetchall` or iteration step returns new dicts that the
+result does not keep, so mutating a fetched row changes nothing else, and a
+result whose rows are fetched in batches never holds a Python copy of all of
+them. `fetchmany_tuples(size)` returns the next rows as tuples in column order
+from the same cursor.
+
+For a SQL INSERT, UPDATE or DELETE, `QueryResult.affected_rows` is the number
+of rows it changed (inside a transaction, the rows staged for commit); it is
+`None` for queries, DDL, Cypher and writes to strict append tables.
+
 `db.read_transaction()` pins the committed state for a stable read scope;
 write statements on it raise the engine's read-transaction error.
 
@@ -378,6 +405,29 @@ savepoints. Catching the exception does not leave a partial batch that can later
 be committed. A successful batch stays staged until the caller commits or exits
 the transaction context normally.
 
+`db.execute`, `db.execute_sql` and `tx.execute_sql`, and every row of
+`db.executemany_sql` and `tx.executemany_sql`, pass the embedded runtime's
+admission before they run. When the runtime is saturated the statement raises
+`hawdb.exceptions.AdmissionError` and nothing of it runs; its `code` names the
+refused resource and `retryable` is `True` for a transient shortage, so the
+call can be retried. A refused `tx.execute_sql` leaves the transaction open with
+its earlier statements staged, while a refused batch rolls back like any batch
+failure. Cypher in a transaction (`tx.execute`, `db.executemany`,
+`tx.executemany`), `db.explain` and `db.read_transaction()` statements are not
+admitted.
+
+SQL statements in `db.transaction()` are recorded in the slow-query log and
+statement summary like autocommit statements, under their own text and
+statement kind, although their effects stay staged until commit; a failed one
+counts as an error. Once a storage integrity failure has poisoned the handle,
+they are refused like autocommit statements, and an integrity failure of a
+read in a transaction poisons the handle.
+
+A transaction pins the snapshot it began with until it commits or rolls back,
+even if it only reads, and that pin holds back checkpoint reclamation. End
+transactions promptly and read in autocommit for long-lived work;
+`db.read_transaction()` pins its snapshot the same way until it is closed.
+
 `hawdb.open()` without a path returns an empty in-memory database for tests,
 notebooks, and other hosts that already hold their data. It answers the same
 `execute` / `execute_sql` calls through the same embedded admission path;
@@ -400,6 +450,41 @@ The parent check is advisory: removal between validation and engine open can
 still race with the engine's parent creation. It is not an atomic
 no-parent-creation guarantee.
 
+For a persistent database, `open`, `Database` and DB-API `connect` also accept
+`namespace_durability_anchor`, a string or `os.PathLike[str]` naming an existing
+ancestor whose own name and ancestry the host guarantees already durable. The
+host must keep that namespace stable while the database is open. HawDB validates
+canonical ancestry before creating the project and synchronizes each required
+directory through the anchor, inclusive. Missing, non-directory, unrelated or
+conflicting anchors fail; an anchor without a database path raises `ValueError`.
+Concurrent opens of the same project must use the same canonical anchor.
+
+On Windows, the user's OS-provisioned LocalAppData directory can supply that
+host guarantee. Obtain its actual path from the Windows known-folder API; the
+path below is illustrative. Create the application directory below that existing
+boundary, then pass the boundary explicitly on every open:
+
+```python
+from pathlib import Path
+
+local_app_data = Path(r"C:\Users\Alice\AppData\Local")
+application_data = local_app_data / "ExampleApp"
+application_data.mkdir(exist_ok=True)
+with hawdb.open(
+    application_data / "graph",
+    namespace_durability_anchor=local_app_data,
+) as db:
+    db.execute("CREATE (:Memory {id: 1})")
+```
+
+Do not infer a durable boundary merely from directory existence or an access
+refusal, and do not use a freshly created application directory as the anchor.
+Omitting the option or passing `None` retains the default synchronization walk
+through the filesystem mount, which may require access to protected Windows
+ancestors such as `C:\Users`. The option preserves synchronous commit durability
+and storage formats. See [namespace durability](../../docs/BRANCH_NAMESPACE_DURABILITY.md)
+for the host guarantee and Windows power-loss qualification limits.
+
 ```python
 db = hawdb.open()
 db.execute("CREATE (:Memory {id: $id})", {"id": 1})
@@ -407,11 +492,26 @@ db.close()
 ```
 
 Parameters accept `None`, `bool`, `int`, `float`, `str`, `bytes`,
-`uuid.UUID`, lists or tuples, and string-keyed dicts, nested up to 64 levels.
+`decimal.Decimal`, `uuid.UUID`, lists or tuples, and string-keyed dicts, nested up to 64 levels.
 They are stored exactly or rejected before the statement runs. Integers,
 including NumPy integer scalars, must fit the signed 64-bit range or raise
 `OverflowError`. NumPy `float16`/`float32` scalars widen to `float` exactly
-and are accepted. Any other type, including `Decimal`, `Fraction`, or NumPy
+and are accepted. Finite `Decimal` values use the native exact representation
+with at most 38 coefficient digits and scale 0 through 38; invalid or
+out-of-range decimals raise `ValueError`. Results return `decimal.Decimal`
+without conversion through a Python float, retaining stored scale. Decimal
+does not have an experimental retained numeric buffer representation.
+`datetime.date`, naive `datetime.time`, `datetime.timedelta` and naive or aware
+`datetime.datetime` values are temporal parameters. In SQL a naive `datetime`
+binds as `TIMESTAMP` and an aware one as `TIMESTAMPTZ`, stored as its UTC
+instant whatever its zone; comparing a `TIMESTAMP` column with an aware value
+(or the reverse) needs a SQL `CAST`, and dates, times and durations are not SQL
+values. `execute`, `execute_sql` and transactions return temporal results as
+single-key tagged dicts with ISO 8601 text, such as
+`{"$localdatetime": "2026-11-05T12:00:00.123456"}` for `TIMESTAMP` and
+`{"$datetime": "2026-11-05T12:00:00Z"}` for `TIMESTAMPTZ`; DB-API cursors
+convert SQL timestamps to `datetime` (see below).
+Any other type, including `Fraction` or NumPy
 `longdouble`, raises `TypeError`; convert such values explicitly, for example
 with `float(x)`. Deeper nesting, including a list or dict that contains
 itself, raises `ValueError`. These errors name where the value sits in the
@@ -424,7 +524,38 @@ Errors raise `hawdb.exceptions` subclasses (`ParseError`, `SemanticError`,
 `StorageError`, `ExecutionError`, `ConflictError`, ...), mapped from
 `HawDBError` kinds.
 
-Memory-ledger and spill-quota refusals raise `exceptions.ResourceBudgetError`,
+A relational constraint violation, such as a duplicate primary key or a NULL
+in a NOT NULL column, has `kind == "constraint"`, and a value that does not
+fit the relational schema, such as one of the wrong type for its column, has
+`kind == "schema"`; both have `retryable == False`. Each keeps the type of the
+path it took: `StorageError` from an autocommit statement and
+`ExecutionError` from a statement inside a transaction. Test `kind` rather
+than the message.
+
+A resident search snapshot that disagrees with its published projection
+raises `StorageError` with `kind == "search_projection_mismatch"`,
+`projection` (the directory, or `None`) and `retryable == False`. Reopening
+does not help: rebuild the search projection from the graph, which is not
+affected.
+
+A search projection rebuild that installed nothing (existing target, missing
+parent, a target that appeared before installation, or a verification
+mismatch) raises `ExecutionError` with
+`kind == "search_projection_rebuild_refused"`, `reason` (for example
+`"target_exists"` or `"verification_mismatch"`), `target` and
+`retryable == False`. It is not a storage failure: the graph and the current
+projection directory are untouched; fix the reason and rebuild again.
+
+A metadata-only search projection epoch advance that published nothing raises
+`ExecutionError` with `kind == "search_projection_epoch_advance_refused"`,
+`reason` (`"projection_changed"`, `"change_log_gap"`, `"range_unavailable"` or
+`"uncheckpointed_changes"`), `source_graph_commit_epoch` (or `None`),
+`target_graph_commit_epoch` and `retryable == False`. It is not a storage
+failure: the projection keeps its previous epoch; apply or catch up the range
+normally instead.
+
+Memory-ledger and spill-quota refusals, and the read ceilings described under
+[Read budgets](#read-budgets-and-query-plans), raise `exceptions.ResourceBudgetError`,
 a subclass of `ExecutionError`, with `resource`, `scope`, `owner`,
 `memory_class`, `requested`, `used`, `budget`, and `budget_option` attributes.
 The message retains the existing execution diagnostic. `requested` is the
@@ -469,16 +600,33 @@ the whole transaction, and the connection refuses further work until
 between transactions; read-only connections always autocommit. Errors follow
 the PEP 249 hierarchy, and engine errors keep their `hawdb.exceptions` types
 as well: a syntax error is both a `ProgrammingError` and a
-`hawdb.exceptions.ParseError`. Constraint violations such as a duplicate
-primary key are plain `DatabaseError`s, because the engine does not set them
-apart yet. Use and close a connection on the thread that opened it.
+`hawdb.exceptions.ParseError`. A constraint violation such as a duplicate
+primary key is an `IntegrityError`, and a value of the wrong type for its
+column is a `DataError`; each is also the `StorageError` (autocommit) or
+`ExecutionError` (transaction) it was before. A statement refused by runtime
+admission is an `OperationalError` and still the `AdmissionError` with its
+`retryable` flag. Use and close a connection on the thread that opened it.
 
 Rows are tuples in SELECT-list order, and `description` lists the columns even
 when nothing matches, including queries on `information_schema`, `pg_catalog`
 and `system`. Catalog wildcards expand in the catalog's declared column order.
 SQL `EXPLAIN` reports `id, estRows, task, access object, operator info`;
 `EXPLAIN ANALYZE` reports `id, estRows, actRows, task, access object, execution info,
-operator info, memory, disk`. `pandas.read_sql` works, with a
+operator info, memory, disk`. `TIMESTAMP` columns fetch as naive
+`datetime.datetime` values and `TIMESTAMPTZ` columns as aware UTC ones, losslessly
+at HawDB's microsecond precision, and their `description` type code equals
+`hawdb.dbapi.DATETIME`; a value outside Python's year range stays a tagged dict.
+A type code is the Python type of the column's first non-null value anywhere in
+the result, known before any row is fetched, or `None` if every value is null.
+Cursors convert rows to tuples as they are fetched, without an intermediate dict
+per row, so a `fetchall()` of a large result needs Python memory for the
+returned list and one 1,024-row chunk: for 200,000 rows of four columns the
+`tracemalloc` peak is 38 MiB, where building dicts first took 115 MiB.
+`cursor.rowcount` is the number of rows an INSERT, UPDATE or DELETE changed, in
+autocommit and in a transaction (where the rows are published at `commit()`),
+or the number of rows a SELECT returned. It is -1 for DDL, after `executemany`,
+and for writes to strict append tables.
+`pandas.read_sql` works, with a
 warning that pandas only tests SQLAlchemy and sqlite3 connections.
 `help(hawdb.dbapi)` gives the full contract.
 
@@ -538,10 +686,16 @@ list, so a strict model needs `Field(strict=False)` on those fields.
 
 `params` returns `model_dump()`, whose keys become parameter names. Its
 values follow the parameter rules above and are checked when the statement
-runs, not by `params`: a `datetime`, `Decimal`, or plain `Enum` field raises
+runs, not by `params`: a `datetime` or plain `Enum` field raises
 `TypeError` there, named by its path, such as `$price` or `$rows[3].price` in
 a batch. Run statements that must all apply or none in `db.transaction()`.
 Engine errors stay `hawdb.exceptions`.
+
+## LlamaIndex property graph store
+
+[`integrations/llama-index-graph-stores-hawdb`](../../integrations/llama-index-graph-stores-hawdb/README.md)
+is a separate package with a LlamaIndex `PropertyGraphStore` over a
+`hawdb.Database`. Install it from that directory.
 
 ## Test
 

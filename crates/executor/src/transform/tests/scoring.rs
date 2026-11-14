@@ -138,6 +138,7 @@ fn scoring_program_product_uses_fixed_time_and_matches_resident_and_spilled_outp
             memory_ledger: &ledger,
             task_context: None,
             observer: &reports,
+            graph: None,
         };
         let mut source = Source::new(originals.clone(), 1);
         let mut output = Vec::new();
@@ -610,6 +611,7 @@ fn scoring_spills_without_changing_ranking_or_leaking_admissions() {
                 memory_ledger: &ledger,
                 task_context: None,
                 observer: &reports,
+                graph: None,
             };
             let mut source = Source::new(originals.clone(), 1);
             let mut output = Vec::new();
@@ -704,6 +706,7 @@ fn scoring_overwrite_uses_final_resident_values_at_the_candidate_cap() {
             memory_ledger: &ledger,
             task_context: None,
             observer: &crate::observer::NoopExecutionObserver,
+            graph: None,
         };
         for combination in [
             ScoringCombination::WeightedSum,

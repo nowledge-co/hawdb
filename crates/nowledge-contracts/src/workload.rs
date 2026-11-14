@@ -19,12 +19,12 @@ use std::collections::BTreeMap;
 
 /// The execution class selected for a qualified Nowledge graph query.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NowledgeMemQueryExecutionPath {
+pub enum EmbeddedQueryExecutionPath {
     FastPath,
     OptimizedPath,
 }
 
-impl NowledgeMemQueryExecutionPath {
+impl EmbeddedQueryExecutionPath {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::FastPath => "fast_path",
@@ -293,7 +293,7 @@ pub struct NowledgeGraphRouteWorkloadQueryReport {
     pub ready: bool,
     pub row_count: usize,
     pub elapsed_micros: u128,
-    pub execution_path: Option<NowledgeMemQueryExecutionPath>,
+    pub execution_path: Option<EmbeddedQueryExecutionPath>,
     pub physical_plan_captured: bool,
     pub scan_pruning_report_count: usize,
     pub physical_operator_counts: BTreeMap<String, usize>,
@@ -308,7 +308,7 @@ impl NowledgeGraphRouteWorkloadQueryReport {
             "ready": self.ready,
             "row_count": self.row_count,
             "elapsed_micros": self.elapsed_micros,
-            "execution_path": self.execution_path.map(NowledgeMemQueryExecutionPath::as_str),
+            "execution_path": self.execution_path.map(EmbeddedQueryExecutionPath::as_str),
             "physical_plan_captured": self.physical_plan_captured,
             "scan_pruning_report_count": self.scan_pruning_report_count,
             "physical_operator_counts": self.physical_operator_counts,
@@ -382,7 +382,7 @@ mod tests {
                     ready: true,
                     row_count: 2,
                     elapsed_micros: 3,
-                    execution_path: Some(NowledgeMemQueryExecutionPath::FastPath),
+                    execution_path: Some(EmbeddedQueryExecutionPath::FastPath),
                     physical_plan_captured: true,
                     scan_pruning_report_count: 1,
                     physical_operator_counts: BTreeMap::from([("NodeScan".to_string(), 1)]),

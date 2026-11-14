@@ -15,7 +15,9 @@
 use crate::artifact::{FileProjection, SegmentParts};
 use crate::error::{ProjectionError, Result};
 use crate::kernel::{score_function, select_kernel, KernelPreference, ScanKernel};
-use crate::model::{encoded_vector_bytes, InMemoryProjection, ProjectionManifest, RaBitQBitWidth};
+use crate::model::{
+    encoded_vector_bytes, InMemoryProjection, ProjectionManifest, ProjectionMetric, RaBitQBitWidth,
+};
 use crate::transform::normalize_and_transform;
 use hawdb_core::RuntimeTaskContext;
 use std::cmp::{Ordering, Reverse};
@@ -115,11 +117,14 @@ impl Default for ProjectionSearchOptions<'_> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProjectionHit {
     pub id: u64,
-    pub score: f32,
+    /// Higher is better: approximate cosine, or negated squared L2.
+    /// This is a candidate estimate; consumers rerank original vectors.
+    pub score: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectionSearchReport {
+    pub metric: ProjectionMetric,
     pub kernel: ScanKernel,
     pub worker_count: usize,
     pub segment_count: usize,
@@ -144,11 +149,15 @@ pub struct ProjectionSearchOutput {
     pub report: ProjectionSearchReport,
 }
 
+#[derive(Clone, Copy)]
+struct ScanQuery<'a> {
+    transformed: &'a [f32],
+    norm: f64,
+    metric: ProjectionMetric,
+}
+
 /// The physical data plane a query scans: given a segment index, produce
-/// that segment's scored candidates. `InMemoryProjection` and
-/// `FileProjection` are today's only two backends; a future mmap-range or
-/// remote-object backend would implement this same boundary rather than
-/// growing another bespoke `search` method.
+/// that segment's scored candidates. Memory and file readers share this boundary.
 trait SegmentReader: Sync {
     fn manifest(&self) -> &ProjectionManifest;
 
@@ -165,7 +174,7 @@ trait SegmentReader: Sync {
     fn scan_segment(
         &self,
         segment_index: usize,
-        query: &[f32],
+        query: ScanQuery<'_>,
         top_k: usize,
         kernel: ScanKernel,
         allowed_ids: Option<&[u64]>,
@@ -193,7 +202,7 @@ impl SegmentReader for InMemoryProjection {
     fn scan_segment(
         &self,
         segment_index: usize,
-        query: &[f32],
+        query: ScanQuery<'_>,
         top_k: usize,
         kernel: ScanKernel,
         allowed_ids: Option<&[u64]>,
@@ -207,6 +216,7 @@ impl SegmentReader for InMemoryProjection {
             |row| segment.ids[row],
             |row| segment.reconstruction_scales[row],
             |row| segment.reconstruction_offsets[row],
+            |row| segment.original_norms[row],
             &segment.codes,
             query,
             top_k,
@@ -244,7 +254,7 @@ impl<Memory: Send + Sync> SegmentReader for FileProjection<Memory> {
     fn scan_segment(
         &self,
         segment_index: usize,
-        query: &[f32],
+        query: ScanQuery<'_>,
         top_k: usize,
         kernel: ScanKernel,
         allowed_ids: Option<&[u64]>,
@@ -317,14 +327,18 @@ fn search_projection<R: SegmentReader>(
     if let Some(context) = options.task_context {
         context.checkpoint()?;
     }
+    if query.iter().any(|value| !value.is_finite()) {
+        return Err(ProjectionError::InvalidVector(
+            "coordinates must be finite".into(),
+        ));
+    }
     let kernel = select_kernel(options.kernel)?;
-    let mut transformed_query = vec![0.0; manifest.dimension];
-    normalize_and_transform(query, manifest.transform_seed, &mut transformed_query)?;
     let segment_count = manifest.segments.len();
     if top_k == 0 || segment_count == 0 || allowed_ids.is_some_and(<[u64]>::is_empty) {
         return Ok(ProjectionSearchOutput {
             hits: Vec::new(),
             report: ProjectionSearchReport {
+                metric: manifest.metric,
                 kernel,
                 worker_count: 0,
                 segment_count,
@@ -336,17 +350,15 @@ fn search_projection<R: SegmentReader>(
                 skipped_block_count: manifest.document_count.div_ceil(SCAN_BLOCK_ROWS),
                 adaptive_exact_scan_count: 0,
                 payload_bytes_read: 0,
-                admitted_working_bytes: transformed_query
-                    .len()
-                    .saturating_mul(std::mem::size_of::<f32>()),
+                admitted_working_bytes: 0,
                 candidate_count: 0,
                 candidate_set_exact,
             },
         });
     }
 
-    let query_bytes = transformed_query
-        .len()
+    let query_bytes = manifest
+        .dimension
         .saturating_mul(std::mem::size_of::<f32>());
     let mask_bytes = allowed_ids.map_or(0, |_| {
         max_segment_rows.div_ceil(u64::BITS as usize) * std::mem::size_of::<u64>()
@@ -389,6 +401,15 @@ fn search_projection<R: SegmentReader>(
         .max(1);
     let admitted_working_bytes = global_bytes.saturating_add(worker_count * per_worker_bytes);
 
+    let mut transformed_query = vec![0.0; manifest.dimension];
+    let query_norm =
+        normalize_and_transform(query, manifest.transform_seed, &mut transformed_query)?;
+    let prepared_query = ScanQuery {
+        transformed: &transformed_query,
+        norm: query_norm,
+        metric: manifest.metric,
+    };
+
     let report = Mutex::new(ReportAccumulator::default());
     let first_error = Mutex::new(None);
     let stopped = AtomicBool::new(false);
@@ -415,7 +436,7 @@ fn search_projection<R: SegmentReader>(
             }
             match reader.scan_segment(
                 segment_index,
-                &transformed_query,
+                prepared_query,
                 top_k,
                 kernel,
                 allowed_ids,
@@ -487,6 +508,7 @@ fn search_projection<R: SegmentReader>(
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     Ok(ProjectionSearchOutput {
         report: ProjectionSearchReport {
+            metric: manifest.metric,
             kernel,
             worker_count,
             segment_count,
@@ -512,7 +534,7 @@ fn scan_file_segment(
     rows: usize,
     dimension: usize,
     bit_width: RaBitQBitWidth,
-    query: &[f32],
+    query: ScanQuery<'_>,
     top_k: usize,
     kernel: ScanKernel,
     allowed_ids: Option<&[u64]>,
@@ -526,6 +548,7 @@ fn scan_file_segment(
         |row| parts.id(row),
         |row| parts.reconstruction_scale(row),
         |row| parts.reconstruction_offset(row),
+        |row| parts.original_norm(row),
         parts.codes,
         query,
         top_k,
@@ -537,15 +560,16 @@ fn scan_file_segment(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn scan_segment<Id, Scale, Offset>(
+fn scan_segment<Id, Scale, Offset, Norm>(
     rows: usize,
     dimension: usize,
     bit_width: RaBitQBitWidth,
     id_at: Id,
     scale_at: Scale,
     offset_at: Offset,
+    norm_at: Norm,
     codes: &[u8],
-    query: &[f32],
+    query: ScanQuery<'_>,
     top_k: usize,
     kernel: ScanKernel,
     allowed_ids: Option<&[u64]>,
@@ -556,6 +580,7 @@ where
     Id: Fn(usize) -> u64,
     Scale: Fn(usize) -> f32,
     Offset: Fn(usize) -> f32,
+    Norm: Fn(usize) -> f64,
 {
     let bytes_per_vector = encoded_vector_bytes(dimension, bit_width);
     if codes.len() != rows.saturating_mul(bytes_per_vector) {
@@ -565,7 +590,7 @@ where
     }
     let mask = allowed_ids.map(|allowed| build_allowed_mask(rows, &id_at, allowed));
     let score = score_function(kernel);
-    let query_sum = query.iter().sum::<f32>();
+    let query_sum = query.transformed.iter().sum::<f32>();
     let mut top = TopK::new(top_k);
     let mut scored_document_count = 0usize;
     let mut scanned_block_count = 0usize;
@@ -597,8 +622,24 @@ where
                 )));
             }
             let start = row * bytes_per_vector;
-            let score = score(&codes[start..start + bytes_per_vector], query, bit_width) * scale
-                + (offset * query_sum);
+            let norm = norm_at(row);
+            if !norm.is_finite() || norm < 0.0 {
+                return Err(ProjectionError::CorruptArtifact(format!(
+                    "row {row} has an invalid RaBitQ original norm"
+                )));
+            }
+            let similarity = f64::from(score(
+                &codes[start..start + bytes_per_vector],
+                query.transformed,
+                bit_width,
+            )) * f64::from(scale)
+                + f64::from(offset) * f64::from(query_sum);
+            let score = match query.metric {
+                ProjectionMetric::Cosine => similarity,
+                ProjectionMetric::SquaredL2 => {
+                    -(norm * norm + query.norm * query.norm - 2.0 * norm * query.norm * similarity)
+                }
+            };
             if !score.is_finite() {
                 return Err(ProjectionError::CorruptArtifact(format!(
                     "row {row} produced a non-finite score"
@@ -888,7 +929,7 @@ mod tests {
         let hits = (0..257u64)
             .map(|id| ProjectionHit {
                 id,
-                score: scores[(id as usize * 17 + 3) % scores.len()],
+                score: f64::from(scores[(id as usize * 17 + 3) % scores.len()]),
             })
             .collect::<Vec<_>>();
 

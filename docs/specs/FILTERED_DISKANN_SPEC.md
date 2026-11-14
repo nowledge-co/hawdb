@@ -241,6 +241,123 @@ Waiting for initial construction checks the caller's cancellation/deadline.
 Focused concurrency cases block execution
 admission while a second query completes, and verify a waiting deadline.
 
+Host candidate reads request exact scoring with
+`SearchCandidateRequest::with_exact_vector_search()` (field
+`exact_vector_search`, default `false`). `EmbeddedReadSnapshot` and
+`EmbeddedStoreHandle` candidate reads, the resident `SearchProjection`
+`search_candidates_with_report`/`try_search_candidates_with_report[_context]`
+entry points and the out-of-core
+`search_candidates_with_report[_context]` entry points apply it as
+`with_exact_search()` on the caller's admitted execution options, so vector
+and hybrid vector legs score the complete metadata-filtered eligible set with
+raw vectors under the same working-memory budget and task context. Exact
+scoring is refused, not downgraded, when combined with an effective compressed
+mode, and an exact request whose executed vector leg did not report
+`raw_vector` candidates fails instead of returning approximate results.
+`SearchCandidateReport` records `exact_vector_search_requested` and
+`exact_vector_search`; the latter is derived from the executed vector
+retriever (available, `raw_vector` candidate and final scores), so it is also
+true when default execution chose a full scalar scan. Resident candidate reads with
+compression disabled already select the adaptive scalar scan
+(`compression_disabled`), so they report exact even without the flag; the flag
+changes out-of-core reads, whose default is DiskANN graph candidates.
+
+Exact memory is bounded but not constant in the eligible-set size. The
+resident scalar scan keeps one score entry per scored eligible document (the
+fused hybrid ranking needs the complete vector ranking) and refuses with
+`scalar vector candidates require N bytes, exceeding admitted working memory M`
+once those entries exceed the admitted bytes; the raw rerank step repeats the
+check for its lookup. The out-of-core scan streams segments into a top-k score
+collector but tracks scored document IDs for duplicate detection, capped at
+`min(max_score_entries, working_bytes / 128) / 2` IDs. It refuses up front
+(`search rank window exceeds the admitted N score entries`) when the requested
+window exceeds that cap, and with
+`search vector uniqueness check requires more than N document ids` once the
+eligible set does.
+Neither path falls back to approximate candidates.
+
+Every over-budget refusal of an exact read is a typed
+`HawDBError::ResourceBudgetExceeded` (`nowledge-co/hawdb#1748`), so hosts can
+tell a request that is merely too large from a damaged store by variant. The
+resident scan and rerank refusals report `MemoryBytes` against
+`VectorSearchExecutionOptions.max_working_bytes`. Out of core, the
+duplicate-ID cap, the score-collector window and complete-map caps, and a zero
+uniqueness capacity report `MetadataEntries` against whichever option bounds
+the entries (`VectorSearchExecutionOptions.max_working_bytes` or
+`SearchOutOfCoreConfig.max_score_entries`); the reader's page and rank window
+caps report `MetadataEntries` against `SearchOutOfCoreConfig.max_score_entries`,
+and a page larger than `SearchOutOfCoreConfig.max_hydrated_documents` reports
+`MetadataEntries` against that option. Messages are unchanged; the out-of-core
+ones were `HawDBError::Storage` and now display with the `execution error:`
+prefix, and the resident ones were untyped `HawDBError::Execution`.
+
+The same typing covers out-of-core refusals that are caller mistakes rather
+than store faults (`nowledge-co/hawdb#1754`).
+`SearchOutOfCoreReader::hydrate_documents` and mutation-target loading refuse
+more ids than `SearchOutOfCoreConfig.max_hydrated_documents` with
+`ResourceBudgetExceeded` (`MetadataEntries`, naming that option). Duplicate
+hydration ids and a page whose `offset + limit` overflows are
+`HawDBError::Semantic`. All three were `HawDBError::Storage`; messages are
+unchanged. Corruption and invariant guards, such as a duplicate document
+found while reading published segments, remain `Storage`. A requested id that
+the projection does not contain is also still `Storage`, because the shared
+loader cannot yet tell it from a damaged document-range index.
+
+Embedded out-of-core candidate reads (`EmbeddedReadSnapshot` and
+`EmbeddedStoreHandle`, text, vector and hybrid, exact and default) also run
+with a query-memory account (`nowledge-co/hawdb#1722`). They call
+`OutOfCoreSearchProjection::search_candidates_with_report_admitted`, which
+serves through `SearchOutOfCoreReader::search_with_options_admitted` with the
+caller's `RuntimePermit`, one query I/O wave and one working account of
+`min(max_working_bytes, task memory reservation)` bytes: the snapshot's
+`query_memory_bytes` admission, or the handle's complete out-of-core search
+admission. Candidate filters and spills, segment and decoder buffers, score
+maps, rankings, fused candidates and hit hydration are charged to that account
+on the same paths native admitted roots use; returned hits stay on the
+caller's result budget. A request that does not fit is refused with a typed
+`ResourceBudgetExceeded` (`MemoryBytes`) error before it allocates beyond its
+admission. A hybrid request without a rank window ranks the complete eligible
+set in both legs and is charged for both rankings; it is refused, never
+truncated, when they do not fit, while a rank window bounds them. The default
+RaBitQ stage sizes its scan to the account's remaining bytes.
+`SearchOutOfCoreMetrics::query_memory_peak_bytes` reports the peak charge.
+Query score maps, rankings and ID sets charge B-tree node bytes derived from
+the std layout (`build_memory::btree_entry_bytes`: at most 11 and at least 5
+entries per non-root node, internal nodes at least 6 edges, plus one root per
+tree) and their keys' heap capacity: 93 bytes per `BTreeMap<String, f64>`
+entry, 72 per `BTreeSet<String>` or `BTreeMap<&str, usize>` entry. Live
+allocation tests bound the charge between 1x and 2x the live working set.
+Exact vector-only therefore keeps its `working_bytes / 256` uniqueness cap
+(262,144 eligible documents at 64 MiB, about 23 MB charged there, independent
+of dimension), and an unwindowed exact hybrid read charges about 690 bytes
+per eligible document.
+
+Hosts that choose between exact and approximate search ask HawDB for the
+capacity instead of reproducing these charges:
+`EmbeddedReadSnapshot::exact_vector_search_capacity(max_document_id_bytes)`
+returns the largest eligible-set size an exact vector-only candidate read in
+that snapshot is guaranteed to serve under the snapshot's admitted working
+memory, for projection document IDs (`kind:external_id`) of at most
+`max_document_id_bytes` bytes. It dispatches to
+`SearchOutOfCoreReader::exact_vector_search_capacity(working_bytes,
+max_document_id_bytes)` (also on `OutOfCoreSearchProjection`) or, for a
+resident projection, `SearchIndex`/`SearchIndexReadSnapshot::
+exact_vector_search_capacity`. Out of core it is the smaller of the
+duplicate-ID cap `min(max_score_entries, working_bytes / 128) / 2` and the
+account's room for one 72-byte entry plus the ID per eligible document after
+a fixed working set (4 MiB for one level-3 zstd decoder, the vector run,
+range validation and query metadata, plus the reader's candidate block
+directory, one cached block and one vector segment head); resident reads
+bound their geometrically grown raw candidates and a raw rerank lookup. Above
+the capacity a read may be refused with a typed `ResourceBudgetExceeded`
+error (`MetadataEntries` for the duplicate-ID cap, `MemoryBytes` for the
+account); it is never truncated. The page's hydration remains bounded by
+`max_hydrated_bytes` and must fit as well. The duplicate-ID refusal keeps its
+message (`search vector uniqueness check requires more than N document ids`)
+but is now a typed budget error instead of a storage error.
+`search_candidates_with_report[_context]` without a permit keep their previous
+unaccounted behavior.
+
 Resident checkpoints now write native DiskANN graphs into the existing candidate
 slot and seal their full source digest in the same manifest. The disk reader
 executes that graph after checkpoint; old readers retain their original graph

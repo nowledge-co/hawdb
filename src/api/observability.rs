@@ -35,7 +35,7 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 
-pub(super) fn sql_statement_kind(statement: &SqlStatement) -> &'static str {
+pub(crate) fn sql_statement_kind(statement: &SqlStatement) -> &'static str {
     match statement {
         SqlStatement::Select(_) => "select",
         SqlStatement::Insert(_) => "insert",
@@ -45,6 +45,8 @@ pub(super) fn sql_statement_kind(statement: &SqlStatement) -> &'static str {
         SqlStatement::CreateIndex(_) => "create_index",
         SqlStatement::CreateMaterializedView(_) => "create_materialized_view",
         SqlStatement::DropMaterializedView(_) => "drop_materialized_view",
+        SqlStatement::CreateSearchIndex(_) => "create_search_index",
+        SqlStatement::DropSearchIndex(_) => "drop_search_index",
         SqlStatement::AlterTableAddColumn(_) => "alter_table_add_column",
         SqlStatement::Explain(_) => "explain",
         SqlStatement::Branch(_) => "branch",
@@ -441,12 +443,45 @@ impl Database {
                 .with_output_limits(options),
             system_variables,
         )
+        .map(|result| result.output)
     }
 
     pub fn query_sql_request(
         &mut self,
         request: super::SqlQueryRequest<'_>,
     ) -> Result<QueryOutput> {
+        self.query_sql_request_with_result(request)
+            .map(|result| result.output)
+    }
+
+    /// Executes and commits one SQL statement, returning its rows together
+    /// with the committed RowPage mutation outcome.
+    ///
+    /// `output` is what [`Self::query_sql_with_params`] returns. `mutation`
+    /// carries the confirmed `affected_rows`/`conflict_rows` of a RowPage
+    /// INSERT, UPDATE or DELETE and is `None` for queries, DDL, branch
+    /// commands and Strict Append writes, matching
+    /// [`crate::SqlSession::query`].
+    pub fn query_sql_with_result_and_params(
+        &mut self,
+        sql_text: &str,
+        parameters: &[Value],
+    ) -> Result<super::SqlStatementResult> {
+        self.query_sql_request_with_result(
+            super::SqlQueryRequest::new(sql_text)
+                .with_params(parameters)
+                .with_output_limits(QueryStreamOptions {
+                    max_rows: self.config.read_result_row_limit(),
+                    max_payload_bytes: self.config.max_read_result_payload_bytes,
+                }),
+        )
+    }
+
+    /// Request form of [`Self::query_sql_with_result_and_params`].
+    pub fn query_sql_request_with_result(
+        &mut self,
+        request: super::SqlQueryRequest<'_>,
+    ) -> Result<super::SqlStatementResult> {
         self.query_sql_request_with_system_variables(request, self.system_variables.clone())
     }
 
@@ -454,7 +489,7 @@ impl Database {
         &mut self,
         request: super::SqlQueryRequest<'_>,
         system_variables: super::QuerySystemVariables,
-    ) -> Result<QueryOutput> {
+    ) -> Result<super::SqlStatementResult> {
         super::query_runtime::query_runtime_checkpoint(request.task_context)?;
         let sql_text = request.sql;
         let parameters = request.parameters;
@@ -484,7 +519,7 @@ impl Database {
                 result.as_ref(),
                 StatementExecutionContext::default(),
             );
-            return result;
+            return result.map(super::sql_query_result);
         }
         self.runtime.get()?.store.ensure_usable()?;
         self.query_sql_with_prepared_request_inner(
@@ -503,6 +538,17 @@ impl Database {
         request: super::SqlQueryRequest<'_>,
         prepared: crate::relational_sql::PreparedRelationalSql,
     ) -> Result<QueryOutput> {
+        self.query_sql_with_prepared_request_with_result(request, prepared)
+            .map(|result| result.output)
+    }
+
+    /// Result-carrying form of [`Self::query_sql_with_prepared_request`]; see
+    /// [`Self::query_sql_with_result_and_params`] for `mutation`.
+    pub(crate) fn query_sql_with_prepared_request_with_result(
+        &mut self,
+        request: super::SqlQueryRequest<'_>,
+        prepared: crate::relational_sql::PreparedRelationalSql,
+    ) -> Result<super::SqlStatementResult> {
         super::query_runtime::query_runtime_checkpoint(request.task_context)?;
         if let Some(runtime) = self.runtime.peek() {
             runtime.store.ensure_usable()?;
@@ -516,13 +562,49 @@ impl Database {
         )
     }
 
+    /// Completes a SQL read that ran on a snapshot of this database (the
+    /// embedded facade's admitted read path) as this database's own
+    /// autocommit read would: a storage integrity failure poisons the
+    /// handle, and the statement is recorded in the statement summary and,
+    /// over the threshold, the slow-query log.
+    pub(crate) fn finish_snapshot_sql_read(
+        &self,
+        sql_text: &str,
+        statement_kind: &'static str,
+        started: hawdb_core::time::Instant,
+        result: &Result<QueryOutput>,
+    ) {
+        if let Some(runtime) = self.runtime.peek() {
+            runtime.store.poison_on_storage_error(result);
+        }
+        self.record_statement_execution(
+            "sql",
+            sql_text,
+            statement_kind,
+            started,
+            result.as_ref(),
+            StatementExecutionContext::default(),
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn poison_storage_handle_for_test(&self) {
+        self.runtime
+            .get()
+            .unwrap()
+            .store
+            .poison_on_storage_error::<()>(&Err(HawDBError::StorageIntegrity(
+                "test-injected integrity failure".to_string(),
+            )));
+    }
+
     fn query_sql_with_prepared_request_inner(
         &mut self,
         request: super::SqlQueryRequest<'_>,
         prepared: crate::relational_sql::PreparedRelationalSql,
         started: hawdb_core::time::Instant,
         system_variables: super::QuerySystemVariables,
-    ) -> Result<QueryOutput> {
+    ) -> Result<super::SqlStatementResult> {
         let sql_text = request.sql;
         let parameters = request.parameters;
         let task_context = request.task_context;
@@ -531,333 +613,374 @@ impl Database {
             max_payload_bytes,
         } = request.output_limits;
         let statement_kind = sql_statement_kind(prepared.statement());
-        let query_result = (|| {
-            super::query_runtime::query_runtime_checkpoint(task_context)?;
-            if let SqlStatement::Branch(statement) = prepared.statement() {
-                return self.execute_branch_sql(statement, parameters, max_rows, max_payload_bytes);
-            }
-            self.runtime.get()?.store.ensure_usable()?;
-            super::reject_locking_select_without_manager(prepared.statement(), false)?;
-            if matches!(
-                prepared.statement(),
-                crate::sql::SqlStatement::Select(_) | crate::sql::SqlStatement::Explain(_)
-            ) {
-                self.runtime.get_read()?;
-            }
-            if hawdb_relational::system_schema::statement_writes_system_schema_registry(
-                prepared.statement(),
-            ) {
-                return Err(HawDBError::Semantic(
-                    "hawdb_schema_migrations is read-only outside system schema upgrade"
-                        .to_string(),
-                ));
-            }
-            // RowPage DML without RETURNING has a statically empty result, so
-            // even an explicit zero-row/zero-byte budget needs no preview.
-            // Keep its native single-pass commit instead of hydrating sparse
-            // rows twice (once for a provisional result and once at commit).
-            // Strict append tables can return generated keys without RETURNING
-            // and must still validate their provisional result before commit.
-            let empty_result_table = match prepared.statement() {
-                SqlStatement::Insert(insert) if insert.returning.is_empty() => Some(&insert.table),
-                SqlStatement::Update(update) => Some(&update.table),
-                SqlStatement::Delete(delete) => Some(&delete.table),
-                _ => None,
-            };
-            let has_empty_rowpage_result = match empty_result_table {
-                Some(table) => self
-                    .runtime
-                    .get()?
-                    .store
-                    .relational_state()
-                    .table_schema(&table.name)
-                    .is_some(),
-                None => false,
-            };
-            // The native entry uses storage's default mutation limits. A
-            // custom mutation ceiling needs the transaction's pre-commit
-            // outcome validation even when its result is empty.
-            let can_commit_empty_result = has_empty_rowpage_result
-                && self.config.mutation_limits
-                    == hawdb_storage::mutation::MutationLimits::default();
-            if !can_commit_empty_result
-                && matches!(
+        // One statement clock for the whole auto-commit statement: every
+        // CURRENT_TIMESTAMP, now(), LOCALTIMESTAMP and clock default agrees.
+        let query_result = hawdb_core::temporal::with_stable_statement_clock(|| {
+            (|| {
+                super::query_runtime::query_runtime_checkpoint(task_context)?;
+                if let SqlStatement::Branch(statement) = prepared.statement() {
+                    return self
+                        .execute_branch_sql(statement, parameters, max_rows, max_payload_bytes)
+                        .map(super::sql_query_result);
+                }
+                self.runtime.get()?.store.ensure_usable()?;
+                super::reject_locking_select_without_manager(prepared.statement(), false)?;
+                if matches!(
                     prepared.statement(),
-                    SqlStatement::Insert(_) | SqlStatement::Update(_) | SqlStatement::Delete(_)
-                )
-            {
-                // Validate result-bearing DML before publication, regardless
-                // of whether a ceiling exists.
-                let mut transaction = self.begin_transaction()?;
-                transaction.task_context = task_context.cloned();
-                transaction.runtime.system_variables = system_variables;
-                transaction.runtime.config.max_read_result_rows = max_rows;
-                transaction.runtime.config.max_read_result_payload_bytes = max_payload_bytes;
-                let result = super::execute_database_transaction_prepared_sql(
-                    &transaction.runtime,
-                    &mut transaction.state,
-                    sql_text,
-                    prepared,
-                    parameters,
-                    super::DatabaseTransactionSqlOptions {
-                        allow_system_schema_registry_write: false,
-                        allow_locking_select: false,
-                        task_context,
-                        output_limits: request.output_limits,
-                        join_planning: request.join_planning,
-                    },
-                )?;
-                // Explicit request Some(0) remains strict, unlike host Some(0).
-                if let Some(limit) = max_rows
-                    && result.output.rows.len() > limit
-                {
-                    return Err(HawDBError::read_budget_exceeded(
-                        crate::ReadBudgetResource::Rows,
-                        limit,
-                        "SQL mutation result exceeds the effective row ceiling",
+                    crate::sql::SqlStatement::Select(_) | crate::sql::SqlStatement::Explain(_)
+                ) {
+                    self.runtime.get_read()?;
+                }
+                if hawdb_relational::system_schema::statement_writes_system_schema_registry(
+                    prepared.statement(),
+                ) {
+                    return Err(HawDBError::Semantic(
+                        "hawdb_schema_migrations is read-only outside system schema upgrade"
+                            .to_string(),
                     ));
                 }
-                if let Some(limit) = max_payload_bytes
-                    && result.output.payload_bytes() > limit
+                // RowPage DML without RETURNING has a statically empty result, so
+                // even an explicit zero-row/zero-byte budget needs no preview.
+                // Keep its native single-pass commit instead of hydrating sparse
+                // rows twice (once for a provisional result and once at commit).
+                // Strict append tables can return generated keys without RETURNING
+                // and must still validate their provisional result before commit.
+                let empty_result_table = match prepared.statement() {
+                    SqlStatement::Insert(insert) if insert.returning.is_empty() => {
+                        Some(&insert.table)
+                    }
+                    SqlStatement::Update(update) => Some(&update.table),
+                    SqlStatement::Delete(delete) => Some(&delete.table),
+                    _ => None,
+                };
+                let has_empty_rowpage_result = match empty_result_table {
+                    Some(table) => self
+                        .runtime
+                        .get()?
+                        .store
+                        .relational_state()
+                        .table_schema(&table.name)
+                        .is_some(),
+                    None => false,
+                };
+                // The native entry uses storage's default mutation limits. A
+                // custom mutation ceiling needs the transaction's pre-commit
+                // outcome validation even when its result is empty.
+                let can_commit_empty_result = has_empty_rowpage_result
+                    && self.config.mutation_limits
+                        == hawdb_storage::mutation::MutationLimits::default();
+                if !can_commit_empty_result
+                    && matches!(
+                        prepared.statement(),
+                        SqlStatement::Insert(_) | SqlStatement::Update(_) | SqlStatement::Delete(_)
+                    )
                 {
-                    return Err(HawDBError::read_budget_exceeded(
-                        crate::ReadBudgetResource::PayloadBytes,
-                        limit,
-                        "SQL mutation result exceeds the effective payload ceiling",
-                    ));
-                }
-                return transaction.commit();
-            }
-            if matches!(
-                prepared.statement(),
-                crate::sql::SqlStatement::Select(select)
-                    if system_sql::is_virtual_catalog_select(select)
-            ) {
-                let plan_cache_stats = self.runtime.get()?.plan_cache.borrow().stats();
-                let slow_queries = self.slow_query_log.borrow().snapshot();
-                let statement_summaries = self.statement_summary.borrow().snapshot();
-                return {
-                    let branch_runtime = self.runtime.get_read()?;
-                    system_sql::query_sql_with_params(
+                    // Validate result-bearing DML before publication, regardless
+                    // of whether a ceiling exists.
+                    let mut transaction = self.begin_transaction()?;
+                    transaction.task_context = task_context.cloned();
+                    transaction.runtime.system_variables = system_variables;
+                    transaction.runtime.config.max_read_result_rows = max_rows;
+                    transaction.runtime.config.max_read_result_payload_bytes = max_payload_bytes;
+                    let result = super::execute_database_transaction_prepared_sql(
+                        &transaction.runtime,
+                        &mut transaction.state,
                         sql_text,
-                        parameters,
-                        max_rows,
-                        max_payload_bytes,
-                        &system_sql::SystemSqlContext {
-                            catalog: branch_runtime.catalog(),
-                            store: branch_runtime.store(),
-                            relational_state: branch_runtime.store().relational_state(),
-                            append_state: branch_runtime.store().append_state(),
-                            runtime: super::system_runtime_snapshot(&self.config),
-                            plan_cache_stats: &plan_cache_stats,
-                            slow_queries: &slow_queries,
-                            statement_summaries: &statement_summaries,
-                        },
-                    )
-                };
-            }
-
-            if let Some(plan) = compile_prepared_append_select_sql(
-                &prepared.template,
-                parameters,
-                self.runtime.get()?.store.append_state(),
-                max_rows.unwrap_or(usize::MAX),
-            )? {
-                let output = self.runtime.get()?.store.read_append_partition_bounded(
-                    &plan.table,
-                    &plan.partition,
-                    plan.after.as_ref(),
-                    plan.max_rows,
-                    max_payload_bytes.unwrap_or(usize::MAX),
-                )?;
-                return Ok(QueryOutput {
-                    rows: project_append_rows(&plan, &output.rows)?,
-                });
-            }
-            if let Some(plan) = compile_prepared_append_explain_sql(
-                &prepared.template,
-                parameters,
-                self.runtime.get()?.store.append_state(),
-                max_rows.unwrap_or(usize::MAX),
-            )? {
-                let report = if plan.analyze {
-                    Some(
-                        self.runtime
-                            .get()?
-                            .store
-                            .read_append_partition_bounded(
-                                &plan.select.table,
-                                &plan.select.partition,
-                                plan.select.after.as_ref(),
-                                plan.select.max_rows,
-                                max_payload_bytes.unwrap_or(usize::MAX),
-                            )?
-                            .report,
-                    )
-                } else {
-                    None
-                };
-                return admit_append_explain(
-                    format_append_explain(&plan, report.as_ref()),
-                    plan.analyze,
-                    &self.config,
-                    QueryStreamOptions {
-                        max_rows,
-                        max_payload_bytes,
-                    },
-                    task_context,
-                );
-            }
-
-            if matches!(
-                prepared.statement(),
-                crate::sql::SqlStatement::Select(_) | crate::sql::SqlStatement::Explain(_)
-            ) {
-                let branch_runtime = self.runtime.get()?;
-                let query_result =
-                    crate::relational_sql::execute_prepared_relational_query_with_resources(
                         prepared,
                         parameters,
-                        branch_runtime.store.relational_state(),
-                        {
-                            crate::relational_sql::RelationalQueryReadModes::new(
-                                super::relational_index_read_mode(
-                                    &self.config,
-                                    &branch_runtime.store,
-                                ),
-                                crate::relational_sql::RelationalRowReadMode::Store(
-                                    &branch_runtime.store,
-                                ),
-                            )
+                        super::DatabaseTransactionSqlOptions {
+                            allow_system_schema_registry_write: false,
+                            allow_locking_select: false,
+                            task_context,
+                            output_limits: request.output_limits,
+                            join_planning: request.join_planning,
                         },
-                        super::relational_query_resource_context(
-                            &self.config,
+                    )?;
+                    // Explicit request Some(0) remains strict, unlike host Some(0).
+                    if let Some(limit) = max_rows
+                        && result.output.rows.len() > limit
+                    {
+                        return Err(HawDBError::read_budget_exceeded(
+                            crate::ReadBudgetResource::Rows,
+                            limit,
+                            "SQL mutation result exceeds the effective row ceiling",
+                        ));
+                    }
+                    if let Some(limit) = max_payload_bytes
+                        && result.output.payload_bytes() > limit
+                    {
+                        return Err(HawDBError::read_budget_exceeded(
+                            crate::ReadBudgetResource::PayloadBytes,
+                            limit,
+                            "SQL mutation result exceeds the effective payload ceiling",
+                        ));
+                    }
+                    let super::TransactionCommitResult {
+                        output, mutations, ..
+                    } = transaction.commit_with_result()?;
+                    // The staged outcome is provisional; report the one
+                    // recomputed against the durable commit instead.
+                    let mutation = result
+                        .mutation
+                        .map(|_| {
+                            mutations.into_iter().next().ok_or_else(|| {
+                                HawDBError::StorageIntegrity(
+                                    "SQL commit omitted its mutation outcome".to_string(),
+                                )
+                            })
+                        })
+                        .transpose()?;
+                    return Ok(super::SqlStatementResult { output, mutation });
+                }
+                if matches!(
+                    prepared.statement(),
+                    crate::sql::SqlStatement::Select(select)
+                        if system_sql::is_virtual_catalog_select(select)
+                ) {
+                    let plan_cache_stats = self.runtime.get()?.plan_cache.borrow().stats();
+                    let slow_queries = self.slow_query_log.borrow().snapshot();
+                    let statement_summaries = self.statement_summary.borrow().snapshot();
+                    return {
+                        let branch_runtime = self.runtime.get_read()?;
+                        system_sql::query_sql_with_params(
+                            sql_text,
+                            parameters,
                             max_rows,
                             max_payload_bytes,
-                            task_context,
+                            &system_sql::SystemSqlContext {
+                                catalog: branch_runtime.catalog(),
+                                store: branch_runtime.store(),
+                                relational_state: branch_runtime.store().relational_state(),
+                                append_state: branch_runtime.store().append_state(),
+                                runtime: super::system_runtime_snapshot(&self.config),
+                                plan_cache_stats: &plan_cache_stats,
+                                slow_queries: &slow_queries,
+                                statement_summaries: &statement_summaries,
+                            },
                         )
-                        .with_join_planning(request.join_planning),
-                    );
-                self.runtime
-                    .get()?
-                    .store
-                    .poison_on_storage_error(&query_result);
-                let output = query_result?;
-                return Ok(QueryOutput { rows: output.rows });
-            }
+                        .map(super::sql_query_result)
+                    };
+                }
 
-            super::query_runtime::query_runtime_checkpoint(task_context)?;
-            self.ensure_writable()?;
-            if let crate::sql::SqlStatement::CreateMaterializedView(create) = prepared.statement()
-                && self
-                    .runtime
-                    .get()?
-                    .store
-                    .append_table_schema(&create.name.name)
-                    .is_some()
-            {
-                return Err(HawDBError::Semantic(format!(
-                    "relation {} already exists as a strict append table",
-                    create.name.name
-                )));
-            }
-            let transaction = compile_prepared_append_statement_sql(
-                &prepared.template,
-                parameters,
-                self.runtime.get()?.store.append_state(),
-            )?;
-            if let Some(transaction) = transaction {
+                if let Some(plan) = compile_prepared_append_select_sql(
+                    &prepared.template,
+                    parameters,
+                    self.runtime.get()?.store.append_state(),
+                    max_rows.unwrap_or(usize::MAX),
+                )? {
+                    let output = self.runtime.get()?.store.read_append_partition_bounded(
+                        &plan.table,
+                        &plan.partition,
+                        plan.after.as_ref(),
+                        plan.max_rows,
+                        max_payload_bytes.unwrap_or(usize::MAX),
+                    )?;
+                    return Ok(super::sql_query_result(QueryOutput {
+                        rows: project_append_rows(&plan, &output.rows)?,
+                    }));
+                }
+                if let Some(plan) = compile_prepared_append_explain_sql(
+                    &prepared.template,
+                    parameters,
+                    self.runtime.get()?.store.append_state(),
+                    max_rows.unwrap_or(usize::MAX),
+                )? {
+                    let report = if plan.analyze {
+                        Some(
+                            self.runtime
+                                .get()?
+                                .store
+                                .read_append_partition_bounded(
+                                    &plan.select.table,
+                                    &plan.select.partition,
+                                    plan.select.after.as_ref(),
+                                    plan.select.max_rows,
+                                    max_payload_bytes.unwrap_or(usize::MAX),
+                                )?
+                                .report,
+                        )
+                    } else {
+                        None
+                    };
+                    return admit_append_explain(
+                        format_append_explain(&plan, report.as_ref()),
+                        plan.analyze,
+                        &self.config,
+                        QueryStreamOptions {
+                            max_rows,
+                            max_payload_bytes,
+                        },
+                        task_context,
+                    )
+                    .map(super::sql_query_result);
+                }
+
+                if matches!(
+                    prepared.statement(),
+                    crate::sql::SqlStatement::Select(_) | crate::sql::SqlStatement::Explain(_)
+                ) {
+                    let branch_runtime = self.runtime.get()?;
+                    let query_result =
+                        crate::relational_sql::execute_prepared_relational_query_with_resources(
+                            prepared,
+                            parameters,
+                            branch_runtime.store.relational_state(),
+                            {
+                                crate::relational_sql::RelationalQueryReadModes::new(
+                                    super::relational_index_read_mode(
+                                        &self.config,
+                                        &branch_runtime.store,
+                                    ),
+                                    crate::relational_sql::RelationalRowReadMode::Store(
+                                        &branch_runtime.store,
+                                    ),
+                                )
+                            },
+                            super::relational_query_resource_context(
+                                &self.config,
+                                max_rows,
+                                max_payload_bytes,
+                                task_context,
+                            )
+                            .with_join_planning(request.join_planning),
+                        );
+                    self.runtime
+                        .get()?
+                        .store
+                        .poison_on_storage_error(&query_result);
+                    let output = query_result?;
+                    return Ok(super::sql_query_result(QueryOutput { rows: output.rows }));
+                }
+
+                super::query_runtime::query_runtime_checkpoint(task_context)?;
+                self.ensure_writable()?;
+                if let crate::sql::SqlStatement::CreateMaterializedView(create) =
+                    prepared.statement()
+                    && self
+                        .runtime
+                        .get()?
+                        .store
+                        .append_table_schema(&create.name.name)
+                        .is_some()
+                {
+                    return Err(HawDBError::Semantic(format!(
+                        "relation {} already exists as a strict append table",
+                        create.name.name
+                    )));
+                }
+                let transaction = compile_prepared_append_statement_sql(
+                    &prepared.template,
+                    parameters,
+                    self.runtime.get()?.store.append_state(),
+                )?;
+                if let Some(transaction) = transaction {
+                    if let crate::sql::SqlStatement::CreateTable(create) = prepared.statement()
+                        && self
+                            .runtime
+                            .get()?
+                            .store
+                            .relational_state()
+                            .table_schema(&create.table.name)
+                            .is_some()
+                    {
+                        return Err(HawDBError::Semantic(format!(
+                            "table {} already exists as a RowPage table",
+                            create.table.name
+                        )));
+                    }
+                    let summary = {
+                        super::query_runtime::query_runtime_checkpoint(task_context)?;
+                        let mut branch_runtime_access = self.runtime.get_mut()?;
+                        let branch_runtime = &mut *branch_runtime_access;
+                        branch_runtime.store.commit_kernel_write_batch(
+                            &mut branch_runtime.catalog,
+                            crate::store::KernelWriteBatch {
+                                append: transaction,
+                                ..crate::store::KernelWriteBatch::default()
+                            },
+                            self.config.mutation_limits,
+                        )
+                    }?;
+                    // Strict Append writes report no RowPage mutation count.
+                    return Ok(super::sql_query_result(QueryOutput {
+                        rows: summary.rows.into(),
+                    }));
+                }
                 if let crate::sql::SqlStatement::CreateTable(create) = prepared.statement()
                     && self
                         .runtime
                         .get()?
                         .store
-                        .relational_state()
-                        .table_schema(&create.table.name)
+                        .append_table_schema(&create.table.name)
                         .is_some()
                 {
                     return Err(HawDBError::Semantic(format!(
-                        "table {} already exists as a RowPage table",
+                        "table {} already exists as a strict append table",
                         create.table.name
                     )));
                 }
+                let compiled = compile_prepared_relational_statement_with_result(
+                    &prepared.template,
+                    parameters,
+                    self.runtime.get()?.store.relational_state(),
+                )?;
                 let summary = {
                     super::query_runtime::query_runtime_checkpoint(task_context)?;
-                    let mut branch_runtime_access = self.runtime.get_mut()?;
-                    let branch_runtime = &mut *branch_runtime_access;
-                    branch_runtime.store.commit_kernel_write_batch(
-                        &mut branch_runtime.catalog,
-                        crate::store::KernelWriteBatch {
-                            append: transaction,
-                            ..crate::store::KernelWriteBatch::default()
+                    // Waits for a live-overlay drain first when the statement
+                    // does not fit beside the retained overlay (#1479).
+                    self.runtime.commit_with_live_headroom(
+                        compiled.transaction,
+                        task_context,
+                        |branch_runtime, transaction| {
+                            branch_runtime
+                                .store
+                                .commit_relational_transaction_with_live_headroom(
+                                    &mut branch_runtime.catalog,
+                                    transaction,
+                                )
                         },
-                        self.config.mutation_limits,
                     )
                 }?;
-                return Ok(QueryOutput {
-                    rows: summary.rows.into(),
-                });
-            }
-            if let crate::sql::SqlStatement::CreateTable(create) = prepared.statement()
-                && self
-                    .runtime
-                    .get()?
-                    .store
-                    .append_table_schema(&create.table.name)
-                    .is_some()
-            {
-                return Err(HawDBError::Semantic(format!(
-                    "table {} already exists as a strict append table",
-                    create.table.name
-                )));
-            }
-            let compiled = compile_prepared_relational_statement_with_result(
-                &prepared.template,
-                parameters,
-                self.runtime.get()?.store.relational_state(),
-            )?;
-            let summary = {
-                super::query_runtime::query_runtime_checkpoint(task_context)?;
-                let mut branch_runtime_access = self.runtime.get_mut()?;
-                let branch_runtime = &mut *branch_runtime_access;
-                branch_runtime.store.commit_relational_transaction(
-                    &mut branch_runtime.catalog,
-                    compiled.transaction,
-                )
-            }?;
-            self.complete_required_relational_row_checkpoint("SQL commit")?;
-            if summary.relational_mutation_outcomes.len() > 1 {
-                return Err(HawDBError::StorageIntegrity(
-                    "one SQL statement produced multiple relational mutation outcomes".to_string(),
-                ));
-            }
-            let mutation = summary
-                .relational_mutation_outcomes
-                .first()
-                .map(|outcome| {
-                    super::project_relational_mutation_outcome(
-                        outcome,
-                        compiled.returning.as_ref(),
-                        self.runtime.get()?.store.relational_state(),
-                        self.config.mutation_limits,
-                        false,
-                    )
+                self.complete_required_relational_row_checkpoint("SQL commit")?;
+                if summary.relational_mutation_outcomes.len() > 1 {
+                    return Err(HawDBError::StorageIntegrity(
+                        "one SQL statement produced multiple relational mutation outcomes"
+                            .to_string(),
+                    ));
+                }
+                let mutation = summary
+                    .relational_mutation_outcomes
+                    .first()
+                    .map(|outcome| {
+                        super::project_relational_mutation_outcome(
+                            outcome,
+                            compiled.returning.as_ref(),
+                            self.runtime.get()?.store.relational_state(),
+                            self.config.mutation_limits,
+                            false,
+                        )
+                    })
+                    .transpose()?;
+                let mut rows: executor::QueryRows = summary.rows.into();
+                if rows.is_empty()
+                    && let Some(mutation) = &mutation
+                {
+                    // `executor::QueryRows::clone` only bumps the `Arc` over its
+                    // immutable storage: this shares the RETURNING rows, no copy.
+                    rows = mutation.rows.clone();
+                }
+                Ok(super::SqlStatementResult {
+                    output: QueryOutput { rows },
+                    mutation,
                 })
-                .transpose()?;
-            let mut rows: executor::QueryRows = summary.rows.into();
-            if rows.is_empty()
-                && let Some(mutation) = mutation
-            {
-                rows = mutation.rows;
-            }
-            Ok(QueryOutput { rows })
-        })();
+            })()
+        });
         self.record_statement_execution(
             "sql",
             sql_text,
             statement_kind,
             started,
-            query_result.as_ref(),
+            query_result.as_ref().map(|result| &result.output),
             StatementExecutionContext::default(),
         );
         query_result

@@ -19,7 +19,7 @@ use crate::{CompressedVectorSearchMode, SearchMode, VECTOR_RECALL_VALIDATION_PRO
 #[test]
 fn request_builders_and_advisor_preserve_compression_admission() {
     for mask in 0_u32..32 {
-        let advisor = NowledgeMemRetrievalProjectionAdvisor {
+        let advisor = RetrievalProjectionAdvisor {
             recall_evidence_protocol: (mask & 1 != 0)
                 .then(|| VECTOR_RECALL_VALIDATION_PROTOCOL.to_string()),
             recall_sample_count: usize::from(mask & 2 != 0),
@@ -34,9 +34,9 @@ fn request_builders_and_advisor_preserve_compression_admission() {
             CompressedVectorSearchMode::Required,
         ] {
             for request in [
-                NowledgeMemSearchCandidateRequest::text("query", 4),
-                NowledgeMemSearchCandidateRequest::vector(vec![1.0, 0.0], 4),
-                NowledgeMemSearchCandidateRequest::hybrid("query", vec![1.0, 0.0], 4),
+                SearchCandidateRequest::text("query", 4),
+                SearchCandidateRequest::vector(vec![1.0, 0.0], 4),
+                SearchCandidateRequest::hybrid("query", vec![1.0, 0.0], 4),
             ] {
                 assert_eq!(request.limit, 4);
                 assert_eq!(request.offset, 0);
@@ -77,6 +77,76 @@ fn request_builders_and_advisor_preserve_compression_admission() {
 }
 
 #[test]
+fn exact_vector_search_request_admission_refuses_compression() {
+    for request in [
+        SearchCandidateRequest::text("query", 4),
+        SearchCandidateRequest::vector(vec![1.0, 0.0], 4),
+        SearchCandidateRequest::hybrid("query", vec![1.0, 0.0], 4),
+    ] {
+        assert!(!request.exact_vector_search);
+        let base = crate::VectorSearchExecutionOptions::default();
+        assert_eq!(
+            format!("{:?}", request.vector_execution_options(base).unwrap()),
+            format!("{base:?}")
+        );
+        let exact = request.clone().with_exact_vector_search();
+        assert!(exact.exact_vector_search);
+        assert_eq!(
+            format!("{:?}", exact.vector_execution_options(base).unwrap()),
+            format!("{:?}", base.with_exact_search())
+        );
+        let ready = RetrievalProjectionAdvisor {
+            recall_evidence_ready: true,
+            recall_evidence_protocol: Some(VECTOR_RECALL_VALIDATION_PROTOCOL.to_string()),
+            recall_sample_count: 1,
+            recall_at_k_per_million: Some(1_000_000),
+            parity_evidence_ready: true,
+            cold_or_constrained_local_segment: true,
+        };
+        for mode in [
+            CompressedVectorSearchMode::Preferred,
+            CompressedVectorSearchMode::Required,
+        ] {
+            let compressed = exact
+                .clone()
+                .with_compressed_vector_search_mode(mode)
+                .with_retrieval_projection_advisor(ready.clone());
+            let error = compressed.vector_execution_options(base).unwrap_err();
+            assert!(
+                error.to_string().contains("exact vector search cannot use"),
+                "{error}"
+            );
+            // An advisor that downgrades compression leaves exact admissible.
+            let downgraded = exact.clone().with_compressed_vector_search_mode(mode);
+            assert!(downgraded.vector_execution_options(base).is_ok());
+        }
+    }
+}
+
+#[test]
+fn requested_exact_vector_search_refuses_approximate_vector_leg() {
+    let mut report = ready_report();
+    report.ensure_requested_exact_vector_search().unwrap();
+    report.exact_vector_search_requested = true;
+    report
+        .retriever_available
+        .insert("vector".to_string(), false);
+    report.ensure_requested_exact_vector_search().unwrap();
+    report
+        .retriever_available
+        .insert("vector".to_string(), true);
+    report
+        .retriever_candidate_score_sources
+        .insert("vector".to_string(), "ann_approximate".to_string());
+    let error = report.ensure_requested_exact_vector_search().unwrap_err();
+    assert!(error.to_string().contains("ann_approximate"), "{error}");
+    report.exact_vector_search = true;
+    report.ensure_requested_exact_vector_search().unwrap();
+    assert_eq!(report.json()["exact_vector_search"], true);
+    assert_eq!(report.json()["exact_vector_search_requested"], true);
+}
+
+#[test]
 fn report_json_preserves_complete_field_set_and_provenance() {
     let report = ready_report();
     let json = report.json();
@@ -90,6 +160,8 @@ fn report_json_preserves_complete_field_set_and_provenance() {
         "protocol",
         "compressed_vector_search_mode",
         "requested_compressed_vector_search_mode",
+        "exact_vector_search_requested",
+        "exact_vector_search",
         "retrieval_projection_advisor",
         "retrieval_projection_advisor_blocker_codes",
         "mode",
@@ -152,6 +224,51 @@ fn report_json_preserves_complete_field_set_and_provenance() {
         7
     );
     assert_eq!(json["candidate_set"]["policy_epoch"], 2);
+    let pushdown = &json["candidate_set"]["metadata_predicate_pushdown"];
+    let mut pushdown_keys = pushdown
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let mut expected_pushdown_keys = vec![
+        "input_predicate_count",
+        "pushed_predicate_count",
+        "residual_predicate_count",
+        "unsatisfiable",
+        "parse_error",
+        "segment_count",
+        "pruned_segment_count",
+        "scanned_segment_count",
+        "segment_pruning_candidate_document_count",
+        "segment_pruned_document_count",
+        "segment_scanned_document_count",
+        "persisted_segment_descriptor_used",
+        "physical_range_read_count",
+        "physical_bytes_read",
+        "postings_segment_count",
+        "postings_predicate_count",
+        "postings_residual_predicate_count",
+        "postings_prefiltered_segment_count",
+        "field_summaries",
+    ];
+    pushdown_keys.sort_unstable();
+    expected_pushdown_keys.sort_unstable();
+    assert_eq!(pushdown_keys, expected_pushdown_keys);
+    assert_eq!(pushdown["postings_segment_count"], 2);
+    assert_eq!(pushdown["postings_predicate_count"], 1);
+    assert_eq!(pushdown["postings_residual_predicate_count"], 0);
+    assert_eq!(pushdown["postings_prefiltered_segment_count"], 0);
+
+    let readiness = SearchCandidateReadinessReport::from_candidate_report(
+        report,
+        &SearchCandidateReadinessOptions::default(),
+    )
+    .json();
+    assert_eq!(
+        readiness["candidate_report"]["candidate_set"]["metadata_predicate_pushdown"],
+        *pushdown
+    );
     assert_eq!(json["projection_embedding_model"], "model");
     assert_eq!(json["retriever_available"]["text"], true);
     assert_eq!(json["retrieval_projection_advisor"]["ready"], false);
@@ -159,7 +276,7 @@ fn report_json_preserves_complete_field_set_and_provenance() {
 
 #[test]
 fn accumulator_saturates_counts_and_retains_invalid_match_blocker() {
-    let mut accumulator = NowledgeMemSearchCandidateShadowAccumulator::new();
+    let mut accumulator = SearchCandidateShadowAccumulator::new();
     accumulator.record_compare(u64::MAX, u64::MAX, u64::MAX);
     accumulator.record_compare(1, 0, 2);
     accumulator.record_retriever_leg("text", true, u64::MAX);
@@ -179,7 +296,7 @@ fn accumulator_saturates_counts_and_retains_invalid_match_blocker() {
 
 #[test]
 fn identity_is_order_insensitive_within_requests_but_keeps_request_boundaries() {
-    let mut single = NowledgeMemSearchCandidateShadowAccumulator::new();
+    let mut single = SearchCandidateShadowAccumulator::new();
     single.record_compare_candidate_ids(&["b", "a", "a"], &["a", "b"]);
     let single = single.evidence();
     assert_eq!(single.primary_candidate_count, 2);
@@ -191,7 +308,7 @@ fn identity_is_order_insensitive_within_requests_but_keeps_request_boundaries() 
         single.matched_candidate_identity_checksum,
         single.shadow_candidate_identity_checksum
     );
-    let mut split = NowledgeMemSearchCandidateShadowAccumulator::new();
+    let mut split = SearchCandidateShadowAccumulator::new();
     split.record_compare_candidate_ids(&["a"], &["a"]);
     split.record_compare_candidate_ids(&["b"], &["b"]);
     assert_ne!(
@@ -202,7 +319,7 @@ fn identity_is_order_insensitive_within_requests_but_keeps_request_boundaries() 
 
 #[test]
 fn field_summary_merge_preserves_max_capabilities_and_scan_absence() {
-    let summary = |source: &str, count, used| NowledgeMemSearchCandidateFieldSummary {
+    let summary = |source: &str, count, used| SearchCandidateFieldSummary {
         field: "lifecycle_state".to_string(),
         source: source.to_string(),
         segment_count: count,
@@ -213,7 +330,7 @@ fn field_summary_merge_preserves_max_capabilities_and_scan_absence() {
         timestamp_range_summary_used: false,
         timestamp_range_segment_count: 0,
     };
-    let mut accumulator = NowledgeMemSearchCandidateShadowAccumulator::new();
+    let mut accumulator = SearchCandidateShadowAccumulator::new();
     accumulator.record_filter_pushdown_summaries(1, false, vec![summary("first", 2, true)]);
     accumulator.record_filter_pushdown_summaries(2, true, vec![summary("second", 3, false)]);
     let evidence = accumulator.evidence();

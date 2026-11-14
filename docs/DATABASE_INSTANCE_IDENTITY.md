@@ -5,8 +5,8 @@ Host composition: https://github.com/nowledge-co/mem/issues/6054.
 
 `DatabaseInstanceIdentity` is an equality-only process-local marker for one
 selected native database runtime. Hosts obtain it from `Database::instance_identity`,
-`NowledgeMemEmbeddedStoreHandle::database_instance_identity`, or the exact
-`NowledgeMemReadSnapshot::database_instance_identity` supplying their read.
+`EmbeddedStoreHandle::database_instance_identity`, or the exact
+`EmbeddedReadSnapshot::database_instance_identity` supplying their read.
 It cannot be constructed by callers or serialized as a durable receipt.
 
 Moves, handle clones, commits and checkpoints retain identity. Creating or

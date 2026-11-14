@@ -1,0 +1,455 @@
+{
+  "artifacts": {
+    "parent": {
+      "path": "/private/tmp/hawdb-peg-rank-lowering-main-benchmark",
+      "sha256": "17e72dd167a3ae2ed286f843fe0aea13d22771ba24d548828b905545c725d255"
+    },
+    "candidate": {
+      "path": "/private/tmp/hawdb-peg-compact-tokens-parser-timing-candidate",
+      "sha256": "f817f8f22c60e0edd5f1569a6f293872057ca69a6b97fd01459ad515ee44e481"
+    }
+  },
+  "runs": [
+    {
+      "variant": "parent",
+      "cpu_seconds": 3.458475,
+      "wall_seconds": 3.5266061669999997,
+      "maximum_resident_bytes": 3047424,
+      "cases": [
+        {
+          "bytes_per_second": 26262626,
+          "category": "short_read",
+          "input_bytes": 65,
+          "iterations": 20000,
+          "median_ns_per_query": 2475,
+          "name": "exact_lookup"
+        },
+        {
+          "bytes_per_second": 47250193,
+          "category": "graph_read",
+          "input_bytes": 183,
+          "iterations": 20000,
+          "median_ns_per_query": 3873,
+          "name": "bounded_expand"
+        },
+        {
+          "bytes_per_second": 43170731,
+          "category": "aggregate_read",
+          "input_bytes": 177,
+          "iterations": 20000,
+          "median_ns_per_query": 4100,
+          "name": "aggregate_page"
+        },
+        {
+          "bytes_per_second": 76923076,
+          "category": "mutation",
+          "input_bytes": 108,
+          "iterations": 20000,
+          "median_ns_per_query": 1404,
+          "name": "parameterized_create"
+        },
+        {
+          "bytes_per_second": 30700603,
+          "category": "hinted_read",
+          "input_bytes": 117,
+          "iterations": 20000,
+          "median_ns_per_query": 3811,
+          "name": "optimizer_hint"
+        }
+      ]
+    },
+    {
+      "variant": "candidate",
+      "cpu_seconds": 2.805643,
+      "wall_seconds": 3.165604125,
+      "maximum_resident_bytes": 3620864,
+      "cases": [
+        {
+          "bytes_per_second": 37142857,
+          "category": "short_read",
+          "input_bytes": 65,
+          "iterations": 20000,
+          "median_ns_per_query": 1750,
+          "name": "exact_lookup"
+        },
+        {
+          "bytes_per_second": 53555750,
+          "category": "graph_read",
+          "input_bytes": 183,
+          "iterations": 20000,
+          "median_ns_per_query": 3417,
+          "name": "bounded_expand"
+        },
+        {
+          "bytes_per_second": 45902489,
+          "category": "aggregate_read",
+          "input_bytes": 177,
+          "iterations": 20000,
+          "median_ns_per_query": 3856,
+          "name": "aggregate_page"
+        },
+        {
+          "bytes_per_second": 108761329,
+          "category": "mutation",
+          "input_bytes": 108,
+          "iterations": 20000,
+          "median_ns_per_query": 993,
+          "name": "parameterized_create"
+        },
+        {
+          "bytes_per_second": 47619047,
+          "category": "hinted_read",
+          "input_bytes": 117,
+          "iterations": 20000,
+          "median_ns_per_query": 2457,
+          "name": "optimizer_hint"
+        }
+      ]
+    },
+    {
+      "variant": "candidate",
+      "cpu_seconds": 2.714717999999999,
+      "wall_seconds": 2.716964667,
+      "maximum_resident_bytes": 3588096,
+      "cases": [
+        {
+          "bytes_per_second": 37703016,
+          "category": "short_read",
+          "input_bytes": 65,
+          "iterations": 20000,
+          "median_ns_per_query": 1724,
+          "name": "exact_lookup"
+        },
+        {
+          "bytes_per_second": 54093999,
+          "category": "graph_read",
+          "input_bytes": 183,
+          "iterations": 20000,
+          "median_ns_per_query": 3383,
+          "name": "bounded_expand"
+        },
+        {
+          "bytes_per_second": 46359350,
+          "category": "aggregate_read",
+          "input_bytes": 177,
+          "iterations": 20000,
+          "median_ns_per_query": 3818,
+          "name": "aggregate_page"
+        },
+        {
+          "bytes_per_second": 109311740,
+          "category": "mutation",
+          "input_bytes": 108,
+          "iterations": 20000,
+          "median_ns_per_query": 988,
+          "name": "parameterized_create"
+        },
+        {
+          "bytes_per_second": 49242424,
+          "category": "hinted_read",
+          "input_bytes": 117,
+          "iterations": 20000,
+          "median_ns_per_query": 2376,
+          "name": "optimizer_hint"
+        }
+      ]
+    },
+    {
+      "variant": "parent",
+      "cpu_seconds": 3.4656029999999993,
+      "wall_seconds": 3.4680679160000007,
+      "maximum_resident_bytes": 3112960,
+      "cases": [
+        {
+          "bytes_per_second": 26031237,
+          "category": "short_read",
+          "input_bytes": 65,
+          "iterations": 20000,
+          "median_ns_per_query": 2497,
+          "name": "exact_lookup"
+        },
+        {
+          "bytes_per_second": 47177107,
+          "category": "graph_read",
+          "input_bytes": 183,
+          "iterations": 20000,
+          "median_ns_per_query": 3879,
+          "name": "bounded_expand"
+        },
+        {
+          "bytes_per_second": 43065693,
+          "category": "aggregate_read",
+          "input_bytes": 177,
+          "iterations": 20000,
+          "median_ns_per_query": 4110,
+          "name": "aggregate_page"
+        },
+        {
+          "bytes_per_second": 76868327,
+          "category": "mutation",
+          "input_bytes": 108,
+          "iterations": 20000,
+          "median_ns_per_query": 1405,
+          "name": "parameterized_create"
+        },
+        {
+          "bytes_per_second": 30484627,
+          "category": "hinted_read",
+          "input_bytes": 117,
+          "iterations": 20000,
+          "median_ns_per_query": 3838,
+          "name": "optimizer_hint"
+        }
+      ]
+    },
+    {
+      "variant": "candidate",
+      "cpu_seconds": 2.7344990000000005,
+      "wall_seconds": 2.736992208,
+      "maximum_resident_bytes": 3506176,
+      "cases": [
+        {
+          "bytes_per_second": 37377803,
+          "category": "short_read",
+          "input_bytes": 65,
+          "iterations": 20000,
+          "median_ns_per_query": 1739,
+          "name": "exact_lookup"
+        },
+        {
+          "bytes_per_second": 53807703,
+          "category": "graph_read",
+          "input_bytes": 183,
+          "iterations": 20000,
+          "median_ns_per_query": 3401,
+          "name": "bounded_expand"
+        },
+        {
+          "bytes_per_second": 46226168,
+          "category": "aggregate_read",
+          "input_bytes": 177,
+          "iterations": 20000,
+          "median_ns_per_query": 3829,
+          "name": "aggregate_page"
+        },
+        {
+          "bytes_per_second": 108216432,
+          "category": "mutation",
+          "input_bytes": 108,
+          "iterations": 20000,
+          "median_ns_per_query": 998,
+          "name": "parameterized_create"
+        },
+        {
+          "bytes_per_second": 48467274,
+          "category": "hinted_read",
+          "input_bytes": 117,
+          "iterations": 20000,
+          "median_ns_per_query": 2414,
+          "name": "optimizer_hint"
+        }
+      ]
+    },
+    {
+      "variant": "parent",
+      "cpu_seconds": 3.4635119999999997,
+      "wall_seconds": 3.4658539169999987,
+      "maximum_resident_bytes": 3129344,
+      "cases": [
+        {
+          "bytes_per_second": 26220250,
+          "category": "short_read",
+          "input_bytes": 65,
+          "iterations": 20000,
+          "median_ns_per_query": 2479,
+          "name": "exact_lookup"
+        },
+        {
+          "bytes_per_second": 47286821,
+          "category": "graph_read",
+          "input_bytes": 183,
+          "iterations": 20000,
+          "median_ns_per_query": 3870,
+          "name": "bounded_expand"
+        },
+        {
+          "bytes_per_second": 43013365,
+          "category": "aggregate_read",
+          "input_bytes": 177,
+          "iterations": 20000,
+          "median_ns_per_query": 4115,
+          "name": "aggregate_page"
+        },
+        {
+          "bytes_per_second": 76813655,
+          "category": "mutation",
+          "input_bytes": 108,
+          "iterations": 20000,
+          "median_ns_per_query": 1406,
+          "name": "parameterized_create"
+        },
+        {
+          "bytes_per_second": 30508474,
+          "category": "hinted_read",
+          "input_bytes": 117,
+          "iterations": 20000,
+          "median_ns_per_query": 3835,
+          "name": "optimizer_hint"
+        }
+      ]
+    },
+    {
+      "variant": "parent",
+      "cpu_seconds": 3.4567559999999986,
+      "wall_seconds": 3.4589737089999986,
+      "maximum_resident_bytes": 3112960,
+      "cases": [
+        {
+          "bytes_per_second": 26199113,
+          "category": "short_read",
+          "input_bytes": 65,
+          "iterations": 20000,
+          "median_ns_per_query": 2481,
+          "name": "exact_lookup"
+        },
+        {
+          "bytes_per_second": 47495458,
+          "category": "graph_read",
+          "input_bytes": 183,
+          "iterations": 20000,
+          "median_ns_per_query": 3853,
+          "name": "bounded_expand"
+        },
+        {
+          "bytes_per_second": 43212890,
+          "category": "aggregate_read",
+          "input_bytes": 177,
+          "iterations": 20000,
+          "median_ns_per_query": 4096,
+          "name": "aggregate_page"
+        },
+        {
+          "bytes_per_second": 76923076,
+          "category": "mutation",
+          "input_bytes": 108,
+          "iterations": 20000,
+          "median_ns_per_query": 1404,
+          "name": "parameterized_create"
+        },
+        {
+          "bytes_per_second": 30556281,
+          "category": "hinted_read",
+          "input_bytes": 117,
+          "iterations": 20000,
+          "median_ns_per_query": 3829,
+          "name": "optimizer_hint"
+        }
+      ]
+    },
+    {
+      "variant": "candidate",
+      "cpu_seconds": 2.808904000000002,
+      "wall_seconds": 2.811189917,
+      "maximum_resident_bytes": 3620864,
+      "cases": [
+        {
+          "bytes_per_second": 37572254,
+          "category": "short_read",
+          "input_bytes": 65,
+          "iterations": 20000,
+          "median_ns_per_query": 1730,
+          "name": "exact_lookup"
+        },
+        {
+          "bytes_per_second": 50960735,
+          "category": "graph_read",
+          "input_bytes": 183,
+          "iterations": 20000,
+          "median_ns_per_query": 3591,
+          "name": "bounded_expand"
+        },
+        {
+          "bytes_per_second": 43942403,
+          "category": "aggregate_read",
+          "input_bytes": 177,
+          "iterations": 20000,
+          "median_ns_per_query": 4028,
+          "name": "aggregate_page"
+        },
+        {
+          "bytes_per_second": 108542713,
+          "category": "mutation",
+          "input_bytes": 108,
+          "iterations": 20000,
+          "median_ns_per_query": 995,
+          "name": "parameterized_create"
+        },
+        {
+          "bytes_per_second": 48447204,
+          "category": "hinted_read",
+          "input_bytes": 117,
+          "iterations": 20000,
+          "median_ns_per_query": 2415,
+          "name": "optimizer_hint"
+        }
+      ]
+    }
+  ],
+  "source_context": {
+    "prototype": true,
+    "base_head": "520d3e968e96025a0435db49e0903a7559d699f6",
+    "tree": "b1441e2e7e3800e5b0e016e36a465d859562d76e",
+    "source_sha256": {
+      "crates/cypher/src/parser/frontend.rs": "5bdbc0aaef8a28f77c802fa1f456ae7afd5fdd643862550e1664e3d1be5fa49d",
+      "crates/cypher/src/parser/frontend/data.rs": "7bbc57e4dc8e39bd56944e8919332190957c0b77b78df7712c716a4c32259346",
+      "crates/cypher/src/parser/frontend/expressions.rs": "173efaea519755cc097d2f9d9fc050f6c420008f95c1a113840dba3836573144",
+      "crates/cypher/src/parser/frontend/lexer.rs": "35b536318d5db483288dc5dfde4c29c70215c577a0a0189098242dc7761357fe",
+      "crates/cypher/src/parser/frontend/patterns.rs": "0d3c0f5ffa5241c2bd92c817cfd4ab89fa559acfe4cc2dffaa4148c67cf5dbf8",
+      "crates/cypher/src/parser/frontend/predicates.rs": "44288801c661471555b099a8d2c8fa567c4ce2c76ed36ed104e498530895db9a",
+      "crates/cypher/src/parser/frontend/procedures.rs": "ca599c081ba100fe176f86b27550397ebfadcc5f498f2e0733e9fd0d4f6ead8e",
+      "crates/cypher/src/parser/frontend/projection.rs": "34ea4638dae1148a6ed7bc56c31acca7701e3df82fbdfbfda5a47f55e17ecf38",
+      "crates/cypher/src/parser/frontend/rust_peg.rs": "747e7b93ec4c688237e2bbc95a6c6d7167ddd792f83047063c1bf86a45151089",
+      "crates/cypher/src/parser/frontend/schema.rs": "3ae4b9986be7482f16e090ee0d6b5476683275196cfd4795881b1df523ced1f2",
+      "crates/cypher/src/parser/frontend/temporal.rs": "c6494ac61da23ed04f0e9fe242a118271c0dd3d595fde0b5432549d1e25755fe",
+      "crates/cypher/src/parser/frontend/tests.rs": "a9f2fe861dd9383a5c2103c137d64d7d6b0f19afd4a9b4275e85f1ff829f820b",
+      "crates/cypher/src/parser/frontend/transform.rs": "b0369028c3771747d461f7bc812219bb54b195a99a29f10c3f8238f2db9a0b75",
+      "crates/cypher/src/parser/frontend/tree.rs": "7eba632bf44b7f10e4bf7576ec0ce452ca748b953d3caf9ab95afcc3fe31dae9",
+      "crates/cypher/src/parser/frontend/values.rs": "2ae33a0634786f3b5bce483b15fbfd9468d2532968680605f99c4b928c3d6fdb"
+    },
+    "benchmark_source_sha256": "157a2939f9271b5332a0856b41057b33c85f65b0f50dd75995856d17f1cbd1df",
+    "reference_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e",
+    "artifacts": {
+      "parent": {
+        "path": "/private/tmp/hawdb-peg-rank-lowering-main-benchmark",
+        "sha256": "17e72dd167a3ae2ed286f843fe0aea13d22771ba24d548828b905545c725d255"
+      },
+      "candidate": {
+        "path": "/private/tmp/hawdb-peg-compact-tokens-parser-timing-candidate",
+        "sha256": "f817f8f22c60e0edd5f1569a6f293872057ca69a6b97fd01459ad515ee44e481"
+      }
+    },
+    "profile": "pinned default Cargo release; unchanged five queries,11 samples,20000 iterations,8 counterbalanced processes"
+  },
+  "interference_monitor": "v4; no observed compiler/test/benchmark workload; other host activity uncontrolled",
+  "mean_cpu_seconds": {
+    "parent": 3.4610864999999995,
+    "candidate": 2.765941
+  },
+  "case_mean_median_ns": {
+    "parent": [
+      2483,
+      3868.75,
+      4105.25,
+      1404.75,
+      3828.25
+    ],
+    "candidate": [
+      1735.75,
+      3448,
+      3882.75,
+      993.5,
+      2415.5
+    ]
+  },
+  "equal_weighted_throughput_improvement_percent": 25.76650234459541
+}

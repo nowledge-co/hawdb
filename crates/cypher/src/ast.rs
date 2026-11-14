@@ -99,6 +99,8 @@ pub struct CreateProperty {
     pub property: String,
     pub value_type: SchemaPropertyType,
     pub nullable: bool,
+    /// `DEFAULT <literal>` or `DEFAULT current_timestamp()`.
+    pub default: Option<hawdb_core::PropertyDefault>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -225,6 +227,23 @@ pub enum ShortestPathReturnExpression {
     Length {
         path_variable: String,
     },
+    Nodes {
+        path_variable: String,
+    },
+    Relationships {
+        path_variable: String,
+    },
+}
+
+impl ShortestPathReturnExpression {
+    pub fn path_variable(&self) -> &str {
+        match self {
+            Self::NodePropertyList { path_variable, .. }
+            | Self::Length { path_variable }
+            | Self::Nodes { path_variable }
+            | Self::Relationships { path_variable } => path_variable,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -256,6 +275,12 @@ pub enum SetValueExpression {
         property: String,
     },
     PreserveNewerExisting {
+        variable: String,
+        property: String,
+        incoming: ValueExpression,
+        preserve: ValueExpression,
+    },
+    PreserveOlderExisting {
         variable: String,
         property: String,
         incoming: ValueExpression,
@@ -336,6 +361,10 @@ pub enum PropertyPredicate {
         expression: ScalarExpression,
         value: ScalarExpression,
     },
+    ExpressionRegexMatch {
+        expression: ScalarExpression,
+        pattern: ValueExpression,
+    },
     ExpressionIn {
         expression: ScalarExpression,
         values: ValueExpression,
@@ -412,9 +441,57 @@ pub enum ValueExpressionKind {
     Literal(Value),
     Parameter(String),
     List(Vec<ValueExpression>),
-    BindingProperty { variable: String, property: String },
+    Binding(String),
+    BindingProperty {
+        variable: String,
+        property: String,
+    },
+    /// `variable[index]` over a list-valued row binding such as a
+    /// `LOAD CSV` record without headers.
+    BindingIndex {
+        variable: String,
+        index: i64,
+    },
     CurrentTimestamp,
     Timestamp(Box<ValueExpression>),
+    /// `toInteger`, `toFloat`, `toBoolean`, `toString` or Kùzu `string`
+    /// (`to_string`) of a value.
+    Conversion {
+        function: hawdb_core::ConversionFunction,
+        argument: Box<ValueExpression>,
+    },
+    /// A temporal function over statically bound arguments, such as
+    /// `date('2026-10-30')` in a CREATE property map. Evaluated when the
+    /// statement is planned; zero-argument constructors read the statement
+    /// clock.
+    Temporal {
+        function: hawdb_core::TemporalFunction,
+        arguments: Vec<ValueExpression>,
+    },
+    /// `{key: value, ...}`, accepted as a temporal function argument.
+    Map(BTreeMap<String, ValueExpression>),
+}
+
+impl ValueExpressionKind {
+    /// True when the value reads a row binding (`variable`,
+    /// `variable.property` or `variable[index]`, also inside a conversion).
+    /// Scalar contexts parse such lists as [`ScalarExpressionKind::List`]
+    /// instead.
+    pub fn reads_row_binding(&self) -> bool {
+        match self {
+            Self::Binding(_) | Self::BindingProperty { .. } | Self::BindingIndex { .. } => true,
+            Self::List(values) => values.iter().any(|value| value.kind.reads_row_binding()),
+            Self::Timestamp(value)
+            | Self::Conversion {
+                argument: value, ..
+            } => value.kind.reads_row_binding(),
+            Self::Temporal { arguments, .. } => arguments
+                .iter()
+                .any(|argument| argument.kind.reads_row_binding()),
+            Self::Map(entries) => entries.values().any(|value| value.kind.reads_row_binding()),
+            Self::Literal(_) | Self::Parameter(_) | Self::CurrentTimestamp => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -440,7 +517,14 @@ pub enum ScalarExpressionKind {
         property: String,
     },
     Id(String),
+    /// `type(r)` of a relationship variable.
     RelationshipType(String),
+    /// Kùzu `label(x)` of a node or relationship variable, or openCypher
+    /// `labels(n)` of a node variable; see [`hawdb_core::LabelFunction`].
+    Label {
+        function: hawdb_core::LabelFunction,
+        variable: String,
+    },
     Value(ValueExpression),
     Coalesce(Vec<ScalarExpression>),
     VectorDistance {
@@ -451,6 +535,7 @@ pub enum ScalarExpressionKind {
     JsonValue {
         expression: Box<ScalarExpression>,
         path: ValueExpression,
+        null_on_non_scalar: bool,
     },
     Left {
         expression: Box<ScalarExpression>,
@@ -510,6 +595,102 @@ pub enum ScalarExpressionKind {
         expression: Box<ScalarExpression>,
         negated: bool,
     },
+    /// A list literal with at least one row-bound element, such as
+    /// `[n, m.name, $p]`. Lists of constants and parameters stay
+    /// [`ScalarExpressionKind::Value`] so they keep value-list fast paths.
+    List(Vec<ScalarExpression>),
+    /// `size`, `head`, `last`, `tail`, `reverse` or `range`.
+    ListFunction {
+        function: hawdb_core::ListFunction,
+        arguments: Vec<ScalarExpression>,
+    },
+
+    StringFunction {
+        function: hawdb_core::StringFunction,
+        arguments: Vec<ScalarExpression>,
+    },
+    /// `[variable IN list WHERE predicate | projection]`.
+    ///
+    /// `variable` is scoped to `predicate` and `projection`; it must not
+    /// shadow a variable or column already visible to the comprehension.
+    ListComprehension {
+        variable: String,
+        list: Box<ScalarExpression>,
+        predicate: Option<Box<ScalarExpression>>,
+        projection: Option<Box<ScalarExpression>>,
+    },
+    /// `list[index]`; negative indexes count from the end.
+    ListIndex {
+        list: Box<ScalarExpression>,
+        index: Box<ScalarExpression>,
+    },
+    /// `list[start..end]`; either bound may be omitted.
+    ListSlice {
+        list: Box<ScalarExpression>,
+        start: Option<Box<ScalarExpression>>,
+        end: Option<Box<ScalarExpression>>,
+    },
+    /// `length(p)`, `nodes(p)`, `relationships(p)` or
+    /// `properties(nodes(p), 'key')` over a bound path variable.
+    Path(ShortestPathReturnExpression),
+    /// An openCypher temporal function: `date(...)`, `datetime(...)`,
+    /// `duration.between(a, b)`, `date.truncate(unit, value)`, ...
+    TemporalFunction {
+        function: hawdb_core::TemporalFunction,
+        arguments: Vec<ScalarExpression>,
+    },
+    /// Postfix `expression.key` over a general expression: a temporal
+    /// component (`p.birthday.month`) or a map key.
+    PropertyAccess {
+        expression: Box<ScalarExpression>,
+        key: String,
+    },
+    /// `{key: expression, ...}` in source order (keys are unique).
+    MapLiteral(Vec<(String, ScalarExpression)>),
+    /// `toInteger`, `toFloat`, `toBoolean`, `toString` or Kùzu `string`
+    /// (`to_string`).
+    Conversion {
+        function: hawdb_core::ConversionFunction,
+        argument: Box<ScalarExpression>,
+    },
+    /// `abs`, `ceil`, `floor`, `round`, `sign` or `sqrt`.
+    NumericFunction {
+        function: hawdb_core::NumericFunction,
+        argument: Box<ScalarExpression>,
+    },
+    /// `reduce(accumulator = initial, variable IN list | expression)`.
+    ///
+    /// `initial` and `list` are evaluated in the enclosing scope;
+    /// `accumulator` and `variable` are scoped to `expression` and must not
+    /// shadow a variable or column already visible to the call.
+    Reduce {
+        accumulator: String,
+        initial: Box<ScalarExpression>,
+        variable: String,
+        list: Box<ScalarExpression>,
+        expression: Box<ScalarExpression>,
+    },
+    /// `startNode(r)` or `endNode(r)` of a relationship variable.
+    RelationshipEndpoint {
+        endpoint: hawdb_core::RelationshipEndpoint,
+        variable: String,
+    },
+    /// A pattern used as a boolean expression, such as
+    /// `NOT (a)-[:KNOWS]-(b)`: true when the pattern has at least one match.
+    ///
+    /// Bound variables correlate with the enclosing scope; anonymous and
+    /// unbound pattern variables are scoped to the pattern.
+    PatternPredicate(Box<MatchPattern>),
+    /// `[pattern WHERE predicate | projection]`: the list of `projection`
+    /// over every match of `pattern` that satisfies `predicate`.
+    ///
+    /// Variables the pattern introduces are visible only to `predicate` and
+    /// `projection`; bound variables correlate with the enclosing scope.
+    PatternComprehension {
+        pattern: Box<MatchPattern>,
+        predicate: Option<Box<ScalarExpression>>,
+        projection: Box<ScalarExpression>,
+    },
 }
 
 /// A projection or grouping expression, with aggregation explicit in its type.
@@ -522,6 +703,13 @@ pub enum ReturnExpressionKind {
         rest: Vec<(ArithmeticOp, ReturnExpression)>,
     },
     Path(ShortestPathReturnExpression),
+    /// A list function applied to an expression containing an aggregate,
+    /// such as `size(collect(x))`. Scalar-only calls use
+    /// [`ScalarExpressionKind::ListFunction`].
+    ListFunction {
+        function: hawdb_core::ListFunction,
+        arguments: Vec<ReturnExpression>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -619,8 +807,20 @@ pub enum ScalarBinaryOp {
     Gte,
     Contains,
     ListContains,
+    /// `element IN list` with openCypher three-valued semantics.
+    In,
     And,
     Or,
+    /// Scalar `+` (numbers, temporal instants and durations).
+    Add,
+    /// Scalar `-`.
+    Subtract,
+    /// Scalar `*`.
+    Multiply,
+    /// Scalar `/`.
+    Divide,
+    /// Scalar `%`.
+    Remainder,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -635,12 +835,17 @@ pub struct OrderItemKind {
     pub direction: OrderDirection,
 }
 
+/// An `ORDER BY` key. `Projection` carries keys outside the scalar grammar,
+/// such as arithmetic or aggregates, planned like an unaliased projection
+/// item; an aggregate key must match an aggregate projected by the same
+/// `RETURN` or `WITH`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OrderExpression {
     Property { variable: String, property: String },
     Id { variable: String },
     Value(ScalarExpression),
     Column(String),
+    Projection(ReturnExpression),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -684,8 +889,58 @@ impl ScalarExpressionKind {
             | Self::IsNull { expression, .. }
             | Self::Lower(expression)
             | Self::Left { expression, .. }
-            | Self::JsonValue { expression, .. } => visit(expression),
-            Self::Coalesce(expressions) => expressions.iter().all(visit),
+            | Self::JsonValue { expression, .. }
+            | Self::PropertyAccess { expression, .. }
+            | Self::Conversion {
+                argument: expression,
+                ..
+            }
+            | Self::NumericFunction {
+                argument: expression,
+                ..
+            } => visit(expression),
+            Self::Reduce {
+                initial,
+                list,
+                expression,
+                ..
+            } => visit(initial) && visit(list) && visit(expression),
+            Self::Coalesce(expressions)
+            | Self::List(expressions)
+            | Self::ListFunction {
+                arguments: expressions,
+                ..
+            }
+            | Self::StringFunction {
+                arguments: expressions,
+                ..
+            }
+            | Self::TemporalFunction {
+                arguments: expressions,
+                ..
+            } => expressions.iter().all(visit),
+            Self::MapLiteral(entries) => entries.iter().all(|(_, value)| visit(value)),
+            Self::ListComprehension {
+                list,
+                predicate,
+                projection,
+                ..
+            } => [Some(list), predicate.as_ref(), projection.as_ref()]
+                .into_iter()
+                .flatten()
+                .map(Box::as_ref)
+                .all(visit),
+            Self::ListIndex { list, index } => visit(list) && visit(index),
+            Self::ListSlice { list, start, end } => [Some(list), start.as_ref(), end.as_ref()]
+                .into_iter()
+                .flatten()
+                .map(Box::as_ref)
+                .all(visit),
+            Self::PatternComprehension {
+                predicate,
+                projection,
+                ..
+            } => predicate.iter().map(Box::as_ref).all(&mut visit) && visit(projection),
             _ => true,
         }
     }

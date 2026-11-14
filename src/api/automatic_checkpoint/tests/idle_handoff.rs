@@ -120,6 +120,29 @@ fn projected_artifact_rebuild_invalidates_paused_checkpoint_source() {
             && !state.report.waiting_for_handoff
             && state.report.completed_checkpoints > completed_before_later_write
     });
+    // The owner may already be checkpointing the sealed epoch when the later
+    // write commits, and a checkpoint that stops at an earlier epoch is valid.
+    // Wait for what was actually checkpointed to cover the later write, not
+    // for a checkpoint count (#1760).
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let checkpointed = db
+            .runtime
+            .get()
+            .unwrap()
+            .store
+            .checkpoint_debt_snapshot()
+            .unwrap()
+            .checkpoint_commit_epoch;
+        if checkpointed > sealed_epoch {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "checkpoint stayed at {checkpointed}, sealed generation {sealed_epoch}"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
     assert!(
         control.report().unwrap().unwrap().completed_checkpoints > completed_before_rebuild,
         "sealed generation {sealed_epoch} must be followed by publication and retirement"

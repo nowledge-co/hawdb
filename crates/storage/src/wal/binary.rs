@@ -77,6 +77,7 @@
 //! | 26   | Relational                                | 1 record:bytes                                                         |
 //! | 27   | RelationalSnapshot                        | 1 record:bytes                                                         |
 //! | 28   | Append                                    | 1 record:bytes                                                         |
+//! | 29   | CreatePropertyWithDefault                 | fields 1-5 as CreateProperty, 6 default_kind:varint (0 constant, 1 current_timestamp), 7 default_value:msg (constant only), 8 backfill_value:msg |
 //!
 //! Nested messages:
 //!
@@ -148,6 +149,12 @@ const OP_MARK_INITIAL_IMPORT_SOURCE: u64 = 25;
 const OP_RELATIONAL: u64 = 26;
 const OP_RELATIONAL_SNAPSHOT: u64 = 27;
 const OP_APPEND: u64 = 28;
+/// A defaulted `CreateProperty`. Undefaulted descriptors keep op code 5 and
+/// their exact pre-default bytes; a separate code makes older binaries fail
+/// closed ("unknown WAL op code") instead of skipping the default field.
+const OP_CREATE_PROPERTY_WITH_DEFAULT: u64 = 29;
+const PROPERTY_DEFAULT_KIND_CONSTANT: u64 = 0;
+const PROPERTY_DEFAULT_KIND_CURRENT_TIMESTAMP: u64 = 1;
 
 const VALUE_FIELD_NULL: u32 = 1;
 const VALUE_FIELD_BOOL: u32 = 2;
@@ -159,6 +166,32 @@ const VALUE_FIELD_MAP_ENTRY: u32 = 7;
 const VALUE_FIELD_BINARY: u32 = 8;
 const VALUE_FIELD_UUID: u32 = 9;
 const VALUE_FIELD_VECTOR: u32 = 10;
+const VALUE_FIELD_DECIMAL: u32 = 16;
+// Temporal values carry the fixed-width `hawdb_core::temporal::codec` payload.
+// Binaries without these fields skip them and then reject the value message
+// as empty, so older readers fail closed.
+const VALUE_FIELD_DATE: u32 = 11;
+const VALUE_FIELD_LOCAL_TIME: u32 = 12;
+const VALUE_FIELD_LOCAL_DATETIME: u32 = 13;
+const VALUE_FIELD_DATETIME: u32 = 14;
+const VALUE_FIELD_DURATION: u32 = 15;
+
+fn temporal_value_field(kind: hawdb_core::temporal::codec::TemporalValueKind) -> u32 {
+    use hawdb_core::temporal::codec::TemporalValueKind as Kind;
+    match kind {
+        Kind::Date => VALUE_FIELD_DATE,
+        Kind::LocalTime => VALUE_FIELD_LOCAL_TIME,
+        Kind::LocalDateTime => VALUE_FIELD_LOCAL_DATETIME,
+        Kind::DateTime => VALUE_FIELD_DATETIME,
+        Kind::Duration => VALUE_FIELD_DURATION,
+    }
+}
+
+fn temporal_value_kind(field: u32) -> Option<hawdb_core::temporal::codec::TemporalValueKind> {
+    hawdb_core::temporal::codec::TemporalValueKind::ALL
+        .into_iter()
+        .find(|kind| temporal_value_field(*kind) == field)
+}
 
 const ENTRY_FIELD_KEY: u32 = 1;
 const ENTRY_FIELD_VALUE: u32 = 2;
@@ -332,6 +365,17 @@ fn encode_value_message(value: &Value, out: &mut Vec<u8>) {
         Value::Binary(value) => encode_len_field(VALUE_FIELD_BINARY, value, out),
         Value::Vector(value) => encode_len_field(VALUE_FIELD_VECTOR, value.encoded(), out),
         Value::Uuid(value) => encode_len_field(VALUE_FIELD_UUID, value.as_bytes(), out),
+        Value::Decimal(value) => encode_len_field(VALUE_FIELD_DECIMAL, &value.to_le_bytes(), out),
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => {
+            let mut payload = Vec::with_capacity(28);
+            let kind = hawdb_core::temporal::codec::encode_payload(value, &mut payload)
+                .expect("temporal values have a payload");
+            encode_len_field(temporal_value_field(kind), &payload, out);
+        }
         Value::List(values) => {
             for value in values {
                 let mut body = Vec::new();
@@ -417,13 +461,37 @@ fn encode_op_body(op: &WalOp) -> Result<(u64, Vec<u8>)> {
             property,
             value_type,
             nullable,
+            default,
         } => {
             encode_varint_field(1, table_kind_code(*table_kind), &mut body);
             encode_string_field(2, table, &mut body);
             encode_string_field(3, property, &mut body);
             encode_varint_field(4, property_type_code(*value_type), &mut body);
             encode_varint_field(5, u64::from(*nullable), &mut body);
-            OP_CREATE_PROPERTY
+            match default {
+                None => OP_CREATE_PROPERTY,
+                Some(default) => {
+                    match &default.value {
+                        hawdb_core::PropertyDefault::CurrentTimestamp => {
+                            encode_varint_field(
+                                6,
+                                PROPERTY_DEFAULT_KIND_CURRENT_TIMESTAMP,
+                                &mut body,
+                            );
+                        }
+                        hawdb_core::PropertyDefault::Value(value) => {
+                            encode_varint_field(6, PROPERTY_DEFAULT_KIND_CONSTANT, &mut body);
+                            let mut value_body = Vec::new();
+                            encode_value_message(value, &mut value_body);
+                            encode_len_field(7, &value_body, &mut body);
+                        }
+                    }
+                    let mut backfill_body = Vec::new();
+                    encode_value_message(&default.backfill_value, &mut backfill_body);
+                    encode_len_field(8, &backfill_body, &mut body);
+                    OP_CREATE_PROPERTY_WITH_DEFAULT
+                }
+            }
         }
         WalOp::AlterTableState {
             table_kind,
@@ -822,6 +890,32 @@ mod tests {
     }
 
     #[test]
+    fn decimal_wal_payload_preserves_scale_and_rejects_malformed_values() {
+        let value = Value::Decimal("9007199254740993.0100".parse().unwrap());
+        let mut encoded = Vec::new();
+        encode_value_message(&value, &mut encoded);
+        assert_eq!(&encoded[..3], &[0x82, 0x01, 17]);
+        let Value::Decimal(decoded) = decode_value_message(&encoded, 1).unwrap() else {
+            panic!("native Decimal");
+        };
+        assert_eq!(decoded.to_string(), "9007199254740993.0100");
+        for end in 0..encoded.len() {
+            assert!(decode_value_message(&encoded[..end], 1).is_err());
+        }
+        let mut corrupt = encoded.clone();
+        corrupt[19] = 39;
+        assert!(decode_value_message(&corrupt, 1).is_err());
+        corrupt = encoded;
+        corrupt[3..19].copy_from_slice(&i128::MAX.to_le_bytes());
+        assert!(decode_value_message(&corrupt, 1).is_err());
+        assert_op_round_trips(WalOp::SetNodeProperty {
+            id: NodeId(1),
+            property: "amount".into(),
+            value,
+        });
+    }
+
+    #[test]
     fn value_message_wire_fixtures_cover_every_field() {
         // Literal bytes, independent of the codec constants and helpers, pin
         // the append-only field IDs as well as their wire types and payloads.
@@ -874,6 +968,95 @@ mod tests {
                 matches!(entry.op, WalOp::SetNodeProperty { value: actual, .. } if actual == value)
             );
         }
+    }
+
+    fn temporal_values() -> Vec<Value> {
+        use hawdb_core::temporal;
+        vec![
+            Value::Date(temporal::parse_date("2026-10-30").unwrap()),
+            Value::Date(temporal::NaiveDate::MIN),
+            Value::LocalTime(temporal::parse_local_time("23:59:59.999999999").unwrap()),
+            Value::LocalDateTime(temporal::parse_local_datetime("1969-12-31T23:59:59.5").unwrap()),
+            Value::DateTime(temporal::parse_datetime("2026-10-30T12:00:00+02:00").unwrap()),
+            Value::DateTime(temporal::parse_datetime("2026-10-30T12:00:00-00:30:15").unwrap()),
+            Value::duration(temporal::parse_duration("-P1Y2M3DT4H5M6.000000007S").unwrap()),
+        ]
+    }
+
+    #[test]
+    fn temporal_value_wire_fixtures_are_append_only_fields() {
+        // Field 11 (date, LEN 4 = 0x5a 0x04), 14 (zoned datetime, LEN 16) and
+        // 15 (duration, LEN 28) carry the shared fixed-width payload.
+        let date = Value::Date(hawdb_core::temporal::parse_date("2026-10-30").unwrap());
+        let mut encoded = Vec::new();
+        encode_value_message(&date, &mut encoded);
+        assert_eq!(encoded, vec![0x5a, 0x04, 0x4f, 0x4a, 0x0b, 0x00]);
+        let zoned = Value::DateTime(
+            hawdb_core::temporal::parse_datetime("2026-10-30T12:00:00+02:00").unwrap(),
+        );
+        let mut encoded = Vec::new();
+        encode_value_message(&zoned, &mut encoded);
+        assert_eq!(&encoded[..2], &[0x72, 0x10]);
+        let duration =
+            Value::duration(hawdb_core::temporal::parse_duration("P1M2DT-0.5S").unwrap());
+        let mut encoded = Vec::new();
+        encode_value_message(&duration, &mut encoded);
+        assert_eq!(&encoded[..2], &[0x7a, 0x1c]);
+        for field in [11u8, 12, 13, 14, 15] {
+            assert!(temporal_value_kind(u32::from(field)).is_some());
+        }
+        assert!(temporal_value_kind(16).is_none());
+
+        let values = temporal_values();
+        for value in values.iter().cloned().chain([
+            Value::List(values.clone()),
+            Value::Map(BTreeMap::from([(
+                "nested".to_string(),
+                Value::List(values.clone()),
+            )])),
+        ]) {
+            let mut encoded = Vec::new();
+            encode_value_message(&value, &mut encoded);
+            assert_eq!(decode_value_message(&encoded, 1).unwrap(), value);
+            let record = encoded_set_node_property_record(&encoded);
+            let BinaryWalRecordDecode::Entry { entry, .. } =
+                decode_binary_wal_record(&record).unwrap()
+            else {
+                panic!("temporal value record was rejected: {value:?}");
+            };
+            assert!(
+                matches!(entry.op, WalOp::SetNodeProperty { value: actual, .. } if actual == value)
+            );
+        }
+    }
+
+    #[test]
+    fn temporal_value_records_fail_closed_on_bad_payloads_and_unknown_fields() {
+        // Wrong payload lengths and out-of-range contents are corruption.
+        for value in [
+            vec![0x5a, 0x03, 0x00, 0x00, 0x00],
+            vec![0x5a, 0x04, 0xff, 0xff, 0xff, 0x7f],
+            vec![0x62, 0x08, 0x00, 0x40, 0x07, 0x2a, 0x95, 0x4e, 0x00, 0x00],
+            vec![0x7a, 0x00],
+        ] {
+            let record = encoded_set_node_property_record(&value);
+            assert!(
+                matches!(
+                    decode_binary_wal_record(&record).unwrap(),
+                    BinaryWalRecordDecode::Corrupt(reason) if reason.contains("temporal payload")
+                ),
+                "{value:02x?}"
+            );
+        }
+        // A binary that predates a value field skips it and then rejects the
+        // empty value message: unknown future kinds fail closed, as these
+        // temporal fields do in binaries older than them.
+        // Field 16 is assigned to Decimal; field 17 remains unknown.
+        let record = encoded_set_node_property_record(&[0x8a, 0x01, 0x04, 0, 0, 0, 0]);
+        assert!(matches!(
+            decode_binary_wal_record(&record).unwrap(),
+            BinaryWalRecordDecode::Corrupt(reason) if reason.contains("WAL value message is empty")
+        ));
     }
 
     #[test]
@@ -1052,6 +1235,33 @@ mod tests {
                     property: "title".to_string(),
                     value_type,
                     nullable: value_type == PropertyType::Any,
+                    default: None,
+                });
+                samples.push(WalOp::CreateProperty {
+                    table_kind,
+                    table: "memories".to_string(),
+                    property: "defaulted".to_string(),
+                    value_type,
+                    nullable: true,
+                    default: Some(Box::new(hawdb_core::DeclaredPropertyDefault::declare(
+                        hawdb_core::PropertyDefault::Value(match value_type {
+                            PropertyType::Bool => Value::Bool(true),
+                            PropertyType::Int => Value::Int(-7),
+                            PropertyType::Float => Value::Float(0.0),
+                            PropertyType::List => Value::List(Vec::new()),
+                            _ => Value::String("{}".to_string()),
+                        }),
+                    ))),
+                });
+                samples.push(WalOp::CreateProperty {
+                    table_kind,
+                    table: "memories".to_string(),
+                    property: "created_at".to_string(),
+                    value_type: PropertyType::Any,
+                    nullable: true,
+                    default: Some(Box::new(hawdb_core::DeclaredPropertyDefault::declare(
+                        hawdb_core::PropertyDefault::CurrentTimestamp,
+                    ))),
                 });
             }
             for state in [
@@ -1210,6 +1420,67 @@ mod tests {
                 .unwrap();
                 assert_eq!(prepared.bind(lsn, epoch), ordinary);
             }
+        }
+    }
+
+    /// Undefaulted descriptors keep op code 5 and its exact field set, so
+    /// pre-#1683 WAL bytes are unchanged; defaulted descriptors use op code
+    /// 29, which older binaries reject as unknown instead of dropping it.
+    #[test]
+    fn property_defaults_use_a_separate_fail_closed_op_code() {
+        let plain = WalOp::CreateProperty {
+            table_kind: TableKind::Node,
+            table: "Memory".to_string(),
+            property: "score".to_string(),
+            value_type: PropertyType::Float,
+            nullable: true,
+            default: None,
+        };
+        let (code, body) = encode_op_body(&plain).unwrap();
+        assert_eq!(code, OP_CREATE_PROPERTY);
+        let mut legacy = Vec::new();
+        encode_varint_field(1, 0, &mut legacy);
+        encode_string_field(2, "Memory", &mut legacy);
+        encode_string_field(3, "score", &mut legacy);
+        encode_varint_field(4, 3, &mut legacy);
+        encode_varint_field(5, 1, &mut legacy);
+        assert_eq!(body, legacy);
+        for value in [
+            hawdb_core::PropertyDefault::Value(Value::List(Vec::new())),
+            hawdb_core::PropertyDefault::Value(Value::String("{}".to_string())),
+            hawdb_core::PropertyDefault::CurrentTimestamp,
+        ] {
+            let op = WalOp::CreateProperty {
+                table_kind: TableKind::Node,
+                table: "Memory".to_string(),
+                property: "score".to_string(),
+                value_type: PropertyType::Float,
+                nullable: true,
+                default: Some(Box::new(hawdb_core::DeclaredPropertyDefault::declare(
+                    value.clone(),
+                ))),
+            };
+            assert_eq!(
+                encode_op_body(&op).unwrap().0,
+                OP_CREATE_PROPERTY_WITH_DEFAULT
+            );
+            let entry = WalEntry { lsn: 3, op };
+            let (decoded, _) = round_trip(&entry, 1);
+            let WalOp::CreateProperty {
+                default: Some(decoded),
+                ..
+            } = decoded.op
+            else {
+                panic!("defaulted CreateProperty expected");
+            };
+            let WalOp::CreateProperty {
+                default: Some(expected),
+                ..
+            } = entry.op
+            else {
+                unreachable!();
+            };
+            assert_eq!(decoded, expected);
         }
     }
 

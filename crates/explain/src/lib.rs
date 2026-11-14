@@ -345,6 +345,9 @@ fn access_object(plan: &PhysicalPlan) -> String {
     match plan {
         PhysicalPlan::SeqNodeScan { label, .. }
         | PhysicalPlan::NodeProjectionScanExec { label, .. } => format!("label:{label}"),
+        PhysicalPlan::RelationshipSeededNodeScan {
+            label, rel_type, ..
+        } => format!("label:{label} seeded by relationship-property:{rel_type}"),
         PhysicalPlan::SourceSegmentScan { .. } => "source-segments".to_string(),
         PhysicalPlan::NodeColumnLookupExec {
             label,

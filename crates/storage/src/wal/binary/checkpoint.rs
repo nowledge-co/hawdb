@@ -177,6 +177,17 @@ fn encode_value(value: &Value, out: &mut Output<'_>) -> Result<()> {
         Value::Binary(value) => out.bytes(VALUE_FIELD_BINARY, value),
         Value::Vector(value) => out.bytes(VALUE_FIELD_VECTOR, value.encoded()),
         Value::Uuid(value) => out.bytes(VALUE_FIELD_UUID, value.as_bytes()),
+        Value::Decimal(value) => out.bytes(VALUE_FIELD_DECIMAL, &value.to_le_bytes()),
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => {
+            let mut payload = Vec::with_capacity(28);
+            let kind = hawdb_core::temporal::codec::encode_payload(value, &mut payload)
+                .expect("temporal values have a payload");
+            out.bytes(temporal_value_field(kind), &payload)
+        }
         Value::List(values) => {
             if values.is_empty() {
                 out.bytes(VALUE_FIELD_ELEMENT, &[])?;
@@ -311,13 +322,29 @@ fn encode_op_body(op: &WalOp, out: &mut Output<'_>) -> Result<u64> {
             property,
             value_type,
             nullable,
+            default,
         } => {
             out.field_varint(1, table_kind_code(*table_kind))?;
             out.string(2, table)?;
             out.string(3, property)?;
             out.field_varint(4, property_type_code(*value_type))?;
             out.field_varint(5, u64::from(*nullable))?;
-            OP_CREATE_PROPERTY
+            match default {
+                None => OP_CREATE_PROPERTY,
+                Some(default) => {
+                    match &default.value {
+                        hawdb_core::PropertyDefault::CurrentTimestamp => {
+                            out.field_varint(6, PROPERTY_DEFAULT_KIND_CURRENT_TIMESTAMP)?;
+                        }
+                        hawdb_core::PropertyDefault::Value(value) => {
+                            out.field_varint(6, PROPERTY_DEFAULT_KIND_CONSTANT)?;
+                            out.message(7, |out| encode_value(value, out))?;
+                        }
+                    }
+                    out.message(8, |out| encode_value(&default.backfill_value, out))?;
+                    OP_CREATE_PROPERTY_WITH_DEFAULT
+                }
+            }
         }
         WalOp::AlterTableState {
             table_kind,

@@ -1,6 +1,17 @@
 // Copyright 2026 Nowledge
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! Explicit publication of a validated checkpoint's transitive artifacts.
 //!
 //! The caller supplies the complete list obtained from the validated durable
@@ -9,7 +20,8 @@
 
 use crate::file_io as fs;
 use crate::immutable_object::{
-    ImmutableObjectError, ImmutableObjectStore, ObjectKind, ObjectReference,
+    BlockWork, ImmutableObjectError, ImmutableObjectStore, ObjectKind, ObjectReference,
+    ObjectReferenceWriter,
 };
 use crate::sealed_root::{
     CheckpointArtifactBinding, SealedRoot, SealedRootError, SealedWalReference,
@@ -20,13 +32,69 @@ use std::path::{Path, PathBuf};
 
 /// Keep admission failures retryable while retaining artifact context for
 /// missing files and other storage failures in every closure reader.
-pub(crate) fn read_closure_artifact(path: &Path, operation: &str) -> hawdb_core::Result<Vec<u8>> {
-    fs::read(path).map_err(|error| {
-        if let Some(resource) = hawdb_core::error::file_descriptor_error(&error) {
-            hawdb_core::HawDBError::FileDescriptors(resource)
-        } else {
-            hawdb_core::HawDBError::Storage(format!("{operation} {}: {error}", path.display()))
+fn closure_io_error(path: &Path, operation: &str, error: std::io::Error) -> hawdb_core::HawDBError {
+    if let Some(resource) = hawdb_core::error::file_descriptor_error(&error) {
+        hawdb_core::HawDBError::FileDescriptors(resource)
+    } else {
+        hawdb_core::HawDBError::Storage(format!("{operation} {}: {error}", path.display()))
+    }
+}
+
+/// Streamed identity of one closure artifact: its length, plain content
+/// digest (CRC32C and SHA-256, as recorded by manifest bindings) and object
+/// reference, computed in one bounded pass without buffering the payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ClosureArtifactDigest {
+    pub byte_length: u64,
+    pub content: hawdb_integrity::IntegrityDigest,
+    pub reference: ObjectReference,
+}
+
+/// With a checkpoint work context, takes one work unit per 64 KiB block.
+pub(crate) fn digest_closure_artifact(
+    path: &Path,
+    kind: ObjectKind,
+    operation: &str,
+    work: BlockWork<'_>,
+) -> hawdb_core::Result<ClosureArtifactDigest> {
+    use std::io::{Read, Write};
+
+    let mut file =
+        fs::File::open(path).map_err(|error| closure_io_error(path, operation, error))?;
+    let byte_length = file
+        .metadata()
+        .map_err(|error| closure_io_error(path, operation, error))?
+        .len();
+    let changed = || {
+        hawdb_core::HawDBError::Storage(format!(
+            "{operation} {}: artifact changed while it was read",
+            path.display()
+        ))
+    };
+    let mut identity = ObjectReferenceWriter::new(kind, kind.current_format_version(), byte_length)
+        .map_err(hawdb_core::HawDBError::from_storage_error)?;
+    let mut content = hawdb_integrity::IntegrityHasher::new();
+    let mut buffer = vec![0; 64 * 1024];
+    loop {
+        let length = work.block(hawdb_core::HawDBError::from_storage_error, || {
+            let length = file
+                .read(&mut buffer)
+                .map_err(|error| closure_io_error(path, operation, error))?;
+            identity
+                .write_all(&buffer[..length])
+                .map_err(|_| changed())?;
+            content.update(&buffer[..length]);
+            Ok(length)
+        })?;
+        if length == 0 {
+            break;
         }
+    }
+    let reference = identity.finish().map_err(|_| changed())?;
+    Ok(ClosureArtifactDigest {
+        byte_length,
+        content: content.finish(),
+        reference,
     })
 }
 
@@ -115,6 +183,15 @@ impl CheckpointClosurePlan {
         self,
         store: &mut ImmutableObjectStore,
     ) -> Result<PublishedCheckpointClosure, CheckpointClosureError> {
+        self.publish_with_work(store, BlockWork::default())
+    }
+
+    /// [`Self::publish`] with one checkpoint work unit per streamed block.
+    pub(crate) fn publish_with_work(
+        self,
+        store: &mut ImmutableObjectStore,
+        work: BlockWork<'_>,
+    ) -> Result<PublishedCheckpointClosure, CheckpointClosureError> {
         let missing = ALL_FAMILIES
             .into_iter()
             .filter(|family| !self.completed_families.contains(family))
@@ -122,7 +199,7 @@ impl CheckpointClosurePlan {
         if !missing.is_empty() {
             return Err(CheckpointClosureError::Incomplete { missing });
         }
-        publish_checkpoint_closure_with_bound_duplicates(store, &self.inputs)
+        publish_checkpoint_closure_inner(store, &self.inputs, true, work)
     }
 
     fn complete_family(
@@ -211,20 +288,14 @@ pub fn publish_checkpoint_closure(
     store: &mut ImmutableObjectStore,
     inputs: &[CheckpointArtifactInput],
 ) -> Result<PublishedCheckpointClosure, CheckpointClosureError> {
-    publish_checkpoint_closure_inner(store, inputs, false)
-}
-
-fn publish_checkpoint_closure_with_bound_duplicates(
-    store: &mut ImmutableObjectStore,
-    inputs: &[CheckpointArtifactInput],
-) -> Result<PublishedCheckpointClosure, CheckpointClosureError> {
-    publish_checkpoint_closure_inner(store, inputs, true)
+    publish_checkpoint_closure_inner(store, inputs, false, BlockWork::default())
 }
 
 fn publish_checkpoint_closure_inner(
     store: &mut ImmutableObjectStore,
     inputs: &[CheckpointArtifactInput],
     retain_duplicate_bindings: bool,
+    work: BlockWork<'_>,
 ) -> Result<PublishedCheckpointClosure, CheckpointClosureError> {
     if inputs.is_empty() {
         return Err(CheckpointClosureError::Empty);
@@ -244,25 +315,23 @@ fn publish_checkpoint_closure_inner(
         if !paths.insert(input.path.clone()) {
             return Err(CheckpointClosureError::DuplicatePath(input.path.clone()));
         }
-        let bytes = fs::read(&input.path).map_err(|source| CheckpointClosureError::Io {
-            path: input.path.clone(),
-            source,
-        })?;
-        let computed = ObjectReference::for_bytes(
-            input.reference.kind,
-            input.reference.format_version,
-            &bytes,
-        );
-        if computed != input.reference {
-            return Err(CheckpointClosureError::Publish(
-                ImmutableObjectError::ReferenceMismatch,
-            ));
-        }
+        // The store streams the source and re-derives its identity, so an
+        // artifact that no longer matches its planned reference is rejected
+        // without buffering it.
         if references.insert(input.reference) {
-            total_bytes = total_bytes.saturating_add(bytes.len() as u64);
+            total_bytes = total_bytes.saturating_add(input.reference.byte_length);
             store
-                .publish(input.reference, &bytes)
-                .map_err(CheckpointClosureError::Publish)?;
+                .publish_file_with_work(input.reference, &input.path, work)
+                .map_err(|error| match error {
+                    ImmutableObjectError::Io {
+                        operation: "open immutable object source" | "read immutable object source",
+                        source,
+                    } => CheckpointClosureError::Io {
+                        path: input.path.clone(),
+                        source,
+                    },
+                    error => CheckpointClosureError::Publish(error),
+                })?;
             published.push(input.reference);
         } else if !retain_duplicate_bindings {
             return Err(CheckpointClosureError::DuplicateReference(input.reference));

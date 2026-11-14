@@ -19,11 +19,9 @@ use hawdb::background_maintenance_evidence::run_nowledge_background_maintenance_
 use hawdb::bounded_read_evidence::run_nowledge_bounded_read_evidence;
 use hawdb::graph_route_evidence::run_nowledge_graph_route_evidence;
 use hawdb::graph_route_readiness::run_nowledge_graph_route_readiness;
-use hawdb::mem_integration_bundle::run_nowledge_mem_integration_bundle;
-use hawdb::mem_integration_readiness::{
-    nowledge_mem_integration_readiness_json, run_nowledge_mem_integration_readiness,
-};
-use hawdb::mem_library_readiness::run_nowledge_mem_library_readiness;
+use hawdb::mem_integration_bundle::run_integration_bundle;
+use hawdb::mem_integration_readiness::{integration_readiness_json, run_integration_readiness};
+use hawdb::mem_library_readiness::run_library_readiness;
 use hawdb::nowledge_inventory::background_maintenance_summary_to_json;
 use hawdb::previous_wrapper_preflight::run_nowledge_previous_wrapper_preflight_check;
 use hawdb::query_family_evidence::run_nowledge_query_family_evidence;
@@ -56,9 +54,9 @@ use hawdb::{
     scan_nowledge_query_inventory_cypher_coverage_to_json,
     scan_nowledge_query_inventory_cypher_migration_gate_with_options_to_json,
     scan_nowledge_query_inventory_to_json, CanonicalGraphSnapshotValidation,
-    CompatibilityRollbackEvidence, Database, DatabaseConfig, ExternalShadowCommand,
-    ExternalShadowReady, HawDBError, NowledgeCypherMigrationGateJsonOptions, NowledgeMemGraph,
-    NowledgeMemGraphMode, NowledgeMemReadOptions, RecoveryMode, Result, SearchIndex,
+    CompatibilityRollbackEvidence, Database, DatabaseConfig, EmbeddedGraph, EmbeddedReadOptions,
+    ExternalShadowCommand, ExternalShadowReady, GraphMode, HawDBError,
+    NowledgeCypherMigrationGateJsonOptions, RecoveryMode, Result, SearchIndex,
     StorageRecoveryReport, StorageResidencyMode, StorageResourceProfileLimits, Value,
     REQUIRED_EXTERNAL_SHADOW_CAPABILITIES,
 };
@@ -164,7 +162,7 @@ fn main() -> Result<()> {
             return Ok(());
         }
         if command == "nowledge-mem-integration-readiness" {
-            let (json, require_ready) = run_nowledge_mem_integration_readiness(args)?;
+            let (json, require_ready) = run_integration_readiness(args)?;
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
             if require_ready && json.get("ready").and_then(serde_json::Value::as_bool) != Some(true)
             {
@@ -175,10 +173,10 @@ fn main() -> Result<()> {
             return Ok(());
         }
         if command == "nowledge-mem-integration-bundle" {
-            let (json, require_ready) = run_nowledge_mem_integration_bundle(args)?;
+            let (json, require_ready) = run_integration_bundle(args)?;
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
             if require_ready
-                && nowledge_mem_integration_readiness_json(&json)
+                && integration_readiness_json(&json)
                     .get("ready")
                     .and_then(serde_json::Value::as_bool)
                     != Some(true)
@@ -190,7 +188,7 @@ fn main() -> Result<()> {
             return Ok(());
         }
         if command == "nowledge-mem-library-readiness" {
-            let (json, require_ready) = run_nowledge_mem_library_readiness(args)?;
+            let (json, require_ready) = run_library_readiness(args)?;
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
             if require_ready && json.get("ready").and_then(serde_json::Value::as_bool) != Some(true)
             {
@@ -261,7 +259,7 @@ fn main() -> Result<()> {
         }
         if command == "nowledge-bounded-read-report" {
             let mut parameters = BTreeMap::new();
-            let mut options = NowledgeMemReadOptions::default();
+            let mut options = EmbeddedReadOptions::default();
             while let Some(flag) = args.peek() {
                 match flag.as_str() {
                     "--params-json" => {
@@ -1598,9 +1596,9 @@ fn nowledge_bounded_read_report_json(
     path: impl AsRef<Path>,
     query: &str,
     parameters: &BTreeMap<String, Value>,
-    options: &NowledgeMemReadOptions,
+    options: &EmbeddedReadOptions,
 ) -> Result<serde_json::Value> {
-    let graph = NowledgeMemGraph::open(path, NowledgeMemGraphMode::ShadowReadOnly)?;
+    let graph = EmbeddedGraph::open(path, GraphMode::ShadowReadOnly)?;
     let read = graph.read_query_with_params(query, parameters, options)?;
     Ok(read.report.json())
 }
@@ -2881,8 +2879,16 @@ fn value_json(value: &Value) -> serde_json::Value {
             "$binary": value.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
         }),
         Value::Uuid(value) => serde_json::json!({ "$uuid": value.to_string() }),
+        Value::Decimal(value) => serde_json::json!({ "$decimal": value.to_string() }),
         Value::Vector(value) => serde_json::json!({
             "$vector": value.as_ref().coordinates().collect::<Vec<_>>()
+        }),
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => serde_json::json!({
+            hawdb_core::temporal::json_tag(value).expect("temporal value"): value.to_string()
         }),
         Value::List(values) => {
             serde_json::Value::Array(values.iter().map(value_json).collect::<Vec<_>>())
@@ -2919,6 +2925,19 @@ fn value_from_json(value: &serde_json::Value) -> Result<Value> {
             .map(Value::List),
         serde_json::Value::Object(values) => {
             if values.len() == 1
+                && let Some(encoded) = values.get("$decimal")
+            {
+                let text = encoded.as_str().ok_or_else(|| {
+                    HawDBError::Semantic("$decimal must be a decimal string".into())
+                })?;
+                return text
+                    .parse::<hawdb_core::Decimal>()
+                    .map(Value::Decimal)
+                    .map_err(|error| {
+                        HawDBError::Semantic(format!("invalid $decimal value: {error}"))
+                    });
+            }
+            if values.len() == 1
                 && let Some(serde_json::Value::String(encoded)) = values.get("$binary")
             {
                 return decode_json_binary(encoded).map(Value::Binary);
@@ -2931,6 +2950,14 @@ fn value_from_json(value: &serde_json::Value) -> Result<Value> {
                     .map_err(|error| {
                         HawDBError::Semantic(format!("invalid $uuid value: {error}"))
                     });
+            }
+            if values.len() == 1
+                && let Some((tag, serde_json::Value::String(encoded))) = values.iter().next()
+                && let Some(decoded) = hawdb_core::temporal::from_json_tag(tag, encoded)
+            {
+                return decoded.map_err(|error| {
+                    HawDBError::Semantic(format!("invalid {tag} value: {error}"))
+                });
             }
             if values.len() == 1
                 && let Some(encoded) = values.get("$vector")
@@ -3029,10 +3056,10 @@ mod tests {
         CanonicalGraphSnapshotValidation, CanonicalSnapshotEndpointViolation,
         CanonicalSnapshotIdentityAudit, CompatibilityCheck, CompatibilityCheckReport,
         CompatibilityShadowCheckReport, CompatibilityShadowReport, CompatibilityShadowStatus,
-        Database, ExternalShadowReady, HawDBLightningBootstrapManifest,
+        Database, EmbeddedReadOptions, ExternalShadowReady, HawDBLightningBootstrapManifest,
         HawDBLightningGraphStreamValidation, HawDBLightningRelationalStreamValidation,
-        LocalQosPolicy, NowledgeMemReadOptions, PlanCacheStats, RecoveryMode,
-        StorageRecoveryReport, Value, WorkClass, WorkRequest,
+        LocalQosPolicy, PlanCacheStats, RecoveryMode, StorageRecoveryReport, Value, WorkClass,
+        WorkRequest,
     };
     use std::collections::BTreeMap;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -3154,7 +3181,7 @@ mod tests {
                 "id".to_string(),
                 Value::String("mem-read-report".to_string()),
             )]),
-            &NowledgeMemReadOptions {
+            &EmbeddedReadOptions {
                 max_rows: Some(4),
                 max_estimated_payload_bytes: Some(1024),
             },
@@ -4316,6 +4343,10 @@ mod tests {
 
         let parameters = BTreeMap::from([("id".to_string(), Value::Int(42))]);
         let plan_cache_stats = PlanCacheStats {
+            max_bytes: None,
+            max_entry_bytes: None,
+            charged_bytes: None,
+            rejected_admissions: 0,
             max_entries: Some(128),
             entries: 1,
             hits: 2,

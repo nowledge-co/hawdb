@@ -16,7 +16,7 @@
 set -euo pipefail
 
 if [[ $# -lt 2 ]]; then
-  echo "usage: $0 <unit-test-binary> <general|concurrent|checkpoint_headroom|analytics|analytics_core|analytics_core_general|analytics_identity|analytics_rss|recovery> [libtest arguments]" >&2
+  echo "usage: $0 <unit-test-binary> <general|concurrent|checkpoint_headroom|checkpoint_headroom_growing_table|checkpoint_headroom_controls|checkpoint_lifecycle|checkpoint_large_commit|checkpoint_large_commit_interrupted|analytics|analytics_core|analytics_core_general|analytics_identity|analytics_rss|recovery> [libtest arguments]" >&2
   exit 64
 fi
 partition_binary="$1"
@@ -27,8 +27,22 @@ if [[ "${partition}" == analytics_identity ]]; then
 fi
 shift 2
 case "${partition}" in
-  general|concurrent|checkpoint_headroom|analytics|analytics_core|analytics_core_general|analytics_identity|analytics_rss|recovery) ;;
+  general|concurrent|checkpoint_headroom|checkpoint_headroom_growing_table|checkpoint_headroom_controls|checkpoint_lifecycle|checkpoint_large_commit|checkpoint_large_commit_interrupted|analytics|analytics_core|analytics_core_general|analytics_identity|analytics_rss|recovery) ;;
   *) echo "unknown root unit partition: ${partition}" >&2; exit 64 ;;
+esac
+
+total_shards="${TEST_TOTAL_SHARDS:-1}"
+shard_index="${TEST_SHARD_INDEX:-0}"
+if [[ "${total_shards}" != 1 || "${shard_index}" != 0 ]]; then
+  echo 'invalid root unit shard coordinates' >&2
+  exit 64
+fi
+
+growing_table_case=api::automatic_checkpoint::tests::relational_live_overlay::steady_inserts_into_a_growing_table_keep_draining_the_live_overlay
+partition_owner="${partition}"
+case "${partition}" in
+  checkpoint_headroom_growing_table|checkpoint_headroom_controls)
+    partition_owner=checkpoint_headroom ;;
 esac
 
 inventory="$(mktemp "${TEST_TMPDIR:-${TMPDIR:-/tmp}}/hawdb-unit-partition.XXXXXX")"
@@ -44,8 +58,16 @@ while IFS= read -r entry; do
     *) continue ;;
   esac
   case "${case_name}" in
-    api::automatic_checkpoint::tests::headroom::*|api::automatic_checkpoint::tests::delta_pressure_sustains_generations_and_preserves_all_values_after_reopen|api::automatic_checkpoint::tests::soft_wal_pressure_sustains_multiple_generations_without_host_checkpoints)
+    api::automatic_checkpoint::tests::relational_live_overlay::large_commit::interrupted::*)
+      case_owner=checkpoint_large_commit_interrupted ;;
+    api::automatic_checkpoint::tests::relational_live_overlay::large_commit::*)
+      case_owner=checkpoint_large_commit ;;
+    api::automatic_checkpoint::tests::headroom::*|api::automatic_checkpoint::tests::relational_live_overlay::*|api::automatic_checkpoint::tests::delta_pressure_sustains_generations_and_preserves_all_values_after_reopen|api::automatic_checkpoint::tests::soft_wal_pressure_sustains_multiple_generations_without_host_checkpoints)
       case_owner=checkpoint_headroom ;;
+    # Give the remaining lifecycle families their own runtime budget while
+    # keeping them isolated; new families inherit this owner.
+    api::automatic_checkpoint::tests::*)
+      case_owner=checkpoint_lifecycle ;;
     api::tests::graph_analytics::persistent_edges_stream_with_bounded_rss_in_an_isolated_process|api::tests::graph_analytics::rss_child)
       case_owner=analytics_rss ;;
     api::tests::concurrent_transactions::*|api::concurrent::*|api::transaction_locks::*)
@@ -56,11 +78,22 @@ while IFS= read -r entry; do
       case_owner=recovery ;;
     *) case_owner=general ;;
   esac
-  if [[ "${case_owner}" == "${partition}" ]] ||
+  if [[ "${case_owner}" == "${partition_owner}" ]] ||
     [[ "${partition}" == analytics && "${case_owner}" == analytics_* ]] ||
     [[ "${partition}" == analytics_core && ( "${case_owner}" == analytics_core_general || "${case_owner}" == analytics_rss ) ]]; then
-    owned_cases=$((owned_cases + 1))
-    owned_names+=("${case_name}")
+    selected=true
+    if [[ "${partition}" == checkpoint_headroom_growing_table && "${case_name}" != "${growing_table_case}" ]]; then
+      selected=false
+    elif [[ "${partition}" == checkpoint_headroom_controls && "${case_name}" == "${growing_table_case}" ]]; then
+      selected=false
+    fi
+    if [[ "${selected}" == true ]]; then
+      owned_cases=$((owned_cases + 1))
+      owned_names+=("${case_name}")
+    else
+      partition_args+=(--skip "${case_name}")
+      skipped_names+=("${case_name}")
+    fi
   else
     # Multiple positive libtest filters are ORed. Complementary full-name skips
     # keep the ownership boundary when callers add filters or --exact.
@@ -84,6 +117,7 @@ if [[ ${#skipped_names[@]} -gt 0 ]]; then
     done
   done
 fi
+if [[ -n "${TEST_SHARD_STATUS_FILE:-}" ]]; then touch "${TEST_SHARD_STATUS_FILE}"; fi
 rm -f "${inventory}"
 trap - EXIT
 exec "${partition_args[@]}" "$@"

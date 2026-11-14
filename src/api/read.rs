@@ -18,6 +18,7 @@ pub(super) fn profiled_relational_sql_output(
         index_execution_evidence,
         row_execution_evidence,
         blocking_operator_memory_reports,
+        search_index_scan,
         ..
     } = output;
     let profile = RelationalSqlReadProfile {
@@ -74,6 +75,7 @@ pub(super) fn profiled_relational_sql_output(
             overlay_resident_bytes: row_execution_evidence.overlay_resident_bytes,
         },
         blocking_operator_memory_reports,
+        search_index_scan,
     };
     ProfiledRelationalSqlQueryOutput {
         output: QueryOutput { rows },
@@ -452,6 +454,8 @@ impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
                 parameters,
                 &self.config.execution_memory,
             )
+            .with_statement_clock(optimized.statement_clock)
+            .with_csv_import(self.config.csv_import_policy().as_ref())
             .with_output_columns(optimized.output_columns.as_deref())
             .with_output_limits(max_rows, max_payload_bytes)
             .with_optional_task_context(context.task_context)
@@ -646,6 +650,8 @@ impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
                     parameters,
                     &self.config.execution_memory,
                 )
+                .with_statement_clock(optimized.statement_clock)
+                .with_csv_import(self.config.csv_import_policy().as_ref())
                 .with_output_columns(optimized.output_columns.as_deref())
                 .with_output_limits(
                     restrictive_query_limit(
@@ -954,7 +960,23 @@ where
         )
     }
 
+    /// Executes one SQL statement with the statement clock pinned to the read
+    /// transaction's start (PostgreSQL `transaction_timestamp()`).
     pub(super) fn query_sql_with_prepared_params_context_and_join_planning(
+        &self,
+        sql_text: &str,
+        parameters: &[Value],
+        prepared: crate::relational_sql::PreparedRelationalSql,
+        options: DatabaseReadSqlOptions<'_>,
+    ) -> Result<QueryOutput> {
+        hawdb_core::temporal::with_statement_clock(self.sql_clock, || {
+            self.query_sql_with_prepared_params_context_and_join_planning_at_clock(
+                sql_text, parameters, prepared, options,
+            )
+        })
+    }
+
+    fn query_sql_with_prepared_params_context_and_join_planning_at_clock(
         &self,
         sql_text: &str,
         parameters: &[Value],
@@ -1068,6 +1090,27 @@ where
     }
 
     pub(super) fn execute_profiled_relational_sql(
+        &self,
+        prepared: crate::relational_sql::PreparedRelationalSql,
+        parameters: &[Value],
+        max_rows: Option<usize>,
+        max_payload_bytes: Option<usize>,
+        task_context: &hawdb_core::RuntimeTaskContext,
+        join_planning: RelationalJoinPlanningDirective,
+    ) -> Result<ProfiledRelationalSqlQueryOutput> {
+        hawdb_core::temporal::with_statement_clock(self.sql_clock, || {
+            self.execute_profiled_relational_sql_at_clock(
+                prepared,
+                parameters,
+                max_rows,
+                max_payload_bytes,
+                task_context,
+                join_planning,
+            )
+        })
+    }
+
+    fn execute_profiled_relational_sql_at_clock(
         &self,
         prepared: crate::relational_sql::PreparedRelationalSql,
         parameters: &[Value],
@@ -1289,6 +1332,53 @@ where
     ) -> Result<MetadataRepairSummary> {
         search_index.repair_metadata_from_graph(&self.catalog, &self.store, options)
     }
+}
+
+impl DatabaseReadTransaction {
+    /// Streams the canonical graph-derived search rows of this pinned snapshot.
+    ///
+    /// Rows use the same mapping as graph deltas, including business labels.
+    /// Nothing is retained between nodes; visit order is the store's node
+    /// order, not document-ID order. Returns the number of scanned nodes.
+    pub(crate) fn visit_search_projection_rows(
+        &self,
+        task: &hawdb_core::RuntimeTaskContext,
+        visitor: &mut dyn FnMut(crate::SearchProjectionRow) -> Result<()>,
+    ) -> Result<u64> {
+        let mut scanned = 0u64;
+        let mut failure = None;
+        self.store.visit_nodes_owned(None, |node| {
+            scanned += 1;
+            let step = (|| {
+                if scanned.is_multiple_of(1024) {
+                    rebuild_scan_checkpoint(task)?;
+                }
+                if let Some(row) =
+                    projection_row_from_node_with_graph_metadata(&self.catalog, &self.store, &node)?
+                {
+                    visitor(row)?;
+                }
+                Ok(())
+            })();
+            match step {
+                Ok(()) => crate::store::GraphScanControl::Continue,
+                Err(error) => {
+                    failure = Some(error);
+                    crate::store::GraphScanControl::Stop
+                }
+            }
+        })?;
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        rebuild_scan_checkpoint(task)?;
+        Ok(scanned)
+    }
+}
+
+fn rebuild_scan_checkpoint(task: &hawdb_core::RuntimeTaskContext) -> Result<()> {
+    task.checkpoint()
+        .map_err(|reason| HawDBError::Execution(format!("search projection rebuild scan {reason}")))
 }
 
 impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {

@@ -82,11 +82,16 @@ mod diskann_identity;
 #[cfg(test)]
 mod document_decoding_tests;
 mod document_encoding;
+mod document_set_digest;
+pub use document_set_digest::SearchDocumentSetDigest;
 mod generation_cleanup;
 mod identifier;
 #[doc(hidden)]
 pub mod knowledge_retrieval_pipeline;
 mod lexical_projection;
+#[cfg(test)]
+mod resident_checkpoint_atomicity_tests;
+pub use lexical_projection::LexicalQueryTermPolicy;
 mod lexical_readiness;
 #[cfg(all(test, feature = "full-text-search"))]
 mod lexical_snapshot_test_gate;
@@ -121,9 +126,11 @@ mod snapshot_writer;
 mod test_allocation;
 mod vector_execution;
 mod vector_index;
+mod vector_scoring;
 pub use vector_index::{
     VectorIndexHit, VectorIndexQuery, VectorIndexQueryReport, VectorIndexRetainedOutput,
 };
+pub use vector_scoring::SearchVectorScoring;
 
 use document_encoding::encode_search_document_line;
 
@@ -206,7 +213,7 @@ use analyzer_stream::{document_token_fields, visit_token_list, TokenOccurrence};
 use cjk_tokenizer::is_cjk_search_char;
 use generation_cleanup::SearchProjectionCleanupState;
 pub use generation_cleanup::{
-    SearchProjectionCleanupOptions, SearchProjectionCleanupReport,
+    SearchProjectionCleanupOptions, SearchProjectionCleanupOutcome, SearchProjectionCleanupReport,
     SEARCH_PROJECTION_CLEANUP_PROTOCOL,
 };
 pub use knowledge_retrieval_pipeline::{KnowledgeRetrievalPipelineReport, KnowledgeRetrievalStage};
@@ -238,9 +245,9 @@ pub use out_of_core::{
     SearchOutOfCoreSegmentCompaction, SearchOutOfCoreSegmentCompactionPolicy,
     SearchOutOfCoreSegmentCompactionReport, SearchOutOfCoreSegmentCompactionStopReason,
     SearchOutOfCoreUnorderedMutationWriter, SearchOutOfCoreUnorderedReplacementWriter,
-    SearchQueryError, SearchQueryResult, SearchRetainedOutput, SearchStagingCleanupReport,
-    SearchTextSeedOutput, SearchTextSeedReport, SearchUnorderedMutationLimits,
-    SearchUnorderedMutationReport, SearchVerifiedBody,
+    SearchProjectionEpochAdvanceReport, SearchQueryError, SearchQueryResult, SearchRetainedOutput,
+    SearchStagingCleanupReport, SearchTextSeedOutput, SearchTextSeedReport,
+    SearchUnorderedMutationLimits, SearchUnorderedMutationReport, SearchVerifiedBody,
 };
 pub use resident_text_seed::SearchResidentTextSeedOutput;
 // These are internal ownership seams. Hosts continue to use the embedded facade.
@@ -279,6 +286,14 @@ const SEARCH_SNAPSHOT_FILE: &str = "search_projection.hawdb";
 const SEARCH_SEGMENT_DESCRIPTOR_FILE: &str = "search_projection_segments.hawdb";
 const SEARCH_SEGMENT_PAYLOAD_FILE: &str = "search_projection_segment_payloads.hawdb";
 const SEARCH_SEGMENT_PAYLOAD_ARTIFACT_ID: u64 = 1;
+
+/// Generation-named resident snapshot. An unregistered resident checkpoint
+/// writes this before its selector; `search_projection.hawdb` is then a hard
+/// link to the generation the out-of-core manifest selects.
+fn resident_snapshot_file(generation: u64) -> String {
+    format!("search_projection.{generation}.hawdb")
+}
+
 const RABITQ_CANDIDATE_BACKEND: &str = "hawdb_rabitq_candidate_projection";
 const DISKANN_CANDIDATE_BACKEND: &str = "hawdb_diskann_candidate_projection";
 
@@ -303,8 +318,8 @@ const SEARCH_RABITQ_PROJECTION_PREFIX: &str = "search_rabitq.";
 const SEARCH_RABITQ_PROJECTION_SUFFIX: &str = ".hawdb";
 pub const FULL_REINDEX_MARKER: &str = ".reindex_needed";
 pub const METADATA_REPAIR_MARKER: &str = ".projection_metadata_repair_needed";
-const BM25_K1: f64 = 1.2;
-const BM25_B: f64 = 0.75;
+/// The BM25 constants shared with the SQL search index access path.
+use hawdb_executor::bm25::{BM25_B, BM25_K1};
 const TITLE_TERM_FREQUENCY_WEIGHT: usize = 2;
 const RRF_K: f64 = 60.0;
 const SEARCH_COMPRESSION_HEADER: &str = "HAWDB_COMPRESSED_V1";
@@ -471,6 +486,13 @@ pub enum SearchMode {
 pub struct SearchHit {
     pub id: String,
     pub score: f64,
+    /// Vector relevance in `[0, 1]`, higher is better. The scale depends on
+    /// the projection's metric: positive cosine similarity for cosine, and
+    /// `1 / (1 + l2_distance)` for Euclidean, which is often far below 1 for
+    /// unnormalized embeddings. Compare scores only within one metric; a
+    /// relevance floor tuned on cosine does not carry over to Euclidean.
+    /// `SearchVectorScoring::LinearSquaredL2` instead exposes
+    /// `max(0, 1 - squared_l2 / 2)` after selecting neighbors by distance.
     pub vector_score: f64,
     pub text_score: f64,
     pub rrf_score: f64,
@@ -565,6 +587,9 @@ pub enum SearchFallbackReasonCode {
     DiskAnnCacheBudgetExceeded,
     QueryEmbeddingMissing,
     TextQueryEmpty,
+    /// The analyzed text query exceeded the scored-term cap; only its most
+    /// selective (lowest document frequency) terms were scored.
+    TextQueryTermsReduced,
 }
 
 impl SearchFallbackReasonCode {
@@ -581,6 +606,7 @@ impl SearchFallbackReasonCode {
             SearchFallbackReasonCode::DiskAnnCacheBudgetExceeded => "diskann_cache_budget_exceeded",
             SearchFallbackReasonCode::QueryEmbeddingMissing => "query_embedding_missing",
             SearchFallbackReasonCode::TextQueryEmpty => "text_query_empty",
+            SearchFallbackReasonCode::TextQueryTermsReduced => "text_query_terms_reduced",
         }
     }
 }
@@ -603,6 +629,7 @@ impl FromStr for SearchFallbackReasonCode {
             }
             "query_embedding_missing" => Ok(SearchFallbackReasonCode::QueryEmbeddingMissing),
             "text_query_empty" => Ok(SearchFallbackReasonCode::TextQueryEmpty),
+            "text_query_terms_reduced" => Ok(SearchFallbackReasonCode::TextQueryTermsReduced),
             _ => Err("unknown search fallback reason code"),
         }
     }
@@ -656,6 +683,16 @@ pub struct SearchPredicatePushdownReport {
     pub persisted_segment_descriptor_used: bool,
     pub physical_range_read_count: usize,
     pub physical_bytes_read: u64,
+    /// Scanned segments whose candidates came from metadata value postings
+    /// instead of decoding their metadata records.
+    pub postings_segment_count: usize,
+    /// Equality/IN predicates compiled into the segment postings plan.
+    pub postings_predicate_count: usize,
+    /// Predicates left for metadata evaluation after a postings prefilter.
+    pub postings_residual_predicate_count: usize,
+    /// Scanned segments where postings narrowed the metadata records evaluated
+    /// by residual predicates.
+    pub postings_prefiltered_segment_count: usize,
     pub field_summaries: Vec<SearchPredicateFieldPruningReport>,
 }
 
@@ -749,6 +786,24 @@ impl Default for SearchFusionWeights {
             text_weight: 1.0,
         }
     }
+}
+
+/// How much of each ranked out-of-core hit is materialized after scoring.
+///
+/// Ranking, filtering, totals and reports are identical for every level.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SearchHitHydration {
+    /// Hydrate the metadata fields, matched terms/spans and the vector score
+    /// recomputed from the stored embedding. Vector-only requests without
+    /// query terms need no matched spans, so they read the metadata and vector
+    /// sidecars instead of the full document payload; the hits are identical.
+    #[default]
+    Documents,
+    /// Return identifiers and ranking scores without reading any document,
+    /// metadata or vector payload. `kind`, `external_id` and `source_id` are
+    /// `None`, matched terms/spans are empty, and `vector_score` is the vector
+    /// retriever's ranking score (0 for hits it did not rank).
+    ScoresOnly,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -897,6 +952,10 @@ impl VectorSearchKernelPreference {
     }
 }
 
+/// Default DiskANN navigation beam: the beam of a query that sets none, and
+/// the default of `SearchOutOfCoreConfig::default_navigation_beam`.
+pub const DEFAULT_NAVIGATION_BEAM: usize = 1024;
+
 #[derive(Debug, Clone, Copy)]
 pub struct VectorSearchExecutionOptions<'a> {
     pub max_parallelism: NonZeroUsize,
@@ -905,6 +964,8 @@ pub struct VectorSearchExecutionOptions<'a> {
     pub task_context: Option<&'a hawdb_core::RuntimeTaskContext>,
     capture_candidate_ids: bool,
     exact: bool,
+    navigation_beam: Option<NonZeroUsize>,
+    candidate_window: Option<NonZeroUsize>,
 }
 
 impl<'a> VectorSearchExecutionOptions<'a> {
@@ -920,6 +981,8 @@ impl<'a> VectorSearchExecutionOptions<'a> {
             task_context,
             capture_candidate_ids: false,
             exact: false,
+            navigation_beam: None,
+            candidate_window: None,
         }
     }
 
@@ -949,6 +1012,49 @@ impl<'a> VectorSearchExecutionOptions<'a> {
         self.capture_candidate_ids = true;
         self
     }
+
+    /// DiskANN navigation beam for this query (default 1024), never below the
+    /// requested result count. A smaller beam trades recall for speed. The
+    /// traversal stays bounded by `max_working_bytes`, and a beam whose
+    /// workspace does not fit is refused, not truncated.
+    pub fn with_navigation_beam(mut self, beam: NonZeroUsize) -> Self {
+        self.navigation_beam = Some(beam);
+        self
+    }
+
+    /// Approximate candidates generated and reranked for this query: the
+    /// RaBitQ rerank depth and DiskANN candidate count. Without it, the window
+    /// is `max(limit, rank_window, 128)` (out of core, at most
+    /// `max_vector_candidates`). The window never goes below the limit or rank
+    /// window. A window below the default 128 does less work but can lower
+    /// recall, because fewer approximate candidates reach the exact rerank.
+    /// Out of core, a window above the reader's `max_vector_candidates` is
+    /// refused; resident search stays bounded by its working memory.
+    pub fn with_candidate_window(mut self, window: NonZeroUsize) -> Self {
+        self.candidate_window = Some(window);
+        self
+    }
+
+    #[cfg(feature = "vector-search")]
+    pub(crate) fn navigation_beam(&self, top_k: usize) -> usize {
+        top_k.max(self.navigation_beam.map_or(
+            crate::vector_execution::DISKANN_NAVIGATION_BEAM,
+            NonZeroUsize::get,
+        ))
+    }
+
+    #[cfg(feature = "vector-search")]
+    pub(crate) fn candidate_window(&self) -> Option<usize> {
+        self.candidate_window.map(NonZeroUsize::get)
+    }
+
+    /// The resident DiskANN candidate floor: the per-query window, or the
+    /// default navigation window.
+    #[cfg(feature = "vector-search")]
+    pub(crate) fn resident_candidate_window(&self) -> usize {
+        self.candidate_window()
+            .unwrap_or(hawdb_vector_projection::diskann::DiskAnnSearchOptions::default().beam_width)
+    }
 }
 
 impl Default for VectorSearchExecutionOptions<'_> {
@@ -960,6 +1066,8 @@ impl Default for VectorSearchExecutionOptions<'_> {
             task_context: None,
             capture_candidate_ids: false,
             exact: false,
+            navigation_beam: None,
+            candidate_window: None,
         }
     }
 }
@@ -1102,6 +1210,8 @@ impl<'a> AdaptiveVectorExecutionControls<'a> {
             task_context: None,
             capture_candidate_ids: false,
             exact: false,
+            navigation_beam: None,
+            candidate_window: None,
         },
     };
     const PERSISTED: Self = Self {
@@ -1114,6 +1224,8 @@ impl<'a> AdaptiveVectorExecutionControls<'a> {
             task_context: None,
             capture_candidate_ids: false,
             exact: false,
+            navigation_beam: None,
+            candidate_window: None,
         },
     };
     const RECALL_CANDIDATES: Self = Self {
@@ -1126,6 +1238,8 @@ impl<'a> AdaptiveVectorExecutionControls<'a> {
             task_context: None,
             capture_candidate_ids: true,
             exact: false,
+            navigation_beam: None,
+            candidate_window: None,
         },
     };
 
@@ -1314,6 +1428,15 @@ pub struct SearchAnalyzerLexicon {
 }
 
 impl SearchAnalyzerLexicon {
+    /// Distinct analyzed terms `text` produces as a lexical query.
+    ///
+    /// Hosts can compare this with the analyzed-term cap (default 1024) before
+    /// submitting a query. Unlike query admission, it analyzes all of `text`
+    /// without that cap, so its cost grows with the input.
+    pub fn analyzed_query_term_count(&self, text: &str) -> usize {
+        tokenize(text, self).len()
+    }
+
     pub fn empty() -> Self {
         Self {
             alias_rules: Vec::new(),
@@ -1505,6 +1628,9 @@ pub struct SearchProjectionDeltaReport {
     pub source_graph_commit_epoch_before: Option<u64>,
     pub source_graph_commit_epoch_after: Option<u64>,
     pub source_graph_commit_epoch_updated: bool,
+    /// Generation cleanup after the publication that made this delta
+    /// durable; `None` when the call published nothing.
+    pub projection_cleanup: Option<SearchProjectionCleanupOutcome>,
 }
 
 #[derive(Debug)]
@@ -1513,6 +1639,7 @@ pub struct SearchIndex {
     read_freshness: Option<Arc<SearchProjectionFreshness>>,
     documents: ResidentDocuments,
     vector_index_descriptor: Option<hawdb_core::VectorIndexDescriptor>,
+    vector_scoring: SearchVectorScoring,
     vector_document_summary: Option<vector_index::VectorDocumentSummary>,
     canonical_vector_source_epoch: Option<u64>,
     canonical_vector_delta: Option<vector_index::CanonicalVectorDelta>,
@@ -1529,6 +1656,11 @@ pub struct SearchIndex {
     import_source_graph_commit_epoch: Option<u64>,
     source_graph_commit_epoch: Option<u64>,
     durable_source_graph_commit_epoch: Mutex<Option<u64>>,
+    /// The epoch the loaded snapshot, lexical and vector artifacts are stamped
+    /// with, when a verified metadata-only advance (#1756) moved
+    /// `source_graph_commit_epoch` past it. Cleared by the next checkpoint,
+    /// which restamps every artifact.
+    artifact_source_graph_commit_epoch: Mutex<Option<u64>>,
     marker_lines: Mutex<BTreeMap<String, Vec<String>>>,
     analyzer_lexicon: Arc<SearchAnalyzerLexicon>,
     lexical_projection: Mutex<Option<Arc<LexicalProjectionReader>>>,
@@ -1544,6 +1676,7 @@ pub struct SearchIndex {
     segment_payload_reader: Option<Arc<hawdb_storage::scan::FileSegmentRangeReader>>,
     range_read_config: SearchRangeReadConfig,
     cleanup_state: Mutex<SearchProjectionCleanupState>,
+    cleanup_options: SearchProjectionCleanupOptions,
     runtime_capabilities: RuntimeCapabilities,
     telemetry: Option<Arc<dyn TelemetrySink>>,
 }
@@ -1593,7 +1726,7 @@ impl SearchIndex {
         let loaded = if registered {
             index.load_snapshot_from_publication(publication)
         } else {
-            index.load_snapshot()
+            out_of_core::recover_resident_aliases(path).and_then(|()| index.load_snapshot())
         };
         loaded.map_err(|error| {
             if registered && !matches!(error, HawDBError::FileDescriptors(_)) {
@@ -1607,11 +1740,11 @@ impl SearchIndex {
                 "metadata-only vector Consumers require registered native reopen".into(),
             ));
         }
-        if registered {
-            out_of_core::validate_captured_resident_snapshot_identity(&index, publication)?;
+        let advanced_source_epoch = if registered {
+            out_of_core::validate_captured_resident_snapshot_identity(&index, publication)?
         } else {
-            out_of_core::validate_resident_snapshot_identity(&index, path)?;
-        }
+            out_of_core::validate_resident_snapshot_identity(&index, path)?
+        };
         if index.consumer_binding.is_some() != registered {
             return Err(HawDBError::Storage(
                 "projection consumer lifecycle does not match snapshot binding".into(),
@@ -1634,6 +1767,11 @@ impl SearchIndex {
         } else {
             index.load_rabitq_projection()?;
         }
+        // Every artifact above was validated against its content stamp. Only
+        // now report the epoch the selector advanced to (#1756).
+        if let Some(epoch) = advanced_source_epoch {
+            index.apply_published_epoch_advance(epoch);
+        }
         index.capture_segment_payload_reader(publication)?;
         for marker in [FULL_REINDEX_MARKER, METADATA_REPAIR_MARKER] {
             let lines = index.read_marker_lines(marker)?;
@@ -1648,6 +1786,21 @@ impl SearchIndex {
             publication,
         );
         Ok(index)
+    }
+
+    /// What a lexical query above the scored-term cap does on this resident
+    /// index; [`LexicalQueryTermPolicy::Exact`] by default. Under `Exact`,
+    /// projection-backed search and text seeds refuse such a query, while
+    /// snapshot-free search scores every analyzed term. Not persisted.
+    pub fn with_lexical_query_term_policy(mut self, policy: LexicalQueryTermPolicy) -> Self {
+        self.lexical_config.query_term_policy = policy;
+        self
+    }
+
+    /// Sets the resident policy in place. Like [`Self::with_lexical_query_term_policy`]
+    /// it is not persisted: a reopened index starts at `Exact`.
+    pub fn set_lexical_query_term_policy(&mut self, policy: LexicalQueryTermPolicy) {
+        self.lexical_config.query_term_policy = policy;
     }
 
     pub fn with_analyzer_lexicon(mut self, analyzer_lexicon: SearchAnalyzerLexicon) -> Self {
@@ -1781,6 +1934,11 @@ impl SearchIndex {
                 &identity,
             ) {
                 Ok(projection) => {
+                    if projection.manifest().metric != self.vector_metric().into() {
+                        return Err(HawDBError::StorageIntegrity(
+                            "RaBitQ artifact metric differs from its projection".into(),
+                        ));
+                    }
                     if let Some(binding) = &self.vector_index_descriptor {
                         vector_index::validate_projection(binding, projection.manifest())?;
                     }
@@ -1833,23 +1991,90 @@ impl SearchIndex {
     }
 
     #[cfg(feature = "vector-search")]
+    fn rabitq_backend_selected(&self) -> bool {
+        self.vector_index_descriptor.as_ref().map_or_else(
+            || self.rabitq_checkpoint.is_some(),
+            |definition| {
+                matches!(
+                    definition.backend(),
+                    hawdb_core::VectorIndexBackend::RaBitQ { .. }
+                )
+            },
+        )
+    }
+
+    #[cfg(feature = "vector-search")]
     fn build_in_memory_rabitq_projection(&self) -> Result<Option<Arc<RaBitQCandidateProjection>>> {
+        self.build_in_memory_rabitq_projection_with_context(None, None)
+    }
+
+    #[cfg(feature = "vector-search")]
+    fn lock_rabitq_projection(
+        &self,
+        task: Option<&RuntimeTaskContext>,
+    ) -> Result<std::sync::MutexGuard<'_, Option<Arc<RaBitQCandidateProjection>>>> {
+        if task.is_none() {
+            return Ok(self
+                .rabitq_projection
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()));
+        }
+        loop {
+            task.map_or(Ok(()), crate::build_control::checkpoint)?;
+            match self.rabitq_projection.try_lock() {
+                Ok(guard) => return Ok(guard),
+                Err(std::sync::TryLockError::Poisoned(error)) => return Ok(error.into_inner()),
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "vector-search")]
+    fn build_in_memory_rabitq_projection_with_context(
+        &self,
+        task: Option<&RuntimeTaskContext>,
+        max_working_bytes: Option<usize>,
+    ) -> Result<Option<Arc<RaBitQCandidateProjection>>> {
+        task.map_or(Ok(()), crate::build_control::checkpoint)?;
+        self.vector_scoring
+            .validate(self.vector_index_descriptor.is_some())?;
         // Serialize the first build within a generation. Captured generations
         // reserve its complete build/cache capacity before a governed lease is
         // returned; concurrent readers must not allocate duplicate projections.
-        let mut cached = self
-            .rabitq_projection
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut cached = self.lock_rabitq_projection(task)?;
+        task.map_or(Ok(()), crate::build_control::checkpoint)?;
         if let Some(projection) = cached.as_ref() {
             return Ok(Some(Arc::clone(projection)));
+        }
+        if let Some(available) = max_working_bytes {
+            let required = RaBitQCandidateProjection::in_memory_capacity_bound_with_context(
+                &self.documents,
+                self.rabitq_projection_identity(0),
+                self.rabitq_build_options,
+                task,
+            )?;
+            task.map_or(Ok(()), crate::build_control::checkpoint)?;
+            if required > available {
+                return Err(rabitq_projection::map_projection_error(
+                    hawdb_vector_projection::ProjectionError::ResourceBudgetExceeded {
+                        required,
+                        available,
+                    },
+                    "resident RaBitQ build/cache admission",
+                ));
+            }
         }
         let projection = RaBitQCandidateProjection::build_from_view(
             &self.documents,
             self.rabitq_projection_identity(0),
             self.rabitq_build_options,
+            self.vector_metric(),
+            task,
         )?
         .map(Arc::new);
+        task.map_or(Ok(()), crate::build_control::checkpoint)?;
         *cached = projection.clone();
         Ok(projection)
     }
@@ -2064,6 +2289,7 @@ impl SearchIndex {
             source_graph_commit_epoch_before,
             source_graph_commit_epoch_after,
             source_graph_commit_epoch_updated,
+            projection_cleanup: None,
         })
     }
 
@@ -2120,6 +2346,25 @@ impl SearchIndex {
     pub fn document_count(&self) -> usize {
         self.vector_document_summary
             .map_or(self.documents.len(), |summary| summary.document_count)
+    }
+
+    /// The largest eligible-set size an exact vector-only read of this
+    /// resident index under `working_bytes` is guaranteed to serve, for
+    /// eligible document IDs of at most `max_document_id_bytes` bytes. Raw
+    /// candidates retain a geometrically grown vector (at most two slots per
+    /// candidate) plus their IDs; a raw rerank also keeps a lookup over every
+    /// indexed document and two ID copies per candidate. A larger read may be
+    /// refused; it is never truncated.
+    pub fn exact_vector_search_capacity(
+        &self,
+        working_bytes: usize,
+        max_document_id_bytes: usize,
+    ) -> usize {
+        resident_exact_vector_search_capacity(
+            self.document_count(),
+            working_bytes,
+            max_document_id_bytes,
+        )
     }
 
     /// Returns vector-bearing document IDs accepted by HawDB's metadata
@@ -2671,6 +2916,16 @@ impl SearchIndex {
             .max(self.documents.len())
     }
 
+    /// Limits for the generation cleanup that runs after every checkpoint.
+    /// Not persisted: a reopened index starts at the defaults.
+    pub fn set_projection_cleanup_options(&mut self, options: SearchProjectionCleanupOptions) {
+        self.cleanup_options = options;
+    }
+
+    pub fn projection_cleanup_options(&self) -> SearchProjectionCleanupOptions {
+        self.cleanup_options
+    }
+
     pub fn projection_cleanup_report(&self) -> SearchProjectionCleanupReport {
         self.cleanup_state
             .lock()
@@ -2742,6 +2997,8 @@ impl SearchIndex {
         publication: Option<&out_of_core::SearchProjectionPublishLease>,
         task: &RuntimeTaskContext,
     ) -> Result<SearchCheckpointReport> {
+        self.vector_scoring
+            .validate(self.vector_index_descriptor.is_some())?;
         let Some(path) = &self.path else {
             return Ok(SearchCheckpointReport::in_memory(self.documents.len()));
         };
@@ -2761,24 +3018,41 @@ impl SearchIndex {
             let publication_lease = publication
                 .or(owned_publication.as_ref())
                 .expect("checkpoint retains publication authority");
-            let snapshot_path = path.join(SEARCH_SNAPSHOT_FILE);
-            let snapshot = snapshot_writer::write_search_snapshot_with_context(
-                &snapshot_path,
-                snapshot_writer::SearchSnapshotMetadata {
-                    source_graph_commit_epoch: self.source_graph_commit_epoch,
-                    import_source_graph_commit_epoch: self.import_source_graph_commit_epoch,
-                    embedding_manifest: self.embedding_manifest.as_ref(),
-                    embedding_dimension: self.embedding_dimension,
-                    consumer_binding: self.consumer_binding.as_ref(),
-                    vector_index_descriptor: self.vector_index_descriptor.as_ref(),
-                    vector_document_summary: None,
-                    canonical_vector_source_epoch: None,
-                    rabitq_checkpoint: self.rabitq_checkpoint,
-                },
-                self.documents.values(),
-                &memory,
-                task,
-            )?;
+            // Unregistered resident checkpoints write every artifact under a
+            // generation name and commit with the manifest rename. Registered
+            // Consumers keep their legacy order; their own publication record
+            // selects the producer closure.
+            let deferred_aliases = self.consumer_binding.is_none();
+            if deferred_aliases {
+                // `open` may have created this directory without persisting
+                // its entry; a durable selector inside it must not vanish.
+                hawdb_storage::durability::sync_directory_ancestors(path)?;
+            }
+            let write_snapshot = |target: &Path| {
+                snapshot_writer::write_search_snapshot_with_context(
+                    target,
+                    snapshot_writer::SearchSnapshotMetadata {
+                        source_graph_commit_epoch: self.source_graph_commit_epoch,
+                        import_source_graph_commit_epoch: self.import_source_graph_commit_epoch,
+                        embedding_manifest: self.embedding_manifest.as_ref(),
+                        embedding_dimension: self.embedding_dimension,
+                        consumer_binding: self.consumer_binding.as_ref(),
+                        vector_index_descriptor: self.vector_index_descriptor.as_ref(),
+                        vector_scoring: self.vector_scoring,
+                        vector_document_summary: None,
+                        canonical_vector_source_epoch: None,
+                        rabitq_checkpoint: self.rabitq_checkpoint,
+                    },
+                    self.documents.values(),
+                    &memory,
+                    task,
+                )
+            };
+            let legacy_snapshot = if deferred_aliases {
+                None
+            } else {
+                Some(write_snapshot(&path.join(SEARCH_SNAPSHOT_FILE))?)
+            };
             let generation =
                 out_of_core::next_generation(path, self.lexical_config.max_manifest_bytes.get())?;
             #[cfg(feature = "vector-search")]
@@ -2786,12 +3060,21 @@ impl SearchIndex {
                 self.write_rabitq_projection(path, generation, task, publication_lease)?;
             #[cfg(not(feature = "vector-search"))]
             let rabitq_bytes_written = 0;
+            #[cfg(test)]
+            out_of_core::resident_checkpoint_fault(out_of_core::ResidentCheckpointStep::RaBitQ)?;
+            let snapshot = match legacy_snapshot {
+                Some(snapshot) => snapshot,
+                None => write_snapshot(&path.join(resident_snapshot_file(generation)))?,
+            };
+            #[cfg(test)]
+            out_of_core::resident_checkpoint_fault(out_of_core::ResidentCheckpointStep::Snapshot)?;
             let publication = out_of_core::write_resident_artifacts(
                 self,
                 path,
                 &snapshot,
                 out_of_core::ResidentPublicationPlan {
                     generation,
+                    deferred_aliases,
                     #[cfg(feature = "vector-search")]
                     rabitq,
                 },
@@ -2804,8 +3087,15 @@ impl SearchIndex {
                 .durable_source_graph_commit_epoch
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.source_graph_commit_epoch;
-            self.retry_projection_cleanup_under_publication(
-                SearchProjectionCleanupOptions::default(),
+            // Every published artifact now carries the current epoch.
+            *self
+                .artifact_source_graph_commit_epoch
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+            #[cfg(test)]
+            out_of_core::resident_checkpoint_fault(out_of_core::ResidentCheckpointStep::Cleanup)?;
+            let cleanup = self.retry_projection_cleanup_under_publication(
+                self.cleanup_options,
                 publication_lease,
             );
             if let Some(binding) = &self.consumer_binding {
@@ -2822,7 +3112,11 @@ impl SearchIndex {
                         sha256: snapshot.encoded_sha256.to_string(),
                     });
             }
-            Ok(snapshot.finish(publication.generation, projection_bytes_written))
+            Ok(snapshot.finish(
+                publication.generation,
+                projection_bytes_written,
+                Some(SearchProjectionCleanupOutcome::from(&cleanup)),
+            ))
         })();
         if let Some(telemetry) = &self.telemetry {
             let (byte_count, generation) = result
@@ -2882,11 +3176,14 @@ impl SearchIndex {
             self.invalidate_rabitq_projection();
             return Ok((generation, artifact.reference.byte_length, Some(artifact)));
         }
+        self.vector_scoring
+            .validate(self.vector_index_descriptor.is_some())?;
         let projection = RaBitQCandidateProjection::write_from_view(
             &artifact_path,
             &self.documents,
             self.rabitq_projection_identity(generation),
             self.rabitq_build_options,
+            self.vector_metric(),
         )?
         .ok_or_else(|| {
             HawDBError::Storage(
@@ -2997,9 +3294,9 @@ impl SearchIndex {
         )
     }
 
-    /// Default graph candidates under the caller's memory and cancellation limits.
-    /// Sources exceeding the ordinary graph cache use scalar search with a
-    /// reported cache-budget fallback. Caller-selected limits remain binding.
+    /// Default candidates under the caller's memory and cancellation limits.
+    /// Explicit RaBitQ selection refuses build/cache or query budget failures.
+    /// The ordinary graph may use scalar search with a reported cache fallback.
     pub fn try_search_with_options_context(
         &self,
         query_text: &str,
@@ -3386,7 +3683,7 @@ impl SearchIndex {
     ) -> Option<VectorProjectionQualificationIdentity> {
         #[cfg(feature = "vector-search")]
         {
-            if self.rabitq_checkpoint.is_none() {
+            if !self.rabitq_backend_selected() {
                 return self.resident_diskann.qualification_identity(self);
             }
             let projection = self.rabitq_projection()?;
@@ -3419,7 +3716,9 @@ impl SearchIndex {
         {
             // Resident graph snapshots do not persist construction measurements.
             // Never manufacture their resource evidence from an unrelated codec.
-            self.rabitq_checkpoint?;
+            if !self.rabitq_backend_selected() {
+                return None;
+            }
             let projection = self.rabitq_projection()?;
             let manifest = projection.manifest();
             let raw_vector_bytes = u64::try_from(manifest.document_count)
@@ -3513,7 +3812,10 @@ impl SearchIndex {
         request: AdaptiveVectorSearchRequest,
         filtered_documents: &[&SearchDocument],
         embedding_dimension: usize,
-    ) -> PreparedAdaptiveVectorBackend {
+        execution: VectorSearchExecutionOptions<'_>,
+    ) -> Result<PreparedAdaptiveVectorBackend> {
+        let task = execution.task_context;
+        task.map_or(Ok(()), crate::build_control::checkpoint)?;
         let document_count = self
             .documents
             .values()
@@ -3540,22 +3842,31 @@ impl SearchIndex {
             request.policy,
         );
         if preliminary.backend == AdaptiveVectorBackend::ScalarFlat {
-            return PreparedAdaptiveVectorBackend {
+            return Ok(PreparedAdaptiveVectorBackend {
                 decision: preliminary,
                 fallback_reason: None,
                 #[cfg(feature = "vector-search")]
                 projection: None,
-            };
+            });
         }
 
         #[cfg(feature = "vector-search")]
         {
-            let projection = self.rabitq_projection().or_else(|| {
+            let cached = self.lock_rabitq_projection(task)?.clone();
+            let projection = cached.or_else(|| {
                 self.path
                     .is_none()
-                    .then(|| self.build_in_memory_rabitq_projection().ok().flatten())
+                    .then(|| {
+                        self.build_in_memory_rabitq_projection_with_context(
+                            task,
+                            Some(execution.max_working_bytes),
+                        )
+                        .ok()
+                        .flatten()
+                    })
                     .flatten()
             });
+            task.map_or(Ok(()), crate::build_control::checkpoint)?;
             let covered_document_count = projection
                 .as_ref()
                 .map(|projection| {
@@ -3573,22 +3884,22 @@ impl SearchIndex {
                 request.policy,
             );
             let fallback_reason = adaptive_vector_fallback_reason(decision);
-            PreparedAdaptiveVectorBackend {
+            Ok(PreparedAdaptiveVectorBackend {
                 projection: (decision.backend == AdaptiveVectorBackend::QuantizedProjection)
                     .then_some(projection)
                     .flatten(),
                 decision,
                 fallback_reason,
-            }
+            })
         }
 
         #[cfg(not(feature = "vector-search"))]
         {
             let decision = select_adaptive_vector_backend(decision_input(false, 0), request.policy);
-            PreparedAdaptiveVectorBackend {
+            Ok(PreparedAdaptiveVectorBackend {
                 decision,
                 fallback_reason: adaptive_vector_fallback_reason(decision),
-            }
+            })
         }
     }
 
@@ -3646,7 +3957,18 @@ impl SearchIndex {
             capture_candidate_ids,
             vector_execution_options,
         } = strategy;
-        let query_terms = tokenize(query_text, &self.analyzer_lexicon);
+        let query_can_generate_candidates = vector_execution::query_can_generate_candidates(
+            query_embedding,
+            self.embedding_dimension,
+            self.vector_metric(),
+            vector_execution_options,
+        )?;
+        // Text-scoring modes stop analyzing once the analyzed-term cap is passed.
+        let mut query_terms = if mode == SearchMode::Vector {
+            tokenize(query_text, &self.analyzer_lexicon)
+        } else {
+            tokenize_query_bounded(query_text, &self.analyzer_lexicon, &self.lexical_config)?
+        };
         let mut vector_fallback_reason_codes = Vec::new();
         let mut vector_fallback_reasons = Vec::new();
         if let Some(reason) = vector_backend_fallback_reason {
@@ -3715,46 +4037,81 @@ impl SearchIndex {
         filtered_documents.sort_unstable_by(|left, right| left.id.cmp(&right.id));
         let filtered_document_count = filtered_documents.len();
         let mut prepared_adaptive_backend = None;
-        let vector_backend_request = if vector_execution_options.exact {
+        self.vector_scoring
+            .validate(self.vector_index_descriptor.is_some())?;
+        #[cfg(feature = "vector-search")]
+        let default_without_candidates = mode != SearchMode::Text
+            && matches!(vector_backend_request, VectorSearchBackendRequest::Default)
+            && (limit == 0
+                || !filtered_documents
+                    .iter()
+                    .any(|document| document.embedding.is_some()))
+            && if self.rabitq_backend_selected() {
+                self.lock_rabitq_projection(vector_execution_options.task_context)?
+                    .is_none()
+            } else {
+                !self
+                    .resident_diskann
+                    .has_cached_projection(vector_execution_options.task_context)?
+            };
+        #[cfg(not(feature = "vector-search"))]
+        let default_without_candidates = false;
+        let vector_backend_request = if vector_execution_options.exact || default_without_candidates
+        {
             VectorSearchBackendRequest::Fixed(VectorSearchBackend::Scalar)
         } else {
             vector_backend_request
         };
+        #[cfg(feature = "vector-search")]
+        let default_rabitq =
+            if matches!(vector_backend_request, VectorSearchBackendRequest::Default)
+                && self.rabitq_backend_selected()
+                && mode != SearchMode::Text
+                && query_can_generate_candidates
+            {
+                self.build_in_memory_rabitq_projection_with_context(
+                    vector_execution_options.task_context,
+                    Some(vector_execution_options.max_working_bytes),
+                )?
+            } else {
+                None
+            };
         let vector_backend = match vector_backend_request {
             VectorSearchBackendRequest::Default => {
                 #[cfg(feature = "vector-search")]
                 {
-                    let valid_query = query_embedding.is_some_and(|vector| {
-                        Some(vector.len()) == self.embedding_dimension
-                            && !vector.is_empty()
-                            && vector.iter().all(|coordinate| coordinate.is_finite())
-                            && vector.iter().any(|coordinate| *coordinate != 0.0)
-                    });
-                    if !vector_execution_options.exact && mode != SearchMode::Text && valid_query {
-                        let candidate_limit = options
-                            .offset
-                            .saturating_add(limit)
-                            .max(options.rank_window.unwrap_or(0))
-                            .max(
-                                hawdb_vector_projection::diskann::DiskAnnSearchOptions::default()
-                                    .beam_width,
-                            );
-                        if self.resident_diskann.admits_default_search(
-                            self,
-                            &filtered_documents,
-                            query_embedding.expect("valid query").len(),
-                            candidate_limit,
-                            vector_execution_options,
-                        )? {
-                            VectorSearchBackend::DiskAnn { index: self }
-                        } else {
-                            vector_fallback_reason_codes
-                                .push(SearchFallbackReasonCode::DiskAnnCacheBudgetExceeded);
-                            vector_fallback_reasons.push("resident DiskANN cache exceeds its memory envelope; using scalar vector scan".into());
-                            VectorSearchBackend::Scalar
+                    if let Some(projection) = default_rabitq.as_deref() {
+                        VectorSearchBackend::RaBitQ {
+                            projection,
+                            required: true,
                         }
                     } else {
-                        VectorSearchBackend::Scalar
+                        if !vector_execution_options.exact
+                            && mode != SearchMode::Text
+                            && query_can_generate_candidates
+                        {
+                            let candidate_limit = options
+                                .offset
+                                .saturating_add(limit)
+                                .max(options.rank_window.unwrap_or(0))
+                                .max(vector_execution_options.resident_candidate_window());
+                            if self.resident_diskann.admits_default_search(
+                                self,
+                                &filtered_documents,
+                                query_embedding.expect("valid query").len(),
+                                candidate_limit,
+                                vector_execution_options,
+                            )? {
+                                VectorSearchBackend::DiskAnn { index: self }
+                            } else {
+                                vector_fallback_reason_codes
+                                    .push(SearchFallbackReasonCode::DiskAnnCacheBudgetExceeded);
+                                vector_fallback_reasons.push("resident DiskANN cache exceeds its memory envelope; using scalar vector scan".into());
+                                VectorSearchBackend::Scalar
+                            }
+                        } else {
+                            VectorSearchBackend::Scalar
+                        }
                     }
                 }
                 #[cfg(not(feature = "vector-search"))]
@@ -3764,7 +4121,7 @@ impl SearchIndex {
             }
             VectorSearchBackendRequest::Fixed(backend) => backend,
             VectorSearchBackendRequest::Adaptive(request)
-                if mode != SearchMode::Text && query_embedding.is_some() =>
+                if mode != SearchMode::Text && query_can_generate_candidates =>
             {
                 prepared_adaptive_backend = Some(
                     self.prepare_adaptive_vector_backend(
@@ -3772,7 +4129,8 @@ impl SearchIndex {
                         &filtered_documents,
                         self.embedding_dimension
                             .unwrap_or_else(|| query_embedding.map_or(0, <[f32]>::len)),
-                    ),
+                        vector_execution_options,
+                    )?,
                 );
                 prepared_adaptive_backend
                     .as_ref()
@@ -3835,7 +4193,7 @@ impl SearchIndex {
             }
         };
         let text_available = !query_terms.is_empty();
-        let (text_fallback_reason_codes, text_fallback_reasons) =
+        let (mut text_fallback_reason_codes, mut text_fallback_reasons) =
             if !text_available && mode != SearchMode::Vector {
                 (
                     vec![SearchFallbackReasonCode::TextQueryEmpty],
@@ -3856,6 +4214,35 @@ impl SearchIndex {
         if lexical_snapshot.is_some() {
             lexical_snapshot_test_gate::pause_after_capture();
         }
+        // The segmented projection bounds scored terms; long queries keep
+        // their most selective terms instead of failing the whole search.
+        if let Some((projection, delta)) = &lexical_snapshot {
+            let selection = projection.fit_query_terms(
+                &mut query_terms,
+                delta,
+                self.lexical_config.max_term_bytes,
+                self.lexical_config.query_term_policy,
+                None,
+            )?;
+            if selection.reduced() {
+                text_fallback_reason_codes.push(SearchFallbackReasonCode::TextQueryTermsReduced);
+                text_fallback_reasons.push(selection.to_string());
+            }
+        }
+        // Without a projection, resident BM25 applies the same caps and the
+        // same selection as the resident text seed over the filtered corpus.
+        if text_available && mode != SearchMode::Vector && lexical_snapshot.is_none() {
+            let selection = resident_bm25::select_query_terms(
+                &mut query_terms,
+                filtered_documents.iter().copied(),
+                &self.analyzer_lexicon,
+                &self.lexical_config,
+            )?;
+            if selection.reduced() {
+                text_fallback_reason_codes.push(SearchFallbackReasonCode::TextQueryTermsReduced);
+                text_fallback_reasons.push(selection.to_string());
+            }
+        }
         let mut text_corpus =
             if text_available && mode != SearchMode::Vector && lexical_snapshot.is_none() {
                 Some(resident_bm25::Scorer::from_documents(
@@ -3874,6 +4261,8 @@ impl SearchIndex {
             Some(execute_search_vector_plan(SearchVectorExecutionRequest {
                 query_embedding: query_embedding
                     .expect("vector_available requires query embedding"),
+                metric: self.vector_metric(),
+                scoring: self.vector_scoring,
                 documents: &filtered_documents,
                 backend: vector_backend,
                 filter_fields: vector_filter_fields,
@@ -3951,7 +4340,7 @@ impl SearchIndex {
         let text_ranks = ranked_scores(&text_scores);
         let vector_window_ranks = window_ranks(&vector_ranks, options.rank_window);
         let text_window_ranks = window_ranks(&text_ranks, options.rank_window);
-        let retrievers = vec![
+        let mut retrievers = vec![
             SearchRetrieverReport {
                 name: "vector".to_string(),
                 backend: vector_backend.report_name().to_string(),
@@ -4167,6 +4556,13 @@ impl SearchIndex {
                 top_candidates: top_ranked_candidates(&text_window_ranks, &text_scores, limit),
             },
         ];
+        for retriever in &mut retrievers {
+            if retriever.name == "vector" {
+                for candidate in &mut retriever.top_candidates {
+                    candidate.score = self.vector_scoring.exposed(candidate.score);
+                }
+            }
+        }
         let mut scored_candidates = vector_scores
             .keys()
             .chain(text_scores.keys())
@@ -4238,8 +4634,12 @@ impl SearchIndex {
                 })?;
             hits.push(SearchHit {
                 id: candidate.id,
-                score: candidate.score,
-                vector_score: candidate.vector_score,
+                score: if mode == SearchMode::Vector {
+                    self.vector_scoring.exposed(candidate.score)
+                } else {
+                    candidate.score
+                },
+                vector_score: self.vector_scoring.exposed(candidate.vector_score),
                 text_score: candidate.text_score,
                 rrf_score: candidate.rrf_score,
                 vector_rrf_score: candidate.vector_rrf_score,
@@ -4426,6 +4826,14 @@ impl SearchIndex {
                     summary.validate()?;
                     self.vector_document_summary = Some(summary);
                 }
+                ["vector_scoring", "linear_squared_l2"] => {
+                    if !self.vector_scoring.is_default() || !self.documents.is_empty() {
+                        return Err(vector_index::invalid(
+                            "duplicate or misplaced vector scoring",
+                        ));
+                    }
+                    self.vector_scoring = SearchVectorScoring::LinearSquaredL2;
+                }
                 ["vector_index_binding", encoded] => {
                     if self.vector_index_descriptor.is_some() || !self.documents.is_empty() {
                         return Err(HawDBError::StorageIntegrity(
@@ -4595,6 +5003,8 @@ impl SearchIndex {
                 "invalid registered projection epochs".into(),
             ));
         }
+        self.vector_scoring
+            .validate(self.vector_index_descriptor.is_some())?;
         Ok(())
     }
 
@@ -4720,12 +5130,14 @@ impl Default for SearchIndex {
             rabitq_checkpoint: None,
             embedding_manifest: None,
             vector_index_descriptor: None,
+            vector_scoring: SearchVectorScoring::default(),
             vector_document_summary: None,
             canonical_vector_source_epoch: None,
             canonical_vector_delta: None,
             import_source_graph_commit_epoch: None,
             source_graph_commit_epoch: None,
             durable_source_graph_commit_epoch: Mutex::new(None),
+            artifact_source_graph_commit_epoch: Mutex::new(None),
             marker_lines: Mutex::new(BTreeMap::new()),
             analyzer_lexicon: Arc::default(),
             lexical_projection: Mutex::new(None),
@@ -4741,6 +5153,7 @@ impl Default for SearchIndex {
             segment_payload_reader: None,
             range_read_config: SearchRangeReadConfig::default(),
             cleanup_state: Mutex::new(SearchProjectionCleanupState::default()),
+            cleanup_options: SearchProjectionCleanupOptions::default(),
             runtime_capabilities: crate::compiled_runtime_capabilities(),
             telemetry: None,
         }
@@ -5670,6 +6083,7 @@ fn value_to_projection_string(value: &Value) -> String {
         Value::Bool(value) => value.to_string(),
         Value::Int(value) => value.to_string(),
         Value::Float(value) => value.to_string(),
+        Value::Decimal(value) => value.to_string(),
         Value::String(value) => value.clone(),
         Value::Binary(value) => format!(
             "\\x{}",
@@ -5679,7 +6093,12 @@ fn value_to_projection_string(value: &Value) -> String {
                 .collect::<String>()
         ),
         Value::Uuid(value) => value.to_string(),
-        Value::Vector(_) => value.to_string(),
+        Value::Vector(_)
+        | Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => value.to_string(),
         Value::List(values) => values
             .iter()
             .map(value_to_projection_string)
@@ -5902,6 +6321,10 @@ fn metadata_predicate_pushdown(
         persisted_segment_descriptor_used: false,
         physical_range_read_count: 0,
         physical_bytes_read: 0,
+        postings_segment_count: 0,
+        postings_predicate_count: 0,
+        postings_residual_predicate_count: 0,
+        postings_prefiltered_segment_count: 0,
         field_summaries: Vec::new(),
     };
     SearchMetadataPredicatePushdown { predicates, report }
@@ -5914,6 +6337,20 @@ fn search_document_matches_predicates(
     search_metadata_matches_predicates(&document.id, &document.metadata, predicates)
 }
 
+fn search_metadata_matches_predicate(
+    id: &str,
+    metadata: &BTreeMap<String, String>,
+    predicate: &SearchPredicate,
+) -> bool {
+    let header = crate::document_encoding::Header {
+        id,
+        title: "",
+        embedding: None,
+        metadata,
+    };
+    search_header_matches_predicate(header, predicate)
+}
+
 fn search_metadata_matches_predicates(
     id: &str,
     metadata: &BTreeMap<String, String>,
@@ -5922,16 +6359,10 @@ fn search_metadata_matches_predicates(
     if predicates.is_unsatisfiable() {
         return false;
     }
-    let header = crate::document_encoding::Header {
-        id,
-        title: "",
-        embedding: None,
-        metadata,
-    };
     predicates
         .predicates()
         .iter()
-        .all(|predicate| search_header_matches_predicate(header, predicate))
+        .all(|predicate| search_metadata_matches_predicate(id, metadata, predicate))
 }
 
 struct FilteredSearchDocuments<'a> {
@@ -6397,7 +6828,9 @@ impl SearchFilterSegmentSummary {
         if predicates.is_unsatisfiable() {
             return false;
         }
-        let summary = self.storage_summary();
+        // Each predicate is pruned on its own field, so only those fields
+        // are summarized (#1613).
+        let summary = self.storage_summary_for(predicates);
         predicates.predicates().iter().all(|predicate| {
             if !self.may_match_predicate(predicate) {
                 return false;
@@ -6413,7 +6846,16 @@ impl SearchFilterSegmentSummary {
         })
     }
 
-    fn storage_summary(&self) -> SegmentSummary {
+    fn storage_summary_for(&self, predicates: &SearchPredicateSet) -> SegmentSummary {
+        let fields = predicates
+            .predicates()
+            .iter()
+            .map(|predicate| predicate.field().name())
+            .collect::<BTreeSet<_>>();
+        self.storage_summary_fields(|field| fields.contains(field))
+    }
+
+    fn storage_summary_fields(&self, include: impl Fn(&str) -> bool) -> SegmentSummary {
         let mut segment = SegmentSummary::new(0, self.document_count as u64);
         for field in self
             .present_counts
@@ -6421,6 +6863,7 @@ impl SearchFilterSegmentSummary {
             .chain(self.values.keys())
             .chain(self.numeric_ranges.keys())
             .chain(self.timestamp_ranges.keys())
+            .filter(|field| include(field))
         {
             if segment.field(field).is_some() {
                 continue;
@@ -6708,7 +7151,9 @@ impl SearchSegmentDescriptorEntry {
         if predicates.is_unsatisfiable() {
             return false;
         }
-        let summary = self.storage_summary();
+        // Each predicate is pruned on its own field, so only those fields
+        // are summarized (#1613).
+        let summary = self.storage_summary_for(predicates);
         predicates.predicates().iter().all(|predicate| {
             if !self.may_match_predicate(predicate) {
                 return false;
@@ -6724,9 +7169,18 @@ impl SearchSegmentDescriptorEntry {
         })
     }
 
-    fn storage_summary(&self) -> SegmentSummary {
+    fn storage_summary_for(&self, predicates: &SearchPredicateSet) -> SegmentSummary {
+        let fields = predicates
+            .predicates()
+            .iter()
+            .map(|predicate| predicate.field().name())
+            .collect::<BTreeSet<_>>();
         let mut segment = SegmentSummary::new(0, self.document_count as u64);
-        for (field, persisted) in &self.metadata {
+        for (field, persisted) in self
+            .metadata
+            .iter()
+            .filter(|(field, _)| fields.contains(field.as_str()))
+        {
             let mut summary = FieldSummary::new(self.document_count as u64)
                 .with_presence_counts(
                     persisted.present_count as u64,
@@ -6996,9 +7450,16 @@ fn parse_label_metadata_values(value: &str) -> Vec<Cow<'_, str>> {
 }
 
 fn metadata_value_matches(key: &str, actual: &str, expected: &str) -> bool {
+    normalize_metadata_posting_value(key, actual) == normalize_metadata_posting_value(key, expected)
+}
+
+/// Canonical value shared by metadata matching and persistent postings.
+fn normalize_metadata_posting_value(key: &str, value: &str) -> String {
     match key {
-        "kind" => metadata_kind_matches(actual, expected),
-        _ => normalize_metadata_filter_value(actual) == normalize_metadata_filter_value(expected),
+        "kind" => normalized_projection_kind(value)
+            .map(str::to_string)
+            .unwrap_or_else(|| value.to_string()),
+        _ => normalize_metadata_filter_value(value),
     }
 }
 
@@ -7135,16 +7596,6 @@ fn metadata_timestamp_range_may_match(
         | SearchPredicateOp::NotIn(_)
         | SearchPredicateOp::Exists
         | SearchPredicateOp::IsMissing => true,
-    }
-}
-
-fn metadata_kind_matches(actual: &str, expected: &str) -> bool {
-    match (
-        normalized_projection_kind(actual),
-        normalized_projection_kind(expected),
-    ) {
-        (Some(actual), Some(expected)) => actual == expected,
-        _ => actual == expected,
     }
 }
 
@@ -7401,6 +7852,28 @@ fn tokenize(text: &str, analyzer_lexicon: &SearchAnalyzerLexicon) -> BTreeSet<St
     tokenize_list(text, analyzer_lexicon).into_iter().collect()
 }
 
+/// Distinct query terms, refusing as soon as they would exceed the analyzed
+/// cap. Like the out-of-core normalizer, refusal costs O(cap) analysis rather
+/// than tokenizing the remainder of an oversized query.
+fn tokenize_query_bounded(
+    text: &str,
+    analyzer_lexicon: &SearchAnalyzerLexicon,
+    config: &LexicalProjectionConfig,
+) -> Result<BTreeSet<String>> {
+    let limit = config.analyzed_query_term_limit();
+    let mut terms = BTreeSet::new();
+    analyzer_stream::visit_token_list(text, analyzer_lexicon, |term, _| {
+        if !terms.contains(&term) {
+            if terms.len() >= limit {
+                return Err(config.analyzed_query_term_error());
+            }
+            terms.insert(term);
+        }
+        Ok(())
+    })?;
+    Ok(terms)
+}
+
 fn tokenize_list(text: &str, analyzer_lexicon: &SearchAnalyzerLexicon) -> Vec<String> {
     analyzer_stream::collect_token_list(text, analyzer_lexicon)
 }
@@ -7653,32 +8126,51 @@ fn is_ascii_consonant(ch: char) -> bool {
 #[cfg(test)]
 mod raw_vector_math_tests;
 
-// Final facade vector relevance is positive-only in [0, 1]. Signed RaBitQ
-// estimates are candidate-ranking hints, not final scores; nonpositive exact
-// similarities cannot contribute a vector hit (text may still match).
+#[cfg(all(test, feature = "vector-search"))]
+mod vector_metric_tests;
+
+// Final facade vector relevance is positive-only in [0, 1], higher is better,
+// and is always computed with the projection's own distance metric:
+// - cosine: positive cosine similarity. Nonpositive exact similarities cannot
+//   contribute a vector hit (text may still match);
+// - Euclidean: `1 / (1 + l2_distance)`. It is positive for every finite pair
+//   and strictly decreasing in distance, so descending relevance is ascending
+//   L2 distance and no candidate is dropped for its direction.
+// Signed RaBitQ estimates and graph distances are candidate-ranking hints, not
+// final scores. Schema-bound vector index queries expose raw distances instead.
 /// One prepared query shared by a scoring phase. Keep legacy nonfinite behavior
 /// at this private boundary; public projection distances validate finite inputs.
 #[derive(Clone, Copy)]
-struct CosineQuery<'a> {
+struct VectorRelevanceQuery<'a> {
     query: &'a [f32],
+    metric: hawdb_core::VectorDistance,
+    scoring: SearchVectorScoring,
     prepared: Option<hawdb_core::vector::PreparedVectorQuery<'a>>,
 }
 
-impl<'a> CosineQuery<'a> {
+impl<'a> VectorRelevanceQuery<'a> {
     #[cfg(test)]
-    fn new(query: &'a [f32]) -> Self {
+    fn new(query: &'a [f32], metric: hawdb_core::VectorDistance) -> Self {
         Self {
             query,
+            metric,
+            scoring: SearchVectorScoring::default(),
             prepared: (query.len() >= 16)
                 .then(|| hawdb_core::vector::PreparedVectorQuery::new(query).ok())
                 .flatten(),
         }
     }
 
-    fn with_work(query: &'a [f32], mut checkpoint: impl FnMut() -> Result<()>) -> Result<Self> {
+    fn with_work(
+        query: &'a [f32],
+        metric: hawdb_core::VectorDistance,
+        mut checkpoint: impl FnMut() -> Result<()>,
+    ) -> Result<Self> {
         if query.len() < 16 {
             return Ok(Self {
                 query,
+                metric,
+                scoring: SearchVectorScoring::default(),
                 prepared: None,
             });
         }
@@ -7694,23 +8186,90 @@ impl<'a> CosineQuery<'a> {
         }
         Ok(Self {
             query,
+            metric,
+            scoring: SearchVectorScoring::default(),
             prepared: prepared.ok(),
         })
     }
 
-    fn score(&self, embedding: &[f32]) -> Option<f64> {
-        if let Some(prepared) = &self.prepared
-            && let Ok(score) = prepared.positive_cosine_similarity(embedding)
-        {
-            return score;
+    /// A query whose scoring phase has no candidates needs no prepared norm.
+    #[cfg(feature = "vector-search")]
+    fn unprepared(query: &'a [f32], metric: hawdb_core::VectorDistance) -> Self {
+        Self {
+            query,
+            metric,
+            scoring: SearchVectorScoring::default(),
+            prepared: None,
         }
-        scalar_cosine_similarity(self.query, embedding)
     }
+
+    fn with_scoring(mut self, scoring: SearchVectorScoring) -> Self {
+        self.scoring = scoring;
+        self
+    }
+
+    /// Exact mathematical distance under this query's metric.
+    #[cfg(feature = "vector-search")]
+    fn distance_with_work(
+        &self,
+        embedding: &[f32],
+        checkpoint: impl FnMut() -> Result<()>,
+    ) -> Result<f64> {
+        match &self.prepared {
+            Some(prepared) => {
+                prepared.distance_slices_with_work(self.metric, embedding, checkpoint)
+            }
+            None => self
+                .metric
+                .distance_slices_with_work(self.query, embedding, checkpoint),
+        }
+    }
+
+    /// Facade relevance in [0, 1]; `None` when the pair has no defined score.
+    fn score(&self, embedding: &[f32]) -> Option<f64> {
+        if self.scoring == SearchVectorScoring::LinearSquaredL2 {
+            return self.scoring.ranking_score(self.query, embedding);
+        }
+        match self.metric {
+            hawdb_core::VectorDistance::Cosine => {
+                if let Some(prepared) = &self.prepared
+                    && let Ok(score) = prepared.positive_cosine_similarity(embedding)
+                {
+                    return score;
+                }
+                scalar_cosine_similarity(self.query, embedding)
+            }
+            hawdb_core::VectorDistance::Euclidean => {
+                if self.query.len() != embedding.len() || embedding.is_empty() {
+                    return None;
+                }
+                let distance = match &self.prepared {
+                    Some(prepared) => prepared.distance_slices_with_work(
+                        hawdb_core::VectorDistance::Euclidean,
+                        embedding,
+                        || Ok(()),
+                    ),
+                    None => hawdb_core::VectorDistance::Euclidean.distance_slices_with_work(
+                        self.query,
+                        embedding,
+                        || Ok(()),
+                    ),
+                }
+                .ok()?;
+                euclidean_relevance(distance)
+            }
+        }
+    }
+}
+
+/// Maps a finite L2 distance onto the facade's higher-is-better (0, 1] scale.
+fn euclidean_relevance(distance: f64) -> Option<f64> {
+    (distance.is_finite() && distance >= 0.0).then(|| 1.0 / (1.0 + distance))
 }
 
 #[cfg(test)]
 fn cosine_similarity(left: &[f32], right: &[f32]) -> Option<f64> {
-    CosineQuery::new(left).score(right)
+    VectorRelevanceQuery::new(left, hawdb_core::VectorDistance::Cosine).score(right)
 }
 
 fn scalar_cosine_similarity(left: &[f32], right: &[f32]) -> Option<f64> {
@@ -7740,18 +8299,6 @@ fn dot_product(left: &[f32], right: &[f32]) -> Option<f64> {
     }))
 }
 
-fn encode_embedding(embedding: Option<&[f32]>) -> String {
-    embedding
-        .map(|values| {
-            values
-                .iter()
-                .map(|value| value.to_string())
-                .collect::<Vec<_>>()
-                .join(",")
-        })
-        .unwrap_or_default()
-}
-
 fn decode_embedding(input: &str) -> Result<Option<Vec<f32>>> {
     if input.is_empty() {
         return Ok(None);
@@ -7772,6 +8319,60 @@ fn encode_metadata(metadata: &BTreeMap<String, String>) -> String {
         .map(|(key, value)| format!("{}={}", encode_string(key), encode_string(value)))
         .collect::<Vec<_>>()
         .join(";")
+}
+
+/// The metadata keys a candidate filter reads, hex-encoded as stored, so a
+/// record's other pairs are skipped without being decoded (#1613).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct MetadataKeys(BTreeSet<String>);
+
+impl MetadataKeys {
+    pub(crate) fn contains(&self, encoded_key: &str) -> bool {
+        self.0.contains(encoded_key)
+    }
+
+    /// Every key `predicates` read: a predicate reads the metadata entry of
+    /// its field's name (see [`search_header_field_values`]).
+    pub(crate) fn for_predicates(predicates: &SearchPredicateSet) -> Self {
+        Self::for_predicate_iter(predicates.predicates())
+    }
+
+    pub(crate) fn for_predicate_iter<'a>(
+        predicates: impl IntoIterator<Item = &'a SearchPredicate>,
+    ) -> Self {
+        Self(
+            predicates
+                .into_iter()
+                .map(|predicate| encode_string(predicate.field().name()))
+                .collect(),
+        )
+    }
+}
+
+/// [`decode_metadata`] restricted to `keys`. Every pair must still be a
+/// `key=value` pair; pairs with other keys are not hex-decoded.
+pub(crate) fn decode_metadata_keys(
+    input: &str,
+    keys: Option<&MetadataKeys>,
+) -> Result<BTreeMap<String, String>> {
+    let Some(keys) = keys else {
+        return decode_metadata(input);
+    };
+    let mut metadata = BTreeMap::new();
+    if input.is_empty() {
+        return Ok(metadata);
+    }
+    for pair in input.split(';') {
+        let Some((key, value)) = pair.split_once('=') else {
+            return Err(HawDBError::Storage(format!(
+                "invalid metadata pair: {pair}"
+            )));
+        };
+        if keys.0.contains(key) {
+            metadata.insert(decode_string(key)?, decode_string(value)?);
+        }
+    }
+    Ok(metadata)
 }
 
 fn decode_metadata(input: &str) -> Result<BTreeMap<String, String>> {
@@ -7811,11 +8412,12 @@ fn decode_search_document_line(line: &str) -> Result<SearchDocument> {
 
 fn write_search_segment_payloads<T>(
     path: &Path,
+    file_name: &str,
     documents: &impl DocumentView,
     descriptor: &mut SearchSegmentDescriptor,
     finish: impl FnOnce(&mut File) -> Result<T>,
 ) -> Result<T> {
-    let artifact_path = path.join(SEARCH_SEGMENT_PAYLOAD_FILE);
+    let artifact_path = path.join(file_name);
     let tmp_path = artifact_path.with_extension("hawdb.tmp");
     let mut offset = 0u64;
     let reference;
@@ -7871,18 +8473,25 @@ fn write_search_segment_descriptor_bounded(
     descriptor: &SearchSegmentDescriptor,
     max_bytes: u64,
 ) -> Result<u64> {
-    write_search_segment_descriptor_output(path, descriptor, max_bytes, |_| Ok(()))
-        .map(|(length, ())| length)
+    write_search_segment_descriptor_output(
+        path,
+        SEARCH_SEGMENT_DESCRIPTOR_FILE,
+        descriptor,
+        max_bytes,
+        |_| Ok(()),
+    )
+    .map(|(length, ())| length)
 }
 
 fn write_search_segment_descriptor_output<T>(
     path: &Path,
+    file_name: &str,
     descriptor: &SearchSegmentDescriptor,
     max_bytes: u64,
     finish: impl FnOnce(&mut File) -> Result<T>,
 ) -> Result<(u64, T)> {
     let encoding = document_encoding::DescriptorEncoding::new(descriptor, max_bytes)?;
-    let descriptor_path = path.join(SEARCH_SEGMENT_DESCRIPTOR_FILE);
+    let descriptor_path = path.join(file_name);
     let tmp_path = descriptor_path.with_extension("hawdb.tmp");
     let reference;
     {
@@ -10272,6 +10881,10 @@ mod tests {
                 "query_embedding_missing",
             ),
             (SearchFallbackReasonCode::TextQueryEmpty, "text_query_empty"),
+            (
+                SearchFallbackReasonCode::TextQueryTermsReduced,
+                "text_query_terms_reduced",
+            ),
         ];
 
         for (code, name) in cases {
@@ -16052,3 +16665,20 @@ mod tests {
 }
 
 mod graph_store_adapter;
+
+fn resident_exact_vector_search_capacity(
+    document_count: usize,
+    working_bytes: usize,
+    max_document_id_bytes: usize,
+) -> usize {
+    use hawdb_executor::{VectorCandidate, VectorRawScore};
+    let id = max_document_id_bytes;
+    let candidates = working_bytes / (2 * size_of::<VectorCandidate>()).saturating_add(id).max(1);
+    let lookup = document_count.saturating_mul(3 * size_of::<(&str, &SearchDocument)>());
+    let rerank = working_bytes.saturating_sub(lookup)
+        / size_of::<VectorCandidate>()
+            .saturating_add(size_of::<VectorRawScore>())
+            .saturating_add(id.saturating_mul(2))
+            .max(1);
+    candidates.min(rerank)
+}

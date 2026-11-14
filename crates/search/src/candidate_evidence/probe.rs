@@ -12,14 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{NowledgeMemSearchCandidateFieldSummary, NowledgeMemSearchCandidateShadowAccumulator};
+use super::{SearchCandidateFieldSummary, SearchCandidateShadowAccumulator};
 use crate::SearchMode;
 use hawdb_core::{HawDBError, Result};
 
 pub fn parse_search_candidate_shadow_probe(
     value: &serde_json::Value,
-) -> Result<NowledgeMemSearchCandidateShadowAccumulator> {
-    let mut accumulator = NowledgeMemSearchCandidateShadowAccumulator::new();
+) -> Result<SearchCandidateShadowAccumulator> {
+    let mut accumulator = SearchCandidateShadowAccumulator::new();
     let requests = value
         .get("requests")
         .and_then(serde_json::Value::as_array)
@@ -70,7 +70,7 @@ fn parse_top_k_overlap(
     value: &serde_json::Value,
     name: &'static str,
     mode: SearchMode,
-    accumulator: &mut NowledgeMemSearchCandidateShadowAccumulator,
+    accumulator: &mut SearchCandidateShadowAccumulator,
 ) -> Result<()> {
     let top_k = required_object(value, name)?;
     accumulator.record_top_k_overlap_candidate_ids(
@@ -84,7 +84,7 @@ fn parse_top_k_overlap(
 fn parse_retriever_leg(
     value: &serde_json::Value,
     name: &'static str,
-    accumulator: &mut NowledgeMemSearchCandidateShadowAccumulator,
+    accumulator: &mut SearchCandidateShadowAccumulator,
 ) -> Result<()> {
     let leg = required_object(value, name)?;
     let available = required_bool(leg, "available")?;
@@ -99,7 +99,7 @@ fn parse_retriever_leg(
 
 fn optional_field_summaries(
     value: &serde_json::Value,
-) -> Result<Option<Vec<NowledgeMemSearchCandidateFieldSummary>>> {
+) -> Result<Option<Vec<SearchCandidateFieldSummary>>> {
     let Some(items) = value.get("field_summaries") else {
         return Ok(None);
     };
@@ -113,10 +113,8 @@ fn optional_field_summaries(
         .map(Some)
 }
 
-fn parse_field_summary(
-    value: &serde_json::Value,
-) -> Result<NowledgeMemSearchCandidateFieldSummary> {
-    Ok(NowledgeMemSearchCandidateFieldSummary {
+fn parse_field_summary(value: &serde_json::Value) -> Result<SearchCandidateFieldSummary> {
+    Ok(SearchCandidateFieldSummary {
         field: required_string(value, "field")?,
         source: value
             .get("source")

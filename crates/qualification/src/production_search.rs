@@ -15,9 +15,9 @@
 use super::{latency_percentiles, LatencyPercentiles};
 use crate::production_graph::validate_production_identity_for_current_target;
 use hawdb::{
-    CompressedVectorSearchMode, NowledgeMemSearchCandidateRequest, ProcessMemoryProfile,
-    ProcessMemorySnapshot, ProductionEvidenceBinding, ProductionQualificationIdentity,
-    SearchAccessControlContext, SearchIndex, SearchLexicalFeasibilityCoverage,
+    CompressedVectorSearchMode, ProcessMemoryProfile, ProcessMemorySnapshot,
+    ProductionEvidenceBinding, ProductionQualificationIdentity, SearchAccessControlContext,
+    SearchCandidateRequest, SearchIndex, SearchLexicalFeasibilityCoverage,
     SearchLexicalFeasibilityMetrics, SearchLexicalProductionQualificationReport, SearchMode,
     SearchOutOfCoreConfig, SearchOutOfCoreGenerationBuildOptions, SearchOutOfCoreMetrics,
     SearchOutOfCoreOutput, SearchOutOfCoreReader, SearchProjectionDelta, SearchQueryOptions,
@@ -67,7 +67,7 @@ impl ProductionSearchCaseKind {
 pub struct ProductionSearchQueryCase {
     pub name: String,
     pub kind: ProductionSearchCaseKind,
-    pub request: NowledgeMemSearchCandidateRequest,
+    pub request: SearchCandidateRequest,
     pub access_control: Option<SearchAccessControlContext>,
 }
 
@@ -1424,27 +1424,23 @@ mod tests {
             ProductionSearchQueryCase {
                 name: "metadata".to_string(),
                 kind: ProductionSearchCaseKind::MetadataFilter,
-                request: NowledgeMemSearchCandidateRequest::text("common", 2)
-                    .with_metadata_filters(BTreeMap::from([(
-                        "group".to_string(),
-                        "a".to_string(),
-                    )])),
+                request: SearchCandidateRequest::text("common", 2).with_metadata_filters(
+                    BTreeMap::from([("group".to_string(), "a".to_string())]),
+                ),
                 access_control: None,
             },
             ProductionSearchQueryCase {
                 name: "vector".to_string(),
                 kind: ProductionSearchCaseKind::Vector,
-                request: NowledgeMemSearchCandidateRequest::vector(vec![1.0, 0.0], 2)
-                    .with_metadata_filters(BTreeMap::from([(
-                        "group".to_string(),
-                        "a".to_string(),
-                    )])),
+                request: SearchCandidateRequest::vector(vec![1.0, 0.0], 2).with_metadata_filters(
+                    BTreeMap::from([("group".to_string(), "a".to_string())]),
+                ),
                 access_control: None,
             },
             ProductionSearchQueryCase {
                 name: "hybrid".to_string(),
                 kind: ProductionSearchCaseKind::Hybrid,
-                request: NowledgeMemSearchCandidateRequest::hybrid("common", vec![1.0, 0.0], 2)
+                request: SearchCandidateRequest::hybrid("common", vec![1.0, 0.0], 2)
                     .with_rank_window(Some(2)),
                 access_control: None,
             },
@@ -1459,7 +1455,7 @@ mod tests {
         ProductionSearchQueryCase {
             name: name.to_string(),
             kind,
-            request: NowledgeMemSearchCandidateRequest::text(query, 2),
+            request: SearchCandidateRequest::text(query, 2),
             access_control: None,
         }
     }

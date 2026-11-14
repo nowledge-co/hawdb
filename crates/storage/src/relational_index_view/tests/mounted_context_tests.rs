@@ -98,6 +98,13 @@ impl MountedFixture {
         file.seek(SeekFrom::Start(self.unselected_page_offset))
             .unwrap();
         file.write_all(&byte).unwrap();
+        // An ordinary later write: advance the modification time explicitly
+        // so a coarse timestamp clock cannot keep the mount's stamp (#1440).
+        let modified = file.metadata().unwrap().modified().unwrap();
+        file.set_times(
+            std::fs::FileTimes::new().set_modified(modified + std::time::Duration::from_secs(2)),
+        )
+        .unwrap();
     }
 
     fn evict_handle(&self) {
@@ -183,48 +190,83 @@ fn evicted_mounted_base_validation_admits_before_unselected_payload() {
     reject_cold_mounted_probe(true);
 }
 
+/// The mount hashed the whole object, so the first cold read after it (#1440)
+/// charges only the root and leaf. After eviction, a cold read charges the
+/// whole-object validation plus root and leaf exactly once, and warm reads
+/// charge only the pages.
 #[test]
 fn mounted_base_validation_accounts_once_and_warm_reads_keep_complete_results() {
-    for kind in 0..3 {
-        let fixture = MountedFixture::new();
-        let limits = RelationalIndexReadLimits {
-            max_file_bytes: usize::try_from(fixture.reference.byte_length).unwrap()
-                + 2 * fixture.selected_page_bytes,
-            ..Default::default()
-        };
-        let context = RelationalIndexReadContext::new(limits);
-        let mut rows = Vec::new();
-        let report = fixture.probe(&context, kind, limits, &mut rows).unwrap();
-        let scan = RelationalIndexRangeScan {
-            bounds: Default::default(),
-            prefix: key(&[1]),
-            exclusive_bound: None,
-            direction: RelationalIndexScanDirection::Forward,
-        };
-        assert_eq!(rows, expected(&fixture.oracle, &scan));
+    let scan = RelationalIndexRangeScan {
+        bounds: Default::default(),
+        prefix: key(&[1]),
+        exclusive_bound: None,
+        direction: RelationalIndexScanDirection::Forward,
+    };
+    let base_report = |report: RelationalIndexReadViewReport| {
         let RelationalIndexReadViewBackendReport::Base(report) = report.backend else {
             unreachable!()
         };
+        report
+    };
+    for kind in 0..3 {
+        let fixture = MountedFixture::new();
+        let pages = 2 * fixture.selected_page_bytes;
+        let whole = usize::try_from(fixture.reference.byte_length).unwrap();
+
+        let reused_limits = RelationalIndexReadLimits {
+            max_file_bytes: pages,
+            ..Default::default()
+        };
+        let context = RelationalIndexReadContext::new(reused_limits);
+        let mut rows = Vec::new();
+        let report = base_report(
+            fixture
+                .probe(&context, kind, reused_limits, &mut rows)
+                .unwrap(),
+        );
+        assert_eq!(rows, expected(&fixture.oracle, &scan));
+        assert_eq!(
+            report.file_bytes_read, pages,
+            "the first cold read after the mount reuses its verification"
+        );
+        assert_eq!(context.remaining_limits().unwrap().max_file_bytes, 0);
+        assert_eq!(fixture.project.metrics().mount_verification_reuses, 1);
+        assert_eq!(fixture.project.metrics().cached_handles, 1);
+
+        fixture.evict_handle();
+        let limits = RelationalIndexReadLimits {
+            max_file_bytes: whole + pages,
+            ..Default::default()
+        };
+        let context = RelationalIndexReadContext::new(limits);
+        let mut cold_rows = Vec::new();
+        let report = base_report(
+            fixture
+                .probe(&context, kind, limits, &mut cold_rows)
+                .unwrap(),
+        );
+        assert_eq!(cold_rows, rows);
         assert_eq!(
             report.file_bytes_read, limits.max_file_bytes,
             "physical report includes whole-object validation, root and leaf exactly once"
         );
         assert_eq!(context.remaining_limits().unwrap().max_file_bytes, 0);
+        assert_eq!(fixture.project.metrics().mount_verification_reuses, 1);
         assert_eq!(fixture.project.metrics().cached_handles, 1);
+
         let warm_limits = RelationalIndexReadLimits {
-            max_file_bytes: 2 * fixture.selected_page_bytes,
+            max_file_bytes: pages,
             ..Default::default()
         };
         let warm_context = RelationalIndexReadContext::new(warm_limits);
         let mut warm_rows = Vec::new();
-        let warm_report = fixture
-            .probe(&warm_context, kind, warm_limits, &mut warm_rows)
-            .unwrap();
+        let warm_report = base_report(
+            fixture
+                .probe(&warm_context, kind, warm_limits, &mut warm_rows)
+                .unwrap(),
+        );
         assert_eq!(warm_rows, rows);
-        let RelationalIndexReadViewBackendReport::Base(warm_report) = warm_report.backend else {
-            unreachable!()
-        };
-        assert_eq!(warm_report.file_bytes_read, 2 * fixture.selected_page_bytes);
+        assert_eq!(warm_report.file_bytes_read, pages);
         assert_eq!(warm_report.file_pages_read, 2);
         assert_eq!(warm_context.remaining_limits().unwrap().max_file_bytes, 0);
         assert!(!fixture.view.is_poisoned());

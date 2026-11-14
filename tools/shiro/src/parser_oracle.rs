@@ -14,7 +14,7 @@
 
 use std::thread;
 
-pub const PARSER_FUZZ_PROTOCOL: &str = "shiro-parser-v1";
+pub const PARSER_FUZZ_PROTOCOL: &str = "shiro-parser-v4";
 const MAX_INPUT_BYTES: usize = 16 * 1024;
 const PARSER_WORKER_STACK_BYTES: usize = 2 * 1024 * 1024;
 
@@ -56,6 +56,18 @@ const STATIC_SEEDS: &[(&str, &[u8])] = &[
     ),
     ("unterminated_string", b"SELECT 'unterminated"),
     ("unterminated_comment", b"MATCH (n) /* unterminated"),
+    ("cypher_cap_pipeline", b"MATCH (e:Entity) UNWIND list_append(COALESCE(e.aliases, []), e.name) AS term WITH e, term WHERE lower(term) CONTAINS $needle WITH DISTINCT e RETURN e.id ORDER BY e.id"),
+    ("cypher_cap_case", b"MATCH (t:Thread) WHERE CASE WHEN t.space IS NULL OR trim(t.space) = '' THEN 'default' ELSE t.space END = $space RETURN t.id"),
+    ("cypher_cap_set", b"MATCH (a:Memory {id: $left}), (b:Memory {id: $right}) SET a.latest = true, b.latest = true"),
+    ("cypher_cap_temporal", b"UNWIND [1] AS one RETURN date('2026-10-30') + duration('P1D') AS tomorrow, datetime('2026-10-30T12:00+02:00') AS at"),
+    ("cypher_cap_optional", b"MATCH (a:Memory) OPTIONAL MATCH (a)-[:MENTIONS]->(e:Entity) WITH a, e RETURN a.id, e.name"),
+    ("cypher_cap_scalar_regex", b"MATCH (m:Memory) WHERE regexp_replace(m.content, 'x', 'a') =~ $pattern RETURN m.id"),
+    ("cypher_cap_scalar_regex_keyword_identifier", b"UNWIND [1] AS row WITH row WHERE $value.order =~ $pattern RETURN row"),
+    ("sql_cap_decimal", b"CREATE TABLE prices (id BIGINT PRIMARY KEY, amount DECIMAL(38,2) DEFAULT 1.235)"),
+    ("sql_cap_decimal_cast", b"SELECT CAST(($1 + 0.2) * 10 / 3 AS DECIMAL(20,4)) AS amount"),
+    ("sql_cap_keyless", b"CREATE TABLE events (bucket BIGINT, score BIGINT DEFAULT 7, note TEXT)"),
+    ("sql_cap_composite", b"CREATE TABLE lines (w BIGINT, k BIGINT, tail BIGINT, PRIMARY KEY (w, k, tail))"),
+    ("sql_cap_lock_range", b"SELECT k FROM lines WHERE w = $1 AND k > $2 AND k <= $3 FOR SHARE"),
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -183,9 +195,22 @@ pub fn run_parser_fuzz_case(case: &ParserFuzzCase) -> Result<ParserFuzzObservati
             }
         })
         .map_err(|error| format!("failed to spawn bounded parser worker: {error}"))?;
-    worker
+    let observation = worker
         .join()
-        .map_err(|_| "bounded parser worker panicked".to_string())
+        .map_err(|_| "bounded parser worker panicked".to_string())?;
+    // Mutation rejection is normal. Exact positive seeds must remain accepted;
+    // otherwise a parser rejecting every input would be a false pass.
+    if case.source_kind == "seed_corpus"
+        && let Some(name) = case.seed_name
+    {
+        if name.starts_with("cypher_cap_") && !observation.cypher_accepted {
+            return Err(format!("positive Cypher seed rejected: {name}"));
+        }
+        if name.starts_with("sql_cap_") && !observation.relational_sql_accepted {
+            return Err(format!("positive SQL seed rejected: {name}"));
+        }
+    }
+    Ok(observation)
 }
 
 pub fn parser_input_fingerprint(input: &[u8]) -> String {
@@ -289,6 +314,24 @@ mod tests {
             .any(|case| case.seed_name == Some("postgres_deep_nesting")));
         for case in &cases {
             run_parser_fuzz_case(case).expect("seeded parser case must not panic");
+        }
+    }
+
+    #[test]
+    fn scalar_regex_seeds_are_positive_and_replayable() {
+        for name in [
+            "cypher_cap_scalar_regex",
+            "cypher_cap_scalar_regex_keyword_identifier",
+        ] {
+            let index = STATIC_SEEDS
+                .iter()
+                .position(|(seed_name, _)| *seed_name == name)
+                .unwrap();
+            let left = generate_parser_fuzz_case(7, index);
+            let right = generate_parser_fuzz_case(7, index);
+            assert_eq!(left, right);
+            assert_eq!(left.seed_name, Some(name));
+            assert!(run_parser_fuzz_case(&left).unwrap().cypher_accepted);
         }
     }
 

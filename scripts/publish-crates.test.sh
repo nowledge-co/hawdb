@@ -29,7 +29,7 @@ fixture_root="${TEST_TMPDIR:-$(mktemp -d)}/publish-crates"
 # and the publish = false exclusion in one fixture.
 make_fixture() {
   local root="$1"
-  mkdir -p "${root}/crates/leaf" "${root}/crates/mid" "${root}/crates/top" "${root}/crates/excluded"
+  mkdir -p "${root}/crates/leaf" "${root}/crates/mid" "${root}/crates/top" "${root}/crates/excluded" "${root}/crates/test-contracts/src"
 
   cat >"${root}/Cargo.toml" <<'EOF'
 [workspace]
@@ -38,6 +38,7 @@ members = [
   "crates/mid",
   "crates/top",
   "crates/excluded",
+  "crates/test-contracts",
 ]
 resolver = "2"
 EOF
@@ -87,9 +88,19 @@ mid = { path = "../mid", version = "0.1.0" }
 
 [dev-dependencies]
 excluded = { path = "../excluded", version = "0.1.0" }
+hawdb-test-contracts = { path = "../test-contracts", version = "0.1.0" }
 EOF
   mkdir -p "${root}/crates/top/src"
   echo "" >"${root}/crates/top/src/lib.rs"
+
+  cat >"${root}/crates/test-contracts/Cargo.toml" <<'EOF'
+[package]
+name = "hawdb-test-contracts"
+version = "0.1.0"
+edition = "2021"
+publish = false
+EOF
+  echo "" >"${root}/crates/test-contracts/src/lib.rs"
 }
 
 fixture="${fixture_root}/diamond"
@@ -134,3 +145,44 @@ if (( mid_pos >= top_pos )); then
 fi
 
 echo "publish-crates.sh --print-order: leaf-first ordering verified" >&2
+
+publishable_tests="${fixture_root}/publishable-tests"
+make_fixture "${publishable_tests}"
+sed 's/publish = false/publish = true/' \
+  "${publishable_tests}/crates/test-contracts/Cargo.toml" >"${fixture_root}/changed.toml"
+mv "${fixture_root}/changed.toml" "${publishable_tests}/crates/test-contracts/Cargo.toml"
+if "${script}" --print-order "${publishable_tests}" >"${fixture_root}/publishable.out" 2>&1; then
+  echo "expected a publishable test-contract crate to fail" >&2
+  exit 1
+fi
+grep -q 'hawdb-test-contracts must set publish = false' "${fixture_root}/publishable.out"
+
+if TEST_SRCDIR="${fixture_root}" TEST_WORKSPACE=publishable-tests \
+  "${script}" --dry-run >"${fixture_root}/publishable-dry-run.out" 2>&1; then
+  echo "expected the publish path to preserve the publication policy error" >&2
+  exit 1
+fi
+grep -q 'hawdb-test-contracts must set publish = false' "${fixture_root}/publishable-dry-run.out"
+
+for dependency_kind in dependencies build-dependencies; do
+  invalid="${fixture_root}/${dependency_kind}"
+  make_fixture "${invalid}"
+  cat >>"${invalid}/crates/leaf/Cargo.toml" <<EOF
+
+[${dependency_kind}]
+hawdb-test-contracts = { path = "../test-contracts", version = "0.1.0" }
+EOF
+  if "${script}" --print-order "${invalid}" >"${fixture_root}/${dependency_kind}.out" 2>&1; then
+    echo "expected test contracts in ${dependency_kind} to fail" >&2
+    exit 1
+  fi
+  grep -q 'hawdb-test-contracts must only be a dev-dependency' "${fixture_root}/${dependency_kind}.out"
+  if TEST_SRCDIR="${fixture_root}" TEST_WORKSPACE="${dependency_kind}" \
+    "${script}" --dry-run >"${fixture_root}/${dependency_kind}-dry-run.out" 2>&1; then
+    echo "expected the publish path to preserve the ${dependency_kind} policy error" >&2
+    exit 1
+  fi
+  grep -q 'hawdb-test-contracts must only be a dev-dependency' "${fixture_root}/${dependency_kind}-dry-run.out"
+done
+
+echo "publish-crates.sh: test-only publication and dependency guards verified" >&2
