@@ -55,7 +55,9 @@ final class DatabaseTests: XCTestCase {
     ]
     for value in values {
       XCTAssertEqual(
-        try database.query("RETURN $myValue AS value", parameters: ["myValue": value]).rows,
+        try database.query(
+          "UNWIND [0] AS ignored RETURN $myValue AS value", parameters: ["myValue": value]
+        ).rows,
         [[value]])
     }
     try database.query(
@@ -72,17 +74,19 @@ final class DatabaseTests: XCTestCase {
     assertKind("constraint", try database.querySQL("INSERT INTO keys_test (id) VALUES (1)"))
     assertKind(
       "invalid_argument",
-      try database.query("RETURN $value", parameters: ["value": .decimal("invalid")]))
+      try database.query(
+        "UNWIND [0] AS ignored RETURN $value AS value",
+        parameters: ["value": .decimal("invalid")]))
     XCTAssertEqual(try database.querySQL("SELECT id FROM keys_test").rows, [[.int(1)]])
   }
 
   func testCloseIsIdempotentAndResultsOutliveHandle() throws {
     let database = try Database.inMemory()
-    let result = try database.query("RETURN 42 AS answer")
+    let result = try database.query("UNWIND [42] AS answer RETURN answer")
     try database.close()
     try database.close()
     XCTAssertEqual(result.rows, [[.int(42)]])
-    assertKind("closed", try database.query("RETURN 1"))
+    assertKind("closed", try database.query("UNWIND [1] AS value RETURN value"))
     assertKind("closed", try database.transaction { _ in 1 })
     XCTAssertFalse(try Database.version().isEmpty)
   }
@@ -175,7 +179,7 @@ final class DatabaseTests: XCTestCase {
     }
     XCTAssertEqual(returned, 7)
     let expired = try XCTUnwrap(escaped)
-    assertKind("no_transaction", try expired.query("RETURN 1"))
+    assertKind("no_transaction", try expired.query("UNWIND [1] AS value RETURN value"))
     try database.transaction { _ in
       assertKind("no_transaction", try expired.querySQL("SELECT id FROM atomic_values"))
     }
@@ -227,14 +231,15 @@ final class DatabaseTests: XCTestCase {
       } else {
         do {
           let result = try database.query(
-            "RETURN $index AS value", parameters: ["index": .int(Int64(index))])
+            "UNWIND [0] AS ignored RETURN $index AS value",
+            parameters: ["index": .int(Int64(index))])
           XCTAssertEqual(result.rows, [[.int(Int64(index))]])
         } catch {
           XCTAssertEqual((error as? HawDBError)?.kind, "closed")
         }
       }
     }
-    assertKind("closed", try database.query("RETURN 1"))
+    assertKind("closed", try database.query("UNWIND [1] AS value RETURN value"))
   }
 
   func testConcurrentTransactionsSerializeCompleteBodies() throws {
