@@ -119,6 +119,23 @@ reads, `public_hydration_preserves_order_budgets_and_old_reader` asserts
 typed `MetadataEntries` refusal naming
 `SearchOutOfCoreConfig.max_hydrated_documents` for over-limit hydration by id
 and mutation-target loading (all `//crates/search:hawdb_search_tests`).
+The remaining caller mistakes follow (#1767):
+`public_hydration_preserves_order_budgets_and_old_reader` asserts `Semantic`
+for an unknown hydration id and `Storage` for the same id on the hit-hydration
+loader; `hydration_byte_refusal_preserves_the_complete_operation_budget` asserts
+owner `search hydration by id`;
+`resident_access_control_caller_mistakes_are_semantic_errors` and
+`out_of_core::tests::out_of_core_access_control_caller_mistakes_are_semantic_errors`
+assert `Semantic` for a policy-epoch mismatch and each invalid access-control
+context (`acl` feature);
+`out_of_core::tests::mutation_rabitq_budget_fallback_is_exact_observable_and_failure_specific`,
+`required_rerank_preserves_checksum_budget_and_cancellation_guards` and
+`candidate_ordinals_over_working_budget_are_a_typed_refusal` assert a typed
+RaBitQ allowlist refusal naming the binding working-bytes option (all
+`//crates/search:hawdb_search_tests`); and
+`embedded_store::tests::embedded_handle_search_hydration_refuses_unknown_ids_on_both_paths`
+(`//:hawdb_unit_general_tests`) asserts `Semantic` for an unknown id on the
+resident and out-of-core embedded paths.
 Replay with `cargo test --locked -p hawdb --lib out_of_core_working_memory`
 and `cargo test --locked -p hawdb-search --lib admitted_working`. No new lane,
 profile or timeout.

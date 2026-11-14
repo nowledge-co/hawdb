@@ -86,6 +86,51 @@ fn hydrated_documents_refusal(
     .into()
 }
 
+/// Who asked [`SearchOutOfCoreReader::load_document_targets`] for documents.
+///
+/// The request names the budget owner and decides what an id the published
+/// projection does not contain means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DocumentTargetRequest {
+    /// Hits produced by this reader's own index. A hit without a visible
+    /// document route is index damage.
+    SearchHits,
+    /// Ids named by the caller of [`SearchOutOfCoreReader::hydrate_documents`].
+    /// An id that is absent or deleted is the caller's mistake.
+    ById,
+    /// Ids a mutation writer derived against this reader (test-only today).
+    /// A missing one means the index disagrees with that writer's source.
+    #[cfg(test)]
+    MutationTargets,
+}
+
+impl DocumentTargetRequest {
+    /// The operation named in messages; the budget owner is `search {operation}`.
+    fn operation(self) -> &'static str {
+        match self {
+            Self::SearchHits => "hydration",
+            Self::ById => "hydration by id",
+            #[cfg(test)]
+            Self::MutationTargets => "mutation target resolution",
+        }
+    }
+
+    fn unknown_document(self, id: &str) -> HawDBError {
+        match self {
+            Self::ById => HawDBError::Semantic(format!(
+                "search hydration by id requested document {id}, which the published search projection does not contain"
+            )),
+            Self::SearchHits => HawDBError::Storage(format!(
+                "search document {id} is outside the published document ranges"
+            )),
+            #[cfg(test)]
+            Self::MutationTargets => HawDBError::Storage(format!(
+                "search document {id} is outside the published document ranges"
+            )),
+        }
+    }
+}
+
 pub(crate) struct CandidateQuery<'a> {
     pub(crate) text: &'a str,
     pub(crate) embedding: Option<&'a [f32]>,
@@ -485,6 +530,7 @@ pub(crate) struct SearchOutOfCoreMutationTarget {
     pub(crate) document: SearchDocument,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SearchOutOfCoreMutationTargetOutput {
     pub(crate) targets: BTreeMap<String, SearchOutOfCoreMutationTarget>,
@@ -2799,6 +2845,13 @@ impl SearchOutOfCoreReader {
         )
     }
 
+    /// Hydrates the named documents in request order.
+    ///
+    /// The request is all-or-nothing. Duplicate ids and an id the published
+    /// projection does not contain (including a deleted one) are
+    /// `HawDBError::Semantic`; more ids than
+    /// `SearchOutOfCoreConfig.max_hydrated_documents` is
+    /// `ResourceBudgetExceeded` with owner `search hydration by id`.
     pub fn hydrate_documents(
         &self,
         document_ids: &[String],
@@ -2810,21 +2863,20 @@ impl SearchOutOfCoreReader {
                 "search hydration document ids must be unique".to_string(),
             ));
         }
-        let targets = self.resolve_mutation_targets(&requested)?;
-        let mut metrics = targets.metrics;
-        let mut hydrated = targets
-            .targets
-            .into_iter()
-            .map(|(id, target)| (id, target.document))
-            .collect::<BTreeMap<_, _>>();
+        let mut metrics = SearchOutOfCoreMetrics::default();
+        let mut hydrated =
+            self.load_document_targets(&requested, &mut metrics, DocumentTargetRequest::ById)?;
         let documents = document_ids
             .iter()
             .map(|id| {
-                hydrated.remove(id).ok_or_else(|| {
-                    HawDBError::Storage(format!(
-                        "search document {id} was not found during bounded hydration"
-                    ))
-                })
+                hydrated
+                    .remove(id)
+                    .map(|target| target.document)
+                    .ok_or_else(|| {
+                        HawDBError::Storage(format!(
+                            "search document {id} was not found during bounded hydration"
+                        ))
+                    })
             })
             .collect::<Result<Vec<_>>>()?;
         metrics.hydrated_documents = documents.len();
@@ -2837,12 +2889,21 @@ impl SearchOutOfCoreReader {
     /// deterministic document-id order. Resolution performs the same bounded
     /// physical hydration as serving, while retaining the manifest segment
     /// identity required for a segment-local replacement or delete.
+    ///
+    /// No production caller resolves mutation targets yet: segment-local
+    /// delta writes route through [`Self::resolve_mutation_segment`]. Public
+    /// hydration by id shares the loader under its own budget owner.
+    #[cfg(test)]
     pub(crate) fn resolve_mutation_targets(
         &self,
         document_ids: &BTreeSet<String>,
     ) -> Result<SearchOutOfCoreMutationTargetOutput> {
         let mut metrics = SearchOutOfCoreMetrics::default();
-        let targets = self.load_mutation_targets(document_ids, &mut metrics)?;
+        let targets = self.load_document_targets(
+            document_ids,
+            &mut metrics,
+            DocumentTargetRequest::MutationTargets,
+        )?;
         metrics.hydrated_documents = targets.len();
         Ok(SearchOutOfCoreMutationTargetOutput { targets, metrics })
     }
@@ -3093,17 +3154,7 @@ impl SearchOutOfCoreReader {
         }
 
         let metadata_filters = match access_control {
-            Some(access_control) => {
-                if let Some(policy_epoch) = options.policy_epoch
-                    && policy_epoch != access_control.policy_epoch
-                {
-                    return Err(HawDBError::Storage(format!(
-                        "search options policy epoch {policy_epoch} does not match access control policy epoch {}",
-                        access_control.policy_epoch
-                    )));
-                }
-                access_control.effective_metadata_filters(&options.metadata_filters)?
-            }
+            Some(access_control) => access_control.effective_query_filters(&options)?,
             None => output_memory.map(&options.metadata_filters)?,
         };
         let policy_epoch = access_control
@@ -3718,26 +3769,19 @@ impl SearchOutOfCoreReader {
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<BTreeMap<String, SearchDocument>> {
         Ok(self
-            .load_document_targets(document_ids, metrics, "hydration")?
+            .load_document_targets(document_ids, metrics, DocumentTargetRequest::SearchHits)?
             .into_iter()
             .map(|(id, target)| (id, target.document))
             .collect())
-    }
-
-    fn load_mutation_targets(
-        &self,
-        document_ids: &BTreeSet<String>,
-        metrics: &mut SearchOutOfCoreMetrics,
-    ) -> Result<BTreeMap<String, SearchOutOfCoreMutationTarget>> {
-        self.load_document_targets(document_ids, metrics, "mutation target resolution")
     }
 
     fn load_document_targets(
         &self,
         document_ids: &BTreeSet<String>,
         metrics: &mut SearchOutOfCoreMetrics,
-        operation: &str,
+        request: DocumentTargetRequest,
     ) -> Result<BTreeMap<String, SearchOutOfCoreMutationTarget>> {
+        let operation = request.operation();
         if document_ids.len() > self.config.max_hydrated_documents.get() {
             return Err(hydrated_documents_refusal(
                 &format!("search {operation}"),
@@ -3752,11 +3796,9 @@ impl SearchOutOfCoreReader {
         }
         let mut segment_documents = BTreeMap::<(usize, u64), BTreeSet<String>>::new();
         for id in document_ids {
-            let route = self.segment_for_document(id)?.ok_or_else(|| {
-                HawDBError::Storage(format!(
-                    "search document {id} is outside the published document ranges"
-                ))
-            })?;
+            let route = self
+                .segment_for_document(id)?
+                .ok_or_else(|| request.unknown_document(id))?;
             if route.lexical_document_bytes_read > 0 {
                 metrics.lexical_document_block_reads =
                     metrics.lexical_document_block_reads.saturating_add(1);
@@ -6801,6 +6843,50 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
 
+    #[cfg(all(feature = "acl", feature = "full-text-search"))]
+    #[test]
+    fn out_of_core_access_control_caller_mistakes_are_semantic_errors() {
+        let path = test_dir("acl-caller-mistakes");
+        let mut index = SearchIndex::open(&path).unwrap();
+        index.upsert(document(0, "team")).unwrap();
+        index.checkpoint().unwrap();
+        let mut reader = SearchOutOfCoreReader::open(&path).unwrap();
+        reader.set_runtime_capabilities(
+            RuntimeCapabilities::default().with(RuntimeCapability::AccessControl, true),
+        );
+        let search = |policy_epoch, access_control| {
+            reader.search_with_options_access_control(
+                "graph",
+                None,
+                SearchMode::Text,
+                SearchQueryOptions {
+                    policy_epoch,
+                    ..options(10, None)
+                },
+                access_control,
+            )
+        };
+        // A matching epoch and a valid context still search.
+        search(
+            Some(7),
+            SearchAccessControlContext::visibility_scopes(7, "space_id", ["team"]),
+        )
+        .unwrap();
+        // A mismatched epoch or a malformed context is the caller's mistake,
+        // not a storage fault (#1767).
+        for (policy_epoch, access_control) in
+            SearchAccessControlContext::invalid_requests_for_test()
+        {
+            let error = search(policy_epoch, access_control.clone()).unwrap_err();
+            assert!(
+                matches!(error, HawDBError::Semantic(_)),
+                "{access_control:?}: {error:?}"
+            );
+        }
+        drop(reader);
+        fs::remove_dir_all(path).unwrap();
+    }
+
     #[test]
     #[cfg(feature = "full-text-search")]
     fn out_of_core_hydration_and_candidate_budgets_fail_closed() {
@@ -8075,13 +8161,37 @@ mod tests {
             )
         };
         let expected = search(&reader, CompressedVectorSearchMode::Disabled).unwrap();
-        let error = search(&reader, CompressedVectorSearchMode::Required).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("candidate allowlist and block require"),
-            "{error}"
+        // The allowlist working set is a resource refusal naming the option
+        // that bound it, not a storage fault (#1767).
+        let assert_allowlist_refusal = |error: HawDBError, budget_option: &str| match error {
+            HawDBError::ResourceBudgetExceeded(details) => {
+                assert_eq!(details.resource, ResourceBudgetKind::MemoryBytes);
+                assert_eq!(details.budget_option, budget_option, "{details:?}");
+                assert!(details.requested > details.budget, "{details:?}");
+            }
+            other => panic!("{other:?}"),
+        };
+        assert_allowlist_refusal(
+            search(&reader, CompressedVectorSearchMode::Required).unwrap_err(),
+            "SearchOutOfCoreConfig.max_vector_search_working_bytes",
         );
+        // With a roomy reader cap, the per-query admission binds instead.
+        let mut roomy = mutation_reader_for_test(&path);
+        roomy.config.max_vector_candidates = NonZeroUsize::new(4).unwrap();
+        assert_allowlist_refusal(
+            roomy
+                .search_with_options_compressed_vector_projection_execution_options(
+                    "",
+                    Some(&[1.0, 16.0]),
+                    SearchMode::Vector,
+                    options(1, None),
+                    CompressedVectorSearchMode::Required,
+                    VectorSearchExecutionOptions::bounded(NonZeroUsize::MIN, budget, None),
+                )
+                .unwrap_err(),
+            "VectorSearchExecutionOptions.max_working_bytes",
+        );
+        drop(roomy);
         let actual = search(&reader, CompressedVectorSearchMode::Preferred).unwrap();
         assert_search_parity(&expected.result, &actual.result);
         assert!(actual

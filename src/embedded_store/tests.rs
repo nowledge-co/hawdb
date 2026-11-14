@@ -4911,6 +4911,64 @@ fn embedded_handle_hydrates_only_explicitly_bounded_search_documents() {
 }
 
 #[test]
+fn embedded_handle_search_hydration_refuses_unknown_ids_on_both_paths() {
+    for out_of_core in [false, true] {
+        let root = unique_embedded_store_test_dir("search_hydration_unknown_id");
+        let graph = EmbeddedGraph::from_database(Database::new(), GraphMode::ShadowReadOnly);
+        let mut index = if out_of_core {
+            SearchIndex::open(&root).unwrap()
+        } else {
+            SearchIndex::in_memory()
+        };
+        index
+            .upsert(crate::SearchDocument {
+                id: "source_chunk:known".to_string(),
+                title: "Known".to_string(),
+                content: "known".to_string(),
+                embedding: None,
+                metadata: BTreeMap::new(),
+            })
+            .unwrap();
+        let store = if out_of_core {
+            index.checkpoint().unwrap();
+            drop(index);
+            EmbeddedStore::new_with_out_of_core_search(
+                graph,
+                OutOfCoreSearchProjection::open(&root).unwrap(),
+                RetrievalProjectionAdvisor::default(),
+            )
+        } else {
+            EmbeddedStore::new(graph, Some(SearchProjection::from_index(index)))
+        };
+        let handle = EmbeddedStoreHandle::new(store).unwrap();
+        let known = "source_chunk:known".to_string();
+        assert_eq!(
+            handle
+                .search_projection_documents(std::slice::from_ref(&known), 1)
+                .unwrap()[0]
+                .content,
+            "known"
+        );
+        // Both paths refuse an unknown id as a caller mistake rather than
+        // skipping it (resident) or reporting storage damage (out-of-core).
+        for request in [
+            vec!["source_chunk:unknown".to_string()],
+            vec![known.clone(), "source_chunk:unknown".to_string()],
+        ] {
+            let error = handle.search_projection_documents(&request, 2).unwrap_err();
+            assert!(
+                matches!(error, HawDBError::Semantic(_)),
+                "out_of_core={out_of_core}: {error:?}"
+            );
+        }
+        drop(handle);
+        if out_of_core {
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+}
+
+#[test]
 fn embedded_handle_search_hydration_rejects_payload_over_budget() {
     for out_of_core in [false, true] {
         let root = unique_embedded_store_test_dir("search_hydration_budget");

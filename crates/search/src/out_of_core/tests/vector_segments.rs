@@ -478,8 +478,9 @@ fn required_rerank_preserves_checksum_budget_and_cancellation_guards() {
                     && cause.used == 0
                     && cause.budget == 1
                     && cause.requested > cause.budget
+                    // The 1-byte per-query admission binds, not the reader cap (#1767).
                     && cause.budget_option
-                        == "SearchOutOfCoreConfig.max_vector_search_working_bytes"),
+                        == "VectorSearchExecutionOptions.max_working_bytes"),
             "{error:?}"
         );
 
