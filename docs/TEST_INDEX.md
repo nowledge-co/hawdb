@@ -110,6 +110,15 @@ eligible documents, serves that many untruncated and refuses 1,501 with a typed
 `out_of_core::tests::out_of_core_exact_vector_window_and_hydration_caps_are_typed_budget_errors`
 (`//crates/search:hawdb_search_tests`) covers the out-of-core page, rank-window,
 uniqueness and hydrated-document caps of exact reads.
+Caller-mistake refusals are not storage faults (#1754):
+`out_of_core::tests::out_of_core_offset_and_limit_overflow_is_a_semantic_error`
+asserts `Semantic` for an overflowing `offset + limit` on full and candidate
+reads, `public_hydration_preserves_order_budgets_and_old_reader` asserts
+`Semantic` for duplicate hydration ids, and
+`hydration_byte_refusal_preserves_the_complete_operation_budget` asserts a
+typed `MetadataEntries` refusal naming
+`SearchOutOfCoreConfig.max_hydrated_documents` for over-limit hydration by id
+and mutation-target loading (all `//crates/search:hawdb_search_tests`).
 Replay with `cargo test --locked -p hawdb --lib out_of_core_working_memory`
 and `cargo test --locked -p hawdb-search --lib admitted_working`. No new lane,
 profile or timeout.

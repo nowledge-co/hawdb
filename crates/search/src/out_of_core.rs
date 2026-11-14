@@ -64,12 +64,18 @@ use score_collector::{score_entries_refusal, BoundedScoreCollector};
 /// The reader option that bounds query score entries and windows.
 const MAX_SCORE_ENTRIES_OPTION: &str = "SearchOutOfCoreConfig.max_score_entries";
 
-/// A search page that would hydrate more hits than the reader admits.
-fn hydrated_documents_refusal(requested: usize, budget: usize, message: String) -> HawDBError {
+/// A search page, hydration-by-id or mutation-target request that would
+/// hydrate more documents than the reader admits.
+fn hydrated_documents_refusal(
+    owner: &str,
+    requested: usize,
+    budget: usize,
+    message: String,
+) -> HawDBError {
     ResourceBudgetError {
         resource: ResourceBudgetKind::MetadataEntries,
         scope: ResourceBudgetScope::Operator,
-        owner: "search hit hydration".into(),
+        owner: owner.into(),
         memory_class: None,
         requested: u64::try_from(requested).unwrap_or(u64::MAX),
         used: 0,
@@ -2798,8 +2804,9 @@ impl SearchOutOfCoreReader {
         document_ids: &[String],
     ) -> Result<SearchOutOfCoreHydrationOutput> {
         let requested = document_ids.iter().cloned().collect::<BTreeSet<_>>();
+        // A repeated id is a malformed request, not storage damage.
         if requested.len() != document_ids.len() {
-            return Err(HawDBError::Storage(
+            return Err(HawDBError::Semantic(
                 "search hydration document ids must be unique".to_string(),
             ));
         }
@@ -2983,6 +2990,7 @@ impl SearchOutOfCoreReader {
     ) -> Result<SearchOutOfCoreOutput> {
         if options.limit > self.config.max_hydrated_documents.get() {
             return Err(hydrated_documents_refusal(
+                "search hit hydration",
                 options.limit,
                 self.config.max_hydrated_documents.get(),
                 format!(
@@ -3054,7 +3062,7 @@ impl SearchOutOfCoreReader {
         let page_score_limit = options
             .offset
             .checked_add(options.limit)
-            .ok_or_else(|| HawDBError::Storage("search offset and limit overflow".to_string()))?;
+            .ok_or_else(|| HawDBError::Semantic("search offset and limit overflow".to_string()))?;
         let max_score_entries = self.config.max_score_entries.get();
         if page_score_limit > max_score_entries {
             return Err(score_entries_refusal(
@@ -3543,6 +3551,7 @@ impl SearchOutOfCoreReader {
     ) -> Result<Vec<SearchHit>> {
         if candidates.len() > self.config.max_hydrated_documents.get() {
             return Err(hydrated_documents_refusal(
+                "search hit hydration",
                 candidates.len(),
                 self.config.max_hydrated_documents.get(),
                 format!(
@@ -3730,11 +3739,16 @@ impl SearchOutOfCoreReader {
         operation: &str,
     ) -> Result<BTreeMap<String, SearchOutOfCoreMutationTarget>> {
         if document_ids.len() > self.config.max_hydrated_documents.get() {
-            return Err(HawDBError::Storage(format!(
-                "search {operation} requires {} documents, exceeding {}",
+            return Err(hydrated_documents_refusal(
+                &format!("search {operation}"),
                 document_ids.len(),
-                self.config.max_hydrated_documents
-            )));
+                self.config.max_hydrated_documents.get(),
+                format!(
+                    "search {operation} requires {} documents, exceeding {}",
+                    document_ids.len(),
+                    self.config.max_hydrated_documents
+                ),
+            ));
         }
         let mut segment_documents = BTreeMap::<(usize, u64), BTreeSet<String>>::new();
         for id in document_ids {
@@ -6649,6 +6663,32 @@ mod tests {
             "VectorSearchExecutionOptions.max_working_bytes",
             "search rank window exceeds the admitted 1 score entries",
         );
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    /// An offset and limit whose sum overflows is a caller mistake, not a
+    /// storage fault (#1754).
+    #[test]
+    #[cfg(feature = "full-text-search")]
+    fn out_of_core_offset_and_limit_overflow_is_a_semantic_error() {
+        let path = test_dir("offset-limit-overflow");
+        let mut index = SearchIndex::open(&path).unwrap();
+        index.upsert(document(0, "team")).unwrap();
+        index.checkpoint().unwrap();
+        let reader = SearchOutOfCoreReader::open(&path).unwrap();
+        let overflowing = SearchQueryOptions {
+            offset: usize::MAX,
+            ..options(1, None)
+        };
+        let error = reader
+            .search_with_options("storage", None, SearchMode::Text, overflowing.clone())
+            .unwrap_err();
+        assert!(matches!(error, HawDBError::Semantic(_)), "{error:?}");
+        let error = reader
+            .search_candidates_with_options("storage", None, SearchMode::Text, overflowing)
+            .unwrap_err();
+        assert!(matches!(error, HawDBError::Semantic(_)), "{error:?}");
+        drop(reader);
         fs::remove_dir_all(path).unwrap();
     }
 
