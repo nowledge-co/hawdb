@@ -79,11 +79,7 @@ fn inline_integer_sort_matches_general_keys_and_stable_ties() {
                     None,
                 )
                 .unwrap();
-                let expected = match direction {
-                    SortDirection::Asc => left.cmp(right),
-                    SortDirection::Desc => left.cmp(right).reverse(),
-                }
-                .then(Ordering::Less);
+                let expected = direction.compare(left, right).then(Ordering::Less);
                 assert_eq!(first.values.cmp_mixed(&second.values, direction), expected);
                 assert_eq!(
                     second.values.cmp_mixed(&first.values, direction),
@@ -166,11 +162,7 @@ fn sort_run_modes_preserve_complete_typed_order_and_key_charges() {
                 let mut expected: Vec<_> = (0..values.len()).collect();
                 expected.sort_by(|left, right| {
                     let order = if with_key {
-                        let order = values[*left].cmp(&values[*right]);
-                        match direction {
-                            SortDirection::Asc => order,
-                            SortDirection::Desc => order.reverse(),
-                        }
+                        direction.compare(&values[*left], &values[*right])
                     } else {
                         Ordering::Equal
                     };
