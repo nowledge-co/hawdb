@@ -98,6 +98,9 @@ enum DocumentTargetRequest {
     /// Ids named by the caller of [`SearchOutOfCoreReader::hydrate_documents`].
     /// An id that is absent or deleted is the caller's mistake.
     ById,
+    /// Ids named by the caller of [`SearchOutOfCoreReader::lookup_documents`].
+    /// An id that is absent or deleted is reported missing, not refused.
+    LookupById,
     /// Ids a mutation writer derived against this reader (test-only today).
     /// A missing one means the index disagrees with that writer's source.
     #[cfg(test)]
@@ -110,23 +113,27 @@ impl DocumentTargetRequest {
         match self {
             Self::SearchHits => "hydration",
             Self::ById => "hydration by id",
+            Self::LookupById => "lookup by id",
             #[cfg(test)]
             Self::MutationTargets => "mutation target resolution",
         }
     }
 
-    fn unknown_document(self, id: &str) -> HawDBError {
+    /// What an id without a visible document route means: `None` when the
+    /// caller asked which ids are present, otherwise the refusal.
+    fn unknown_document(self, id: &str) -> Option<HawDBError> {
         match self {
-            Self::ById => HawDBError::Semantic(format!(
+            Self::ById => Some(HawDBError::Semantic(format!(
                 "search hydration by id requested document {id}, which the published search projection does not contain"
-            )),
-            Self::SearchHits => HawDBError::Storage(format!(
+            ))),
+            Self::LookupById => None,
+            Self::SearchHits => Some(HawDBError::Storage(format!(
                 "search document {id} is outside the published document ranges"
-            )),
+            ))),
             #[cfg(test)]
-            Self::MutationTargets => HawDBError::Storage(format!(
+            Self::MutationTargets => Some(HawDBError::Storage(format!(
                 "search document {id} is outside the published document ranges"
-            )),
+            ))),
         }
     }
 }
@@ -517,6 +524,20 @@ pub struct SearchOutOfCoreCandidate {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchOutOfCoreHydrationOutput {
     pub documents: Vec<SearchDocument>,
+    pub metrics: SearchOutOfCoreMetrics,
+}
+
+/// The result of [`SearchOutOfCoreReader::lookup_documents`].
+///
+/// Every requested id appears exactly once: either as a document in
+/// `documents` or in `missing_document_ids`. Both lists follow request order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SearchOutOfCoreDocumentLookup {
+    /// The requested documents the published projection contains.
+    pub documents: Vec<SearchDocument>,
+    /// The requested ids the published projection does not contain, including
+    /// deleted ones.
+    pub missing_document_ids: Vec<String>,
     pub metrics: SearchOutOfCoreMetrics,
 }
 
@@ -2883,6 +2904,50 @@ impl SearchOutOfCoreReader {
         Ok(SearchOutOfCoreHydrationOutput { documents, metrics })
     }
 
+    /// Hydrates the named documents the published projection contains and
+    /// reports the rest as missing, both in request order.
+    ///
+    /// Unlike [`Self::hydrate_documents`], an id the projection does not
+    /// contain is not an error: an id that was never published and one hidden
+    /// by deletion visibility are both reported in `missing_document_ids`.
+    /// Duplicate ids are `HawDBError::Semantic`, and more ids than
+    /// `SearchOutOfCoreConfig.max_hydrated_documents` is
+    /// `ResourceBudgetExceeded` with owner `search lookup by id`. Absence is
+    /// decided by the published document routes alone; an id they list whose
+    /// document cannot be read or verified is still `HawDBError::Storage`.
+    pub fn lookup_documents(
+        &self,
+        document_ids: &[String],
+    ) -> Result<SearchOutOfCoreDocumentLookup> {
+        let requested = document_ids.iter().cloned().collect::<BTreeSet<_>>();
+        // A repeated id is a malformed request, as in hydration by id.
+        if requested.len() != document_ids.len() {
+            return Err(HawDBError::Semantic(
+                "search lookup document ids must be unique".to_string(),
+            ));
+        }
+        let mut metrics = SearchOutOfCoreMetrics::default();
+        let mut found = self.load_document_targets(
+            &requested,
+            &mut metrics,
+            DocumentTargetRequest::LookupById,
+        )?;
+        let mut documents = Vec::with_capacity(found.len());
+        let mut missing_document_ids = Vec::new();
+        for id in document_ids {
+            match found.remove(id) {
+                Some(target) => documents.push(target.document),
+                None => missing_document_ids.push(id.clone()),
+            }
+        }
+        metrics.hydrated_documents = documents.len();
+        Ok(SearchOutOfCoreDocumentLookup {
+            documents,
+            missing_document_ids,
+            metrics,
+        })
+    }
+
     /// Resolves the current content segment for each requested document.
     ///
     /// The input is a `BTreeSet` so mutation preparation receives a unique,
@@ -3795,10 +3860,16 @@ impl SearchOutOfCoreReader {
             ));
         }
         let mut segment_documents = BTreeMap::<(usize, u64), BTreeSet<String>>::new();
+        // Every id with a visible route must load, whoever asked for it.
+        let mut routed_documents = 0usize;
         for id in document_ids {
-            let route = self
-                .segment_for_document(id)?
-                .ok_or_else(|| request.unknown_document(id))?;
+            let Some(route) = self.segment_for_document(id)? else {
+                match request.unknown_document(id) {
+                    Some(error) => return Err(error),
+                    None => continue,
+                }
+            };
+            routed_documents += 1;
             if route.lexical_document_bytes_read > 0 {
                 metrics.lexical_document_block_reads =
                     metrics.lexical_document_block_reads.saturating_add(1);
@@ -3869,11 +3940,10 @@ impl SearchOutOfCoreReader {
                 }
             }
         }
-        if targets.len() != document_ids.len() {
+        if targets.len() != routed_documents {
             return Err(HawDBError::Storage(format!(
-                "search {operation} found {} of {} requested documents",
+                "search {operation} found {} of {routed_documents} routed documents",
                 targets.len(),
-                document_ids.len()
             )));
         }
         metrics.hydrated_bytes = hydrated_bytes;
@@ -8345,10 +8415,29 @@ mod tests {
                     .documents,
                 vec![live.clone()]
             );
+            // The deleted id is hidden by the mutation run's visibility, not
+            // removed from its content segment.
+            // A replacement keeps the id, so it is requested once.
+            let mut ids = vec![live.id.clone()];
             if !replace {
-                assert!(reader
+                ids.push(old.id.clone());
+            }
+            ids.push("memory:never".to_string());
+            let lookup = reader.lookup_documents(&ids).unwrap();
+            assert_eq!(lookup.documents, vec![live.clone()]);
+            if replace {
+                assert_eq!(lookup.missing_document_ids, vec!["memory:never"]);
+            } else {
+                // Hydration by id refuses a deleted id as a caller mistake
+                // (#1767); lookup reports it missing (#1786).
+                let deleted = reader
                     .hydrate_documents(std::slice::from_ref(&old.id))
-                    .is_err());
+                    .unwrap_err();
+                assert!(matches!(deleted, HawDBError::Semantic(_)), "{deleted:?}");
+                assert_eq!(
+                    lookup.missing_document_ids,
+                    vec![old.id.clone(), "memory:never".to_string()]
+                );
             }
             let mut modes = vec![SearchMode::Text];
             #[cfg(feature = "vector-search")]

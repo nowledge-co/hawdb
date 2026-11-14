@@ -136,6 +136,25 @@ RaBitQ allowlist refusal naming the binding working-bytes option (all
 `embedded_store::tests::embedded_handle_search_hydration_refuses_unknown_ids_on_both_paths`
 (`//:hawdb_unit_general_tests`) asserts `Semantic` for an unknown id on the
 resident and out-of-core embedded paths.
+Lookup by id reports absent ids instead of refusing them (#1786):
+`public_lookup_reports_missing_ids_and_keeps_damage_a_storage_error` asserts
+request order for present and never-published ids, `Semantic` for duplicates,
+a typed `MetadataEntries` refusal with owner `search lookup by id` naming
+`SearchOutOfCoreConfig.max_hydrated_documents`, and `Storage` for a listed id
+whose payload checksum fails; and
+`out_of_core::tests::mutation_visibility_matches_merged_reads_for_delete_and_replace`
+asserts that a document deleted by mutation-run visibility is missing from
+lookup and `Semantic` for hydration by id (both
+`//crates/search:hawdb_search_tests`). In `//:hawdb_unit_general_tests`,
+`embedded_store::tests::search_projection_document_lookup_tests::lookup_reports_present_deleted_and_never_published_ids_on_both_paths`
+deletes a document through the graph and catch-up and asserts, on the
+resident and out-of-core paths, that `EmbeddedReadSnapshot` lookup reports it
+and a never-published id missing, that hydration by id refuses the deleted id
+with `Semantic`, and that duplicates are `Semantic`;
+`lookup_is_charged_to_the_snapshot_row_and_payload_budgets_on_both_paths`
+asserts the snapshot row and payload refusals; and
+`out_of_core_lookup_count_refusal_names_max_hydrated_documents` asserts the
+reader count cap through the snapshot.
 Replay with `cargo test --locked -p hawdb --lib out_of_core_working_memory`
 and `cargo test --locked -p hawdb-search --lib admitted_working`. No new lane,
 profile or timeout.

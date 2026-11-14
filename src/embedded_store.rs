@@ -17,9 +17,10 @@
 use crate::search::{
     AdaptiveVectorSearchOptions, CompressedVectorSearchMode, SearchFallbackReasonCode,
     SearchLexicalProductionQualificationReport, SearchOutOfCoreConfig,
-    SearchOutOfCoreHydrationOutput, SearchOutOfCoreMetrics, SearchOutOfCoreReader,
-    SearchQueryOptions, SearchRangeReadConfig, VectorRecallProductionQualificationReport,
-    VectorRecallValidationOptions, VectorRecallValidationReport, VectorSearchExecutionOptions,
+    SearchOutOfCoreDocumentLookup, SearchOutOfCoreHydrationOutput, SearchOutOfCoreMetrics,
+    SearchOutOfCoreReader, SearchQueryOptions, SearchRangeReadConfig,
+    VectorRecallProductionQualificationReport, VectorRecallValidationOptions,
+    VectorRecallValidationReport, VectorSearchExecutionOptions,
     NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS,
 };
 use crate::search_projection_evidence::{
@@ -1379,6 +1380,22 @@ pub struct SearchHydrationOutput {
     pub out_of_core_metrics: Option<SearchOutOfCoreMetrics>,
 }
 
+/// The result of [`EmbeddedReadSnapshot::lookup_search_projection_documents`].
+///
+/// Every requested id appears exactly once: either as a document in
+/// `documents` or in `missing_document_ids`. Both lists follow request order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SearchProjectionDocumentLookup {
+    /// The requested documents the pinned projection contains.
+    pub documents: Vec<SearchDocument>,
+    /// The requested ids the pinned projection does not contain: never
+    /// published, or deleted.
+    pub missing_document_ids: Vec<String>,
+    /// Physical read evidence on the out-of-core path; `None` on the resident
+    /// path.
+    pub out_of_core_metrics: Option<SearchOutOfCoreMetrics>,
+}
+
 impl OutOfCoreSearchProjection {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Ok(Self {
@@ -1460,6 +1477,14 @@ impl OutOfCoreSearchProjection {
         document_ids: &[String],
     ) -> Result<SearchOutOfCoreHydrationOutput> {
         self.reader.hydrate_documents(document_ids)
+    }
+
+    /// See [`SearchOutOfCoreReader::lookup_documents`].
+    pub fn lookup_documents(
+        &self,
+        document_ids: &[String],
+    ) -> Result<SearchOutOfCoreDocumentLookup> {
+        self.reader.lookup_documents(document_ids)
     }
 
     pub fn search_candidates(
