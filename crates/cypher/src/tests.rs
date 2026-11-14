@@ -183,6 +183,7 @@ mod math_reduce_endpoints;
 mod migration_corpus;
 mod order_by_expressions;
 mod pattern_expressions;
+mod set_expressions;
 mod source_spans;
 mod temporal;
 

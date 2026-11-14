@@ -55,6 +55,14 @@ pub(super) fn logical_output_columns(
             LogicalPlan::OptionalRelationshipCountSum { output, .. } => {
                 break vec![output.clone()];
             }
+            LogicalPlan::MatchSet(set) => {
+                break set
+                    .returns
+                    .as_ref()?
+                    .iter()
+                    .map(|item| item.name.clone())
+                    .collect();
+            }
             LogicalPlan::SetNodePropertiesReturn { returns, .. } => {
                 break match returns {
                     SetNodePropertiesReturnMode::Project(items) => {

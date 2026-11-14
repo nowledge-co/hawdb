@@ -397,6 +397,15 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
             false,
         ),
         (
+            PhysicalPlan::MatchSetExec(Box::new(MatchSet {
+                input: PhysicalPlan::EmptyExec,
+                bindings: Vec::new(),
+                assignments: Vec::new(),
+                returns: None,
+            })),
+            false,
+        ),
+        (
             PhysicalPlan::SetRelationshipProperty {
                 source_variable: String::new(),
                 source_label: String::new(),

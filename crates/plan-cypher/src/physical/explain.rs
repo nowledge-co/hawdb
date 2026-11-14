@@ -315,6 +315,40 @@ impl PhysicalPlan {
                     set_return_mode_summary(returns)
                 )
             }
+            PhysicalPlan::MatchSetExec(set) => {
+                let assignments = set
+                    .assignments
+                    .iter()
+                    .map(|assignment| {
+                        let value = match &assignment.value {
+                            crate::MatchSetValue::Expression(_) => "expression",
+                            crate::MatchSetValue::Local(_) => "local",
+                        };
+                        format!("{}.{}={value}", assignment.variable, assignment.property)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let bindings = set
+                    .bindings
+                    .iter()
+                    .map(|binding| binding.variable.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let returns = set.returns.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |items| {
+                        let columns = items
+                            .iter()
+                            .map(|item| item.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!("[{columns}]")
+                    },
+                );
+                format!(
+                    "{pad}MatchSetExec bindings=[{bindings}] assignments=[{assignments}] returns={returns}"
+                )
+            }
             PhysicalPlan::SetRelationshipProperty {
                 source_variable,
                 source_label,

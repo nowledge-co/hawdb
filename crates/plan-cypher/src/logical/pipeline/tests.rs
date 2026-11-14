@@ -1400,3 +1400,79 @@ fn unwound_variables_import_as_nodes_in_later_matches() {
         );
     }
 }
+
+#[test]
+fn general_set_values_bind_row_evaluation_and_fixed_forms_keep_their_commands() {
+    let parameters = BTreeMap::from([
+        ("id".to_string(), Value::String("a".into())),
+        ("d".to_string(), Value::Float(0.5)),
+        ("s".to_string(), Value::String("x".into())),
+    ]);
+    let plan = |query: &str| plan_pipeline_query(query, &parameters);
+
+    let LogicalPlan::MatchSet(set) = plan(
+        "MATCH (e:E {id: $id})-[:R]->(:F) SET e.score = e.score * 0.5 + $d, \
+         e.count = e.count + 1 RETURN e.score AS score",
+    )
+    .unwrap() else {
+        panic!("expected row evaluation");
+    };
+    // The anonymous endpoint is not read; `e` is read by id.
+    assert_eq!(
+        set.bindings,
+        vec![MatchSetBinding {
+            variable: "e".into(),
+            column: "\0set.e".into(),
+            entity: Some(GraphEntityKind::Node),
+        }]
+    );
+    assert!(matches!(
+        set.assignments[0].value,
+        MatchSetValue::Expression(_)
+    ));
+    // A fixed form keeps its storage semantics inside row evaluation.
+    assert_eq!(
+        set.assignments[1].value,
+        MatchSetValue::Local(SetValue::AddInt {
+            property: "count".into(),
+            amount: 1
+        })
+    );
+    assert_eq!(set.returns.as_ref().unwrap()[0].name, "score".to_string());
+
+    // A string increment or another variable's property is row-evaluated.
+    for query in [
+        "MATCH (e:E) SET e.name = e.name + $s",
+        "MATCH (e:E) SET e.copy = e.name",
+        "MATCH (a:E)-[r:R]->(b:E) SET r.w = r.w + a.weight",
+        "MATCH (a:E)-[r:R]->(b:E) WHERE a.id = $id OR b.id = $id \
+         SET r.space = CASE WHEN a.space <> 'x' THEN a.space ELSE b.space END",
+    ] {
+        assert!(
+            matches!(plan(query).unwrap(), LogicalPlan::MatchSet(_)),
+            "{query}"
+        );
+    }
+    // Shapes the single-pattern commands evaluate keep their plans.
+    assert!(matches!(
+        plan("MATCH (e:E {id: $id}) SET e.name = $s, e.count = e.count + 1").unwrap(),
+        LogicalPlan::SetNodeProperties { .. }
+    ));
+    for (query, message) in [
+        (
+            "MATCH (e:E) SET x.name = e.name + $s",
+            "unknown variable 'x'",
+        ),
+        (
+            "MATCH (e:E) SET e.name = e.name + $s RETURN count(e)",
+            "does not support aggregation",
+        ),
+        (
+            "MERGE (e:E {id: $id}) ON MATCH SET e.name = e.name + $s + '!'",
+            "general SET expressions require MATCH ... SET",
+        ),
+    ] {
+        let error = plan(query).unwrap_err().to_string();
+        assert!(error.contains(message), "{query}: {error}");
+    }
+}

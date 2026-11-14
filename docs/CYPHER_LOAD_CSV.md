@@ -124,9 +124,8 @@ afterwards (thread version stamps such as
 `COALESCE(string(t.updated_at), '') + '|' + COALESCE(string(t.message_count), '')`),
 so the function reproduces Kùzu 0.11.3 output byte for byte instead of
 `toString`'s Neo4j text. `toString` is unchanged. `NULL` converts to `NULL`.
-String concatenation with `+` is not yet supported in HawDB Cypher (it fails
-with `arithmetic requires numeric operands`), so the stamp expression above
-also needs that separate fix.
+String `+` concatenates as in Kùzu, so the stamp expression runs unchanged
+(see [SET expressions](CYPHER_SET_EXPRESSIONS.md#value-semantics)).
 
 The cast is driven by the value's type. HawDB graph properties are not
 declared as `TIMESTAMP`: a property holding a native local or zoned datetime

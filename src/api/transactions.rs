@@ -327,7 +327,55 @@ pub(super) fn execute_graph_transaction_plan(
             mutation_limits.max_result_rows = mutation_limits.max_result_rows.min(limit);
         }
         let statement_savepoint = transaction.savepoint();
+        let finish = |transaction: &mut GraphMutationTransaction, rows: Vec<executor::Row>| {
+            let output = QueryOutput {
+                rows: optimized.collect_named_rows(rows)?,
+            };
+            hawdb_executor::result_delivery::OutputLimits {
+                max_rows: restrictive_query_limit(
+                    runtime.read_result_row_limit(),
+                    execution.output_limits.max_rows,
+                ),
+                max_payload_bytes: restrictive_query_limit(
+                    runtime.config.max_read_result_payload_bytes,
+                    execution.output_limits.max_payload_bytes,
+                ),
+            }
+            .validate(
+                output.rows.len(),
+                if output.rows.is_empty() {
+                    0
+                } else {
+                    output.rows.payload_bytes()
+                },
+            )?;
+            Ok((
+                output,
+                transaction.lock_footprint_since(&statement_savepoint)?,
+            ))
+        };
         let execute = || {
+            if let PhysicalPlan::MatchSetExec(set) = &optimized.physical_plan {
+                let outcome = executor::resolve_match_set(
+                    set,
+                    parameters,
+                    transaction.catalog(),
+                    transaction.store(),
+                    mutation_limits,
+                    hawdb_executor::result_delivery::OutputLimits::default(),
+                    &runtime.config.execution_memory,
+                    task_context,
+                )?;
+                if let Some(mutation) = outcome.mutation {
+                    if is_mutation_return {
+                        transaction
+                            .stage_mutation_without_commit_rows(mutation, mutation_limits)?;
+                    } else {
+                        transaction.stage_mutation_with_limits(mutation, mutation_limits)?;
+                    }
+                }
+                return finish(transaction, outcome.rows);
+            }
             let staged = executor::stage_row_mutations(
                 &optimized.physical_plan,
                 parameters,
@@ -400,32 +448,7 @@ pub(super) fn execute_graph_transaction_plan(
                 &summary.rows,
                 runtime.config.mutation_limits,
             )?;
-            let rows = returned_rows.unwrap_or_default();
-            let output = QueryOutput {
-                rows: optimized.collect_named_rows(rows)?,
-            };
-            hawdb_executor::result_delivery::OutputLimits {
-                max_rows: restrictive_query_limit(
-                    runtime.read_result_row_limit(),
-                    execution.output_limits.max_rows,
-                ),
-                max_payload_bytes: restrictive_query_limit(
-                    runtime.config.max_read_result_payload_bytes,
-                    execution.output_limits.max_payload_bytes,
-                ),
-            }
-            .validate(
-                output.rows.len(),
-                if output.rows.is_empty() {
-                    0
-                } else {
-                    output.rows.payload_bytes()
-                },
-            )?;
-            Ok((
-                output,
-                transaction.lock_footprint_since(&statement_savepoint)?,
-            ))
+            finish(transaction, returned_rows.unwrap_or_default())
         };
         // Row-evaluated clock reads observe the instant planning observed.
         let execution =

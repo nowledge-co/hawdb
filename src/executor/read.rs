@@ -172,5 +172,18 @@ pub(super) fn execute_bindings_with_limit(
             )?;
             Ok(rows.into_iter().map(Binding::values).collect())
         }
+        PhysicalPlan::MatchSetExec(set) => {
+            let rows = execute_match_set(
+                set,
+                context.parameters,
+                catalog,
+                store,
+                MutationLimits::default(),
+                hawdb_executor::result_delivery::OutputLimits::default(),
+                context.memory,
+                context.task_context,
+            )?;
+            Ok(rows.into_iter().map(Binding::values).collect())
+        }
     }
 }

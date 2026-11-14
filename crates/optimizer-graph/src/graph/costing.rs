@@ -426,6 +426,8 @@ fn estimate_local_operator_cost(
     COST_EVALUATIONS.with(|count| count.set(count.get() + 1));
     match plan {
         PhysicalPlan::EmptyExec => PlanCostBreakdown::new(1, 0, 0, 0, 0),
+        // The read input dominates; applying the SET is one write per row.
+        PhysicalPlan::MatchSetExec(_) => inputs[0].expect("unary input cost"),
         PhysicalPlan::NodeCountExec { .. } | PhysicalPlan::RelationshipCountExec { .. } => {
             PlanCostBreakdown::new(1, 1, 0, 0, 0)
         }
