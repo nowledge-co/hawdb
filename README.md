@@ -3,7 +3,7 @@
 [![Website](https://img.shields.io/badge/website-hawdb.ai-111111?style=flat)](https://hawdb.ai)
 [![License](https://img.shields.io/github/license/nowledge-co/hawdb?style=flat)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/nowledge-co/hawdb?style=flat)](https://github.com/nowledge-co/hawdb/releases/latest)
-[![Rust](https://img.shields.io/badge/rust-1.97.1-dea584?style=flat&logo=rust&logoColor=white)](rust-toolchain.toml)
+[![Rust](https://img.shields.io/badge/rust-1.99.1-dea584?style=flat&logo=rust&logoColor=white)](rust-toolchain.toml)
 
 HawDB is an AI-native embedded database for agents. It keeps the facts an agent reasons over — entities, relationships, documents, and events — in one crash-safe process, returns them as bounded context, and gives each agent its own durable branch to work in.
 
@@ -20,7 +20,7 @@ For BM25 full-text search over SQL rows, see [the SQL search index guide](docs/S
 
 ## Install
 
-HawDB is a Rust library. Published releases are on crates.io. The repository pins Rust 1.97.1.
+HawDB is a Rust library. Published releases are on crates.io. The repository pins Rust 1.99.1.
 
 ```toml
 [dependencies]
@@ -275,7 +275,7 @@ bazel build //:hawdb
 bazel test --test_output=errors //...
 ```
 
-`//:hawdb_graph_text` matches `cargo build -p hawdb --no-default-features --features full-text-search`: graph and SQL plus full-text search, without vector search. Bazel uses a hermetic JDK 21, so `JAVA_HOME` is unnecessary for the TLA+ rules. On macOS the repository keeps Rust proc-macros unstripped to avoid a Mach-O alignment bug in the pinned 1.97.1 toolchain.
+`//:hawdb_graph_text` matches `cargo build -p hawdb --no-default-features --features full-text-search`: graph and SQL plus full-text search, without vector search. Bazel uses a hermetic JDK 21, so `JAVA_HOME` is unnecessary for the TLA+ rules. On macOS the repository keeps Rust proc-macros unstripped to avoid a Mach-O alignment bug observed with Rust 1.97.1.
 
 The experimental in-memory browser build is documented in [`docs/WASM.md`](docs/WASM.md). The public playground is built from [nowledge-co/hawdb-website](https://github.com/nowledge-co/hawdb-website).
 

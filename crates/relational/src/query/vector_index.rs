@@ -604,7 +604,9 @@ impl BindingBatchSource<()> for CandidateRows<'_> {
                         })?;
                     decoded = hex
                         .as_bytes()
-                        .chunks_exact(2)
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
                         .map(|pair| {
                             let digit = |b: u8| (b as char).to_digit(16).map(|n| n as u8);
                             digit(pair[0])

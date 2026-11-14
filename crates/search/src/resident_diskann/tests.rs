@@ -755,7 +755,7 @@ fn default_resident_graph_retains_allocation_ownership_until_cache_drop() {
             ceiling: u64,
         ) -> std::result::Result<Box<dyn RuntimeMemoryPermit>, RuntimeMemoryError> {
             self.0
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
                     used.checked_add(bytes).filter(|total| *total <= ceiling)
                 })
                 .map_err(|used| RuntimeMemoryError::AdmissionDenied {

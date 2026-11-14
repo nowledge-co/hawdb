@@ -62,18 +62,17 @@ impl SearchVectorScoring {
             return None;
         }
         let mut lanes = [0.0_f32; 16];
-        let left_chunks = left.chunks_exact(16);
-        let right_chunks = right.chunks_exact(16);
-        let tail = left_chunks
-            .remainder()
+        let (left_chunks, left_tail) = left.as_chunks::<16>();
+        let (right_chunks, right_tail) = right.as_chunks::<16>();
+        let tail = left_tail
             .iter()
-            .zip(right_chunks.remainder())
+            .zip(right_tail)
             .map(|(left, right)| {
                 let difference = left - right;
                 difference * difference
             })
             .sum::<f32>();
-        for (left, right) in left_chunks.zip(right_chunks) {
+        for (left, right) in left_chunks.iter().zip(right_chunks) {
             for lane in 0..16 {
                 let difference = left[lane] - right[lane];
                 lanes[lane] += difference * difference;

@@ -68,8 +68,8 @@ unsafe fn score<const FOUR_BIT: bool>(codes: &[u8], query: &[f32]) -> f32 {
     };
     let weight = vdupq_n_u32(if FOUR_BIT { 8 } else { 1 });
     let mut sum = -0.0f32;
-    let mut chunks = query.chunks_exact(8);
-    for (block, chunk) in chunks.by_ref().enumerate() {
+    let (chunks, tail) = query.as_chunks::<8>();
+    for (block, chunk) in chunks.iter().enumerate() {
         let sign = vdupq_n_u32(u32::from(signs[block]));
         let mut low = vandq_u32(vtstq_u32(sign, low_positions), weight);
         let mut high = vandq_u32(vtstq_u32(sign, high_positions), weight);
@@ -105,7 +105,6 @@ unsafe fn score<const FOUR_BIT: bool>(codes: &[u8], query: &[f32]) -> f32 {
             sum += product;
         }
     }
-    let tail = chunks.remainder();
     let bit_width = if FOUR_BIT {
         RaBitQBitWidth::Four
     } else {

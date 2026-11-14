@@ -228,7 +228,7 @@ fn namespace() -> u64 {
 }
 fn next_id() -> Result<u64> {
     NEXT_HANDLE
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
         .map_err(|_| HAWDB_RETAINED_SIZE_OVERFLOW)
 }
 fn metadata_bytes(descriptor_bytes: usize) -> usize {

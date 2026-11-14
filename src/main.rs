@@ -2991,7 +2991,9 @@ fn decode_json_binary(encoded: &str) -> Result<Vec<u8>> {
     }
     encoded
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|digits| {
             let high = decode_json_hex_digit(digits[0])?;
             let low = decode_json_hex_digit(digits[1])?;

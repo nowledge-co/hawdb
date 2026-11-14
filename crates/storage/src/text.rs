@@ -228,7 +228,9 @@ fn decode_hex_bytes(input: &str) -> Result<Vec<u8>> {
     }
     input
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|digits| {
             let high = decode_hex_digit(digits[0])?;
             let low = decode_hex_digit(digits[1])?;

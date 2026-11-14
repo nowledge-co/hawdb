@@ -143,7 +143,7 @@ impl Drop for PhaseTimer<'_> {
 }
 
 fn add(counter: &AtomicU64, amount: u64) {
-    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+    let _ = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
         Some(value.saturating_add(amount))
     });
 }
