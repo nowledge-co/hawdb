@@ -96,9 +96,11 @@ _CONSTRAINTS = (
 _INDEXES = (
     "SELECT subject_kind, subject_name, property_names, index_kind FROM system.indexes"
 )
-_ID_INDEXES = (
-    "SELECT subject_name, property_names FROM system.indexes "
-    "WHERE subject_kind = 'node' AND index_kind = 'equality'"
+# Read per label, so that the rows stay within a host's max_read_result_rows
+# however many other labels the database indexes.
+_LABEL_INDEXES = (
+    "SELECT property_names FROM system.indexes WHERE subject_kind = 'node' "
+    "AND index_kind = 'equality' AND subject_name = $1"
 )
 
 # The binding returns temporal values and vectors as a dict with one of these
@@ -222,21 +224,24 @@ class HawDBGraph(GraphStore):
                 )
             source_id = batch.add_source(document.source) if include_source else None
             for node in document.nodes:
-                label, node_id = batch.add_node(node)
-                if source_id is not None:
-                    batch.mentions[(source_id, label, node_id)] = None
+                batch.add_node(node, source_id)
             for relationship in document.relationships:
                 batch.add_relationship(relationship)
         statements = batch.statements()
         if not statements:
             return
         with database.transaction() as tx:
-            indexed = {
-                row["subject_name"]
-                for row in tx.execute_sql(_ID_INDEXES)
-                if list(row["property_names"]) == ["id"]
-            }
-            for label in sorted(batch.labels() - indexed):
+            # Read every index before the first write: each statement after a
+            # write costs time that grows with the stored graph.
+            missing = [
+                label
+                for label in sorted(batch.labels())
+                if not any(
+                    list(row["property_names"]) == ["id"]
+                    for row in tx.execute_sql(_LABEL_INDEXES, [label])
+                )
+            ]
+            for label in missing:
                 tx.execute(f"CREATE INDEX ON :{label}(id)")
             for statement, rows in statements:
                 tx.execute(statement, {"rows": rows})
@@ -281,13 +286,15 @@ class _Batch:
         self.sources.setdefault(source_id, properties)
         return source_id
 
-    def add_node(self, node: Node) -> tuple[str, str | int]:
+    def add_node(self, node: Node, source_id: str | int | None) -> None:
+        """Add a node, mentioned by the source document ``source_id`` if set."""
         key = _endpoint(node)
         owner = f"node {_brief(key)}"
         properties = _properties(node.properties, _NODE_RESERVED, owner)
         _check_size(_size(key[1]) + _size(properties), MAX_NODE_BYTES, owner)
         self.nodes.setdefault(key, properties)
-        return key
+        if source_id is not None:
+            self.mentions[(source_id, *key)] = None
 
     def add_relationship(self, relationship: Relationship) -> None:
         source = _endpoint(relationship.source)
@@ -505,10 +512,12 @@ def _read_schema(snapshot: Any) -> dict[str, Any]:
 
 def _add_histogram(owner: dict[str, str], row: dict[str, Any]) -> None:
     # The statistics leave out properties whose values differ in type, so the
-    # first value names the type of them all.
-    histogram = row["histogram"]
-    if histogram:
-        owner[row["property_name"]] = _type_name(histogram[0])
+    # first value other than an explicit null, which sorts first, names the
+    # type of them all.
+    for value in row["histogram"] or ():
+        if value is not None:
+            owner[row["property_name"]] = _type_name(value)
+            return
 
 
 def _add_sampled(

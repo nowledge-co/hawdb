@@ -771,6 +771,31 @@ def test_schema_lists_properties_the_sampled_elements_lack(graph):
     ]
 
 
+def test_schema_types_skip_stored_nulls(graph):
+    # Cypher can store explicit nulls, which sort first in the statistics.
+    graph.query(
+        "CREATE (:Item {id: 'a', name: null, size: 1, gone: null})"
+        "-[:LINKS {weight: null, kind: 'x'}]->"
+        "(:Item {id: 'b', name: 'b', size: null, gone: null})"
+    )
+    graph.query(
+        "MATCH (a:Item {id: 'b'}), (b:Item {id: 'a'}) "
+        "CREATE (a)-[:LINKS {weight: 2, kind: null}]->(b)"
+    )
+    graph.refresh_schema()
+    schema = graph.get_structured_schema
+    # A property stored only as null has no type to list.
+    assert schema["node_props"]["Item"] == [
+        {"property": "id", "type": "STRING"},
+        {"property": "name", "type": "STRING"},
+        {"property": "size", "type": "INTEGER"},
+    ]
+    assert schema["rel_props"]["LINKS"] == [
+        {"property": "kind", "type": "STRING"},
+        {"property": "weight", "type": "INTEGER"},
+    ]
+
+
 def test_schema_text_matches_construct_schema(graph):
     graph.add_graph_documents(
         [graph_document([ALICE, ACME], [works_at({"since": 2020})])],
@@ -834,6 +859,12 @@ def test_read_budgets_set_on_open_apply_to_queries():
         assert graph.query("MATCH (n:Person) RETURN n.id AS id") == [{"id": "Alice"}]
         with pytest.raises(hawdb.exceptions.Error, match="max_read_result_rows"):
             graph.query("MATCH (n) RETURN n.id AS id")
+        # The store reads the indexes of one label at a time, so writes keep
+        # working however many labels the database indexes.
+        graph.add_graph_documents(
+            [graph_document([ALICE, ACME, Node(id="Paris", type="City")])]
+        )
+        assert graph.query("MATCH (n:City) RETURN n.id AS id") == [{"id": "Paris"}]
 
 
 @memory_only

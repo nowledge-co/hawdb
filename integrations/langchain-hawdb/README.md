@@ -276,8 +276,9 @@ examples do; a closed database that leaks this way keeps no files open.
   `hawdb.open`, limits the result.
 - The read budgets you pass to `hawdb.open` also apply to the store's own
   reads. `refresh_schema` reads one row for each label, relationship type,
-  pattern and property statistic, and `add_graph_documents` reads one row for
-  each node index, so a lower `max_read_result_rows` makes them fail.
+  pattern and property statistic, so a lower `max_read_result_rows` makes it
+  fail. `add_graph_documents` reads the equality indexes of one label at a
+  time.
 
 ## Tests
 
