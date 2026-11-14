@@ -697,6 +697,13 @@ Engine errors stay `hawdb.exceptions`.
 is a separate package with a LlamaIndex `PropertyGraphStore` over a
 `hawdb.Database`. Install it from that directory.
 
+## LangChain graph store
+
+[`integrations/langchain-hawdb`](../../integrations/langchain-hawdb/README.md)
+is a separate package with a LangChain `GraphStore` over a `hawdb.Database`,
+for `LLMGraphTransformer` output and `GraphCypherQAChain`. Install it from
+that directory.
+
 ## Test
 
 ```bash

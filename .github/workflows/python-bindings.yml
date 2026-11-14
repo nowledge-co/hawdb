@@ -6,6 +6,7 @@ on:
     paths:
       - "bindings/python/**"
       - "integrations/llama-index-graph-stores-hawdb/**"
+      - "integrations/langchain-hawdb/**"
       - "crates/core/src/error.rs"
       - "MODULE.bazel"
       - "BUILD.bazel"
@@ -18,6 +19,7 @@ on:
     paths:
       - "bindings/python/**"
       - "integrations/llama-index-graph-stores-hawdb/**"
+      - "integrations/langchain-hawdb/**"
       - "crates/core/src/error.rs"
       - "MODULE.bazel"
       - "BUILD.bazel"
@@ -149,6 +151,18 @@ jobs:
       - name: Test the LlamaIndex property graph store against the installed wheel
         if: matrix.os == 'ubuntu-24.04'
         run: pytest ../../integrations/llama-index-graph-stores-hawdb/tests
+
+      - name: Provision the optional LangChain consumer
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          pip install "langchain-community==0.4.2"
+          # Keep the wheel built above instead of a hawdb release from PyPI.
+          pip install --no-deps ../../integrations/langchain-hawdb
+          pip check
+
+      - name: Test the LangChain graph store against the installed wheel
+        if: matrix.os == 'ubuntu-24.04'
+        run: pytest ../../integrations/langchain-hawdb/tests
 
       - name: Retain the tested native wheel for host verification
         uses: actions/upload-artifact@v7
