@@ -96,8 +96,8 @@ pub(super) fn install(
     let update = update::prepare(writer, envelope.body, decode)?;
     let manifest = update.manifest();
     manifest.validate_names()?;
-    // This head is serialized without `stamp_reader_version`; the initial
-    // body never carries a field above the base version (#1763).
+    // This head is serialized without `stamp_reader_version`; `update::prepare`
+    // stamped the joined closure (#1763, #1746).
     debug_assert_eq!(
         manifest.min_reader_version,
         manifest.required_reader_version()

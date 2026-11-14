@@ -99,6 +99,7 @@ fn sample() -> SearchSegmentDescriptor {
                 SearchSegmentFieldSummary {
                     present_count: 3,
                     values: BTreeSet::from(["0".into(), "value\0\n\u{1f980}".into()]),
+                    values_omitted: false,
                     numeric_range: Some(SearchNumericRange {
                         min: -0.0,
                         max: f64::MAX,
@@ -242,13 +243,16 @@ fn seeded_descriptors_preserve_ranges_order_and_optional_fields() {
         let mut descriptor = sample();
         descriptor.segments[0].metadata.clear();
         for index in 0..case % 17 {
+            // Some cases omit a value set, which selects the V4 grammar.
+            let values_omitted = next() % 5 == 0;
             descriptor.segments[0].metadata.insert(
                 format!("key-{index}"),
                 SearchSegmentFieldSummary {
                     present_count: next() as usize % 4,
-                    values: (0..next() % 8)
+                    values: (0..if values_omitted { 0 } else { next() % 8 })
                         .map(|_| format!("value-{}-\u{4e2d}\u{1f980}", next()))
                         .collect(),
+                    values_omitted,
                     numeric_range: (next() % 2 == 0).then(|| SearchNumericRange {
                         min: -(next() as f64),
                         max: next() as f64 / 3.0,

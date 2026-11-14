@@ -26,6 +26,8 @@ pub(super) struct DescriptorSpool {
     bytes: u64,
     checksum: Crc32cHasher,
     pub(super) segment_count: u64,
+    /// Some entry omits a value set, so the descriptor uses the V4 grammar.
+    pub(super) omits_value_summaries: bool,
     _path: OwnedPath,
     _buffer_memory: QueryMemoryLease,
 }
@@ -54,6 +56,7 @@ impl DescriptorSpool {
             bytes: 0,
             checksum: Crc32cHasher::new(),
             segment_count: 0,
+            omits_value_summaries: false,
             _path: path,
             _buffer_memory: buffer_memory,
         })
@@ -80,6 +83,7 @@ impl DescriptorSpool {
             limit,
         };
         write_segment_to(&mut output, descriptor, task)?;
+        self.omits_value_summaries |= descriptor.omits_value_summaries();
         self.segment_count = self
             .segment_count
             .checked_add(1)
@@ -112,7 +116,15 @@ impl DescriptorSpool {
             limit,
         };
         let mut checked = CheckedWriter::new(&mut output, Some(task));
-        writeln!(checked, "HAWDB_SEARCH_SEGMENTS_V3")?;
+        writeln!(
+            checked,
+            "{}",
+            if self.omits_value_summaries {
+                crate::SEARCH_SEGMENT_DESCRIPTOR_V4_HEADER
+            } else {
+                "HAWDB_SEARCH_SEGMENTS_V3"
+            }
+        )?;
         writeln!(
             checked,
             "target_documents\t{}",

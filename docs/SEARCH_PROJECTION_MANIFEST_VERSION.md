@@ -33,8 +33,9 @@ Both are omitted when `min_reader_version` is 1, and an absent field reads as
 | --- | --- |
 | 1 | Every field written before #1763. |
 | 2 | `content_source_graph_commit_epoch` (#1756), and the version fields themselves. |
+| 3 | A segment's `descriptor_version` (#1746). It names a V4 segment descriptor, which can omit a field's value set. |
 
-This reader supports version 2.
+This reader supports version 3.
 
 ## Reading
 
@@ -105,6 +106,11 @@ An epoch advance therefore writes version 2, because it writes
 checkpoint or an out-of-core delta, drops that field and writes version 1
 again. A host can downgrade after such a publication.
 
+An out-of-core generation whose descriptor omits a value set writes version 3
+(see [Segment value summaries](#segment-value-summaries)). The selector stays
+at version 3 while any selected segment carries `descriptor_version`, so
+publishing more content does not lower it.
+
 ## Bump policy
 
 The selector `format` string (`HAWDB_SEARCH_OUT_OF_CORE_V4`) names the selector
@@ -137,6 +143,46 @@ it does not bump `PERSISTENT_FORMAT_VERSION`. A change that stops this reader
 from reading selectors it used to read does bump it
 (`crates/storage/src/persistent_format.rs`).
 
+## Segment value summaries
+
+Issue: `nowledge-co/hawdb#1746`.
+
+Each segment descriptor entry keeps, per metadata field, the set of distinct
+normalized values. The reader uses it to skip a segment for `Eq`, `In` and
+`NotIn`. Every node property is also projection metadata, so before #1746 the
+set for `content` (and other long text) held every document body, and an
+out-of-core reader kept about one copy of the corpus text resident.
+
+An out-of-core segment now keeps a field's set only within two bounds:
+
+| Bound | Value |
+| --- | --- |
+| One normalized value | 256 bytes (`SEARCH_SEGMENT_VALUE_SUMMARY_MAX_VALUE_BYTES`) |
+| Sum of distinct normalized values per field per segment | 8 KiB (`SEARCH_SEGMENT_VALUE_SUMMARY_MAX_FIELD_BYTES`) |
+
+Above either bound the set is omitted for that segment. An omitted set proves
+nothing, so `Eq`, `In` and `NotIn` on that field read the segment and filter
+its rows. Presence counts and numeric and timestamp ranges are unaffected and
+still skip segments. Truncated prefixes are not stored instead: a prefix of
+per-document text is still one entry per document, so it would keep reader
+memory proportional to the document count, and the sets serve only exact
+equality, which is rare on body text.
+
+The writer records an omitted set as `~` in the value column of a
+`HAWDB_SEARCH_SEGMENTS_V4` descriptor, and the selector's segment entry carries
+`descriptor_version: 4`. A descriptor without omitted sets is still written as
+V3 with no `descriptor_version`, byte for byte as before. Readers accept `~`
+only in a V4 descriptor, and refuse a segment whose `descriptor_version` does
+not match its descriptor header.
+
+A reader applies the same bounds while decoding a V1-V3 descriptor written
+before #1746, without materializing the values it omits. Old projections
+therefore open with bounded value summaries and need no rebuild. They still
+read their larger descriptor file once at open.
+
+Resident `SearchIndex` descriptors are unchanged: they keep complete value
+sets, alongside the documents they already hold in memory.
+
 ## Limits
 
 - The gate only helps readers that have it. HawDB 0.31.0 and 0.32.0 have no
@@ -144,6 +190,9 @@ from reading selectors it used to read does bump it
   This includes every version-2 selector. Before downgrading to one of these
   releases, publish content after the last epoch advance (checkpoint or catch
   up), so that the selector is back at version 1.
+- A version-3 selector names V4 descriptors, which HawDB releases before
+  #1746 cannot read. They refuse the selector with the typed error above.
+  Only a rebuild with the older binary returns such a projection to version 1.
 - Selectors written by a development build between #1762 and #1763 can carry
   `content_source_graph_commit_epoch` without the version fields. This reader
   accepts them, and the next publication stamps the version.
@@ -172,8 +221,26 @@ covers:
 Every refusal assertion also checks
 `format() == SEARCH_PROJECTION_MANIFEST_FORMAT`.
 
+Segment value summaries (#1746) are covered by
+`out_of_core::tests::value_summary_bounds`,
+`out_of_core::generation_writer::artifacts::descriptor::tests` and
+`document_encoding::descriptor::decode::tests`:
+
+- bodies above the bounds omit the set, while values at the exact value and
+  field bounds are kept, including trimming and Unicode lowercase growth;
+- an omitted set never skips a segment for `Eq`, `In` or `NotIn`, and filters
+  on it return the same rows; kept sets and ranges still skip segments;
+- a V4 generation writes version 3, a version-2 reader refuses it with the
+  typed error, and a mismatched `descriptor_version` or a `~` outside V4 is a
+  storage failure;
+- a V3 descriptor with full bodies reopens with bounded summaries;
+- reader-retained value bytes and admitted reader memory do not grow with the
+  body length.
+
 The C ABI (`bindings/ffi/src/error_tests.rs`) and Python
 (`bindings/python/src/errors.rs`) tests pin the binding kinds for this error.
 
 Local replay:
-`cargo test --locked -p hawdb-search --lib manifest_version -- --test-threads=4`.
+`cargo test --locked -p hawdb-search --lib manifest_version -- --test-threads=4`
+and
+`cargo test --locked -p hawdb-search --lib value_summar descriptor -- --test-threads=4`.
