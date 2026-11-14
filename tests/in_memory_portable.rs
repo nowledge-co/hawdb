@@ -354,6 +354,36 @@ fn json_string_selects_decoded_strings_before_numeric_conversion() {
 }
 
 #[test]
+fn json_string_nested_expressions_preserve_scalar_column_scope() {
+    let mut db = Database::new();
+    db.query("CREATE (:Memory {id: 1})").unwrap();
+    for (document, expected) in [
+        (r#"{"state":"active"}"#, "active"),
+        (r#"{"state":18446744073709551615}"#, "fallback"),
+        (r#"{}"#, "fallback"),
+    ] {
+        let parameters = BTreeMap::from([
+            ("document".into(), Value::String(document.into())),
+            ("path".into(), Value::String("$.state".into())),
+        ]);
+        db.query_with_params("MATCH (m:Memory) SET m.metadata = $document", &parameters)
+            .unwrap();
+        for query in [
+            "UNWIND [$document] AS doc RETURN coalesce(json_string(doc, $path), 'fallback') AS state",
+            "MATCH (m:Memory) WITH m.metadata AS doc RETURN coalesce(json_string(doc, $path), 'fallback') AS state",
+        ] {
+            let result = db.query_with_params(query, &parameters).unwrap();
+            assert_eq!(result.rows.len(), 1, "{query}");
+            assert_eq!(
+                result.rows[0].get("state"),
+                Some(&Value::String(expected.into())),
+                "{query}, {document}"
+            );
+        }
+    }
+}
+
+#[test]
 fn json_string_filters_and_aggregates_preserve_non_string_absence() {
     let mut db = Database::new();
     for (id, metadata) in [

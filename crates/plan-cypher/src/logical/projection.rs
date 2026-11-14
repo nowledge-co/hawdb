@@ -1421,7 +1421,12 @@ pub(super) fn plan_scalar_expression_with_columns(
         )),
         ScalarExpressionKind::JsonString { expression, path } => {
             Ok(ProjectionExpression::JsonString {
-                expression: Box::new(plan_scalar_expression(scope, expression, parameters)?),
+                expression: Box::new(plan_scalar_expression_with_columns(
+                    scope,
+                    column_scope,
+                    expression,
+                    parameters,
+                )?),
                 path: bind_json_value_path(path, parameters, "JSON_STRING")?,
             })
         }
