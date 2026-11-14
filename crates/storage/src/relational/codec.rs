@@ -1240,7 +1240,7 @@ fn validate_codec_version(version: u16) -> Result<(), RelationalError> {
     if version != CODEC_VERSION {
         return Err(RelationalError::UnsupportedFormat(
             hawdb_core::StorageFormatError::UnsupportedVersion {
-                format: "relational durable codec",
+                format: hawdb_core::RELATIONAL_DURABLE_CODEC_FORMAT,
                 found: version,
                 supported: CODEC_VERSION,
             },
@@ -2260,7 +2260,7 @@ impl<I: DecodeInput> Decoder<I> {
                 .ok_or_else(|| {
                     RelationalError::UnsupportedFormat(
                         hawdb_core::StorageFormatError::UnsupportedFeature {
-                            format: "relational schema",
+                            format: hawdb_core::RELATIONAL_SCHEMA_FORMAT,
                             feature: "search index analyzer",
                             tag: u64::from(tag),
                         },
@@ -2270,7 +2270,7 @@ impl<I: DecodeInput> Decoder<I> {
             if layout != super::materialized_view::SEARCH_INDEX_LAYOUT_TAG {
                 return Err(RelationalError::UnsupportedFormat(
                     hawdb_core::StorageFormatError::UnsupportedFeature {
-                        format: "relational schema",
+                        format: hawdb_core::RELATIONAL_SCHEMA_FORMAT,
                         feature: "search index layout",
                         tag: u64::from(layout),
                     },
@@ -2291,7 +2291,7 @@ impl<I: DecodeInput> Decoder<I> {
         } else if derived_relation > 1 {
             return Err(RelationalError::UnsupportedFormat(
                 hawdb_core::StorageFormatError::UnsupportedFeature {
-                    format: "relational schema",
+                    format: hawdb_core::RELATIONAL_SCHEMA_FORMAT,
                     feature: "derived relation",
                     tag: u64::from(derived_relation),
                 },
@@ -2312,7 +2312,7 @@ impl<I: DecodeInput> Decoder<I> {
                     tag => {
                         return Err(RelationalError::UnsupportedFormat(
                             hawdb_core::StorageFormatError::UnsupportedFeature {
-                                format: "relational schema",
+                                format: hawdb_core::RELATIONAL_SCHEMA_FORMAT,
                                 feature: "materialized view expression",
                                 tag: u64::from(tag),
                             },

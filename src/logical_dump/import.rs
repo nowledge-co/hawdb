@@ -177,7 +177,7 @@ fn parse_manifest(bytes: &[u8]) -> Result<Manifest> {
     if version == 0 || version > u64::from(LOGICAL_DUMP_FORMAT_VERSION) {
         return Err(HawDBError::UnsupportedStorageFormat(
             hawdb_core::StorageFormatError::UnsupportedVersion {
-                format: "logical dump",
+                format: hawdb_core::LOGICAL_DUMP_FORMAT,
                 found: u16::try_from(version).unwrap_or(u16::MAX),
                 supported: LOGICAL_DUMP_FORMAT_VERSION,
             },

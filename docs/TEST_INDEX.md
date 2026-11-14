@@ -455,6 +455,21 @@ no lane, profile or timeout is added. Local replay:
 and `cargo test --locked -p hawdb-search --lib epoch_advance`. See
 [the contract](SEARCH_PROJECTION_EPOCH_ADVANCE.md).
 
+Search-crate owner `out_of_core::manifest_version::tests` (`nowledge-co/hawdb#1763`),
+in the same `hawdb-search` unit lane, covers the selector version gate. A newer
+selector is refused as the typed `UnsupportedStorageFormat`, never `Storage`,
+through the decoder, `SearchOutOfCoreReader::open` and `SearchIndex::open`.
+Damaged and version-inconsistent selectors stay `Storage`. Unversioned
+selectors read and re-encode byte-identically. An epoch-advanced selector
+round-trips at version 2, and a checkpoint or delta after it returns to
+version 1. A new-generation build, an incremental update and a resident
+checkpoint over a newer selector are refused with the typed error and leave it
+byte-identical. Each refusal asserts `format() == SEARCH_PROJECTION_MANIFEST_FORMAT`;
+`hawdb-core` `storage_format` tests pin the exported format constants. `bindings/ffi/src/error_tests.rs` and `bindings/python/src/errors.rs`
+pin the binding kind. No lane, profile or timeout is added. Local replay:
+`cargo test --locked -p hawdb-search --lib manifest_version`. See
+[the policy](SEARCH_PROJECTION_MANIFEST_VERSION.md).
+
 The experimental [Windows directory-custody first packet](../scripts/windows-directory-custody-probe.ps1)
 is owned by the narrowly path-filtered, same-repository
 [Directory Custody Primitive Probe](../.github/workflows/directory-custody-probe.yml)

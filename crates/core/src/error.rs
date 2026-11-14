@@ -20,7 +20,11 @@ pub use resource::{ResourceBudgetError, ResourceBudgetKind, ResourceBudgetScope}
 mod transaction;
 pub use transaction::{TransactionRetryError, TransactionRetryReason};
 mod storage_format;
-pub use storage_format::StorageFormatError;
+pub use storage_format::{
+    StorageFormatError, APPEND_WAL_FORMAT, LOGICAL_DUMP_FORMAT, RELATIONAL_DURABLE_CODEC_FORMAT,
+    RELATIONAL_ROW_PAGE_FORMAT, RELATIONAL_SCHEMA_FORMAT, SEARCH_PROJECTION_MANIFEST_FORMAT,
+    STORAGE_MANIFEST_FORMAT,
+};
 mod relational;
 pub use relational::{find_relational_error_kind, RelationalErrorKind, RelationalErrorSurface};
 

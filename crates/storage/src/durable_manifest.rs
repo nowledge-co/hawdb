@@ -1507,7 +1507,6 @@ fn parse_optional_sha256(input: &str, name: &str) -> Result<Option<Sha256Digest>
 /// Numeric revision of [`STORAGE_VERSION`], reported by compatibility refusals.
 pub const STORAGE_VERSION_REVISION: u16 = 1;
 const STORAGE_VERSION_PREFIX: &str = "hawdb-storage-v";
-const STORAGE_VERSION_FORMAT: &str = "storage manifest";
 
 /// Accepts exactly the supported storage version. An intact version string of
 /// the `hawdb-storage-v<N>` family written by another release is a typed
@@ -1523,7 +1522,7 @@ pub fn validate_storage_version(version: &str) -> Result<()> {
     {
         return Err(HawDBError::UnsupportedStorageFormat(
             hawdb_core::StorageFormatError::UnsupportedVersion {
-                format: STORAGE_VERSION_FORMAT,
+                format: hawdb_core::STORAGE_MANIFEST_FORMAT,
                 found,
                 supported: STORAGE_VERSION_REVISION,
             },

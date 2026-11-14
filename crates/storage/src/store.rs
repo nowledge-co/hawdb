@@ -12586,7 +12586,7 @@ mod tests {
             error,
             HawDBError::UnsupportedStorageFormat(
                 hawdb_core::StorageFormatError::UnsupportedVersion {
-                    format: "storage manifest",
+                    format: hawdb_core::STORAGE_MANIFEST_FORMAT,
                     found: 0,
                     supported: 1,
                 }
@@ -12718,7 +12718,7 @@ mod tests {
             error,
             HawDBError::UnsupportedStorageFormat(
                 hawdb_core::StorageFormatError::UnsupportedVersion {
-                    format: "storage manifest",
+                    format: hawdb_core::STORAGE_MANIFEST_FORMAT,
                     found: 0,
                     supported: 1,
                 }
