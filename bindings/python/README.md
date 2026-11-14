@@ -504,8 +504,9 @@ does not have an experimental retained numeric buffer representation.
 `datetime.date`, naive `datetime.time`, `datetime.timedelta` and naive or aware
 `datetime.datetime` values are temporal parameters. In SQL a naive `datetime`
 binds as `TIMESTAMP` and an aware one as `TIMESTAMPTZ`, stored as its UTC
-instant whatever its zone; comparing a `TIMESTAMP` column with an aware value
-(or the reverse) needs a SQL `CAST`, and dates, times and durations are not SQL
+instant whatever its zone; a `TIMESTAMP` column compares only with naive values
+and a `TIMESTAMPTZ` column only with aware ones (a `WHERE` clause cannot cast
+the parameter or the column), and dates, times and durations are not SQL
 values. `execute`, `execute_sql` and transactions return temporal results as
 single-key tagged dicts with ISO 8601 text, such as
 `{"$localdatetime": "2026-11-05T12:00:00.123456"}` for `TIMESTAMP` and
@@ -626,6 +627,12 @@ returned list and one 1,024-row chunk: for 200,000 rows of four columns the
 autocommit and in a transaction (where the rows are published at `commit()`),
 or the number of rows a SELECT returned. It is -1 for DDL, after `executemany`,
 and for writes to strict append tables.
+The PEP 249 constructors `Timestamp`, `Date` and `Time` are the `datetime`
+classes. HawDB has no session time zone, so `TimestampFromTicks` reads ticks in
+UTC, where sqlite3 and psycopg use local time, and returns an aware UTC
+`datetime`, which binds as `TIMESTAMPTZ`; `DateFromTicks` and `TimeFromTicks`
+return its date and naive time of day. SQL has no `DATE` or `TIME` type, so
+binding a date or time raises `ProgrammingError`.
 `pandas.read_sql` works, with a
 warning that pandas only tests SQLAlchemy and sqlite3 connections.
 `help(hawdb.dbapi)` gives the full contract.
