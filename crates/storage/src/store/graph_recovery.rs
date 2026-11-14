@@ -398,9 +398,14 @@ impl GraphStore {
             let overflow = durable.open_bound_relational_overflow()?;
             let rows = durable.open_bound_relational_row_pages(&overflow)?;
             if !rows.manifest().tables.is_empty() {
-                return Err(HawDBError::Storage(
-                    "checkpoint stores canonical metadata-only relational rows; reopen requires OutOfCore residency with Authoritative relational indexes"
-                        .to_string(),
+                // Intact canonical rows require another reader configuration,
+                // rather than repair or poisoning of the stored database.
+                return Err(HawDBError::UnsupportedStorageFormat(
+                    hawdb_core::StorageFormatError::UnsupportedFeature {
+                        format: hawdb_core::RELATIONAL_METADATA_ONLY_CHECKPOINT_FORMAT,
+                        feature: "reopen requires OutOfCore residency with Authoritative relational indexes",
+                        tag: 1,
+                    },
                 ));
             }
         }

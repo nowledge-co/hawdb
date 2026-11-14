@@ -22,6 +22,9 @@ use std::fmt::{Display, Formatter};
 pub const STORAGE_MANIFEST_FORMAT: &str = "storage manifest";
 /// Relational WAL and full-checkpoint envelopes.
 pub const RELATIONAL_DURABLE_CODEC_FORMAT: &str = "relational durable codec";
+/// Canonical metadata-only relational checkpoint authority. Feature tag 1
+/// requires OutOfCore residency with Authoritative relational indexes.
+pub const RELATIONAL_METADATA_ONLY_CHECKPOINT_FORMAT: &str = "metadata-only relational checkpoint";
 /// Relational schema records, including materialized-view expression tags.
 pub const RELATIONAL_SCHEMA_FORMAT: &str = "relational schema";
 /// Relational row-page publications.
@@ -119,6 +122,7 @@ mod tests {
         let names = [
             STORAGE_MANIFEST_FORMAT,
             RELATIONAL_DURABLE_CODEC_FORMAT,
+            RELATIONAL_METADATA_ONLY_CHECKPOINT_FORMAT,
             RELATIONAL_SCHEMA_FORMAT,
             RELATIONAL_ROW_PAGE_FORMAT,
             APPEND_WAL_FORMAT,

@@ -98,6 +98,7 @@ crates/relational/src/locator.rs const TYPED_LOCATOR_RECORD_VERSION: u8 = 1;
 crates/relational/src/locator.rs const HASH_SPILL_LOCATOR_RECORD_VERSION: u8 = 1;
 crates/core/src/error/storage_format.rs pub const STORAGE_MANIFEST_FORMAT: &str = "storage manifest";
 crates/core/src/error/storage_format.rs pub const RELATIONAL_DURABLE_CODEC_FORMAT: &str = "relational durable codec";
+crates/core/src/error/storage_format.rs pub const RELATIONAL_METADATA_ONLY_CHECKPOINT_FORMAT: &str = "metadata-only relational checkpoint";
 crates/core/src/error/storage_format.rs pub const RELATIONAL_SCHEMA_FORMAT: &str = "relational schema";
 crates/core/src/error/storage_format.rs pub const RELATIONAL_ROW_PAGE_FORMAT: &str = "relational row-page format (recreate the development database)";
 crates/core/src/error/storage_format.rs pub const APPEND_WAL_FORMAT: &str = "append WAL";

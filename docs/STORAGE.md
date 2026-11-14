@@ -76,12 +76,21 @@ An unknown materialized-view expression tag returns `UnsupportedFeature` with
 the schema format, feature name, and numeric tag. `StorageFormatError::format()`
 is always one of the constants exported from `hawdb` and `hawdb_core`:
 `STORAGE_MANIFEST_FORMAT`, `RELATIONAL_DURABLE_CODEC_FORMAT`,
-`RELATIONAL_SCHEMA_FORMAT`, `RELATIONAL_ROW_PAGE_FORMAT`, `APPEND_WAL_FORMAT`,
+`RELATIONAL_METADATA_ONLY_CHECKPOINT_FORMAT`, `RELATIONAL_SCHEMA_FORMAT`,
+`RELATIONAL_ROW_PAGE_FORMAT`, `APPEND_WAL_FORMAT`,
 `LOGICAL_DUMP_FORMAT` or `SEARCH_PROJECTION_MANIFEST_FORMAT`. Hosts compare
 against these constants instead of matching message text. They are recorded in
 `docs/persistent-format.lock`. Current relational schema tags
 0 through 5 represent column, COUNT(*), COUNT(column), SUM, MIN, and MAX.
 This change does not add a feature bitmap or change any encoded bytes.
+
+A canonical metadata-only relational checkpoint requires OutOfCore residency
+with Authoritative relational indexes. Other reader configurations refuse it
+as `UnsupportedFeature` with
+`format() == RELATIONAL_METADATA_ONLY_CHECKPOINT_FORMAT` and tag 1, identifying
+the existing metadata-only authority capability. This diagnostic tag adds no
+stored bytes. Retain the database and select the supported reader configuration;
+the refusal is not corruption and does not authorize recreation or repair.
 
 Compatibility refusal is distinct from malformed data, invalid reserved fields,
 truncation, or checksum failure in supported formats. Streaming checkpoint readers finish integrity

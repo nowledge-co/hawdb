@@ -358,10 +358,20 @@ fn writable_metadata_only_transaction_checkpoints_rows_and_indexes() {
         committed_epoch
     };
 
+    let before_refusal = checkpoint_files(&path);
     let incompatible = Database::open(&path).unwrap().commit_epoch().unwrap_err();
+    assert!(matches!(
+        incompatible,
+        HawDBError::UnsupportedStorageFormat(crate::StorageFormatError::UnsupportedFeature {
+            format: crate::RELATIONAL_METADATA_ONLY_CHECKPOINT_FORMAT,
+            tag: 1,
+            ..
+        })
+    ));
     assert!(incompatible
         .to_string()
         .contains("reopen requires OutOfCore residency with Authoritative relational indexes"));
+    assert_eq!(checkpoint_files(&path), before_refusal);
 
     let mut reopened = Database::open_with_config(&path, config).unwrap();
     assert_eq!(reopened.commit_epoch().unwrap(), committed_epoch);
@@ -385,6 +395,29 @@ fn writable_metadata_only_transaction_checkpoints_rows_and_indexes() {
 
     drop(reopened);
     std::fs::remove_dir_all(path).unwrap();
+}
+
+fn checkpoint_files(root: &std::path::Path) -> BTreeMap<std::path::PathBuf, Vec<u8>> {
+    fn collect(
+        root: &std::path::Path,
+        path: &std::path::Path,
+        files: &mut BTreeMap<std::path::PathBuf, Vec<u8>>,
+    ) {
+        for entry in std::fs::read_dir(path).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                collect(root, &path, files);
+            } else {
+                files.insert(
+                    path.strip_prefix(root).unwrap().to_path_buf(),
+                    std::fs::read(path).unwrap(),
+                );
+            }
+        }
+    }
+    let mut files = BTreeMap::new();
+    collect(root, root, &mut files);
+    files
 }
 
 #[test]
