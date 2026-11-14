@@ -697,6 +697,10 @@ impl EmbeddedStoreHandle {
     /// Candidate search intentionally returns compact identities. Embedded
     /// hosts use this method for projection-owned payloads, such as source
     /// chunks, that have no authoritative graph node to hydrate from.
+    ///
+    /// Documents return in request order, one per id. An id the projection
+    /// does not contain refuses the whole request with `HawDBError::Semantic`
+    /// on both the resident and the out-of-core projection.
     pub fn search_projection_documents(
         &self,
         document_ids: &[String],

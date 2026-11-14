@@ -404,13 +404,14 @@ impl CandidateSet<'_> {
         &self,
         layer: usize,
         max_bytes: u64,
+        budget_option: &'static str,
         task_context: Option<&crate::RuntimeTaskContext>,
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<Option<Ordinals>> {
         match self {
             Self::All(_) => Ok(None),
             Self::Spilled(set) => set
-                .vector_ordinals_for_layer(layer, max_bytes, task_context, metrics)
+                .vector_ordinals_for_layer(layer, max_bytes, budget_option, task_context, metrics)
                 .map(Some),
         }
     }
@@ -596,14 +597,22 @@ impl SpilledCandidateSet<'_> {
         &self,
         layer: usize,
         max_bytes: u64,
+        budget_option: &'static str,
         task_context: Option<&crate::RuntimeTaskContext>,
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<Ordinals> {
         let (cardinality, required_working_bytes) = self.vector_allowlist_layout(layer)?;
+        // `max_bytes` is the scan's remaining working set; `budget_option`
+        // names the setting that bound it. Over budget is a resource refusal.
         if required_working_bytes > max_bytes {
-            return Err(HawDBError::Storage(format!(
-                "search vector candidate allowlist and block require {required_working_bytes} bytes, exceeding {max_bytes}"
-            )));
+            return Err(super::vector_serving::rabitq_working_budget_refusal(
+                required_working_bytes,
+                max_bytes,
+                budget_option,
+                format!(
+                    "search vector candidate allowlist and block require {required_working_bytes} bytes, exceeding {max_bytes}"
+                ),
+            ));
         }
         let mut ordinals = Ordinals {
             values: Vec::new(),

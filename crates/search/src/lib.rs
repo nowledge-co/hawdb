@@ -839,19 +839,22 @@ impl SearchAccessControlContext {
         }
     }
 
+    /// Refuses a context the caller built incorrectly. These are caller
+    /// mistakes, not storage faults, so they are `Semantic` like the core
+    /// `QueryAccessControlContext::validate` (#1767).
     fn validate(&self) -> Result<()> {
         if self.policy_epoch == 0 {
-            return Err(HawDBError::Storage(
+            return Err(HawDBError::Semantic(
                 "access control context requires a non-zero policy epoch".to_string(),
             ));
         }
         if self.visibility_metadata_field.trim().is_empty() {
-            return Err(HawDBError::Storage(
+            return Err(HawDBError::Semantic(
                 "access control context requires a visibility metadata field".to_string(),
             ));
         }
         if self.allowed_visibility_values.is_empty() {
-            return Err(HawDBError::Storage(
+            return Err(HawDBError::Semantic(
                 "access control context requires at least one visibility value".to_string(),
             ));
         }
@@ -860,11 +863,51 @@ impl SearchAccessControlContext {
             .iter()
             .any(|value| value.trim().is_empty())
         {
-            return Err(HawDBError::Storage(
+            return Err(HawDBError::Semantic(
                 "access control context visibility values must be non-empty".to_string(),
             ));
         }
         Ok(())
+    }
+
+    /// Refuses search options whose own policy epoch disagrees with this
+    /// context. Both the resident and the out-of-core reader call this.
+    fn check_options_policy_epoch(&self, policy_epoch: Option<u64>) -> Result<()> {
+        match policy_epoch {
+            Some(policy_epoch) if policy_epoch != self.policy_epoch => {
+                Err(HawDBError::Semantic(format!(
+                    "search options policy epoch {policy_epoch} does not match access control policy epoch {}",
+                    self.policy_epoch
+                )))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Requests each caller check refuses: `(options policy epoch, context)`.
+    /// Shared by the resident and out-of-core reader tests (#1767).
+    #[cfg(all(test, feature = "acl", feature = "full-text-search"))]
+    pub(crate) fn invalid_requests_for_test() -> Vec<(Option<u64>, Self)> {
+        vec![
+            (Some(8), Self::visibility_scopes(7, "space_id", ["team"])),
+            (None, Self::visibility_scopes(0, "space_id", ["team"])),
+            (None, Self::visibility_scopes(7, " ", ["team"])),
+            (
+                None,
+                Self::visibility_scopes(7, "space_id", Vec::<String>::new()),
+            ),
+            (None, Self::visibility_scopes(7, "space_id", ["team", " "])),
+        ]
+    }
+
+    /// The metadata filters a query runs with under this context: `options`'
+    /// filters plus the visibility predicate, after both caller checks.
+    pub(crate) fn effective_query_filters(
+        &self,
+        options: &SearchQueryOptions,
+    ) -> Result<BTreeMap<String, String>> {
+        self.check_options_policy_epoch(options.policy_epoch)?;
+        self.effective_metadata_filters(&options.metadata_filters)
     }
 
     pub fn effective_metadata_filters(
@@ -3979,17 +4022,7 @@ impl SearchIndex {
         let limit = options.limit;
         let document_count = self.documents.len();
         let metadata_filters = match access_control {
-            Some(access_control) => {
-                if let Some(policy_epoch) = options.policy_epoch
-                    && policy_epoch != access_control.policy_epoch
-                {
-                    return Err(HawDBError::Storage(format!(
-                        "search options policy epoch {policy_epoch} does not match access control policy epoch {}",
-                        access_control.policy_epoch
-                    )));
-                }
-                access_control.effective_metadata_filters(&options.metadata_filters)?
-            }
+            Some(access_control) => access_control.effective_query_filters(&options)?,
             None => options.metadata_filters.clone(),
         };
         let policy_epoch = access_control
@@ -16554,6 +16587,61 @@ mod tests {
         assert_eq!(text.candidate_set.cardinality, 3);
         assert!(text.segmented_lexical_projection_used);
         fs::remove_dir_all(path).unwrap();
+    }
+
+    #[cfg(all(feature = "acl", feature = "full-text-search"))]
+    #[test]
+    fn resident_access_control_caller_mistakes_are_semantic_errors() {
+        let mut index = SearchIndex::in_memory();
+        index.set_runtime_capabilities(
+            RuntimeCapabilities::default().with(RuntimeCapability::AccessControl, true),
+        );
+        index
+            .upsert(SearchDocument {
+                id: "allowed".to_string(),
+                title: "Graph".to_string(),
+                content: "storage".to_string(),
+                embedding: None,
+                metadata: BTreeMap::from([("space_id".to_string(), "team".to_string())]),
+            })
+            .unwrap();
+        let options = |policy_epoch| SearchQueryOptions {
+            limit: 10,
+            offset: 0,
+            rank_window: None,
+            fusion_weights: SearchFusionWeights::default(),
+            metadata_filters: BTreeMap::new(),
+            policy_epoch,
+        };
+        // A matching epoch and a valid context still search.
+        index
+            .try_search_with_options_access_control(
+                "graph",
+                None,
+                SearchMode::Text,
+                options(Some(7)),
+                SearchAccessControlContext::visibility_scopes(7, "space_id", ["team"]),
+            )
+            .unwrap();
+        // A mismatched epoch or a malformed context is the caller's mistake,
+        // not a storage fault (#1767).
+        for (policy_epoch, access_control) in
+            SearchAccessControlContext::invalid_requests_for_test()
+        {
+            let error = index
+                .try_search_with_options_access_control(
+                    "graph",
+                    None,
+                    SearchMode::Text,
+                    options(policy_epoch),
+                    access_control.clone(),
+                )
+                .unwrap_err();
+            assert!(
+                matches!(error, HawDBError::Semantic(_)),
+                "{access_control:?}: {error:?}"
+            );
+        }
     }
 
     #[cfg(all(feature = "acl", feature = "full-text-search"))]

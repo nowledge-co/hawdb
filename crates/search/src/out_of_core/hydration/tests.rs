@@ -378,7 +378,24 @@ fn public_hydration_preserves_order_budgets_and_old_reader() {
         matches!(duplicate, HawDBError::Semantic(_)),
         "{duplicate:?}"
     );
-    assert!(reader.hydrate_documents(&["missing".to_string()]).is_err());
+    // An id the projection does not contain is the caller's mistake when the
+    // caller named it, alone or beside ids that exist (#1767).
+    for request in [
+        vec!["missing".to_string()],
+        vec![ids[0].clone(), "missing".to_string()],
+    ] {
+        let missing = reader.hydrate_documents(&request).unwrap_err();
+        assert!(matches!(missing, HawDBError::Semantic(_)), "{missing:?}");
+    }
+    // The same id reaching hit hydration came from the reader's own index,
+    // so its absence is index damage and stays a storage error.
+    let damaged = reader
+        .load_documents(
+            &BTreeSet::from(["missing".to_string()]),
+            &mut SearchOutOfCoreMetrics::default(),
+        )
+        .unwrap_err();
+    assert!(matches!(damaged, HawDBError::Storage(_)), "{damaged:?}");
     assert!(reader.hydrate_documents(&[]).unwrap().documents.is_empty());
     let short = SearchOutOfCoreReader::open_with_config(
         &root,

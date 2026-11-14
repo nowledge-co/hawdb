@@ -299,9 +299,33 @@ more ids than `SearchOutOfCoreConfig.max_hydrated_documents` with
 hydration ids and a page whose `offset + limit` overflows are
 `HawDBError::Semantic`. All three were `HawDBError::Storage`; messages are
 unchanged. Corruption and invariant guards, such as a duplicate document
-found while reading published segments, remain `Storage`. A requested id that
-the projection does not contain is also still `Storage`, because the shared
-loader cannot yet tell it from a damaged document-range index.
+found while reading published segments, remain `Storage`.
+
+The remaining caller mistakes are typed as well (`nowledge-co/hawdb#1767`):
+
+- `hydrate_documents` with an id the projection does not contain (or has
+  deleted) is `HawDBError::Semantic`. The shared loader now knows its caller:
+  the same absence during search-hit hydration is index damage and stays
+  `Storage`. The resident embedded hydration path refuses the id the same way
+  instead of silently skipping it, so both paths return one document per
+  requested id or nothing. Over-limit hydration by id reports budget owner
+  `search hydration by id` instead of `search mutation target resolution`.
+- Search options whose `policy_epoch` differs from the
+  `SearchAccessControlContext` epoch, and a context with a zero epoch, a blank
+  visibility field, no visibility values or a blank value, are
+  `HawDBError::Semantic` on the resident and out-of-core readers, matching the
+  core `QueryAccessControlContext::validate`.
+- A RaBitQ candidate allowlist whose ordinals plus largest block exceed the
+  scan's working set is `ResourceBudgetExceeded` (`MemoryBytes`, owner
+  `RaBitQ candidate scan`) on the pre-check and the candidate-set guard. The
+  budget is `min(SearchOutOfCoreConfig.max_vector_search_working_bytes,
+  VectorSearchExecutionOptions.max_working_bytes)` less retained candidate
+  state, and `budget_option` names whichever of the two is smaller; it
+  previously always named the reader option. `Preferred` mode still falls back
+  to exact scoring on this refusal.
+
+Messages are unchanged except the hydration-by-id ones, which name the new
+operation.
 
 Embedded out-of-core candidate reads (`EmbeddedReadSnapshot` and
 `EmbeddedStoreHandle`, text, vector and hybrid, exact and default) also run

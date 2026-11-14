@@ -119,9 +119,10 @@ fn hydration_byte_refusal_preserves_the_complete_operation_budget() {
         }
         other => panic!("{other:?}"),
     };
+    // Each caller reports itself as the budget owner (#1767).
     assert_count_refusal(
         count_limited.hydrate_documents(&ids).unwrap_err(),
-        "search mutation target resolution",
+        "search hydration by id",
     );
     assert_count_refusal(
         count_limited

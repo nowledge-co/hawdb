@@ -32,6 +32,48 @@ use std::num::NonZeroUsize;
 
 const VECTOR_SCORE_ENTRY_WORKING_BYTES: usize = 128;
 
+/// The reader option that caps the out-of-core vector working set.
+#[cfg(feature = "vector-search")]
+const MAX_VECTOR_SEARCH_WORKING_BYTES_OPTION: &str =
+    "SearchOutOfCoreConfig.max_vector_search_working_bytes";
+
+/// The option that binds the RaBitQ scan working set, which is the smaller of
+/// the reader's configured cap and the per-query execution admission.
+#[cfg(feature = "vector-search")]
+pub(super) fn vector_working_bytes_option(
+    configured_max_bytes: usize,
+    execution_max_bytes: usize,
+) -> &'static str {
+    if execution_max_bytes < configured_max_bytes {
+        "VectorSearchExecutionOptions.max_working_bytes"
+    } else {
+        MAX_VECTOR_SEARCH_WORKING_BYTES_OPTION
+    }
+}
+
+/// A RaBitQ candidate scan whose working set exceeds its byte budget. This is
+/// a resource refusal: `Preferred` mode falls back to exact scoring on it.
+#[cfg(feature = "vector-search")]
+pub(super) fn rabitq_working_budget_refusal(
+    required: u64,
+    available: u64,
+    budget_option: &'static str,
+    message: String,
+) -> HawDBError {
+    ResourceBudgetError {
+        resource: ResourceBudgetKind::MemoryBytes,
+        scope: ResourceBudgetScope::Operator,
+        owner: "RaBitQ candidate scan".into(),
+        memory_class: None,
+        requested: required,
+        used: 0,
+        budget: available,
+        budget_option,
+        message,
+    }
+    .into()
+}
+
 #[cfg(feature = "vector-search")]
 #[derive(Debug)]
 enum RabitqScanError {
@@ -42,20 +84,27 @@ enum RabitqScanError {
 #[cfg(feature = "vector-search")]
 impl RabitqScanError {
     fn budget(required: u64, available: u64, message: String) -> Self {
-        Self::Budget(
-            hawdb_core::ResourceBudgetError {
-                resource: hawdb_core::ResourceBudgetKind::MemoryBytes,
-                scope: hawdb_core::ResourceBudgetScope::Operator,
-                owner: "RaBitQ candidate scan".into(),
-                memory_class: None,
-                requested: required,
-                used: 0,
-                budget: available,
-                budget_option: "SearchOutOfCoreConfig.max_vector_search_working_bytes",
-                message,
-            }
-            .into(),
+        Self::working_budget(
+            required,
+            available,
+            MAX_VECTOR_SEARCH_WORKING_BYTES_OPTION,
+            message,
         )
+    }
+
+    /// A working-set refusal naming the option that bound `available`.
+    fn working_budget(
+        required: u64,
+        available: u64,
+        budget_option: &'static str,
+        message: String,
+    ) -> Self {
+        Self::Budget(rabitq_working_budget_refusal(
+            required,
+            available,
+            budget_option,
+            message,
+        ))
     }
 
     fn into_error(self) -> HawDBError {
@@ -819,6 +868,10 @@ impl SearchOutOfCoreReader {
             .max_vector_search_working_bytes
             .get()
             .min(vector_execution_options.max_working_bytes);
+        let working_budget_option = vector_working_bytes_option(
+            self.config.max_vector_search_working_bytes.get(),
+            vector_execution_options.max_working_bytes,
+        );
         // The projection can return one local top-k while the global heap is
         // retained. Sorting the heap also transiently materializes a second
         // layered vector, so reserve both representations before dispatch.
@@ -830,7 +883,7 @@ impl SearchOutOfCoreReader {
         let scan_working_bytes = total_working_bytes
             .checked_sub(selected_candidate_bytes)
             .ok_or_else(|| {
-                RabitqScanError::budget(selected_candidate_bytes as u64, total_working_bytes as u64, format!(
+                RabitqScanError::working_budget(selected_candidate_bytes as u64, total_working_bytes as u64, working_budget_option, format!(
                     "search RaBitQ retained candidates require {selected_candidate_bytes} bytes, exceeding {total_working_bytes}"
                 ))
             })?;
@@ -872,7 +925,12 @@ impl SearchOutOfCoreReader {
                 })?;
             let allowlist_required = candidate_set.vector_allowlist_working_bytes(layer)?;
             if allowlist_required > layer_working_bytes as u64 {
-                return Err(RabitqScanError::budget(allowlist_required, layer_working_bytes as u64, format!("search vector candidate allowlist and block require {allowlist_required} bytes, exceeding {layer_working_bytes}")));
+                return Err(RabitqScanError::working_budget(
+                    allowlist_required,
+                    layer_working_bytes as u64,
+                    working_budget_option,
+                    format!("search vector candidate allowlist and block require {allowlist_required} bytes, exceeding {layer_working_bytes}"),
+                ));
             }
             let _allowlist_memory = policy
                 .query
@@ -887,6 +945,7 @@ impl SearchOutOfCoreReader {
             let allowlist = candidate_set.vector_ordinals_for_layer(
                 layer,
                 layer_working_bytes as u64,
+                working_budget_option,
                 task_context,
                 metrics,
             )?;
@@ -896,7 +955,7 @@ impl SearchOutOfCoreReader {
             let projection_working_bytes = layer_working_bytes
                 .checked_sub(allowlist_bytes)
                 .ok_or_else(|| {
-                    RabitqScanError::budget(allowlist_bytes as u64, layer_working_bytes as u64, format!(
+                    RabitqScanError::working_budget(allowlist_bytes as u64, layer_working_bytes as u64, working_budget_option, format!(
                         "search vector layer {layer} allowlist requires {allowlist_bytes} bytes, exceeding {scan_working_bytes}"
                     ))
                 })?;
