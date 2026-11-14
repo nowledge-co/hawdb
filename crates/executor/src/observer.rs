@@ -57,6 +57,8 @@ pub trait ExecutionObserver {
 
     fn record_borrowed_node_projection_rows(&self, _rows: usize) {}
 
+    fn record_simple_case_dispatch(&self, _tables: usize, _lookups: usize) {}
+
     fn record_blocking_memory_report(&self, _report: BlockingOperatorMemoryReport) {}
 }
 

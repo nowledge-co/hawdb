@@ -41,7 +41,10 @@ use std::ops::Bound;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-pub const DEFAULT_RELATIONAL_ROW_PAGE_READ_PAGES: usize = 16;
+/// Pages one demand operation may read. Format v2 pages are about 32 KiB
+/// rather than 1 MiB slots, so the default keeps the byte and row budgets
+/// binding: 512 pages of the default target cover the 16 MiB byte budget.
+pub const DEFAULT_RELATIONAL_ROW_PAGE_READ_PAGES: usize = 512;
 pub const DEFAULT_RELATIONAL_ROW_PAGE_READ_ROWS: usize = 4096;
 pub const DEFAULT_RELATIONAL_ROW_PAGE_READ_BYTES: usize = 16 * 1024 * 1024;
 pub const DEFAULT_RELATIONAL_ROW_PAGE_READ_PINS: usize = 1;
@@ -1130,13 +1133,8 @@ impl<'a> DemandReadContext<'a> {
                 self.limits.max_pages
             )));
         }
-        let page_bytes = self
-            .reader
-            .root
-            .publication_config()
-            .page_limits
-            .max_page_bytes
-            .get();
+        // v2 pages have exact lengths; charge what the read materializes.
+        let page_bytes = descriptor.page_integrity.encoded_len as usize;
         let next_bytes = self
             .report
             .bytes_read

@@ -14,16 +14,22 @@
 
 use super::cardinality::{
     estimate_aggregate_rows, estimate_aggregate_work_rows, estimate_filter_rows,
-    estimate_full_text_rows, estimate_optional_degree_work, PlanBindings,
+    estimate_full_text_rows, estimate_optional_degree_work, PlanBindings, StatisticsUsage,
 };
 use super::{OptimizerCatalog, PhysicalPlan, PlanCost, PlanCostBreakdown};
 use hawdb_core::Value;
 use hawdb_cypher::RelationshipDirection;
 use hawdb_plan_cypher::{
     CompositeRangeSeek, ExactPropertySeekBranch, NodeProjectionAccess, PlanChildren,
-    RelationshipCountLeg,
+    ProjectionExpression, RelationshipCountLeg,
 };
 use std::collections::BTreeMap;
+
+mod graph_match;
+mod row_goal;
+mod shape;
+mod width;
+mod work;
 
 pub(super) const NODE_INDEX_EQ_STARTUP_COST: u64 = 1;
 pub(super) const NODE_INDEX_RANGE_STARTUP_COST: u64 = 2;
@@ -103,9 +109,9 @@ fn projected_access_cost(
         }
         NodeProjectionAccess::PropertyValues { property, values } => {
             let rows = if values.len() == 1 {
-                catalog.estimate_property_index_eq_rows(label, property)
+                catalog.estimate_property_index_value_rows(label, property, &values[0])
             } else {
-                catalog.estimate_property_index_in_rows(label, property, values.len() as u64)
+                catalog.estimate_property_index_values_rows(label, property, values)
             }
             .max(1);
             node_index_seek_work(rows, values.len().max(1) as u64)
@@ -181,11 +187,8 @@ fn exact_property_union_cost(
     let mut cpu = 0u64;
     let mut random_io = 0u64;
     for branch in branches {
-        let branch_rows = catalog.estimate_property_index_in_rows(
-            label,
-            &branch.property,
-            branch.values.len() as u64,
-        );
+        let branch_rows =
+            catalog.estimate_property_index_values_rows(label, &branch.property, &branch.values);
         rows = rows.saturating_add(branch_rows);
         let work = node_index_seek_work(branch_rows, branch.values.len().max(1) as u64);
         cpu = cpu.saturating_add(work.cpu);
@@ -215,6 +218,27 @@ pub(super) fn estimate_physical_plan_cost(
     estimate_physical_plan_cost_breakdown(plan, catalog).as_plan_cost()
 }
 
+pub(super) fn estimate_physical_plan_cost_with_context(
+    plan: &PhysicalPlan,
+    catalog: &OptimizerCatalog,
+    context: &crate::OptimizerContext,
+) -> PlanCost {
+    estimate_costed_plan_with_context(plan, catalog, context)
+        .cost
+        .as_plan_cost()
+}
+
+fn estimate_costed_plan_with_context<'a>(
+    plan: &'a PhysicalPlan,
+    catalog: &OptimizerCatalog,
+    context: &crate::OptimizerContext,
+) -> CostedPlan<'a> {
+    let inputs = estimate_input_costs(plan, |input| {
+        estimate_costed_plan_with_context(input, catalog, context)
+    });
+    estimate_operator_cost_with_context(plan, catalog, inputs, context)
+}
+
 pub(super) fn estimate_physical_plan_cost_breakdown(
     plan: &PhysicalPlan,
     catalog: &OptimizerCatalog,
@@ -222,9 +246,39 @@ pub(super) fn estimate_physical_plan_cost_breakdown(
     estimate_costed_plan(plan, catalog).cost
 }
 
+pub(super) fn estimate_physical_plan_cost_with_row_goal(
+    plan: &PhysicalPlan,
+    catalog: &OptimizerCatalog,
+    context: &crate::OptimizerContext,
+    rows: u64,
+) -> PlanCost {
+    let costed = estimate_costed_plan_with_context(plan, catalog, context);
+    row_goal::ConsumptionCost {
+        total: costed.cost,
+        startup: costed.startup,
+    }
+    .prefix(rows)
+    .as_plan_cost()
+}
+
 pub(super) struct CostedPlan<'a> {
     pub(super) cost: PlanCostBreakdown,
+    startup: PlanCostBreakdown,
+    shape: shape::RowShape<'a>,
+    width_report: Option<work::WidthReport>,
+    pub(super) statistics: Option<StatisticsUsage>,
     bindings: PlanBindings<'a>,
+}
+
+impl CostedPlan<'_> {
+    pub(super) fn width_diagnostic(&self, ordinal: usize, plan: &PhysicalPlan) -> Option<String> {
+        self.width_report.map(|width| format!(
+            "physical width cost: operator={} ordinal={ordinal} row_bytes={} retained_bytes={} comparison_work={} spill_work={} memory_hint={:?} proxy_fields={} sampled_values={} units=logical_estimates",
+            plan.kind().as_str(), width.row_bytes, width.retained_bytes,
+            width.comparison_work, width.spill_work, width.memory_hint,
+            width.proxy_fields, width.sampled_values,
+        ))
+    }
 }
 
 fn estimate_costed_plan<'a>(plan: &'a PhysicalPlan, catalog: &OptimizerCatalog) -> CostedPlan<'a> {
@@ -240,10 +294,15 @@ pub(super) fn estimate_cost_with_test_bindings<'a>(
     catalog: &OptimizerCatalog,
     bindings: &impl Fn(&'a PhysicalPlan) -> PlanBindings<'a>,
 ) -> PlanCostBreakdown {
-    let inputs = estimate_input_costs(plan, |input| {
-        estimate_cost_with_test_bindings(input, catalog, bindings)
-    });
-    estimate_local_operator_cost(plan, catalog, inputs, &bindings(plan))
+    fn visit<'a>(
+        plan: &'a PhysicalPlan,
+        catalog: &OptimizerCatalog,
+        bindings: &impl Fn(&'a PhysicalPlan) -> PlanBindings<'a>,
+    ) -> CostedPlan<'a> {
+        let inputs = estimate_input_costs(plan, |input| visit(input, catalog, bindings));
+        estimate_operator_cost_internal(plan, catalog, inputs, Some(bindings(plan)), None)
+    }
+    visit(plan, catalog, bindings).cost
 }
 
 // Finish the child traversal before entering the large operator-cost match, so
@@ -264,13 +323,96 @@ pub(super) fn estimate_operator_cost<'a>(
     catalog: &OptimizerCatalog,
     inputs: [Option<CostedPlan<'a>>; 2],
 ) -> CostedPlan<'a> {
-    let costs = inputs
-        .each_ref()
-        .map(|input| input.as_ref().map(|input| input.cost));
-    let bindings =
-        PlanBindings::for_operator(plan, inputs.map(|input| input.map(|input| input.bindings)));
-    let cost = estimate_local_operator_cost(plan, catalog, costs, &bindings);
-    CostedPlan { cost, bindings }
+    estimate_operator_cost_internal(plan, catalog, inputs, None, None)
+}
+
+pub(super) fn estimate_operator_cost_with_context<'a>(
+    plan: &'a PhysicalPlan,
+    catalog: &OptimizerCatalog,
+    inputs: [Option<CostedPlan<'a>>; 2],
+    context: &crate::OptimizerContext,
+) -> CostedPlan<'a> {
+    estimate_operator_cost_internal(
+        plan,
+        catalog,
+        inputs,
+        None,
+        context.resource_hints().max_memory_bytes,
+    )
+}
+
+fn estimate_operator_cost_internal<'a>(
+    plan: &'a PhysicalPlan,
+    catalog: &OptimizerCatalog,
+    mut inputs: [Option<CostedPlan<'a>>; 2],
+    bindings_override: Option<PlanBindings<'a>>,
+    memory: Option<u64>,
+) -> CostedPlan<'a> {
+    let consumption_inputs = inputs.each_ref().map(|input| {
+        input.as_ref().map(|input| row_goal::ConsumptionCost {
+            total: input.cost,
+            startup: input.startup,
+        })
+    });
+    let costs = row_goal::input_costs(plan, consumption_inputs);
+    let mut statistics = None;
+    // MATCH imports and aggregate keys refer to the input binding scope.
+    let input_binding_cost = if matches!(plan, PhysicalPlan::AggregateExec { .. })
+        || matches!(plan, PhysicalPlan::GraphMatchExec { .. }) && inputs[0].is_some()
+    {
+        Some(estimate_local_operator_cost(
+            plan,
+            catalog,
+            costs,
+            &inputs[0].as_ref().expect("unary input").bindings,
+            &mut statistics,
+        ))
+    } else {
+        None
+    };
+    let input_row_bytes = inputs.each_ref().map(|input| {
+        input
+            .as_ref()
+            .map_or(0, |input| input.shape.retained_bytes())
+    });
+    let shapes = inputs
+        .each_mut()
+        .map(|input| input.as_mut().map(|input| std::mem::take(&mut input.shape)));
+    let shape = shape::RowShape::for_operator(
+        plan,
+        catalog,
+        shapes,
+        inputs[0].as_ref().map(|input| &input.bindings),
+    );
+    let bindings = bindings_override.unwrap_or_else(|| {
+        PlanBindings::for_operator(plan, inputs.map(|input| input.map(|input| input.bindings)))
+    });
+    let cost = input_binding_cost.unwrap_or_else(|| {
+        estimate_local_operator_cost(plan, catalog, costs, &bindings, &mut statistics)
+    });
+    let (cost, width_report) = work::apply(
+        plan,
+        catalog,
+        work::Inputs {
+            costs,
+            row_bytes: input_row_bytes,
+        },
+        &shape,
+        &bindings,
+        cost,
+        memory,
+    );
+    // Width/decode/spill work participates in startup as well as total work.
+    // In particular, a LIMIT must never discount a blocking operator's spill.
+    let consumption = row_goal::cost_operator(plan, consumption_inputs, cost);
+    CostedPlan {
+        cost: consumption.total,
+        startup: consumption.startup,
+        shape,
+        width_report,
+        statistics,
+        bindings,
+    }
 }
 
 fn estimate_local_operator_cost(
@@ -278,6 +420,7 @@ fn estimate_local_operator_cost(
     catalog: &OptimizerCatalog,
     inputs: [Option<PlanCostBreakdown>; 2],
     bindings: &PlanBindings<'_>,
+    statistics: &mut Option<StatisticsUsage>,
 ) -> PlanCostBreakdown {
     #[cfg(test)]
     COST_EVALUATIONS.with(|count| count.set(count.get() + 1));
@@ -286,13 +429,52 @@ fn estimate_local_operator_cost(
         PhysicalPlan::NodeCountExec { .. } | PhysicalPlan::RelationshipCountExec { .. } => {
             PlanCostBreakdown::new(1, 1, 0, 0, 0)
         }
+        PhysicalPlan::UnwindExec { rows, .. } => {
+            let count = rows.len() as u64;
+            PlanCostBreakdown::new(count.max(1), count, 0, 0, 0)
+        }
+        PhysicalPlan::UnwindRowsExec { expression, .. } => {
+            let input = inputs[0].expect("unary input cost");
+            let width = match expression {
+                ProjectionExpression::List(values) => values.len() as u64,
+                ProjectionExpression::Literal(Value::List(values)) => values.len() as u64,
+                ProjectionExpression::Literal(Value::Null) => 0,
+                _ => 10,
+            };
+            let rows = input.estimated_rows.saturating_mul(width);
+            input.with_cpu(input.estimated_rows.saturating_add(rows), rows, 0)
+        }
         PhysicalPlan::UnwindMutation { rows, .. } => {
             let row_count = rows.len().max(1) as u64;
             PlanCostBreakdown::new(row_count, row_count, 0, 0, 0)
         }
+        // File contents are unknown until execution; no plan alternative
+        // competes with the single CSV source, so its cost is nominal.
+        PhysicalPlan::LoadCsvMutation { .. } | PhysicalPlan::LoadCsvExec { .. } => {
+            PlanCostBreakdown::new(1, 1, 0, 0, 0)
+        }
         PhysicalPlan::SeqNodeScan { label, .. } => {
             let rows = catalog.label_count(label);
             node_full_scan_work(rows)
+        }
+        PhysicalPlan::RelationshipSeededNodeScan {
+            label,
+            rel_type,
+            rel_properties,
+            rel_property_in,
+            ..
+        } => {
+            // Seeds are distinct endpoints of the matching relationships, at
+            // most the scanned nodes; each one is an index-located point read.
+            let matching = catalog.estimate_seeded_relationships(
+                rel_type,
+                rel_properties,
+                rel_property_in
+                    .as_ref()
+                    .map(|(property, values)| (property.as_str(), values.as_slice())),
+            );
+            let rows = matching.min(catalog.scan_population(label));
+            node_index_seek_work(rows, NODE_INDEX_EQ_STARTUP_COST)
         }
         PhysicalPlan::NodeProjectionScanExec {
             label,
@@ -302,10 +484,25 @@ fn estimate_local_operator_cost(
             ..
         } => {
             let access_cost = projected_access_cost(access, label, catalog);
+            let access_statistics = match access {
+                NodeProjectionAccess::PropertyValues { property, values } if values.len() == 1 => {
+                    catalog
+                        .property_equality_estimate(
+                            label,
+                            property,
+                            &values[0],
+                            catalog.label_count(label),
+                        )
+                        .map(StatisticsUsage::distribution)
+                }
+                _ => None,
+            };
             let input_rows = access_cost.estimated_rows;
             let rows = predicate.as_ref().map_or(input_rows, |predicate| {
-                estimate_filter_rows(predicate, plan, input_rows, catalog, bindings).max(1)
+                estimate_filter_rows(predicate, plan, input_rows, catalog, bindings, statistics)
+                    .max(1)
             });
+            *statistics = statistics.or(access_statistics);
             let cpu_rows = if !items.is_empty() || predicate.is_some() {
                 rows
             } else {
@@ -353,16 +550,25 @@ fn estimate_local_operator_cost(
                 |cost| cost.with_cpu(rows, work, rows),
             )
         }
-        PhysicalPlan::HashJoinExec { .. } => {
+        PhysicalPlan::HashJoinExec {
+            left_key,
+            right_key,
+            ..
+        } => {
             let left = inputs[0].expect("left input cost");
             let right = inputs[1].expect("right input cost");
-            // Without cross-input key statistics, preserve the conservative
-            // duplicate-heavy output bound. Hashing adds one visit per input;
-            // the enclosing residual filter retains existing selectivity rules.
-            let rows = left
-                .estimated_rows
-                .saturating_mul(right.estimated_rows)
-                .max(1);
+            // Hash one key exactly as execution does. Additional equalities
+            // remain residual work over this intermediate, even when joint
+            // statistics estimate fewer final rows.
+            let rows = super::cardinality::estimate_hash_join_rows(
+                left_key,
+                right_key,
+                left.estimated_rows,
+                right.estimated_rows,
+                catalog,
+                bindings,
+                statistics,
+            );
             let work = left
                 .estimated_rows
                 .saturating_add(right.estimated_rows)
@@ -374,25 +580,12 @@ fn estimate_local_operator_cost(
             let right_cost = inputs[1].expect("right input cost");
             combine_node_cartesian_product_cost(left_cost, right_cost)
         }
-        PhysicalPlan::GraphMatchExec { program, .. } => {
-            let base = inputs[0].unwrap_or_else(|| PlanCostBreakdown::new(1, 0, 0, 0, 0));
-            let mut rows = base.estimated_rows;
-            let mut work = rows;
-            let mut bound = std::collections::BTreeSet::new();
-            for step in &program.steps {
-                let (node, expanding) = match step {
-                    hawdb_plan_cypher::GraphMatchStep::Node(node) => (node, false),
-                    hawdb_plan_cypher::GraphMatchStep::Expand { target, .. } => (target, true),
-                };
-                let newly_bound =
-                    bound.insert(&node.variable) && program.introduced.contains(&node.variable);
-                if expanding || newly_bound {
-                    rows = rows.saturating_mul(catalog.label_count(&node.label).max(1));
-                }
-                work = work.saturating_add(rows);
-            }
-            base.with_random_io(rows, work, 0)
-        }
+        PhysicalPlan::GraphMatchExec { program, .. } => graph_match::estimate(
+            program,
+            catalog,
+            bindings,
+            inputs[0].unwrap_or_else(|| PlanCostBreakdown::new(1, 0, 0, 0, 0)),
+        ),
         PhysicalPlan::NodeColumnLookupExec { label, .. } => {
             let input_cost = inputs[0].expect("unary input cost");
             let label_rows = catalog.label_count(label).max(1);
@@ -403,9 +596,15 @@ fn estimate_local_operator_cost(
             )
         }
         PhysicalPlan::IndexNodeSeek {
-            label, property, ..
+            label,
+            property,
+            value,
+            ..
         } => {
-            let rows = catalog.estimate_property_index_eq_rows(label, property);
+            *statistics = catalog
+                .property_equality_estimate(label, property, value, catalog.label_count(label))
+                .map(StatisticsUsage::distribution);
+            let rows = catalog.estimate_property_index_value_rows(label, property, value);
             node_index_seek_work(rows, NODE_INDEX_EQ_STARTUP_COST)
         }
         PhysicalPlan::IndexNodeMultiSeek {
@@ -414,8 +613,7 @@ fn estimate_local_operator_cost(
             values,
             ..
         } => {
-            let rows =
-                catalog.estimate_property_index_in_rows(label, property, values.len() as u64);
+            let rows = catalog.estimate_property_index_values_rows(label, property, values);
             node_index_seek_work(rows, values.len() as u64)
         }
         PhysicalPlan::IndexNodeUnionSeek {
@@ -456,6 +654,7 @@ fn estimate_local_operator_cost(
             target_label,
             min_hops,
             max_hops,
+            input,
             ..
         } => {
             let input_cost = inputs[0].expect("unary input cost");
@@ -468,11 +667,18 @@ fn estimate_local_operator_cost(
                 *max_hops,
             );
             let source_rows = catalog.label_count(source_label).max(1);
-            let scaled_rows = expand_estimate
-                .estimated_rows
-                .saturating_mul(input_cost.estimated_rows.max(1))
-                .div_ceil(source_rows)
-                .max(1);
+            // Seeded sources already are the matching relationships' endpoints,
+            // so the expand yields its whole-label estimate, not a fraction.
+            let scaled_rows = if matches!(**input, PhysicalPlan::RelationshipSeededNodeScan { .. })
+            {
+                expand_estimate.estimated_rows.max(1)
+            } else {
+                expand_estimate
+                    .estimated_rows
+                    .saturating_mul(input_cost.estimated_rows.max(1))
+                    .div_ceil(source_rows)
+                    .max(1)
+            };
             input_cost.with_random_io(
                 scaled_rows,
                 input_cost.estimated_rows.saturating_add(scaled_rows),
@@ -491,6 +697,7 @@ fn estimate_local_operator_cost(
                 input_cost.estimated_rows,
                 catalog,
                 bindings,
+                statistics,
             );
             input_cost.with_cpu(rows, input_cost.estimated_rows, 0)
         }
@@ -543,8 +750,13 @@ fn estimate_local_operator_cost(
             group_keys, items, ..
         } => {
             let input_cost = inputs[0].expect("unary input cost");
-            let rows =
-                estimate_aggregate_rows(group_keys, bindings, input_cost.estimated_rows, catalog);
+            let rows = estimate_aggregate_rows(
+                group_keys,
+                bindings,
+                input_cost.estimated_rows,
+                catalog,
+                statistics,
+            );
             let work_rows =
                 estimate_aggregate_work_rows(items, bindings, input_cost.estimated_rows, catalog);
             input_cost.with_cpu(rows, work_rows, 0)
@@ -793,3 +1005,6 @@ fn estimate_relationship_count_leg_rows(
     };
     seed_rows.saturating_mul(per_seed).max(1)
 }
+
+#[cfg(test)]
+mod tests_width;

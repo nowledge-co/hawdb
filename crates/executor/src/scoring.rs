@@ -427,8 +427,8 @@ mod tests {
                 .into_iter()
                 .map(|(name, value)| (name.to_string(), value))
                 .collect::<BTreeMap<_, _>>(),
-            nodes: BTreeMap::new(),
-            relationships: BTreeMap::new(),
+            nodes: BTreeMap::new().into(),
+            relationships: BTreeMap::new().into(),
         }
     }
 
@@ -569,6 +569,7 @@ mod tests {
                     memory_ledger: &ledger,
                     task_context: None,
                     observer: &NoopExecutionObserver,
+                    graph: None,
                 },
                 ExecutionLimit::unlimited(),
                 &mut |batch| {

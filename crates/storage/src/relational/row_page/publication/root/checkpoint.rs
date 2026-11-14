@@ -21,29 +21,13 @@ pub(in crate::relational::row_page::publication) fn work_error(
     RelationalRowPagePublicationError::Admission(error.to_string())
 }
 
-pub(super) fn pad_slot(
-    encoded: &mut Vec<u8>,
-    slot_bytes: usize,
-    work: &CheckpointWorkContext,
-) -> Result<(), RelationalRowPagePublicationError> {
-    let unit = work.start_unit().map_err(work_error)?;
-    encoded.reserve(slot_bytes - encoded.len());
-    unit.finish();
-    while encoded.len() < slot_bytes {
-        let unit = work.start_unit().map_err(work_error)?;
-        encoded.resize((encoded.len() + 64 * 1024).min(slot_bytes), 0);
-        unit.finish();
-    }
-    work.checkpoint().map_err(work_error)
-}
-
-pub(super) fn write_slot(
+pub(super) fn write_page(
     writer: &mut BufWriter<File>,
     hasher: &mut IntegrityHasher,
     bytes: &[u8],
     work: &CheckpointWorkContext,
 ) -> Result<(), RelationalRowPagePublicationError> {
-    write_bytes(writer, hasher, bytes, "write row-page slot", work)
+    write_bytes(writer, hasher, bytes, "write row page", work)
 }
 
 pub(super) fn finish(

@@ -28,11 +28,12 @@ SHORT = "// Copyright 2026 Nowledge\n// SPDX-License-Identifier: Apache-2.0"
 
 
 class LicenseHookTests(unittest.TestCase):
-    def run_fixture(self, contents, expected):
-        with tempfile.TemporaryDirectory(prefix=".license-test-", dir=ROOT) as directory:
+    def run_fixture(self, contents, expected, parent=ROOT):
+        with tempfile.TemporaryDirectory(prefix=".license-test-", dir=parent) as directory:
             paths = []
             for name, text in contents.items():
                 path = Path(directory) / name
+                path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(text)
                 paths.append(path)
             before = {path: path.read_bytes() for path in paths}
@@ -63,6 +64,41 @@ class LicenseHookTests(unittest.TestCase):
 
     def test_markdown_unsupported_and_toml_excluded(self):
         self.run_fixture({"notes.md": "# Notes\n", "config.toml": "value = 1\n"}, 0)
+
+    def test_moonbit_sources_interfaces_and_manifests(self):
+        for name, body in {
+            "source.mbt": "///|\nfn main { println(1) }\n",
+            "package.mbti": '// Generated using `moon info`, DO NOT EDIT\npackage "example/test"\n',
+            "moon.mod": 'name = "example/test"\n',
+            "moon.pkg": 'import { "moonbitlang/core/json" }\n',
+        }.items():
+            for header in (FULL, SHORT):
+                with self.subTest(path=name, header=header):
+                    self.run_fixture({name: header + "\n\n" + body}, 0)
+            with self.subTest(path=name, header="missing"):
+                self.run_fixture({name: body}, 1)
+
+    def test_go_line_headers_and_build_constraints(self):
+        for header in (FULL, SHORT):
+            with self.subTest(header=header):
+                self.run_fixture({
+                    "source.go": header + "\n\n//go:build example\n\npackage example\n",
+                }, 0)
+        self.run_fixture({"source.go": "//go:build example\n\npackage example\n"}, 1)
+
+    def test_generated_output_and_dependencies_are_excluded(self):
+        self.run_fixture({
+            "target/generated.rs": "fn generated() {}\n",
+            "_build/generated.mbt": "fn main { println(1) }\n",
+            ".mooncakes/dependency/source.mbt": "fn main { println(1) }\n",
+        }, 0)
+
+    def test_historical_benchmark_evidence_is_preserved(self):
+        self.run_fixture({
+            "test.xml": '<testsuites tests="1" />\n',
+            "probe.rs": "fn main() {}\n",
+            "measure.py": 'print("historical evidence")\n',
+        }, 0, parent=ROOT / "docs/benchmarks")
 
 
 if __name__ == "__main__":

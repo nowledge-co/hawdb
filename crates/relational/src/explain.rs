@@ -267,7 +267,9 @@ pub fn format_relational_explain(
             || match base_access_path.kind {
                 RelationalAccessPathKind::FullScan => "TableFullScanExec",
                 RelationalAccessPathKind::PrimaryKey => "TablePointGetExec",
+                RelationalAccessPathKind::PrimaryKeyRange => "TableRangeScanExec",
                 RelationalAccessPathKind::Index => "IndexRangeScanExec",
+                RelationalAccessPathKind::SearchIndex => "Bm25IndexScan",
             },
             |profile| profile.operator.as_str(),
         ),
@@ -454,6 +456,72 @@ fn explain_join_planning(
     )
 }
 
+/// One operator row of an EXPLAIN tree built by an access path that plans
+/// outside the join planner (the search index scan).
+#[derive(Debug, Clone)]
+pub(crate) struct ExplainRow {
+    pub operator: &'static str,
+    pub id: String,
+    pub estimated_rows: Option<usize>,
+    pub actual_rows: Option<usize>,
+    pub access_object: String,
+    pub operator_info: String,
+    /// ANALYZE only.
+    pub execution_info: Option<String>,
+}
+
+/// Renders `nodes`, root first, in the shared EXPLAIN schema.
+pub(crate) fn render_explain_rows(
+    nodes: &[ExplainRow],
+    analyze: bool,
+    statement_rows: usize,
+    limits: RelationalQueryLimits,
+) -> Result<QueryRows> {
+    let mut rows = Vec::with_capacity(nodes.len());
+    let mut payload_bytes = 0usize;
+    for (index, node) in nodes.iter().enumerate() {
+        let mut row = Row::from([
+            (
+                "id".to_string(),
+                Value::String(explain_tree_id(node.operator, index, &node.id)),
+            ),
+            (
+                "estRows".to_string(),
+                optional_estimated_rows_explain_value(node.estimated_rows),
+            ),
+            ("task".to_string(), Value::String("root".to_string())),
+            (
+                "access object".to_string(),
+                Value::String(node.access_object.clone()),
+            ),
+            (
+                "operator info".to_string(),
+                Value::String(node.operator_info.clone()),
+            ),
+        ]);
+        if analyze {
+            let actual = if index == 0 {
+                Some(node.actual_rows.unwrap_or(statement_rows))
+            } else {
+                node.actual_rows
+            };
+            row.insert("actRows".to_string(), optional_usize_explain_value(actual));
+            row.insert(
+                "execution info".to_string(),
+                match (&node.execution_info, index) {
+                    (Some(info), _) => Value::String(info.clone()),
+                    (None, 0) => Value::String(format!("statement_output_rows={statement_rows}")),
+                    (None, _) => Value::Null,
+                },
+            );
+            row.insert("memory".to_string(), Value::Null);
+            row.insert("disk".to_string(), Value::Null);
+        }
+        push_relational_output(row, &mut rows, &mut payload_bytes, limits)?;
+    }
+    QueryRows::try_from_named_rows(sql_explain_schema(analyze), rows)
+}
+
 fn explain_tree_id(operator: &str, index: usize, display_id: &str) -> String {
     if index == 0 {
         format!("{operator}_{display_id}")
@@ -476,8 +544,14 @@ fn explain_access_object(table: &str, descriptor: &RelationalAccessPathDescripto
     match descriptor.kind {
         RelationalAccessPathKind::FullScan => format!("table:{table}"),
         RelationalAccessPathKind::PrimaryKey => format!("table:{table}, primary_key"),
+        RelationalAccessPathKind::PrimaryKeyRange => {
+            format!("table:{table}, primary_key_range")
+        }
         RelationalAccessPathKind::Index => {
             format!("table:{table}, index:{}", descriptor.name)
+        }
+        RelationalAccessPathKind::SearchIndex => {
+            format!("table:{table}, search_index:{}", descriptor.name)
         }
     }
 }
@@ -502,7 +576,11 @@ fn relational_index_evidence<'a>(
             hawdb_storage::relational::RELATIONAL_PRIMARY_INDEX_NAME
         }
         RelationalAccessPathKind::Index => descriptor.name.as_str(),
-        RelationalAccessPathKind::FullScan => return None,
+        // Clustered intervals read row pages; row evidence describes them.
+        // Search index evidence is reported by the scan itself.
+        RelationalAccessPathKind::FullScan
+        | RelationalAccessPathKind::PrimaryKeyRange
+        | RelationalAccessPathKind::SearchIndex => return None,
     };
     output
         .index_execution_evidence
@@ -537,7 +615,7 @@ fn explain_access_path(
     }
 
     let row = format!(
-        "row_runtime_path={}, row_projection_generation={}, row_projection_source_watermark={}, row_projection_version={}, row_projection_publication_epoch={}, row_base_generation={}, row_delta_generation={}, row_base_epoch={}, row_visible_epoch={}, row_root_set_digest={}, row_descriptor_reads={}, row_logical_pages={}, row_logical_bytes={}, row_physical_pages={}, row_physical_bytes={}, row_cache_hits={}, row_cache_misses={}, row_cache_admission_rejections={}, row_overlay_entries={}, row_overlay_bytes={}, row_rows={}, row_borrowed_rows={}, row_owned_rows={}, row_index_covered_rows={}",
+        "row_runtime_path={}, row_projection_generation={}, row_projection_source_watermark={}, row_projection_version={}, row_projection_publication_epoch={}, row_base_generation={}, row_delta_generation={}, row_base_epoch={}, row_visible_epoch={}, row_root_set_digest={}, row_descriptor_reads={}, row_logical_pages={}, row_logical_bytes={}, row_physical_pages={}, row_physical_bytes={}, row_cache_hits={}, row_cache_misses={}, row_cache_admission_rejections={}, row_overlay_entries={}, row_overlay_bytes={}, row_rows={}, row_borrowed_rows={}, row_owned_rows={}, row_index_covered_rows={}, postings_visited={}, posting_blocks_read={}, posting_blocks_skipped={}",
         row_evidence.runtime_path,
         row_evidence
             .projection_generation
@@ -565,6 +643,9 @@ fn explain_access_path(
         row_evidence.borrowed_rows_visited,
         row_evidence.owned_rows_visited,
         row_evidence.index_covered_rows,
+        row_evidence.postings_visited,
+        row_evidence.posting_blocks_read,
+        row_evidence.posting_blocks_skipped,
     );
     let Some(evidence) = evidence else {
         return format!("{planned}, {row}");
@@ -621,7 +702,7 @@ fn optional_u64_text(value: Option<u64>) -> String {
         .unwrap_or_else(|| "none".to_string())
 }
 
-fn explain_order_by(order_by: &[hawdb_sql::SqlOrderItem]) -> String {
+pub(crate) fn explain_order_by(order_by: &[hawdb_sql::SqlOrderItem]) -> String {
     order_by
         .iter()
         .map(|item| {
@@ -744,7 +825,7 @@ fn explain_expression(expression: &SqlExpression) -> String {
     }
 }
 
-fn explain_predicate(predicate: &SqlPredicate) -> String {
+pub(crate) fn explain_predicate(predicate: &SqlPredicate) -> String {
     match &predicate.kind {
         ExprKind::And(left, right) => {
             format!(
@@ -831,6 +912,7 @@ fn explain_sql_value(value: &SqlValue) -> String {
     match value {
         SqlValue::Literal(value) => value.to_string(),
         SqlValue::Parameter(position) => format!("${position}"),
+        SqlValue::Expression(expression) => explain_expression(expression),
     }
 }
 

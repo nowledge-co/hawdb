@@ -32,23 +32,43 @@ mod constraints;
 mod index_range;
 mod index_shadow;
 mod materialized_view;
+mod numeric_expression;
 pub(crate) use index_range::EncodedRelationalIndexRange;
 pub use index_range::{RelationalIndexBound, RelationalIndexBounds};
 pub(crate) use index_shadow::{
     IndexReadAdmission, IndexReadCharge, IndexReadObserver, IndexReadPreflightError,
 };
 pub use materialized_view::{
-    MaterializedViewColumn, MaterializedViewDefinition, MaterializedViewExpression,
+    decode_search_sealed_block, decode_search_sealed_block_header, search_index_block_bounds_range,
+    search_index_block_fence, search_index_dictionary_key, search_index_length_block_key,
+    search_index_length_block_range, search_index_length_block_start,
+    search_index_sealed_block_after_range, search_index_sealed_block_range,
+    search_index_sealed_block_window, search_index_statistics_key, MaterializedViewColumn,
+    MaterializedViewDefinition, MaterializedViewExpression, SearchBlockBounds, SearchDocumentEntry,
+    SearchIndexAnalyzer, SearchIndexSpec, SearchIndexStatistics, SearchLengthBlock, SearchPosting,
+    SearchPostingBlockHeader, SearchTermDictionary, SEARCH_INDEX_BLOCK_POSTINGS,
+    SEARCH_INDEX_COLUMN_COUNT, SEARCH_INDEX_DATA_COLUMN, SEARCH_INDEX_KIND_COLUMN,
+    SEARCH_INDEX_LENGTH_BLOCK_DOCUMENTS, SEARCH_INDEX_MAX_BLOCK_POSTINGS,
+    SEARCH_INDEX_MAX_TOKEN_BYTES, SEARCH_INDEX_NAME_COLUMN, SEARCH_INDEX_SLOT_COLUMN,
+    SEARCH_INDEX_TAIL_POSTINGS,
+};
+pub use numeric_expression::{
+    RelationalNumericExpression, MAX_NUMERIC_EXPRESSION_DEPTH, MAX_NUMERIC_EXPRESSION_NODES,
 };
 mod admitted_point;
 mod ordered_key;
+mod primary_key_range;
 #[doc(hidden)]
 pub use admitted_point::{
     RelationalAdmittedPoint, RelationalPointAllocation, RelationalPointReadRequest,
 };
+use primary_key_range::{equality as mutation_equality, mutation_primary_key_range};
+pub use primary_key_range::{RelationalKeyRange, RelationalPrimaryKeyRange};
 pub(crate) mod overflow;
 mod recovery;
+mod resident_rows;
 mod row_page;
+use resident_rows::RelationalRowPages;
 pub(crate) use row_page::CheckpointSnapshotPointRequest;
 
 pub use codec::{
@@ -130,12 +150,13 @@ pub use row_page::{
     relational_row_delta_manifest_generation_file, relational_row_delta_run_file,
     relational_row_page_artifact_file, relational_row_page_manifest_generation_file,
     relational_row_page_root_descriptor_file, relational_row_page_root_key_file,
-    ImmutableRelationalRowPage, RelationalProjectedField, RelationalProjectedFieldRef,
-    RelationalProjectedRow, RelationalProjectedRowRef, RelationalProjectedRowView,
-    RelationalRowDeltaBaseBinding, RelationalRowDeltaBuilder, RelationalRowDeltaConfig,
-    RelationalRowDeltaError, RelationalRowDeltaGeneration, RelationalRowDeltaManifest,
-    RelationalRowDeltaPublicationPhase, RelationalRowDeltaReadReport, RelationalRowDeltaReader,
-    RelationalRowDeltaReport, RelationalRowDeltaTableMetadata, RelationalRowLiveUnavailable,
+    ImmutableRelationalRowPage, RelationalLiveOverlayKind, RelationalLiveOverlayShortfall,
+    RelationalProjectedField, RelationalProjectedFieldRef, RelationalProjectedRow,
+    RelationalProjectedRowRef, RelationalProjectedRowView, RelationalRowDeltaBaseBinding,
+    RelationalRowDeltaBuilder, RelationalRowDeltaConfig, RelationalRowDeltaError,
+    RelationalRowDeltaGeneration, RelationalRowDeltaManifest, RelationalRowDeltaPublicationPhase,
+    RelationalRowDeltaReadReport, RelationalRowDeltaReader, RelationalRowDeltaReport,
+    RelationalRowDeltaTableMetadata, RelationalRowLiveUnavailable,
     RelationalRowPageArtifactMetadata, RelationalRowPageBootstrap,
     RelationalRowPageBootstrapReport, RelationalRowPageCheckpointError,
     RelationalRowPageCumulativeReadRemaining, RelationalRowPageCumulativeReadReport,
@@ -143,8 +164,9 @@ pub use row_page::{
     RelationalRowPageDemandReadReport, RelationalRowPageDemandReader, RelationalRowPageEntry,
     RelationalRowPageError, RelationalRowPageGenerationArtifacts,
     RelationalRowPageGenerationRequest, RelationalRowPageId, RelationalRowPageIdAllocator,
-    RelationalRowPageLimits, RelationalRowPageLiveError, RelationalRowPageMutationError,
-    RelationalRowPageMutationPlan, RelationalRowPageMutationPlanner,
+    RelationalRowPageIntegrity, RelationalRowPageLimits, RelationalRowPageLiveError,
+    RelationalRowPageMutationError, RelationalRowPageMutationPlan,
+    RelationalRowPageMutationPlanner, RelationalRowPagePartitionAbsenceProof,
     RelationalRowPagePhysicalGeneration, RelationalRowPageProjectedFields,
     RelationalRowPageProjectedRange, RelationalRowPageProjectedRangeFields,
     RelationalRowPagePublicationConfig, RelationalRowPagePublicationError,
@@ -152,12 +174,12 @@ pub use row_page::{
     RelationalRowPagePublisher, RelationalRowPageReadView, RelationalRowPageReadViewIdentity,
     RelationalRowPageRecoveredValue, RelationalRowPageRecoveryStatus,
     RelationalRowPageRewriteConfig, RelationalRowPageRootDescriptor, RelationalRowPageRootManifest,
-    RelationalRowPageRootReader, RelationalRowPageServingResources, RelationalRowPageSlotIntegrity,
+    RelationalRowPageRootReader, RelationalRowPageServingResources,
     RelationalRowPageSnapshotPointReport, RelationalRowPageSnapshotPointsReport,
     RelationalRowPageSnapshotRangeReport, RelationalRowPageSnapshotReadError,
     RelationalRowPageSnapshotReadLimits, RelationalRowPageSnapshotReader,
     RelationalRowPageSnapshotRowSource, RelationalRowPageState, RelationalRowPageTableDelta,
-    RelationalRowPageTableRoot, RelationalRowPageView,
+    RelationalRowPageTableRoot, RelationalRowPageView, RelationalRowSchemaRewrite,
     DEFAULT_RELATIONAL_ROW_DELTA_CHECKPOINT_RUNS, DEFAULT_RELATIONAL_ROW_DELTA_DIRTY_BYTES,
     DEFAULT_RELATIONAL_ROW_DELTA_DIRTY_ENTRIES, DEFAULT_RELATIONAL_ROW_DELTA_MANIFEST_BYTES,
     DEFAULT_RELATIONAL_ROW_DELTA_RUNS, DEFAULT_RELATIONAL_ROW_DELTA_RUN_BYTES,
@@ -169,12 +191,13 @@ pub use row_page::{
     DEFAULT_RELATIONAL_ROW_PAGE_READ_ROWS, DEFAULT_RELATIONAL_ROW_PAGE_READ_TREE_HEIGHT,
     DEFAULT_RELATIONAL_ROW_PAGE_ROOT_KEY_BYTES, DEFAULT_RELATIONAL_ROW_PAGE_ROOT_PAGES,
     DEFAULT_RELATIONAL_ROW_PAGE_ROWS, DEFAULT_RELATIONAL_ROW_PAGE_ROW_BYTES,
-    DEFAULT_RELATIONAL_ROW_PAGE_TABLES, DEFAULT_RELATIONAL_ROW_PAGE_VALUE_BYTES,
-    DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_BYTES, DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_ENTRIES,
-    RELATIONAL_ROW_DELTA_MANIFEST_FILE, RELATIONAL_ROW_PAGE_MANIFEST_FILE,
+    DEFAULT_RELATIONAL_ROW_PAGE_TABLES, DEFAULT_RELATIONAL_ROW_PAGE_TARGET_BYTES,
+    DEFAULT_RELATIONAL_ROW_PAGE_VALUE_BYTES, DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_BYTES,
+    DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_ENTRIES, RELATIONAL_ROW_DELTA_MANIFEST_FILE,
+    RELATIONAL_ROW_PAGE_MANIFEST_FILE,
 };
 
-pub const DEFAULT_MAX_RELATIONAL_MUTATION_ROWS: usize = 100_000;
+pub const DEFAULT_MAX_RELATIONAL_MUTATION_ROWS: usize = 250_000;
 pub const DEFAULT_MAX_RELATIONAL_MUTATION_BYTES: usize = 64 * 1024 * 1024;
 pub const DEFAULT_MAX_RELATIONAL_INDEX_CHANGES: usize = 100_000;
 pub const DEFAULT_MAX_RELATIONAL_INDEX_CHANGE_BYTES: usize = 8 * 1024 * 1024;
@@ -190,6 +213,18 @@ const RELATIONAL_FOREIGN_KEY_INDEX_PREFIX: &str = "__foreign_key_";
 pub struct RelationalMutationLimits {
     pub max_rows: NonZeroUsize,
     pub max_payload_bytes: NonZeroUsize,
+}
+
+impl RelationalMutationLimits {
+    pub(crate) fn for_recovery() -> Self {
+        // Durable transactions were already admitted. Replaying them must not
+        // depend on the host's current foreground work policy. Decode bounds,
+        // allocation reservations and integrity checks still apply.
+        Self {
+            max_rows: NonZeroUsize::MAX,
+            max_payload_bytes: NonZeroUsize::MAX,
+        }
+    }
 }
 
 impl Default for RelationalMutationLimits {
@@ -259,22 +294,76 @@ pub enum RelationalScalarType {
     Boolean,
     BigInt,
     DoublePrecision,
+    Decimal(hawdb_core::DecimalType),
     Text,
     Bytea,
     Uuid,
     Vector(hawdb_core::VectorDimension),
+    /// `TIMESTAMP(p)`: local date and time, microseconds since 1970-01-01.
+    Timestamp(hawdb_core::TimestampPrecision),
+    /// `TIMESTAMPTZ(p)`: a UTC instant, microseconds since 1970-01-01.
+    TimestampTz(hawdb_core::TimestampPrecision),
 }
 
 impl RelationalScalarType {
+    /// Index identity is numeric for Decimal, independent of declaration scale,
+    /// and chronological for timestamps, independent of declared precision.
+    pub fn same_value_domain(self, other: Option<Self>) -> bool {
+        matches!(
+            (self, other),
+            (Self::Decimal(_), Some(Self::Decimal(_)))
+                | (Self::Timestamp(_), Some(Self::Timestamp(_)))
+                | (Self::TimestampTz(_), Some(Self::TimestampTz(_)))
+        ) || other == Some(self)
+    }
+
+    /// Whether a value of `value_type` belongs to this column type's domain
+    /// for comparison and key lookup. Timestamp precision does not
+    /// participate; other types require identical scalar types.
+    pub fn value_type_matches(self, value_type: Option<Self>) -> bool {
+        match (self, value_type) {
+            (Self::Timestamp(_), Some(Self::Timestamp(_)))
+            | (Self::TimestampTz(_), Some(Self::TimestampTz(_))) => true,
+            _ => value_type == Some(self),
+        }
+    }
+
+    /// Whether a non-NULL stored value has exactly this column type, including
+    /// a timestamp rounded to the declared precision.
+    pub fn holds(self, value: RelationalValueRef<'_>) -> bool {
+        match (self, value) {
+            (Self::Timestamp(precision), RelationalValueRef::Timestamp(value))
+            | (Self::TimestampTz(precision), RelationalValueRef::TimestampTz(value)) => {
+                precision.accepts(value)
+            }
+            (_, value) => value.scalar_type() == Some(self),
+        }
+    }
+
+    pub fn accepts(self, value: RelationalValueRef<'_>) -> bool {
+        match (self, value) {
+            (_, RelationalValueRef::Null) => true,
+            (Self::Decimal(kind), RelationalValueRef::Decimal(value)) => kind.accepts(value),
+            (Self::Timestamp(precision), RelationalValueRef::Timestamp(value))
+            | (Self::TimestampTz(precision), RelationalValueRef::TimestampTz(value)) => {
+                precision.accepts(value)
+            }
+            (_, value) => value.scalar_type() == Some(self),
+        }
+    }
+
     pub const fn logical_type(self) -> LogicalType {
         match self {
             Self::Boolean => LogicalType::Boolean,
             Self::BigInt => LogicalType::Int64,
             Self::DoublePrecision => LogicalType::Float64,
+            Self::Decimal(_) => LogicalType::Decimal,
             Self::Text => LogicalType::Text,
             Self::Bytea => LogicalType::Binary,
             Self::Uuid => LogicalType::Uuid,
             Self::Vector(dimension) => LogicalType::Vector(dimension),
+            Self::Timestamp(_) => LogicalType::LocalDateTime,
+            Self::TimestampTz(_) => LogicalType::DateTime,
         }
     }
 }
@@ -285,10 +374,15 @@ pub enum RelationalValue {
     Boolean(bool),
     BigInt(i64),
     DoublePrecision(f64),
+    Decimal(hawdb_core::Decimal),
     Text(String),
     Bytea(Vec<u8>),
     Vector(hawdb_core::Vector),
     Uuid(Uuid),
+    /// Microseconds since 1970-01-01 00:00:00 (local, no zone).
+    Timestamp(i64),
+    /// Microseconds since 1970-01-01 00:00:00 UTC.
+    TimestampTz(i64),
     Overflow(RelationalOverflowRef),
 }
 
@@ -303,10 +397,15 @@ pub enum RelationalValueRef<'a> {
     Boolean(bool),
     BigInt(i64),
     DoublePrecision(f64),
+    Decimal(hawdb_core::Decimal),
     Text(&'a str),
     Bytea(&'a [u8]),
     Vector(hawdb_core::VectorRef<'a>),
     Uuid(Uuid),
+    /// Microseconds since 1970-01-01 00:00:00 (local, no zone).
+    Timestamp(i64),
+    /// Microseconds since 1970-01-01 00:00:00 UTC.
+    TimestampTz(i64),
     Overflow(RelationalOverflowRef),
 }
 
@@ -321,10 +420,17 @@ impl RelationalValue {
             Self::Boolean(_) => Some(RelationalScalarType::Boolean),
             Self::BigInt(_) => Some(RelationalScalarType::BigInt),
             Self::DoublePrecision(_) => Some(RelationalScalarType::DoublePrecision),
+            Self::Decimal(value) => Some(RelationalScalarType::Decimal(value.decimal_type())),
             Self::Text(_) => Some(RelationalScalarType::Text),
             Self::Bytea(_) => Some(RelationalScalarType::Bytea),
             Self::Vector(value) => Some(RelationalScalarType::Vector(value.dimension())),
             Self::Uuid(_) => Some(RelationalScalarType::Uuid),
+            Self::Timestamp(_) => Some(RelationalScalarType::Timestamp(
+                hawdb_core::TimestampPrecision::DEFAULT,
+            )),
+            Self::TimestampTz(_) => Some(RelationalScalarType::TimestampTz(
+                hawdb_core::TimestampPrecision::DEFAULT,
+            )),
             Self::Overflow(reference) => Some(reference.scalar_type),
         }
     }
@@ -337,7 +443,11 @@ impl RelationalValue {
         match self {
             Self::Null => 0,
             Self::Boolean(_) => 1,
-            Self::BigInt(_) | Self::DoublePrecision(_) => 8,
+            Self::BigInt(_)
+            | Self::DoublePrecision(_)
+            | Self::Timestamp(_)
+            | Self::TimestampTz(_) => 8,
+            Self::Decimal(_) => hawdb_core::Decimal::ENCODED_LEN,
             Self::Text(value) => value.len(),
             Self::Bytea(value) => value.len(),
             Self::Vector(value) => value.encoded().len(),
@@ -351,12 +461,15 @@ impl RelationalValue {
             Self::Null => 0,
             Self::Boolean(_) => 1,
             Self::BigInt(_) => 2,
+            Self::Decimal(_) => 9,
             Self::DoublePrecision(_) => 3,
             Self::Text(_) => 4,
             Self::Bytea(_) => 5,
             Self::Vector(_) => 8,
             Self::Uuid(_) => 6,
             Self::Overflow(_) => 7,
+            Self::Timestamp(_) => 10,
+            Self::TimestampTz(_) => 11,
         }
     }
 }
@@ -368,10 +481,17 @@ impl<'a> RelationalValueRef<'a> {
             Self::Boolean(_) => Some(RelationalScalarType::Boolean),
             Self::BigInt(_) => Some(RelationalScalarType::BigInt),
             Self::DoublePrecision(_) => Some(RelationalScalarType::DoublePrecision),
+            Self::Decimal(value) => Some(RelationalScalarType::Decimal(value.decimal_type())),
             Self::Text(_) => Some(RelationalScalarType::Text),
             Self::Bytea(_) => Some(RelationalScalarType::Bytea),
             Self::Vector(value) => Some(RelationalScalarType::Vector(value.dimension())),
             Self::Uuid(_) => Some(RelationalScalarType::Uuid),
+            Self::Timestamp(_) => Some(RelationalScalarType::Timestamp(
+                hawdb_core::TimestampPrecision::DEFAULT,
+            )),
+            Self::TimestampTz(_) => Some(RelationalScalarType::TimestampTz(
+                hawdb_core::TimestampPrecision::DEFAULT,
+            )),
             Self::Overflow(reference) => Some(reference.scalar_type),
         }
     }
@@ -387,7 +507,11 @@ impl<'a> RelationalValueRef<'a> {
         match self {
             Self::Null => 0,
             Self::Boolean(_) => 1,
-            Self::BigInt(_) | Self::DoublePrecision(_) => 8,
+            Self::BigInt(_)
+            | Self::DoublePrecision(_)
+            | Self::Timestamp(_)
+            | Self::TimestampTz(_) => 8,
+            Self::Decimal(_) => hawdb_core::Decimal::ENCODED_LEN,
             Self::Text(value) => value.len(),
             Self::Bytea(value) => value.len(),
             Self::Vector(value) => value.encoded().len(),
@@ -401,11 +525,14 @@ impl<'a> RelationalValueRef<'a> {
             Self::Null => RelationalValue::Null,
             Self::Boolean(value) => RelationalValue::Boolean(value),
             Self::BigInt(value) => RelationalValue::BigInt(value),
+            Self::Decimal(value) => RelationalValue::Decimal(value),
             Self::DoublePrecision(value) => RelationalValue::DoublePrecision(value),
             Self::Text(value) => RelationalValue::Text(value.to_owned()),
             Self::Bytea(value) => RelationalValue::Bytea(value.to_vec()),
             Self::Vector(value) => RelationalValue::Vector(value.to_owned()),
             Self::Uuid(value) => RelationalValue::Uuid(value),
+            Self::Timestamp(value) => RelationalValue::Timestamp(value),
+            Self::TimestampTz(value) => RelationalValue::TimestampTz(value),
             Self::Overflow(reference) => RelationalValue::Overflow(reference),
         }
     }
@@ -454,12 +581,15 @@ impl<'a> RelationalValueRef<'a> {
             Self::Null => 0,
             Self::Boolean(_) => 1,
             Self::BigInt(_) => 2,
+            Self::Decimal(_) => 9,
             Self::DoublePrecision(_) => 3,
             Self::Text(_) => 4,
             Self::Bytea(_) => 5,
             Self::Vector(_) => 8,
             Self::Uuid(_) => 6,
             Self::Overflow(_) => 7,
+            Self::Timestamp(_) => 10,
+            Self::TimestampTz(_) => 11,
         }
     }
 }
@@ -470,11 +600,14 @@ impl<'a> From<&'a RelationalValue> for RelationalValueRef<'a> {
             RelationalValue::Null => Self::Null,
             RelationalValue::Boolean(value) => Self::Boolean(*value),
             RelationalValue::BigInt(value) => Self::BigInt(*value),
+            RelationalValue::Decimal(value) => Self::Decimal(*value),
             RelationalValue::DoublePrecision(value) => Self::DoublePrecision(*value),
             RelationalValue::Text(value) => Self::Text(value),
             RelationalValue::Bytea(value) => Self::Bytea(value),
             RelationalValue::Vector(value) => Self::Vector(value.as_ref()),
             RelationalValue::Uuid(value) => Self::Uuid(*value),
+            RelationalValue::Timestamp(value) => Self::Timestamp(*value),
+            RelationalValue::TimestampTz(value) => Self::TimestampTz(*value),
             RelationalValue::Overflow(reference) => Self::Overflow(*reference),
         }
     }
@@ -502,6 +635,7 @@ impl Ord for RelationalValueRef<'_> {
                 (Self::Null, Self::Null) => Ordering::Equal,
                 (Self::Boolean(left), Self::Boolean(right)) => left.cmp(&right),
                 (Self::BigInt(left), Self::BigInt(right)) => left.cmp(&right),
+                (Self::Decimal(left), Self::Decimal(right)) => left.cmp(&right),
                 (Self::DoublePrecision(left), Self::DoublePrecision(right)) => {
                     left.total_cmp(&right)
                 }
@@ -509,6 +643,8 @@ impl Ord for RelationalValueRef<'_> {
                 (Self::Bytea(left), Self::Bytea(right)) => left.cmp(right),
                 (Self::Vector(left), Self::Vector(right)) => left.cmp(&right),
                 (Self::Uuid(left), Self::Uuid(right)) => left.cmp(&right),
+                (Self::Timestamp(left), Self::Timestamp(right))
+                | (Self::TimestampTz(left), Self::TimestampTz(right)) => left.cmp(&right),
                 (Self::Overflow(left), Self::Overflow(right)) => left.cmp(&right),
                 _ => Ordering::Equal,
             })
@@ -537,6 +673,7 @@ impl Ord for RelationalValue {
                 (Self::Null, Self::Null) => Ordering::Equal,
                 (Self::Boolean(left), Self::Boolean(right)) => left.cmp(right),
                 (Self::BigInt(left), Self::BigInt(right)) => left.cmp(right),
+                (Self::Decimal(left), Self::Decimal(right)) => left.cmp(right),
                 (Self::DoublePrecision(left), Self::DoublePrecision(right)) => {
                     left.total_cmp(right)
                 }
@@ -544,6 +681,8 @@ impl Ord for RelationalValue {
                 (Self::Bytea(left), Self::Bytea(right)) => left.cmp(right),
                 (Self::Vector(left), Self::Vector(right)) => left.cmp(right),
                 (Self::Uuid(left), Self::Uuid(right)) => left.cmp(right),
+                (Self::Timestamp(left), Self::Timestamp(right))
+                | (Self::TimestampTz(left), Self::TimestampTz(right)) => left.cmp(right),
                 (Self::Overflow(left), Self::Overflow(right)) => left.cmp(right),
                 _ => Ordering::Equal,
             })
@@ -557,11 +696,13 @@ impl Hash for RelationalValue {
             Self::Null => {}
             Self::Boolean(value) => value.hash(state),
             Self::BigInt(value) => value.hash(state),
+            Self::Decimal(value) => value.hash(state),
             Self::DoublePrecision(value) => value.to_bits().hash(state),
             Self::Text(value) => value.hash(state),
             Self::Bytea(value) => value.hash(state),
             Self::Vector(value) => value.hash(state),
             Self::Uuid(value) => value.hash(state),
+            Self::Timestamp(value) | Self::TimestampTz(value) => value.hash(state),
             Self::Overflow(reference) => reference.hash(state),
         }
     }
@@ -579,6 +720,9 @@ pub struct RelationalColumnSchema {
 pub enum RelationalColumnDefault {
     Literal(RelationalValue),
     UuidV7,
+    /// `CURRENT_TIMESTAMP[(p)]`/`now()` (zoned) or `LOCALTIMESTAMP[(p)]`
+    /// (local), materialized for each inserted row before it is logged.
+    CurrentTimestamp(hawdb_core::sql_timestamp::TimestampType),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -707,6 +851,9 @@ fn clone_column_with_allocations(
             value.as_ref().to_owned_value_with_allocations(context)?,
         )),
         Some(RelationalColumnDefault::UuidV7) => Some(RelationalColumnDefault::UuidV7),
+        Some(RelationalColumnDefault::CurrentTimestamp(kind)) => {
+            Some(RelationalColumnDefault::CurrentTimestamp(*kind))
+        }
         None => None,
     };
     Ok(RelationalColumnSchema {
@@ -865,11 +1012,13 @@ impl RelationalTableSchema {
         let mut definitions = Vec::with_capacity(
             1 + self.unique_constraints.len() + self.indexes.len() + self.foreign_keys.len(),
         );
-        definitions.push(RelationalIndexDefinition {
-            name: RELATIONAL_PRIMARY_INDEX_NAME.to_string(),
-            columns: self.primary_key.clone(),
-            role: RelationalIndexRole::Primary,
-        });
+        if !self.primary_key.is_empty() {
+            definitions.push(RelationalIndexDefinition {
+                name: RELATIONAL_PRIMARY_INDEX_NAME.to_string(),
+                columns: self.primary_key.clone(),
+                role: RelationalIndexRole::Primary,
+            });
+        }
         definitions.extend(
             self.unique_constraints
                 .iter()
@@ -903,7 +1052,7 @@ impl RelationalTableSchema {
     }
 
     pub fn unique_index_definition(&self, columns: &[String]) -> Option<RelationalIndexDefinition> {
-        if columns == self.primary_key {
+        if !columns.is_empty() && columns == self.primary_key {
             return Some(RelationalIndexDefinition {
                 name: RELATIONAL_PRIMARY_INDEX_NAME.to_string(),
                 columns: self.primary_key.clone(),
@@ -930,6 +1079,83 @@ impl RelationalTableSchema {
                 columns: index.columns.clone(),
                 role: RelationalIndexRole::DeclaredUnique,
             })
+    }
+}
+
+/// A clock default (`CURRENT_TIMESTAMP`, `now()`, `LOCALTIMESTAMP`) requires a
+/// TIMESTAMP or TIMESTAMPTZ column.
+pub(crate) fn validate_clock_default(
+    column: &RelationalColumnSchema,
+) -> Result<(), RelationalError> {
+    if matches!(
+        column.scalar_type,
+        RelationalScalarType::Timestamp(_) | RelationalScalarType::TimestampTz(_)
+    ) {
+        Ok(())
+    } else {
+        Err(RelationalError::Schema(format!(
+            "column {} uses a CURRENT_TIMESTAMP or LOCALTIMESTAMP default but is not TIMESTAMP or TIMESTAMPTZ",
+            column.name
+        )))
+    }
+}
+
+/// Encodes a clock default's function type: zoned flag, then precision.
+pub(crate) const fn clock_default_bytes(kind: hawdb_core::sql_timestamp::TimestampType) -> [u8; 2] {
+    [kind.zoned as u8, kind.precision.get()]
+}
+
+/// Decodes [`clock_default_bytes`].
+pub(crate) fn decode_clock_default(
+    zoned: u8,
+    precision: u8,
+) -> Result<RelationalColumnDefault, RelationalError> {
+    let zoned = match zoned {
+        0 => false,
+        1 => true,
+        tag => {
+            return Err(RelationalError::Corruption(format!(
+                "invalid clock default zone flag {tag}"
+            )))
+        }
+    };
+    let precision = hawdb_core::TimestampPrecision::new(precision)
+        .ok_or_else(|| RelationalError::Corruption("invalid clock default precision".into()))?;
+    Ok(RelationalColumnDefault::CurrentTimestamp(
+        hawdb_core::sql_timestamp::TimestampType { zoned, precision },
+    ))
+}
+
+/// Decodes a durable TIMESTAMP (scalar tag 9) or TIMESTAMPTZ (10) type.
+pub(crate) fn decode_timestamp_type(
+    tag: u8,
+    precision: u8,
+) -> Result<RelationalScalarType, RelationalError> {
+    let precision = hawdb_core::TimestampPrecision::new(precision)
+        .ok_or_else(|| RelationalError::Corruption("invalid TIMESTAMP precision".into()))?;
+    match tag {
+        9 => Ok(RelationalScalarType::Timestamp(precision)),
+        10 => Ok(RelationalScalarType::TimestampTz(precision)),
+        _ => Err(RelationalError::Corruption(format!(
+            "invalid TIMESTAMP scalar type tag {tag}"
+        ))),
+    }
+}
+
+/// Decodes a durable TIMESTAMP (value tag 10) or TIMESTAMPTZ (11) value,
+/// rejecting microsecond counts outside the supported range as corruption.
+pub(crate) fn decode_timestamp_value(
+    tag: u8,
+    micros: i64,
+) -> Result<RelationalValue, RelationalError> {
+    let micros = hawdb_core::sql_timestamp::checked(micros)
+        .map_err(|_| RelationalError::Corruption("TIMESTAMP value is out of range".into()))?;
+    match tag {
+        10 => Ok(RelationalValue::Timestamp(micros)),
+        11 => Ok(RelationalValue::TimestampTz(micros)),
+        _ => Err(RelationalError::Corruption(format!(
+            "invalid TIMESTAMP value tag {tag}"
+        ))),
     }
 }
 
@@ -1439,6 +1665,7 @@ pub struct RelationalSparseMutationHydrationPlan {
     point_access: Vec<RelationalReplayAccess>,
     monotonic_appends: Vec<RelationalMonotonicAppendHydration>,
     scan_tables: Vec<String>,
+    ranges: Vec<(String, RelationalPrimaryKeyRange)>,
     index_probes: Vec<RelationalSparseIndexProbe>,
 }
 
@@ -1453,6 +1680,10 @@ impl RelationalSparseMutationHydrationPlan {
 
     pub fn scan_tables(&self) -> &[String] {
         &self.scan_tables
+    }
+
+    pub fn ranges(&self) -> &[(String, RelationalPrimaryKeyRange)] {
+        &self.ranges
     }
 
     pub fn index_probes(&self) -> &[RelationalSparseIndexProbe] {
@@ -1679,12 +1910,24 @@ pub enum RelationalRowChangeCapture {
         changes: Vec<RelationalRowChange>,
         encoded_bytes: usize,
     },
+    /// A schema change in `tables` requires a canonical row checkpoint.
     RequiresCheckpoint {
         tables: Vec<String>,
+        /// The same commit's changes to every other table, when they fit
+        /// the capture limits. The schema checkpoint then rewrites only
+        /// `tables`; `None` requires a full rebuild (#1593).
+        unaffected: Option<RelationalRowUnaffectedChanges>,
     },
     Invalidated {
         reason: String,
     },
+}
+
+/// Row changes captured outside the tables a schema change rewrites.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelationalRowUnaffectedChanges {
+    pub changes: Vec<RelationalRowChange>,
+    pub encoded_bytes: usize,
 }
 
 impl RelationalIndexChangeCapture {
@@ -1704,6 +1947,13 @@ impl RelationalRow {
         // Private decoding already constructs the vector at its admitted size.
         values.shrink_to_fit();
         Self::from_checkpoint_values(values)
+    }
+
+    /// Whether another live owner, such as a live-overlay batch or resident
+    /// canonical state, retains these values. Cloning such a row allocates
+    /// nothing, so resource accounting must not charge its values again.
+    pub(crate) fn shares_values(&self) -> bool {
+        Arc::strong_count(&self.values) > 1
     }
 
     fn from_checkpoint_values(values: Vec<RelationalValue>) -> Self {
@@ -1787,6 +2037,7 @@ impl RelationalRow {
 
 #[derive(Debug, Default)]
 struct RelationalTableSegment {
+    last_row_id: i64,
     rows: RelationalRowPages,
     indexes: BTreeMap<String, RelationalIndexPages>,
     _memory: crate::background::CheckpointAllocationOwner,
@@ -1795,6 +2046,7 @@ struct RelationalTableSegment {
 impl Clone for RelationalTableSegment {
     fn clone(&self) -> Self {
         Self {
+            last_row_id: self.last_row_id,
             rows: self.rows.clone(),
             indexes: self.indexes.clone(),
             _memory: Default::default(),
@@ -1803,6 +2055,27 @@ impl Clone for RelationalTableSegment {
 }
 
 impl RelationalTableSegment {
+    fn allocate_row_handle(
+        &mut self,
+        row: &RelationalRow,
+        primary_positions: &[usize],
+        allocations: Option<&crate::background::CheckpointDecodeContext>,
+    ) -> Result<RelationalKey, RelationalError> {
+        if !primary_positions.is_empty() {
+            return row_key_with_allocations(row, primary_positions, allocations);
+        }
+        let id = self
+            .last_row_id
+            .checked_add(1)
+            .ok_or_else(|| RelationalError::Admission("hidden row ID space exhausted".into()))?;
+        let key = clone_key_with_allocations(
+            &RelationalKey(vec![RelationalValue::BigInt(id)]),
+            allocations,
+        )?;
+        self.last_row_id = id;
+        Ok(key)
+    }
+
     fn checkpoint_empty(
         work: &crate::background::CheckpointWorkContext,
     ) -> Result<Arc<Self>, RelationalError> {
@@ -1823,14 +2096,14 @@ impl RelationalTableSegment {
         let unit = work
             .start_unit()
             .map_err(|error| RelationalError::Admission(error.to_string()))?;
-        let rows = RelationalRowPages {
-            pages: RelationalRowDirectory::from_checkpoint_value(
+        let rows = RelationalRowPages::from_empty_directory(
+            RelationalRowDirectory::from_checkpoint_value(
                 Vec::new(),
                 directory_context.memory.into_inner(),
             ),
-            len: 0,
-        };
+        );
         let output = Arc::new(Self {
+            last_row_id: 0,
             rows,
             indexes: BTreeMap::new(),
             _memory: context.memory.into_inner(),
@@ -1873,6 +2146,7 @@ impl RelationalTableSegment {
             .start_unit()
             .map_err(|error| RelationalError::Admission(error.to_string()))?;
         let output = Arc::new(Self {
+            last_row_id: self.last_row_id,
             rows: self.rows.clone(),
             indexes,
             _memory: context.memory.into_inner(),
@@ -1898,6 +2172,7 @@ impl RelationalTableSegment {
             .start_unit()
             .map_err(|error| RelationalError::Admission(error.to_string()))?;
         let output = Arc::new(Self {
+            last_row_id: self.last_row_id,
             rows: self.rows.clone(),
             indexes: BTreeMap::new(),
             _memory: context.memory.into_inner(),
@@ -1922,448 +2197,56 @@ fn mutable_segment_with_allocations<'a>(
 const RELATIONAL_ROW_PAGE_MAX_ENTRIES: usize = 256;
 const RELATIONAL_ROW_PAGE_TARGET_BYTES: usize = 1024 * 1024;
 
-/// An ordered row map backed by immutable COW pages.
-///
-/// A relational snapshot shares every page. A mutation clones only the page
-/// containing the affected primary key instead of cloning the entire table.
+/// One immutable COW page of a [`RelationalRowPages`] map.
 type RelationalRowPage = crate::cow::CowSegment<BTreeMap<RelationalKey, RelationalRow>>;
 type RelationalRowDirectory = crate::cow::CowSegment<Vec<RelationalRowPage>>;
-
-#[derive(Debug, Clone, Default)]
-struct RelationalRowPages {
-    pages: RelationalRowDirectory,
-    len: usize,
-}
-
-impl RelationalRowPages {
-    fn prepare_checkpoint_copy_for_key(
-        &mut self,
-        key: &RelationalKey,
-        work: &crate::background::CheckpointWorkContext,
-    ) -> Result<(), RelationalError> {
-        let Some(index) = self.page_index(key) else {
-            return Ok(());
-        };
-        let copy_directory = self.pages.is_shared();
-        let copy_page = copy_directory || self.pages[index].is_shared();
-        if !copy_page {
-            return Ok(());
-        }
-        let admission =
-            |error: hawdb_core::HawDBError| RelationalError::Admission(error.to_string());
-        // Inventories precede temporary buffers, so denied copies destroy data first.
-        let directory_allocations = crate::background::CheckpointDecodeContext {
-            work: work.clone(),
-            memory: Default::default(),
-        };
-        let page_allocations = crate::background::CheckpointDecodeContext {
-            work: work.clone(),
-            memory: Default::default(),
-        };
-        let mut directory = if copy_directory {
-            let mut pages = directory_allocations
-                .vector_capacity(self.pages.len())
-                .map_err(admission)?;
-            directory_allocations
-                .reserve(RelationalRowDirectory::checkpoint_ownership_bytes())
-                .map_err(admission)?;
-            for page in self.pages.iter() {
-                let unit = work
-                    .start_unit()
-                    .map_err(|error| RelationalError::Admission(error.to_string()))?;
-                pages.push(page.clone());
-                unit.finish();
-            }
-            Some(pages)
-        } else {
-            None
-        };
-        let node_bytes = (self.pages[index].len() / 4 + 2)
-            .checked_mul(crate::cow::checkpoint_tree_node_bytes::<
-                RelationalKey,
-                RelationalRow,
-            >())
-            .ok_or_else(|| RelationalError::Admission("row page copy capacity overflow".into()))?;
-        page_allocations.reserve(node_bytes).map_err(admission)?;
-        page_allocations
-            .reserve(RelationalRowPage::checkpoint_ownership_bytes())
-            .map_err(admission)?;
-        let mut rows = BTreeMap::new();
-        for (key, row) in self.pages[index].iter() {
-            let key = key.clone_with_allocations(&page_allocations)?;
-            let unit = work
-                .start_unit()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
-            rows.insert(key, row.clone());
-            unit.finish();
-        }
-        work.checkpoint()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
-        let replacement = crate::cow::CowSegment::from_checkpoint_value(
-            rows,
-            page_allocations.memory.into_inner(),
-        );
-        if let Some(mut pages) = directory.take() {
-            pages[index] = replacement;
-            self.pages = crate::cow::CowSegment::from_checkpoint_value(
-                pages,
-                directory_allocations.memory.into_inner(),
-            );
-        } else {
-            self.pages.get_unique_mut().expect("private row directory")[index] = replacement;
-        }
-        Ok(())
-    }
-
-    fn insert_with_allocations(
-        &mut self,
-        key: RelationalKey,
-        row: RelationalRow,
-        allocations: Option<&crate::background::CheckpointDecodeContext>,
-    ) -> Result<Option<RelationalRow>, RelationalError> {
-        let Some(context) = allocations else {
-            return Ok(self.insert(key, row));
-        };
-        let work = &context.work;
-        let admission =
-            |error: hawdb_core::HawDBError| RelationalError::Admission(error.to_string());
-        let directory_context = crate::background::CheckpointDecodeContext {
-            work: work.clone(),
-            memory: Default::default(),
-        };
-        let page_context = crate::background::CheckpointDecodeContext {
-            work: work.clone(),
-            memory: Default::default(),
-        };
-        let split_context = crate::background::CheckpointDecodeContext {
-            work: work.clone(),
-            memory: Default::default(),
-        };
-        let index = self.page_index(&key).unwrap_or(0);
-        let previous_len = self.pages.get(index).map_or(0, |page| page.len());
-        let capacity =
-            self.pages.len().checked_add(1).ok_or_else(|| {
-                RelationalError::Admission("row directory growth overflow".into())
-            })?;
-        let mut directory = directory_context
-            .vector_capacity(capacity)
-            .map_err(admission)?;
-        directory_context
-            .reserve(RelationalRowDirectory::checkpoint_ownership_bytes())
-            .map_err(admission)?;
-        for page in self.pages.iter() {
-            let unit = work
-                .start_unit()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
-            directory.push(page.clone());
-            unit.finish();
-        }
-        let nodes = previous_len
-            .checked_add(3)
-            .ok_or_else(|| RelationalError::Admission("row page growth overflow".into()))?;
-        let bytes = nodes
-            .checked_mul(crate::cow::checkpoint_tree_node_bytes::<
-                RelationalKey,
-                RelationalRow,
-            >())
-            .and_then(|bytes| {
-                bytes.checked_add(2 * RelationalRowPage::checkpoint_ownership_bytes())
-            })
-            .ok_or_else(|| RelationalError::Admission("row page growth overflow".into()))?;
-        page_context.reserve(bytes).map_err(admission)?;
-        let mut rows = BTreeMap::new();
-        if let Some(page) = self.pages.get(index) {
-            for (key, row) in page.iter() {
-                let key = key.clone_with_allocations(&page_context)?;
-                let unit = work
-                    .start_unit()
-                    .map_err(|error| RelationalError::Admission(error.to_string()))?;
-                rows.insert(key, row.clone());
-                unit.finish();
-            }
-        }
-        let key = key.clone_with_allocations(&page_context)?;
-        let unit = work
-            .start_unit()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
-        let previous = rows.insert(key, row);
-        unit.finish();
-        let mut page_bytes = 0usize;
-        for (key, row) in &rows {
-            let unit = work
-                .start_unit()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
-            page_bytes = page_bytes.saturating_add(relational_row_entry_bytes(key, row));
-            unit.finish();
-        }
-        let right = if rows.len() > 1
-            && (rows.len() > RELATIONAL_ROW_PAGE_MAX_ENTRIES
-                || page_bytes > RELATIONAL_ROW_PAGE_TARGET_BYTES)
-        {
-            let split_key = rows
-                .keys()
-                .nth(rows.len() / 2)
-                .expect("nonempty split page")
-                .clone_with_allocations(&split_context)?;
-            let unit = work
-                .start_unit()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
-            let right = rows.split_off(&split_key);
-            unit.finish();
-            Some(right)
-        } else {
-            None
-        };
-        work.checkpoint()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
-        let memory = page_context.memory.into_inner();
-        let left = crate::cow::CowSegment::from_checkpoint_value(rows, memory.clone());
-        if directory.is_empty() {
-            directory.push(left);
-        } else {
-            directory[index] = left;
-        }
-        if let Some(right) = right {
-            directory.insert(
-                index + 1,
-                crate::cow::CowSegment::from_checkpoint_value(right, memory),
-            );
-        }
-        self.pages = crate::cow::CowSegment::from_checkpoint_value(
-            directory,
-            directory_context.memory.into_inner(),
-        );
-        if previous.is_none() {
-            self.len += 1;
-        }
-        Ok(previous)
-    }
-
-    fn from_map(rows: BTreeMap<RelationalKey, RelationalRow>) -> Self {
-        let len = rows.len();
-        let mut pages = Vec::new();
-        let mut page = BTreeMap::new();
-        let mut page_bytes = 0usize;
-        for (key, row) in rows {
-            let entry_bytes = relational_row_entry_bytes(&key, &row);
-            if !page.is_empty()
-                && (page.len() >= RELATIONAL_ROW_PAGE_MAX_ENTRIES
-                    || page_bytes.saturating_add(entry_bytes) > RELATIONAL_ROW_PAGE_TARGET_BYTES)
-            {
-                pages.push(crate::cow::CowSegment::from(std::mem::take(&mut page)));
-                page_bytes = 0;
-            }
-            page_bytes = page_bytes.saturating_add(entry_bytes);
-            page.insert(key, row);
-        }
-        if !page.is_empty() {
-            pages.push(crate::cow::CowSegment::from(page));
-        }
-        Self {
-            pages: pages.into(),
-            len,
-        }
-    }
-
-    fn len(&self) -> usize {
-        self.len
-    }
-
-    fn page_index(&self, key: &RelationalKey) -> Option<usize> {
-        if self.pages.is_empty() {
-            return None;
-        }
-        let index = self.pages.partition_point(|page| {
-            page.last_key_value()
-                .is_some_and(|(last_key, _)| last_key < key)
-        });
-        Some(index.min(self.pages.len() - 1))
-    }
-
-    fn get(&self, key: &RelationalKey) -> Option<&RelationalRow> {
-        self.page_index(key)
-            .and_then(|index| self.pages[index].get(key))
-    }
-
-    fn get_key_value(&self, key: &RelationalKey) -> Option<(&RelationalKey, &RelationalRow)> {
-        self.page_index(key)
-            .and_then(|index| self.pages[index].get_key_value(key))
-    }
-
-    fn contains_key(&self, key: &RelationalKey) -> bool {
-        self.get(key).is_some()
-    }
-
-    fn iter(&self) -> impl DoubleEndedIterator<Item = (&RelationalKey, &RelationalRow)> {
-        self.pages.iter().flat_map(|page| page.iter())
-    }
-
-    fn first_key_after(&self, after: Option<&RelationalKey>) -> Option<&RelationalKey> {
-        let Some(after) = after else {
-            return self.pages.first()?.first_key_value().map(|(key, _)| key);
-        };
-        let page = self
-            .pages
-            .partition_point(|page| page.last_key_value().is_none_or(|(last, _)| last <= after));
-        self.pages
-            .get(page)?
-            .range((std::ops::Bound::Excluded(after), std::ops::Bound::Unbounded))
-            .next()
-            .map(|(key, _)| key)
-    }
-
-    fn values(&self) -> impl DoubleEndedIterator<Item = &RelationalRow> {
-        self.iter().map(|(_, row)| row)
-    }
-
-    fn append_value_to_all_with_allocations(
-        &mut self,
-        value: &RelationalValue,
-        allocations: &crate::background::CheckpointDecodeContext,
-    ) -> Result<(), RelationalError> {
-        let work = &allocations.work;
-        let directory_context = crate::background::CheckpointDecodeContext {
-            work: work.clone(),
-            memory: Default::default(),
-        };
-        let mut pages = directory_context
-            .vector_capacity(self.pages.len())
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
-        directory_context
-            .reserve(RelationalRowDirectory::checkpoint_ownership_bytes())
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
-        for source in self.pages.iter() {
-            let page_context = crate::background::CheckpointDecodeContext {
-                work: work.clone(),
-                memory: Default::default(),
-            };
-            let bytes = (source.len() / 4 + 2)
-                .checked_mul(crate::cow::checkpoint_tree_node_bytes::<
-                    RelationalKey,
-                    RelationalRow,
-                >())
-                .and_then(|bytes| {
-                    bytes.checked_add(RelationalRowPage::checkpoint_ownership_bytes())
-                })
-                .ok_or_else(|| {
-                    RelationalError::Admission("schema row page capacity overflow".into())
-                })?;
-            page_context
-                .reserve(bytes)
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
-            let mut rows = BTreeMap::new();
-            for (key, row) in source.iter() {
-                let key = key.clone_with_allocations(&page_context)?;
-                let count = row.values().len().checked_add(1).ok_or_else(|| {
-                    RelationalError::Admission("schema row value count overflow".into())
-                })?;
-                let row = RelationalRow::reconstruct_values_with_allocations(
-                    count,
-                    Some(allocations),
-                    |ordinal| {
-                        Ok(if ordinal + 1 == count {
-                            value.as_ref()
-                        } else {
-                            row.values()[ordinal].as_ref()
-                        })
-                    },
-                )?;
-                let unit = work
-                    .start_unit()
-                    .map_err(|error| RelationalError::Admission(error.to_string()))?;
-                rows.insert(key, row);
-                unit.finish();
-            }
-            let unit = work
-                .start_unit()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
-            pages.push(RelationalRowPage::from_checkpoint_value(
-                rows,
-                page_context.memory.into_inner(),
-            ));
-            unit.finish();
-        }
-        let unit = work
-            .start_unit()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
-        let replacement = RelationalRowDirectory::from_checkpoint_value(
-            pages,
-            directory_context.memory.into_inner(),
-        );
-        unit.finish();
-        work.checkpoint()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
-        self.pages = replacement;
-        Ok(())
-    }
-
-    fn append_value_to_all(&mut self, value: &RelationalValue) {
-        let pages = &mut *self.pages;
-        for page in pages {
-            for row in page.values_mut() {
-                let mut values = row.values().to_vec();
-                values.push(value.clone());
-                *row = RelationalRow::new(values);
-            }
-        }
-    }
-
-    fn insert(&mut self, key: RelationalKey, row: RelationalRow) -> Option<RelationalRow> {
-        if self.pages.is_empty() {
-            self.pages = vec![crate::cow::CowSegment::from(BTreeMap::from([(key, row)]))].into();
-            self.len = 1;
-            return None;
-        }
-        let index = self
-            .page_index(&key)
-            .expect("non-empty relational row pages have a target page");
-        let pages = &mut *self.pages;
-        let previous = pages[index].insert(key, row);
-        if previous.is_none() {
-            self.len = self.len.saturating_add(1);
-        }
-        split_relational_row_page(pages, index);
-        previous
-    }
-
-    fn remove(&mut self, key: &RelationalKey) -> Option<RelationalRow> {
-        let index = self.page_index(key)?;
-        if !self.pages[index].contains_key(key) {
-            return None;
-        }
-        let pages = &mut *self.pages;
-        let removed = pages[index].remove(key);
-        if removed.is_some() {
-            self.len = self.len.saturating_sub(1);
-            if pages[index].is_empty() {
-                pages.remove(index);
-            }
-        }
-        removed
-    }
-
-    #[cfg(test)]
-    fn page_count(&self) -> usize {
-        self.pages.len()
-    }
-
-    #[cfg(test)]
-    fn shared_page_count(&self, other: &Self) -> usize {
-        self.pages
-            .iter()
-            .filter(|left| {
-                other
-                    .pages
-                    .iter()
-                    .any(|right| left.shares_storage_with(right))
-            })
-            .count()
-    }
-}
 
 fn relational_row_entry_bytes(key: &RelationalKey, row: &RelationalRow) -> usize {
     relational_row_entry_bytes_with_visit(key, row, &mut || Ok::<_, std::convert::Infallible>(()))
         .unwrap_or_else(|never| match never {})
+}
+
+/// Test-only count of row entries sized on the current thread. Regression
+/// tests use it to prove that per-commit work does not walk resident rows.
+#[cfg(test)]
+pub(crate) mod row_entry_byte_probe {
+    use std::cell::Cell;
+
+    thread_local! {
+        static VISITS: Cell<u64> = const { Cell::new(0) };
+        static SUPPRESSED: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub(crate) fn visits() -> u64 {
+        VISITS.get()
+    }
+
+    pub(super) fn record() {
+        if !SUPPRESSED.get() {
+            VISITS.set(VISITS.get().saturating_add(1));
+        }
+    }
+
+    pub(super) fn suppressed<T>(f: impl FnOnce() -> T) -> T {
+        let previous = SUPPRESSED.replace(true);
+        let output = f();
+        SUPPRESSED.set(previous);
+        output
+    }
+}
+
+/// Runs debug-only verification folds without charging them to the test
+/// probe, so the probe observes production work only.
+#[cfg(any(test, debug_assertions))]
+fn without_row_entry_byte_probe<T>(f: impl FnOnce() -> T) -> T {
+    #[cfg(test)]
+    {
+        row_entry_byte_probe::suppressed(f)
+    }
+    #[cfg(not(test))]
+    {
+        f()
+    }
 }
 
 fn relational_row_entry_bytes_with_visit<E>(
@@ -2371,6 +2254,8 @@ fn relational_row_entry_bytes_with_visit<E>(
     row: &RelationalRow,
     visit: &mut impl FnMut() -> std::result::Result<(), E>,
 ) -> std::result::Result<usize, E> {
+    #[cfg(test)]
+    row_entry_byte_probe::record();
     visit()?;
     let mut payload = 0usize;
     for value in key.0.iter().chain(row.values.iter()) {
@@ -2431,27 +2316,6 @@ fn relational_replay_access_resident_bytes_parts(
         .checked_add(table.len())?
         .checked_add(std::mem::size_of::<RelationalKey>())?
         .checked_add(key_payload_bytes)
-}
-
-fn split_relational_row_page(pages: &mut Vec<RelationalRowPage>, index: usize) {
-    let page = &mut *pages[index];
-    let page_bytes = page
-        .iter()
-        .map(|(key, row)| relational_row_entry_bytes(key, row))
-        .sum::<usize>();
-    if page.len() <= 1
-        || (page.len() <= RELATIONAL_ROW_PAGE_MAX_ENTRIES
-            && page_bytes <= RELATIONAL_ROW_PAGE_TARGET_BYTES)
-    {
-        return;
-    }
-    let split_key = page
-        .keys()
-        .nth(page.len() / 2)
-        .cloned()
-        .expect("oversized relational row page is non-empty");
-    let right = page.split_off(&split_key);
-    pages.insert(index + 1, right.into());
 }
 
 const RELATIONAL_INDEX_PAGE_MAX_KEYS: usize = 256;
@@ -3439,13 +3303,40 @@ impl RelationalState {
             .sum()
     }
 
+    /// Estimated bytes of all resident materialized rows.
+    ///
+    /// O(tables): each row map maintains its exact entry-byte total on every
+    /// mutation, so durable commit admission does not walk resident rows
+    /// (nowledge-co/hawdb#1519). The value equals the saturating per-row fold
+    /// in [`Self::recomputed_materialized_row_bytes`]; debug builds check it.
     pub fn estimated_materialized_row_bytes(&self) -> u64 {
         if !self.materialized_rows_resident {
             return 0;
         }
-        self.segments.values().fold(0u64, |bytes, segment| {
-            segment.rows.iter().fold(bytes, |bytes, (key, row)| {
-                bytes.saturating_add(relational_row_entry_bytes(key, row) as u64)
+        let total = self.segments.values().fold(0u128, |bytes, segment| {
+            bytes.saturating_add(segment.rows.entry_bytes())
+        });
+        let bytes = u64::try_from(total).unwrap_or(u64::MAX);
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(
+            bytes,
+            self.recomputed_materialized_row_bytes(),
+            "maintained relational row byte total diverged from its rows"
+        );
+        bytes
+    }
+
+    /// Reference O(rows) fold for [`Self::estimated_materialized_row_bytes`].
+    #[cfg(any(test, debug_assertions))]
+    pub(crate) fn recomputed_materialized_row_bytes(&self) -> u64 {
+        if !self.materialized_rows_resident {
+            return 0;
+        }
+        without_row_entry_byte_probe(|| {
+            self.segments.values().fold(0u64, |bytes, segment| {
+                segment.rows.iter().fold(bytes, |bytes, (key, row)| {
+                    bytes.saturating_add(relational_row_entry_bytes(key, row) as u64)
+                })
             })
         })
     }
@@ -3467,7 +3358,10 @@ impl RelationalState {
         self.detached_row_bytes = self.estimated_materialized_row_bytes();
         self.detached_row_counts = counts.into();
         for segment in self.segments.values_mut() {
-            *segment = Arc::new(RelationalTableSegment::default());
+            *segment = Arc::new(RelationalTableSegment {
+                last_row_id: segment.last_row_id,
+                ..Default::default()
+            });
         }
         self.materialized_rows_resident = false;
         self.materialized_index_postings_resident = false;
@@ -3485,6 +3379,16 @@ impl RelationalState {
         for table in &manifest.tables {
             if table.schema.materialized_view.is_some() {
                 return Err(RelationalError::Admission("materialized views require resident relational rows; authoritative out-of-core storage is unsupported".into()));
+            }
+            if table.last_row_id < 0
+                || (!table.schema.primary_key.is_empty() && table.last_row_id != 0)
+                || (table.schema.primary_key.is_empty()
+                    && table.row_count > table.last_row_id as u64)
+            {
+                return Err(RelationalError::Corruption(format!(
+                    "canonical row root table {} has an invalid hidden row ID allocator",
+                    table.table
+                )));
             }
             if table.table != table.schema.name {
                 return Err(RelationalError::Corruption(format!(
@@ -3536,7 +3440,10 @@ impl RelationalState {
             }
             segments.insert(
                 table.table.clone(),
-                Arc::new(RelationalTableSegment::default()),
+                Arc::new(RelationalTableSegment {
+                    last_row_id: table.last_row_id,
+                    ..Default::default()
+                }),
             );
             row_counts.insert(table.table.clone(), row_count);
         }
@@ -3558,7 +3465,7 @@ impl RelationalState {
     /// source-fenced recovery artifact without materializing checkpoint rows.
     pub fn adopt_recovered_row_counts<'a>(
         &mut self,
-        row_counts: impl IntoIterator<Item = (&'a str, u64)>,
+        row_counts: impl IntoIterator<Item = (&'a str, u64, i64)>,
     ) -> Result<(), RelationalError> {
         if self.materialized_rows_resident || !self.canonical_row_metadata_only {
             return Err(RelationalError::Corruption(
@@ -3568,12 +3475,22 @@ impl RelationalState {
         }
         let mut counts = BTreeMap::new();
         let mut total = 0usize;
-        for (table, row_count) in row_counts {
+        let mut allocators = BTreeMap::new();
+        for (table, row_count, last_row_id) in row_counts {
             if !self.schemas.contains_key(table) {
                 return Err(RelationalError::Corruption(format!(
                     "recovered row counts contain unknown table {table}"
                 )));
             }
+            if last_row_id < self.last_row_id(table)
+                || (!self.schemas[table].primary_key.is_empty() && last_row_id != 0)
+                || (self.schemas[table].primary_key.is_empty() && row_count > last_row_id as u64)
+            {
+                return Err(RelationalError::Corruption(
+                    "invalid recovered row ID allocator".into(),
+                ));
+            }
+            allocators.insert(table.to_string(), last_row_id);
             let row_count = usize::try_from(row_count).map_err(|_| {
                 RelationalError::Admission(format!(
                     "recovered row count {row_count} for table {table} exceeds platform capacity"
@@ -3596,6 +3513,10 @@ impl RelationalState {
             return Err(RelationalError::Corruption(
                 "recovered row counts do not cover the canonical schema set".to_string(),
             ));
+        }
+        for (table, last_row_id) in allocators {
+            Arc::make_mut(self.segments.get_mut(&table).expect("validated table")).last_row_id =
+                last_row_id;
         }
         self.detached_total_row_count = total;
         self.detached_row_counts = counts.into();
@@ -4514,6 +4435,7 @@ impl RelationalState {
         let mut point_access = BTreeSet::new();
         let mut monotonic_appends = Vec::new();
         let mut scan_tables = BTreeSet::new();
+        let mut ranges = Vec::new();
         let mut index_probes = BTreeSet::new();
         let mut append_only_tables = BTreeMap::<&str, bool>::new();
         for write in &transaction.writes {
@@ -4536,6 +4458,7 @@ impl RelationalState {
                 .or_insert(eligible);
         }
         let mut append_candidates = BTreeMap::<(String, RelationalKey), Vec<RelationalKey>>::new();
+        let mut hidden_allocators = BTreeMap::<&str, i64>::new();
         for write in &transaction.writes {
             match write {
                 RelationalWrite::Insert { table, rows, .. } => {
@@ -4543,7 +4466,14 @@ impl RelationalState {
                     let primary_key = column_positions(schema, &schema.primary_key)?;
                     for row in rows {
                         validate_row(schema, row)?;
-                        let key = row_key(row, &primary_key);
+                        let key = if primary_key.is_empty() {
+                            let last = hidden_allocators
+                                .entry(table.as_str())
+                                .or_insert_with(|| self.last_row_id(table));
+                            planned_hidden_row_handle(last)
+                        } else {
+                            row_key(row, &primary_key)
+                        };
                         let has_constraint_probes = !schema.unique_constraints.is_empty()
                             || !schema.foreign_keys.is_empty();
                         if append_only_tables.get(table.as_str()) == Some(&true)
@@ -4581,9 +4511,17 @@ impl RelationalState {
                         })?;
                     for row in rows {
                         validate_row(schema, row)?;
+                        let key = if primary_key.is_empty() {
+                            let last = hidden_allocators
+                                .entry(table.as_str())
+                                .or_insert_with(|| self.last_row_id(table));
+                            planned_hidden_row_handle(last)
+                        } else {
+                            row_key(row, &primary_key)
+                        };
                         point_access.insert(RelationalReplayAccess {
                             table: table.clone(),
-                            primary_key: row_key(row, &primary_key),
+                            primary_key: key,
                         });
                         let conflict_key = row_key(row, &conflict_positions);
                         if !key_contains_null(&conflict_key) {
@@ -4615,6 +4553,12 @@ impl RelationalState {
                             table: table.clone(),
                             primary_key,
                         });
+                    } else if let Some(range) = mutation_primary_key_range(schema, predicate, None)?
+                    {
+                        let entry = (table.clone(), range);
+                        if !entry.1.is_empty() && !ranges.contains(&entry) {
+                            ranges.push(entry);
+                        }
                     } else {
                         scan_tables.insert(table.clone());
                     }
@@ -4645,10 +4589,12 @@ impl RelationalState {
             }
         }
         point_access.retain(|access| !scan_tables.contains(&access.table));
+        ranges.retain(|(table, _)| !scan_tables.contains(table));
         Ok(RelationalSparseMutationHydrationPlan {
             point_access: point_access.into_iter().collect(),
             monotonic_appends,
             scan_tables: scan_tables.into_iter().collect(),
+            ranges,
             index_probes: index_probes.into_iter().collect(),
         })
     }
@@ -4978,7 +4924,13 @@ impl RelationalState {
                 None => (table.clone(), table.clone()),
             };
             schemas.insert(schema_name, schema.clone());
-            segments.insert(segment_name, Arc::new(RelationalTableSegment::default()));
+            segments.insert(
+                segment_name,
+                Arc::new(RelationalTableSegment {
+                    last_row_id: self.segments[table].last_row_id,
+                    ..Default::default()
+                }),
+            );
         }
         for hydrated in hydrated_access {
             if supplied_access
@@ -5056,10 +5008,17 @@ impl RelationalState {
                 &schema.primary_key,
                 position_allocations.as_ref(),
             )?;
-            if !primary_key_positions
-                .iter()
-                .map(|position| &row.values()[*position])
-                .eq(hydrated.primary_key.0.iter())
+            if schema.primary_key.is_empty() {
+                validate_hidden_row_handle(
+                    &hydrated.primary_key,
+                    self.segments[&hydrated.table].last_row_id,
+                )?;
+            }
+            if !schema.primary_key.is_empty()
+                && !primary_key_positions
+                    .iter()
+                    .map(|position| &row.values()[*position])
+                    .eq(hydrated.primary_key.0.iter())
             {
                 return Err(RelationalError::Corruption(format!(
                     "{context} row primary key differs from its hydrated key in table {}",
@@ -5074,66 +5033,12 @@ impl RelationalState {
             let replaced = if let Some(context) = &workspace_allocations {
                 // Authenticated hydration is sorted. Append bounded pages by
                 // moving keys, avoiding split-key clones and directory growth.
-                let entry_bytes = relational_row_entry_bytes(&hydrated.primary_key, &row);
-                let new_page = segment.rows.pages.last().is_none_or(|page| {
-                    page.len() >= RELATIONAL_ROW_PAGE_MAX_ENTRIES
-                        || (!page.is_empty()
-                            && page
-                                .iter()
-                                .map(|(key, row)| relational_row_entry_bytes(key, row))
-                                .sum::<usize>()
-                                .saturating_add(entry_bytes)
-                                > RELATIONAL_ROW_PAGE_TARGET_BYTES)
-                });
-                context
-                    .reserve(crate::cow::checkpoint_tree_node_bytes::<
-                        RelationalKey,
-                        RelationalRow,
-                    >())
-                    .map_err(admission)?;
-                if segment.rows.pages.is_empty() {
-                    let pages = context
-                        .vector_capacity(directory_capacity)
-                        .map_err(admission)?;
-                    context
-                        .reserve(RelationalRowDirectory::checkpoint_ownership_bytes())
-                        .map_err(admission)?;
-                    segment.rows.pages = pages.into();
-                }
-                if new_page {
-                    context
-                        .reserve(RelationalRowPage::checkpoint_ownership_bytes())
-                        .map_err(admission)?;
-                    let unit = context
-                        .start_unit()
-                        .map_err(|error| RelationalError::Admission(error.to_string()))?;
-                    segment
-                        .rows
-                        .pages
-                        .get_unique_mut()
-                        .expect("private sparse directory")
-                        .push(BTreeMap::new().into());
-                    unit.finish();
-                }
-                let unit = context
-                    .start_unit()
-                    .map_err(|error| RelationalError::Admission(error.to_string()))?;
-                let pages = segment
-                    .rows
-                    .pages
-                    .get_unique_mut()
-                    .expect("private sparse directory");
-                let replaced = pages
-                    .last_mut()
-                    .expect("sparse row page")
-                    .get_unique_mut()
-                    .expect("private sparse row page")
-                    .insert(hydrated.primary_key, row);
-                if replaced.is_none() {
-                    segment.rows.len += 1;
-                }
-                unit.finish();
-                replaced
+                segment.rows.push_sorted_with_allocations(
+                    hydrated.primary_key,
+                    row,
+                    context,
+                    directory_capacity,
+                )?
             } else {
                 segment.rows.insert(hydrated.primary_key, row)
             };
@@ -5283,7 +5188,7 @@ impl RelationalState {
 
         let row_changes = match row_capture {
             RelationalRowChangeCapture::Captured { changes, .. } => changes,
-            RelationalRowChangeCapture::RequiresCheckpoint { tables } => {
+            RelationalRowChangeCapture::RequiresCheckpoint { tables, .. } => {
                 return Err(RelationalError::Admission(format!(
                     "relational live preparation requires a checkpoint for tables {}",
                     tables.join(",")
@@ -5363,6 +5268,14 @@ impl RelationalState {
         };
         let counts = &mut *metadata.detached_row_counts;
         for table in self.schemas.keys() {
+            let segment = metadata.segments.get_mut(table).expect("known table");
+            let last_row_id = after.segments[table].last_row_id;
+            if segment.last_row_id != last_row_id {
+                if let Some(work) = work {
+                    *segment = segment.checkpoint_clone(work)?;
+                }
+                Arc::make_mut(segment).last_row_id = last_row_id;
+            }
             let before_count = before
                 .segments
                 .get(table)
@@ -5414,6 +5327,13 @@ impl RelationalState {
         Ok(metadata)
     }
 
+    /// Last allocated hidden handle; zero for tables addressed by an explicit primary key.
+    pub fn last_row_id(&self, table: &str) -> i64 {
+        self.segments
+            .get(table)
+            .map_or(0, |segment| segment.last_row_id)
+    }
+
     pub fn table_schema(&self, table: &str) -> Option<&RelationalTableSchema> {
         self.schemas.get(table).map(|schema| &schema.schema)
     }
@@ -5454,6 +5374,19 @@ impl RelationalState {
             .flat_map(|segment| segment.rows.iter())
     }
 
+    /// Resident rows inside one primary-key interval, in primary-key order.
+    /// An out-of-core state must read the interval through its row snapshot.
+    pub fn rows_in_range(
+        &self,
+        table: &str,
+        range: &RelationalPrimaryKeyRange,
+    ) -> impl Iterator<Item = (&RelationalKey, &RelationalRow)> {
+        self.segments
+            .get(table)
+            .into_iter()
+            .flat_map(move |segment| segment.rows.range(Some(range.clone())))
+    }
+
     /// Metadata-only ordered seek for native full-source enumeration. A sparse
     /// row state must use its pinned canonical row reader, never an empty map.
     #[doc(hidden)]
@@ -5490,7 +5423,6 @@ impl RelationalState {
         }
         let mut dirty_pages = 0usize;
         let mut dirty_bytes = 0u64;
-        let slot_bytes = config.page_limits.max_page_bytes.get() as u64;
         self.table_schemas()
             .map(|schema| {
                 let schema_digest = self
@@ -5505,13 +5437,16 @@ impl RelationalState {
                         ))
                     })?;
                 let mut pages = Vec::new();
-                let mut emit = |page| {
+                let mut emit = |page: ImmutableRelationalRowPage| {
                     let next_pages = dirty_pages.checked_add(1).ok_or_else(|| {
                         RelationalRowPageMutationError::Admission(
                             "row-page snapshot page count overflow".to_string(),
                         )
                     })?;
-                    let next_bytes = dirty_bytes.checked_add(slot_bytes).ok_or_else(|| {
+                    // Encoded bytes, not the v1 slot (#1593); see
+                    // `RelationalRowPagePublicationConfig::max_dirty_bytes`.
+                    let page_bytes = page.encoded_len(config.page_limits)?;
+                    let next_bytes = dirty_bytes.checked_add(page_bytes).ok_or_else(|| {
                         RelationalRowPageMutationError::Admission(
                             "row-page snapshot byte count overflow".to_string(),
                         )
@@ -5520,7 +5455,7 @@ impl RelationalState {
                         || next_bytes > config.max_dirty_bytes.get()
                     {
                         return Err(RelationalRowPageMutationError::Admission(format!(
-                            "row-page snapshot requires {next_pages} pages/{next_bytes} bytes, exceeding limits {}/{}",
+                            "row-page snapshot requires {next_pages} pages/{next_bytes} encoded bytes, exceeding limits {}/{}",
                             config.max_dirty_pages, config.max_dirty_bytes
                         )));
                     }
@@ -5548,6 +5483,8 @@ impl RelationalState {
                 }
                 let report = bootstrap.finish(&mut emit)?;
                 Ok(RelationalRowPageTableDelta {
+                    replaces_base: false,
+                    last_row_id: self.last_row_id(&schema.name),
                     table: schema.name.clone(),
                     schema: Some(schema.clone()),
                     schema_digest,
@@ -5571,6 +5508,78 @@ impl RelationalState {
                 })
             })
             .collect()
+    }
+
+    /// Packs one table's complete current rows as a replacement of its base
+    /// row-page table (#1593). Page ids continue from `next_page_id`, the
+    /// base table's allocator, so no id of a pinned base root is reused. The
+    /// bootstrap admits `config`'s dirty-page and encoded dirty-byte limits.
+    pub fn row_page_table_replacement_delta(
+        &self,
+        table: &str,
+        generation: u64,
+        source_commit_epoch: u64,
+        next_page_id: NonZeroU64,
+        config: RelationalRowPagePublicationConfig,
+    ) -> Result<RelationalRowPageTableDelta, RelationalRowPageMutationError> {
+        self.require_materialized_rows("relational row-page table replacement")
+            .map_err(|error| RelationalRowPageMutationError::Admission(error.to_string()))?;
+        let schema = self.table_schema(table).ok_or_else(|| {
+            RelationalRowPageMutationError::Corrupt(format!(
+                "replaced row-page table {table} is missing from the relational state"
+            ))
+        })?;
+        let schema_digest = self
+            .table_schema_digest(table)
+            .map_err(|error| RelationalRowPageMutationError::Corrupt(error.to_string()))?
+            .ok_or_else(|| {
+                RelationalRowPageMutationError::Corrupt(format!(
+                    "replaced row-page table {table} has no schema digest"
+                ))
+            })?;
+        let mut bootstrap = RelationalRowPageBootstrap::new(
+            generation,
+            source_commit_epoch,
+            schema_digest,
+            schema.columns.len(),
+            next_page_id,
+            config,
+        )?;
+        let mut pages = Vec::new();
+        for (primary_key, row) in self.rows(table) {
+            bootstrap.push(
+                RelationalRowPageEntry {
+                    primary_key: primary_key.clone(),
+                    row: row.clone(),
+                },
+                |page| {
+                    pages.push(page);
+                    Ok(())
+                },
+            )?;
+        }
+        let report = bootstrap.finish(|page| {
+            pages.push(page);
+            Ok(())
+        })?;
+        Ok(RelationalRowPageTableDelta {
+            last_row_id: self.last_row_id(table),
+            table: table.to_string(),
+            schema: Some(schema.clone()),
+            schema_digest,
+            column_count: NonZeroU32::new(u32::try_from(schema.columns.len()).map_err(|_| {
+                RelationalRowPageMutationError::Admission(format!(
+                    "table {table} column count does not fit u32"
+                ))
+            })?)
+            .ok_or_else(|| {
+                RelationalRowPageMutationError::Admission(format!("table {table} has no columns"))
+            })?,
+            next_page_id: report.next_page_id,
+            dirty_pages: pages,
+            deleted_page_ids: Vec::new(),
+            replaces_base: true,
+        })
     }
 
     pub fn row_count(&self, table: &str) -> usize {
@@ -6117,6 +6126,15 @@ pub enum RelationalComparisonOp {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelationalPredicate {
+    NumericCompare {
+        left: RelationalNumericExpression,
+        op: RelationalComparisonOp,
+        right: RelationalNumericExpression,
+    },
+    NumericIsNull {
+        expression: RelationalNumericExpression,
+        negated: bool,
+    },
     And(Box<RelationalPredicate>, Box<RelationalPredicate>),
     Or(Box<RelationalPredicate>, Box<RelationalPredicate>),
     Not(Box<RelationalPredicate>),
@@ -6138,33 +6156,18 @@ fn mutation_primary_key(
     predicate: &RelationalPredicate,
     allocations: Option<&crate::background::CheckpointDecodeContext>,
 ) -> Result<Option<RelationalKey>, RelationalError> {
-    fn equality<'a>(
-        predicate: &'a RelationalPredicate,
-        column: &str,
-    ) -> Option<&'a RelationalValue> {
-        match predicate {
-            RelationalPredicate::And(left, right) => {
-                equality(left, column).or_else(|| equality(right, column))
-            }
-            RelationalPredicate::Compare {
-                column: name,
-                op: RelationalComparisonOp::Eq,
-                value,
-            } if name == column && !matches!(value, RelationalValue::Null) => Some(value),
-            _ => None,
-        }
-    }
     if schema.primary_key.is_empty()
         || schema
             .primary_key
             .iter()
-            .any(|column| equality(predicate, column).is_none())
+            .any(|column| mutation_equality(predicate, column).is_none())
     {
         return Ok(None);
     }
     collect_results_with_allocations(
         schema.primary_key.iter().map(|column| {
-            let value = equality(predicate, column).expect("complete primary key checked above");
+            let value =
+                mutation_equality(predicate, column).expect("complete primary key checked above");
             match allocations {
                 Some(context) => value.as_ref().to_owned_value_with_allocations(context),
                 None => Ok(value.clone()),
@@ -6191,7 +6194,12 @@ fn mutation_candidate_rows<'a>(
     };
     let scan_limit = if key.is_some() { 0 } else { usize::MAX };
     let point = key.and_then(|key| rows.get_key_value(&key));
-    Ok(point.into_iter().chain(rows.iter().take(scan_limit)))
+    let range = if primary_key_lookup && scan_limit != 0 {
+        mutation_primary_key_range(schema, predicate, allocations)?
+    } else {
+        None
+    };
+    Ok(point.into_iter().chain(rows.range(range).take(scan_limit)))
 }
 
 fn transaction_uses_primary_key_predicate_lookup(
@@ -6206,7 +6214,7 @@ fn transaction_uses_primary_key_predicate_lookup(
         TransactionIndexMode::AuthoritativeRecovery => checkpoint_access.is_some_and(|access| {
             // Legacy scans read every original key, including keys deleted earlier
             // in the transaction, which are retained by changed-key capture. An
-            // uncovered original key therefore identifies a point-access record.
+            // uncovered original key therefore identifies a bounded-access record.
             // The executor still verifies the complete resulting access set.
             state.segments.iter().any(|(table, segment)| {
                 transaction.writes.iter().any(|write| match write {
@@ -6243,6 +6251,7 @@ pub struct RelationalUpsertAssignment {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelationalUpdateValue {
+    Numeric(RelationalNumericExpression),
     Column(String),
     Value(RelationalValue),
     BigIntArithmetic {
@@ -6464,12 +6473,10 @@ impl RelationalStore {
     ) -> Result<SnapshotReadGuard<RelationalState>, SnapshotCommitError<RelationalError>> {
         let batch = decode_relational_wal_batch(record, decode_limits)
             .map_err(SnapshotCommitError::Stage)?;
-        self.admit(&batch.transaction)
-            .map_err(SnapshotCommitError::Stage)?;
         let expected_epoch = batch.epoch;
         let transaction = batch.transaction;
         let overflow_config = self.overflow_config;
-        let limits = self.limits;
+        let limits = RelationalMutationLimits::for_recovery();
         self.snapshots.commit(
             move |state, next_epoch| {
                 if next_epoch != expected_epoch {
@@ -6547,16 +6554,29 @@ impl fmt::Display for RelationalError {
 }
 
 impl std::error::Error for RelationalError {
+    /// Constraint and schema refusals report their typed kind as the source,
+    /// so `HawDBError::from_storage_error` keeps it through any wrapper.
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::FileDescriptors(error) => Some(error),
             Self::UnsupportedFormat(error) => Some(error),
+            Self::Constraint(_) => Some(&hawdb_core::RelationalErrorKind::Constraint),
+            Self::Schema(_) => Some(&hawdb_core::RelationalErrorKind::Schema),
             _ => None,
         }
     }
 }
 
 impl RelationalError {
+    /// The typed kind of a constraint or schema refusal.
+    pub const fn kind(&self) -> Option<hawdb_core::RelationalErrorKind> {
+        match self {
+            Self::Constraint(_) => Some(hawdb_core::RelationalErrorKind::Constraint),
+            Self::Schema(_) => Some(hawdb_core::RelationalErrorKind::Schema),
+            _ => None,
+        }
+    }
+
     pub(crate) fn into_wal_recovery_error(self) -> hawdb_core::HawDBError {
         match self {
             Self::Corruption(message) => hawdb_core::HawDBError::StorageIntegrity(format!(
@@ -6978,19 +6998,28 @@ fn add_column_with_allocations(
             limits.max_rows
         )));
     }
-    let fill = match &column.default {
-        None => RelationalValue::Null,
-        Some(RelationalColumnDefault::Literal(value)) => value
-            .as_ref()
-            .to_owned_value_with_allocations(&fill_context)?,
-        Some(RelationalColumnDefault::UuidV7) if row_count == 0 => RelationalValue::Null,
-        Some(RelationalColumnDefault::UuidV7) => {
-            return Err(RelationalError::Schema(format!(
+    let fill =
+        match &column.default {
+            None => RelationalValue::Null,
+            Some(RelationalColumnDefault::Literal(value)) => value
+                .as_ref()
+                .to_owned_value_with_allocations(&fill_context)?,
+            Some(
+                RelationalColumnDefault::UuidV7 | RelationalColumnDefault::CurrentTimestamp(_),
+            ) if row_count == 0 => RelationalValue::Null,
+            Some(RelationalColumnDefault::UuidV7) => {
+                return Err(RelationalError::Schema(format!(
             "ALTER TABLE {table} cannot add column {} with uuidv7() default to a non-empty table",
             column.name
         )))
-        }
-    };
+            }
+            Some(RelationalColumnDefault::CurrentTimestamp(_)) => {
+                return Err(RelationalError::Schema(format!(
+            "ALTER TABLE {table} cannot add column {} with a clock default to a non-empty table",
+            column.name
+        )))
+            }
+        };
     if !column.nullable && matches!(&fill, RelationalValue::Null) && row_count != 0 {
         return Err(RelationalError::Constraint(format!("ALTER TABLE {table} cannot add NOT NULL column {} without a default to a non-empty table", column.name)));
     }
@@ -7044,6 +7073,7 @@ fn add_column_with_allocations(
         .start_unit()
         .map_err(|error| RelationalError::Admission(error.to_string()))?;
     let replacement = Arc::new(RelationalTableSegment {
+        last_row_id: state.segments[table].last_row_id,
         rows,
         indexes: BTreeMap::new(),
         _memory: segment_context.memory.into_inner(),
@@ -7303,12 +7333,19 @@ fn apply_transaction_inner(
                 let fill = match column.default.clone() {
                     None => RelationalValue::Null,
                     Some(RelationalColumnDefault::Literal(value)) => value,
-                    Some(RelationalColumnDefault::UuidV7) if row_count == 0 => {
-                        RelationalValue::Null
-                    }
+                    Some(
+                        RelationalColumnDefault::UuidV7
+                        | RelationalColumnDefault::CurrentTimestamp(_),
+                    ) if row_count == 0 => RelationalValue::Null,
                     Some(RelationalColumnDefault::UuidV7) => {
                         return Err(RelationalError::Schema(format!(
                             "ALTER TABLE {table} cannot add column {} with uuidv7() default to a non-empty table",
+                            column.name
+                        )));
+                    }
+                    Some(RelationalColumnDefault::CurrentTimestamp(_)) => {
+                        return Err(RelationalError::Schema(format!(
+                            "ALTER TABLE {table} cannot add column {} with a clock default to a non-empty table",
                             column.name
                         )));
                     }
@@ -7447,7 +7484,8 @@ fn apply_transaction_inner(
                 })?;
                 let segment = mutable_segment_with_allocations(segment, checkpoint_allocations)?;
                 for row in prepared_rows {
-                    let key = row_key_with_allocations(&row, &primary_key, checkpoint_allocations)?;
+                    let key =
+                        segment.allocate_row_handle(&row, &primary_key, checkpoint_allocations)?;
                     if mode == RelationalInsertMode::Error && segment.rows.contains_key(&key) {
                         return Err(RelationalError::Constraint(format!(
                             "duplicate primary key in table {table}"
@@ -7714,7 +7752,13 @@ fn apply_transaction_inner(
             allocations: checkpoint_allocations,
         },
     )?;
-    overflow::prune_unreachable_segments_with_allocations(&mut next, checkpoint_allocations)?;
+    overflow::prune_unreachable_segments_after_changes(
+        state,
+        &mut next,
+        &changed_keys,
+        !full_index_rebuild.is_empty() || !projection_rebuild_tables.is_empty(),
+        checkpoint_allocations,
+    )?;
     if index_mode == TransactionIndexMode::Materialized {
         for table in &touched {
             if !next.schemas.contains_key(table) {
@@ -8029,8 +8073,11 @@ fn apply_upsert(
                 },
             )?;
             validate_row(&schema, &updated)?;
-            let updated_primary_key =
-                row_key_with_allocations(&updated, &primary_key_positions, checkpoint_allocations)?;
+            let updated_primary_key = if primary_key_positions.is_empty() {
+                clone_key_with_allocations(&existing_primary_key, checkpoint_allocations)?
+            } else {
+                row_key_with_allocations(&updated, &primary_key_positions, checkpoint_allocations)?
+            };
             let updated_conflict_key =
                 row_key_with_allocations(&updated, &conflict_positions, checkpoint_allocations)?;
             insert_changed_key_with_allocations(
@@ -8070,7 +8117,7 @@ fn apply_upsert(
             }
             affected_rows = affected_rows.saturating_add(1);
         } else {
-            let primary_key = row_key_with_allocations(
+            let primary_key = segment.allocate_row_handle(
                 &excluded,
                 &primary_key_positions,
                 checkpoint_allocations,
@@ -8293,6 +8340,22 @@ fn apply_update(
                 ))
             })?;
             let value = match &assignment.value {
+                RelationalUpdateValue::Numeric(expression) => {
+                    let expression = expression.compile(&schema, assignment_context.as_ref())?;
+                    if !schema.columns[target]
+                        .scalar_type
+                        .logical_type()
+                        .is_numeric()
+                        || expression
+                            .result_type
+                            .is_some_and(|kind| !kind.is_numeric())
+                    {
+                        return Err(RelationalError::Schema(
+                            "numeric assignment requires numeric operands and target".into(),
+                        ));
+                    }
+                    ResolvedUpdateValue::Numeric(expression)
+                }
                 RelationalUpdateValue::Column(column) => {
                     let source = schema.column_position(column).ok_or_else(|| {
                         RelationalError::Schema(format!(
@@ -8404,6 +8467,9 @@ fn apply_update(
         // later, so arithmetic errors keep the ordinary transaction contract.
         for (target, value) in &resolved {
             let value = match value {
+                ResolvedUpdateValue::Numeric(expression) => {
+                    expression.assignment(row, schema.columns[*target].scalar_type)?
+                }
                 ResolvedUpdateValue::Column(source) => row.values()[*source].as_ref(),
                 ResolvedUpdateValue::Value(value) => value.as_ref(),
                 ResolvedUpdateValue::BigIntArithmetic {
@@ -8440,8 +8506,11 @@ fn apply_update(
             overflow_config,
             checkpoint_allocations,
         )?;
-        let new_key =
-            row_key_with_allocations(&updated, &primary_key_positions, checkpoint_allocations)?;
+        let new_key = if primary_key_positions.is_empty() {
+            clone_key_with_allocations(old_key, checkpoint_allocations)?
+        } else {
+            row_key_with_allocations(&updated, &primary_key_positions, checkpoint_allocations)?
+        };
         let retained_old_key = match &update_context {
             Some(context) => old_key.clone_with_allocations(context)?,
             None => old_key.clone(),
@@ -8593,6 +8662,7 @@ fn insert_changed_key_with_allocations(
 }
 
 enum ResolvedUpdateValue<'a> {
+    Numeric(numeric_expression::CompiledNumericExpression<'a>),
     Column(usize),
     Value(&'a RelationalValue),
     BigIntArithmetic {
@@ -8668,6 +8738,14 @@ fn validate_predicate(
     predicate: &RelationalPredicate,
 ) -> Result<(), RelationalError> {
     match predicate {
+        RelationalPredicate::NumericCompare { left, right, .. } => {
+            let left = left.compile(schema, None)?;
+            let right = right.compile(schema, None)?;
+            numeric_expression::validate_numeric_comparison(left.result_type, right.result_type)
+        }
+        RelationalPredicate::NumericIsNull { expression, .. } => {
+            expression.compile(schema, None).map(|_| ())
+        }
         RelationalPredicate::And(left, right) | RelationalPredicate::Or(left, right) => {
             validate_predicate(schema, left)?;
             validate_predicate(schema, right)
@@ -8678,7 +8756,9 @@ fn validate_predicate(
                 RelationalError::Schema(format!("predicate references unknown column {column}"))
             })?;
             if !matches!(value, RelationalValue::Null)
-                && value.scalar_type() != Some(schema.columns[position].scalar_type)
+                && !schema.columns[position]
+                    .scalar_type
+                    .same_value_domain(value.scalar_type())
             {
                 return Err(RelationalError::Schema(format!(
                     "predicate on column {column} has an incompatible value type"
@@ -8703,6 +8783,29 @@ fn predicate_truth(
     predicate: &RelationalPredicate,
 ) -> Result<Option<bool>, RelationalError> {
     match predicate {
+        RelationalPredicate::NumericCompare { left, op, right } => {
+            let left = left.evaluate_row(schema, row)?;
+            let right = right.evaluate_row(schema, row)?;
+            if left.is_null() || right.is_null() {
+                return Ok(None);
+            }
+            let ordering = hawdb_core::numeric::compare_numeric(left, right)
+                .map_err(|error| RelationalError::Constraint(error.to_string()))?;
+            Ok(Some(match op {
+                RelationalComparisonOp::Eq => ordering.is_eq(),
+                RelationalComparisonOp::NotEq => !ordering.is_eq(),
+                RelationalComparisonOp::Lt => ordering.is_lt(),
+                RelationalComparisonOp::Lte => !ordering.is_gt(),
+                RelationalComparisonOp::Gt => ordering.is_gt(),
+                RelationalComparisonOp::Gte => !ordering.is_lt(),
+            }))
+        }
+        RelationalPredicate::NumericIsNull {
+            expression,
+            negated,
+        } => Ok(Some(
+            expression.evaluate_row(schema, row)?.is_null() != *negated,
+        )),
         RelationalPredicate::And(left, right) => match (
             predicate_truth(schema, row, left)?,
             predicate_truth(schema, row, right)?,
@@ -8772,12 +8875,6 @@ fn validate_table_schema(schema: &RelationalTableSchema) -> Result<(), Relationa
             "table name and columns must be non-empty".to_string(),
         ));
     }
-    if schema.primary_key.is_empty() {
-        return Err(RelationalError::Schema(format!(
-            "table {} must declare a primary key",
-            schema.name
-        )));
-    }
     let mut names = BTreeSet::new();
     for column in &schema.columns {
         if column.name.is_empty() || !names.insert(column.name.clone()) {
@@ -8797,10 +8894,15 @@ fn validate_table_schema(schema: &RelationalTableSchema) -> Result<(), Relationa
                         column.name
                     )));
                 }
+                RelationalColumnDefault::CurrentTimestamp(_) => {
+                    validate_clock_default(column)?;
+                }
             }
         }
     }
-    validate_column_list(schema, &schema.primary_key, "primary key")?;
+    if !schema.primary_key.is_empty() {
+        validate_column_list(schema, &schema.primary_key, "primary key")?;
+    }
     for column in &schema.primary_key {
         let position = schema.column_position(column).expect("validated column");
         if schema.columns[position].nullable {
@@ -8920,7 +9022,7 @@ fn validate_value_type(
             "overflow values require TEXT or BYTEA".into(),
         ));
     }
-    if value.scalar_type() != Some(column.scalar_type) {
+    if !column.scalar_type.accepts(value.as_ref()) {
         return Err(RelationalError::Schema(format!(
             "column {} expects {:?} but received {:?}",
             column.name,
@@ -9005,6 +9107,7 @@ fn rebuild_indexes_with_allocations(
         .start_unit()
         .map_err(|error| RelationalError::Admission(error.to_string()))?;
     let replacement = Arc::new(RelationalTableSegment {
+        last_row_id: source.last_row_id,
         rows: source.rows.clone(),
         indexes,
         _memory: owned_context.memory.into_inner(),
@@ -9193,7 +9296,7 @@ fn unique_index_definition_with_allocations(
     let Some(context) = allocations else {
         return Ok(schema.unique_index_definition(columns));
     };
-    let (name, role) = if columns == schema.primary_key {
+    let (name, role) = if !columns.is_empty() && columns == schema.primary_key {
         (
             clone_string_with_allocations(RELATIONAL_PRIMARY_INDEX_NAME, Some(context))?,
             RelationalIndexRole::Primary,
@@ -9261,11 +9364,13 @@ fn required_index_definitions_with_allocations(
         unit.finish();
         Ok(())
     };
-    push(
-        clone_string_with_allocations(RELATIONAL_PRIMARY_INDEX_NAME, Some(context))?,
-        &schema.primary_key,
-        RelationalIndexRole::Primary,
-    )?;
+    if !schema.primary_key.is_empty() {
+        push(
+            clone_string_with_allocations(RELATIONAL_PRIMARY_INDEX_NAME, Some(context))?,
+            &schema.primary_key,
+            RelationalIndexRole::Primary,
+        )?;
+    }
     for (ordinal, columns) in schema.unique_constraints.iter().enumerate() {
         push(
             admitted_ordinal_index_name(RELATIONAL_UNIQUE_INDEX_PREFIX, ordinal, context)?,
@@ -9535,6 +9640,14 @@ fn capture_relational_row_changes_with_allocations(
     limits: RelationalRowChangeCaptureLimits,
     allocations: Option<&crate::background::CheckpointDecodeContext>,
 ) -> Result<RelationalRowChangeCapture, RelationalError> {
+    let captured = capture_relational_row_change_entries(
+        previous,
+        next,
+        changed_keys,
+        rewritten_tables,
+        limits,
+        allocations,
+    )?;
     if !rewritten_tables.is_empty() {
         let tables = collect_results_with_allocations(
             rewritten_tables.iter().map(|name| match allocations {
@@ -9546,12 +9659,38 @@ fn capture_relational_row_changes_with_allocations(
             rewritten_tables.len(),
             allocations,
         )?;
-        return Ok(RelationalRowChangeCapture::RequiresCheckpoint { tables });
+        // Changes to the other tables of the same commit let the schema
+        // checkpoint keep their pages incremental (#1593).
+        let unaffected = match captured {
+            RelationalRowChangeCapture::Captured {
+                changes,
+                encoded_bytes,
+            } => Some(RelationalRowUnaffectedChanges {
+                changes,
+                encoded_bytes,
+            }),
+            _ => None,
+        };
+        return Ok(RelationalRowChangeCapture::RequiresCheckpoint { tables, unaffected });
     }
+    Ok(captured)
+}
 
+/// Captures the row changes of `changed_keys` outside `skipped_tables`.
+fn capture_relational_row_change_entries(
+    previous: &RelationalState,
+    next: &RelationalState,
+    changed_keys: &BTreeMap<String, BTreeSet<RelationalKey>>,
+    skipped_tables: &BTreeSet<String>,
+    limits: RelationalRowChangeCaptureLimits,
+    allocations: Option<&crate::background::CheckpointDecodeContext>,
+) -> Result<RelationalRowChangeCapture, RelationalError> {
     let mut changes = Vec::new();
     let mut encoded_bytes = 0usize;
     for (table, keys) in changed_keys {
+        if skipped_tables.contains(table) {
+            continue;
+        }
         for primary_key in keys {
             let previous_row = previous.row(table, primary_key);
             let next_row = next.row(table, primary_key);
@@ -9561,13 +9700,25 @@ fn capture_relational_row_changes_with_allocations(
             let Some(change_bytes) =
                 estimated_row_change_encoding_bytes_parts(table, primary_key, next_row)
             else {
-                return Ok(row_capture_limit_invalidated(limits));
+                return Ok(row_capture_limit_invalidated(
+                    limits,
+                    changes.len() + 1,
+                    encoded_bytes,
+                ));
             };
             let Some(next_bytes) = encoded_bytes.checked_add(change_bytes) else {
-                return Ok(row_capture_limit_invalidated(limits));
+                return Ok(row_capture_limit_invalidated(
+                    limits,
+                    changes.len() + 1,
+                    encoded_bytes,
+                ));
             };
             if changes.len() >= limits.max_entries.get() || next_bytes > limits.max_bytes.get() {
-                return Ok(row_capture_limit_invalidated(limits));
+                return Ok(row_capture_limit_invalidated(
+                    limits,
+                    changes.len() + 1,
+                    next_bytes,
+                ));
             }
             let table = match allocations {
                 Some(context) => context
@@ -9731,12 +9882,17 @@ fn estimated_replay_access_encoding_bytes(
     FIXED_BYTES.checked_add(table.len())?.checked_add(key_bytes)
 }
 
+/// A single commit whose row changes reach `entries`/`bytes` (at least) cannot
+/// be captured, so no drain can make room for it.
 fn row_capture_limit_invalidated(
     limits: RelationalRowChangeCaptureLimits,
+    entries: usize,
+    bytes: usize,
 ) -> RelationalRowChangeCapture {
     RelationalRowChangeCapture::Invalidated {
         reason: format!(
-            "relational row WAL delta cannot be encoded within capture limits: max_entries={}, max_bytes={}",
+            "relational row WAL delta cannot be encoded within capture limits: max_entries={}, max_bytes={}; \
+             a single commit changes at least {entries} rows/{bytes} encoded bytes, so split it into smaller commits",
             limits.max_entries, limits.max_bytes
         ),
     }
@@ -9837,7 +9993,11 @@ fn estimated_relational_values_encoding_bytes<'a>(
         let value_bytes = match value {
             RelationalValue::Null => 1,
             RelationalValue::Boolean(_) => 2,
-            RelationalValue::BigInt(_) | RelationalValue::DoublePrecision(_) => 9,
+            RelationalValue::BigInt(_)
+            | RelationalValue::DoublePrecision(_)
+            | RelationalValue::Timestamp(_)
+            | RelationalValue::TimestampTz(_) => 9,
+            RelationalValue::Decimal(_) => 1 + hawdb_core::Decimal::ORDERED_LEN,
             RelationalValue::Text(value) => 3usize
                 .checked_add(value.as_bytes().iter().filter(|byte| **byte == 0).count())?
                 .checked_add(value.len())?,
@@ -10242,6 +10402,27 @@ fn row_key_with_allocations(
         .checkpoint()
         .map_err(|error| RelationalError::Admission(error.to_string()))?;
     Ok(RelationalKey(values))
+}
+
+// Probe every possible allocation up to the maximum. Conflicting UPSERT rows
+// consume no ID, so later actual allocations remain inside this upper bound.
+// Saturation avoids rejecting a conflict-only UPSERT at allocator exhaustion;
+// the actual insert path still fails before publishing an exhausted allocation.
+fn planned_hidden_row_handle(last_row_id: &mut i64) -> RelationalKey {
+    *last_row_id = last_row_id.saturating_add(1);
+    RelationalKey(vec![RelationalValue::BigInt(*last_row_id)])
+}
+
+fn validate_hidden_row_handle(
+    key: &RelationalKey,
+    last_row_id: i64,
+) -> Result<(), RelationalError> {
+    if !matches!(key.0.as_slice(), [RelationalValue::BigInt(id)] if *id > 0 && *id <= last_row_id) {
+        return Err(RelationalError::Corruption(
+            "invalid hidden row handle or allocation high-water mark".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn row_key(row: &RelationalRow, positions: &[usize]) -> RelationalKey {

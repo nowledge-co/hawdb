@@ -231,7 +231,33 @@ mod tests {
     }
 
     #[test]
-    fn vector_index_binding_rejects_unsupported_metric_and_build_parameters() {
+    fn rabitq_binding_seals_euclidean_metric() {
+        let binding = VectorIndexDescriptor::new(
+            "memory.embedding".into(),
+            VectorIndexTarget::Relational {
+                table: "memories".into(),
+                column: "embedding".into(),
+                column_ordinal: 1,
+            },
+            VectorDimension::new(3).unwrap(),
+            VectorDistance::Euclidean,
+            VectorIndexBackend::RaBitQ {
+                bit_width: 4,
+                segment_rows: 1024,
+                transform_seed: 42,
+            },
+            [0x5a; 32],
+        )
+        .unwrap();
+        assert_eq!(
+            VectorIndexDescriptor::decode(&binding.encode()).unwrap(),
+            binding
+        );
+        assert_eq!(binding.distance(), VectorDistance::Euclidean);
+    }
+
+    #[test]
+    fn vector_index_binding_rejects_unsupported_build_parameters() {
         let target = VectorIndexTarget::Relational {
             table: "memories".into(),
             column: "embedding".into(),
@@ -239,7 +265,6 @@ mod tests {
         };
         let valid = descriptor(target.clone());
         for (metric, backend) in [
-            (VectorDistance::Euclidean, valid.backend()),
             (
                 VectorDistance::Cosine,
                 VectorIndexBackend::RaBitQ {

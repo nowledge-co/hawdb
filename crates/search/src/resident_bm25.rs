@@ -1,0 +1,155 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
+//! Exact resident fallback statistics for one query's terms. The caller chooses
+//! the corpus; ordinary search keeps its existing filtered-document domain.
+
+use crate::analyzer_stream::Control;
+use crate::lexical_projection::{
+    retain_most_selective_terms, LexicalProjectionConfig, LexicalQueryTermPolicy,
+    QueryTermSelection,
+};
+use crate::resident_text_seed::count_document_tokens;
+use crate::{Result, SearchAnalyzerLexicon, SearchDocument, BM25_B, BM25_K1};
+use std::collections::{BTreeMap, BTreeSet};
+
+pub(super) struct Scorer<'a> {
+    query_terms: BTreeMap<&'a str, usize>,
+    document_frequency: Vec<usize>,
+    frequencies: Vec<usize>,
+    document_count: usize,
+    average_document_len: f64,
+}
+
+/// Fits a resident query to the analyzed and scored-term caps. Document
+/// frequencies come from the same corpus `Scorer` will use, so the kept terms
+/// score exactly as the resident text seed scores them.
+pub(super) fn select_query_terms<'d>(
+    terms: &mut BTreeSet<String>,
+    documents: impl Iterator<Item = &'d SearchDocument>,
+    analyzer: &SearchAnalyzerLexicon,
+    config: &LexicalProjectionConfig,
+) -> Result<QueryTermSelection> {
+    let limit = config.max_query_terms;
+    if terms.len() > config.analyzed_query_term_limit() {
+        return Err(config.analyzed_query_term_error());
+    }
+    if terms.len() <= limit.get() {
+        return Ok(QueryTermSelection::unchanged(terms.len(), limit));
+    }
+    if config.query_term_policy == LexicalQueryTermPolicy::Exact {
+        // Snapshot-free resident search scores every analyzed term, as it did
+        // before the scored-term cap existed: Exact stays complete BM25 here.
+        return Ok(QueryTermSelection::unchanged(terms.len(), limit));
+    }
+    let mut selected = terms.clone();
+    let selection = {
+        let scorer = Scorer::from_documents(terms, documents, analyzer)?;
+        retain_most_selective_terms(
+            &mut selected,
+            limit,
+            config.query_term_policy,
+            |term| {
+                scorer
+                    .query_terms
+                    .get(term)
+                    .map_or(0, |index| scorer.document_frequency[*index] as u64)
+            },
+            None,
+        )?
+    };
+    *terms = selected;
+    Ok(selection)
+}
+
+impl<'a> Scorer<'a> {
+    pub(super) fn from_documents<'d>(
+        terms: &'a BTreeSet<String>,
+        documents: impl Iterator<Item = &'d SearchDocument>,
+        analyzer: &SearchAnalyzerLexicon,
+    ) -> Result<Self> {
+        let mut scorer = Self {
+            query_terms: terms
+                .iter()
+                .enumerate()
+                .map(|(index, term)| (term.as_str(), index))
+                .collect(),
+            document_frequency: vec![0; terms.len()],
+            frequencies: vec![0; terms.len()],
+            document_count: 0,
+            average_document_len: 0.0,
+        };
+        let mut total_len = 0;
+        for document in documents {
+            scorer.document_count += 1;
+            total_len += scorer.count(document, analyzer)?;
+            for (frequency, df) in scorer
+                .frequencies
+                .iter()
+                .zip(&mut scorer.document_frequency)
+            {
+                // Repetition and field weights affect TF/length, never DF.
+                if *frequency > 0 {
+                    *df += 1;
+                }
+            }
+        }
+        if scorer.document_count != 0 {
+            scorer.average_document_len = total_len as f64 / scorer.document_count as f64;
+        }
+        Ok(scorer)
+    }
+
+    fn count(
+        &mut self,
+        document: &SearchDocument,
+        analyzer: &SearchAnalyzerLexicon,
+    ) -> Result<usize> {
+        self.frequencies.fill(0);
+        count_document_tokens(
+            document,
+            analyzer,
+            &self.query_terms,
+            &mut self.frequencies,
+            Control::default(),
+        )
+    }
+
+    pub(super) fn score(
+        &mut self,
+        document: &SearchDocument,
+        analyzer: &SearchAnalyzerLexicon,
+    ) -> Result<f64> {
+        if self.query_terms.is_empty() || self.document_count == 0 {
+            return Ok(0.0);
+        }
+        let document_len = self.count(document, analyzer)?;
+        if document_len == 0 {
+            return Ok(0.0);
+        }
+        let document_len = document_len as f64;
+        let average_document_len = self.average_document_len.max(1.0);
+        let mut score = 0.0;
+        // BTreeMap iteration preserves the legacy query BTreeSet's summation
+        // order, including roundoff at tied ranking boundaries.
+        for index in self.query_terms.values() {
+            let frequency = self.frequencies[*index];
+            let document_frequency = self.document_frequency[*index];
+            if frequency == 0 || document_frequency == 0 {
+                continue;
+            }
+            let idf = (1.0
+                + (self.document_count as f64 - document_frequency as f64 + 0.5)
+                    / (document_frequency as f64 + 0.5))
+                .ln();
+            let frequency = frequency as f64;
+            let denominator =
+                frequency + BM25_K1 * (1.0 - BM25_B + BM25_B * document_len / average_document_len);
+            score += idf * (frequency * (BM25_K1 + 1.0)) / denominator;
+        }
+        Ok(score)
+    }
+}
+
+#[cfg(test)]
+mod tests;

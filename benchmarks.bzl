@@ -43,6 +43,7 @@ HAWDB_MANUAL_BENCHMARKS = [
     "host_boundary",
     "host_boundary_allocations",
     "mem_query_concurrency",
+    "mem_query_resources",
     "mixed_point_growth",
     "retained_source_capacity",
 ]
@@ -65,7 +66,7 @@ def hawdb_benchmark_binaries(crate_features):
             "//bindings/benchmarks:native_alloc.rs",
         ] if benchmark == "host_boundary_allocations" else [
             "//bindings/benchmarks:native_alloc.rs",
-        ] if benchmark == "mem_query_concurrency" else []
+        ] if benchmark in ["mem_query_concurrency", "mem_query_resources"] else []
         rust_binary(
             name = "hawdb_bench_%s" % benchmark,
             crate_root = "benches/%s.rs" % benchmark,

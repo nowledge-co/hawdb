@@ -26,7 +26,7 @@ use hawdb_core::{LabelId, RelTypeId};
 use hawdb_plan_cypher::NodeProjectionAccess;
 use hawdb_storage::store::{GraphScanControl, GraphStore};
 use hawdb_storage::{
-    adjacency::AdjacencyDirection,
+    adjacency::{AdjacencyDirection, OrderedAdjacencyEntry},
     mutation::{GraphMutation, MutationLimits, MutationSummary, NodeSetAssignment, PropertyFilter},
     NodeId, NodeRecord, ProjectedNodeRecord, RelId, RelRecord,
 };
@@ -104,12 +104,43 @@ impl GraphExecutionRead for GraphStore {
         GraphStore::node_with_allocation(self, id, label_ids, admit)
     }
 
+    fn relationship_property_endpoint_candidates(
+        &self,
+        rel_type: RelTypeId,
+        constraints: hawdb_storage::store::RelationshipSeedConstraints<'_>,
+        endpoints: hawdb_storage::store::RelationshipEndpoints,
+        max_relationships: usize,
+        admit: &mut dyn FnMut(
+            usize,
+        ) -> Result<
+            Option<Box<dyn hawdb_storage::read_view::GraphReadAllocation>>,
+        >,
+    ) -> Result<Option<hawdb_storage::store::EndpointCandidates>> {
+        GraphStore::relationship_property_endpoint_candidates(
+            self,
+            rel_type,
+            constraints,
+            endpoints,
+            max_relationships,
+            admit,
+        )
+    }
+
     fn relationship_with_allocation(
         &self,
         id: RelId,
         admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
     ) -> Result<hawdb_storage::read_view::AdmittedRelationshipRead> {
         GraphStore::relationship_with_allocation(self, id, admit)
+    }
+
+    fn projected_relationship_with_allocation(
+        &self,
+        id: RelId,
+        required_properties: &BTreeSet<String>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+    ) -> Result<hawdb_storage::read_view::AdmittedRelationshipRead> {
+        GraphStore::projected_relationship_with_allocation(self, id, required_properties, admit)
     }
 
     fn scan_nodes_borrowed<'a>(
@@ -563,6 +594,44 @@ impl GraphExecutionRead for GraphStore {
             memory.budget_bytes,
             admit,
             |relationship| consumer(relationship).map(to_store_control),
+        )
+        .map(to_execution_control)
+    }
+
+    fn visit_ordered_projected_relationships_with_allocation(
+        &self,
+        adjacency: (NodeId, Option<RelTypeId>, AdjacencyDirection),
+        required_properties: &BTreeSet<String>,
+        memory: AdjacencyReadMemory<'_>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(
+            hawdb_storage::read_view::AdmittedRelationshipRecord,
+        ) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        GraphStore::visit_ordered_projected_relationships_with_allocation(
+            self,
+            adjacency,
+            required_properties,
+            memory.budget_bytes,
+            admit,
+            |relationship| consumer(relationship).map(to_store_control),
+        )
+        .map(to_execution_control)
+    }
+
+    fn visit_ordered_adjacency_entries_with_allocation(
+        &self,
+        adjacency: (NodeId, Option<RelTypeId>, AdjacencyDirection),
+        memory: AdjacencyReadMemory<'_>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(OrderedAdjacencyEntry) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        GraphStore::visit_ordered_adjacency_entries_with_allocation(
+            self,
+            adjacency,
+            memory.budget_bytes,
+            admit,
+            |entry| consumer(entry).map(to_store_control),
         )
         .map(to_execution_control)
     }

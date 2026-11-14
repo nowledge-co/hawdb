@@ -17,7 +17,7 @@ fn configuration(index: &SearchIndex) -> Option<(DiskAnnBuildConfig, VectorDista
     index
         .rabitq_checkpoint
         .is_none()
-        .then_some((DiskAnnBuildConfig::default(), VectorDistance::Cosine))
+        .then_some((DiskAnnBuildConfig::default(), index.vector_metric()))
 }
 
 fn shape(
@@ -75,6 +75,7 @@ fn identity(
     let (mut digest, binding_digest) = crate::diskann_identity::source(
         index.embedding_manifest.as_ref(),
         index.vector_index_descriptor.as_ref(),
+        index.vector_scoring,
         dimension,
         config,
         task,

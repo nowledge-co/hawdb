@@ -658,6 +658,7 @@ fn persisted_stable_id_mapping_respects_read_only_open() {
             &path,
             DatabaseConfig {
                 read_only: true,
+                recovery_mode: crate::RecoveryMode::Strict,
                 ..DatabaseConfig::default()
             },
         )

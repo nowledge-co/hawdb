@@ -16,11 +16,12 @@ use super::SearchDocument;
 use crate::error::{HawDBError, Result};
 use hawdb_core::RuntimeTaskContext;
 use hawdb_storage::file_io::File;
+pub use hawdb_vector_projection::RaBitQBitWidth;
 use hawdb_vector_projection::{
     FileProjection, InMemoryProjection, KernelPreference, ProjectionBuildConfig,
     ProjectionBuildReport, ProjectionBuilder, ProjectionError, ProjectionIdentity,
     ProjectionManifest, ProjectionSearchOptions, ProjectionSearchReport, ProjectionWriter,
-    RaBitQBitWidth, DEFAULT_BUILD_MEMORY_BYTES, DEFAULT_SEGMENT_ROWS, DEFAULT_TRANSFORM_SEED,
+    DEFAULT_BUILD_MEMORY_BYTES, DEFAULT_SEGMENT_ROWS, DEFAULT_TRANSFORM_SEED,
 };
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
@@ -135,18 +136,31 @@ impl RaBitQCandidateProjection {
         identity: ProjectionIdentity,
         options: RaBitQCandidateProjectionBuildOptions,
     ) -> usize {
+        Self::in_memory_capacity_bound_with_context(documents, identity, options, None)
+            .unwrap_or(usize::MAX)
+    }
+
+    pub(crate) fn in_memory_capacity_bound_with_context(
+        documents: &impl crate::resident_documents::DocumentView,
+        identity: ProjectionIdentity,
+        options: RaBitQCandidateProjectionBuildOptions,
+        task: Option<&RuntimeTaskContext>,
+    ) -> Result<usize> {
+        task.map_or(Ok(()), crate::build_control::checkpoint)?;
         let mut count = 0usize;
         let mut ids = 0usize;
         let mut dimension = 0;
         for document in documents.values() {
+            task.map_or(Ok(()), crate::build_control::checkpoint)?;
             if let Some(embedding) = &document.embedding {
                 count = count.saturating_add(1);
                 dimension = dimension.max(embedding.len());
                 ids = ids.saturating_add(document.id.len().saturating_mul(2));
             }
         }
+        task.map_or(Ok(()), crate::build_control::checkpoint)?;
         if count == 0 {
-            return 0;
+            return Ok(0);
         }
         let identity_bytes = identity
             .embedding_model
@@ -158,11 +172,18 @@ impl RaBitQCandidateProjection {
                     .as_ref()
                     .map_or(0, String::capacity),
             );
-        let Ok(admission) = build_config(dimension, identity, options).resource_admission() else {
-            return usize::MAX;
+        let Ok(admission) = build_config(
+            dimension,
+            identity,
+            options,
+            hawdb_core::VectorDistance::Cosine,
+        )
+        .resource_admission() else {
+            return Ok(usize::MAX);
         };
         let segments = count.div_ceil(admission.admitted_segment_rows);
-        ids.saturating_add(identity_bytes.saturating_mul(2))
+        Ok(ids
+            .saturating_add(identity_bytes.saturating_mul(2))
             .saturating_add(documents.len().saturating_mul(
                 crate::build_memory::MAP_ENTRY_BYTES + std::mem::size_of::<String>(),
             ))
@@ -173,7 +194,7 @@ impl RaBitQCandidateProjection {
                         .saturating_add(4096)
                         .saturating_mul(2),
                 ),
-            )
+            ))
     }
 
     pub(crate) fn retained_capacity_bytes(&self) -> usize {
@@ -207,36 +228,49 @@ impl RaBitQCandidateProjection {
         identity: ProjectionIdentity,
         options: RaBitQCandidateProjectionBuildOptions,
     ) -> Result<Option<Self>> {
-        Self::build_from_view(documents, identity, options)
+        Self::build_from_view(
+            documents,
+            identity,
+            options,
+            hawdb_core::VectorDistance::Cosine,
+            None,
+        )
     }
 
     pub(crate) fn build_from_view(
         documents: &impl crate::resident_documents::DocumentView,
         identity: ProjectionIdentity,
         options: RaBitQCandidateProjectionBuildOptions,
+        metric: hawdb_core::VectorDistance,
+        task: Option<&RuntimeTaskContext>,
     ) -> Result<Option<Self>> {
+        task.map_or(Ok(()), crate::build_control::checkpoint)?;
         let Some(RaBitQDocumentIdMap {
             dimension,
             ordinal_to_document_id,
             document_to_ordinal,
-        }) = validate_and_map_documents(documents)?
+        }) = validate_and_map_documents(documents, task)?
         else {
             return Ok(None);
         };
-        let config = build_config(dimension, identity, options);
+        let config = build_config(dimension, identity, options, metric);
         let mut builder = ProjectionBuilder::new(config).map_err(projection_error)?;
         for (ordinal, document_id) in ordinal_to_document_id.iter().enumerate() {
+            task.map_or(Ok(()), crate::build_control::checkpoint)?;
             let embedding = documents
                 .get(document_id)
                 .expect("mapped document exists")
                 .embedding
                 .as_deref()
                 .expect("mapped RaBitQ document has an embedding");
+            task.map_or(Ok(()), crate::build_control::checkpoint)?;
             builder
                 .push(ordinal as u64, embedding)
                 .map_err(projection_error)?;
         }
+        task.map_or(Ok(()), crate::build_control::checkpoint)?;
         let projection = builder.finish().map_err(projection_error)?;
+        task.map_or(Ok(()), crate::build_control::checkpoint)?;
         let build_report = projection.build_report().clone();
         Ok(Some(Self {
             storage: RaBitQCandidateProjectionStorage::InMemory(Box::new(projection)),
@@ -252,7 +286,13 @@ impl RaBitQCandidateProjection {
         identity: ProjectionIdentity,
         options: RaBitQCandidateProjectionBuildOptions,
     ) -> Result<Option<Self>> {
-        Self::write_from_view(artifact_path, documents, identity, options)
+        Self::write_from_view(
+            artifact_path,
+            documents,
+            identity,
+            options,
+            hawdb_core::VectorDistance::Cosine,
+        )
     }
 
     pub(crate) fn write_from_view(
@@ -260,16 +300,17 @@ impl RaBitQCandidateProjection {
         documents: &impl crate::resident_documents::DocumentView,
         identity: ProjectionIdentity,
         options: RaBitQCandidateProjectionBuildOptions,
+        metric: hawdb_core::VectorDistance,
     ) -> Result<Option<Self>> {
         let Some(RaBitQDocumentIdMap {
             dimension,
             ordinal_to_document_id,
             document_to_ordinal,
-        }) = validate_and_map_documents(documents)?
+        }) = validate_and_map_documents(documents, None)?
         else {
             return Ok(None);
         };
-        let config = build_config(dimension, identity, options);
+        let config = build_config(dimension, identity, options, metric);
         let mut writer =
             ProjectionWriter::create(artifact_path, config).map_err(projection_error)?;
         for (ordinal, document_id) in ordinal_to_document_id.iter().enumerate() {
@@ -331,7 +372,7 @@ impl RaBitQCandidateProjection {
             dimension,
             ordinal_to_document_id,
             document_to_ordinal,
-        }) = validate_and_map_documents(documents)
+        }) = validate_and_map_documents(documents, None)
             .map_err(RaBitQCandidateProjectionLoadError::NotApplicable)?
         else {
             return Err(RaBitQCandidateProjectionLoadError::NotApplicable(
@@ -508,7 +549,7 @@ impl RaBitQCandidateProjection {
                     })?;
                 Ok(RaBitQCandidate {
                     id,
-                    score: f64::from(hit.score),
+                    score: hit.score,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -551,6 +592,7 @@ impl RaBitQCandidateProjection {
 
 fn validate_and_map_documents(
     documents: &impl crate::resident_documents::DocumentView,
+    task: Option<&RuntimeTaskContext>,
 ) -> Result<Option<RaBitQDocumentIdMap>> {
     let mut dimension = None;
     let mut ordinal_to_document_id = Vec::new();
@@ -558,6 +600,7 @@ fn validate_and_map_documents(
     // Match the out-of-core generation writer: ascending document IDs, with
     // vectorless documents omitted. Ordinals belong only to this generation.
     for (document_id, document) in documents.iter() {
+        task.map_or(Ok(()), crate::build_control::checkpoint)?;
         if document_id != &document.id {
             return Err(HawDBError::Storage(format!(
                 "HawDB RaBitQ projection document key {document_id:?} does not match id {:?}",
@@ -600,8 +643,10 @@ fn build_config(
     dimension: usize,
     identity: ProjectionIdentity,
     options: RaBitQCandidateProjectionBuildOptions,
+    metric: hawdb_core::VectorDistance,
 ) -> ProjectionBuildConfig {
     ProjectionBuildConfig::new(dimension, identity)
+        .with_metric(metric.into())
         .with_bit_width(options.bit_width)
         .with_segment_rows(options.segment_rows)
         .with_max_working_bytes(options.max_working_bytes)
@@ -645,6 +690,9 @@ pub(crate) fn map_projection_error(error: ProjectionError, context: &str) -> Haw
 
 #[cfg(test)]
 mod ordinal_tests;
+
+#[cfg(test)]
+mod cancellation_tests;
 
 #[cfg(test)]
 mod tests {

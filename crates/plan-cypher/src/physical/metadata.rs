@@ -61,7 +61,10 @@ pub enum PhysicalPlanKind {
     GraphSeedScan,
     VectorIndexScan,
     CreateNode,
+    UnwindExec,
+    UnwindRowsExec,
     UnwindMutationExec,
+    LoadCsvMutationExec,
     MergeNode,
     MergeRelationship,
     MergeMatchedRelationship,
@@ -80,7 +83,9 @@ pub enum PhysicalPlanKind {
     CreateRelationship,
     GraphMatchExec,
     EmptyExec,
+    LoadCsvExec,
     SeqNodeScan,
+    RelationshipSeededNodeScan,
     NodeProjectionScanExec,
     SourceSegmentScan,
     NodeCartesianProductExec,
@@ -167,7 +172,10 @@ impl PhysicalPlanKind {
             PhysicalPlanKind::GraphSeedScan,
             PhysicalPlanKind::VectorIndexScan,
             PhysicalPlanKind::CreateNode,
+            PhysicalPlanKind::UnwindExec,
+            PhysicalPlanKind::UnwindRowsExec,
             PhysicalPlanKind::UnwindMutationExec,
+            PhysicalPlanKind::LoadCsvMutationExec,
             PhysicalPlanKind::MergeNode,
             PhysicalPlanKind::MergeRelationship,
             PhysicalPlanKind::MergeMatchedRelationship,
@@ -186,7 +194,9 @@ impl PhysicalPlanKind {
             PhysicalPlanKind::CreateRelationship,
             PhysicalPlanKind::GraphMatchExec,
             PhysicalPlanKind::EmptyExec,
+            PhysicalPlanKind::LoadCsvExec,
             PhysicalPlanKind::SeqNodeScan,
+            PhysicalPlanKind::RelationshipSeededNodeScan,
             PhysicalPlanKind::NodeProjectionScanExec,
             PhysicalPlanKind::SourceSegmentScan,
             PhysicalPlanKind::NodeCartesianProductExec,
@@ -251,7 +261,10 @@ impl PhysicalPlanKind {
             PhysicalPlanKind::GraphSeedScan => "GraphSeedScan",
             PhysicalPlanKind::VectorIndexScan => "VectorIndexScan",
             PhysicalPlanKind::CreateNode => "CreateNode",
+            PhysicalPlanKind::UnwindExec => "UnwindExec",
+            PhysicalPlanKind::UnwindRowsExec => "UnwindRowsExec",
             PhysicalPlanKind::UnwindMutationExec => "UnwindMutationExec",
+            PhysicalPlanKind::LoadCsvMutationExec => "LoadCsvMutationExec",
             PhysicalPlanKind::MergeNode => "MergeNode",
             PhysicalPlanKind::MergeRelationship => "MergeRelationship",
             PhysicalPlanKind::MergeMatchedRelationship => "MergeMatchedRelationship",
@@ -276,7 +289,9 @@ impl PhysicalPlanKind {
             PhysicalPlanKind::CreateRelationship => "CreateRelationship",
             PhysicalPlanKind::GraphMatchExec => "GraphMatchExec",
             PhysicalPlanKind::EmptyExec => "EmptyExec",
+            PhysicalPlanKind::LoadCsvExec => "LoadCsvExec",
             PhysicalPlanKind::SeqNodeScan => "SeqNodeScan",
+            PhysicalPlanKind::RelationshipSeededNodeScan => "RelationshipSeededNodeScan",
             PhysicalPlanKind::NodeProjectionScanExec => "NodeProjectionScanExec",
             PhysicalPlanKind::SourceSegmentScan => "SourceSegmentScan",
             PhysicalPlanKind::HashJoinExec => "HashJoinExec",
@@ -333,6 +348,7 @@ impl PhysicalPlanKind {
             }
             PhysicalPlanKind::CreateNode
             | PhysicalPlanKind::UnwindMutationExec
+            | PhysicalPlanKind::LoadCsvMutationExec
             | PhysicalPlanKind::MergeNode
             | PhysicalPlanKind::MergeRelationship
             | PhysicalPlanKind::MergeMatchedRelationship
@@ -350,6 +366,7 @@ impl PhysicalPlanKind {
             | PhysicalPlanKind::DeleteRelationshipTargetNodes
             | PhysicalPlanKind::CreateRelationship => PhysicalPlanClass::Mutation,
             PhysicalPlanKind::SeqNodeScan
+            | PhysicalPlanKind::RelationshipSeededNodeScan
             | PhysicalPlanKind::NodeProjectionScanExec
             | PhysicalPlanKind::SourceSegmentScan
             | PhysicalPlanKind::NodeColumnLookupExec
@@ -368,6 +385,8 @@ impl PhysicalPlanKind {
             | PhysicalPlanKind::ShortestPathExec => PhysicalPlanClass::Traversal,
             PhysicalPlanKind::NodeCountExec
             | PhysicalPlanKind::RelationshipCountExec
+            | PhysicalPlanKind::UnwindExec
+            | PhysicalPlanKind::UnwindRowsExec
             | PhysicalPlanKind::EmptyExec
             | PhysicalPlanKind::NodeCartesianProductExec
             | PhysicalPlanKind::HashJoinExec
@@ -387,7 +406,8 @@ impl PhysicalPlanKind {
             | PhysicalPlanKind::TextSeedScan
             | PhysicalPlanKind::GraphSeedScan
             | PhysicalPlanKind::VectorIndexScan
-            | PhysicalPlanKind::ThreadRepairStatsExec => PhysicalPlanClass::Procedure,
+            | PhysicalPlanKind::ThreadRepairStatsExec
+            | PhysicalPlanKind::LoadCsvExec => PhysicalPlanClass::Procedure,
         }
     }
 }

@@ -136,6 +136,14 @@ impl Options {
                     .into(),
             ));
         }
+        if !self.value.vector_scoring.is_default()
+            && self.value.vector_scoring != reader.vector_scoring()
+        {
+            return Err(HawDBError::Semantic(
+                "vector scoring differs from the active generation".into(),
+            ));
+        }
+        self.value.vector_scoring = reader.vector_scoring();
         if self.value.analyzer_lexicon != *reader.analyzer_lexicon() {
             return Err(HawDBError::Storage(
                 "search generation update analyzer does not match the active generation".into(),

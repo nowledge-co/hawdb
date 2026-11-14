@@ -65,7 +65,7 @@ algorithms outside active routes are not implied backlog items.
     bytes, hydration bytes, update latency, and checkpoint amplification.
   - Exercise the bounded generation-delta merge and require zero resident
     corpus documents while old-generation reads overlap publication.
-  - Exercise the default 1-bit RaBitQ out-of-core serving path in both
+  - Exercise the default 4-bit RaBitQ out-of-core serving path in both
     `Preferred` and `Required` modes, with metadata allowlist pushdown and
     bounded raw-vector late reranking.
   - Run those probes on the exact source generation recorded by the artifact,
@@ -77,10 +77,10 @@ algorithms outside active routes are not implied backlog items.
     production constructor and the final cutover report recomputes readiness
     from the bound raw evidence.
 
-- [ ] Qualify the default 1-bit RaBitQ candidate projection on representative
+- [ ] Qualify the default 4-bit RaBitQ candidate projection on representative
   Mem embeddings.
   - Run `run_production_vector_qualification` on representative embeddings,
-    compare default 1-bit candidate recall against canonical raw-vector TopK,
+    compare default 4-bit candidate recall against canonical raw-vector TopK,
     and record `ProductionVectorRaBitQReferenceEvidence` from
     `crates/qualification/src/production_vector/oracle.rs` as a differential
     dispatch and serving consistency check, not as recall truth.
@@ -98,7 +98,7 @@ algorithms outside active routes are not implied backlog items.
   - Keep the full-residency recall oracle offline and require its document,
     analyzer, embedding, and epoch identity to match the released out-of-core
     search generation.
-  - Measure the released out-of-core 1-bit RaBitQ artifact before opening the
+  - Measure the released out-of-core 4-bit RaBitQ artifact before opening the
     oracle; require serving/oracle final-result parity, payload I/O, raw
     reranking, and cancellation propagation from the serving path. Keep
     candidate recall in the identity-bound offline oracle so serving does not
@@ -492,6 +492,40 @@ qualification justifies moving them.
       add incompatible-source-DDL rejection and checkpoint/reopen coverage.
   - Acceptance: active SQL/PGQ statements produce PostgreSQL-compatible rows
     and error classes without a separate executor or public `query_gql` API.
+
+## P1: Optimizer Cost Qualification
+
+The [proposed specification](docs/specs/OPTIMIZER_COST_QUALIFICATION_SPEC.md)
+defines the evidence and acceptance contract; the
+[development plan](docs/OPTIMIZER_COST_QUALIFICATION_PLAN.md) defines phase
+dependencies and owners. This work supports [#1596](https://github.com/nowledge-co/hawdb/issues/1596).
+
+- [x] Extract Shiro's deterministic generators into unpublished tool support,
+  add bounded opt-in SQLsmith generation and fixed-fixture comparison, and reuse
+  frozen queries/parameters/setup for ordinary-plan cost baselines. See
+  [query-lab](tools/query-lab/README.md); multi-family candidate measurement below remains open.
+- [x] Add directed cardinality workloads with independent result counts,
+  zero-aware selected-operator diagnostics and frozen-input version comparison.
+  Predicate-level CE traces and observed-cardinality re-costing remain open.
+- [x] Prove bounded legal-candidate selection and typed evidence on one pinned
+  Cypher read, including two distinct executed Sort/TopN alternatives and
+  complete result, fingerprint, cost and refusal evidence under fresh equal
+  per-attempt admission nested in a cumulative campaign bound (phase 1).
+- [ ] Deliver the explicit offline four-family runner and supported SQL/Cypher
+  adapters, with frozen manifests, serial paired sampling, complete replay and
+  separate residency/cache/timing cohorts (phase 2).
+- [x] Add a separately scoped warm materialized Cypher bounded-order pilot
+  with frozen fingerprints, preparation/execution timings, full typed parity,
+  paired samples, memory counters and tie-aware inversion/regret diagnostics.
+  The other families/adapters and observed-cardinality re-costing remain open.
+- [ ] Add within-query rank/regret metrics and frozen-plan observed-cardinality
+  diagnosis, retaining unsupported, partial, timed-out and refused cases
+  rather than counting them as successful coverage (phase 3).
+- [ ] Evaluate nonnegative coefficient fits against frozen holdouts after
+  diagnosis; qualify any default-policy change in a separate implementation PR
+  using the specification's semantic and paired performance gates (phase 4).
+- [ ] Extend the qualified protocol to active Mem join decisions and, separately,
+  quality-constrained exact/Filtered DiskANN selection (phase 5).
 
 ## P2: Deferred Delivery Governance
 

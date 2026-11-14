@@ -327,6 +327,7 @@ fn assert_admitted_segment_lifetime(with_vectors: bool) {
                 &[1.0; 8],
                 1,
                 hawdb_vector_projection::ProjectionSearchOptions::new().with_task_context(&task),
+                1024,
             )
             .unwrap();
         assert_eq!(result.hits.len(), 1);

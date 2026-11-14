@@ -59,7 +59,7 @@ impl DiskAnnArtifactBuilder {
         let dimension = input.embedding_dimension.ok_or_else(|| {
             HawDBError::StorageIntegrity("DiskANN source has no embedding dimension".into())
         })?;
-        let metric = definition.map_or(VectorDistance::Cosine, |value| value.distance());
+        let metric = input.options.vector_scoring.metric(definition);
         let peak_bytes =
             DiskAnnIndex::build_memory_bound(input.vector_document_count, dimension, config)
                 .map_err(error)?;
@@ -78,6 +78,7 @@ impl DiskAnnArtifactBuilder {
         let (digest, binding_digest) = crate::diskann_identity::source(
             input.options.embedding_manifest.as_ref(),
             definition,
+            input.options.vector_scoring,
             dimension,
             config,
             Some(&input.task_context),

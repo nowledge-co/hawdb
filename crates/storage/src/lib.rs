@@ -94,6 +94,7 @@ pub mod mutation;
 mod native_file_identity;
 #[doc(hidden)]
 pub mod ownership;
+pub mod persistent_format;
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub mod power_loss;

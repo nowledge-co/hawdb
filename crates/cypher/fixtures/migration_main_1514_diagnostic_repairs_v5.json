@@ -1,0 +1,944 @@
+{
+  "reference_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e",
+  "reference_library_sha256": "9c61459cf030e6df33f1271fcc33b800e3e13e52d1707b853ee8add2dd6ad361",
+  "reference_rendered_sha256": "4a173cd39a2d7bba112b729f8bfe7ca37fcea6080ee668de1eedc820ebbbd9d5",
+  "source_records": 21944,
+  "corrected_records": 187,
+  "cases": [
+    {
+      "entry": "statement",
+      "query": "CREATE (n:Item {value: .5})",
+      "expected": "Err(Parse(\"expected value at byte 23 line 1 column 24 near `.5})`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (n:Item {value: .5})",
+      "expected": "Err(Parse(\"expected value at byte 23 line 1 column 24 near `.5})`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL vector_search($q) RETURN node, rank",
+      "expected": "Err(Parse(\"vector search RETURN must be id, score at byte 40 line 1 column 41 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL vector_search($q) RETURN node, node_id, node_label, pagerank_score",
+      "expected": "Err(Parse(\"vector search RETURN must be id, score at byte 43 line 1 column 44 near `, node_label, pagerank_s`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL vector_search($q) RETURN wrong, rank",
+      "expected": "Err(Parse(\"vector search RETURN must be id, score at byte 41 line 1 column 42 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL page_rank('g', d",
+      "expected": "Err(Parse(\"expected := at byte 21 line 1 column 22 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL page_rank('g', d",
+      "expected": "Err(Parse(\"expected := at byte 21 line 1 column 22 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL page_rank('g', da",
+      "expected": "Err(Parse(\"expected := at byte 22 line 1 column 23 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL page_rank('g', da",
+      "expected": "Err(Parse(\"expected := at byte 22 line 1 column 23 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL page_rank('g', dam",
+      "expected": "Err(Parse(\"expected := at byte 23 line 1 column 24 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL page_rank('g', dam",
+      "expected": "Err(Parse(\"expected := at byte 23 line 1 column 24 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL page_rank('g', damp",
+      "expected": "Err(Parse(\"expected := at byte 24 line 1 column 25 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL page_rank('g', damp",
+      "expected": "Err(Parse(\"expected := at byte 24 line 1 column 25 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL page_rank('g', dampi",
+      "expected": "Err(Parse(\"expected := at byte 25 line 1 column 26 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL page_rank('g', dampi",
+      "expected": "Err(Parse(\"expected := at byte 25 line 1 column 26 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL page_rank('g', dampin",
+      "expected": "Err(Parse(\"expected := at byte 26 line 1 column 27 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL page_rank('g', dampin",
+      "expected": "Err(Parse(\"expected := at byte 26 line 1 column 27 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL page_rank('g', damping",
+      "expected": "Err(Parse(\"expected := at byte 27 line 1 column 28 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL page_rank('g', damping",
+      "expected": "Err(Parse(\"expected := at byte 27 line 1 column 28 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL page_rank('g', dampingF",
+      "expected": "Err(Parse(\"expected := at byte 28 line 1 column 29 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL page_rank('g', dampingF",
+      "expected": "Err(Parse(\"expected := at byte 28 line 1 column 29 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL page_rank('g', dampingFa",
+      "expected": "Err(Parse(\"expected := at byte 29 line 1 column 30 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL page_rank('g', dampingFa",
+      "expected": "Err(Parse(\"expected := at byte 29 line 1 column 30 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL page_rank('g', dampingFac",
+      "expected": "Err(Parse(\"expected := at byte 30 line 1 column 31 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL page_rank('g', dampingFac",
+      "expected": "Err(Parse(\"expected := at byte 30 line 1 column 31 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL page_rank('g', dampingFact",
+      "expected": "Err(Parse(\"expected := at byte 31 line 1 column 32 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL page_rank('g', dampingFact",
+      "expected": "Err(Parse(\"expected := at byte 31 line 1 column 32 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL page_rank('g', dampingFacto",
+      "expected": "Err(Parse(\"expected := at byte 32 line 1 column 33 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL page_rank('g', dampingFacto",
+      "expected": "Err(Parse(\"expected := at byte 32 line 1 column 33 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL page_rank('g', dampingFactor",
+      "expected": "Err(Parse(\"expected := at byte 33 line 1 column 34 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL page_rank('g', dampingFactor",
+      "expected": "Err(Parse(\"expected := at byte 33 line 1 column 34 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL page_rank('g', dampingFactor ",
+      "expected": "Err(Parse(\"expected := at byte 34 line 1 column 35 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL page_rank('g', dampingFactor ",
+      "expected": "Err(Parse(\"expected := at byte 34 line 1 column 35 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL page_rank('g', dampingFactor :",
+      "expected": "Err(Parse(\"expected := at byte 34 line 1 column 35 near `:`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL page_rank('g', dampingFactor :",
+      "expected": "Err(Parse(\"expected := at byte 34 line 1 column 35 near `:`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:Memory {id: ",
+      "expected": "Err(Parse(\"expected value at byte 21 line 1 column 22 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:Memory {id: ",
+      "expected": "Err(Parse(\"expected value at byte 21 line 1 column 22 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:Memory {id: (1, importance: 0.4})",
+      "expected": "Err(Parse(\"expected value at byte 21 line 1 column 22 near `(1, importance: 0.4})`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:Memory {id: (1, importance: 0.4})",
+      "expected": "Err(Parse(\"expected value at byte 21 line 1 column 22 near `(1, importance: 0.4})`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:Memory {id: ;1, importance: 0.4})",
+      "expected": "Err(Parse(\"expected value at byte 21 line 1 column 22 near `;1, importance: 0.4})`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:Memory {id: ;1, importance: 0.4})",
+      "expected": "Err(Parse(\"expected value at byte 21 line 1 column 22 near `;1, importance: 0.4})`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:Thread {id: 'alpha-thread', thread_id: 'logical-a', title: 'Alpha', summary: 'Summary', source: 'codex', message_count: 3, created_at: 10, updated_at: ",
+      "expected": "Err(Parse(\"expected value at byte 160 line 1 column 161 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:Thread {id: 'alpha-thread', thread_id: 'logical-a', title: 'Alpha', summary: 'Summary', source: 'codex', message_count: 3, created_at: 10, updated_at: ",
+      "expected": "Err(Parse(\"expected value at byte 160 line 1 column 161 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:Thread {id: 'alpha-thread', thread_id: 'logical-a', title: 'Alpha', summary: 'Summary', source: 'codex', message_count: 3, created_at: 10, updated_at: (20, space_id: 'team', project: 'graph', workspace: 'local'})",
+      "expected": "Err(Parse(\"expected value at byte 160 line 1 column 161 near `(20, space_id: \\\\'team\\\\', p`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:Thread {id: 'alpha-thread', thread_id: 'logical-a', title: 'Alpha', summary: 'Summary', source: 'codex', message_count: 3, created_at: 10, updated_at: (20, space_id: 'team', project: 'graph', workspace: 'local'})",
+      "expected": "Err(Parse(\"expected value at byte 160 line 1 column 161 near `(20, space_id: \\\\'team\\\\', p`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:Thread {id: 'alpha-thread', thread_id: 'logical-a', title: 'Alpha', summary: 'Summary', source: 'codex', message_count: 3, created_at: 10, updated_at: ;20, space_id: 'team', project: 'graph', workspace: 'local'})",
+      "expected": "Err(Parse(\"expected value at byte 160 line 1 column 161 near `;20, space_id: \\\\'team\\\\', p`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:Thread {id: 'alpha-thread', thread_id: 'logical-a', title: 'Alpha', summary: 'Summary', source: 'codex', message_count: 3, created_at: 10, updated_at: ;20, space_id: 'team', project: 'graph', workspace: 'local'})",
+      "expected": "Err(Parse(\"expected value at byte 160 line 1 column 161 near `;20, space_id: \\\\'team\\\\', p`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE FULLTEXT INDEX ON :Node(a,b)",
+      "expected": "Err(Parse(\"fulltext index expects one property at byte 33 line 1 column 34 near `b)`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE RANGE INDEX ON :Node(a,b)",
+      "expected": "Err(Parse(\"range index expects one property at byte 32 line 1 column 33 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN CYPHER SYSTEM.cpu = 1 MATCH (:Item {name:",
+      "expected": "Err(Parse(\"expected value at byte 49 line 1 column 50 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN CYPHER SYSTEM.cpu = 1 MATCH (:Item {name: ",
+      "expected": "Err(Parse(\"expected value at byte 50 line 1 column 51 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (m:Memory {id:",
+      "expected": "Err(Parse(\"expected value at byte 20 line 1 column 21 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (m:Memory {id:",
+      "expected": "Err(Parse(\"expected value at byte 20 line 1 column 21 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (m:Memory {id:( $memory_id}), (l:Label {id: $label_id}) MERGE (m)-[r:HAS_LABEL]->(l) ON CREATE SET r.assigned_by = $assigned_by, r.properties = '{}'",
+      "expected": "Err(Parse(\"expected value at byte 20 line 1 column 21 near `( $memory_id}), (l:Label`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (m:Memory {id:( $memory_id}), (l:Label {id: $label_id}) MERGE (m)-[r:HAS_LABEL]->(l) ON CREATE SET r.assigned_by = $assigned_by, r.properties = '{}'",
+      "expected": "Err(Parse(\"expected value at byte 20 line 1 column 21 near `( $memory_id}), (l:Label`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (m:Memory {id:; $memory_id}), (l:Label {id: $label_id}) MERGE (m)-[r:HAS_LABEL]->(l) ON CREATE SET r.assigned_by = $assigned_by, r.properties = '{}'",
+      "expected": "Err(Parse(\"expected value at byte 20 line 1 column 21 near `; $memory_id}), (l:Label`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (m:Memory {id:; $memory_id}), (l:Label {id: $label_id}) MERGE (m)-[r:HAS_LABEL]->(l) ON CREATE SET r.assigned_by = $assigned_by, r.properties = '{}'",
+      "expected": "Err(Parse(\"expected value at byte 20 line 1 column 21 near `; $memory_id}), (l:Label`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (t:Thread {id:",
+      "expected": "Err(Parse(\"expected value at byte 20 line 1 column 21 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (t:Thread {id:",
+      "expected": "Err(Parse(\"expected value at byte 20 line 1 column 21 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (t:Thread {id:( $thread_uuid})-[:CONTAINS]->(m:Message) DETACH DELETE m",
+      "expected": "Err(Parse(\"expected value at byte 20 line 1 column 21 near `( $thread_uuid})-[:CONTA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (t:Thread {id:( $thread_uuid})-[:CONTAINS]->(m:Message) DETACH DELETE m",
+      "expected": "Err(Parse(\"expected value at byte 20 line 1 column 21 near `( $thread_uuid})-[:CONTA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (t:Thread {id:; $thread_uuid})-[:CONTAINS]->(m:Message) DETACH DELETE m",
+      "expected": "Err(Parse(\"expected value at byte 20 line 1 column 21 near `; $thread_uuid})-[:CONTA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (t:Thread {id:; $thread_uuid})-[:CONTAINS]->(m:Message) DETACH DELETE m",
+      "expected": "Err(Parse(\"expected value at byte 20 line 1 column 21 near `; $thread_uuid})-[:CONTA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {value:{year:2026, nested:{month:1}}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{year:2026, nested:{mont`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {value:{year:2026, nested:{month:1}}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{year:2026, nested:{mont`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {value:{}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{}})`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {value:{}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{}})`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {value:{x: n.p + 1}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{x: n.p + 1}})`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {value:{x: n.p + 1}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{x: n.p + 1}})`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {value:($month % 12) + 1})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `($month % 12) + 1})`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {value:($month % 12) + 1})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `($month % 12) + 1})`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {value:(n.p)})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `(n.p)})`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {value:(n.p)})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `(n.p)})`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {value:(n.p IS NULL)})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `(n.p IS NULL)})`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {value:(n.p IS NULL)})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `(n.p IS NULL)})`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {value:{a:1}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{a:1}})`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {value:{a:1}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{a:1}})`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {value:{a:{a:1}}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{a:{a:1}}})`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {value:{a:{a:1}}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{a:{a:1}}})`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {value:((n.p))})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `((n.p))})`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {value:((n.p))})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `((n.p))})`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {value:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:1}}}}}}}}}}}}}}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{a:{a:{a:{a:{a:{a:{a:{a:`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {value:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:1}}}}}}}}}}}}}}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{a:{a:{a:{a:{a:{a:{a:{a:`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {value:((((((((((((((n.p))))))))))))))})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `((((((((((((((n.p)))))))`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {value:((((((((((((((n.p))))))))))))))})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `((((((((((((((n.p)))))))`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {value:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:1}}}}}}}}}}}}}}}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{a:{a:{a:{a:{a:{a:{a:{a:`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {value:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:1}}}}}}}}}}}}}}}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{a:{a:{a:{a:{a:{a:{a:{a:`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {value:(((((((((((((((n.p)))))))))))))))})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `(((((((((((((((n.p))))))`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {value:(((((((((((((((n.p)))))))))))))))})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `(((((((((((((((n.p))))))`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {value:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:1}}}}}}}}}}}}}}}}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{a:{a:{a:{a:{a:{a:{a:{a:`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {value:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:1}}}}}}}}}}}}}}}}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{a:{a:{a:{a:{a:{a:{a:{a:`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {value:((((((((((((((((n.p))))))))))))))))})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `((((((((((((((((n.p)))))`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {value:((((((((((((((((n.p))))))))))))))))})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `((((((((((((((((n.p)))))`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {value:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:1}}}}}}}}}}}}}}}}}}}}}}}}}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{a:{a:{a:{a:{a:{a:{a:{a:`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {value:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:1}}}}}}}}}}}}}}}}}}}}}}}}}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{a:{a:{a:{a:{a:{a:{a:{a:`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {value:(((((((((((((((((((((((((n.p)))))))))))))))))))))))))})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `((((((((((((((((((((((((`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {value:(((((((((((((((((((((((((n.p)))))))))))))))))))))))))})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `((((((((((((((((((((((((`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {value:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:1}}}}}}}}}}}}}}}}}}}}}}}}}}}}}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{a:{a:{a:{a:{a:{a:{a:{a:`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {value:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:1}}}}}}}}}}}}}}}}}}}}}}}}}}}}}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{a:{a:{a:{a:{a:{a:{a:{a:`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {value:(((((((((((((((((((((((((((((n.p)))))))))))))))))))))))))))))})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `((((((((((((((((((((((((`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {value:(((((((((((((((((((((((((((((n.p)))))))))))))))))))))))))))))})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `((((((((((((((((((((((((`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {value:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:1}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{a:{a:{a:{a:{a:{a:{a:{a:`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {value:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:1}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{a:{a:{a:{a:{a:{a:{a:{a:`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {value:((((((((((((((((((((((((((((((n.p))))))))))))))))))))))))))))))})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `((((((((((((((((((((((((`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {value:((((((((((((((((((((((((((((((n.p))))))))))))))))))))))))))))))})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `((((((((((((((((((((((((`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {value:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:1}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{a:{a:{a:{a:{a:{a:{a:{a:`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {value:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:1}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{a:{a:{a:{a:{a:{a:{a:{a:`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {value:(((((((((((((((((((((((((((((((n.p)))))))))))))))))))))))))))))))})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `((((((((((((((((((((((((`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {value:(((((((((((((((((((((((((((((((n.p)))))))))))))))))))))))))))))))})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `((((((((((((((((((((((((`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {value:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:1}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{a:{a:{a:{a:{a:{a:{a:{a:`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {value:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:1}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{a:{a:{a:{a:{a:{a:{a:{a:`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {value:((((((((((((((((((((((((((((((((n.p))))))))))))))))))))))))))))))))})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `((((((((((((((((((((((((`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {value:((((((((((((((((((((((((((((((((n.p))))))))))))))))))))))))))))))))})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `((((((((((((((((((((((((`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {value:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:1}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{a:{a:{a:{a:{a:{a:{a:{a:`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {value:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:1}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{a:{a:{a:{a:{a:{a:{a:{a:`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {value:(((((((((((((((((((((((((((((((((n.p)))))))))))))))))))))))))))))))))})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `((((((((((((((((((((((((`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {value:(((((((((((((((((((((((((((((((((n.p)))))))))))))))))))))))))))))))))})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `((((((((((((((((((((((((`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {value:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:1}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{a:{a:{a:{a:{a:{a:{a:{a:`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {value:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:1}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{a:{a:{a:{a:{a:{a:{a:{a:`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {value:((((((((((((((((((((((((((((((((((n.p))))))))))))))))))))))))))))))))))})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `((((((((((((((((((((((((`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {value:((((((((((((((((((((((((((((((((((n.p))))))))))))))))))))))))))))))))))})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `((((((((((((((((((((((((`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {value:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:1}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{a:{a:{a:{a:{a:{a:{a:{a:`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {value:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:1}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{a:{a:{a:{a:{a:{a:{a:{a:`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {value:((((((((((((((((((((((((((((((((((((((((n.p))))))))))))))))))))))))))))))))))))))))})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `((((((((((((((((((((((((`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {value:((((((((((((((((((((((((((((((((((((((((n.p))))))))))))))))))))))))))))))))))))))))})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `((((((((((((((((((((((((`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {value:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:1}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{a:{a:{a:{a:{a:{a:{a:{a:`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {value:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:{a:1}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `{a:{a:{a:{a:{a:{a:{a:{a:`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {value:((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((n.p))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `((((((((((((((((((((((((`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {value:((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((n.p))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))})",
+      "expected": "Err(Parse(\"expected value at byte 18 line 1 column 19 near `((((((((((((((((((((((((`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {p:{z:2,a:n.p}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{z:2,a:n.p}})`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {p:{z:2,a:n.p}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{z:2,a:n.p}})`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {p:{year:date(n.p)}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{year:date(n.p)}})`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {p:{year:date(n.p)}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{year:date(n.p)}})`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {p:{year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date(n.p)})})})})})})})})})})})}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{year:date({year:date({y`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {p:{year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date(n.p)})})})})})})})})})})})}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{year:date({year:date({y`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {p:{year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date(n.p)})})})})})})})})})})})})}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{year:date({year:date({y`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {p:{year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date(n.p)})})})})})})})})})})})})}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{year:date({year:date({y`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {p:{year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date(n.p)})})})})})})})})})})})})})}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{year:date({year:date({y`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {p:{year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date(n.p)})})})})})})})})})})})})})}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{year:date({year:date({y`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {p:{year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date(n.p)})})})})})})})})})})})})})})}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{year:date({year:date({y`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {p:{year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date(n.p)})})})})})})})})})})})})})})}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{year:date({year:date({y`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {p:{year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date(n.p)})})})})})})})})})})})})})})})}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{year:date({year:date({y`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {p:{year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date(n.p)})})})})})})})})})})})})})})})}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{year:date({year:date({y`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {p:{year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date(n.p)})})})})})})})})})})})})})})})})}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{year:date({year:date({y`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {p:{year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date(n.p)})})})})})})})})})})})})})})})})}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{year:date({year:date({y`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {p:{year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date(n.p)})})})})})})})})})})})})})})})})})})})})})})})})}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{year:date({year:date({y`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {p:{year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date(n.p)})})})})})})})})})})})})})})})})})})})})})})})})}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{year:date({year:date({y`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {p:{year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date(n.p)})})})})})})})})})})})})})})})})})})})})})})})})})}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{year:date({year:date({y`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {p:{year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date(n.p)})})})})})})})})})})})})})})})})})})})})})})})})})}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{year:date({year:date({y`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {p:{year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date(n.p)})})})})})})})})})})})})})})})})})})})})})})})})})})}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{year:date({year:date({y`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {p:{year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date(n.p)})})})})})})})})})})})})})})})})})})})})})})})})})})}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{year:date({year:date({y`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {p:{year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date(n.p)})})})})})})})})})})})})})})})})})})})})})})})})})})})}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{year:date({year:date({y`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {p:{year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date(n.p)})})})})})})})})})})})})})})})})})})})})})})})})})})})}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{year:date({year:date({y`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {p:{year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date(n.p)})})})})})})})})})})})})})})})})})})})})})})})})})})})})}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{year:date({year:date({y`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {p:{year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date(n.p)})})})})})})})})})})})})})})})})})})})})})})})})})})})})}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{year:date({year:date({y`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {p:{year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date(n.p)})})})})})})})})})})})})})})})})})})})})})})})})})})})})})}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{year:date({year:date({y`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {p:{year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date(n.p)})})})})})})})})})})})})})})})})})})})})})})})})})})})})})}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{year:date({year:date({y`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {p:{year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date(n.p)})})})})})})})})})})})})})})})})})})})})})})})})})})})})})})}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{year:date({year:date({y`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {p:{year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date(n.p)})})})})})})})})})})})})})})})})})})})})})})})})})})})})})})}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{year:date({year:date({y`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {p:{year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date(n.p)})})})})})})})})})})})})})})})})})})})})})})})})})})})})})})})}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{year:date({year:date({y`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {p:{year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date(n.p)})})})})})})})})})})})})})})})})})})})})})})})})})})})})})})})}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{year:date({year:date({y`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:N {p:{year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date(n.p)})})})})})})})})})})})})})})})})})})})})})})})})})})})})})})})})}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{year:date({year:date({y`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:N {p:{year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date({year:date(n.p)})})})})})})})})})})})})})})})})})})})})})})})})})})})})})})})})}})",
+      "expected": "Err(Parse(\"expected value at byte 14 line 1 column 15 near `{year:date({year:date({y`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL page_rank('",
+      "expected": "Err(Parse(\"unterminated string at byte 16 line 1 column 17 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL page_rank('",
+      "expected": "Err(Parse(\"unterminated string at byte 16 line 1 column 17 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL page_rank('g",
+      "expected": "Err(Parse(\"unterminated string at byte 17 line 1 column 18 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CALL page_rank('g",
+      "expected": "Err(Parse(\"unterminated string at byte 17 line 1 column 18 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:Entity {id: 'e4', name: 'Iso",
+      "expected": "Err(Parse(\"unterminated string at byte 37 line 1 column 38 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:Entity {id: 'e4', name: 'Iso",
+      "expected": "Err(Parse(\"unterminated string at byte 37 line 1 column 38 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:Memory {id: '1, importance: 0.4})",
+      "expected": "Err(Parse(\"unterminated string at byte 42 line 1 column 43 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:Memory {id: '1, importance: 0.4})",
+      "expected": "Err(Parse(\"unterminated string at byte 42 line 1 column 43 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:Thread {id: 'thread', thread_id: 'log",
+      "expected": "Err(Parse(\"unterminated string at byte 46 line 1 column 47 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:Thread {id: 'thread', thread_id: 'log",
+      "expected": "Err(Parse(\"unterminated string at byte 46 line 1 column 47 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (:ThreadIdentity {id: 'identity-a-1', thread_node_id: 't",
+      "expected": "Err(Parse(\"unterminated string at byte 63 line 1 column 64 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (:ThreadIdentity {id: 'identity-a-1', thread_node_id: 't",
+      "expected": "Err(Parse(\"unterminated string at byte 63 line 1 column 64 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN CYPHER SYSTEM.cpu = 1 MATCH (:Item {name: '",
+      "expected": "Err(Parse(\"unterminated string at byte 51 line 1 column 52 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN CYPHER SYSTEM.cpu = 1 MATCH (:Item {name: '你",
+      "expected": "Err(Parse(\"unterminated string at byte 54 line 1 column 53 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN CYPHER SYSTEM.cpu = 1 MATCH (:Item {name: '你好",
+      "expected": "Err(Parse(\"unterminated string at byte 57 line 1 column 54 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "EXPLAIN CYPHER SYSTEM.cpu = 1 MATCH (:Item {name: '你好é",
+      "expected": "Err(Parse(\"unterminated string at byte 59 line 1 column 55 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (e:Entity)\n             WHERE e.community_id = $cid\n             RETURN e.id, COALESCE(e.name, e.id), COALESCE(e.pagerank_score, e.confidence, '0.5)",
+      "expected": "Err(Parse(\"unterminated string at byte 154 line 3 column 97 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (e:Entity)\n             WHERE e.community_id = $cid\n             RETURN e.id, COALESCE(e.name, e.id), COALESCE(e.pagerank_score, e.confidence, '0.5)",
+      "expected": "Err(Parse(\"unterminated string at byte 154 line 3 column 97 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (t:Thread {id:' $thread_uuid})-[:CONTAINS]->(m:Message) DETACH DELETE m",
+      "expected": "Err(Parse(\"unterminated string at byte 77 line 1 column 78 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (t:Thread {id:' $thread_uuid})-[:CONTAINS]->(m:Message) DETACH DELETE m",
+      "expected": "Err(Parse(\"unterminated string at byte 77 line 1 column 78 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL vector_search($q) RETURN node",
+      "expected": "Err(Parse(\"expected ',' at byte 34 line 1 column 35 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL vector_search($q) RETURN 1",
+      "expected": "Err(Parse(\"expected identifier at byte 30 line 1 column 31 near `1`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL vector_search($q) RETURN true",
+      "expected": "Err(Parse(\"expected ',' at byte 34 line 1 column 35 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CALL vector_search($q) RETURN node.rank AS score ORDER BY score LIMIT 1",
+      "expected": "Err(Parse(\"expected ',' at byte 35 line 1 column 36 near `rank AS score ORDER BY s`\"))"
+    }
+  ]
+}

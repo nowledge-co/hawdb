@@ -1,9 +1,25 @@
+// Copyright 2026 Nowledge
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use super::predicate::{predicate_comparison_truth, PredicateTruth};
 use super::*;
 use hawdb_plan_cypher::ScalarBinaryOp;
 
 mod borrowed;
-pub(crate) use borrowed::{evaluate_projection_borrowed, ProjectedValue};
+pub(crate) use borrowed::{
+    evaluate_projection_borrowed, evaluate_projection_in_graph, ExpressionGraph, ProjectedValue,
+};
 
 pub fn insert_projected_value<V>(values: &mut BTreeMap<String, V>, name: &str, value: V) {
     let mut candidate = name.to_string();
@@ -148,7 +164,28 @@ pub fn binding_value(binding: &Binding, catalog: &Catalog, variable: &str) -> Op
         .or_else(|| (binding.values.get(variable) == Some(&Value::Null)).then_some(Value::Null))
 }
 
-fn node_value(node: &NodeRecord, catalog: &Catalog) -> Value {
+/// Map keys of the value bound to a shortest-path variable. Returning a path
+/// variable yields this map; path functions read it.
+pub(crate) const PATH_LENGTH_KEY: &str = "length";
+pub(crate) const PATH_NODES_KEY: &str = "nodes";
+pub(crate) const PATH_RELATIONSHIPS_KEY: &str = "relationships";
+
+/// Builds a path value from ordered node and relationship values.
+pub(crate) fn path_value(nodes: Vec<Value>, relationships: Vec<Value>) -> Value {
+    Value::Map(BTreeMap::from([
+        (
+            PATH_LENGTH_KEY.to_string(),
+            Value::Int(relationships.len() as i64),
+        ),
+        (PATH_NODES_KEY.to_string(), Value::List(nodes)),
+        (
+            PATH_RELATIONSHIPS_KEY.to_string(),
+            Value::List(relationships),
+        ),
+    ]))
+}
+
+pub(crate) fn node_value(node: &NodeRecord, catalog: &Catalog) -> Value {
     let mut values = node.properties.clone();
     values.insert("_id".to_string(), Value::Int(node.id.0 as i64));
     values.insert(
@@ -164,7 +201,7 @@ fn node_value(node: &NodeRecord, catalog: &Catalog) -> Value {
     Value::Map(values)
 }
 
-fn relationship_value(relationship: &RelRecord, catalog: &Catalog) -> Value {
+pub(crate) fn relationship_value(relationship: &RelRecord, catalog: &Catalog) -> Value {
     let mut values = relationship.properties.clone();
     values.insert("_id".to_string(), Value::Int(relationship.id.0 as i64));
     values.insert(
@@ -233,48 +270,27 @@ fn evaluate_arithmetic(left: &Value, op: ScalarBinaryOp, right: &Value) -> Resul
     if matches!(left, Value::Null) || matches!(right, Value::Null) {
         return Ok(Value::Null);
     }
-    if let (Value::Int(left), Value::Int(right)) = (left, right) {
-        if matches!(op, ScalarBinaryOp::Divide | ScalarBinaryOp::Remainder) && *right == 0 {
-            return Err(HawDBError::Execution("division by zero".to_string()));
-        }
-        let value = match op {
-            ScalarBinaryOp::Add => left.checked_add(*right),
-            ScalarBinaryOp::Subtract => left.checked_sub(*right),
-            ScalarBinaryOp::Multiply => left.checked_mul(*right),
-            ScalarBinaryOp::Divide => left.checked_div(*right),
-            ScalarBinaryOp::Remainder => left.checked_rem(*right),
-            _ => unreachable!("arithmetic operators only"),
-        };
-        return value
-            .map(Value::Int)
-            .ok_or_else(|| HawDBError::Execution("integer arithmetic overflow".to_string()));
-    }
-    let numeric = |value: &Value| match value {
-        Value::Int(value) => Ok(*value as f64),
-        Value::Float(value) => Ok(*value),
-        _ => Err(HawDBError::Execution(
-            "arithmetic requires numeric operands".to_string(),
-        )),
-    };
-    let left = numeric(left)?;
-    let right = numeric(right)?;
-    if matches!(op, ScalarBinaryOp::Divide | ScalarBinaryOp::Remainder) && right == 0.0 {
-        return Err(HawDBError::Execution("division by zero".to_string()));
-    }
-    let value = match op {
-        ScalarBinaryOp::Add => left + right,
-        ScalarBinaryOp::Subtract => left - right,
-        ScalarBinaryOp::Multiply => left * right,
-        ScalarBinaryOp::Divide => left / right,
-        ScalarBinaryOp::Remainder => left % right,
+    let temporal_op = match op {
+        ScalarBinaryOp::Add => hawdb_core::temporal::TemporalArithmeticOp::Add,
+        ScalarBinaryOp::Subtract => hawdb_core::temporal::TemporalArithmeticOp::Subtract,
+        ScalarBinaryOp::Multiply => hawdb_core::temporal::TemporalArithmeticOp::Multiply,
+        ScalarBinaryOp::Divide => hawdb_core::temporal::TemporalArithmeticOp::Divide,
+        ScalarBinaryOp::Remainder => hawdb_core::temporal::TemporalArithmeticOp::Remainder,
         _ => unreachable!("arithmetic operators only"),
     };
-    if !value.is_finite() {
-        return Err(HawDBError::Execution(
-            "non-finite arithmetic result".to_string(),
-        ));
+    if let Some(result) = hawdb_core::temporal::arithmetic(left, temporal_op, right) {
+        return result.map_err(|error| HawDBError::Execution(error.to_string()));
     }
-    Ok(Value::Float(value))
+    use hawdb_core::numeric::{evaluate_numeric, NumericBinaryOp};
+    let op = match op {
+        ScalarBinaryOp::Add => NumericBinaryOp::Add,
+        ScalarBinaryOp::Subtract => NumericBinaryOp::Subtract,
+        ScalarBinaryOp::Multiply => NumericBinaryOp::Multiply,
+        ScalarBinaryOp::Divide => NumericBinaryOp::Divide,
+        ScalarBinaryOp::Remainder => NumericBinaryOp::Remainder,
+        _ => unreachable!("arithmetic operators only"),
+    };
+    evaluate_numeric(left.as_ref(), op, right.as_ref())
 }
 
 #[cfg(test)]
@@ -579,6 +595,18 @@ mod arithmetic_tests {
                 Value::Null,
             ),
             (ScalarBinaryOp::Add, Value::Null, Value::Int(7), Value::Null),
+            (
+                ScalarBinaryOp::Add,
+                Value::Decimal("9007199254740993.01".parse().unwrap()),
+                Value::Decimal("0.0001".parse().unwrap()),
+                Value::Decimal("9007199254740993.0101".parse().unwrap()),
+            ),
+            (
+                ScalarBinaryOp::Multiply,
+                Value::Decimal("1.25".parse().unwrap()),
+                Value::Int(3),
+                Value::Decimal("3.75".parse().unwrap()),
+            ),
         ] {
             assert_eq!(evaluate_arithmetic(&left, op, &right).unwrap(), expected);
         }

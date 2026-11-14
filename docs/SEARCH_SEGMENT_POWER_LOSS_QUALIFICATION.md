@@ -56,6 +56,88 @@ write reordering. The torn-write cases assert that the observed write actually
 has uncovered bytes. Snapshots precede later flushes and handle closure, which
 cannot strengthen their durability.
 
+## Resident checkpoint
+
+The full-residency checkpoint (`SearchIndex::checkpoint` on an unregistered
+projection) used to replace `search_projection.hawdb` before it wrote the
+generation files and the selector. A crash in that window paired a new snapshot
+with the previous selector, and reopen refused the projection (#1711). The
+checkpoint now has one commit point:
+
+1. Write and sync the RaBitQ/DiskANN artifact, then the snapshot as
+   `search_projection.<g>.hawdb`. Next write the segment payload and descriptor,
+   the lexical artifact and `search_lexical.manifest.<g>.hawdb`, and the
+   metadata/vector sidecars and layout. Each file is synced and renamed with a
+   directory sync. No current name and no selector changes.
+2. Re-read and verify each installed generation file against the object
+   reference the selector will record, including `search_projection.<g>.hawdb`
+   against the snapshot receipt. Then sync and rename
+   `search_projection.out_of_core.manifest.hawdb`. This rename is the commit
+   point.
+3. Replace `search_projection.hawdb`, `search_projection_segment_payloads.hawdb`,
+   `search_projection_segments.hawdb` and `search_lexical.manifest.hawdb`, in
+   that order, by hard links (or synced copies) to the selected generation.
+4. Run the ordinary current-plus-previous generation cleanup. The generation
+   snapshot is a content-generation artifact, so the previous checkpoint's
+   snapshot is retained until a newer selector has been published.
+
+`SearchIndex::open` repairs step 3 if it was interrupted. It applies only when
+the selected generation snapshot exists and matches the selector's receipt.
+For each current name that is neither the same inode as its generation file nor
+equal to the selector's object reference, it verifies the generation file
+against that reference and re-links it. Otherwise it leaves the name unchanged, and the existing
+validation reports the failure. Older layouts without generation snapshots
+therefore keep their existing behavior. Registered Consumer checkpoints keep
+their legacy order.
+
+Before the repair, the same open removes scratch that only an interrupted
+resident checkpoint can leave. That is alias link temporaries
+(`<stem>.tmp.<pid>.<sequence>`) and generation write temporaries
+(`<stem>.<g>.hawdb.tmp` / `.hawdb.zstd.tmp`) for the snapshot, payload,
+descriptor and lexical-manifest families. The open holds the publication lease,
+so no live checkpoint owns them. Other pre-existing temporary names are out of
+scope here.
+
+Reopen cost: on Unix (including macOS) a linked current name is recognized by
+its device and inode, so a completed checkpoint costs a few `metadata` calls.
+Stable Rust exposes no file identity on Windows. There, while the selected
+generation snapshot exists, every reopen hashes each of the four current files
+once to compare it with the selector. The snapshot is therefore read twice per
+open.
+
+Two owners qualify the protocol:
+
+- `api::tests::power_loss::resident_search_checkpoint` (Unix `test-support`)
+  drives `EmbeddedStore` with full residency through the runtime
+  `apply_search_projection_delta_and_checkpoint` path,
+  `apply_initial_import_projection_delta_and_checkpoint`, and the deferred
+  `apply_initial_import_projection_delta` plus
+  `checkpoint_initial_import_projection` path. Three
+  checkpoints are acknowledged and the fourth is cut at the first checkpoint
+  write (lost, complete, reversed, isolated and torn), after the generation
+  snapshot rename, after the layout rename, before and after the selector
+  rename, after the snapshot and lexical alias renames, and after the first
+  cleanup unlink. Every image must reopen through `EmbeddedStore`. Its source
+  and import epochs, documents and Text, Vector and Hybrid hits must equal the
+  previous or the new checkpoint. Hits include every score's bits, ranks,
+  matched terms and fallback codes. Cuts before the selector must reopen the
+  previous checkpoint. A lost acknowledgement must retain the new checkpoint.
+- `resident_checkpoint_atomicity_tests` in `hawdb-search` stop the checkpoint
+  as a process abort would after each step: RaBitQ, snapshot, segment
+  artifacts, lexical, before and after the selector, after each alias, and
+  before cleanup. Each reopen must equal the previous or the new oracle, retain
+  both generation snapshots, and checkpoint again. Further cases cover a crash
+  on the Nth of repeated small deltas, an old layout reopening and upgrading, an
+  old-layout mixed snapshot that still fails closed, and a damaged generation
+  snapshot that is never linked.
+
+Replay with:
+
+```sh
+cargo test --locked -p hawdb --features test-support --lib api::tests::power_loss::resident_search_checkpoint -- --nocapture --test-threads=1
+cargo test --locked -p hawdb-search --lib resident_checkpoint_atomicity
+```
+
 ## Assumptions and remaining evidence
 
 The model assumes reliable completed POSIX file and directory synchronization,

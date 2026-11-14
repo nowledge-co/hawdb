@@ -207,6 +207,14 @@ pub fn pipeline_memory_report_value(report: &PipelineMemoryReport) -> Value {
             usize_value(report.borrowed_node_projection_rows),
         ),
         (
+            "simple_case_dispatch_tables".to_string(),
+            usize_value(report.simple_case_dispatch_tables),
+        ),
+        (
+            "simple_case_dispatch_lookups".to_string(),
+            usize_value(report.simple_case_dispatch_lookups),
+        ),
+        (
             "native_projection_rows".to_string(),
             usize_value(report.native_projection_rows),
         ),
@@ -455,6 +463,14 @@ pub fn vector_execution_report_value(report: &VectorExecutionReport) -> Value {
                 .candidate_scan_metrics
                 .as_ref()
                 .map(|metrics| usize_value(metrics.skipped_block_count))
+                .unwrap_or(Value::Null),
+        ),
+        (
+            "candidate_scan_adaptive_exact_scan_count".to_string(),
+            report
+                .candidate_scan_metrics
+                .as_ref()
+                .map(|metrics| usize_value(metrics.adaptive_exact_scan_count))
                 .unwrap_or(Value::Null),
         ),
         (

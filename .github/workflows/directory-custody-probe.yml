@@ -1,0 +1,45 @@
+name: Directory Custody Primitive Probe
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - scripts/windows-directory-custody-probe.ps1
+      - .github/workflows/directory-custody-probe.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: directory-custody-probe-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: false
+
+jobs:
+  first-packet:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - name: Checkout the reviewed head
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Run the fixed experimental packet
+        shell: pwsh
+        env:
+          PROBE_EXPECTED_REVISION: ${{ github.event.pull_request.head.sha }}
+          PROBE_OUTPUT: ${{ runner.temp }}/hawdb-directory-custody-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          pwsh -NoLogo -NoProfile -NonInteractive -File ./scripts/windows-directory-custody-probe.ps1 -OutputDirectory $env:PROBE_OUTPUT -ExpectedSourceRevision $env:PROBE_EXPECTED_REVISION
+          exit $LASTEXITCODE
+
+      - name: Retain outcomes, including negative and partial results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: directory-custody-first-packet-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/hawdb-directory-custody-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 14

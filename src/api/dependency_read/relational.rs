@@ -56,6 +56,32 @@ pub(in crate::api) fn collect_transaction(
             .map_err(|error| HawDBError::Execution(error.to_string()))
     };
     match statement {
+        SqlStatement::Select(select) if let Some(search) = select.text_search() => {
+            // BM25 statistics depend on every indexed document, and results
+            // on the hydrated source rows. Index rows change only with source
+            // rows, so the source table's domain covers both; an index name
+            // that does not resolve keeps the database barrier.
+            let index = match &search.index {
+                crate::sql::SqlValue::Literal(Value::String(index)) => Some(index.as_str()),
+                crate::sql::SqlValue::Parameter(position) => position
+                    .checked_sub(1)
+                    .and_then(|position| parameters.get(position))
+                    .and_then(|value| match value {
+                        Value::String(index) => Some(index.as_str()),
+                        _ => None,
+                    }),
+                _ => None,
+            };
+            let source = index
+                .and_then(|index| state.table_schema(index))
+                .filter(|schema| schema.search_index().is_some())
+                .and_then(|schema| schema.materialized_view.as_deref())
+                .map(|definition| definition.source.clone());
+            match source {
+                Some(source) => record(dependencies, VersionKey::ReadRelationalTableDomain(source)),
+                None => record(dependencies, VersionKey::Database),
+            }
+        }
         SqlStatement::Select(select) => {
             qualify_expressions(select)?;
             let table = select
@@ -101,14 +127,19 @@ pub(in crate::api) fn collect_transaction(
             if schema.columns.iter().enumerate().any(|(index, column)| {
                 matches!(
                     column.default,
-                    Some(hawdb_storage::relational::RelationalColumnDefault::UuidV7)
+                    Some(
+                        hawdb_storage::relational::RelationalColumnDefault::UuidV7
+                            | hawdb_storage::relational::RelationalColumnDefault::CurrentTimestamp(
+                                _
+                            )
+                    )
                 ) && if statement.columns.is_empty() {
                     statement.rows.iter().any(|row| row.len() <= index)
                 } else {
                     !statement.columns.contains(&column.name)
                 }
             }) {
-                return Err(refusal("unversioned generated UUID default"));
+                return Err(refusal("unversioned generated UUID or clock default"));
             }
             record(dependencies, key)
         }
@@ -137,6 +168,8 @@ pub(in crate::api) fn collect_transaction(
         SqlStatement::CreateTable(_)
         | SqlStatement::CreateMaterializedView(_)
         | SqlStatement::DropMaterializedView(_)
+        | SqlStatement::CreateSearchIndex(_)
+        | SqlStatement::DropSearchIndex(_)
         | SqlStatement::CreateIndex(_)
         | SqlStatement::AlterTableAddColumn(_) => record(dependencies, VersionKey::Database),
         SqlStatement::Explain(_) | SqlStatement::Branch(_) => {
@@ -260,9 +293,19 @@ fn refusal(shape: &str) -> HawDBError {
 fn scalar_bytes(value: &Value) -> Result<usize> {
     match value {
         Value::String(value) => Ok(value.len()),
+        Value::Decimal(_) => Ok(17),
         Value::Binary(value) => Ok(value.len()),
         Value::Vector(value) => Ok(value.encoded().len()),
-        Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Uuid(_) => Ok(16),
+        Value::Null
+        | Value::Bool(_)
+        | Value::Int(_)
+        | Value::Float(_)
+        | Value::Uuid(_)
+        | Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => Ok(16),
         Value::List(_) | Value::Map(_) => Err(refusal("compound SQL parameter values")),
     }
 }
@@ -312,10 +355,14 @@ fn qualify_expression(expression: &Expr, nodes: &mut usize, depth: usize) -> Res
         return Err(refusal("expression exceeding metadata work admission"));
     }
     match &expression.kind {
-        ExprKind::Column(_) | ExprKind::Value(_) => Ok(()),
+        ExprKind::Value(SqlValue::Expression(expression)) => {
+            qualify_expression(expression, nodes, depth + 1)
+        }
+        ExprKind::Column(_) | ExprKind::Value(_) | ExprKind::CurrentTimestamp(_) => Ok(()),
         ExprKind::And(left, right)
         | ExprKind::Or(left, right)
         | ExprKind::Compare { left, right, .. }
+        | ExprKind::Arithmetic { left, right, .. }
         | ExprKind::Like {
             left,
             pattern: right,
@@ -324,7 +371,11 @@ fn qualify_expression(expression: &Expr, nodes: &mut usize, depth: usize) -> Res
             qualify_expression(left, nodes, depth + 1)?;
             qualify_expression(right, nodes, depth + 1)
         }
-        ExprKind::Not(expression) | ExprKind::IsNull { expression, .. } => {
+        ExprKind::Not(expression)
+        | ExprKind::IsNull { expression, .. }
+        | ExprKind::Negate(expression)
+        | ExprKind::Cast { expression, .. }
+        | ExprKind::TimestampCast { expression, .. } => {
             qualify_expression(expression, nodes, depth + 1)
         }
         ExprKind::InList { left, values, .. } => {
@@ -365,6 +416,7 @@ fn primary_key(
         };
         let value = match value {
             SqlValue::Literal(value) => value,
+            SqlValue::Expression(_) => return Ok(VersionKey::Database),
             SqlValue::Parameter(position) => {
                 parameters.get(position.saturating_sub(1)).ok_or_else(|| {
                     HawDBError::Semantic(format!("missing PostgreSQL parameter ${position}"))
@@ -383,7 +435,7 @@ fn primary_key(
         if matches!(value, RelationalValue::Null) {
             return Ok(VersionKey::Database);
         }
-        if value.scalar_type() != Some(scalar_type) {
+        if !scalar_type.same_value_domain(value.scalar_type()) {
             return Err(refusal(
                 "primary-key comparison with incompatible scalar types",
             ));

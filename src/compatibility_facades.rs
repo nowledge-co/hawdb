@@ -95,12 +95,12 @@ pub mod bounded_read_evidence {
     #[cfg(test)]
     mod tests {
         use super::{parse_graph_route_readiness_json, parse_read_report_json};
-        use crate::{NowledgeMemReadReport, NowledgeMemRouteReadinessSummary, Result};
+        use crate::{EmbeddedReadReport, Result, RouteReadinessSummary};
 
         #[test]
         fn bounded_read_evidence_facade_preserves_contract_types() {
-            let _: fn(&serde_json::Value) -> Result<NowledgeMemReadReport> = parse_read_report_json;
-            let _: fn(&serde_json::Value) -> Result<NowledgeMemRouteReadinessSummary> =
+            let _: fn(&serde_json::Value) -> Result<EmbeddedReadReport> = parse_read_report_json;
+            let _: fn(&serde_json::Value) -> Result<RouteReadinessSummary> =
                 parse_graph_route_readiness_json;
         }
     }
@@ -148,16 +148,16 @@ pub mod mem_integration_bundle {
             );
             let bundle: fn(
                 integration_bundle_cli::IntegrationBundleInputs,
-            ) -> crate::Result<serde_json::Value> = crate::nowledge_mem_integration_bundle_json;
+            ) -> crate::Result<serde_json::Value> = crate::integration_bundle_json;
             assert!(std::ptr::fn_addr_eq(
                 bundle,
-                integration_bundle_cli::nowledge_mem_integration_bundle_json as fn(_) -> _,
+                integration_bundle_cli::integration_bundle_json as fn(_) -> _,
             ));
             let runner: fn(std::vec::IntoIter<String>) -> crate::Result<(serde_json::Value, bool)> =
-                crate::mem_integration_bundle::run_nowledge_mem_integration_bundle;
+                crate::mem_integration_bundle::run_integration_bundle;
             assert!(std::ptr::fn_addr_eq(
                 runner,
-                integration_bundle_cli::run_nowledge_mem_integration_bundle
+                integration_bundle_cli::run_integration_bundle
                     as fn(std::vec::IntoIter<String>) -> crate::Result<(serde_json::Value, bool)>,
             ));
 
@@ -188,16 +188,14 @@ pub mod mem_integration_readiness {
 
     #[cfg(test)]
     mod tests {
-        use super::nowledge_mem_integration_readiness_json;
+        use super::integration_readiness_json;
 
         #[test]
         fn root_compatibility_module_preserves_integration_entrypoint() {
-            let facade: fn(&serde_json::Value) -> serde_json::Value =
-                nowledge_mem_integration_readiness_json;
+            let facade: fn(&serde_json::Value) -> serde_json::Value = integration_readiness_json;
             assert!(std::ptr::fn_addr_eq(
                 facade,
-                hawdb_readiness::integration_readiness::nowledge_mem_integration_readiness_json
-                    as fn(_) -> _,
+                hawdb_readiness::integration_readiness::integration_readiness_json as fn(_) -> _,
             ));
         }
     }
@@ -274,11 +272,9 @@ pub mod query_family_evidence {
 /// Compatibility facade for graph route ownership and readiness contracts.
 pub mod route_ownership {
     pub use hawdb_route_ownership::graph::{
-        nowledge_mem_route_ownership_all_hawdb, nowledge_mem_route_ownership_all_legacy,
-        nowledge_mem_route_ownership_for_engine, nowledge_mem_route_ownership_readiness,
-        NowledgeMemRouteOwnership, NowledgeMemRouteOwnershipPolicy,
-        NowledgeMemRouteOwnershipReadinessReport, NowledgeMemRouteReadEngine,
-        NOWLEDGE_MEM_ROUTE_OWNERSHIP_PROTOCOL,
+        route_ownership_all_hawdb, route_ownership_all_legacy, route_ownership_for_engine,
+        route_ownership_readiness, RouteOwnership, RouteOwnershipPolicy,
+        RouteOwnershipReadinessReport, RouteReadEngine, ROUTE_OWNERSHIP_PROTOCOL,
     };
 
     #[cfg(test)]
@@ -289,59 +285,51 @@ pub mod route_ownership {
         #[test]
         fn ownership_facade_preserves_concrete_types_and_function_signatures() {
             let summarize: fn(
-                &[owner::NowledgeMemRouteOwnership],
-                Option<&crate::NowledgeMemRouteReadinessSummary>,
-                owner::NowledgeMemRouteOwnershipPolicy,
-            ) -> crate::NowledgeMemRouteOwnershipReadinessReport =
-                crate::nowledge_mem_route_ownership_readiness;
-            let routes: Vec<owner::NowledgeMemRouteOwnership> =
-                nowledge_mem_route_ownership_all_legacy();
-            let report: NowledgeMemRouteOwnershipReadinessReport =
-                summarize(&routes, None, NowledgeMemRouteOwnershipPolicy::migration());
+                &[owner::RouteOwnership],
+                Option<&crate::RouteReadinessSummary>,
+                owner::RouteOwnershipPolicy,
+            ) -> crate::RouteOwnershipReadinessReport = crate::route_ownership_readiness;
+            let routes: Vec<owner::RouteOwnership> = route_ownership_all_legacy();
+            let report: RouteOwnershipReadinessReport =
+                summarize(&routes, None, RouteOwnershipPolicy::migration());
             assert!(report.ready);
             assert!(!report.production_cutover_ready);
             assert_eq!(report.route_catalog_digest, "fnv1a64:80816a4f519d9693");
             assert_eq!(
                 report,
-                owner::nowledge_mem_route_ownership_readiness(
-                    &routes,
-                    None,
-                    NowledgeMemRouteOwnershipPolicy::migration(),
-                )
+                owner::route_ownership_readiness(&routes, None, RouteOwnershipPolicy::migration(),)
             );
         }
 
         #[test]
         fn catalog_facade_preserves_public_paths_and_concrete_types() {
-            let lookup: fn(&str) -> Option<&'static owner::NowledgeMemGraphReadRouteSpec> =
-                crate::nowledge_mem_graph_read_route_spec;
-            let summary: Option<&owner::NowledgeMemRouteReadinessSummary> =
-                None::<&crate::nowledge_mem::NowledgeMemRouteReadinessSummary>;
+            let lookup: fn(&str) -> Option<&'static owner::GraphReadRouteSpec> =
+                crate::graph_read_route_spec;
+            let summary: Option<&owner::RouteReadinessSummary> =
+                None::<&crate::embedded_store::RouteReadinessSummary>;
             assert!(summary.is_none());
-            for expected in owner::NOWLEDGE_MEM_GRAPH_READ_ROUTE_SPECS {
+            for expected in owner::GRAPH_READ_ROUTE_SPECS {
                 assert_eq!(lookup(expected.route).unwrap(), expected);
-                let actual: &crate::NowledgeMemGraphReadRouteSpec =
-                    crate::nowledge_mem::nowledge_mem_graph_read_route_spec(expected.route)
-                        .unwrap();
+                let actual: &crate::GraphReadRouteSpec =
+                    crate::embedded_store::graph_read_route_spec(expected.route).unwrap();
                 assert_eq!(actual, expected);
-                let _: crate::NowledgeMemGraphReadRouteOwner = expected.owner;
-                let _: crate::NowledgeMemGraphReadRouteEvidenceKind =
-                    expected.required_evidence_kind;
+                let _: crate::GraphReadRouteOwner = expected.owner;
+                let _: crate::GraphReadRouteEvidenceKind = expected.required_evidence_kind;
             }
             assert_eq!(
-                crate::nowledge_mem::NOWLEDGE_MEM_GRAPH_READ_ROUTE_SPECS,
-                owner::NOWLEDGE_MEM_GRAPH_READ_ROUTE_SPECS
+                crate::embedded_store::GRAPH_READ_ROUTE_SPECS,
+                owner::GRAPH_READ_ROUTE_SPECS
             );
             assert_eq!(
-                crate::REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
-                owner::REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+                crate::REQUIRED_BOUNDED_READ_ROUTES,
+                owner::REQUIRED_BOUNDED_READ_ROUTES
             );
             assert_eq!(
-                crate::nowledge_mem_graph_read_route_specs_json(),
-                owner::nowledge_mem_graph_read_route_specs_json()
+                crate::graph_read_route_specs_json(),
+                owner::graph_read_route_specs_json()
             );
             assert_eq!(
-                crate::nowledge_mem_graph_read_route_catalog_digest(),
+                crate::graph_read_route_catalog_digest(),
                 "fnv1a64:80816a4f519d9693"
             );
         }
@@ -361,7 +349,7 @@ pub mod search_candidate_shadow_evidence {
             let facade: fn(
                 &serde_json::Value,
             ) -> hawdb_core::Result<
-                hawdb_search::candidate_evidence::NowledgeMemSearchCandidateShadowAccumulator,
+                hawdb_search::candidate_evidence::SearchCandidateShadowAccumulator,
             > = parse_search_candidate_shadow_probe;
             assert!(std::ptr::fn_addr_eq(
                 facade,

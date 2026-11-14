@@ -37,7 +37,13 @@ pub(super) fn verify_recovery(
     mut phase: impl FnMut(&'static str),
 ) -> RecoveryVerification {
     phase("recovery-open");
-    let mut reopened = match Database::open(path) {
+    let mut reopened = match Database::open_with_config(
+        path,
+        hawdb::DatabaseConfig {
+            recovery_mode: hawdb::RecoveryMode::Strict,
+            ..Default::default()
+        },
+    ) {
         Ok(database) => database,
         Err(error) => {
             eprintln!("wal_group_commit recovery open failed: {error}");

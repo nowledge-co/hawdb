@@ -26,6 +26,10 @@ class SemanticError(Error):
 class StorageError(Error):
     """Storage layer failure."""
 
+    # Some failures carry `kind`, such as "constraint" or "schema" for a
+    # relational refusal, and `retryable`.
+    def __getattr__(self, name: str) -> Any: ...
+
 class IntegrityError(StorageError):
     """Storage integrity violation."""
 
@@ -53,6 +57,11 @@ class BranchError(Error):
 
 class AdmissionError(Error):
     """Query admission was rejected by runtime resource governance."""
+
+    # The refused resource, for example "cpu_saturated" or "memory_saturated".
+    code: str
+    # True for a transient shortage that a later attempt can pass.
+    retryable: bool
 
 class TaskStoppedError(Error):
     """The runtime task was stopped before producing a result."""

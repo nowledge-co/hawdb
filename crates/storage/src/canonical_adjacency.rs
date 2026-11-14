@@ -1749,6 +1749,9 @@ pub struct CanonicalAdjacencyReadReport {
     pub descriptor_cache_hits: u64,
     pub descriptor_cache_misses: u64,
     pub descriptor_cache_admission_rejections: u64,
+    /// Endpoint scans answered from a leaf retained by an open
+    /// `DescriptorLeafScope` instead of a descriptor root traversal (#1615).
+    pub descriptor_retained_leaf_hits: u64,
     pub blocks_considered: u64,
     pub blocks_read: u64,
     pub bytes_read: u64,
@@ -2107,7 +2110,7 @@ impl CanonicalAdjacencyReader {
                 };
                 let mut scan_control = CanonicalScanControl::Continue;
                 let mut scan_error = None;
-                let descriptor_result = demand.scan_prefix(
+                let descriptor_result = demand.scan_prefix_retained(
                     &prefix,
                     GraphDescriptorTreeReadLimits::default(),
                     |key, value| {
@@ -2384,6 +2387,7 @@ impl CanonicalAdjacencyReadReport {
         self.descriptor_cache_hits = report.cache_hits;
         self.descriptor_cache_misses = report.cache_misses;
         self.descriptor_cache_admission_rejections = report.cache_admission_rejections;
+        self.descriptor_retained_leaf_hits = report.retained_leaf_hits;
     }
 }
 
@@ -2644,10 +2648,16 @@ fn estimated_value_bytes(value: &Value) -> u64 {
         Value::Null => 1,
         Value::Bool(_) => 2,
         Value::Int(_) | Value::Float(_) => 9,
+        Value::Decimal(_) => 18,
         Value::String(value) => 5u64.saturating_add(value.len() as u64),
         Value::Binary(value) => 5u64.saturating_add(value.len() as u64),
         Value::Vector(value) => 5u64.saturating_add(value.encoded().len() as u64),
         Value::Uuid(_) => 17,
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => 29,
         Value::List(values) => 5u64.saturating_add(
             values
                 .iter()

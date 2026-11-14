@@ -76,21 +76,18 @@ pub struct RuntimeResourceSnapshot {
 
 #[derive(Debug)]
 pub(crate) struct RuntimeResourceDetector {
-    system: System,
+    system: Option<System>,
 }
 
 impl RuntimeResourceDetector {
     pub(crate) fn new() -> Self {
-        Self {
-            system: System::new(),
-        }
+        Self { system: None }
     }
 
     pub(crate) fn detect(&mut self) -> RuntimeResourceSnapshot {
         let host_parallelism = std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
-        self.system.refresh_memory();
         let (host_total_bytes, host_available_bytes) =
-            host_memory_values(self.system.total_memory(), self.system.available_memory());
+            detect_host_memory(&mut self.system, System::new);
 
         #[cfg(target_os = "linux")]
         {
@@ -156,10 +153,8 @@ impl RuntimeResourceBudget {
 
 impl RuntimeMemorySnapshot {
     pub fn detect() -> Self {
-        let mut system = System::new();
-        system.refresh_memory();
-        let (host_total_bytes, host_available_bytes) =
-            host_memory_values(system.total_memory(), system.available_memory());
+        let mut system = None;
+        let (host_total_bytes, host_available_bytes) = detect_host_memory(&mut system, System::new);
 
         #[cfg(target_os = "linux")]
         let (cgroup_limit_bytes, cgroup_high_bytes, cgroup_current_bytes) =
@@ -264,7 +259,7 @@ impl IoConcurrencyBudget {
             StorageMediaKind::NonRotational => device
                 .queue_depth_hint
                 .map(NonZeroUsize::get)
-                .unwrap_or(8)
+                .unwrap_or(12)
                 .clamp(4, 32),
             StorageMediaKind::Memory => 8,
             StorageMediaKind::Network | StorageMediaKind::Virtual | StorageMediaKind::Unknown => 4,
@@ -380,6 +375,23 @@ fn admitted_memory_current(value: LinuxCgroupValue<u64>) -> Option<u64> {
     }
 }
 
+fn detect_host_memory(
+    system: &mut Option<System>,
+    initialize: impl FnOnce() -> Result<System, sysinfo::Error>,
+) -> (Option<u64>, Option<u64>) {
+    // sysinfo initialization can fail, including on unsupported targets. Keep
+    // host readings unknown and retain independent cgroup limits in that case.
+    // A later refresh can recover; a successful detector remains cached.
+    if system.is_none() {
+        *system = initialize().ok();
+    }
+    let Some(system) = system.as_mut() else {
+        return (None, None);
+    };
+    system.refresh_memory();
+    host_memory_values(system.total_memory(), system.available_memory())
+}
+
 fn host_memory_values(total_bytes: u64, available_bytes: u64) -> (Option<u64>, Option<u64>) {
     // A detected total makes zero availability meaningful. Only two zero
     // readings retain sysinfo's unavailable/unsupported fallback.
@@ -417,9 +429,66 @@ fn memory_pressure(
 mod tests {
     use super::*;
     use crate::{
-        RuntimeAdmissionCode, RuntimeGovernor, RuntimeGovernorConfig, RuntimeWorkPriority,
-        RuntimeWorkRequest,
+        RuntimeAdmissionCode, RuntimeGovernor, RuntimeGovernorConfig, RuntimeWorkKind,
+        RuntimeWorkPriority, RuntimeWorkRequest,
     };
+
+    #[test]
+    fn failed_host_initialization_retains_unknown_and_cgroup_budgets() {
+        for error in [
+            sysinfo::Error::Unsupported,
+            sysinfo::Error::Io(std::io::ErrorKind::PermissionDenied.into()),
+            sysinfo::Error::Other("host initialization failed".into()),
+        ] {
+            let mut system = None;
+            let (total, available) = detect_host_memory(&mut system, || Err(error));
+            assert_eq!((total, available), (None, None));
+            assert!(system.is_none());
+            let resources = RuntimeResourceSnapshot::from_parts(
+                RuntimeResourceBudget::from_limits(NonZeroUsize::MIN, None, None),
+                RuntimeMemorySnapshot::from_limits(total, available, None, None, None),
+            );
+            assert_eq!(resources.memory, RuntimeMemorySnapshot::default());
+            let config = RuntimeGovernorConfig::shared_host();
+            let governor = RuntimeGovernor::new(config, resources, IoConcurrencyBudget::new(4, 1));
+            assert_eq!(
+                governor.snapshot().limits.memory_budget_bytes,
+                config.fallback_memory_budget_bytes
+            );
+
+            let cgroup = LinuxCgroupSnapshot {
+                version: LinuxCgroupVersion::V2,
+                memory_limit_bytes: LinuxCgroupValue::Value(4 << 30),
+                memory_high_bytes: LinuxCgroupValue::Value(3 << 30),
+                memory_current_bytes: LinuxCgroupValue::Value(3 << 30),
+                ..LinuxCgroupSnapshot::host()
+            };
+            let constrained =
+                resource_snapshot_from_cgroup(NonZeroUsize::MIN, total, available, &cgroup);
+            assert_eq!(constrained.memory.effective_limit_bytes, Some(3 << 30));
+            assert_eq!(constrained.memory.effective_available_bytes, Some(0));
+            assert_eq!(constrained.memory.pressure, RuntimeMemoryPressure::Critical);
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn host_initialization_recovers_and_reuses_the_successful_detector() {
+        let mut system = None;
+        assert_eq!(
+            detect_host_memory(&mut system, || Err(sysinfo::Error::Unsupported)),
+            (None, None)
+        );
+        let (total, _) = detect_host_memory(&mut system, System::new);
+        assert!(
+            system.is_some(),
+            "the native system detector must initialize"
+        );
+        let (cached_total, _) = detect_host_memory(&mut system, || {
+            panic!("a successful detector must be reused")
+        });
+        assert_eq!(cached_total, total);
+    }
 
     #[test]
     fn host_memory_values_distinguish_exhausted_from_unknown() {
@@ -763,8 +832,76 @@ mod tests {
         let default_ssd =
             StorageDeviceProfile::host_provided(StorageMediaKind::NonRotational, None);
         let io = IoConcurrencyBudget::shared_host_for_device(default_ssd);
-        assert_eq!(io.foreground_depth.get(), 8);
-        assert_eq!(io.background_depth.get(), 2);
+        assert_eq!(io.foreground_depth.get(), 12);
+        assert_eq!(io.background_depth.get(), 3);
+    }
+
+    #[test]
+    fn shared_host_ssd_io_budget_preserves_explicit_hint_bounds() {
+        for (hint, foreground, background) in [(1, 4, 1), (8, 8, 2), (16, 16, 4), (64, 32, 4)] {
+            let device = StorageDeviceProfile::host_provided(
+                StorageMediaKind::NonRotational,
+                NonZeroUsize::new(hint),
+            );
+            let io = IoConcurrencyBudget::shared_host_for_device(device);
+            assert_eq!(io, IoConcurrencyBudget::new(foreground, background));
+        }
+    }
+
+    #[test]
+    fn shared_host_ssd_io_admission_enforces_and_refunds_each_priority_budget() {
+        let device = StorageDeviceProfile::host_provided(StorageMediaKind::NonRotational, None);
+        let governor = RuntimeGovernor::new(
+            RuntimeGovernorConfig::shared_host(),
+            sampled_host_resources(8 << 30, 8 << 30),
+            IoConcurrencyBudget::shared_host_for_device(device),
+        );
+        let mut foreground =
+            RuntimeWorkRequest::new(RuntimeWorkPriority::Foreground, RuntimeWorkKind::Io);
+        foreground.io_slots = 12;
+        let mut background =
+            RuntimeWorkRequest::new(RuntimeWorkPriority::Background, RuntimeWorkKind::Io);
+        background.io_slots = 3;
+        let foreground_permit = governor.try_admit(foreground).unwrap();
+        let background_permit = governor.try_admit(background).unwrap();
+        let snapshot = governor.snapshot();
+        assert_eq!(snapshot.active_foreground_io_slots, 12);
+        assert_eq!(snapshot.active_background_io_slots, 3);
+
+        for mut request in [foreground, background] {
+            request.io_slots = 1;
+            let error = governor.try_admit(request).unwrap_err();
+            assert_eq!(error.code, RuntimeAdmissionCode::IoSaturated);
+            assert_eq!(error.requested, 1);
+            assert_eq!(error.available, 0);
+            assert!(error.is_retryable());
+        }
+
+        drop(background_permit);
+        assert_eq!(governor.snapshot().active_background_io_slots, 0);
+        assert_eq!(governor.snapshot().active_foreground_io_slots, 12);
+        drop(governor.try_admit(background).unwrap());
+        drop(foreground_permit);
+        drop(governor.try_admit(foreground).unwrap());
+        let snapshot = governor.snapshot();
+        assert_eq!(snapshot.active_foreground_io_slots, 0);
+        assert_eq!(snapshot.active_background_io_slots, 0);
+    }
+
+    #[test]
+    fn shared_host_non_ssd_io_defaults_stay_conservative() {
+        for (kind, foreground, background) in [
+            (StorageMediaKind::Rotational, 2, 1),
+            (StorageMediaKind::Memory, 8, 2),
+            (StorageMediaKind::Network, 4, 1),
+            (StorageMediaKind::Virtual, 4, 1),
+            (StorageMediaKind::Unknown, 4, 1),
+        ] {
+            let io = IoConcurrencyBudget::shared_host_for_device(
+                StorageDeviceProfile::host_provided(kind, None),
+            );
+            assert_eq!(io, IoConcurrencyBudget::new(foreground, background));
+        }
     }
 
     #[test]

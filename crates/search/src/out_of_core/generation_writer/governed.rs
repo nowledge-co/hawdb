@@ -56,6 +56,14 @@ impl SearchGenerationAdmission {
         })
     }
 
+    /// Adopts a permit the host already admitted for one complete
+    /// search-generation operation, under the same request contract as
+    /// [`Self::acquire`]. The operation's read verification and cleanup then
+    /// run under this permit instead of an unaccounted fallback.
+    pub fn from_permit(permit: std::sync::Arc<RuntimePermit>) -> Self {
+        Self { permit }
+    }
+
     /// Returns the exact request retained by this admission.
     pub fn request(&self) -> RuntimeWorkRequest {
         self.permit.request()

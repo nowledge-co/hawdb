@@ -12,15 +12,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ar_archive_writer"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4087686b4b0a3427190bae57a1d9a478dbb2d40c5dc1bd6e2b6d797913bdd348"
-dependencies = [
- "object",
-]
-
-[[package]]
 name = "async-trait"
 version = "0.1.92"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -144,18 +135,18 @@ dependencies = [
 
 [[package]]
 name = "crc32c"
-version = "0.6.8"
+version = "0.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a47af21622d091a8f0fb295b88bc886ac74efcc613efc19f5d0b21de5c89e47"
+checksum = "7f132a176423ee852e8f0a35d43088d1850966b50745be818a88b76f64b1c6cb"
 dependencies = [
  "rustc_version",
 ]
 
 [[package]]
 name = "crc32fast"
-version = "1.5.3"
+version = "1.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ba106e844045ddc02c20768ac4b0b7cb45f2cc2ecbd833ac9f5dacb183c2055"
+checksum = "5f97d3416d5337d15c4b0d78c8c91df922ca143f57ec20e2d1c188333047ef04"
 dependencies = [
  "cfg-if",
 ]
@@ -293,7 +284,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "chrono",
  "getrandom",
@@ -340,14 +331,14 @@ dependencies = [
 
 [[package]]
 name = "hawdb-analytics"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "hawdb-core",
 ]
 
 [[package]]
 name = "hawdb-artifact"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "hawdb-core",
  "hawdb-executor",
@@ -356,7 +347,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-bootstrap"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "hawdb-core",
  "hawdb-integrity",
@@ -367,15 +358,15 @@ dependencies = [
 
 [[package]]
 name = "hawdb-cascades"
-version = "0.17.0"
+version = "0.33.0"
 
 [[package]]
 name = "hawdb-cgroup"
-version = "0.17.0"
+version = "0.33.0"
 
 [[package]]
 name = "hawdb-compat"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "hawdb-analytics",
  "hawdb-core",
@@ -388,9 +379,12 @@ dependencies = [
 
 [[package]]
 name = "hawdb-core"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
+ "chrono",
  "getrandom",
+ "num-bigint",
+ "num-traits",
  "regex",
  "uuid",
  "web-time",
@@ -398,23 +392,26 @@ dependencies = [
 
 [[package]]
 name = "hawdb-cypher"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "hawdb-core",
  "hawdb-ddl",
+ "hawdb-sql-syntax",
+ "peg",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
 name = "hawdb-ddl"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "hawdb-core",
 ]
 
 [[package]]
 name = "hawdb-evidence"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "hawdb-core",
  "hawdb-integrity",
@@ -424,7 +421,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-executor"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "fs2",
  "hawdb-analytics",
@@ -439,7 +436,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-explain"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "hawdb-core",
  "hawdb-executor",
@@ -453,14 +450,14 @@ dependencies = [
 
 [[package]]
 name = "hawdb-expression"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "hawdb-core",
 ]
 
 [[package]]
 name = "hawdb-fuzz-contracts"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "hawdb-core",
  "serde_json",
@@ -468,7 +465,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-integrity"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "crc32c",
  "sha2",
@@ -476,7 +473,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-nowledge-contracts"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "hawdb-core",
  "hawdb-qos",
@@ -488,7 +485,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-optimizer"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "hawdb-cascades",
  "hawdb-optimizer-graph",
@@ -499,7 +496,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-optimizer-graph"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "hawdb-cascades",
  "hawdb-core",
@@ -512,7 +509,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-optimizer-predicate"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "hawdb-cascades",
  "serde_json",
@@ -520,7 +517,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-optimizer-relational"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "hawdb-cascades",
  "hawdb-core",
@@ -529,7 +526,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-optimizer-vector"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "hawdb-cascades",
  "hawdb-plan-core",
@@ -537,7 +534,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-plan-cache"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "hawdb-core",
  "hawdb-cypher",
@@ -548,11 +545,11 @@ dependencies = [
 
 [[package]]
 name = "hawdb-plan-core"
-version = "0.17.0"
+version = "0.33.0"
 
 [[package]]
 name = "hawdb-plan-cypher"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "hawdb-core",
  "hawdb-cypher",
@@ -564,7 +561,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-qos"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "hawdb-cgroup",
  "hawdb-core",
@@ -576,7 +573,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-qualification"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "hawdb",
  "hawdb-query",
@@ -588,14 +585,14 @@ dependencies = [
 
 [[package]]
 name = "hawdb-query"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "sha2",
 ]
 
 [[package]]
 name = "hawdb-query-policy"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "hawdb-core",
  "hawdb-cypher",
@@ -605,7 +602,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-readiness"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "hawdb-core",
  "hawdb-cypher",
@@ -623,7 +620,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-relational"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "hawdb-core",
  "hawdb-executor",
@@ -636,7 +633,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-resource-profile"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "hawdb-core",
  "hawdb-evidence",
@@ -647,14 +644,14 @@ dependencies = [
 
 [[package]]
 name = "hawdb-route-ownership"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "hawdb-runtime-tokio"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "hawdb-core",
  "hawdb-qos",
@@ -664,7 +661,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-search"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "bitpacking",
  "chrono",
@@ -692,7 +689,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-sql"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "caseless",
  "hawdb-core",
@@ -703,16 +700,15 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "sqlparser",
 ]
 
 [[package]]
 name = "hawdb-sql-syntax"
-version = "0.17.0"
+version = "0.33.0"
 
 [[package]]
 name = "hawdb-storage"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "chrono",
  "fs2",
@@ -732,7 +728,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-system-sql"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "hawdb-core",
  "hawdb-executor",
@@ -746,15 +742,23 @@ dependencies = [
 
 [[package]]
 name = "hawdb-telemetry"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "hawdb-qos",
  "opentelemetry",
 ]
 
 [[package]]
+name = "hawdb-test-contracts"
+version = "0.33.0"
+dependencies = [
+ "hawdb",
+ "hawdb-storage",
+]
+
+[[package]]
 name = "hawdb-vector-projection"
-version = "0.17.0"
+version = "0.33.0"
 dependencies = [
  "crc32fast",
  "hawdb-core",
@@ -908,6 +912,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "num-bigint"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93e7820bc0a80a0238e650327316f929ba18d5be054b647490a3a6a339f3e7c0"
+dependencies = [
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
+name = "num-integer"
+version = "0.1.47"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ce2d95d4b3734dc35aa2f45e1aa22cd416814592a4f9d9205e11affd5b8e10b"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "num-traits"
 version = "0.2.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -937,15 +960,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "object"
-version = "0.37.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
-dependencies = [
- "memchr",
-]
-
-[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -967,6 +981,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "peg"
+version = "0.8.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0aad070be5b63aa72103f2fcdd70a83adbd5e90112ce5b574171ff1c65501773"
+dependencies = [
+ "peg-macros",
+ "peg-runtime",
+]
+
+[[package]]
+name = "peg-macros"
+version = "0.8.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ddd8ef6825cae95355031ae26a99b616a2a21f22ba2de0197c43dfb05acbe7ee"
+dependencies = [
+ "peg-runtime",
+ "proc-macro2",
+ "quote",
+]
+
+[[package]]
+name = "peg-runtime"
+version = "0.8.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7011d97b484a5ebdc4b1fdb3b12d5e4bbbea56e9d22b688f2e79e04b65a7d8a6"
+
+[[package]]
 name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -985,16 +1026,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "psm"
-version = "0.1.31"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "645dbe486e346d9b5de3ef16ede18c26e6c70ad97418f4874b8b1889d6e761ea"
-dependencies = [
- "ar_archive_writer",
- "cc",
 ]
 
 [[package]]
@@ -1030,26 +1061,6 @@ checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
-]
-
-[[package]]
-name = "recursive"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0786a43debb760f491b1bc0269fe5e84155353c67482b9e60d0cfb596054b43e"
-dependencies = [
- "recursive-proc-macro-impl",
- "stacker",
-]
-
-[[package]]
-name = "recursive-proc-macro-impl"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76009fbe0614077fc1a2ce255e3a1881a2e3a3527097d5dc6d8212c585e7e38b"
-dependencies = [
- "quote",
- "syn 2.0.118",
 ]
 
 [[package]]
@@ -1215,29 +1226,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 
 [[package]]
-name = "sqlparser"
-version = "0.63.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3679862809bd1f92e563cf6fd820e28f39135303668001c10331d5027183e8b4"
-dependencies = [
- "log",
- "recursive",
-]
-
-[[package]]
-name = "stacker"
-version = "0.1.24"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "640c8cdd92b6b12f5bcb1803ca3bbf5ab96e5e6b6b96b9ab77dabe9e880b3190"
-dependencies = [
- "cc",
- "cfg-if",
- "libc",
- "psm",
- "windows-sys",
-]
-
-[[package]]
 name = "syn"
 version = "2.0.118"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1261,9 +1249,9 @@ dependencies = [
 
 [[package]]
 name = "sysinfo"
-version = "0.39.6"
+version = "0.40.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2071df9448915b71c4fe6d25deaf1c22f12bd234f01540b77312bb8e41361e6"
+checksum = "0e8a3edbe0394ce115f3917a00349dd242be09eb5a091ed509eaf67b55cfb8a8"
 dependencies = [
  "libc",
  "memchr",
@@ -1378,15 +1366,15 @@ dependencies = [
 
 [[package]]
 name = "unicode-width"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
+checksum = "ca718471876992059f251e33aafc334346ada08042b7661dd1fe313a9bced557"
 
 [[package]]
 name = "uuid"
-version = "1.28.0"
+version = "1.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7cc1186384beb7dd8eedea376413fd654937285ea6c9cfbb928dc3043ea4b606"
+checksum = "4a0e2d11620c50695fe12bbbfde96b3477fe606e7284c22d505c12ce51214514"
 dependencies = [
  "js-sys",
  "wasm-bindgen",

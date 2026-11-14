@@ -1,5 +1,5 @@
 // Copyright 2026 Nowledge
-// Licensed under the Apache License, Version 2.0.
+// SPDX-License-Identifier: Apache-2.0
 
 use super::*;
 use crate::build_memory::{
@@ -16,7 +16,14 @@ impl Drop for Directory {
     }
 }
 
-pub(super) fn with_query(
+pub(in crate::out_of_core) fn with_query(
+    work: impl FnOnce(&Path, &ProjectFileDescriptors, &BuildMemory, QueryContext<'_>, &ScratchDirectory),
+) {
+    with_query_memory(4 << 20, work)
+}
+
+pub(in crate::out_of_core) fn with_query_memory(
+    memory_bytes: u64,
     work: impl FnOnce(&Path, &ProjectFileDescriptors, &BuildMemory, QueryContext<'_>, &ScratchDirectory),
 ) {
     let directory = Directory(crate::test_temp_dir().join(format!(
@@ -29,7 +36,7 @@ pub(super) fn with_query(
     let parent = SourceDirectory::capture(&directory.0, &project.io_context()).unwrap();
     let governor = governor();
     let permit = governor
-        .try_admit(RuntimeWorkRequest::background_maintenance(4 << 20).with_io_wave_slots(1))
+        .try_admit(RuntimeWorkRequest::background_maintenance(memory_bytes).with_io_wave_slots(1))
         .unwrap();
     let task = permit.bind_task_context(hawdb_core::RuntimeTaskContext::with_timeout(
         std::time::Duration::from_secs(10),
@@ -93,7 +100,7 @@ fn captured_candidate_spill_uses_original_fd_domain_and_one_query_io_slot() {
                 drop(grant);
             });
             ready.wait();
-            let result = SpillFile::create(&config, Some(context), Some(scratch));
+            let result = SpillFile::create(&config, Some(context), Some(scratch), true);
             release.wait();
             let error = result.err().expect("original project is full");
             assert!(matches!(error, HawDBError::FileDescriptors(_)), "{error:?}");
@@ -106,11 +113,12 @@ fn captured_candidate_spill_uses_original_fd_domain_and_one_query_io_slot() {
                 ..context
             }),
             Some(scratch),
+            true,
         )
         .err()
         .expect("scope belongs to exact original task");
         assert!(matches!(error, HawDBError::Execution(_)), "{error:?}");
-        let mut file = SpillFile::create(&config, Some(context), Some(scratch)).unwrap();
+        let mut file = SpillFile::create(&config, Some(context), Some(scratch), true).unwrap();
         assert_eq!(project.metrics().open, before.open + 1);
         file.write_all(b"private candidates").unwrap();
         file.sync_all().unwrap();
@@ -124,7 +132,8 @@ fn captured_candidate_spill_uses_original_fd_domain_and_one_query_io_slot() {
 }
 
 fn set<'a>(context: QueryContext<'a>, scratch: &'a ScratchDirectory) -> SpilledCandidateSet<'a> {
-    let mut file = SpillFile::create(&Default::default(), Some(context), Some(scratch)).unwrap();
+    let mut file =
+        SpillFile::create(&Default::default(), Some(context), Some(scratch), true).unwrap();
     let mut blocks = Vec::new();
     let mut offset = 0;
     for (segment_id, id) in ["a", "b"].into_iter().enumerate() {
@@ -242,7 +251,8 @@ fn cancelled_candidate_spill_retains_funded_debt_until_fresh_original_cleanup() 
         execution: Some(&permit),
         io_scope: Some(&scope),
     };
-    let mut file = SpillFile::create(&Default::default(), Some(context), Some(&scratch)).unwrap();
+    let mut file =
+        SpillFile::create(&Default::default(), Some(context), Some(&scratch), true).unwrap();
     file.write_all(b"retained private bytes").unwrap();
     task.cancellation().cancel();
     assert!(matches!(

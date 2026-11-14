@@ -18,12 +18,14 @@ use crate::{
 };
 use std::collections::BTreeMap;
 
-pub(super) fn ready_report() -> NowledgeMemSearchCandidateReport {
-    NowledgeMemSearchCandidateReport {
-        protocol: NOWLEDGE_MEM_SEARCH_CANDIDATE_REPORT_PROTOCOL.to_string(),
+pub(super) fn ready_report() -> SearchCandidateReport {
+    SearchCandidateReport {
+        protocol: SEARCH_CANDIDATE_REPORT_PROTOCOL.to_string(),
         compressed_vector_search_mode: CompressedVectorSearchMode::Disabled,
         requested_compressed_vector_search_mode: CompressedVectorSearchMode::Disabled,
-        retrieval_projection_advisor: NowledgeMemRetrievalProjectionAdvisor::default(),
+        exact_vector_search_requested: false,
+        exact_vector_search: false,
+        retrieval_projection_advisor: RetrievalProjectionAdvisor::default(),
         retrieval_projection_advisor_blocker_codes: Vec::new(),
         mode: SearchMode::Text,
         query_embedding_dimension: Some(2),
@@ -47,7 +49,22 @@ pub(super) fn ready_report() -> NowledgeMemSearchCandidateReport {
             policy_epoch: Some(2),
             filtered_out_count: 2,
             metadata_filters: BTreeMap::new(),
-            metadata_predicate_pushdown: SearchPredicatePushdownReport::default(),
+            metadata_predicate_pushdown: SearchPredicatePushdownReport {
+                input_predicate_count: 1,
+                pushed_predicate_count: 1,
+                segment_count: 3,
+                pruned_segment_count: 1,
+                scanned_segment_count: 2,
+                segment_pruning_candidate_document_count: 9,
+                segment_pruned_document_count: 2,
+                segment_scanned_document_count: 7,
+                persisted_segment_descriptor_used: true,
+                physical_range_read_count: 2,
+                physical_bytes_read: 256,
+                postings_segment_count: 2,
+                postings_predicate_count: 1,
+                ..SearchPredicatePushdownReport::default()
+            },
         },
         filtered_out_count: 2,
         metadata_filter_count: 1,

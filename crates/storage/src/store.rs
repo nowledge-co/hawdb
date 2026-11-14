@@ -21,7 +21,7 @@ use crate::schema::{
 };
 use crate::telemetry::TelemetrySink;
 use crate::value::Value;
-use hawdb_core::RuntimeTaskContext;
+use hawdb_core::{DeclaredPropertyDefault, PropertyDefault, RuntimeTaskContext};
 use hawdb_integrity::{checksum_u64, Sha256Digest};
 use hawdb_storage::mutation::compact_transaction_graph_ops;
 use hawdb_storage::projection::projection_document_id_for_node as search_projection_document_id_for_node;
@@ -98,6 +98,7 @@ mod durable;
 mod graph_apply;
 #[path = "store/graph_checkpoint.rs"]
 mod graph_checkpoint;
+mod wal_fence;
 #[doc(hidden)]
 pub use graph_checkpoint::CheckpointPreparation;
 #[path = "store/graph_checkpoint_candidate.rs"]
@@ -107,7 +108,7 @@ mod graph_checkpoint_projection;
 #[doc(hidden)]
 pub use graph_checkpoint_candidate::{
     CheckpointCandidate, CheckpointDebtSnapshot, CheckpointReclamationContext,
-    CheckpointSourceIdentity,
+    CheckpointSourceIdentity, RelationalLiveOverlayDebt,
 };
 use graph_checkpoint_projection::checkpoint_projected_graph_from_definition;
 #[path = "store/graph_columnar_shadow.rs"]
@@ -118,15 +119,18 @@ mod graph_commit;
 mod graph_indexes;
 #[path = "store/graph_mutation.rs"]
 mod graph_mutation;
+#[doc(hidden)]
+pub use graph_read::{record_reads_for_test, RecordReadsForTest};
 #[path = "store/graph_read.rs"]
 mod graph_read;
 #[doc(hidden)]
 pub use graph_read::{
-    MaterializedNodePointRead, MaterializedNodePointSource, MaterializedNodeReadSource,
-    MaterializedReadHealth,
+    adjacency_visits_for_test, MaterializedNodePointRead, MaterializedNodePointSource,
+    MaterializedNodeReadSource, MaterializedReadHealth,
 };
 #[path = "store/read_dependencies.rs"]
 mod read_dependencies;
+pub use graph_read::{EndpointCandidates, RelationshipEndpoints, RelationshipSeedConstraints};
 pub use read_dependencies::ReadDependencyValidationFailures;
 #[doc(hidden)]
 pub use read_dependencies::{GraphReadDependencies, GraphReadDependencyError};
@@ -291,9 +295,8 @@ use hawdb_storage::{
         encode_relational_checkpoint, RelationalCheckpointIndexLoad, RelationalDecodeLimits,
         RelationalMutationLimits, RelationalOverflowConfig, RelationalOverflowPublicationConfig,
         RelationalOverflowPublisher, RelationalRecoverySourceBuilder,
-        RelationalRowPageGenerationRequest, RelationalRowPagePublicationConfig,
-        RelationalRowPagePublisher, RelationalSparseLiveStage, RelationalState,
-        RelationalTransaction,
+        RelationalRowPageGenerationRequest, RelationalRowPagePublisher, RelationalSparseLiveStage,
+        RelationalState, RelationalTransaction,
     },
 };
 pub use hawdb_storage::{
@@ -404,8 +407,7 @@ use wal_codec::frame::{
     encode_binary_wal_header, frame_binary_wal_record, WAL_BINARY_FILE_HEADER_BYTES,
 };
 use wal_codec::{
-    quarantine_corrupt_wal, reject_corrupt_wal_record, WalCursorEvent, WalEntry, WalOp,
-    WalOpenOutcome, WalRecordCursor,
+    reject_corrupt_wal_record, WalCursorEvent, WalEntry, WalOp, WalOpenOutcome, WalRecordCursor,
 };
 
 use hawdb_storage::durable_manifest::{safe_reclaim_commit_epoch, STORAGE_VERSION};
@@ -499,14 +501,30 @@ pub fn set_checkpoint_failpoint(stage: Option<CheckpointPublishStage>) {
     CHECKPOINT_FAILPOINT.with(|failpoint| failpoint.set(stage));
 }
 
-#[cfg(test)]
+thread_local! {
+    static MATCHED_NODE_LABEL_SCANS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts label scans by matched-node mutation filters without an internal-id
+/// fast path on this thread. Diagnostic for tests; always compiled so test
+/// builds that do not enable `test-support` (for example Bazel) still link.
+#[doc(hidden)]
+pub fn matched_node_label_scans_for_test() -> u64 {
+    MATCHED_NODE_LABEL_SCANS.with(std::cell::Cell::get)
+}
+
+fn record_matched_node_label_scan() {
+    MATCHED_NODE_LABEL_SCANS.with(|scans| scans.set(scans.get().saturating_add(1)));
+}
+
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static GENERATION_RECLAMATION_REMOVE_FAILPOINT: std::cell::RefCell<Option<String>> =
         const { std::cell::RefCell::new(None) };
 }
 
 fn remove_generation_reclamation_candidate(path: &Path) -> std::io::Result<()> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     {
         let file_name = path.file_name().and_then(|name| name.to_str());
         let should_fail = GENERATION_RECLAMATION_REMOVE_FAILPOINT
@@ -527,8 +545,56 @@ fn remove_generation_reclamation_candidate(path: &Path) -> std::io::Result<()> {
     fs::remove_file(path)
 }
 
+/// Test-only faults for the branch-private WAL sweep (#1727): the head
+/// re-read and the directory barrier that precede its first removal.
 #[cfg(test)]
-fn set_generation_reclamation_remove_failpoint(file_name: Option<String>) {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BranchWalSweepFailpoint {
+    HeadRead,
+    DirectorySync,
+}
+
+#[cfg(test)]
+thread_local! {
+    static BRANCH_WAL_SWEEP_FAILPOINT: std::cell::Cell<Option<BranchWalSweepFailpoint>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn set_branch_wal_sweep_failpoint(failpoint: Option<BranchWalSweepFailpoint>) {
+    BRANCH_WAL_SWEEP_FAILPOINT.with(|slot| slot.set(failpoint));
+}
+
+/// Reads the selected branch head before a branch-private WAL sweep.
+fn read_branch_head_for_wal_sweep(
+    path: &Path,
+) -> std::result::Result<hawdb_storage::branch_head::BranchHead, ()> {
+    #[cfg(test)]
+    if BRANCH_WAL_SWEEP_FAILPOINT.with(|slot| slot.get()) == Some(BranchWalSweepFailpoint::HeadRead)
+    {
+        return Err(());
+    }
+    hawdb_storage::branch_head::read_branch_head(path).map_err(|_| ())
+}
+
+/// Synchronizes the branch directory before a branch-private WAL sweep.
+fn sync_branch_directory_for_wal_sweep(directory: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if BRANCH_WAL_SWEEP_FAILPOINT.with(|slot| slot.get())
+        == Some(BranchWalSweepFailpoint::DirectorySync)
+    {
+        return Err(std::io::Error::other(
+            "injected branch WAL sweep directory sync failure",
+        ));
+    }
+    hawdb_storage::durability::sync_directory(directory)
+}
+
+/// Fails the next removal of the named obsolete generation file on this
+/// thread, leaving generation reclamation debt for pressure assertions.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn set_generation_reclamation_remove_failpoint(file_name: Option<String>) {
     GENERATION_RECLAMATION_REMOVE_FAILPOINT.with(|failpoint| {
         *failpoint.borrow_mut() = file_name;
     });
@@ -560,6 +626,22 @@ fn wal_apply_failpoint() -> Result<()> {
         }
     }
     Ok(())
+}
+
+thread_local! {
+    static NODE_SCANS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts node scans (`visit_nodes_with_allocation`) started on this thread.
+/// Diagnostic for tests; always compiled so test builds without the
+/// `test-support` feature still link.
+#[doc(hidden)]
+pub fn node_scans_for_test() -> u64 {
+    NODE_SCANS.with(std::cell::Cell::get)
+}
+
+fn record_node_scan() {
+    NODE_SCANS.with(|scans| scans.set(scans.get().saturating_add(1)));
 }
 
 /// Test support: renders binary WAL records as deterministic text lines.
@@ -689,6 +771,47 @@ struct MutationCommitOptions<'a> {
     mvcc_read_epoch: Option<u64>,
     captured_graph_ops: Option<&'a mut Vec<WalOp>>,
     prepared_wal: Option<crate::wal::binary::PreparedWalBatch>,
+    /// Receives the unconsumed inputs when the commit fits an empty
+    /// relational live overlay but not its remaining headroom.
+    retain_on_live_headroom: Option<&'a mut Option<RetainedLiveHeadroomCommit>>,
+    /// The writing transaction's `current_timestamp()` default instant.
+    /// `None` reads the clock at most once for this commit.
+    creation_clock: Option<chrono::NaiveDateTime>,
+}
+
+/// Inputs of a commit rejected before WAL append only for live-overlay
+/// headroom. Relational and append records were removed from `ops`.
+struct RetainedLiveHeadroomCommit {
+    shortfall: hawdb_storage::relational::RelationalLiveOverlayShortfall,
+    ops: Vec<WalOp>,
+    rows: Vec<BTreeMap<String, Value>>,
+    relational: Option<RelationalTransaction>,
+    append: Option<AppendTransaction>,
+}
+
+/// Outcome of a commit that may first need the relational live overlay
+/// drained by a checkpoint (#1479).
+#[doc(hidden)]
+#[derive(Debug)]
+pub enum LiveHeadroomCommit<T> {
+    Committed(MutationSummary),
+    /// The commit fits an empty overlay but not the remaining headroom.
+    /// Nothing was applied: `inputs` can be committed once a drain made room,
+    /// and `error` is the pre-WAL rejection to report without one.
+    NeedsHeadroom {
+        shortfall: hawdb_storage::relational::RelationalLiveOverlayShortfall,
+        inputs: T,
+        error: HawDBError,
+    },
+}
+
+/// Everything one explicit transaction commit consumes.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct PreparedTransactionCommit {
+    pub transaction: PreparedGraphMutationTransaction,
+    pub relational: RelationalTransaction,
+    pub append: AppendTransaction,
 }
 
 /// An isolated graph mutation workspace for a single explicit transaction.
@@ -707,6 +830,9 @@ pub struct GraphMutationTransaction {
     ops: Vec<WalOp>,
     rows: Vec<BTreeMap<String, Value>>,
     persistent_commit: bool,
+    /// One `current_timestamp()` default instant for every record this
+    /// transaction creates (Kùzu evaluates such defaults per transaction).
+    creation_clock: chrono::NaiveDateTime,
 }
 
 /// A sealed transaction preparation. No statement can mutate its compacted
@@ -905,7 +1031,7 @@ pub struct GraphStore {
     relational_row_pages: RelationalRowPageState,
     projection_generations: Option<hawdb_storage::projection_generation::ProjectionGenerationStore>,
     /// The engine's runtime governor, threaded down from the embedding
-    /// layer (`HawDBEmbedded` / `NowledgeMemGraph`) so background shadow
+    /// layer (`HawDBEmbedded` / `EmbeddedGraph`) so background shadow
     /// work can request admission. The store never constructs its own.
     runtime_governor: Option<Arc<dyn hawdb_storage::background::BackgroundWorkAdmission>>,
     branch_lease: Option<Arc<hawdb_storage::ownership::DatabaseDirectoryLease>>,
@@ -1379,6 +1505,7 @@ impl GraphMutationTransaction {
             limits,
             MutationCommitOptions {
                 captured_graph_ops: Some(&mut captured_ops),
+                creation_clock: Some(self.creation_clock),
                 ..MutationCommitOptions::default()
             },
         )?;
@@ -2539,18 +2666,37 @@ fn validate_property_descriptor(
     nullable: bool,
 ) -> Result<()> {
     validate_property_descriptor_with_table_state(
-        catalog, store, table_id, property, value_type, nullable, false,
+        catalog,
+        store,
+        table_id,
+        PropertyCheck {
+            property,
+            value_type,
+            nullable,
+            force: false,
+            allow_absent: false,
+        },
     )
+}
+
+/// One descriptor validation over a table's existing records.
+#[derive(Clone, Copy)]
+struct PropertyCheck<'a> {
+    property: &'a str,
+    value_type: PropertyType,
+    nullable: bool,
+    /// Validate even when the table descriptor is not `Public`.
+    force: bool,
+    /// Accept records lacking the property (a defaulted declaration's
+    /// backfill fills them before validation).
+    allow_absent: bool,
 }
 
 fn validate_property_descriptor_with_table_state(
     catalog: &Catalog,
     store: &GraphStore,
     table_id: TableId,
-    property: &str,
-    value_type: PropertyType,
-    nullable: bool,
-    force: bool,
+    check: PropertyCheck<'_>,
 ) -> Result<()> {
     let Some(table) = catalog.table_descriptor(table_id) else {
         return Err(HawDBError::Storage(format!(
@@ -2558,9 +2704,22 @@ fn validate_property_descriptor_with_table_state(
             table_id.0
         )));
     };
-    if !force && table.state != SchemaObjectState::Public {
+    if !check.force && table.state != SchemaObjectState::Public {
         return Ok(());
     }
+    let validate = |value: Option<&Value>, record: &dyn Fn() -> String| {
+        if check.allow_absent && value.is_none() {
+            return Ok(());
+        }
+        validate_property_schema_value(
+            &table.name,
+            check.property,
+            check.value_type,
+            check.nullable,
+            value,
+            &record(),
+        )
+    };
     match table.kind {
         TableKind::Node => {
             let Some(label_id) = catalog.label_id(&table.name) else {
@@ -2568,14 +2727,9 @@ fn validate_property_descriptor_with_table_state(
             };
             for node in store.nodes.values() {
                 if node.labels.contains(&label_id) {
-                    validate_property_schema_value(
-                        &table.name,
-                        property,
-                        value_type,
-                        nullable,
-                        node.properties.get(property),
-                        &format!("node {}", node.id.0),
-                    )?;
+                    validate(node.properties.get(check.property), &|| {
+                        format!("node {}", node.id.0)
+                    })?;
                 }
             }
         }
@@ -2585,19 +2739,232 @@ fn validate_property_descriptor_with_table_state(
             };
             for relationship in store.relationships.values() {
                 if relationship.rel_type == rel_type_id {
-                    validate_property_schema_value(
-                        &table.name,
-                        property,
-                        value_type,
-                        nullable,
-                        relationship.properties.get(property),
-                        &format!("relationship {}", relationship.id.0),
-                    )?;
+                    validate(relationship.properties.get(check.property), &|| {
+                        format!("relationship {}", relationship.id.0)
+                    })?;
                 }
             }
         }
     }
     Ok(())
+}
+
+/// Rejects a declared default that the descriptor itself would reject, so a
+/// default can never make a later creation fail validation.
+fn validate_property_default(
+    table: &str,
+    property: &str,
+    value_type: PropertyType,
+    nullable: bool,
+    default: &PropertyDefault,
+) -> Result<()> {
+    let sample = match default {
+        PropertyDefault::Value(Value::Null) => {
+            return Err(HawDBError::Storage(format!(
+                "property schema {table}.{property} DEFAULT NULL is not a default; omit DEFAULT to leave the property absent"
+            )));
+        }
+        PropertyDefault::Value(value) => {
+            crate::canonical::validate_property_value(value).map_err(|error| {
+                HawDBError::Storage(format!(
+                    "property schema {table}.{property} default violates storage limits: {error}"
+                ))
+            })?;
+            value.clone()
+        }
+        PropertyDefault::CurrentTimestamp => {
+            PropertyDefault::CurrentTimestamp.resolve(PropertyDefault::creation_clock())
+        }
+    };
+    validate_property_schema_value(
+        table,
+        property,
+        value_type,
+        nullable,
+        Some(&sample),
+        "default value",
+    )
+}
+
+/// A property descriptor declaration, as written by `CREATE PROPERTY`.
+pub(crate) struct PropertyDeclaration<'a> {
+    pub(crate) table_kind: TableKind,
+    pub(crate) table: &'a str,
+    pub(crate) table_id: TableId,
+    pub(crate) property: &'a str,
+    pub(crate) value_type: PropertyType,
+    pub(crate) nullable: bool,
+    pub(crate) default: Option<PropertyDefault>,
+}
+
+/// Ops declaring a property descriptor. A defaulted property declared on a
+/// table that has records without it enters `Backfill`: schema maintenance
+/// writes the default into those records before validation and `Public`.
+fn property_declaration_ops(
+    catalog: &Catalog,
+    store: &GraphStore,
+    declaration: &PropertyDeclaration<'_>,
+) -> Result<(
+    Vec<WalOp>,
+    Option<DeclaredPropertyDefault>,
+    SchemaObjectState,
+)> {
+    let PropertyDeclaration {
+        table_kind,
+        table,
+        table_id,
+        property,
+        value_type,
+        nullable,
+        ref default,
+    } = *declaration;
+    let create = |default: Option<DeclaredPropertyDefault>| WalOp::CreateProperty {
+        table_kind,
+        table: table.to_string(),
+        property: property.to_string(),
+        value_type,
+        nullable,
+        default: default.map(Box::new),
+    };
+    let Some(default) = default.clone() else {
+        validate_property_descriptor(catalog, store, table_id, property, value_type, nullable)?;
+        return Ok((vec![create(None)], None, SchemaObjectState::Public));
+    };
+    validate_property_default(table, property, value_type, nullable, &default)?;
+    let declared = DeclaredPropertyDefault::declare(default);
+    let needs_backfill = catalog
+        .table_descriptor(table_id)
+        .is_some_and(|descriptor| {
+            !property_backfill_ops(
+                catalog,
+                store,
+                descriptor,
+                property,
+                &declared.backfill_value,
+                Some(1),
+            )
+            .0
+            .is_empty()
+        });
+    // Records lacking the property are filled by the backfill; present values
+    // (including explicit NULLs) must already satisfy the descriptor.
+    validate_property_descriptor_with_table_state(
+        catalog,
+        store,
+        table_id,
+        PropertyCheck {
+            property,
+            value_type,
+            nullable,
+            force: false,
+            allow_absent: needs_backfill,
+        },
+    )?;
+    let mut ops = vec![create(Some(declared.clone()))];
+    let state = if needs_backfill {
+        ops.push(WalOp::AlterPropertyState {
+            table_kind,
+            table: table.to_string(),
+            property: property.to_string(),
+            state: SchemaObjectState::Backfill,
+        });
+        SchemaObjectState::Backfill
+    } else {
+        SchemaObjectState::Public
+    };
+    Ok((ops, Some(declared), state))
+}
+
+/// Set ops writing `value` into records of `table` that lack `property`
+/// (the key is absent; an explicit stored NULL is kept), up to `limit`
+/// records. The flag reports whether every lacking record was covered.
+fn property_backfill_ops(
+    catalog: &Catalog,
+    store: &GraphStore,
+    table: &TableDescriptor,
+    property: &str,
+    value: &Value,
+    limit: Option<usize>,
+) -> (Vec<WalOp>, bool) {
+    let mut ops = Vec::new();
+    let full = |ops: &Vec<WalOp>| limit.is_some_and(|limit| ops.len() >= limit);
+    match table.kind {
+        TableKind::Node => {
+            let Some(label_id) = catalog.label_id(&table.name) else {
+                return (ops, true);
+            };
+            for node in store.nodes.values() {
+                if node.labels.contains(&label_id) && !node.properties.contains_key(property) {
+                    if full(&ops) {
+                        return (ops, false);
+                    }
+                    ops.push(WalOp::SetNodeProperty {
+                        id: node.id,
+                        property: property.to_string(),
+                        value: value.clone(),
+                    });
+                }
+            }
+        }
+        TableKind::Relationship => {
+            let Some(rel_type_id) = catalog.rel_type_id(&table.name) else {
+                return (ops, true);
+            };
+            for relationship in store.relationships.values() {
+                if relationship.rel_type == rel_type_id
+                    && !relationship.properties.contains_key(property)
+                {
+                    if full(&ops) {
+                        return (ops, false);
+                    }
+                    ops.push(WalOp::SetRelationshipProperty {
+                        id: relationship.id,
+                        property: property.to_string(),
+                        value: value.clone(),
+                    });
+                }
+            }
+        }
+    }
+    (ops, true)
+}
+
+/// Fills declared defaults into every created record whose creating write
+/// did not mention the property. Present keys, including explicit NULLs, are
+/// never touched, and nothing is filled at read time. `clock` is the writing
+/// transaction's `current_timestamp()` instant, read lazily at most once.
+pub(crate) fn fill_creation_defaults(
+    catalog: &Catalog,
+    ops: &mut [WalOp],
+    clock: &mut impl FnMut() -> chrono::NaiveDateTime,
+) {
+    if !catalog.has_property_defaults() {
+        return;
+    }
+    for op in ops {
+        match op {
+            WalOp::CreateNode {
+                label, properties, ..
+            } => catalog.fill_creation_defaults(TableKind::Node, label, properties, clock),
+            WalOp::CreateRelationship {
+                rel_type,
+                properties,
+                ..
+            } => {
+                catalog.fill_creation_defaults(TableKind::Relationship, rel_type, properties, clock)
+            }
+            WalOp::Batch(ops) => fill_creation_defaults(catalog, ops, clock),
+            _ => {}
+        }
+    }
+}
+
+/// A lazily read, then fixed, creation clock.
+pub(crate) fn lazy_creation_clock(
+    fixed: Option<chrono::NaiveDateTime>,
+) -> impl FnMut() -> chrono::NaiveDateTime {
+    let mut instant = fixed;
+    move || *instant.get_or_insert_with(PropertyDefault::creation_clock)
 }
 
 fn validate_table_descriptor(
@@ -2616,10 +2983,13 @@ fn validate_table_descriptor(
             catalog,
             store,
             table_id,
-            &property.name,
-            property.value_type,
-            property.nullable,
-            true,
+            PropertyCheck {
+                property: &property.name,
+                value_type: property.value_type,
+                nullable: property.nullable,
+                force: true,
+                allow_absent: false,
+            },
         )?;
     }
     Ok(())
@@ -2936,6 +3306,17 @@ fn optional_label_id(catalog: &Catalog, label: &str) -> Option<LabelId> {
     }
 }
 
+/// Resolves an endpoint label of a relationship mutation's pattern. An
+/// unlabeled pattern node (`""`) matches any node: `Some(None)`. A label the
+/// catalog does not know matches no node: `None`.
+fn endpoint_label_id(catalog: &Catalog, label: &str) -> Option<Option<LabelId>> {
+    if label.is_empty() {
+        Some(None)
+    } else {
+        catalog.label_id(label).map(Some)
+    }
+}
+
 fn pending_node_index(pending_nodes: &[PendingNode], id: NodeId) -> Option<usize> {
     // Allocation appends increasing IDs; deletion retains the order and may leave gaps.
     pending_nodes
@@ -2955,25 +3336,30 @@ fn apply_set_relationship_properties_mutation(
     limits: MutationLimits,
 ) -> Result<()> {
     let (Some(source_label_id), Some(target_label_id), Some(rel_type_id)) = (
-        catalog.label_id(&update.source_label),
-        catalog.label_id(&update.target_label),
+        endpoint_label_id(catalog, &update.source_label),
+        endpoint_label_id(catalog, &update.target_label),
         catalog.rel_type_id(&update.rel_type),
     ) else {
         return Ok(());
     };
-    let source_ids = store
-        .matching_node_ids_with_pending_bounded(
-            Some(source_label_id),
-            update.filter.as_ref(),
-            pending_nodes,
-            remaining_mutation_affected_rows(rows.len(), limits)?,
-            "max_mutation_affected_rows",
-        )?
-        .into_iter()
-        .collect::<BTreeSet<_>>();
+    // `None`: an unconstrained source matches every relationship.
+    let source_ids = (source_label_id.is_some() || update.filter.is_some())
+        .then(|| {
+            store.matching_node_ids_with_pending_bounded(
+                source_label_id,
+                update.filter.as_ref(),
+                pending_nodes,
+                remaining_mutation_affected_rows(rows.len(), limits)?,
+                "max_mutation_affected_rows",
+            )
+        })
+        .transpose()?
+        .map(|ids| ids.into_iter().collect::<BTreeSet<_>>());
+    let source_matches =
+        |source: &NodeId| source_ids.as_ref().is_none_or(|ids| ids.contains(source));
     for relationship in store.relationship_records_owned() {
         let relationship = relationship?;
-        if relationship.rel_type != rel_type_id || !source_ids.contains(&relationship.source) {
+        if relationship.rel_type != rel_type_id || !source_matches(&relationship.source) {
             continue;
         }
         if update
@@ -2989,7 +3375,7 @@ fn apply_set_relationship_properties_mutation(
         let target_matches = store
             .node_owned(relationship.target)?
             .map(|target| {
-                target.labels.contains(&target_label_id)
+                target_label_id.is_none_or(|label| target.labels.contains(&label))
                     && update
                         .target_filter
                         .as_ref()
@@ -3023,7 +3409,7 @@ fn apply_set_relationship_properties_mutation(
     }
     for (relationship_id, source, target, pending_rel_type_id, properties) in pending_relationships
     {
-        if *pending_rel_type_id != rel_type_id || !source_ids.contains(source) {
+        if *pending_rel_type_id != rel_type_id || !source_matches(source) {
             continue;
         }
         if update
@@ -3065,11 +3451,11 @@ fn node_matches_label_and_filter(
     store: &GraphStore,
     pending_nodes: &[PendingNode],
     id: NodeId,
-    label_id: LabelId,
+    label_id: Option<LabelId>,
     filter: Option<&PropertyFilter>,
 ) -> Result<bool> {
     if let Some(node) = store.node_owned(id)? {
-        return Ok(node.labels.contains(&label_id)
+        return Ok(label_id.is_none_or(|label| node.labels.contains(&label))
             && filter
                 .map(|filter| property_filter_matches(filter, id.0, &node.properties))
                 .unwrap_or(true));
@@ -3077,7 +3463,7 @@ fn node_matches_label_and_filter(
     Ok(pending_node_index(pending_nodes, id)
         .map(|index| &pending_nodes[index])
         .map(|(_, pending_label_id, properties)| {
-            *pending_label_id == label_id
+            label_id.is_none_or(|label| *pending_label_id == label)
                 && filter
                     .map(|filter| property_filter_matches(filter, id.0, properties))
                     .unwrap_or(true)
@@ -3619,8 +4005,14 @@ mod tests {
         let domain =
             crate::file_descriptors::ProjectFileDescriptors::acquire_existing(&path, 64).unwrap();
         drop(store);
-        let (repaired, _) =
-            GraphStore::open_for_derived_repair(&path, WalReplayConfig::default()).unwrap();
+        let (repaired, _) = GraphStore::open_for_derived_repair(
+            &path,
+            WalReplayConfig {
+                recovery_mode: crate::config::RecoveryMode::Strict,
+                ..WalReplayConfig::default()
+            },
+        )
+        .unwrap();
         assert_eq!(repaired.file_descriptor_metrics().unwrap().limit, 64);
         assert!(matches!(
             crate::file_descriptors::ProjectFileDescriptors::acquire_existing(&path, 256),
@@ -9152,7 +9544,10 @@ mod tests {
             &path,
             &mut catalog,
             DurabilityPolicy::default(),
-            replay,
+            WalReplayConfig {
+                recovery_mode: crate::config::RecoveryMode::Strict,
+                ..replay
+            },
         )
         .unwrap();
         assert_eq!(
@@ -9313,7 +9708,10 @@ mod tests {
             &path,
             &mut catalog,
             durability,
-            replay,
+            WalReplayConfig {
+                recovery_mode: crate::config::RecoveryMode::Strict,
+                ..replay
+            },
         )
         .unwrap();
         assert_private_checkpoint_recovery_rows(&read_only, epoch, &row);
@@ -9586,7 +9984,10 @@ mod tests {
                     &path,
                     &mut catalog,
                     durability,
-                    replay,
+                    WalReplayConfig {
+                        recovery_mode: crate::config::RecoveryMode::Strict,
+                        ..replay
+                    },
                 )
                 .unwrap();
                 check(&read_only, 4);
@@ -10606,11 +11007,21 @@ mod tests {
         file_bytes_at_cancellation: std::sync::atomic::AtomicU64,
     }
 
+    /// Cancels once `cancel_after_file` units have ended after the private
+    /// file appeared, independently of local admission batches (#1616).
     impl hawdb_qos::QosTelemetrySink for CancelCheckpointAtFile {
         fn record_qos(&self, event: hawdb_qos::QosTelemetryEvent) {
-            use std::sync::atomic::Ordering;
-            let completed = event.phase == hawdb_qos::QosTelemetryPhase::Completion;
             self.probe.record_qos(event);
+        }
+
+        fn observes_units(&self) -> bool {
+            true
+        }
+
+        fn record_qos_unit(&self, event: hawdb_qos::QosUnitEvent) {
+            use std::sync::atomic::Ordering;
+            let completed = event.phase != hawdb_qos::QosUnitPhase::Started;
+            self.probe.record_qos_unit(event);
             if completed && self.path.exists() {
                 self.observed_file.store(true, Ordering::SeqCst);
                 let completed = self.completed_after_file.fetch_add(1, Ordering::SeqCst) + 1;
@@ -12171,9 +12582,16 @@ mod tests {
 
         let mut catalog = Catalog::default();
         let error = GraphStore::open(&path, &mut catalog).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("unsupported storage version: hawdb-storage-v0"));
+        assert_eq!(
+            error,
+            HawDBError::UnsupportedStorageFormat(
+                hawdb_core::StorageFormatError::UnsupportedVersion {
+                    format: hawdb_core::STORAGE_MANIFEST_FORMAT,
+                    found: 0,
+                    supported: 1,
+                }
+            )
+        );
         std::fs::remove_dir_all(path).unwrap();
     }
 
@@ -12296,9 +12714,16 @@ mod tests {
 
         let mut catalog = Catalog::default();
         let error = GraphStore::open(&path, &mut catalog).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("unsupported storage version: hawdb-storage-v0"));
+        assert_eq!(
+            error,
+            HawDBError::UnsupportedStorageFormat(
+                hawdb_core::StorageFormatError::UnsupportedVersion {
+                    format: hawdb_core::STORAGE_MANIFEST_FORMAT,
+                    found: 0,
+                    supported: 1,
+                }
+            )
+        );
         std::fs::remove_dir_all(path).unwrap();
     }
 
@@ -13296,7 +13721,13 @@ mod tests {
             .unwrap();
 
         let mut catalog = Catalog::default();
-        let error = GraphStore::open(&path, &mut catalog).unwrap_err();
+        let error = GraphStore::open_with_durability_and_recovery(
+            &path,
+            &mut catalog,
+            DurabilityPolicy::SyncOnEveryWrite,
+            crate::config::RecoveryMode::Strict,
+        )
+        .unwrap_err();
         assert!(error
             .to_string()
             .contains("strict WAL recovery rejected torn tail"));

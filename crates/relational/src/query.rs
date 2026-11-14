@@ -13,8 +13,9 @@
 // limitations under the License.
 
 use crate::field_plan::{
-    order_by_uses_expression_alias, plan_relational_field_plan, projection_contains_aggregate,
-    resolve_relational_order_target, RelationalOrderTarget,
+    order_by_uses_expression_alias, plan_relational_execution_field_plan,
+    plan_relational_field_plan, projection_contains_aggregate, resolve_relational_order_target,
+    RelationalOrderTarget,
 };
 use crate::index_runtime::{
     RelationalIndexReadMode, RelationalIndexRuntime, RelationalIndexStoreReader,
@@ -75,6 +76,7 @@ pub(super) use crate::locator::{
 use crate::predicate::BoundStreamingPredicate;
 use crate::streaming_projection::BoundStreamingProjection;
 
+pub mod text_search;
 pub mod vector_index;
 
 mod access;
@@ -443,6 +445,7 @@ fn execute_fromless_select(
             runtime_path: "no_from_clause",
             ..RelationalRowExecutionEvidence::default()
         },
+        search_index_scan: None,
         blocking_operator_memory_reports: Vec::new(),
     })
 }
@@ -470,8 +473,20 @@ pub fn execute_prepared_relational_query_with_resources<'a, R: RelationalQuerySt
         ..RelationalSqlStageTimings::default()
     };
     match prepared.statement {
-        SqlStatement::Select(select) => {
+        SqlStatement::Select(mut select) => {
+            if select.text_search().is_some() {
+                crate::literal_coercion::coerce_select(&mut select, state, parameters)?;
+                return text_search::execute_text_search_select(
+                    &select,
+                    parameters,
+                    state,
+                    read_modes,
+                    resources,
+                    initial_stage_timings,
+                );
+            }
             if select.from.is_none() {
+                crate::literal_coercion::coerce_select(&mut select, state, parameters)?;
                 return execute_fromless_select(
                     &select,
                     parameters,
@@ -494,11 +509,30 @@ pub fn execute_prepared_relational_query_with_resources<'a, R: RelationalQuerySt
             execute_select_timed(&prepared, parameters, execution)
         }
         SqlStatement::Explain(explain) => {
-            let SqlStatement::Select(select) = *explain.statement else {
+            let SqlStatement::Select(mut select) = *explain.statement else {
                 return Err(HawDBError::Semantic(
                     "EXPLAIN only supports relational SELECT".to_string(),
                 ));
             };
+            if select.text_search().is_some() {
+                crate::literal_coercion::coerce_select(&mut select, state, parameters)?;
+                return text_search::explain_text_search_select(
+                    &select,
+                    parameters,
+                    state,
+                    read_modes,
+                    if explain.analyze {
+                        resources
+                    } else {
+                        RelationalQueryResourceContext {
+                            task_context: None,
+                            ..resources
+                        }
+                    },
+                    initial_stage_timings,
+                    explain.analyze,
+                );
+            }
             if select.from.is_none() {
                 return Err(HawDBError::Semantic(
                     "EXPLAIN does not support a FROM-less SELECT".to_string(),

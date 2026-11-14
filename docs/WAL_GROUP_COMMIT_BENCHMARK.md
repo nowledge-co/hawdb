@@ -35,7 +35,7 @@ local measurements cannot explain an intermittent remote Linux timeout.
 
 ## One recovery open, independent proofs
 
-After all writers join and the database closes, one default strict reopen now
+After all writers join and the database closes, one explicitly configured `Strict` reopen
 supplies both proofs. Before any query, its original recovery report must show
 LSN 1, the exact final next LSN, the exact replay count and no torn tail. The same
 handle then checks the final epoch and every ordered ID/body, including warmup
@@ -57,9 +57,9 @@ state and a torn WAL. The ordinary regression target participates in the existin
 smoke suite; it is not a fuzz campaign.
 
 ```sh
-cargo test --locked --test wal_group_commit_recovery
-cargo clippy --locked --all-features --bench wal_group_commit \
-  --test wal_group_commit_recovery -- -D warnings
+cargo test --locked -p hawdb-test-contracts --test checkpoint_contracts wal_recovery::
+cargo clippy --locked --all-features --bench wal_group_commit -- -D warnings
+cargo clippy --locked -p hawdb-test-contracts --all-features --test checkpoint_contracts -- -D warnings
 bazel test //:hawdb_wal_group_commit_recovery_tests \
   //:hawdb_linux_ci_wal_group_commit_smoke_test
 bazel test //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests \

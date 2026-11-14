@@ -380,7 +380,7 @@ fn validate_branch_derived_objects(store: &GraphStore, kind: DerivedArtifactKind
         .collect::<std::collections::BTreeSet<_>>();
     for reference in references {
         objects
-            .read(reference)
+            .verify_stored(reference)
             .map_err(HawDBError::from_storage_error)?;
     }
     Ok(())

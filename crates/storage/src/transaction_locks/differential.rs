@@ -508,15 +508,18 @@ fn wait_campaign(seed: u64) -> usize {
                 assert_eq!(result.is_err(), cyclic, "seed={seed} step={step} deadlock");
                 if cyclic {
                     let error = result.unwrap_err();
-                    assert!(matches!(error, HawDBError::Execution(_)));
-                    let message = error.to_string();
-                    let witness: Vec<u64> = message
-                        .split("wait cycle: ")
-                        .nth(1)
-                        .unwrap()
-                        .split(" -> ")
-                        .map(|node| node.parse().unwrap())
-                        .collect();
+                    assert!(error.is_retryable_transaction_conflict());
+                    let HawDBError::TransactionRetryRequired(cause) = error else {
+                        panic!("expected a typed deadlock victim: {error}");
+                    };
+                    assert_eq!(cause.transaction_id, owner);
+                    assert!(!cause.already_aborted);
+                    let hawdb_core::TransactionRetryReason::Deadlock {
+                        wait_cycle: witness,
+                    } = cause.reason
+                    else {
+                        panic!("expected a deadlock retry cause");
+                    };
                     assert_eq!(witness.first(), Some(&owner));
                     assert_eq!(witness.last(), Some(&owner));
                     assert_eq!(

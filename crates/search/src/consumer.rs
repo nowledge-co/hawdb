@@ -1433,6 +1433,11 @@ impl SearchIndex {
                 &self.rabitq_projection_identity(generation),
             ) {
                 Ok(projection) => {
+                    if projection.manifest().metric != self.vector_metric().into() {
+                        return Err(invalid(
+                            "RaBitQ artifact metric differs from its projection",
+                        ));
+                    }
                     if let Some(binding) = &self.vector_index_descriptor {
                         crate::vector_index::validate_projection(binding, projection.manifest())?;
                     }

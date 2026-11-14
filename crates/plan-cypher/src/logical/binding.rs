@@ -375,6 +375,7 @@ pub(super) fn bind_relationship_copy_on_create_set_properties(
             | SetValueExpression::CoalesceProperty { .. }
             | SetValueExpression::DecrementFloorZero { .. }
             | SetValueExpression::PreserveNewerExisting { .. }
+            | SetValueExpression::PreserveOlderExisting { .. }
             | SetValueExpression::CoalescePropertyAdd { .. } => {
                 return Err(HawDBError::Semantic(
                     "relationship-copy MERGE ON CREATE SET supports only values and matched relationship properties"
@@ -593,6 +594,29 @@ pub(super) fn try_pushdown_relationship_property_eq(
     }
 }
 
+pub(super) fn row_value_expression(value: ValueExpression) -> Result<ScalarExpression> {
+    let span = value.span;
+    let kind = match value.kind {
+        ValueExpressionKind::Binding(variable) => ScalarExpressionKind::Variable(variable),
+        ValueExpressionKind::BindingProperty { variable, property } => {
+            ScalarExpressionKind::Property { variable, property }
+        }
+        ValueExpressionKind::List(values) => ScalarExpressionKind::List(
+            values
+                .into_iter()
+                .map(row_value_expression)
+                .collect::<Result<_>>()?,
+        ),
+        ValueExpressionKind::Timestamp(ref inner) if inner.reads_row_binding() => {
+            return Err(HawDBError::Semantic(
+                "row-bound timestamp conversion in value expressions is not supported".into(),
+            ));
+        }
+        _ => ScalarExpressionKind::Value(value),
+    };
+    Ok(AstNode { kind, span })
+}
+
 pub(super) fn bind_value(
     expression: &ValueExpression,
     parameters: &BTreeMap<String, Value>,
@@ -608,22 +632,53 @@ pub(super) fn bind_value(
             .map(|value| bind_value(value, parameters))
             .collect::<Result<Vec<_>>>()
             .map(Value::List),
+        ValueExpressionKind::Binding(variable) => Err(HawDBError::Semantic(format!(
+            "row-bound value '{variable}' is not supported in this position"
+        ))),
         ValueExpressionKind::BindingProperty { variable, property } => Err(HawDBError::Semantic(
-            format!("row-bound value '{variable}.{property}' requires an UNWIND mutation context"),
+            format!("row-bound value '{variable}.{property}' is not supported in this position"),
+        )),
+        ValueExpressionKind::BindingIndex { variable, index } => Err(HawDBError::Semantic(
+            format!("row-bound value '{variable}[{index}]' requires an UNWIND or LOAD CSV mutation context"),
         )),
         ValueExpressionKind::CurrentTimestamp => Ok(current_timestamp_value()),
         ValueExpressionKind::Timestamp(value) => {
             bind_value(value, parameters).and_then(timestamp_value)
         }
+        ValueExpressionKind::Conversion { function, argument } => {
+            function.apply_unaccounted(&bind_value(argument, parameters)?)
+        }
+        ValueExpressionKind::Temporal {
+            function,
+            arguments,
+        } => {
+            let arguments = arguments
+                .iter()
+                .map(|argument| bind_value(argument, parameters))
+                .collect::<Result<Vec<_>>>()?;
+            hawdb_core::temporal::evaluate(
+                *function,
+                &arguments,
+                hawdb_core::temporal::statement_now(),
+            )
+            .map_err(|error| HawDBError::Semantic(error.to_string()))
+        }
+        ValueExpressionKind::Map(entries) => entries
+            .iter()
+            .map(|(key, value)| Ok((key.clone(), bind_value(value, parameters)?)))
+            .collect::<Result<BTreeMap<_, _>>>()
+            .map(Value::Map),
     }
 }
 
+/// `CURRENT_TIMESTAMP()`: epoch nanoseconds of the statement clock, so every
+/// clock read in one statement observes the same instant.
 pub(super) fn current_timestamp_value() -> Value {
-    let nanos = hawdb_core::time::SystemTime::now()
-        .duration_since(hawdb_core::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos().min(i64::MAX as u128) as i64)
-        .unwrap_or(0);
-    Value::Int(nanos)
+    let now = hawdb_core::temporal::statement_now();
+    let nanos = now
+        .timestamp_nanos_opt()
+        .unwrap_or(if now.timestamp() < 0 { 0 } else { i64::MAX });
+    Value::Int(nanos.max(0))
 }
 
 pub(super) fn timestamp_value(value: Value) -> Result<Value> {
@@ -909,10 +964,10 @@ pub(super) fn plan_predicate(
             op: plan_comparison_op(*op),
             value: bind_value(value, parameters)?,
         }),
-        PropertyPredicate::ExpressionEq { expression, value } => Ok(Predicate::ExpressionEq {
-            expression: plan_scalar_expression(scope, expression, parameters)?,
-            value: plan_scalar_expression(scope, value, parameters)?,
-        }),
+        PropertyPredicate::ExpressionEq { expression, value } => Ok(temporal::eq_predicate(
+            plan_scalar_expression(scope, expression, parameters)?,
+            plan_scalar_expression(scope, value, parameters)?,
+        )),
         PropertyPredicate::ExpressionNotEq { expression, value } => {
             Ok(Predicate::ExpressionNotEq {
                 expression: plan_scalar_expression(scope, expression, parameters)?,
@@ -923,17 +978,29 @@ pub(super) fn plan_predicate(
             expression,
             op,
             value,
-        } => Ok(Predicate::ExpressionCompare {
-            expression: plan_scalar_expression(scope, expression, parameters)?,
-            op: plan_comparison_op(*op),
-            value: plan_scalar_expression(scope, value, parameters)?,
-        }),
+        } => Ok(temporal::compare_predicate(
+            plan_scalar_expression(scope, expression, parameters)?,
+            plan_comparison_op(*op),
+            plan_scalar_expression(scope, value, parameters)?,
+        )),
         PropertyPredicate::ExpressionContains { expression, value } => {
             Ok(Predicate::ExpressionContains {
                 expression: plan_scalar_expression(scope, expression, parameters)?,
                 value: plan_scalar_expression(scope, value, parameters)?,
             })
         }
+        PropertyPredicate::ExpressionRegexMatch {
+            expression,
+            pattern,
+        } => match bind_value(pattern, parameters)? {
+            Value::String(pattern) => Ok(Predicate::ExpressionRegexMatch {
+                expression: plan_scalar_expression(scope, expression, parameters)?,
+                pattern: ValidatedRegex::new(pattern)?,
+            }),
+            value => Err(HawDBError::Semantic(format!(
+                "regex match predicate requires a string pattern, got {value:?}"
+            ))),
+        },
         PropertyPredicate::ExpressionIn { expression, values } => {
             match bind_value(values, parameters)? {
                 Value::List(values) => Ok(Predicate::ExpressionIn {
@@ -1307,7 +1374,8 @@ pub(super) fn collect_predicate_variables(
         PropertyPredicate::ExpressionEq { expression, .. }
         | PropertyPredicate::ExpressionNotEq { expression, .. }
         | PropertyPredicate::ExpressionCompare { expression, .. }
-        | PropertyPredicate::ExpressionContains { expression, .. } => {
+        | PropertyPredicate::ExpressionContains { expression, .. }
+        | PropertyPredicate::ExpressionRegexMatch { expression, .. } => {
             collect_scalar_expression_variables(expression, variables);
             let value = match predicate {
                 PropertyPredicate::ExpressionEq { value, .. }
@@ -1357,12 +1425,45 @@ pub(super) fn predicate_variable(predicate: &PropertyPredicate) -> Option<&str> 
         | PropertyPredicate::ExpressionNotEq { .. }
         | PropertyPredicate::ExpressionCompare { .. }
         | PropertyPredicate::ExpressionContains { .. }
+        | PropertyPredicate::ExpressionRegexMatch { .. }
         | PropertyPredicate::ExpressionIn { .. }
         | PropertyPredicate::ParameterIsNull { .. }
         | PropertyPredicate::ParameterIsNotNull { .. }
         | PropertyPredicate::ParameterEq { .. }
         | PropertyPredicate::ParameterNotEq { .. }
         | PropertyPredicate::BoundRelationshipExists { .. } => None,
+    }
+}
+
+fn collect_value_variables(value: &ValueExpression, variables: &mut BTreeSet<String>) {
+    match &value.kind {
+        ValueExpressionKind::Binding(variable)
+        | ValueExpressionKind::BindingProperty { variable, .. }
+        | ValueExpressionKind::BindingIndex { variable, .. } => {
+            variables.insert(variable.clone());
+        }
+        ValueExpressionKind::List(values) => {
+            for value in values {
+                collect_value_variables(value, variables);
+            }
+        }
+        ValueExpressionKind::Map(entries) => {
+            for value in entries.values() {
+                collect_value_variables(value, variables);
+            }
+        }
+        ValueExpressionKind::Timestamp(value)
+        | ValueExpressionKind::Conversion {
+            argument: value, ..
+        } => collect_value_variables(value, variables),
+        ValueExpressionKind::Temporal { arguments, .. } => {
+            for value in arguments {
+                collect_value_variables(value, variables);
+            }
+        }
+        ValueExpressionKind::Literal(_)
+        | ValueExpressionKind::Parameter(_)
+        | ValueExpressionKind::CurrentTimestamp => {}
     }
 }
 
@@ -1374,10 +1475,27 @@ pub(super) fn collect_scalar_expression_variables(
         ScalarExpressionKind::Variable(variable)
         | ScalarExpressionKind::Property { variable, .. }
         | ScalarExpressionKind::Id(variable)
-        | ScalarExpressionKind::RelationshipType(variable) => {
+        | ScalarExpressionKind::RelationshipType(variable)
+        | ScalarExpressionKind::Label { variable, .. }
+        | ScalarExpressionKind::RelationshipEndpoint { variable, .. } => {
             variables.insert(variable.clone());
         }
         ScalarExpressionKind::Value(_) => {}
+        ScalarExpressionKind::Reduce {
+            accumulator,
+            initial,
+            variable,
+            list,
+            expression,
+        } => {
+            collect_scalar_expression_variables(initial, variables);
+            collect_scalar_expression_variables(list, variables);
+            let mut body = BTreeSet::new();
+            collect_scalar_expression_variables(expression, &mut body);
+            body.remove(accumulator);
+            body.remove(variable);
+            variables.extend(body);
+        }
         ScalarExpressionKind::Coalesce(expressions) => {
             for expression in expressions {
                 collect_scalar_expression_variables(expression, variables);
@@ -1413,10 +1531,69 @@ pub(super) fn collect_scalar_expression_variables(
         ScalarExpressionKind::CaseCoalesceDifferenceFloorZero { variable, .. } => {
             variables.insert(variable.clone());
         }
+        ScalarExpressionKind::ListComprehension {
+            variable,
+            list,
+            predicate,
+            projection,
+        } => {
+            collect_scalar_expression_variables(list, variables);
+            let mut body = BTreeSet::new();
+            for expression in predicate.iter().chain(projection.iter()) {
+                collect_scalar_expression_variables(expression, &mut body);
+            }
+            body.remove(variable);
+            variables.extend(body);
+        }
+        ScalarExpressionKind::Path(path) => {
+            variables.insert(path.path_variable().to_string());
+        }
+        // A pattern variable is either bound by the enclosing scope or
+        // introduced by the pattern, which is not known here. Only the
+        // variables the pattern does not name are certainly enclosing ones.
+        ScalarExpressionKind::PatternPredicate(pattern)
+        | ScalarExpressionKind::PatternComprehension { pattern, .. } => {
+            let pattern = &pattern.kind;
+            let nodes = || {
+                std::iter::once(&pattern.first).chain(pattern.steps.iter().map(|step| &step.target))
+            };
+            let mut body = BTreeSet::new();
+            expression.kind.all_children(|child| {
+                collect_scalar_expression_variables(child, &mut body);
+                true
+            });
+            for value in nodes().flat_map(|node| node.properties.values()).chain(
+                pattern
+                    .steps
+                    .iter()
+                    .flat_map(|step| step.relationship.properties.values()),
+            ) {
+                collect_value_variables(value, &mut body);
+            }
+            for node in nodes() {
+                body.remove(&node.variable);
+            }
+            for step in &pattern.steps {
+                if let Some(variable) = &step.relationship.variable {
+                    body.remove(variable);
+                }
+            }
+            variables.extend(body);
+        }
         ScalarExpressionKind::Case { .. }
         | ScalarExpressionKind::Binary { .. }
         | ScalarExpressionKind::Not(_)
-        | ScalarExpressionKind::IsNull { .. } => {
+        | ScalarExpressionKind::IsNull { .. }
+        | ScalarExpressionKind::ListFunction { .. }
+        | ScalarExpressionKind::StringFunction { .. }
+        | ScalarExpressionKind::List(_)
+        | ScalarExpressionKind::ListIndex { .. }
+        | ScalarExpressionKind::Conversion { .. }
+        | ScalarExpressionKind::NumericFunction { .. }
+        | ScalarExpressionKind::ListSlice { .. }
+        | ScalarExpressionKind::TemporalFunction { .. }
+        | ScalarExpressionKind::PropertyAccess { .. }
+        | ScalarExpressionKind::MapLiteral(_) => {
             expression.kind.all_children(|child| {
                 collect_scalar_expression_variables(child, variables);
                 true

@@ -103,6 +103,7 @@ fn application_system_schema_upgrade_crash_recovers_a_consistent_registry_and_sc
                 &path,
                 DatabaseConfig {
                     read_only: true,
+                    recovery_mode: crate::RecoveryMode::Strict,
                     ..DatabaseConfig::default()
                 },
             )
@@ -120,12 +121,13 @@ fn application_system_schema_upgrade_crash_recovers_a_consistent_registry_and_sc
                     ..
                 }
             ));
-            let error = read_only
+            // Resident rows recovered from the WAL serve reads while the
+            // schema checkpoint is pending (#1593).
+            let rows = read_only
                 .query_sql("SELECT kind FROM content_documents WHERE id = 'doc-1'")
-                .unwrap_err();
-            assert!(error
-                .to_string()
-                .contains("canonical relational row reader is unavailable"));
+                .unwrap();
+            assert_eq!(rows.rows.len(), 1);
+            assert_eq!(rows.rows[0]["kind"], Value::String("text".to_string()));
         }
 
         let mut reopened = Database::open(&path).unwrap();
@@ -245,6 +247,7 @@ fn read_only_out_of_core_open_validates_system_schema_through_canonical_rows() {
         &path,
         DatabaseConfig {
             read_only: true,
+            recovery_mode: crate::RecoveryMode::Strict,
             storage_residency_mode: hawdb_storage::config::StorageResidencyMode::OutOfCore,
             relational_index_mode: hawdb_storage::config::RelationalIndexMode::Authoritative,
             ..DatabaseConfig::default()
@@ -525,14 +528,14 @@ fn failed_application_system_schema_upgrade_does_not_publish_version() {
             SystemSchemaMigration::new(
                 2,
                 "invalid_table",
-                ["CREATE TABLE invalid_table (body TEXT NOT NULL)"],
+                ["CREATE TABLE invalid_table (body TEXT PRIMARY KEY, other TEXT PRIMARY KEY)"],
             ),
         ],
     );
     {
         let mut db = Database::open(&path).unwrap();
         let error = db.apply_system_schema_registry(&invalid_v2).unwrap_err();
-        assert!(error.to_string().contains("must declare a primary key"));
+        assert!(error.to_string().contains("more than one primary key"));
     }
     {
         let mut db = Database::open(&path).unwrap();
@@ -559,6 +562,7 @@ fn read_only_database_rejects_pending_application_system_schema_upgrade() {
         &path,
         DatabaseConfig {
             read_only: true,
+            recovery_mode: crate::RecoveryMode::Strict,
             ..DatabaseConfig::default()
         },
     )
@@ -663,13 +667,13 @@ fn application_cannot_claim_the_engine_system_schema_owner() {
 #[test]
 fn embedded_open_applies_application_schema_before_returning_the_store() {
     let path = unique_test_dir("embedded_application_schema_open");
-    let options = crate::NowledgeMemOpenOptions::graph_only(
+    let options = crate::EmbeddedStoreOpenOptions::graph_only(
         path.clone(),
-        crate::NowledgeMemGraphMode::WritableCutover,
+        crate::GraphMode::WritableCutover,
     )
     .with_system_schema_registry(registry_v1());
 
-    let (mut store, report) = crate::NowledgeMemEmbeddedStore::open_with_options(options).unwrap();
+    let (mut store, report) = crate::EmbeddedStore::open_with_options(options).unwrap();
     assert!(report.graph_opened);
     assert_eq!(report.system_schema_upgrades.len(), 1);
     assert_eq!(
@@ -689,14 +693,14 @@ fn embedded_open_applies_application_schema_before_returning_the_store() {
 #[test]
 fn embedded_open_rejects_duplicate_application_schema_owners_before_open() {
     let path = unique_test_dir("duplicate_application_schema_owner");
-    let options = crate::NowledgeMemOpenOptions::graph_only(
+    let options = crate::EmbeddedStoreOpenOptions::graph_only(
         path.clone(),
-        crate::NowledgeMemGraphMode::WritableCutover,
+        crate::GraphMode::WritableCutover,
     )
     .with_system_schema_registry(registry_v1())
     .with_system_schema_registry(registry_v1());
 
-    let error = crate::NowledgeMemEmbeddedStoreHandle::open_with_options(options).unwrap_err();
+    let error = crate::EmbeddedStoreHandle::open_with_options(options).unwrap_err();
     assert!(error.to_string().contains("registered more than once"));
     assert!(!path.exists());
 }

@@ -1,0 +1,28 @@
+{
+  "status": "unqualified",
+  "phase": "quiet-window process observation before timed samples",
+  "exit_code": 1,
+  "reason": "Concurrent compiler/test activity was observed. The existing process monitor raised RuntimeError after a process observation exceeded two seconds.",
+  "timed_samples_started": false,
+  "threshold_not_changed": true,
+  "runtime_tree": "893beda491ac25bf584bcfe05b31b593a80671eb",
+  "candidate_binary_sha256": "34d9a5efd09179fc4bd336670074c4d96d4ab1be862ce8cfbf756ba60c115499",
+  "runtime_source_sha256": {
+    "crates/cypher/src/parser/frontend.rs": "650481a64d728fdb7912ff5c59bb63a5e567c304b4f7cf4201601faac9d2ae79",
+    "crates/cypher/src/parser/frontend/data.rs": "7bbc57e4dc8e39bd56944e8919332190957c0b77b78df7712c716a4c32259346",
+    "crates/cypher/src/parser/frontend/expressions.rs": "173efaea519755cc097d2f9d9fc050f6c420008f95c1a113840dba3836573144",
+    "crates/cypher/src/parser/frontend/lexer.rs": "93f3bd65073038307e5af4d87f2434674bd9c3856ba797ffa8d8e6bbd113529d",
+    "crates/cypher/src/parser/frontend/patterns.rs": "0d3c0f5ffa5241c2bd92c817cfd4ab89fa559acfe4cc2dffaa4148c67cf5dbf8",
+    "crates/cypher/src/parser/frontend/predicates.rs": "44288801c661471555b099a8d2c8fa567c4ce2c76ed36ed104e498530895db9a",
+    "crates/cypher/src/parser/frontend/procedures.rs": "7b0436c1c3530ee5d3735fe7959a4536b532ff8066d0f704cac99870508c0c0a",
+    "crates/cypher/src/parser/frontend/projection.rs": "34ea4638dae1148a6ed7bc56c31acca7701e3df82fbdfbfda5a47f55e17ecf38",
+    "crates/cypher/src/parser/frontend/rust_peg.rs": "fc65dfe4ebf63bf12a6e722c6b6082d391b162f42a86f9eb15c99b79f260cee4",
+    "crates/cypher/src/parser/frontend/schema.rs": "5125b3ced7ed52aa4c6818043eb98fb4a5d4a60f510242141e3c8f248899bde7",
+    "crates/cypher/src/parser/frontend/temporal.rs": "c6494ac61da23ed04f0e9fe242a118271c0dd3d595fde0b5432549d1e25755fe",
+    "crates/cypher/src/parser/frontend/tests.rs": "b249ac48b9bc080b3d63435d06f6ab0151e2686284697b9b5747bcfd3506c439",
+    "crates/cypher/src/parser/frontend/transform.rs": "b0369028c3771747d461f7bc812219bb54b195a99a29f10c3f8238f2db9a0b75",
+    "crates/cypher/src/parser/frontend/tree.rs": "7eba632bf44b7f10e4bf7576ec0ce452ca748b953d3caf9ab95afcc3fe31dae9",
+    "crates/cypher/src/parser/frontend/values.rs": "cd5f981bc80fa237f66c9dbbb1d05f19023edcce0aa52ce819a2bc6757bcc81e"
+  },
+  "scope": "Environmental measurement interruption; neither a throughput pass nor a throughput regression. Repeat the unchanged protocol after the build/test workload is quiet."
+}

@@ -6,6 +6,18 @@ limits, persisted bytes and the current/previous-generation retention rules
 remain unchanged. The approved pair now exposes the integrated
 [context contract](SEARCH_GENERATION_CONTEXT.md).
 
+## Resident generation snapshots
+
+An unregistered resident checkpoint writes its snapshot as
+`search_projection.<g>.hawdb` before its selector (#1711). The cleanup grammar
+classifies that name as a content-generation artifact. The current and previous
+generation snapshots are therefore retained, together with any generation the
+active closure still references, under the same predicate as the descriptor
+and payload files. A generation newer than the selector (an interrupted
+checkpoint) is never obsolete. The next checkpoint reuses or supersedes it.
+`search_projection.hawdb` is a hard link to the selected generation, so
+reclaiming an old generation name never removes the current snapshot.
+
 ## One-shot old-generation cleanup
 
 A writer immediately discarded the full cleanup state's pending-name queue and
@@ -28,6 +40,55 @@ not fail a successful commit. Cancellation before cleanup or between entries
 also requests a retry while preserving completed deletion counts. The existing
 pending-file and delete-attempt ceilings remain authoritative. No candidate list
 is retained by a completed writer.
+
+## Closure verification ceiling (#1755)
+
+Before a pass deletes anything it re-verifies the active closure against its
+producer references, bounded by `SearchProjectionCleanupOptions::max_verification_bytes`
+(128 MiB by default, per file and in total). Previously every closure file was
+re-hashed on every pass, so once one generation exceeded the ceiling every pass
+refused with `captured_closure_unverified`, nothing was ever reclaimed and the
+search directory grew by one generation per checkpoint.
+
+Both publishers already hash every installed closure file against its producer
+reference before the selector names it. That hash is now recorded in the
+process-local verified-object registry of `hawdb_storage::immutable_object`
+(the same registry and stamp rules as published immutable objects): native file
+identity, length and modification time, captured before the hash and unchanged
+after it. A cleanup pass accepts a closure file without re-hashing it, and
+without charging the ceiling, only when the held file still has exactly the
+recorded stamp for the same reference. Successful cleanup hashes are recorded
+the same way, so verification is resumable across passes; the first file a
+pass re-hashes is admitted at any size, so an unverified closure (after a
+restart) converges over successive passes instead of refusing forever. The
+resident snapshot's vector count is remembered per content reference
+(producer count or earlier decode). Decoding a snapshot in memory is bounded
+by a fixed 128 MiB limit (`MAX_SNAPSHOT_DECODE_BYTES`, never above the
+ceiling) that raising `max_verification_bytes` does not lift; a larger
+snapshot is stream-verified and leaves vector absence unproven, which only
+retains standalone vector artifacts. A pass that cannot finish still deletes
+nothing. A changed file (new inode, length or modification time) is re-hashed;
+the stamp does not detect same-tick in-place rewrites, which projection
+artifacts never undergo.
+
+An embedded incremental publication ran under a governor-bound task whose
+permit the writer did not own, so it formed no read admission and refused
+verification outright (`bound cleanup requires the originating admission`): no
+embedded incremental publication ever reclaimed a superseded generation. The
+embedded store now hands its maintenance permit to the update
+(`SearchGenerationAdmission::from_permit`), so build, publication and cleanup
+verify under that admission. Opening the verified closure uses the largest
+artifact the manifest names as its per-file read gate; re-hashing stays bounded
+by the ceiling and in-memory metadata reads keep their reader maxima.
+
+Every result is visible to callers: `SearchCheckpointReport::projection_cleanup`,
+`SearchProjectionDeltaReport::projection_cleanup` (resident and incremental
+paths) and `SearchOutOfCoreGenerationBuildReport::cleanup_closure_unverified`.
+The full report adds `verification_rehashed_bytes` and
+`verification_reused_bytes`. `EmbeddedStoreHandle::retry_search_projection_cleanup`
+runs an explicit pass with host-chosen limits under typed maintenance
+admission and returns its report. It holds the store write lock for the whole
+pass; hosts should call it when the store is idle.
 
 ## Incomplete closure discovery
 

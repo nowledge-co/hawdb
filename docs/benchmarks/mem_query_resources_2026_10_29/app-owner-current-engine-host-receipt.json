@@ -1,0 +1,62 @@
+{
+  "app_head": "044a0c2f3ed6c8dbd76142a234558e1c81bdf602",
+  "engine_base_head": "51f78587e921d17671904f39620acc5da74b6a40",
+  "engine_sources": {
+    "benches/mem_query_resources.rs": "f5fd5758b8781320c9569b3bf5aa89792d6f77d3700b402cd28189020fa0530f",
+    "benches/mem_query_alloc.rs": "7a0db0b6ed03ef900fb28b2d6c9844cf1b758693edff9d48c98fb1abe08ce174",
+    "src/api/mod.rs": "a56221dad03a44cd5902b4a63b4b43e27f4b213c5c00b2026e659f6ef9fbbe4e",
+    "src/api/plan_cache.rs": "1ce0eecbb320ac44d4ca0746e2a8c475b9b9859b0c469d4b19e4c1f3a4c6d117",
+    "src/api/tests/simple_case_dispatch.rs": "c2d07f269f9a7feb07dbdd85796a9330d5a1523012778f16c51c8ca717de6dd7",
+    "crates/plan-cache/src/lib.rs": "ff5260b0feddc5192cc4e58bbda2c9b639187bcc25056de8f73516ed4718e435",
+    "crates/plan-cache/src/template.rs": "8e0371747ff430f0fd39e44fee695077f9498cf16688738750db0c2f515523fb",
+    "crates/plan-cache/src/template/retained.rs": "e52f9cf1c339a27551c362dc32218c999c9ac96d7dd03d727614118bcad7f5bf",
+    "crates/plan-cache/tests/template_retention.rs": "b5a7e4fb17c9e860d728af6243a05b322a9920e67e3303186c0e6141bb499677",
+    "crates/plan-cache/BUILD.bazel": "845cd18bf6c5600aa69e99375de8f82155bcfef193277db756b601747739bb47"
+  },
+  "command": [
+    "bazel",
+    "--output_base=/private/tmp/hawdb-mem-performance/app-reference-bazel",
+    "test",
+    "--repo_env=CARGO_BAZEL_ISOLATED=false",
+    "--repo_env=CARGO_NET_OFFLINE=true",
+    "--override_repository=hawdb_src=/private/tmp/hawdb-mem-performance/engine",
+    "--action_env=CMAKE_PREFIX_PATH=/opt/homebrew/opt/openssl@3.5",
+    "--build_event_json_file=/private/tmp/hawdb-mem-performance/app-owner-current-engine-host.bep.json",
+    "//:hawdb_reference_host_tests"
+  ],
+  "environment": {
+    "CARGO_BAZEL_ISOLATED": "false",
+    "CARGO_NET_OFFLINE": "true"
+  },
+  "qualification_only_override": true,
+  "exit_code": 0,
+  "test_log_sha256": "782b2cbe8900f04145d731c7c2ec5300380bbb7a7ca00abc35116117dd933b37",
+  "binary_sha256": "820840bf63369eacb7af0e3351e1ce378e7de27ff23e8f380e5864b731c60295",
+  "test_names": [
+    "hawdb_reference_reader::dispatch_cause_contract_tests::native_registered_query_causes_survive_reference_normalization",
+    "hawdb_reference_reader::dispatch_cause_contract_tests::native_snapshot_entry_causes_preserve_registered_response_and_priority",
+    "hawdb_reference_reader::dispatch_cause_contract_tests::registered_reference_storage_causes_survive_shadow_and_authority_dispatch",
+    "hawdb_reference_reader::dispatch_cause_contract_tests::unregistered_reference_code_is_not_inferred_from_private_prose",
+    "hawdb_reference_reader::tests::hawdb_reference_classifies_structured_budget_without_parsing_engine_messages",
+    "hawdb_reference_reader::tests::hawdb_reference_closed_dual_read_retains_known_cause_without_fallback",
+    "hawdb_reference_reader::tests::hawdb_reference_closed_shadow_and_legacy_read_retain_legacy_authority",
+    "hawdb_reference_reader::tests::hawdb_reference_dispatch_only_reads_candidate_and_never_falls_back",
+    "hawdb_reference_reader::tests::hawdb_reference_dispatch_shadow_preserves_legacy_and_dual_read_refuses_mismatch",
+    "hawdb_reference_reader::tests::hawdb_reference_exact_ids_raw_space_and_temporal_properties",
+    "hawdb_reference_reader::tests::hawdb_reference_json_expansion_refuses_oversized_complete_output",
+    "hawdb_reference_reader::tests::hawdb_reference_labels_are_sorted_complete_and_bounded",
+    "hawdb_reference_reader::tests::hawdb_reference_measured_deadline_survives_non_integrity_engine_failure",
+    "hawdb_reference_reader::tests::hawdb_reference_native_payload_refusal_reaches_http_and_mcp_for_both_objects",
+    "hawdb_reference_reader::tests::hawdb_reference_pins_source_metadata_and_memory_labels_through_capture",
+    "hawdb_reference_reader::tests::hawdb_reference_preserves_typed_resolver_failure_and_measured_deadline",
+    "hawdb_reference_reader::tests::review_closed_memory_http",
+    "hawdb_reference_reader::tests::review_closed_memory_mcp",
+    "hawdb_reference_reader::tests::review_closed_source_http",
+    "hawdb_reference_reader::tests::review_closed_source_mcp"
+  ],
+  "summary": [
+    "test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 60 filtered out; finished in 395.06s"
+  ],
+  "source_override_resolved": "/private/tmp/hawdb-mem-performance/engine",
+  "source_override_template_sha256_verified": "8e0371747ff430f0fd39e44fee695077f9498cf16688738750db0c2f515523fb"
+}

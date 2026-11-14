@@ -1,0 +1,75 @@
+{
+  "confirmed_on_main_and_candidate": true,
+  "candidate": "3f9271bc738035fff73d6a2cc890398ecf238b76",
+  "main": "870a6edd77fa0913dd8ff47bbb200d67a80cd364",
+  "failure": {
+    "kind": "statement_outcome",
+    "step": 4,
+    "detail": "T1 expected Serialization, got Ok (None)"
+  },
+  "case": {
+    "format_version": 1,
+    "seed": 42,
+    "index": 147,
+    "mode": "pessimistic",
+    "initial": {
+      "0": 0,
+      "1": 6,
+      "2": 5,
+      "3": 19
+    },
+    "transactions": [
+      {
+        "operations": [
+          {
+            "kind": "read"
+          },
+          {
+            "kind": "broad_update",
+            "minimum": 19,
+            "value": 19
+          },
+          {
+            "kind": "read"
+          }
+        ],
+        "rollback": false
+      },
+      {
+        "operations": [
+          {
+            "kind": "update",
+            "id": 3,
+            "value": 19
+          },
+          {
+            "kind": "read"
+          }
+        ],
+        "rollback": false
+      }
+    ],
+    "schedule": [
+      1,
+      1,
+      1,
+      0,
+      0,
+      0,
+      0
+    ]
+  },
+  "candidate_artifact": {
+    "path": "/private/tmp/hawdb-peg-qualification-mvcc-pessimistic-reports/46977-1793677699668335000/failure.json",
+    "sha256": "e9884025c7844ee2df843c3570a468710f26fb2b7555aa16b815f3959ad40819"
+  },
+  "main_artifact": {
+    "path": "/private/tmp/hawdb-peg-qualification-mvcc-replay-main/47706-1793678116119320000/replay.json",
+    "sha256": "c3e709272cf24011a5611b0f9d788614478eeaa80811d4bdc62f33e5b6c440f0"
+  },
+  "identical_affected_source_sha256": {
+    "src/api/concurrent.rs": "d7dcbc21e9d5c58380f3e9eec4237370d8b74cf74373d89be89eb072c15c2ab5",
+    "crates/storage/src/store/read_dependencies/locked_ranges.rs": "a05708fb0eaf4442549aab0c2417de10b25865aa7564bcff778cf4176abb3a76"
+  },
+  "scope": "Actual deterministic failure on both independently built sources. No MVCC pass or qualification waiver. Parser prototype work may proceed separately once the focused correction is checked."
+}

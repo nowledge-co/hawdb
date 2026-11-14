@@ -149,6 +149,14 @@ impl AdmittedRelationshipRecord {
         &self.relationship
     }
 
+    /// Drops the properties `keep` rejects. The record only shrinks, so its
+    /// allocation still covers it.
+    pub fn retain_properties(&mut self, mut keep: impl FnMut(&str) -> bool) {
+        self.relationship
+            .properties
+            .retain(|name, _| keep(name.as_str()));
+    }
+
     pub fn into_parts(self) -> (crate::RelRecord, Box<dyn GraphReadAllocation>) {
         (self.relationship, self.allocation)
     }

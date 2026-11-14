@@ -3,51 +3,318 @@
 
 use std::collections::HashMap;
 
-use super::Memo;
+use super::{Memo, MAX_RULES};
 
-pub(super) struct MemoTable {
-    // Most statement-envelope rules are visited at only one token position.
-    // Keep that first entry indexed by the compiled rule ID, without hashing.
-    first: Vec<Option<(usize, Memo)>>,
-    // Other positions retain ordinary packrat behavior, including failures.
-    overflow: HashMap<(usize, usize), Memo>,
+pub(super) struct MemoTable<'a> {
+    rules: [RuleMemo<'a>; MAX_RULES],
     len: usize,
 }
 
-impl MemoTable {
+#[derive(Default)]
+struct RuleMemo<'a> {
+    // Forward parsing and probes at the current token avoid a map lookup.
+    // Keep one historical position inline; allocate history only on a third visit.
+    latest: Option<(usize, Memo<'a>)>,
+    first_older: Option<(usize, Memo<'a>)>,
+    older: Option<Box<Older<'a>>>,
+}
+
+enum Older<'a> {
+    Inline {
+        entries: [Option<(usize, Memo<'a>)>; 2],
+        len: usize,
+    },
+    // Small rules avoid allocating a hash table. The scan has a fixed bound.
+    Small(Vec<(usize, Memo<'a>)>),
+    // Dense token visits use direct indexing. At most four slots per memo.
+    Dense {
+        start: usize,
+        slots: Vec<Option<Memo<'a>>>,
+        count: usize,
+    },
+    // A sparse rule stays sparse: repeated density changes cannot cause
+    // repeated linear conversions or adversarial quadratic copying.
+    Sparse(HashMap<usize, Memo<'a>>),
+}
+
+impl<'a> MemoTable<'a> {
     pub fn new(rules: usize) -> Self {
+        assert!(rules <= MAX_RULES, "compiled grammar bounds the memo table");
         Self {
-            first: std::iter::repeat_with(|| None).take(rules).collect(),
-            overflow: HashMap::new(),
+            rules: [const {
+                RuleMemo {
+                    latest: None,
+                    first_older: None,
+                    older: None,
+                }
+            }; MAX_RULES],
             len: 0,
         }
     }
-
     pub fn len(&self) -> usize {
         self.len
     }
-
-    pub fn get(&self, rule: usize, position: usize) -> Option<&Memo> {
-        match self.first[rule].as_ref() {
-            Some((first_position, memo)) if *first_position == position => Some(memo),
+    pub fn get(&self, rule: usize, position: usize) -> Option<&Memo<'a>> {
+        // Grammar compilation resolves all IDs within its validated rule count.
+        let entries = &self.rules[rule];
+        match &entries.latest {
+            Some((latest, memo)) if position == *latest => Some(memo),
             None => None,
-            Some(_) => self.overflow.get(&(rule, position)),
+            Some((latest, _)) if position > *latest => None,
+            Some(_) => entries
+                .first_older
+                .as_ref()
+                .filter(|(key, _)| *key == position)
+                .map(|(_, memo)| memo)
+                .or_else(|| {
+                    entries
+                        .older
+                        .as_deref()
+                        .and_then(|older| older.get(position))
+                }),
         }
     }
-
-    pub fn insert(&mut self, rule: usize, position: usize, memo: Memo) {
-        match &mut self.first[rule] {
+    pub fn insert(&mut self, rule: usize, position: usize, memo: Memo<'a>) {
+        let entries = &mut self.rules[rule];
+        match &mut entries.latest {
             slot @ None => {
                 *slot = Some((position, memo));
                 self.len += 1;
             }
-            Some((first_position, first_memo)) if *first_position == position => {
-                *first_memo = memo;
+            Some((latest, value)) if position == *latest => *value = memo,
+            Some((latest, value)) if position > *latest => {
+                let old_position = std::mem::replace(latest, position);
+                let old_value = std::mem::replace(value, memo);
+                entries.insert_older(old_position, old_value);
+                self.len += 1;
+            }
+            Some(_) => self.len += usize::from(entries.insert_older(position, memo)),
+        }
+    }
+}
+
+impl<'a> RuleMemo<'a> {
+    fn insert_older(&mut self, position: usize, memo: Memo<'a>) -> bool {
+        if let Some(older) = self.older.as_deref_mut() {
+            return older.insert(position, memo);
+        }
+        match &mut self.first_older {
+            slot @ None => {
+                *slot = Some((position, memo));
+                true
+            }
+            Some((key, value)) if *key == position => {
+                *value = memo;
+                false
             }
             Some(_) => {
-                if self.overflow.insert((rule, position), memo).is_none() {
-                    self.len += 1;
+                let first = self.first_older.take().expect("first older memo");
+                self.older = Some(Box::new(Older::Inline {
+                    entries: [Some(first), Some((position, memo))],
+                    len: 2,
+                }));
+                true
+            }
+        }
+    }
+}
+
+impl<'a> Older<'a> {
+    fn get(&self, position: usize) -> Option<&Memo<'a>> {
+        match self {
+            Self::Inline { entries, len } => entries[..*len]
+                .iter()
+                .flatten()
+                .find(|(key, _)| *key == position)
+                .map(|(_, memo)| memo),
+            Self::Small(entries) => entries
+                .iter()
+                .find(|(key, _)| *key == position)
+                .map(|(_, memo)| memo),
+            Self::Dense { start, slots, .. } => position
+                .checked_sub(*start)
+                .and_then(|index| slots.get(index))
+                .and_then(Option::as_ref),
+            Self::Sparse(entries) => entries.get(&position),
+        }
+    }
+    // Returns true only for a new logical memo entry, including dense holes.
+    fn insert(&mut self, position: usize, memo: Memo<'a>) -> bool {
+        match self {
+            Self::Inline { entries, len } => {
+                if let Some((_, value)) = entries[..*len]
+                    .iter_mut()
+                    .flatten()
+                    .find(|(key, _)| *key == position)
+                {
+                    *value = memo;
+                    return false;
                 }
+                if *len < entries.len() {
+                    entries[*len] = Some((position, memo));
+                    *len += 1;
+                } else {
+                    let mut values = Vec::with_capacity(4);
+                    values.extend(entries.iter_mut().map(|entry| entry.take().unwrap()));
+                    values.push((position, memo));
+                    *self = Self::Small(values);
+                }
+                true
+            }
+            Self::Small(entries) => {
+                if let Some((_, value)) = entries.iter_mut().find(|(key, _)| *key == position) {
+                    *value = memo;
+                    return false;
+                }
+                entries.push((position, memo));
+                if entries.len() == 9 {
+                    let start = entries
+                        .iter()
+                        .map(|(key, _)| *key)
+                        .min()
+                        .expect("nine entries");
+                    let end = entries
+                        .iter()
+                        .map(|(key, _)| *key)
+                        .max()
+                        .expect("nine entries");
+                    if end - start < 4 * entries.len() {
+                        let count = entries.len();
+                        let mut slots: Vec<_> = std::iter::repeat_with(|| None)
+                            .take(end - start + 1)
+                            .collect();
+                        for (key, value) in entries.drain(..) {
+                            slots[key - start] = Some(value);
+                        }
+                        *self = Self::Dense {
+                            start,
+                            slots,
+                            count,
+                        };
+                    } else {
+                        *self = Self::Sparse(entries.drain(..).collect());
+                    }
+                }
+                true
+            }
+            Self::Dense {
+                start,
+                slots,
+                count,
+            } => {
+                if let Some(index) = position
+                    .checked_sub(*start)
+                    .filter(|index| *index < slots.len())
+                {
+                    let fresh = slots[index].replace(memo).is_none();
+                    *count += usize::from(fresh);
+                    return fresh;
+                }
+                // Only append cheap, dense forward visits. An earlier visit
+                // or large gap converts once to the permanent sparse form.
+                if let Some(index) = position
+                    .checked_sub(*start)
+                    .filter(|index| *index < 4 * (*count + 1))
+                {
+                    slots.resize_with(index + 1, || None);
+                    slots[index] = Some(memo);
+                    *count += 1;
+                } else {
+                    let mut values: HashMap<_, _> = slots
+                        .drain(..)
+                        .enumerate()
+                        .filter_map(|(index, value)| value.map(|value| (index + *start, value)))
+                        .collect();
+                    values.insert(position, memo);
+                    *self = Self::Sparse(values);
+                }
+                true
+            }
+            Self::Sparse(entries) => entries.insert(position, memo).is_none(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::MemoState;
+    use super::*;
+
+    #[test]
+    fn forward_cache_preserves_pending_backwards_and_replaced_entries() {
+        let mut table = MemoTable::new(2);
+        table.insert(0, 1, Memo::pending());
+        table.insert(0, 3, Memo::pending());
+        table.insert(1, 2, Memo::failed(None));
+        assert!(matches!(
+            table.get(0, 1).map(Memo::value),
+            Some(MemoState::Pending)
+        ));
+        assert!(matches!(
+            table.get(0, 3).map(Memo::value),
+            Some(MemoState::Pending)
+        ));
+        assert!(table.get(0, 4).is_none());
+        assert!(table.get(0, 2).is_none());
+        table.insert(0, 1, Memo::matched(2, 10, None));
+        table.insert(0, 3, Memo::failed(None));
+        assert_eq!(table.len(), 3);
+        assert!(matches!(
+            table.get(0, 1).map(Memo::value),
+            Some(MemoState::Matched(2, 10, None))
+        ));
+        assert!(matches!(
+            table.get(0, 3).map(Memo::value),
+            Some(MemoState::Failed(None))
+        ));
+        table.insert(0, 2, Memo::failed(None));
+        table.insert(0, 5, Memo::matched(6, 11, None));
+        assert_eq!(table.len(), 5);
+        assert!(matches!(
+            table.get(0, 2).map(Memo::value),
+            Some(MemoState::Failed(None))
+        ));
+        assert!(matches!(
+            table.get(0, 3).map(Memo::value),
+            Some(MemoState::Failed(None))
+        ));
+        assert!(matches!(
+            table.get(0, 5).map(Memo::value),
+            Some(MemoState::Matched(6, 11, None))
+        ));
+        assert!(matches!(
+            table.get(1, 2).map(Memo::value),
+            Some(MemoState::Failed(None))
+        ));
+    }
+
+    #[test]
+    fn adaptive_storage_matches_sparse_oracle_through_density_changes() {
+        let dense: Vec<_> = (0..48).map(|i| i * 2).collect();
+        let sparse: Vec<_> = (0..48).map(|i| i * 1000).collect();
+        let mut gap = dense.clone();
+        gap.extend([10000, 10002, 1, 3, 10001]);
+        let mut earlier: Vec<_> = (100..148).collect();
+        earlier.extend([1, 2, 3]);
+        for positions in [dense, sparse, gap, earlier] {
+            let mut table = MemoTable::new(2);
+            let mut oracle = HashMap::new();
+            for (index, position) in positions
+                .iter()
+                .chain(positions.iter().rev())
+                .copied()
+                .enumerate()
+            {
+                let rule = index % 2;
+                table.insert(rule, position, Memo::matched(position + 1, index, None));
+                oracle.insert((rule, position), index);
+                assert_eq!(table.len(), oracle.len());
+                for (&(rule, key), &value) in &oracle {
+                    assert!(
+                        matches!(table.get(rule, key).map(Memo::value), Some(MemoState::Matched(end, node, None)) if end == key + 1 && node == value)
+                    );
+                }
+                assert!(table.get(rule, 1000000).is_none());
             }
         }
     }

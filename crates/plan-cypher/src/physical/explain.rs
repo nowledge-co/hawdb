@@ -66,9 +66,14 @@ impl PhysicalPlan {
                 property,
                 value_type,
                 nullable,
+                default,
             } => {
+                let default = default
+                    .as_ref()
+                    .map(|default| format!(" default={default}"))
+                    .unwrap_or_default();
                 format!(
-                    "{pad}CreateProperty table_kind={table_kind:?} table={table} property={property} value_type={value_type:?} nullable={nullable}"
+                    "{pad}CreateProperty table_kind={table_kind:?} table={table} property={property} value_type={value_type:?} nullable={nullable}{default}"
                 )
             }
             PhysicalPlan::AlterTableState {
@@ -177,12 +182,34 @@ impl PhysicalPlan {
             PhysicalPlan::CreateNode { label, .. } => {
                 format!("{pad}CreateNode label={label}")
             }
+            PhysicalPlan::UnwindExec { rows, variable } => {
+                format!("{pad}UnwindExec rows={} variable={variable}", rows.len())
+            }
+            PhysicalPlan::UnwindRowsExec {
+                expression,
+                variable,
+                consumes_source,
+                ..
+            } => {
+                let consumes = if *consumes_source {
+                    " consumes_source=true"
+                } else {
+                    ""
+                };
+                format!("{pad}UnwindRowsExec expression={expression:?} variable={variable}{consumes}")
+            }
             PhysicalPlan::UnwindMutation {
                 rows,
                 variable,
                 operation,
             } => {
                 format!("{pad}UnwindMutationExec rows={} variable={variable} operation={operation:?}", rows.len())
+            }
+            PhysicalPlan::LoadCsvMutation { source, operation } => {
+                format!(
+                    "{pad}LoadCsvMutationExec {} operation={operation:?}",
+                    load_csv_description(source)
+                )
             }
             PhysicalPlan::MergeNode { label, .. } => {
                 format!("{pad}MergeNode label={label}")
@@ -372,8 +399,27 @@ impl PhysicalPlan {
                 )
             }
             PhysicalPlan::EmptyExec => format!("{pad}EmptyExec"),
+            PhysicalPlan::LoadCsvExec { source } => {
+                format!("{pad}LoadCsvExec {}", load_csv_description(source))
+            }
             PhysicalPlan::SeqNodeScan { variable, label } => {
                 format!("{pad}SeqNodeScan variable={variable} label={label}")
+            }
+            PhysicalPlan::RelationshipSeededNodeScan {
+                variable,
+                label,
+                rel_type,
+                rel_properties,
+                rel_property_in,
+                direction,
+            } => {
+                let property_in = rel_property_in
+                    .as_ref()
+                    .map(|(property, values)| format!(" in={property}:{values:?}"))
+                    .unwrap_or_default();
+                format!(
+                    "{pad}RelationshipSeededNodeScan variable={variable} label={label} rel={rel_type} direction={direction:?} properties={rel_properties:?}{property_in}"
+                )
             }
             PhysicalPlan::NodeProjectionScanExec {
                 variable,
@@ -409,7 +455,58 @@ impl PhysicalPlan {
                 format!("{pad}NodeCartesianProductExec")
             }
             PhysicalPlan::GraphMatchExec { program, .. } => {
-                format!("{pad}GraphMatchExec optional={} steps={:?} imports={:?} introduced={:?} predicate={:?}", program.optional, program.steps, program.imports, program.introduced, program.predicate)
+                let placement = if program.predicate_steps.is_empty() {
+                    String::new()
+                } else {
+                    format!(" predicate_after_steps={:?}", program.predicate_steps)
+                };
+                let edge = if program.edge_predicates.is_empty() {
+                    String::new()
+                } else {
+                    format!(" edge_predicates={:?}", program.edge_predicates)
+                };
+                let projected = if program.projected_nodes.is_empty() {
+                    String::new()
+                } else {
+                    format!(" projected_nodes={:?}", program.projected_nodes)
+                };
+                let projected_relationships = if program.projected_relationships.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " projected_relationships={:?}",
+                        program.projected_relationships
+                    )
+                };
+                let mut hash_join = program.hash_join.as_ref().map_or(String::new(), |join| {
+                    format!(
+                        " hash_join=key:{} build_conjuncts={:?} residual_order={:?} residual_placed={} probe_conjuncts={}",
+                        join.key,
+                        join.build_conjuncts,
+                        join.residual_order,
+                        join.residual_placed,
+                        join.probe_conjuncts
+                    )
+                });
+                if !program.id_set_conjuncts.is_empty() {
+                    hash_join.push_str(&format!(" id_set_conjuncts={:?}", program.id_set_conjuncts));
+                }
+                if !program.seeded_union.is_empty() {
+                    let branches = program
+                        .seeded_union
+                        .iter()
+                        .enumerate()
+                        .map(|(index, branch)| {
+                            format!(
+                                "branch {index}: steps={:?} predicate={:?} predicate_after_steps={:?}",
+                                branch.steps, branch.predicate, branch.predicate_steps
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    hash_join.push_str(&format!(" seeded_union=[{branches}]"));
+                }
+                format!("{pad}GraphMatchExec optional={} steps={:?} imports={:?} introduced={:?}{projected}{projected_relationships} predicate={:?}{placement}{edge}{hash_join}", program.optional, program.steps, program.imports, program.introduced, program.predicate)
             }
             PhysicalPlan::NodeColumnLookupExec {
                 variable,
@@ -530,6 +627,12 @@ impl PhysicalPlan {
                         }
                     })
                     .unwrap_or_default();
+                // An unbounded pattern prints as `n..`.
+                let max_hops = if *max_hops == usize::MAX {
+                    String::new()
+                } else {
+                    max_hops.to_string()
+                };
                 format!(
                     "{pad}AdjacencyExpandExec source={source_variable}:{source_label}{rel} direction={arrow} properties={rel_properties:?} hops={min_hops}..{max_hops} optional={optional}{budget} target={target_variable}:{target_label}"
                 )
@@ -628,6 +731,7 @@ impl PhysicalPlan {
             PhysicalPlan::AggregateExec {
                 group_keys,
                 items,
+                graph_keys,
                 ..
             } => {
                 let mut columns = group_keys
@@ -636,7 +740,13 @@ impl PhysicalPlan {
                     .collect::<Vec<_>>();
                 columns.extend(items.iter().map(|item| item.name.as_str()));
                 let columns = columns.join(", ");
-                format!("{pad}AggregateExec columns=[{columns}]")
+                // Grouped graph variables leave as graph slots (#1615).
+                let graph_keys = match graph_keys {
+                    crate::GraphGroupKeys::Values => "",
+                    crate::GraphGroupKeys::Slots => " graph_keys=slots",
+                    crate::GraphGroupKeys::DistinctSlots => " graph_keys=distinct_slots",
+                };
+                format!("{pad}AggregateExec columns=[{columns}]{graph_keys}")
             }
             PhysicalPlan::DistinctExec { .. } => {
                 format!("{pad}DistinctExec")
@@ -693,6 +803,11 @@ fn set_value_summary(value: &SetValue) -> String {
             incoming,
             preserve,
         } => format!("preserve_newer({property},{incoming:?},{preserve})"),
+        SetValue::PreserveOlderExisting {
+            property,
+            incoming,
+            preserve,
+        } => format!("preserve_older({property},{incoming:?},{preserve})"),
     }
 }
 
@@ -715,4 +830,17 @@ fn set_return_mode_summary(returns: &SetNodePropertiesReturnMode) -> String {
         SetNodePropertiesReturnMode::Project(items) => items.len().to_string(),
         SetNodePropertiesReturnMode::Count { name } => format!("count:{name}"),
     }
+}
+
+fn load_csv_description(source: &crate::LoadCsvSource) -> String {
+    let location = match &source.location {
+        crate::CsvLocation::Literal(location) => format!("{location:?}"),
+        crate::CsvLocation::Parameter(name) => format!("${name}"),
+    };
+    format!(
+        "source={location} headers={} field_terminator={:?} variable={}",
+        source.with_headers,
+        char::from(source.field_terminator),
+        source.variable
+    )
 }

@@ -140,6 +140,11 @@ pub(crate) struct SpillPool {
 }
 
 impl SpillPool {
+    pub(crate) fn with_file_descriptors(mut self, context: FileOpenContext) -> Self {
+        self.file_descriptors = context;
+        self
+    }
+
     pub(crate) fn open(memory: &ExecutionMemoryConfig) -> Result<Self> {
         Self::open_with_context(memory, None)
     }
@@ -230,7 +235,7 @@ impl SpillPool {
         &self.shared.directory
     }
 
-    pub(super) fn file_descriptors(&self) -> &FileOpenContext {
+    pub(crate) fn file_descriptors(&self) -> &FileOpenContext {
         &self.file_descriptors
     }
 

@@ -264,6 +264,11 @@ impl<'a> AdmittedHashJoin<'a> {
         }
         runtime_checkpoint(self.task_context)?;
         self.work.input_rows = self.work.input_rows.saturating_add(1);
+        if self.build_run.is_none() && self.tracker.should_spill(0, self.task_context) {
+            let mut writer = self.writer(AdmittedHashJoinSide::Build)?;
+            self.spill_table(&mut writer)?;
+            self.build_run = Some(writer.finish()?);
+        }
         if self.build_run.is_some() {
             if self.probe_writer.is_none() {
                 self.probe_writer = Some(self.writer(AdmittedHashJoinSide::Probe)?);
@@ -421,9 +426,12 @@ impl<'a> AdmittedHashJoin<'a> {
             .map(Some)
     }
 
-    fn can_insert(&self, binding: &Binding) -> bool {
+    fn can_insert(&mut self, binding: &Binding) -> bool {
         let insertion_bytes = self.table.insertion_bytes(binding_memory_bytes(binding));
-        !self.tracker.would_exceed(insertion_bytes) && self.account.can_reserve(insertion_bytes)
+        !self
+            .tracker
+            .should_spill(insertion_bytes, self.task_context)
+            && self.account.can_reserve(insertion_bytes)
     }
 
     fn insert(&mut self, hash: u64, binding: Binding) -> Result<()> {
@@ -697,8 +705,8 @@ mod tests {
                         hawdb_core::Value::String("x".repeat(padding)),
                     ),
                 ]),
-                nodes: BTreeMap::new(),
-                relationships: BTreeMap::new(),
+                nodes: BTreeMap::new().into(),
+                relationships: BTreeMap::new().into(),
             }
         }
     }
@@ -805,6 +813,69 @@ mod tests {
         assert_eq!(join.work().candidate_rows, 6);
         drop(join);
         assert_eq!(ledger.snapshot().used_bytes, 0);
+    }
+
+    #[test]
+    fn pressure_during_probe_releases_build_state_without_replaying_prior_outputs() {
+        use std::sync::{
+            atomic::{AtomicU64, Ordering},
+            Arc,
+        };
+        #[derive(Debug)]
+        struct Target(AtomicU64);
+        impl hawdb_core::RuntimeMemoryTarget for Target {
+            fn target_bytes(&self, hard: u64) -> u64 {
+                self.0.load(Ordering::Relaxed).min(hard)
+            }
+        }
+        let target = Arc::new(Target(AtomicU64::new(u64::MAX)));
+        let task = RuntimeTaskContext::default().with_memory_target(target.clone());
+        let memory = spill_memory("probe-pressure");
+        let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+        let mut join = AdmittedHashJoin::new("pressure join", &memory, &ledger, Some(&task));
+        for value in 0..32 {
+            join.push_build(AdmittedHashJoinRecord {
+                hash: value as u64,
+                binding: EqualityAdapter::binding(value, 1024),
+            })
+            .unwrap();
+        }
+        join.finish_build().unwrap();
+        assert!(join.build_run.is_none());
+        assert!(join.tracker.used_bytes > 16 * 1024);
+        let mut adapter = EqualityAdapter {
+            matches: Vec::new(),
+        };
+        join.push_probe(
+            AdmittedHashJoinRecord {
+                hash: 0,
+                binding: EqualityAdapter::binding(0, 0),
+            },
+            &mut adapter,
+        )
+        .unwrap();
+        assert_eq!(adapter.matches, [0]);
+        target.0.store(0, Ordering::Relaxed);
+        // Include nonmatching probes so feedback refreshes without build growth.
+        for value in 1..96 {
+            join.push_probe(
+                AdmittedHashJoinRecord {
+                    hash: value as u64,
+                    binding: EqualityAdapter::binding(value, 0),
+                },
+                &mut adapter,
+            )
+            .unwrap();
+        }
+        assert!(join.build_run.is_some());
+        assert_eq!(join.tracker.used_bytes, 0);
+        join.finish(&mut adapter).unwrap();
+        adapter.matches.sort();
+        assert_eq!(adapter.matches, (0..32).collect::<Vec<_>>());
+        drop(join);
+        assert_eq!(ledger.snapshot().used_bytes, 0);
+        assert_eq!(memory.spill_pool_snapshot().unwrap().active_runs, 0);
+        std::fs::remove_dir_all(memory.spill_directory).unwrap();
     }
 
     #[test]

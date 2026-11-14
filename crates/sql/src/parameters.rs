@@ -74,7 +74,9 @@ fn collect_statement_parameters(statement: &SqlStatement, positions: &mut BTreeS
         SqlStatement::CreateMaterializedView(create) => {
             collect_select_parameters(&create.query, positions)
         }
-        SqlStatement::DropMaterializedView(_) => {}
+        SqlStatement::DropMaterializedView(_)
+        | SqlStatement::CreateSearchIndex(_)
+        | SqlStatement::DropSearchIndex(_) => {}
         SqlStatement::Insert(insert) => collect_insert_parameters(insert, positions),
         SqlStatement::Update(update) => collect_update_parameters(update, positions),
         SqlStatement::Delete(delete) => collect_delete_parameters(delete, positions),
@@ -142,7 +144,7 @@ fn collect_column_default_parameter(default: &SqlColumnDefault, positions: &mut 
 }
 
 fn collect_select_parameters(select: &SelectStatement, positions: &mut BTreeSet<usize>) {
-    if let Some(search) = &select.vector_index {
+    if let Some(search) = select.vector_index() {
         for value in [&search.index, &search.embedding, &search.top_k] {
             collect_value_parameter(value, positions);
         }
@@ -150,6 +152,11 @@ fn collect_select_parameters(select: &SelectStatement, positions: &mut BTreeSet<
             collect_value_parameter(value, positions);
         }
         if let Some(value) = &search.candidates {
+            collect_value_parameter(value, positions);
+        }
+    }
+    if let Some(search) = select.text_search() {
+        for value in [&search.index, &search.query, &search.top_k] {
             collect_value_parameter(value, positions);
         }
     }
@@ -204,6 +211,9 @@ fn collect_assignment_parameters(assignments: &[SqlAssignment], positions: &mut 
     for assignment in assignments {
         match &assignment.value {
             SqlAssignmentValue::Value(value) => collect_value_parameter(value, positions),
+            SqlAssignmentValue::Expression(expression) => {
+                collect_expression_parameters(expression, positions)
+            }
             SqlAssignmentValue::Column(_) => {}
             SqlAssignmentValue::Arithmetic { left, right, .. } => {
                 collect_arithmetic_operand_parameter(left, positions);
@@ -224,15 +234,19 @@ fn collect_arithmetic_operand_parameter(
 
 fn collect_expression_parameters(expression: &SqlExpression, positions: &mut BTreeSet<usize>) {
     expression.visit(&mut |expression| {
-        if let ExprKind::Value(value) = &expression.kind {
-            collect_value_parameter(value, positions);
+        if let ExprKind::Value(SqlValue::Parameter(position)) = &expression.kind {
+            positions.insert(*position);
         }
     });
 }
 
 fn collect_value_parameter(value: &SqlValue, positions: &mut BTreeSet<usize>) {
-    if let SqlValue::Parameter(position) = value {
-        positions.insert(*position);
+    match value {
+        SqlValue::Parameter(position) => {
+            positions.insert(*position);
+        }
+        SqlValue::Expression(expression) => collect_expression_parameters(expression, positions),
+        SqlValue::Literal(_) => {}
     }
 }
 

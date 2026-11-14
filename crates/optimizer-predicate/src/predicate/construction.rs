@@ -1,5 +1,5 @@
 // Copyright 2026 Nowledge
-// Licensed under the Apache License, Version 2.0.
+// SPDX-License-Identifier: Apache-2.0
 
 //! Pre-allocation envelopes for the shared metadata parser. These assumptions
 //! follow the pinned Rust Vec growth and serde_json 1.0.154 slice deserializer:

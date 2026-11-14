@@ -301,6 +301,19 @@ pub fn external_shadow_value_from_json(value: &serde_json::Value) -> Result<Valu
             .map(Value::List),
         serde_json::Value::Object(values) => {
             if values.len() == 1
+                && let Some(encoded) = values.get("$decimal")
+            {
+                let text = encoded.as_str().ok_or_else(|| {
+                    HawDBError::Semantic("$decimal must be a decimal string".into())
+                })?;
+                return text
+                    .parse::<hawdb_core::Decimal>()
+                    .map(Value::Decimal)
+                    .map_err(|error| {
+                        HawDBError::Semantic(format!("invalid external Decimal: {error}"))
+                    });
+            }
+            if values.len() == 1
                 && let Some(encoded) = values.get("$vector")
             {
                 let coordinates = encoded
@@ -329,6 +342,14 @@ pub fn external_shadow_value_from_json(value: &serde_json::Value) -> Result<Valu
                         HawDBError::Semantic(format!("invalid external UUID: {error}"))
                     });
             }
+            if values.len() == 1
+                && let Some((tag, serde_json::Value::String(encoded))) = values.iter().next()
+                && let Some(decoded) = hawdb_core::temporal::from_json_tag(tag, encoded)
+            {
+                return decoded.map_err(|error| {
+                    HawDBError::Semantic(format!("invalid {tag} value: {error}"))
+                });
+            }
             values
                 .iter()
                 .map(|(key, value)| Ok((key.clone(), external_shadow_value_from_json(value)?)))
@@ -349,9 +370,17 @@ pub fn external_shadow_json_from_value(value: Value) -> serde_json::Value {
         Value::String(value) => serde_json::Value::String(value),
         Value::Binary(value) => serde_json::json!({ "$binary": encode_binary_hex(&value) }),
         Value::Uuid(value) => serde_json::json!({ "$uuid": value.to_string() }),
+        Value::Decimal(value) => serde_json::json!({ "$decimal": value.to_string() }),
         Value::Vector(value) => {
             serde_json::json!({ "$vector": value.as_ref().coordinates().collect::<Vec<_>>() })
         }
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => serde_json::json!({
+            hawdb_core::temporal::json_tag(&value).expect("temporal value"): value.to_string()
+        }),
         Value::List(values) => serde_json::Value::Array(
             values
                 .into_iter()
@@ -477,8 +506,18 @@ fn json_error_from_hawdb(error: HawDBError) -> serde_json::Value {
         HawDBError::Semantic(message) => json_error("semantic", message),
         HawDBError::Storage(message) => json_error("storage", message),
         HawDBError::ProjectionBusy => json_error("storage", "search projection operation is busy"),
+        HawDBError::SearchProjectionMismatch { message, .. } => json_error("storage", message),
         HawDBError::StorageIntegrity(message) => json_error("storage", message),
+        error @ HawDBError::WalRecoveryIo { .. } => json_error("storage", error),
+        error @ HawDBError::PublishOutcomeUnknown { .. } => json_error("storage", error),
         HawDBError::Execution(message) => json_error("execution", message),
+        HawDBError::Constraint { surface, message } | HawDBError::Schema { surface, message } => {
+            let class = match surface {
+                hawdb_core::RelationalErrorSurface::Storage => "storage",
+                hawdb_core::RelationalErrorSurface::Execution => "execution",
+            };
+            json_error(class, message)
+        }
         error @ HawDBError::BranchEvidenceBudgetExceeded {
             resource,
             requested,
@@ -519,7 +558,8 @@ fn json_error_from_hawdb(error: HawDBError) -> serde_json::Value {
         }
         error @ (HawDBError::GraphExpansionCandidateLimitExceeded { .. }
         | HawDBError::GraphExpansionPayloadLimitExceeded { .. }) => json_error("execution", error),
-        error @ HawDBError::TransactionConflict { .. } => json_error("execution", error),
+        error @ (HawDBError::TransactionConflict { .. }
+        | HawDBError::TransactionRetryRequired(_)) => json_error("execution", error),
         error @ HawDBError::TransactionReadDependencyRefused { .. } => {
             json_error("execution", error)
         }
@@ -566,6 +606,10 @@ fn json_error_from_hawdb(error: HawDBError) -> serde_json::Value {
             response
         }
         error @ HawDBError::BranchCommandUnsupported { .. } => json_error("execution", error),
+        error @ HawDBError::SearchProjectionRebuildRefused { .. } => json_error("execution", error),
+        error @ HawDBError::SearchProjectionEpochAdvanceRefused { .. } => {
+            json_error("execution", error)
+        }
         HawDBError::CapabilityUnavailable { capability } => {
             json_error("capability_unavailable", capability.as_str())
         }
@@ -1338,9 +1382,17 @@ fn json_from_value(value: &Value) -> serde_json::Value {
         Value::String(value) => serde_json::Value::String(value.clone()),
         Value::Binary(value) => serde_json::json!({ "$binary": encode_binary_hex(value) }),
         Value::Uuid(value) => serde_json::json!({ "$uuid": value.to_string() }),
+        Value::Decimal(value) => serde_json::json!({ "$decimal": value.to_string() }),
         Value::Vector(value) => {
             serde_json::json!({ "$vector": value.as_ref().coordinates().collect::<Vec<_>>() })
         }
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => serde_json::json!({
+            hawdb_core::temporal::json_tag(value).expect("temporal value"): value.to_string()
+        }),
         Value::List(values) => {
             serde_json::Value::Array(values.iter().map(json_from_value).collect())
         }
@@ -1736,6 +1788,11 @@ fn value_from_json(engine_name: &str, value: &serde_json::Value) -> Result<Value
             .map(|value| value_from_json(engine_name, value))
             .collect::<Result<Vec<_>>>()
             .map(Value::List),
+        serde_json::Value::Object(values)
+            if values.len() == 1 && values.contains_key("$decimal") =>
+        {
+            external_shadow_value_from_json(value)
+        }
         serde_json::Value::Object(values) => values
             .iter()
             .map(|(key, value)| Ok((key.clone(), value_from_json(engine_name, value)?)))

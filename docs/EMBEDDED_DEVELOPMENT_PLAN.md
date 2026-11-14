@@ -258,12 +258,14 @@ streaming, EXPLAIN ANALYZE, and system SQL results; callers may further tighten
 the limits, while unbounded results require explicitly setting both fields to
 `None`. `max_optimizer_groups` caps cascades memo search groups with
 the existing deterministic direct physical fallback warning. `recovery_mode`
-defaults to strict WAL replay. A torn tail or checksum mismatch rejects every
-database open. Torn-tail repair is a separate typed `DatabaseDoctor` operation:
-first produce a generation-bound dry-run plan, then explicitly acknowledge that
-exact plan before an original-WAL quarantine copy, repair audit, and truncation
-can be published. `DoctorRepairTornTail` remains a report-compatibility value
-and is rejected by the database-open path.
+defaults to `AutoRepairTornTail` for writable opens. Read-only opens explicitly
+select `Strict`. Automatic recovery preserves a bounded discarded suffix and
+identity-bound audit before truncating a physical torn tail or an unsynchronized
+suffix authorized by its durable fence. Protected-prefix corruption fails
+closed. Explicit repair uses the separate typed `DatabaseDoctor` dry-run plan
+and exact acknowledgement. `DoctorRepairTornTail` remains a report-compatibility
+value rejected by database open. See [the recovery protocol](STORAGE.md#wal-recovery)
+for classification, typed reports and retry barriers.
 `max_wal_replay_entries` caps startup WAL replay after valid record decode and
 before applying the next record; it counts top-level WAL records rather than
 child operations inside a batch, preserving batch replay atomicity. Mutation
@@ -721,8 +723,11 @@ Nowledge graph path reads support the endpoint-id bounded
 `MATCH p = (a)-[e* ALL SHORTEST 1..3]-(b) WHERE a.id = $from_id AND b.id = $to_id RETURN properties(nodes(p), 'id') AS node_ids, properties(nodes(p), 'name') AS names, length(p) AS hops`
 through a dedicated shortest-path read operator. The operator returns all
 simple paths at the first target depth and only supports `properties(nodes(p),
-...)` plus `length(p)` projections; generic returned path values and
-unbounded shortest-path searches remain outside the supported subset.
+...)` plus `length(p)` projections. Other shortest-path reads use
+`shortestPath(...)` / `allShortestPaths(...)` (and `* ANY|ALL SHORTEST`) as a
+correlated MATCH or OPTIONAL MATCH step over bound endpoints, in any
+direction, with optional upper bounds capped at 256 hops; see
+[shortest-path execution](SHORTEST_PATH_EXECUTION.md).
 Nowledge feed reads support the bounded synthesized-source aggregation
 `MATCH (c:Memory)-[:SYNTHESIZED_FROM]->(s:Memory) WHERE c.id IN $ids WITH c, COLLECT(DISTINCT s.id) AS source_ids RETURN c.id, source_ids`
 as a direct group-by-property plus collected-property list. General `WITH`
@@ -780,7 +785,10 @@ remains rejected. Anonymous relationship endpoints such as `()` and `(:Label)`
 are supported for Nowledge relationship-count reads. Untyped one-hop
 relationship reads such as `MATCH (a)-[r]->(b)` are supported for Nowledge
 overview edge queries, and `label(r)`/`type(r)` can project the bound
-relationship type. The graph-canvas id-set induced subgraph is a fixed bounded
+relationship type. Kùzu `label(n)` reads a node's label and openCypher
+`labels(n)` its label list, in every expression position including
+`WHERE label(b) IN $labels` (#1678; see
+[label functions](CYPHER_LIST_FUNCTIONS.md#labels-and-relationship-types)). The graph-canvas id-set induced subgraph is a fixed bounded
 query decoded by the host route. Nowledge-used
 `RETURN` projection fallbacks support
 `COALESCE(...)` and `LEFT(...)`, including nested forms such as
@@ -791,7 +799,18 @@ comparison predicates. Nowledge-used case-insensitive grep predicates such as
 `LOWER(COALESCE(m.content, '')) CONTAINS LOWER($needle)` and
 `LOWER(e.name) = LOWER($mention)` are supported through the same limited scalar
 expression evaluator; broader predicate function composition remains separate
-follow-up work.
+follow-up work. openCypher list functions (`size`, `head`, `last`, `tail`,
+`reverse`, `range`), list comprehensions, list indexing/slicing and generic
+`IN` are described in [Cypher list functions](CYPHER_LIST_FUNCTIONS.md).
+openCypher temporal types, constructors, component access, arithmetic,
+`duration.between` and truncation, with native persistence, are described in
+[Cypher temporal types](CYPHER_TEMPORAL.md).
+`LOAD CSV [WITH HEADERS] FROM ... AS row [FIELDTERMINATOR ...]` imports local
+files beneath `DatabaseConfig::csv_import_root` as a row source for reads and
+for node `CREATE`/`MERGE` and matched-relationship `CREATE`; the
+`toInteger`/`toFloat`/`toBoolean`/`toString` conversion functions and the
+Kùzu-compatible `string`/`to_string` cast are available in every scalar
+context. See [Cypher LOAD CSV](CYPHER_LOAD_CSV.md).
 Parenthesized predicate groups preserve explicit `AND`/`OR` precedence. String
 literals support escaped quotes, backslashes, and common control escapes. Graph algorithm procedure options such
 as `dampingFactor`, `maxIterations`, and `maxLevels` accept bound parameters and
@@ -803,7 +822,20 @@ alias-based ordering, `ORDER BY COUNT(variable)` over the projected aggregate
 column, and pagination. Nowledge-used `MIN(variable.property)` is
 implemented for schema verification reads such as `min(r.weight)`, and
 Nowledge-used `AVG(variable.property)` is implemented for health aggregate reads
-such as `avg(m.decay_score_cached)`. One-hop
+such as `avg(m.decay_score_cached)`. openCypher `SUM` is implemented: it ignores
+NULL, returns an integer for all-integer input (failing on `i64` overflow), a
+float once any float is summed, `0` for empty or all-NULL input, and fails on
+non-numeric input. `AVG` keeps its earlier lenient behavior, which Nowledge
+health reads rely on: it skips non-numeric values and does not reject a
+non-finite running total, so over the same rows `avg(x)` can return a value
+(or infinity) where `sum(x)` fails. `COUNT`, `SUM`, `MIN`, `MAX`, `AVG`, and `COLLECT` accept
+any aggregate-free projection expression as their argument, each with optional
+`DISTINCT` over the argument value, for example
+`sum(CASE WHEN n.x > 1 THEN 1 ELSE 0 END)`, `count(DISTINCT n.x % 2)`,
+`avg(n.x * 2)`, `max(-n.x)`, or `sum(x * 2)` over a `WITH` column. The fixed
+`variable[.property]` shapes keep their previous logical plans; other arguments
+are evaluated per input row by the aggregate operator. Aggregates nested inside
+an aggregate argument are rejected. One-hop
 relationship variables can be returned, filtered, sorted, and counted through relationship properties, for example
 `RETURN r.weight`, `WHERE r.weight > 1`, `ORDER BY r.weight`, `COUNT(r)`, and
 `COUNT(r.weight)`. Stable logical identities can be projected, filtered, and
@@ -992,7 +1024,16 @@ table schema DDL is implemented through
 `CREATE PROPERTY ON RELATIONSHIP TABLE Name(property) TYPE Type`, supports
 optional `NOT NULL`, persists through WAL replay and checkpoint, validates
 existing records before descriptor creation, and checks later writes before a
-WAL batch is appended. `Database::run_schema_maintenance` advances
+WAL batch is appended. An optional `DEFAULT <literal>` or
+`DEFAULT current_timestamp()` (#1683) is applied only to records created
+without the property (CREATE, MERGE create branch, explicit transactions,
+direct store creation APIs and graph snapshot import); explicit NULLs stay
+NULL, nothing is filled at read time, and declaring a defaulted property on a
+table with records lacking it enters `BACKFILL` so schema maintenance fills
+those records in bounded, crash-resumable WAL batches before validation.
+`Database::property_schemas` reports declared defaults; see
+[STORAGE.md](STORAGE.md) for the semantics table and format compatibility.
+`Database::run_schema_maintenance` advances
 `BACKFILL` descriptors to `VALIDATING`, validates `VALIDATING` descriptors
 before advancing them to `PUBLIC`, and removes `GC` descriptors through a single
 grouped WAL batch. `Database::plan_schema_maintenance` exposes a read-only

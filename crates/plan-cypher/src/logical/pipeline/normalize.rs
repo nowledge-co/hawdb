@@ -1,3 +1,6 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
 //! Preserve conventional read operators when a generic MATCH has the same semantics.
 
 use super::*;
@@ -46,6 +49,15 @@ pub(super) fn normalize(plan: LogicalPlan) -> LogicalPlan {
             }
         }
         LogicalPlan::Project { items, input } => project(items, normalize(*input)),
+        LogicalPlan::UnwindRows {
+            expression,
+            variable,
+            input,
+        } => LogicalPlan::UnwindRows {
+            expression,
+            variable,
+            input: Box::new(normalize(*input)),
+        },
         LogicalPlan::Filter { predicate, input } => LogicalPlan::Filter {
             predicate,
             input: Box::new(normalize(*input)),
@@ -54,6 +66,7 @@ pub(super) fn normalize(plan: LogicalPlan) -> LogicalPlan {
         LogicalPlan::Aggregate {
             group_keys,
             items,
+            graph_keys,
             input,
         } => {
             let input = normalize(*input);
@@ -66,6 +79,7 @@ pub(super) fn normalize(plan: LogicalPlan) -> LogicalPlan {
             LogicalPlan::Aggregate {
                 group_keys,
                 items,
+                graph_keys,
                 input: Box::new(input),
             }
         }
@@ -116,6 +130,7 @@ fn chained_optional_match(program: &GraphMatchProgram, input: LogicalPlan) -> Op
         source: expand_source,
         relationship,
         rel_type,
+        rel_types,
         properties,
         direction,
         min_hops,
@@ -125,6 +140,10 @@ fn chained_optional_match(program: &GraphMatchProgram, input: LogicalPlan) -> Op
     else {
         return None;
     };
+    // Expand reads one relationship type; a disjunction stays a GraphMatch.
+    if !rel_types.is_empty() {
+        return None;
+    }
     // Expand cannot encode target-node properties. A filter above an optional
     // Expand would remove the required NULL row when all endpoints are rejected.
     if expand_source != &source.variable
@@ -163,6 +182,12 @@ fn introduces_expand_bindings(
 
 /// A single-node MATCH constrained by an existing scalar can use the bounded
 /// column lookup operator instead of scanning every node and filtering it.
+///
+/// A mandatory MATCH may carry further conjuncts: one `node.property = column`
+/// conjunct becomes the lookup key and the others its node predicate, so
+/// each upstream row no longer scans the label (#1544). The other conjuncts
+/// must be infallible and must not include another equality on the node, which
+/// an index could serve. An optional MATCH still requires a lone key.
 fn column_node_lookup(program: &GraphMatchProgram, input: LogicalPlan) -> Option<LogicalPlan> {
     if !program.imports.is_empty() || !introduced_bindings_are_disjoint(program, &input) {
         return None;
@@ -173,24 +198,140 @@ fn column_node_lookup(program: &GraphMatchProgram, input: LogicalPlan) -> Option
     if program.introduced.as_slice() != [node.variable.as_str()] || !node.properties.is_empty() {
         return None;
     }
-    let Some(Predicate::ExpressionEq { expression, value }) = &program.predicate else {
+    let predicate = program.predicate.as_ref()?;
+    let mut conjuncts = Vec::new();
+    flatten_conjuncts(predicate, &mut conjuncts);
+    if program.optional && conjuncts.len() != 1 {
+        return None;
+    }
+    let key = conjuncts
+        .iter()
+        .position(|conjunct| lookup_key(conjunct, &node.variable).is_some())?;
+    // Planning has no index catalog. Another equality on the node may be the
+    // indexed one the per-row path would seek, so keep that path (#1545).
+    if conjuncts
+        .iter()
+        .enumerate()
+        .any(|(index, conjunct)| index != key && node_equality(conjunct, &node.variable))
+    {
+        return None;
+    }
+    let (property, column) = lookup_key(conjuncts[key], &node.variable)?;
+    let mut residual = conjuncts
+        .into_iter()
+        .enumerate()
+        .filter(|(index, _)| *index != key)
+        .map(|(_, conjunct)| conjunct.clone())
+        .collect::<Vec<_>>();
+    // The scan evaluates every conjunct on every candidate node, so a
+    // conjunct that can fail surfaces its error even when the key matches no
+    // node. Defer only conjuncts that cannot fail, keeping that contract.
+    if !residual
+        .iter()
+        .all(|conjunct| infallible_predicate(conjunct, &node.variable))
+    {
+        return None;
+    }
+    // The remaining conjuncts become the lookup's node predicate, which it
+    // evaluates on each matched node before counting the row, so a row limit
+    // still stops the lookup. Visibility policies extend the same predicate.
+    let node_predicate = match residual.len() {
+        0 => None,
+        1 => residual.pop(),
+        _ => Some(Predicate::And(residual)),
+    };
+    Some(LogicalPlan::NodeColumnLookup {
+        variable: node.variable.clone(),
+        label: node.label.clone(),
+        property: property.to_owned(),
+        column: column.to_owned(),
+        optional: program.optional,
+        node_visibility_predicate: node_predicate,
+        input: Box::new(input),
+    })
+}
+
+fn flatten_conjuncts<'a>(predicate: &'a Predicate, conjuncts: &mut Vec<&'a Predicate>) {
+    match predicate {
+        Predicate::And(predicates) => {
+            for predicate in predicates {
+                flatten_conjuncts(predicate, conjuncts);
+            }
+        }
+        predicate => conjuncts.push(predicate),
+    }
+}
+
+/// Predicates whose evaluation cannot raise an error on any binding; anything
+/// else keeps the per-row scan. Deliberately conservative: comparisons,
+/// string operators and function calls are excluded.
+/// Only properties of the matched node itself are admitted, so no conjunct
+/// depends on another binding being declared.
+fn infallible_predicate(predicate: &Predicate, node: &str) -> bool {
+    match predicate {
+        Predicate::And(predicates) | Predicate::Or(predicates) => predicates
+            .iter()
+            .all(|predicate| infallible_predicate(predicate, node)),
+        Predicate::Not(predicate) => infallible_predicate(predicate, node),
+        Predicate::ConstantBool(_) => true,
+        Predicate::PropertyEq { variable, .. }
+        | Predicate::PropertyNotEq { variable, .. }
+        | Predicate::PropertyIn { variable, .. }
+        | Predicate::PropertyIsNull { variable, .. }
+        | Predicate::PropertyIsNotNull { variable, .. }
+        // The pattern is validated at planning; non-strings do not match.
+        | Predicate::PropertyRegexMatch { variable, .. } => variable == node,
+        Predicate::ExpressionEq { expression, value }
+        | Predicate::ExpressionNotEq { expression, value } => {
+            infallible_expression(expression, node) && infallible_expression(value, node)
+        }
+        _ => false,
+    }
+}
+
+fn infallible_expression(expression: &ProjectionExpression, node: &str) -> bool {
+    match expression {
+        ProjectionExpression::Column(_) | ProjectionExpression::Literal(_) => true,
+        ProjectionExpression::Property { variable, .. }
+        | ProjectionExpression::DefaultIfNullOrEq { variable, .. }
+        | ProjectionExpression::DefaultIfNull { variable, .. } => variable == node,
+        ProjectionExpression::Coalesce(expressions) => expressions
+            .iter()
+            .all(|expression| infallible_expression(expression, node)),
+        _ => false,
+    }
+}
+
+/// An equality or membership test on a plain property of `node`, in either
+/// orientation: the per-row path can seek such a conjunct through an index.
+fn node_equality(predicate: &Predicate, node: &str) -> bool {
+    let property = |expression: &ProjectionExpression| matches!(expression, ProjectionExpression::Property { variable, .. } if variable == node);
+    match predicate {
+        Predicate::PropertyEq { variable, .. } | Predicate::PropertyIn { variable, .. } => {
+            variable == node
+        }
+        Predicate::ExpressionEq { expression, value } => property(expression) || property(value),
+        Predicate::ExpressionIn { expression, .. } => property(expression),
+        _ => false,
+    }
+}
+
+/// `variable.property = column`, the only shape the lookup operator binds.
+fn lookup_key<'a>(predicate: &'a Predicate, variable: &str) -> Option<(&'a str, &'a str)> {
+    let Predicate::ExpressionEq { expression, value } = predicate else {
         return None;
     };
-    let ProjectionExpression::Property { variable, property } = expression else {
+    let ProjectionExpression::Property {
+        variable: bound,
+        property,
+    } = expression
+    else {
         return None;
     };
     let ProjectionExpression::Column(column) = value else {
         return None;
     };
-    (variable == &node.variable).then(|| LogicalPlan::NodeColumnLookup {
-        variable: node.variable.clone(),
-        label: node.label.clone(),
-        property: property.clone(),
-        column: column.clone(),
-        optional: program.optional,
-        node_visibility_predicate: None,
-        input: Box::new(input),
-    })
+    (bound == variable).then_some((property.as_str(), column.as_str()))
 }
 
 fn independent_nodes(program: &GraphMatchProgram, input: Option<&LogicalPlan>) -> bool {
@@ -229,13 +370,16 @@ fn disjoint_native_bindings(input: &LogicalPlan, variables: &BTreeSet<&str>, dep
     let next = depth + 1;
     match input {
         LogicalPlan::NodeScan { variable, .. } => !variables.contains(variable.as_str()),
-        LogicalPlan::VectorSeed { .. } | LogicalPlan::TextSeed { .. } => true,
+        LogicalPlan::VectorSeed { .. }
+        | LogicalPlan::TextSeed { .. }
+        | LogicalPlan::Unwind { .. } => true,
         LogicalPlan::GraphSeed { variable, .. } => !variables.contains(variable.as_str()),
         LogicalPlan::VectorIndexSearch(scan) => !variables.contains(scan.variable.as_str()),
         // Aggregate constructs fresh value-only bindings, including its spill
         // paths. No native entity binding survives from the input.
         LogicalPlan::Aggregate { .. } => true,
         LogicalPlan::Filter { input, .. }
+        | LogicalPlan::UnwindRows { input, .. }
         | LogicalPlan::Project { input, .. }
         | LogicalPlan::Sort { input, .. }
         | LogicalPlan::Limit { input, .. }
@@ -286,6 +430,8 @@ fn disjoint_native_bindings(input: &LogicalPlan, variables: &BTreeSet<&str>, dep
                                 .as_ref()
                                 .is_none_or(|name| !variables.contains(name.as_str()))
                     }
+                    // A path is a value binding, never a native one.
+                    GraphMatchStep::ShortestPath(_) => true,
                 })
                 && input
                     .as_ref()
@@ -355,6 +501,7 @@ fn chained_match(program: &GraphMatchProgram, input: &LogicalPlan) -> Option<Log
         source: expand_source,
         relationship,
         rel_type,
+        rel_types,
         properties,
         direction,
         min_hops,
@@ -364,7 +511,8 @@ fn chained_match(program: &GraphMatchProgram, input: &LogicalPlan) -> Option<Log
     else {
         return None;
     };
-    if expand_source != &source.variable {
+    // Expand reads one relationship type; a disjunction stays a GraphMatch.
+    if expand_source != &source.variable || !rel_types.is_empty() {
         return None;
     }
 
@@ -441,7 +589,8 @@ fn reorderable_filter(predicate: &Predicate) -> bool {
         | Predicate::ExpressionEq { .. }
         | Predicate::ExpressionNotEq { .. }
         | Predicate::ExpressionCompare { .. }
-        | Predicate::ExpressionContains { .. } => false,
+        | Predicate::ExpressionContains { .. }
+        | Predicate::ExpressionRegexMatch { .. } => false,
         Predicate::ExpressionIn { .. } => false,
     }
 }
@@ -512,6 +661,7 @@ fn lower_optional_count_match(items: &[Aggregation], input: &LogicalPlan) -> Opt
         source,
         relationship,
         rel_type,
+        rel_types,
         properties,
         direction,
         min_hops: 1,
@@ -521,6 +671,10 @@ fn lower_optional_count_match(items: &[Aggregation], input: &LogicalPlan) -> Opt
     else {
         return None;
     };
+    // Expand reads one relationship type; a disjunction stays a GraphMatch.
+    if !rel_types.is_empty() {
+        return None;
+    }
     let counts_relationship = relationship.as_deref() == Some(counted);
     let counts_target = target.variable == *counted;
     let first_is_introduced = program
@@ -599,10 +753,15 @@ fn initial_match(program: &GraphMatchProgram) -> Option<LogicalPlan> {
     // constraints that conventional Expand operators cannot express. Fixed,
     // distinct relationship types cannot alias the same relationship, so that
     // subset can retain the conventional chain shape safely.
-    if tail.len() > 1 && !has_distinct_fixed_relationship_types(tail) {
+    let expansions = tail
+        .iter()
+        .filter(|step| matches!(step, GraphMatchStep::Expand { .. }))
+        .count();
+    if expansions > 1 && !has_distinct_fixed_relationship_types(tail) {
         return None;
     }
     let mut introduced = BTreeSet::from([first.variable.as_str()]);
+    let mut node_labels = BTreeMap::from([(first.variable.as_str(), first.label.as_str())]);
     let mut predicates = node_predicates(first);
     let mut input = LogicalPlan::NodeScan {
         variable: first.variable.clone(),
@@ -610,11 +769,33 @@ fn initial_match(program: &GraphMatchProgram) -> Option<LogicalPlan> {
     };
     let mut source_variable = first.variable.clone();
     let mut source_label = first.label.clone();
-    for step in tail {
+    for (index, step) in tail.iter().enumerate() {
+        // A later comma pattern that starts from a node this clause already
+        // bound, as in `(a)-[:R]->(b), (b)-[:S]->(c)`, continues from that
+        // binding. The repeated node must not narrow the label; its property
+        // map becomes an ordinary conjunct like any other pattern property.
+        // Only a repeated node that starts the next expansion is accepted.
+        if let GraphMatchStep::Node(node) = step {
+            if !matches!(
+                tail.get(index + 1),
+                Some(GraphMatchStep::Expand { source, .. }) if source == &node.variable
+            ) {
+                return None;
+            }
+            let label = node_labels.get(node.variable.as_str())?;
+            if !node.label.is_empty() && node.label != *label {
+                return None;
+            }
+            predicates.extend(node_predicates(node));
+            source_variable = node.variable.clone();
+            source_label = label.to_string();
+            continue;
+        }
         let GraphMatchStep::Expand {
             source,
             relationship,
             rel_type,
+            rel_types,
             properties,
             direction,
             min_hops,
@@ -624,6 +805,10 @@ fn initial_match(program: &GraphMatchProgram) -> Option<LogicalPlan> {
         else {
             return None;
         };
+        // Expand reads one relationship type; a disjunction stays a GraphMatch.
+        if !rel_types.is_empty() {
+            return None;
+        }
         if source != &source_variable || !introduced.insert(target.variable.as_str()) {
             return None;
         }
@@ -632,6 +817,7 @@ fn initial_match(program: &GraphMatchProgram) -> Option<LogicalPlan> {
         {
             return None;
         }
+        node_labels.insert(target.variable.as_str(), target.label.as_str());
         predicates.extend(node_predicates(target));
         input = LogicalPlan::Expand {
             source_variable: source_variable.clone(),
@@ -668,11 +854,14 @@ fn initial_match(program: &GraphMatchProgram) -> Option<LogicalPlan> {
 
 fn has_distinct_fixed_relationship_types(steps: &[GraphMatchStep]) -> bool {
     let mut relationship_types = BTreeSet::new();
-    steps.iter().all(|step| {
-        let GraphMatchStep::Expand { rel_type, .. } = step else {
-            return false;
-        };
-        !rel_type.is_empty() && relationship_types.insert(rel_type)
+    steps.iter().all(|step| match step {
+        GraphMatchStep::Expand {
+            rel_type,
+            rel_types,
+            ..
+        } => rel_types.is_empty() && !rel_type.is_empty() && relationship_types.insert(rel_type),
+        GraphMatchStep::Node(_) => true,
+        GraphMatchStep::ShortestPath(_) => false,
     })
 }
 
@@ -715,6 +904,7 @@ fn project(projections: Vec<Projection>, input: LogicalPlan) -> LogicalPlan {
             let LogicalPlan::Aggregate {
                 mut group_keys,
                 mut items,
+                graph_keys,
                 input,
             } = input
             else {
@@ -731,6 +921,7 @@ fn project(projections: Vec<Projection>, input: LogicalPlan) -> LogicalPlan {
             return LogicalPlan::Aggregate {
                 group_keys,
                 items,
+                graph_keys,
                 input,
             };
         }

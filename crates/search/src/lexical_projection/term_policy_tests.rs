@@ -88,8 +88,9 @@ fn term_policy_default_query_count_boundary_remains_usable() {
             &Default::default(),
         )
         .unwrap();
-    let mut query = (0..31)
-        .map(|index| format!("query{index:02}"))
+    let limit = reader.config.max_query_terms.get();
+    let mut query = (0..limit - 1)
+        .map(|index| format!("query{index:03}"))
         .collect::<BTreeSet<_>>();
     query.insert("short".into());
     assert_eq!(query.len(), reader.config.max_query_terms.get());
@@ -106,7 +107,10 @@ fn term_policy_default_query_count_boundary_remains_usable() {
         .score(&query, &Default::default(), None, |_| Ok(true))
         .unwrap_err()
         .to_string()
-        .contains("33 terms"));
+        .contains(&format!(
+            "scores {} terms, exceeding max_query_terms",
+            limit + 1
+        )));
 }
 
 #[test]

@@ -24,7 +24,11 @@ impl DatabaseTransactionRuntime {
             instance_identity: db.instance_identity()?,
             session_config,
             optimizer: runtime.optimizer.clone(),
-            plan_cache: SharedState::new(PlanCache::new(db.config.max_plan_cache_entries)),
+            plan_cache: SharedState::new(PlanCache::with_byte_limits(
+                db.config.max_plan_cache_entries,
+                Some(db.config.max_physical_plan_cache_bytes),
+                Some(db.config.max_physical_plan_cache_entry_bytes),
+            )),
             relational_plan_template_cache: Arc::clone(&runtime.relational_plan_template_cache),
             optimizer_planning_cache: SharedState::new(
                 runtime.optimizer_planning_cache.borrow().clone(),
@@ -106,6 +110,7 @@ impl DatabaseTransactionState {
                 .store
                 .begin_authoritative_relational_transaction_rows()
                 .map_err(|error| error.to_string()),
+            sql_clock: hawdb_core::temporal::statement_now(),
         })
     }
 
@@ -143,6 +148,7 @@ impl DatabaseTransactionState {
             relational_returning: std::mem::take(&mut self.relational_returning),
             relational_index: std::mem::replace(&mut self.relational_index, Ok(None)),
             relational_rows: std::mem::replace(&mut self.relational_rows, Ok(None)),
+            sql_clock: self.sql_clock,
         }
     }
 
@@ -301,10 +307,8 @@ pub(super) fn execute_graph_transaction_plan(
     }
     if executor::is_mutation_plan(&optimized.physical_plan)? {
         runtime.ensure_writable(transaction.store())?;
-        let is_mutation_return = matches!(
-            optimized.physical_plan,
-            PhysicalPlan::SetNodePropertiesReturn { .. }
-        );
+        let is_mutation_return =
+            hawdb_executor::mutation::mutation_returns_rows(&optimized.physical_plan);
         let mut mutation_limits = match &optimized.physical_plan {
             PhysicalPlan::SetNodePropertiesReturn {
                 returns: crate::planner::SetNodePropertiesReturnMode::Count { .. },
@@ -323,29 +327,39 @@ pub(super) fn execute_graph_transaction_plan(
             mutation_limits.max_result_rows = mutation_limits.max_result_rows.min(limit);
         }
         let statement_savepoint = transaction.savepoint();
-        let execution = (|| {
-            let summary = match &optimized.physical_plan {
-                PhysicalPlan::UnwindMutation {
-                    rows,
-                    variable,
-                    operation,
-                } => transaction.stage_mutations_with_limits(
-                    executor::materialize_unwind_mutations(
-                        rows,
-                        variable,
-                        operation,
+        let execute = || {
+            let staged = executor::stage_row_mutations(
+                &optimized.physical_plan,
+                parameters,
+                runtime.config.csv_import_policy().as_ref(),
+                mutation_limits,
+                &runtime.config.execution_memory,
+                task_context,
+            )?;
+            let summary = match staged {
+                Some(mut staged) => {
+                    // Endpoints resolve against this transaction's working
+                    // store, which already holds its earlier statements.
+                    // Relationship CREATE and MERGE endpoints both resolve
+                    // here.
+                    staged.resolve_endpoints(
+                        transaction.catalog(),
+                        transaction.store(),
                         mutation_limits,
+                        &runtime.config.execution_memory,
                         task_context,
-                    )?,
-                    mutation_limits,
-                )?,
-                _ => {
+                    )?;
+                    let (mutations, _charge) = staged.into_parts();
+                    transaction.stage_mutations_with_limits(mutations, mutation_limits)?
+                }
+                None => {
                     let command = if is_mutation_return {
                         hawdb_executor::mutation::materialize_node_mutation(
                             &optimized.physical_plan,
                             transaction.catalog(),
                             transaction.store(),
                             mutation_limits,
+                            &runtime.config.execution_memory,
                             task_context,
                         )?
                     } else {
@@ -357,6 +371,7 @@ pub(super) fn execute_graph_transaction_plan(
                                     transaction.catalog(),
                                     transaction.store(),
                                     mutation_limits,
+                                    &runtime.config.execution_memory,
                                     task_context,
                                 )? {
                                     Some(command) => Some(command),
@@ -386,7 +401,9 @@ pub(super) fn execute_graph_transaction_plan(
                 runtime.config.mutation_limits,
             )?;
             let rows = returned_rows.unwrap_or_default();
-            let output = QueryOutput { rows: rows.into() };
+            let output = QueryOutput {
+                rows: optimized.collect_named_rows(rows)?,
+            };
             hawdb_executor::result_delivery::OutputLimits {
                 max_rows: restrictive_query_limit(
                     runtime.read_result_row_limit(),
@@ -397,12 +414,22 @@ pub(super) fn execute_graph_transaction_plan(
                     execution.output_limits.max_payload_bytes,
                 ),
             }
-            .validate(output.rows.len(), output.rows.payload_bytes())?;
+            .validate(
+                output.rows.len(),
+                if output.rows.is_empty() {
+                    0
+                } else {
+                    output.rows.payload_bytes()
+                },
+            )?;
             Ok((
                 output,
                 transaction.lock_footprint_since(&statement_savepoint)?,
             ))
-        })();
+        };
+        // Row-evaluated clock reads observe the instant planning observed.
+        let execution =
+            hawdb_core::temporal::with_statement_clock(optimized.statement_clock, execute);
         return match execution {
             Ok((output, lock_footprint)) => Ok(GraphTransactionStatementOutcome {
                 output,
@@ -425,6 +452,9 @@ pub(super) fn execute_graph_transaction_plan(
                 parameters,
                 &runtime.config.execution_memory,
             )
+            .with_statement_clock(optimized.statement_clock)
+            .with_csv_import(runtime.config.csv_import_policy().as_ref())
+            .with_output_columns(optimized.output_columns.as_deref())
             .with_output_limits(
                 restrictive_query_limit(
                     runtime.read_result_row_limit(),
@@ -550,10 +580,7 @@ impl<'a> PreparedGraphTransactionRequest<'a> {
     }
 
     pub(super) fn returns_statement_rows(&self) -> bool {
-        matches!(
-            self.optimized.physical_plan,
-            PhysicalPlan::SetNodePropertiesReturn { .. }
-        )
+        hawdb_executor::mutation::mutation_returns_rows(&self.optimized.physical_plan)
     }
 
     pub(super) fn into_trace(self, capture_trace: bool) -> QueryExecutionTrace {
@@ -638,6 +665,80 @@ pub(crate) fn execute_database_transaction_sql_request(
     result
 }
 
+/// Runs one SQL statement of an explicit transaction that `db` owns, with
+/// the fail-closed checks and statement recording of an autocommit statement.
+///
+/// Before the statement runs, `db`'s storage handle must be usable, so a
+/// handle poisoned by an earlier integrity failure refuses transaction
+/// statements as it refuses autocommit ones. A storage integrity failure of
+/// a `SELECT` or `EXPLAIN` poisons the handle, as the autocommit read path
+/// does. Every prepared statement is recorded in `db`'s statement summary
+/// and, when it succeeds over the threshold, in its slow-query log, under
+/// its own text and statement kind. The elapsed time and row count are the
+/// statement's own; its effects are staged and become visible only if the
+/// transaction commits. As in autocommit, a statement that fails to parse or
+/// meets an unusable handle is not recorded.
+///
+/// `prepared` is the already parsed `request.sql`, or `None` to parse it here.
+pub(crate) fn execute_recorded_database_transaction_sql_request(
+    db: &Database,
+    runtime: &DatabaseTransactionRuntime,
+    state: &mut DatabaseTransactionState,
+    request: SqlQueryRequest<'_>,
+    prepared: Option<crate::relational_sql::PreparedRelationalSql>,
+) -> Result<SqlStatementResult> {
+    let started = hawdb_core::time::Instant::now();
+    let result = (|| {
+        let task = query_request::bind_request_context(None, request.task_context)?;
+        query_runtime::query_runtime_checkpoint(task.as_ref())?;
+        db.runtime.get()?.store.ensure_usable()?;
+        if let Some(dependencies) = &mut state.read_dependencies {
+            dependencies.admit_sql(request.sql, request.parameters)?;
+        }
+        let prepared = match prepared {
+            Some(prepared) => prepared,
+            None => runtime
+                .relational_plan_template_cache
+                .prepare(request.sql)?,
+        };
+        let statement_kind = observability::sql_statement_kind(prepared.statement());
+        let reads = matches!(
+            prepared.statement(),
+            crate::sql::SqlStatement::Select(_) | crate::sql::SqlStatement::Explain(_)
+        );
+        let result = execute_database_transaction_prepared_sql(
+            runtime,
+            state,
+            request.sql,
+            prepared,
+            request.parameters,
+            DatabaseTransactionSqlOptions {
+                allow_system_schema_registry_write: false,
+                allow_locking_select: false,
+                task_context: task.as_ref(),
+                output_limits: request.output_limits,
+                join_planning: request.join_planning,
+            },
+        );
+        if reads && let Ok(branch_runtime) = db.runtime.get() {
+            branch_runtime.store.poison_on_storage_error(&result);
+        }
+        db.record_statement_execution(
+            "sql",
+            request.sql,
+            statement_kind,
+            started,
+            result.as_ref().map(|result| &result.output),
+            StatementExecutionContext::default(),
+        );
+        result
+    })();
+    if result.is_err() {
+        state.fail_read_dependencies();
+    }
+    result
+}
+
 pub(super) fn execute_database_transaction_sql(
     runtime: &DatabaseTransactionRuntime,
     state: &mut DatabaseTransactionState,
@@ -668,6 +769,49 @@ pub(super) fn execute_database_transaction_sql(
     )
 }
 
+pub(super) fn transaction_relational_read_modes<'a>(
+    runtime: &DatabaseTransactionRuntime,
+    state: &'a DatabaseTransactionState,
+) -> Result<crate::relational_sql::RelationalQueryReadModes<'a>> {
+    let index_read_mode = if runtime
+        .config
+        .relational_index_mode
+        .requires_authoritative_indexes()
+    {
+        crate::relational_sql::RelationalIndexReadMode::AuthoritativeTransaction(
+            state.authoritative_relational_index()?,
+        )
+    } else if runtime
+        .config
+        .relational_index_mode
+        .serves_demand_paged_reads()
+    {
+        crate::relational_sql::RelationalIndexReadMode::TransactionWorkspace
+    } else {
+        crate::relational_sql::RelationalIndexReadMode::Materialized
+    };
+    let row_read_mode = match &state.relational_rows {
+        Ok(Some(rows)) => crate::relational_sql::RelationalRowReadMode::Transaction {
+            store: state
+                .graph_transaction
+                .as_ref()
+                .expect("database transaction must own a graph workspace")
+                .store(),
+            rows,
+        },
+        Ok(None) => crate::relational_sql::RelationalRowReadMode::CanonicalMemory,
+        Err(error) => {
+            return Err(HawDBError::StorageIntegrity(format!(
+                "authoritative transaction row view could not be pinned: {error}"
+            )));
+        }
+    };
+    Ok(crate::relational_sql::RelationalQueryReadModes::new(
+        index_read_mode,
+        row_read_mode,
+    ))
+}
+
 pub(super) struct DatabaseTransactionSqlOptions<'a> {
     pub(super) allow_system_schema_registry_write: bool,
     pub(super) allow_locking_select: bool,
@@ -676,7 +820,24 @@ pub(super) struct DatabaseTransactionSqlOptions<'a> {
     pub(super) join_planning: RelationalJoinPlanningDirective,
 }
 
+/// Executes one SQL statement of a transaction with the statement clock
+/// pinned to the transaction start (PostgreSQL `transaction_timestamp()`).
 pub(super) fn execute_database_transaction_prepared_sql(
+    runtime: &DatabaseTransactionRuntime,
+    state: &mut DatabaseTransactionState,
+    sql_text: &str,
+    prepared: crate::relational_sql::PreparedRelationalSql,
+    parameters: &[Value],
+    options: DatabaseTransactionSqlOptions<'_>,
+) -> Result<SqlStatementResult> {
+    hawdb_core::temporal::with_statement_clock(state.sql_clock, || {
+        execute_database_transaction_prepared_sql_at_clock(
+            runtime, state, sql_text, prepared, parameters, options,
+        )
+    })
+}
+
+fn execute_database_transaction_prepared_sql_at_clock(
     runtime: &DatabaseTransactionRuntime,
     state: &mut DatabaseTransactionState,
     sql_text: &str,
@@ -856,44 +1017,12 @@ pub(super) fn execute_database_transaction_prepared_sql(
         prepared.statement(),
         crate::sql::SqlStatement::Select(_) | crate::sql::SqlStatement::Explain(_)
     ) {
-        let index_read_mode = if runtime
-            .config
-            .relational_index_mode
-            .requires_authoritative_indexes()
-        {
-            crate::relational_sql::RelationalIndexReadMode::AuthoritativeTransaction(
-                state.authoritative_relational_index()?,
-            )
-        } else if runtime
-            .config
-            .relational_index_mode
-            .serves_demand_paged_reads()
-        {
-            crate::relational_sql::RelationalIndexReadMode::TransactionWorkspace
-        } else {
-            crate::relational_sql::RelationalIndexReadMode::Materialized
-        };
-        let row_read_mode = match &state.relational_rows {
-            Ok(Some(rows)) => crate::relational_sql::RelationalRowReadMode::Transaction {
-                store: state
-                    .graph_transaction
-                    .as_ref()
-                    .expect("database transaction must own a graph workspace")
-                    .store(),
-                rows,
-            },
-            Ok(None) => crate::relational_sql::RelationalRowReadMode::CanonicalMemory,
-            Err(error) => {
-                return Err(HawDBError::StorageIntegrity(format!(
-                    "authoritative transaction row view could not be pinned: {error}"
-                )));
-            }
-        };
+        let read_modes = transaction_relational_read_modes(runtime, state)?;
         let output = crate::relational_sql::execute_prepared_relational_query_with_resources(
             prepared,
             parameters,
             &state.relational_state,
-            crate::relational_sql::RelationalQueryReadModes::new(index_read_mode, row_read_mode),
+            read_modes,
             relational_query_resource_context(
                 &runtime.config,
                 max_rows,
@@ -1194,6 +1323,7 @@ pub(super) fn relational_value_to_query_value(
         hawdb_storage::relational::RelationalValue::Null => Ok(Value::Null),
         hawdb_storage::relational::RelationalValue::Boolean(value) => Ok(Value::Bool(*value)),
         hawdb_storage::relational::RelationalValue::BigInt(value) => Ok(Value::Int(*value)),
+        hawdb_storage::relational::RelationalValue::Decimal(value) => Ok(Value::Decimal(*value)),
         hawdb_storage::relational::RelationalValue::DoublePrecision(value) => {
             Ok(Value::Float(*value))
         }
@@ -1204,6 +1334,12 @@ pub(super) fn relational_value_to_query_value(
         hawdb_storage::relational::RelationalValue::Uuid(value) => Ok(Value::Uuid(*value)),
         hawdb_storage::relational::RelationalValue::Vector(value) => {
             Ok(Value::Vector(value.clone()))
+        }
+        hawdb_storage::relational::RelationalValue::Timestamp(value) => {
+            hawdb_core::sql_timestamp::local_value(*value)
+        }
+        hawdb_storage::relational::RelationalValue::TimestampTz(value) => {
+            hawdb_core::sql_timestamp::zoned_value(*value)
         }
         hawdb_storage::relational::RelationalValue::Overflow(_) => {
             Err(HawDBError::StorageIntegrity(
@@ -1258,9 +1394,17 @@ pub(super) fn map_transaction_relational_error(
         | hawdb_storage::relational::RelationalError::Durability(message) => {
             HawDBError::StorageIntegrity(message)
         }
-        error @ (hawdb_storage::relational::RelationalError::Admission(_)
-        | hawdb_storage::relational::RelationalError::Schema(_)
-        | hawdb_storage::relational::RelationalError::Constraint(_)) => {
+        error @ (hawdb_storage::relational::RelationalError::Schema(_)
+        | hawdb_storage::relational::RelationalError::Constraint(_)) => match error.kind() {
+            // A statement in an explicit transaction keeps the execution surface.
+            Some(kind) => HawDBError::relational(
+                kind,
+                hawdb_core::RelationalErrorSurface::Execution,
+                error.to_string(),
+            ),
+            None => HawDBError::Execution(error.to_string()),
+        },
+        error @ hawdb_storage::relational::RelationalError::Admission(_) => {
             HawDBError::Execution(error.to_string())
         }
     }
@@ -1290,6 +1434,17 @@ pub(crate) fn commit_database_transaction_state(
     state: &mut DatabaseTransactionState,
     allow_stale_rebase: bool,
 ) -> Result<TransactionCommitResult> {
+    commit_database_transaction_state_with_context(db, state, allow_stale_rebase, None)
+}
+
+/// Commits with `task_context` checked before a commit that must wait for a
+/// live-overlay drain is attempted again.
+pub(crate) fn commit_database_transaction_state_with_context(
+    db: &mut Database,
+    state: &mut DatabaseTransactionState,
+    allow_stale_rebase: bool,
+    task_context: Option<&hawdb_core::RuntimeTaskContext>,
+) -> Result<TransactionCommitResult> {
     let result = (|| {
         let prepared = state
             .graph_transaction
@@ -1300,7 +1455,13 @@ pub(crate) fn commit_database_transaction_state(
                 state.relational_transaction.writes.is_empty()
                     && state.append_transaction.writes.is_empty(),
             )?;
-        commit_database_transaction_state_inner(db, state, prepared, allow_stale_rebase)
+        commit_database_transaction_state_inner(
+            db,
+            state,
+            prepared,
+            allow_stale_rebase,
+            task_context,
+        )
     })();
     db.poison_on_storage_error(&result);
     result
@@ -1311,8 +1472,15 @@ pub(super) fn commit_prepared_database_transaction_state(
     state: &mut DatabaseTransactionState,
     prepared: crate::store::PreparedGraphMutationTransaction,
     allow_stale_rebase: bool,
+    task_context: Option<&hawdb_core::RuntimeTaskContext>,
 ) -> Result<TransactionCommitResult> {
-    let result = commit_database_transaction_state_inner(db, state, prepared, allow_stale_rebase);
+    let result = commit_database_transaction_state_inner(
+        db,
+        state,
+        prepared,
+        allow_stale_rebase,
+        task_context,
+    );
     db.poison_on_storage_error(&result);
     result
 }
@@ -1322,6 +1490,7 @@ pub(super) fn commit_database_transaction_state_inner(
     state: &mut DatabaseTransactionState,
     graph_transaction: crate::store::PreparedGraphMutationTransaction,
     allow_stale_rebase: bool,
+    task_context: Option<&hawdb_core::RuntimeTaskContext>,
 ) -> Result<TransactionCommitResult> {
     db.ensure_writable()?;
     if let Some(dependencies) = &state.read_dependencies {
@@ -1330,17 +1499,27 @@ pub(super) fn commit_database_transaction_state_inner(
     let returning = std::mem::take(&mut state.relational_returning);
     let relational_transaction = std::mem::take(&mut state.relational_transaction);
     let append_transaction = std::mem::take(&mut state.append_transaction);
-    let mut branch_runtime_access = db.runtime.get_mut()?;
-    let branch_runtime = &mut *branch_runtime_access;
-    let summary = branch_runtime.store.commit_prepared_graph_transaction(
-        &mut branch_runtime.catalog,
-        graph_transaction,
-        relational_transaction,
-        append_transaction,
-        db.config.mutation_limits,
-        allow_stale_rebase,
+    let mutation_limits = db.config.mutation_limits;
+    // A commit that fits an empty live overlay but not its remaining headroom
+    // waits for a drain and is committed again, unchanged (#1479).
+    let summary = db.runtime.commit_with_live_headroom(
+        crate::store::PreparedTransactionCommit {
+            transaction: graph_transaction,
+            relational: relational_transaction,
+            append: append_transaction,
+        },
+        task_context,
+        |branch_runtime, inputs| {
+            branch_runtime
+                .store
+                .commit_prepared_graph_transaction_with_live_headroom(
+                    &mut branch_runtime.catalog,
+                    inputs,
+                    mutation_limits,
+                    allow_stale_rebase,
+                )
+        },
     )?;
-    drop(branch_runtime_access);
     db.complete_required_relational_row_checkpoint("transaction commit")?;
     if returning.len() != summary.relational_mutation_outcomes.len() {
         return Err(HawDBError::StorageIntegrity(format!(
@@ -1485,7 +1664,12 @@ impl DatabaseTransaction<'_> {
             dependencies.ensure_complete()?;
             query_runtime::query_runtime_checkpoint(self.task_context.as_ref())?;
         }
-        commit_database_transaction_state(self.db, &mut self.state, false)
+        commit_database_transaction_state_with_context(
+            self.db,
+            &mut self.state,
+            false,
+            self.task_context.as_ref(),
+        )
     }
 
     pub fn rollback(mut self) {
@@ -1788,6 +1972,9 @@ impl DatabaseSession<'_> {
                     parameters,
                     &self.db.config.execution_memory,
                 )
+                .with_statement_clock(optimized.statement_clock)
+                .with_csv_import(self.db.config.csv_import_policy().as_ref())
+                .with_output_columns(optimized.output_columns.as_deref())
                 .with_output_limits(row_limit, self.db.config.max_read_result_payload_bytes),
                 executor::ExecutionResources::new(
                     &mut branch_runtime.catalog,
@@ -1806,10 +1993,11 @@ impl DatabaseSession<'_> {
                 &profiled.profile,
             );
             drop(profiled.rows);
-            return explain::admit_explain_output(row, &self.db.config, options);
+            return explain::admit_explain_output(row, true, &self.db.config, options);
         }
         explain::admit_explain_output(
             explain_output_row(&optimized, work_request, inner_statement_kind),
+            false,
             &self.db.config,
             options,
         )

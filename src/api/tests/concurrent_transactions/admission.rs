@@ -686,12 +686,18 @@ fn admitted_group_failure_preserves_conflicts_and_recovers_only_complete_serial_
         for (start, len) in &records {
             let torn = &full_wal[..start + len / 2];
             std::fs::write(&wal_path, torn).unwrap();
-            assert!(Database::open(&path)
-                .unwrap()
-                .commit_epoch()
-                .unwrap_err()
-                .to_string()
-                .contains("strict WAL recovery rejected torn tail"));
+            assert!(Database::open_with_config(
+                &path,
+                crate::DatabaseConfig {
+                    recovery_mode: crate::RecoveryMode::Strict,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .commit_epoch()
+            .unwrap_err()
+            .to_string()
+            .contains("strict WAL recovery rejected torn tail"));
             assert_eq!(std::fs::read(&wal_path).unwrap(), torn);
         }
         if records.len() == 2 {

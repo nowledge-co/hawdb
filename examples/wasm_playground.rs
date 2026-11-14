@@ -83,8 +83,13 @@ impl QueryBridge {
                     HawDBError::Parse(_) => "parse",
                     HawDBError::Semantic(_) => "semantic",
                     HawDBError::Storage(_) => "storage",
+                    HawDBError::Constraint { .. } => "constraint",
+                    HawDBError::Schema { .. } => "schema",
                     HawDBError::ProjectionBusy => "projection_busy",
+                    HawDBError::SearchProjectionMismatch { .. } => "search_projection_mismatch",
                     HawDBError::StorageIntegrity(_) => "storage_integrity",
+                    HawDBError::WalRecoveryIo { .. } => "wal_recovery_io",
+                    HawDBError::PublishOutcomeUnknown { .. } => "publish_outcome_unknown",
                     HawDBError::FileDescriptors(_) => "file_descriptors",
                     HawDBError::Execution(_)
                     | HawDBError::TransactionReadDependencyRefused { .. }
@@ -93,12 +98,19 @@ impl QueryBridge {
                     | HawDBError::GraphExpansionCandidateLimitExceeded { .. }
                     | HawDBError::GraphExpansionPayloadLimitExceeded { .. } => "execution",
                     HawDBError::BranchCommandUnsupported { .. } => "branch_command_unsupported",
+                    HawDBError::SearchProjectionRebuildRefused { .. } => {
+                        "search_projection_rebuild_refused"
+                    }
+                    HawDBError::SearchProjectionEpochAdvanceRefused { .. } => {
+                        "search_projection_epoch_advance_refused"
+                    }
                     HawDBError::BranchBusy { .. } => "branch_busy",
                     HawDBError::BranchReclamationBlocked { .. } => "branch_reclamation_blocked",
                     HawDBError::BranchEvidenceBudgetExceeded { .. } => {
                         "branch_evidence_budget_exceeded"
                     }
-                    HawDBError::TransactionConflict { .. } => "transaction_conflict",
+                    HawDBError::TransactionConflict { .. }
+                    | HawDBError::TransactionRetryRequired(_) => "transaction_conflict",
                     HawDBError::AppendSequenceExhausted { .. } => "append_sequence_exhausted",
                     HawDBError::CapabilityUnavailable { .. } => "capability_unavailable",
                 };
@@ -174,6 +186,10 @@ impl Serialize for DisplayValue<'_> {
                 value.serialize_field("type", "float64")?;
                 value.serialize_field("value", &inner.to_string())?;
             }
+            ValueRef::Decimal(inner) => {
+                value.serialize_field("type", "decimal")?;
+                value.serialize_field("value", &inner.to_string())?;
+            }
             ValueRef::String(inner) => {
                 value.serialize_field("type", "string")?;
                 value.serialize_field("value", inner)?;
@@ -189,6 +205,21 @@ impl Serialize for DisplayValue<'_> {
             ValueRef::Uuid(inner) => {
                 value.serialize_field("type", "uuid")?;
                 value.serialize_field("value", &inner.to_string())?;
+            }
+            ValueRef::Date(_)
+            | ValueRef::LocalTime(_)
+            | ValueRef::LocalDateTime(_)
+            | ValueRef::DateTime(_)
+            | ValueRef::Duration(_) => {
+                let kind = match self.0 {
+                    ValueRef::Date(_) => "date",
+                    ValueRef::LocalTime(_) => "localtime",
+                    ValueRef::LocalDateTime(_) => "localdatetime",
+                    ValueRef::DateTime(_) => "datetime",
+                    _ => "duration",
+                };
+                value.serialize_field("type", kind)?;
+                value.serialize_field("value", &self.0.to_string())?;
             }
             ValueRef::List(inner) => {
                 value.serialize_field("type", "list")?;

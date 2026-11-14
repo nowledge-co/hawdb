@@ -195,26 +195,38 @@ fn vector_index_incremental_power_loss_recovery_publication_completes_selected_i
     qualify(super::Cut::SelectorRename(ObservationBoundary::After));
 }
 
-fn qualify_lost_relaxed_source(graph: bool) {
-    for origin in [super::Cut::Link, super::Cut::SelectorWrite] {
-        for cut in CUTS {
-            check_recovery(
-                origin,
-                DurabilityPolicy::SyncOnCheckpoint,
-                graph,
-                Some(cut),
-                true,
-            );
-        }
+fn qualify_lost_relaxed_source(origin: super::Cut, graph: bool) {
+    for cut in CUTS {
+        check_recovery(
+            origin,
+            DurabilityPolicy::SyncOnCheckpoint,
+            graph,
+            Some(cut),
+            true,
+        );
     }
 }
 
 #[test]
-fn vector_index_incremental_power_loss_recovery_publication_preserves_lost_relaxed_sql_sources() {
-    qualify_lost_relaxed_source(false);
+fn vector_index_incremental_power_loss_recovery_publication_preserves_lost_relaxed_sql_sources_after_link(
+) {
+    qualify_lost_relaxed_source(super::Cut::Link, false);
 }
 
 #[test]
-fn vector_index_incremental_power_loss_recovery_publication_preserves_lost_relaxed_node_sources() {
-    qualify_lost_relaxed_source(true);
+fn vector_index_incremental_power_loss_recovery_publication_preserves_lost_relaxed_sql_sources_after_selector_write(
+) {
+    qualify_lost_relaxed_source(super::Cut::SelectorWrite, false);
+}
+
+#[test]
+fn vector_index_incremental_power_loss_recovery_publication_preserves_lost_relaxed_node_sources_after_link(
+) {
+    qualify_lost_relaxed_source(super::Cut::Link, true);
+}
+
+#[test]
+fn vector_index_incremental_power_loss_recovery_publication_preserves_lost_relaxed_node_sources_after_selector_write(
+) {
+    qualify_lost_relaxed_source(super::Cut::SelectorWrite, true);
 }

@@ -87,7 +87,7 @@ fn new_graph_targets_still_replay_and_stale_snapshots_still_abort() {
         .query(&update(3, 4))
         .unwrap_err()
         .to_string()
-        .contains("cannot acquire a graph lock after its snapshot changed"));
+        .contains("cannot acquire a new lock after its snapshot changed"));
     assert!(owner.commit().is_err());
     let rows = db
         .query("MATCH (n:Memory) RETURN n.value AS value ORDER BY n.id")

@@ -16,7 +16,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const WAL_DOCTOR_REPAIR_PROTOCOL: &str = "hawdb-wal-doctor-repair-v1";
+pub const WAL_DOCTOR_REPAIR_PROTOCOL: &str = "hawdb-wal-doctor-repair-v2";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WalDoctorOptions {
@@ -39,6 +39,7 @@ impl Default for WalDoctorOptions {
 #[serde(rename_all = "snake_case")]
 pub enum WalTailRepairReason {
     IncompleteFinalRecord,
+    UnsynchronizedSuffix,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,4 +115,7 @@ pub struct WalTailRepairReport {
     pub quarantine_file: String,
     pub repair_record_file: String,
     pub resumed_interrupted_repair: bool,
+    pub reason: WalTailRepairReason,
+    /// Directory containing the audit and its quarantine subdirectory.
+    pub evidence_directory: std::path::PathBuf,
 }

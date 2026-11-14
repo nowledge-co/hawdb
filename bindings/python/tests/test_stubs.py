@@ -72,6 +72,8 @@ SIGNATURES = [
     ("QueryResult.fetchone", hawdb.QueryResult.fetchone),
     ("QueryResult.fetchmany", hawdb.QueryResult.fetchmany),
     ("QueryResult.fetchall", hawdb.QueryResult.fetchall),
+    ("QueryResult.fetchmany_tuples", hawdb.QueryResult.fetchmany_tuples),
+    ("QueryResult._first_non_null", hawdb.QueryResult._first_non_null),
     ("QueryResult._repr_html_", hawdb.QueryResult._repr_html_),
     ("QueryResult._display_rows", hawdb.QueryResult._display_rows),
 ]

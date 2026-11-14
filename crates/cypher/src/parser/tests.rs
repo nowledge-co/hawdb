@@ -12,54 +12,30 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{Parser, MAX_CYPHER_PARSER_DEPTH};
-
 #[test]
-fn checkpoint_restores_prior_names_after_a_failed_nested_parse() {
-    let mut parser = Parser::new("(:Source) (:Memory) RETURN");
-    assert_eq!(parser.parse_match_node_pattern().unwrap().0, "__anon0");
-    let checkpoint = parser.checkpoint();
-    let error = parser
-        .with_recursion(|parser| {
-            assert_eq!(parser.parse_match_node_pattern()?.0, "__anon1");
-            parser.expect_keyword("WHERE")
-        })
-        .unwrap_err();
-    assert!(error.to_string().contains("expected WHERE"));
-    assert_eq!(parser.recursion_depth, 0);
-    assert_eq!(parser.anonymous_variable_id, 2);
-    parser.restore(checkpoint);
-    assert_eq!(parser.checkpoint(), checkpoint);
-    assert_eq!(parser.parse_match_node_pattern().unwrap().0, "__anon1");
-    parser.expect_keyword("RETURN").unwrap();
-    parser.expect_eof().unwrap();
+fn failed_parse_does_not_consume_names_in_the_next_query() {
+    let query = "MATCH (:Source) MATCH (:Memory) RETURN 1";
+    let expected = crate::parse(query).unwrap();
+    assert!(crate::parse("MATCH (:Source) MATCH (:Memory) WHERE").is_err());
+    assert_eq!(crate::parse(query).unwrap(), expected);
+    let crate::Statement::Pipeline(pipeline) = expected else {
+        panic!("pipeline");
+    };
+    for (index, clause) in pipeline.clauses.iter().take(2).enumerate() {
+        let crate::ClauseKind::Match { patterns, .. } = &clause.kind else {
+            panic!("MATCH");
+        };
+        assert_eq!(patterns[0].first.variable, format!("__anon{index}"));
+    }
 }
 
 #[test]
-fn nested_checkpoints_preserve_the_active_recursion_budget() {
-    let mut parser = Parser::new("(:Source) (:Memory)");
-    parser
-        .with_recursion(|parser| {
-            let outer = parser.checkpoint();
-            assert_eq!(parser.parse_match_node_pattern()?.0, "__anon0");
-            let inner = parser.checkpoint();
-            assert_eq!(parser.parse_match_node_pattern()?.0, "__anon1");
-            parser.restore(inner);
-            assert_eq!(parser.parse_match_node_pattern()?.0, "__anon1");
-            parser.restore(outer);
-            assert_eq!(parser.recursion_depth, 1);
-            assert_eq!(parser.parse_match_node_pattern()?.0, "__anon0");
-            Ok(())
-        })
-        .unwrap();
-    assert_eq!(parser.recursion_depth, 0);
-
-    parser.recursion_depth = MAX_CYPHER_PARSER_DEPTH;
-    let checkpoint = parser.checkpoint();
-    assert!(parser.with_recursion(|_| Ok(())).is_err());
-    parser.restore(checkpoint);
-    assert_eq!(parser.recursion_depth, MAX_CYPHER_PARSER_DEPTH);
-    assert!(parser.with_recursion(|_| Ok(())).is_err());
+fn failed_deep_parse_does_not_change_the_next_query_budget() {
+    let query = "MATCH (n) RETURN n";
+    let expected = crate::parse(query).unwrap();
+    let nested = format!("UNWIND {}0{} AS x RETURN x", "[".repeat(40), "]".repeat(40));
+    assert!(crate::parse(&nested).is_err());
+    assert_eq!(crate::parse(query).unwrap(), expected);
 }
 
 #[test]
@@ -74,34 +50,19 @@ fn graph_seed_procedure_accepts_a_parameterized_canonical_node_pipeline() {
 
 #[test]
 fn identity_898_malformed_legacy_clauses_preserve_exact_diagnostics() {
-    use crate::GraphAlgorithmKind::{Louvain, PageRank};
-    for (procedure, algorithm, clause) in [
-        ("page_rank", PageRank, "RETURN other, pagerank_score"),
-        ("page_rank", PageRank, "RETURN node pagerank_score"),
-        ("page_rank", PageRank, "RETURN node, wrong"),
-        ("page_rank", PageRank, "RETURN node, node_id, wrong, rank"),
-        ("page_rank", PageRank, "RETURN node, node_id, , rank"),
-        ("page_rank", PageRank, "RETURN node, rank,"),
-        ("page_rank", PageRank, "RETURN node, rank; AS node_labels"),
-        ("louvain", Louvain, "RETURN node, level, wrong"),
-        ("louvain", Louvain, "RETURN node, node_id, node_label,"),
-    ] {
-        let query = format!("CALL {procedure}('g') {clause}");
-        let mut legacy = Parser::new(&query);
-        legacy.pos = query.find("RETURN").unwrap();
-        let expected = legacy
-            .parse_algorithm_return_clause(algorithm)
-            .and_then(|_| {
-                legacy.consume_char(';');
-                legacy.expect_eof()
-            })
-            .unwrap_err();
+    // Exact diagnostics exported from independently compiled main 9c355e9a46.
+    let mut count = 0;
+    for line in include_str!("../../fixtures/migration_legacy_diagnostics_v1.jsonl").lines() {
+        let case: serde_json::Value = serde_json::from_str(line).unwrap();
+        let query = case["query"].as_str().unwrap();
         assert_eq!(
-            crate::parse(&query).unwrap_err().to_string(),
-            expected.to_string(),
+            crate::parse(query).unwrap_err().to_string(),
+            case["error"].as_str().unwrap(),
             "{query}"
         );
+        count += 1;
     }
+    assert_eq!(count, 9);
 }
 
 #[test]

@@ -20,8 +20,9 @@ ignored read errors, budget exhaustion and cancellation poison the session.
 
 The mapper is a fixed trusted host function. It must propagate incomplete work,
 use the supplied source reads, and represent all relevant graph and relational
-effects. Schema/opaque capture gaps require rebuilding rather than skipping
-input. Native cold preimage capture runs before WAL append and checkpoint replay
+effects. Retiring-schema/opaque capture gaps require rebuilding rather than
+skipping input; additive schema commits are complete empty captures (see
+`docs/STORAGE.md`). Native cold preimage capture runs before WAL append and checkpoint replay
 uses that same collector with its cooperative work context. Append tables and
 named graph projections are outside this source domain: tracked SQL refuses
 append tables and tracked Cypher refuses named-projection algorithms before

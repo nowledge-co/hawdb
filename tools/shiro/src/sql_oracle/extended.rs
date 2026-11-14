@@ -3,6 +3,7 @@
 
 //! Additional relations over supported SQL operators. No production executor hooks.
 use super::*;
+use crate::typed_value_json;
 
 pub(crate) const PROTOCOL: &str = "shiro-sql-operators-v1";
 

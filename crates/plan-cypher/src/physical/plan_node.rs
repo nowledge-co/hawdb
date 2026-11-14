@@ -51,7 +51,10 @@ impl PhysicalPlan {
             PhysicalPlan::VectorIndexScan(_) => PhysicalPlanKind::VectorIndexScan,
             PhysicalPlan::TextSeedScan { .. } => PhysicalPlanKind::TextSeedScan,
             PhysicalPlan::CreateNode { .. } => PhysicalPlanKind::CreateNode,
+            PhysicalPlan::UnwindExec { .. } => PhysicalPlanKind::UnwindExec,
+            PhysicalPlan::UnwindRowsExec { .. } => PhysicalPlanKind::UnwindRowsExec,
             PhysicalPlan::UnwindMutation { .. } => PhysicalPlanKind::UnwindMutationExec,
+            PhysicalPlan::LoadCsvMutation { .. } => PhysicalPlanKind::LoadCsvMutationExec,
             PhysicalPlan::MergeNode { .. } => PhysicalPlanKind::MergeNode,
             PhysicalPlan::MergeRelationship { .. } => PhysicalPlanKind::MergeRelationship,
             PhysicalPlan::MergeMatchedRelationship { .. } => {
@@ -88,7 +91,11 @@ impl PhysicalPlan {
             PhysicalPlan::CreateRelationship { .. } => PhysicalPlanKind::CreateRelationship,
             PhysicalPlan::GraphMatchExec { .. } => PhysicalPlanKind::GraphMatchExec,
             PhysicalPlan::EmptyExec => PhysicalPlanKind::EmptyExec,
+            PhysicalPlan::LoadCsvExec { .. } => PhysicalPlanKind::LoadCsvExec,
             PhysicalPlan::SeqNodeScan { .. } => PhysicalPlanKind::SeqNodeScan,
+            PhysicalPlan::RelationshipSeededNodeScan { .. } => {
+                PhysicalPlanKind::RelationshipSeededNodeScan
+            }
             PhysicalPlan::NodeProjectionScanExec { .. } => PhysicalPlanKind::NodeProjectionScanExec,
             PhysicalPlan::SourceSegmentScan { .. } => PhysicalPlanKind::SourceSegmentScan,
             PhysicalPlan::HashJoinExec { .. } => PhysicalPlanKind::HashJoinExec,
@@ -144,6 +151,7 @@ impl PhysicalPlan {
             PhysicalPlan::NodeCartesianProductExec { left, right }
             | PhysicalPlan::HashJoinExec { left, right, .. } => PlanChildren::Binary(left, right),
             PhysicalPlan::NodeColumnLookupExec { input, .. }
+            | PhysicalPlan::UnwindRowsExec { input, .. }
             | PhysicalPlan::AdjacencyExpandExec { input, .. }
             | PhysicalPlan::AdjacencyExistsExec { input, .. }
             | PhysicalPlan::OptionalDegreeExec { input, .. }
@@ -180,6 +188,7 @@ impl PhysicalPlan {
             | PhysicalPlan::TextSeedScan { .. }
             | PhysicalPlan::CreateNode { .. }
             | PhysicalPlan::UnwindMutation { .. }
+            | PhysicalPlan::LoadCsvMutation { .. }
             | PhysicalPlan::MergeNode { .. }
             | PhysicalPlan::MergeRelationship { .. }
             | PhysicalPlan::MergeMatchedRelationship { .. }
@@ -196,8 +205,11 @@ impl PhysicalPlan {
             | PhysicalPlan::DeleteRelationship { .. }
             | PhysicalPlan::DeleteRelationshipTargetNodes { .. }
             | PhysicalPlan::CreateRelationship { .. }
+            | PhysicalPlan::UnwindExec { .. }
             | PhysicalPlan::EmptyExec
+            | PhysicalPlan::LoadCsvExec { .. }
             | PhysicalPlan::SeqNodeScan { .. }
+            | PhysicalPlan::RelationshipSeededNodeScan { .. }
             | PhysicalPlan::NodeProjectionScanExec { .. }
             | PhysicalPlan::SourceSegmentScan { .. }
             | PhysicalPlan::IndexNodeSeek { .. }

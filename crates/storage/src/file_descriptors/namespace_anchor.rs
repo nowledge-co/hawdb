@@ -85,6 +85,81 @@ fn namespace_anchor_keeps_detached_component_ancestry_and_accounting() {
 }
 
 #[test]
+fn namespace_anchor_bounds_related_sibling_scratch_without_leaking_accounting() {
+    let scratch = Scratch::new();
+    let anchor = scratch.0.join("durable");
+    std::fs::create_dir(&anchor).unwrap();
+    let project = open(&anchor.join("graph"), Some(&anchor), true).unwrap();
+    let sibling = anchor.join("producer/stage");
+    std::fs::create_dir_all(&sibling).unwrap();
+    project
+        .io_context()
+        .with_component_context(&sibling, || {
+            let outside_failure = crate::durability::fail_sync_directory_for(&scratch.0);
+            crate::durability::sync_directory_ancestors(&sibling).unwrap();
+            drop(outside_failure);
+            let covered_failure = crate::durability::fail_sync_directory_for(&anchor);
+            assert!(crate::durability::sync_directory_ancestors(&sibling).is_err());
+            drop(covered_failure);
+            crate::durability::sync_directory_ancestors(&sibling).unwrap();
+            assert_eq!(project.metrics().open, 0);
+            assert_eq!(project.metrics().reserved, 0);
+            assert_eq!(project.metrics().high_water, 1);
+        })
+        .unwrap();
+}
+
+#[test]
+fn namespace_anchor_admits_related_components_and_rejects_foreign_or_conflicting_policy() {
+    let scratch = Scratch::new();
+    let anchor = scratch.0.join("durable");
+    std::fs::create_dir(&anchor).unwrap();
+    let graph = open(&anchor.join("graph"), Some(&anchor), true).unwrap();
+    let search = anchor.join("search");
+    let component =
+        ProjectFileDescriptors::acquire_component_with_namespace_anchor(&search, true, &anchor)
+            .unwrap();
+    assert!(!Arc::ptr_eq(&graph.state, &component.state));
+    let nested = ProjectFileDescriptors::acquire_component_with_namespace_anchor(
+        &search.join("nested"),
+        true,
+        &anchor.join("."),
+    )
+    .unwrap();
+    assert!(Arc::ptr_eq(&component.state, &nested.state));
+    assert!(Arc::ptr_eq(
+        &component.state,
+        &ProjectFileDescriptors::acquire_component(&search, false)
+            .unwrap()
+            .state
+    ));
+    let conflict =
+        ProjectFileDescriptors::acquire_component_with_namespace_anchor(&search, true, &scratch.0)
+            .unwrap_err();
+    assert!(conflict
+        .to_string()
+        .contains("namespace durability anchor conflicts"));
+    let foreign = scratch.0.join("foreign/new");
+    assert!(
+        ProjectFileDescriptors::acquire_component_with_namespace_anchor(&foreign, true, &anchor,)
+            .is_err()
+    );
+    assert!(!scratch.0.join("foreign").exists());
+    let missing_reader = anchor.join("missing-reader");
+    assert!(
+        ProjectFileDescriptors::acquire_component_with_namespace_anchor(
+            &missing_reader,
+            false,
+            &anchor,
+        )
+        .is_err()
+    );
+    assert!(!missing_reader.exists());
+    assert_eq!(component.metrics().open, 0);
+    assert_eq!(component.metrics().reserved, 0);
+}
+
+#[test]
 fn namespace_anchor_failure_retains_retry_and_descriptor_accounting() {
     let scratch = Scratch::new();
     let root = scratch.0.join("graph");

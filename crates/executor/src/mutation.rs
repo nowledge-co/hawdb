@@ -33,10 +33,21 @@ use crate::expression::{
 use crate::predicate::property_filter_from_properties;
 
 mod preflight;
+mod staged;
 pub use preflight::{
-    execute_mutation_with_store, execute_mutation_with_store_output_limits,
+    commit_staged_mutations, commit_staged_mutations_with_output, execute_mutation_with_store,
+    execute_mutation_with_store_output_limits, materialize_load_csv_mutations,
     materialize_node_mutation, materialize_unwind_mutations, project_staged_mutation_return_rows,
+    resolve_relationship_merge_endpoints, stage_row_mutations, stage_unwind_mutations,
 };
+pub use staged::{EndpointResolutionReport, StagedCharge, StagedMutations};
+
+pub fn mutation_returns_rows(plan: &PhysicalPlan) -> bool {
+    matches!(plan, PhysicalPlan::SetNodePropertiesReturn { .. })
+        || matches!(plan, PhysicalPlan::UnwindMutation {
+            operation: hawdb_plan_cypher::BatchMutationOperation::MergeRelationship(merge), ..
+        } if merge.returns.is_some())
+}
 
 pub fn mutation_command(plan: &PhysicalPlan) -> Result<Option<GraphMutation>> {
     match plan {
@@ -62,12 +73,14 @@ pub fn mutation_command(plan: &PhysicalPlan) -> Result<Option<GraphMutation>> {
             property,
             value_type,
             nullable,
+            default,
         } => Ok(Some(GraphMutation::CreateProperty {
             table_kind: table_kind_to_core(*table_kind),
             table: table.clone(),
             property: property.clone(),
             value_type: property_type_to_core(*value_type),
             nullable: *nullable,
+            default: default.clone(),
         })),
         PhysicalPlan::AlterTableState {
             table_kind,
@@ -346,6 +359,19 @@ pub fn mutation_command(plan: &PhysicalPlan) -> Result<Option<GraphMutation>> {
                         },
                     }],
                 })),
+                SetValue::PreserveOlderExisting {
+                    incoming, preserve, ..
+                } => Ok(Some(GraphMutation::SetNodeProperties {
+                    label: label.clone(),
+                    filter,
+                    assignments: vec![NodeSetAssignment {
+                        property: property.clone(),
+                        value: NodeSetValue::PreserveOlderExisting {
+                            incoming: incoming.clone(),
+                            preserve: *preserve,
+                        },
+                    }],
+                })),
             }
         }
         PhysicalPlan::SetNodeProperties {
@@ -518,6 +544,7 @@ pub fn mutation_command(plan: &PhysicalPlan) -> Result<Option<GraphMutation>> {
         | PhysicalPlan::NodeCountExec { .. }
         | PhysicalPlan::RelationshipCountExec { .. }
         | PhysicalPlan::SeqNodeScan { .. }
+        | PhysicalPlan::RelationshipSeededNodeScan { .. }
         | PhysicalPlan::NodeProjectionScanExec { .. }
         | PhysicalPlan::SourceSegmentScan { .. }
         | PhysicalPlan::NodeCartesianProductExec { .. }
@@ -554,6 +581,10 @@ pub fn mutation_command(plan: &PhysicalPlan) -> Result<Option<GraphMutation>> {
         | PhysicalPlan::GraphSeedScan { .. }
         | PhysicalPlan::TextSeedScan { .. }
         | PhysicalPlan::UnwindMutation { .. }
+        | PhysicalPlan::UnwindExec { .. }
+        | PhysicalPlan::UnwindRowsExec { .. }
+        | PhysicalPlan::LoadCsvMutation { .. }
+        | PhysicalPlan::LoadCsvExec { .. }
         | PhysicalPlan::GraphMatchExec { .. } => Ok(None),
     }
 }
@@ -584,6 +615,12 @@ pub fn node_set_value(value: &SetValue) -> NodeSetValue {
         SetValue::PreserveNewerExisting {
             incoming, preserve, ..
         } => NodeSetValue::PreserveNewerExisting {
+            incoming: incoming.clone(),
+            preserve: *preserve,
+        },
+        SetValue::PreserveOlderExisting {
+            incoming, preserve, ..
+        } => NodeSetValue::PreserveOlderExisting {
             incoming: incoming.clone(),
             preserve: *preserve,
         },

@@ -1,19 +1,22 @@
-# HawDB
+# <img src="docs/images/hawdb-mark.svg" alt="" width="40" height="41" align="absmiddle"> HawDB
 
 [![Website](https://img.shields.io/badge/website-hawdb.ai-111111?style=flat)](https://hawdb.ai)
 [![License](https://img.shields.io/github/license/nowledge-co/hawdb?style=flat)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/nowledge-co/hawdb?style=flat)](https://github.com/nowledge-co/hawdb/releases/latest)
 [![Rust](https://img.shields.io/badge/rust-1.97.1-dea584?style=flat&logo=rust&logoColor=white)](rust-toolchain.toml)
 
-HawDB is an embedded knowledge and context database. It keeps the facts an agent or application reasons over — entities, relationships, documents, and events — in one crash-safe process, and returns them as bounded context.
+HawDB is an AI-native embedded database for agents. It keeps the facts an agent reasons over — entities, relationships, documents, and events — in one crash-safe process, returns them as bounded context, and gives each agent its own durable branch to work in.
 
-Graph structure, relational rows, lexical search, and vector search share one engine. A retrieval request takes search candidates, filters them, walks the authorized graph, reranks with a typed score, and hydrates the result from the canonical snapshot.
+- **Context layer.** Graph structure, relational rows, lexical search, and vector search share one engine. A retrieval request takes search candidates, filters them, walks the authorized graph, reranks with a typed score, and hydrates the result from the canonical snapshot. See [Context, in one pipeline](#context-in-one-pipeline).
+- **Built for agent workloads.** Agents talk to the database through parameterized Cypher and SQL. Every read has an explicit row and payload budget, and an over-budget request fails instead of returning a silently truncated answer. A read transaction pins one published snapshot, so a multi-step plan sees one consistent state.
+- **Branches for agents.** A copy-on-write branch costs metadata and an empty WAL, not a copy of the data. An agent can try a plan, write intermediate facts, or run a long task on its own branch without disturbing `main` or other agents. See [Branches for agents](#branches-for-agents).
 
 HawDB is written in Rust and licensed under Apache-2.0. It is built for Nowledge Mem, currently in nightly integration. The library is the product: any host that needs a durable context layer opens it the same way.
 
 The site and in-browser playground are at [hawdb.ai](https://hawdb.ai). Their source is [nowledge-co/hawdb-website](https://github.com/nowledge-co/hawdb-website).
 
 For synchronous SQL materialized views, see [the materialized view guide](docs/MATERIALIZED_VIEWS.md).
+For BM25 full-text search over SQL rows, see [the SQL search index guide](docs/SQL_SEARCH_INDEXES.md).
 
 ## Install
 
@@ -21,7 +24,7 @@ HawDB is a Rust library. Published releases are on crates.io. The repository pin
 
 ```toml
 [dependencies]
-hawdb = "0.7"
+hawdb = "0.33"
 ```
 
 To follow the repository tip instead of a release:
@@ -38,7 +41,7 @@ cargo build --locked -p hawdb
 
 The default build includes full-text search, vector search, graph analytics, background maintenance, and the Tokio adapter. A capability left out of the build cannot be turned back on at runtime. See [Build](#build).
 
-Python bindings live in-tree and are not published to PyPI yet. See [Python](#python).
+Python bindings live in-tree and are distributed as `hawdb` on PyPI. See [Python](#python).
 
 ## Open a database
 
@@ -126,6 +129,28 @@ host process
                               rerank ──► top-k ──► hydrate from the snapshot
 ```
 
+## Branches for agents
+
+An agent often needs its own copy of the world: to explore a plan, stage facts it is not yet sure of, or run a long task while the user and other agents keep reading `main`. A HawDB branch is that copy.
+
+- **Cheap to create.** A new branch shares the parent's sealed durable root and writes only catalog metadata and an empty branch-local WAL. It does not scan, import, or copy the parent's data, so creation cost does not grow with the database.
+- **Fully writable and isolated.** Cypher and SQL reads, writes, and branch-local schema changes run on the selected branch exactly as on `main`. A branch can itself be branched.
+- **Named for agents.** Omitting the name generates `agent/<branch-uuid>`; the `agent/` prefix is reserved for these generated names. Every branch also has a stable UUID that is never reused.
+- **Safe to retry.** Creation carries a request key, so a retry after a lost response returns the same branch instead of a duplicate. Dropping a branch requires its UUID and metadata revision, so a delayed request cannot delete a newer branch that reused the name.
+- **Durable until dropped.** Branches survive handle closure, process crashes, and restarts. There is no TTL; an idle branch keeps its data until it is explicitly dropped.
+
+Branch lifecycle and selection are SQL statements on the same handle:
+
+```sql
+CREATE BRANCH FROM main AT REVISION $1 REQUEST KEY $2;  -- returns branch_id, metadata_revision, ...
+USE BRANCH ID $1;
+SHOW CURRENT BRANCH;
+SHOW BRANCHES LIMIT 10;
+DROP BRANCH ID $1 AT REVISION $2;
+```
+
+`AT REVISION` is the source branch's committed epoch (`Database::commit_epoch`). Branches do not merge: lineage records where a branch came from, and the host writes the results it wants to keep back to the target branch. The durability, identity, and reclamation contract is [`docs/specs/BRANCHING_STORAGE_SPEC.md`](docs/specs/BRANCHING_STORAGE_SPEC.md).
+
 ## What the engine stores
 
 | Surface | Role |
@@ -133,18 +158,27 @@ host process
 | Canonical graph | Nodes, relationships, properties, schema, and adjacency. Cypher reads and mutations. Crash recovery replays the WAL onto this state. |
 | Canonical rows | PostgreSQL-dialect tables on the same snapshot and commit boundary, including strict-append event logs. |
 | Lexical projection | Rebuildable full-text index. Published as its own generation and caught up from the graph. |
-| Vector projection | Raw embeddings stay canonical. A checksummed RaBitQ artifact (`search_rabitq.<generation>.hawdb`) supplies 1-bit or 4-bit candidates. Final ranking reads the raw vectors. |
+| Vector projection | Raw embeddings stay canonical. Default approximate queries traverse a persistent, filter-aware DiskANN (Vamana) graph; a checksummed RaBitQ artifact (`search_rabitq.<generation>.hawdb`) supplies 1-bit or 4-bit candidates. Exact queries stay exact, and final ranking reads the raw vectors. |
 | Analytics projection | Immutable CSR/CSC graphs for PageRank and Louvain, invoked with `CALL project_graph`, `CALL page_rank`, and `CALL louvain`. Rebuildable derived state. |
 
 Lexical, vector, and analytics data are projections. Identity and authorization live on the canonical snapshot, and retrieval rebinds to that snapshot before it returns rows.
 
-Vector search is native Rust. Only the portable scalar kernel is qualified. An AVX2 request fails closed. A NEON request fails closed off Arm, and on Arm it runs on the scalar kernel. Segment scans are opt-in under a caller-supplied concurrency limit and memory budget. HawDB does not start a global vector-search thread pool. The encoding, recovery, and readiness contract is [`docs/specs/RABITQ_VECTOR_PROJECTION_SPEC.md`](docs/specs/RABITQ_VECTOR_PROJECTION_SPEC.md).
+Vector search is native Rust, and the portable scalar kernel is the correctness reference. Exact raw-vector arithmetic selects AVX2 or NEON at runtime when the CPU supports it and keeps the scalar summation order, so scores are bit-identical. The RaBitQ candidate scorer selects AVX2 automatically; NEON is used only when requested explicitly, and a NEON request fails closed off Arm. Segment scans are opt-in under a caller-supplied concurrency limit and memory budget. HawDB does not start a global vector-search thread pool. The RaBitQ encoding, recovery, and readiness contract is [`docs/specs/RABITQ_VECTOR_PROJECTION_SPEC.md`](docs/specs/RABITQ_VECTOR_PROJECTION_SPEC.md). The DiskANN graph, filter semantics, and memory preflight are in [`docs/specs/FILTERED_DISKANN_SPEC.md`](docs/specs/FILTERED_DISKANN_SPEC.md).
 
 ## Query languages
 
-Application graph work is parameterized Cypher: `MATCH`, `WHERE`, `RETURN`, `ORDER BY`, `LIMIT`, `CREATE`, `MERGE`, `SET`, `DELETE`, `DETACH DELETE`, and explicit `BEGIN` / `COMMIT` / `ROLLBACK`. The same statements run through `Database`, `DatabaseTransaction`, and `DatabaseReadTransaction`.
+Application graph work is parameterized Cypher: `MATCH`, `OPTIONAL MATCH`, `WHERE`, `WITH`, `UNWIND`, `RETURN`, `ORDER BY`, `SKIP`, `LIMIT`, `CREATE`, `MERGE`, `SET`, `DELETE`, `DETACH DELETE`, and explicit `BEGIN` / `COMMIT` / `ROLLBACK`. The same statements run through `Database`, `DatabaseTransaction`, and `DatabaseReadTransaction`.
+
+Within those clauses:
+
+- Variable-length relationship patterns match as trails in every direction: a path never reuses a relationship.
+- `shortestPath(...)`, `allShortestPaths(...)`, and the `ANY SHORTEST` / `ALL SHORTEST` selectors run a bounded bidirectional search between bound endpoints. An unbounded search is capped at 256 hops and fails rather than report no path. See [`docs/SHORTEST_PATH_EXECUTION.md`](docs/SHORTEST_PATH_EXECUTION.md).
+- `count`, `sum`, `min`, `max`, `avg`, and `collect` accept a scalar-expression argument, with optional `DISTINCT`.
+- List comprehensions, `size`, `head`, `last`, `tail`, `reverse`, `range`, indexing, slicing, and three-valued `IN` are supported. [`docs/CYPHER_LIST_FUNCTIONS.md`](docs/CYPHER_LIST_FUNCTIONS.md) lists their semantics and the remaining differences from openCypher.
 
 Application relational work is PostgreSQL-dialect SQL through `query_sql` and `query_sql_with_params`. Idempotent ingestion uses `INSERT ... ON CONFLICT (...) DO NOTHING RETURNING ...`. Provisional row counts are available before commit; `commit_with_result` recomputes them at the durable boundary. The SQL/PGQ binder in `hawdb-sql` (`CREATE PROPERTY GRAPH`, `GRAPH_TABLE`) is specified in [`docs/specs/POSTGRES_SQL_PGQ_SPEC.md`](docs/specs/POSTGRES_SQL_PGQ_SPEC.md).
+
+`Database::sql_session()` runs parameterized SQL with native rows and mutation counts, and `session.transaction(|transaction| ...)` makes several statements atomic. A statement failure aborts the whole callback, even if its error is caught. See [the SQL session contract](docs/SQL_SESSION.md) for examples, result provenance, and the supported PostgreSQL subset.
 
 Both languages go through one Cascades-style optimizer. Plans are fingerprinted, cached when the statement shape allows it, and explainable. Costing, join enumeration, and predicate pushdown are separate rule families over a shared memo.
 
@@ -258,7 +292,10 @@ make fuzz-test
 
 ## Python
 
-The Python package is a thin binding over the same embedded engine. It is built from this repository and is not on PyPI yet.
+The Python package is a thin binding over the same embedded engine. Install a
+published release with `python -m pip install hawdb` (CPython 3.11+), then import
+`hawdb`. Native wheels and a source distribution are built from each published
+GitHub Release; see the [Python release workflow](bindings/python/README.md#publishing).
 
 ```python
 import hawdb
@@ -275,6 +312,17 @@ db.close()
 ```
 
 Build and test instructions are in [`bindings/python/README.md`](bindings/python/README.md).
+
+## Swift
+
+The repository-root Swift package exports `HawDB` for Swift 6 hosts on macOS,
+iOS/iPadOS and Linux, using the same embedded C ABI. It supports in-memory and persistent
+databases, parameterized SQL/Cypher, transactions, typed values and read budgets.
+The host supplies a matching native library; iOS hosts can build a static
+XCFramework and self-contained Swift package. See
+[`bindings/swift/README.md`](bindings/swift/README.md) for SwiftPM linking,
+examples, platform scope and verification. The on-disk format carries no
+compatibility promise until HawDB declares one.
 
 ## Production hosts
 
@@ -301,6 +349,7 @@ Alongside the models, the repository keeps differential fuzzing, crash-recovery 
 | [`docs/FILE_DESCRIPTOR_CAPACITY.md`](docs/FILE_DESCRIPTOR_CAPACITY.md) | Descriptor capacity, pins, internal progress and Windows probe isolation |
 | [`docs/specs/README.md`](docs/specs/README.md) | Index of normative contracts |
 | [`docs/WASM.md`](docs/WASM.md) | In-tree experimental browser runtime |
+| [`docs/PREBUILT_LIBRARIES.md`](docs/PREBUILT_LIBRARIES.md) | Prebuilt C ABI release archives and the Bun npm packages |
 | [hawdb.ai](https://hawdb.ai) | Public site and playground. Source: [hawdb-website](https://github.com/nowledge-co/hawdb-website) |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Issues, pull requests, and validation expectations |
 
@@ -311,6 +360,7 @@ HawDB is a single-process embedded engine.
 - One database directory, one writer lease, one process.
 - Cypher covers the statements listed above. That is the executed surface, and it is smaller than the whole of openCypher.
 - Search and analytics artifacts are rebuilt from canonical state.
+- Branches live inside one project directory. There is no branch merge, point-in-time source selection, remote replication, or automatic expiry.
 - Multi-process writers, distributed replication, and a standalone database server are outside this release. Design notes for later storage work live with the specs and are not serving features.
 
 ## Contributing
@@ -321,17 +371,15 @@ Issues and pull requests follow [`CONTRIBUTING.md`](CONTRIBUTING.md). Architectu
 
 Apache License 2.0. See [`LICENSE`](LICENSE).
 
-Source files carry the standard Apache-2.0 header. Check or repair them with [hawkeye](https://crates.io/crates/hawkeye) and [`licenserc.toml`](licenserc.toml):
+Source files carry a full Apache-2.0 header or the canonical Nowledge SPDX
+short header. Check both forms with the pinned, read-only HawkEye hook:
 
 ```console
-hawkeye check
-hawkeye format
+prek run hawkeye-format --all-files
 ```
 
-## In-process SQL sessions
-
-Use `Database::sql_session()` for parameterized SQL queries with native rows and
-mutation counts, and `session.transaction(|transaction| ...)` for atomic
-multi-statement writes. A statement failure aborts the entire callback even if
-its error is caught. See [the SQL session contract](docs/SQL_SESSION.md) for
-examples, result provenance and the supported PostgreSQL subset.
+[`licenserc.toml`](licenserc.toml) includes Go and MoonBit source, interfaces and
+manifests, while excluding generated output and historical benchmark evidence.
+See [the contribution guide](CONTRIBUTING.md#validation-and-evidence) for the
+accepted forms and scope. Use `hawkeye format path/to/file` for explicit repair;
+retain existing copyright notices and review the resulting diff.

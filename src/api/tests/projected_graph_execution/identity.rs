@@ -39,6 +39,7 @@ fn identity_898_public_columns_aliases_and_typed_ids_survive_read_only_reopen() 
             &path,
             DatabaseConfig {
                 read_only: true,
+                recovery_mode: crate::RecoveryMode::Strict,
                 storage_residency_mode: mode,
                 ..DatabaseConfig::default()
             },

@@ -27,7 +27,8 @@ before any writes on both empty and populated databases.
 
 Typed clause/procedure classification preserves plan-cache eligibility: reads
 and graph algorithms retain their prior policy; mutations, UNWIND, vector search
-and graph projection remain ineligible. Procedure capabilities are checked
+and graph projection remain ineligible. `LOAD CSV` statements also parse into
+`Statement::Pipeline`; see [LOAD CSV](CYPHER_LOAD_CSV.md). Procedure capabilities are checked
 before parameter binding, planning, cache accounting or catalog mutation.
 Statement kinds, fast-path reasons and ordering/pagination reports are derived
 from the AST and preserve existing host reports.
@@ -38,12 +39,154 @@ the required NULL-extended row when no endpoint satisfies the properties. Runtim
 guards cover rows and counts with matching, rejected, isolated and missing sources,
 including one-WITH and existing multi-WITH paths.
 
-Newly migrated shapes use structural logical-plan normalization. Queries that
-already used the public multi-WITH pipeline retain their existing logical
-representation, EXPLAIN shape and exact-value cache behavior. WITH windows remain
+All read pipelines, including statements with two or more WITH clauses, use
+structural logical-plan normalization, so their MATCH clauses can lower to index
+seeks and native expands (issue #1425). Parameters that normalization moves into
+a seek key, expand or filter remain template slots only when rebinding the marked
+plan reproduces the actual plan; otherwise they remain exact cache guards.
+A comma pattern that continues from a node bound earlier in the same MATCH,
+such as `(a)-[:R]->(b), (b)-[:S]->(c)`, joins the same native chain when its
+relationship types are fixed and distinct and the repeated node adds no label.
+Conjuncts over variables an Expand does not bind move below it, so an anchor
+equality still reaches its index seek under a longer chain.
+Ranked evidence normalizes only its aggregate input. WITH windows remain
 at the WITH boundary; RETURN windows remain after lookup/aggregation. See
 [WITH semantics](CYPHER_WITH_SEMANTICS.md) and
 [cache eligibility](CYPHER_PLAN_CACHE_ELIGIBILITY.md).
+
+## Exact identity unions with residual filters
+
+A mandatory AND subtree can use the existing `IndexNodeUnionSeek` for a
+cross-property OR of scalar equalities/IN lists. Each arm must refer to the same
+node variable and have a declared scalar index; the existing 64-lookup ceiling
+and scan-versus-seek cost gate still apply. The union competes with ordinary
+conjunctive seeks. It deduplicates native node identities, and the complete
+original WHERE remains above it, including Space filtering before LIMIT.
+
+This covers Mem Thread identity reads with
+`(t.thread_id = $thread_id OR t.id = $thread_id)` plus a COALESCE Space equality.
+Canonical CASE/trim Space normalization can qualify when a public STRING
+property descriptor proves the input domain. Untyped/mixed properties retain
+ordinary evaluation for type-sensitive functions. A bounded whole-predicate
+proof rejects unsupported computation, wrong-variable references and proof
+budget overflow. UNKNOWN from a NULL/missing identity key can still evaluate a
+later AND conjunct, so checking only predicates before the OR is insufficient.
+No Boolean distribution or access extraction through NOT is performed.
+
+EXPLAIN retains `IndexNodeUnionSeek`; access-path decisions identify
+`node_conjunction_index_union_seek`, and execution reports the existing
+`OrUnion` candidate counts. Existing projected reads, deduplication admission,
+query budgets, cancellation and pinned-snapshot storage paths remain in use.
+The optimization establishes bounded candidate work in selective fixtures;
+physical I/O and endpoint latency need separate measurements.
+
+## Row-bound node properties
+
+Read-only pipelines may start with a parameter or list-literal `UNWIND` source
+and carry values through `WITH`. Both `MATCH` and `OPTIONAL MATCH` node property
+maps accept scalar bindings such as `{id: candidate_id}` and property access
+such as `{id: candidate.id}`. These constraints remain inside their MATCH clause,
+preserving OPTIONAL MATCH null extension. Read-only UNWIND retains the existing
+plan-cache bypass policy; template-rebinding tests do not establish public-query
+cache hits for this shape.
+
+The lookup normalization has a narrow boundary: an eligible single-node MATCH
+introducing a fresh node variable, with no remaining constant properties and
+exactly one equality between that node's property and an input scalar column,
+can use `NodeColumnLookupExec`. The bare `{id: candidate_id}` form can qualify.
+
+Shapes with additional constant properties, a residual `WHERE` condition or
+property-access input values retain `GraphMatchExec`. Its single-node access can
+now seek a declared scalar index using a non-NULL input column, map property
+such as `candidate.id`, or already-bound graph property. This includes
+`OPTIONAL MATCH (n:Item {id: candidate_id, space_id: $space})` with an index on
+`Item(id)`. The entire MATCH still owns constant-property checks, residual
+predicates, projected source admission and optional NULL extension. Duplicate
+inputs and nonunique indexed keys retain their complete multiplicities.
+
+Only a required equality in the top-level conjunction can select this access.
+Any potentially fallible conjunct, NULL/missing/non-map input, an
+undeclared scalar index, imports, union labels or multiple pattern steps keep
+the original path. Simple property comparisons use row-validated bound inputs;
+computed expressions retain ordinary evaluation. This preserves errors after
+an UNKNOWN equality on a NULL/missing stored property, even when the erroring
+conjunct appears later. No key is extracted from an OR branch.
+One scan-pruning report per MATCH combines its selected property-equality
+accesses and visited candidates before the remaining filters. Its counters
+use one property selected from syntax/catalog before reading input values and
+include repeated input keys; NULL/generic fallback reads are outside that report.
+Diagnostic state is constant-sized rather than growing with input count. These counts
+do not establish physical I/O or whole-route latency improvements.
+
+Unoptimized correlated matches can still perform input rows times label-size
+work, plus expansion work. Predicate placement may reject partial matches
+before later expansions, but does not turn an unindexed node step into a seek.
+
+Inspect EXPLAIN before adopting extended shapes in a high-cardinality route and
+keep candidate batches bounded. Row/payload budgets and cancellation still
+apply, but do not make a scan use an index. Moving a predicate above OPTIONAL
+MATCH to change its plan can discard the unmatched row and change the result.
+
+Anchored optional relationship-count sums keep their dedicated count operator,
+but source discovery reads only the properties in the initial node pattern.
+A single exact label and a declared non-NULL scalar equality index select
+projected index access; all initial source properties remain authoritative.
+Otherwise the operator uses a projected label scan, or the original label-union
+filter over a projected general scan. Unknown labels still produce a zero
+aggregate. Source scan reports count visited and matched source nodes, separately
+from relationship work and the final one-row aggregate. Key copies, projected
+source records and traversal state retain before-copy admission and cancellation;
+an incomplete source scan cannot publish a partial aggregate.
+
+## Bounded relationship mutation input
+
+The atomic mutation binder accepts two independently bound, non-optional node
+endpoints with one optional parameter/list `UNWIND` before relationship `MERGE`.
+For example, the Mem candidate-evidence writer can use:
+
+```cypher
+MATCH (s:Skill {id: $id})
+UNWIND $ids AS memory_id
+MATCH (m:Memory {id: memory_id})
+MERGE (s)-[r:SYNTHESIZED_FROM]->(m)
+ON CREATE SET r.weight = 1.0, r.occasion_key = $occasion_key, r.created_at = $now
+RETURN m.id
+```
+
+Endpoint equalities may use pattern maps or AND-connected WHERE predicates.
+Scalar UNWIND elements and map-element properties are bound only after their
+row variable is introduced. A final RETURN projects the existing endpoints;
+relationship projections, aggregates, result modifiers, additional mutation
+clauses, optional matches and correlated graph traversals remain refused.
+The same endpoint RETURN is available without UNWIND. This does not enable
+general-purpose read-only UNWIND composition.
+
+Lowering produces the existing `UnwindMutationExec` with a typed matched-edge
+operation. It resolves the complete bounded input before submitting one storage
+batch; it does not run one committed query per row. Input duplicates retain
+result multiplicity while MERGE reuses the same relationship. Missing or NULL
+endpoint equalities produce no rows or invented nodes. ON CREATE changes only
+new relationships. Mutation plans remain excluded from parameter-template reuse.
+
+Endpoint keys are resolved once per `(label, property names)` pattern against
+that statement's store, including earlier writes in an explicit transaction.
+Resident scalar indexes are used when available; other patterns use one admitted
+projected scan. The lookup map and rewritten ID filters obey the host/runtime
+query memory budget. The complete pair count is checked before copying per-row
+ID lists; an empty pair retains no IDs. Storage rechecks labels and non-ID
+predicates by point lookup, without repeating label scans or ID membership
+searches for each candidate. Uniform MERGE batches index pending edges by
+source/target/type, retaining property-subset matching and input multiplicity.
+NULL relationship match properties are refused before any write.
+
+Node-only RETURN values are independent of the new edge. Autocommit preflight
+reuses the resolved endpoint IDs and checks output limits before the
+atomic write. Explicit transactions project the staged result under the existing
+statement savepoint; output rejection restores that statement while retaining
+earlier statements. Ordinary rollback and WAL/reopen boundaries remain unchanged.
+This supplies exact member rows to a host count guard; it does not silently
+accept a partial match or implement Mem's complete Skills adapter/activation.
+Tracked in [#1397](https://github.com/nowledge-co/hawdb/issues/1397).
 
 ## Frozen corpus qualification
 
@@ -52,19 +195,23 @@ outcome manifest remain unchanged. Tests compare every record with its frozen
 outcome or an explicit contract in
 [`migration_default_pipeline_v1.json`](../crates/cypher/fixtures/migration_default_pipeline_v1.json).
 
-Two parser-to-binder transitions are intentional:
+Three parser-to-binder transitions are intentional:
 
 - `mem-0344`: the grammar retains the filtered OPTIONAL relationship. Missing
   `$memory_id` still rejects at binding. Supplying it permits the read; embedded
   tests protect the relationship filter, null extension, count zero, missing
   source, row bound and fresh parameter rebinding.
 - `mem-0361`: the grammar retains the multiple MATCH patterns and SET assignments.
-  Binding rejects the unsupported atomic mutation with or without parameters.
-  Embedded tests verify the same rejection on empty/populated stores and prove
-  both nodes remain unchanged.
+  Missing parameters still reject at binding. Supplying them permits one
+  atomic constant-assignment batch; an empty/missing endpoint matches no rows.
+  Embedded fixtures protect complete post-state, alias ordering, budget refusal,
+  transaction rollback and durable reopen.
+- `mem-0420`: the complete Thread CASE SET now parses. Bound parameters preserve
+  minimum/maximum message times and NULL metadata; native temporal values and
+  close/reopen are covered by the [Mem query contract](specs/MEM_QUERY_COMPATIBILITY_9338.md).
 
 All other frozen parser rejections retain their stage. Historical accepted and
-rejected counts remain checked separately from the two current transitions;
+rejected counts remain checked separately from the three current transitions;
 none of the frozen records is skipped. The 1,327 historically accepted core
 query shapes remain covered by the clause grammar.
 

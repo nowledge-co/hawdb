@@ -17,6 +17,7 @@
 use crate::{projection_business_label_value, SearchProjectionSource};
 use hawdb_core::error::Result;
 use hawdb_core::schema::Catalog;
+use hawdb_storage::adjacency::AdjacencyDirection;
 use hawdb_storage::store::{GraphScanControl, GraphStore, NodeId, NodeRecord};
 use std::collections::{BTreeSet, HashMap};
 
@@ -52,30 +53,36 @@ impl SearchProjectionSource for GraphStore {
         };
         let mut labels = BTreeSet::new();
         let mut callback_error = None;
-        self.visit_relationships_owned(Some(has_label_type_id), |relationship| {
-            let label_node_id = if relationship.source == node.id {
-                relationship.target
-            } else if relationship.target == node.id {
-                relationship.source
-            } else {
-                return GraphScanControl::Continue;
-            };
-            match self.node_owned(label_node_id) {
-                Ok(Some(label)) if label.labels.contains(&label_label_id) => {
-                    if let Some(value) = projection_business_label_value(&label) {
-                        labels.insert(value);
+        // Resolve only this node's HAS_LABEL adjacency, in both directions,
+        // instead of scanning every HAS_LABEL relationship per node.
+        for direction in [AdjacencyDirection::Outgoing, AdjacencyDirection::Incoming] {
+            self.visit_adjacent_relationships_owned(
+                node.id,
+                Some(has_label_type_id),
+                direction,
+                |relationship| {
+                    let label_node_id = match direction {
+                        AdjacencyDirection::Outgoing => relationship.target,
+                        AdjacencyDirection::Incoming => relationship.source,
+                    };
+                    match self.node_owned(label_node_id) {
+                        Ok(Some(label)) if label.labels.contains(&label_label_id) => {
+                            if let Some(value) = projection_business_label_value(&label) {
+                                labels.insert(value);
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            callback_error = Some(error);
+                            return GraphScanControl::Stop;
+                        }
                     }
-                }
-                Ok(_) => {}
-                Err(error) => {
-                    callback_error = Some(error);
-                    return GraphScanControl::Stop;
-                }
+                    GraphScanControl::Continue
+                },
+            )?;
+            if let Some(error) = callback_error.take() {
+                return Err(error);
             }
-            GraphScanControl::Continue
-        })?;
-        if let Some(error) = callback_error {
-            return Err(error);
         }
         Ok(labels.into_iter().collect())
     }

@@ -23,6 +23,7 @@ rust_library(
     deps = all_crate_deps(normal = True) + [
         "//crates/core:hawdb_core",
         "//crates/ddl:hawdb_ddl",
+        "//crates/sql-syntax:hawdb_sql_syntax",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )

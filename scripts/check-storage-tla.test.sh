@@ -27,6 +27,13 @@ cp "$source_root/scripts/check-storage-tla.sh" "$fixture/repo/scripts/"
 checker="$fixture/repo/scripts/check-storage-tla.sh"
 revision=0123456789abcdef0123456789abcdef01234567
 digest=936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
+
+# Exercise the checked-in inventory as well as the synthetic evidence fixtures.
+# Manifest mode validates ordering, uniqueness and complete model/config pairs
+# without downloading tools or running TLC.
+bash "$source_root/scripts/check-storage-tla.sh" --manifest-json "$revision" \
+  > "$fixture/repository-manifest.json"
+
 printf 'STORAGE_MODELS = [\n    "Alpha",\n    "HawDBCowPagePublication",\n]\n' \
   > "$fixture/repo/docs/tla/storage_models.bzl"
 for model in Alpha HawDBCowPagePublication; do

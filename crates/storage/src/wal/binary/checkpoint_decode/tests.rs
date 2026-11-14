@@ -298,7 +298,10 @@ fn checkpoint_units_wal_decode_generated_field_orders_and_mutations_match() {
             assert_eq!(scheduler.state().running_background_operations, 0);
         }
     }
-    assert_eq!(codes, (OP_CREATE_NODE_LABEL..=OP_APPEND).collect());
+    assert_eq!(
+        codes,
+        (OP_CREATE_NODE_LABEL..=OP_CREATE_PROPERTY_WITH_DEFAULT).collect()
+    );
     assert!(checked > 1000);
     println!(
         "WAL field-order and mutation parity: {checked} cases, {} operation codes",

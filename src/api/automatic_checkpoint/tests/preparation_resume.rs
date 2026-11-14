@@ -14,7 +14,7 @@
 
 use super::*;
 use crate::Value;
-use hawdb_qos::{QosTelemetryEvent, QosTelemetryPhase, QosTelemetrySink};
+use hawdb_qos::{QosTelemetryEvent, QosTelemetrySink, QosUnitEvent, QosUnitPhase};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug)]
@@ -24,9 +24,17 @@ struct StopPreparedSource {
     stopped: AtomicBool,
 }
 
+/// Stops at the first builder unit after the checkpoint file exists,
+/// whether or not that unit begins a new local admission batch (#1616).
 impl QosTelemetrySink for StopPreparedSource {
-    fn record_qos(&self, event: QosTelemetryEvent) {
-        if event.phase == QosTelemetryPhase::Admission
+    fn record_qos(&self, _event: QosTelemetryEvent) {}
+
+    fn observes_units(&self) -> bool {
+        true
+    }
+
+    fn record_qos_unit(&self, event: QosUnitEvent) {
+        if event.phase == QosUnitPhase::Started
             && self.checkpoint.exists()
             && !self.stopped.swap(true, Ordering::SeqCst)
         {

@@ -22,6 +22,24 @@ struct PreparedTransformSource<'a> {
     context: BatchReadContext<'a>,
 }
 
+pub(super) fn stream_unwind_rows_batches(
+    unwind: executor_transform::UnwindRows<'_>,
+    input: &PhysicalPlan,
+    context: BatchReadContext<'_>,
+    execution_limit: ExecutionLimit,
+    emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+) -> Result<BatchControl> {
+    let mut source = PreparedTransformSource { context };
+    executor_transform::stream_unwind_rows_batches(
+        unwind,
+        input,
+        &mut source,
+        context.kernel_context(),
+        execution_limit,
+        emit,
+    )
+}
+
 pub(super) fn stream_host_scoring_batches(
     input: &PhysicalPlan,
     scoring: &hawdb_plan_cypher::HostScoringPlan,

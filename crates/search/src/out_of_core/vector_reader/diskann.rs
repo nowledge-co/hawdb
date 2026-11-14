@@ -67,6 +67,10 @@ impl<R> GraphProjection<R> {
         })
     }
 
+    pub(super) fn metric(&self) -> hawdb_core::VectorDistance {
+        self.graph.metadata().metric
+    }
+
     pub(super) fn parameters(&self) -> Parameters {
         let metadata = self.graph.metadata();
         (
@@ -110,11 +114,17 @@ impl<R> GraphProjection<R> {
         query: &[f32],
         top_k: usize,
         options: ProjectionSearchOptions<'_>,
+        navigation_beam: usize,
     ) -> hawdb_vector_projection::Result<ProjectionSearchOutput> {
         // Validate explicit ISA requests, but report the shared Float64 distance
         // kernel actually used by graph traversal rather than a RaBitQ scanner.
         hawdb_vector_projection::select_scan_kernel(options.kernel)?;
-        let kernel = hawdb_vector_projection::ScanKernel::Scalar;
+        let kernel =
+            match hawdb_core::vector::distance_kernel_name(self.graph.metric(), query.len()) {
+                "avx2" => hawdb_vector_projection::ScanKernel::Avx2,
+                "neon" => hawdb_vector_projection::ScanKernel::Neon,
+                _ => hawdb_vector_projection::ScanKernel::Scalar,
+            };
         let conversion_bytes = top_k
             .checked_mul(size_of::<ProjectionHit>())
             .ok_or_else(|| {
@@ -133,7 +143,7 @@ impl<R> GraphProjection<R> {
             top_k,
             options.candidates,
             DiskAnnSearchOptions {
-                beam_width: top_k.max(crate::vector_execution::DISKANN_NAVIGATION_BEAM),
+                beam_width: top_k.max(navigation_beam),
                 max_working_bytes,
                 task: options.task_context,
                 ..Default::default()
@@ -159,13 +169,14 @@ impl<R> GraphProjection<R> {
                 .into_iter()
                 .map(|hit| ProjectionHit {
                     id: hit.id,
-                    // Candidate priorities are Float32; logarithmic ordering
-                    // stays finite even when a valid L2 distance exceeds f32.
-                    // Final distances are independently reranked as Float64.
-                    score: -(hit.distance.ln_1p() as f32),
+                    score: match self.metric() {
+                        hawdb_core::VectorDistance::Cosine => 1.0 - hit.distance,
+                        hawdb_core::VectorDistance::Euclidean => -hit.distance * hit.distance,
+                    },
                 })
                 .collect(),
             report: ProjectionSearchReport {
+                metric: self.metric().into(),
                 kernel,
                 worker_count: 1,
                 segment_count: 1,
@@ -175,6 +186,7 @@ impl<R> GraphProjection<R> {
                 filtered_document_count: report.bridge_nodes,
                 scanned_block_count: report.expanded_nodes,
                 skipped_block_count: 0,
+                adaptive_exact_scan_count: usize::from(report.adaptive_exact_scan),
                 payload_bytes_read,
                 admitted_working_bytes: options.max_working_bytes,
                 candidate_count,
@@ -301,6 +313,16 @@ fn validate<R>(
     {
         return Err(invalid(
             "graph shape or source digest differs from its manifest",
+        ));
+    }
+    let definition = active
+        .vector_index_binding
+        .as_deref()
+        .map(crate::vector_index::decode)
+        .transpose()?;
+    if metadata.metric != active.vector_scoring.metric(definition.as_ref()) {
+        return Err(invalid(
+            "graph metric differs from the projection scoring policy",
         ));
     }
     if let Some(encoded) = &active.vector_index_binding {

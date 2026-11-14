@@ -13,22 +13,31 @@
 # limitations under the License.
 
 import os
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Union
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 from hawdb import exceptions as exceptions
 
 __version__: str
 
 class QueryResult:
-    """Materialized rows of one statement result."""
+    """Rows of one statement result, converted to Python as they are fetched.
+
+    Each fetch returns new objects that the result does not keep.
+    """
 
     @property
     def columns(self) -> List[str]: ...
     @property
     def row_count(self) -> int: ...
+    @property
+    def affected_rows(self) -> Optional[int]:
+        """Rows changed by a SQL INSERT, UPDATE or DELETE; None otherwise."""
     def fetchone(self) -> Optional[Dict[str, Any]]: ...
     def fetchmany(self, size: int = 1) -> List[Dict[str, Any]]: ...
     def fetchall(self) -> List[Dict[str, Any]]: ...
+    def fetchmany_tuples(self, size: int = 1) -> List[Tuple[Any, ...]]:
+        """Up to ``size`` rows from the shared cursor, as tuples in column order."""
+    def _first_non_null(self, column: int) -> Any: ...
     def _repr_html_(self) -> str: ...
     def _display_rows(
         self, start: int = 0, stop: Optional[int] = None
@@ -44,6 +53,7 @@ class Database:
         self, path: Optional[Union[str, "os.PathLike[str]"]] = None, read_only: bool = False,
         *, max_read_result_rows: Optional[int] = None,
         max_read_result_payload_bytes: Optional[int] = None,
+        namespace_durability_anchor: Optional[Union[str, "os.PathLike[str]"]] = None,
     ) -> None: ...
     @property
     def path(self) -> Optional[str]: ...
@@ -57,7 +67,8 @@ class Database:
     ) -> str: ...
     def execute_sql(
         self, sql: str, params: Optional[List[Any]] = None
-    ) -> QueryResult: ...
+    ) -> QueryResult:
+        """Admitted like `execute`: a saturated runtime raises AdmissionError."""
     def executemany(self, cypher: str, rows: Sequence[Dict[str, Any]]) -> None: ...
     def executemany_sql(self, sql: str, rows: Sequence[Sequence[Any]]) -> None: ...
     def execute_retained(
@@ -83,7 +94,8 @@ class Transaction:
     ) -> QueryResult: ...
     def execute_sql(
         self, sql: str, params: Optional[List[Any]] = None
-    ) -> QueryResult: ...
+    ) -> QueryResult:
+        """Admitted like `Database.execute_sql`; a refusal leaves the transaction open."""
     def executemany(self, cypher: str, rows: Sequence[Dict[str, Any]]) -> None: ...
     def executemany_sql(self, sql: str, rows: Sequence[Sequence[Any]]) -> None: ...
     def commit(self) -> QueryResult: ...
@@ -108,7 +120,11 @@ def open(
     path: Optional[Union[str, "os.PathLike[str]"]] = None, read_only: bool = False,
     *, max_read_result_rows: Optional[int] = None,
     max_read_result_payload_bytes: Optional[int] = None,
-) -> Database: ...
+    namespace_durability_anchor: Optional[Union[str, "os.PathLike[str]"]] = None,
+) -> Database:
+    """Open a database. `max_read_result_payload_bytes=None` keeps the 64 MiB
+    default, which is also the admitted runtime result budget; it never removes
+    the ceiling or falls back to the runtime's 16 MiB profile default."""
 def capabilities() -> Mapping[str, bool]:
     """Engine capabilities compiled into this extension (read-only)."""
 

@@ -16,6 +16,10 @@
 
 use super::*;
 
+#[cfg(test)]
+#[path = "graph_indexes/endpoint_validation_tests.rs"]
+mod endpoint_validation_tests;
+
 impl GraphStore {
     pub(super) fn remove_stored_node_from_derived_property_indexes(
         &mut self,
@@ -134,15 +138,23 @@ impl GraphStore {
         if let Some(id) = catalog.property_descriptor_id(table_id, property) {
             return Ok(id);
         }
-        validate_property_descriptor(catalog, self, table_id, property, value_type, nullable)?;
-        self.append_durable_wal_batch(&[WalOp::CreateProperty {
-            table_kind,
-            table: table.to_string(),
-            property: property.to_string(),
-            value_type,
-            nullable,
-        }])?;
-        let id = catalog.get_or_create_property(table_id, property, value_type, nullable);
+        let (ops, declared, state) = property_declaration_ops(
+            catalog,
+            self,
+            &PropertyDeclaration {
+                table_kind,
+                table,
+                table_id,
+                property,
+                value_type,
+                nullable,
+                default: None,
+            },
+        )?;
+        self.append_durable_wal_batch(&ops)?;
+        let id = catalog.get_or_create_property_with_default(
+            table_id, property, value_type, nullable, declared, state,
+        );
         self.finish_non_relational_commit();
         Ok(id)
     }
@@ -245,6 +257,7 @@ impl GraphStore {
         max_estimated_operations: Option<usize>,
     ) -> Result<Vec<SchemaMaintenanceAction>> {
         let mut ops = Vec::new();
+        let mut data_ops = Vec::new();
         let mut actions = Vec::new();
         let mut used_estimated_operations = 0usize;
 
@@ -262,6 +275,53 @@ impl GraphStore {
                 continue;
             };
             match property.state {
+                SchemaObjectState::Backfill if property.default.is_some() => {
+                    // Fill records that lack the property, bounded by the
+                    // remaining budget. The advance to Validating shares the
+                    // atomic WAL batch of the final fills, so a crash leaves
+                    // either a resumable Backfill or a completed one.
+                    let backfill_value = property
+                        .default
+                        .as_ref()
+                        .map(|default| default.backfill_value.clone())
+                        .unwrap_or(Value::Null);
+                    let remaining_budget = max_estimated_operations
+                        .map(|max| max.saturating_sub(used_estimated_operations));
+                    if remaining_budget == Some(0) {
+                        continue;
+                    }
+                    let (fills, complete) = property_backfill_ops(
+                        catalog,
+                        self,
+                        &table,
+                        &property.name,
+                        &backfill_value,
+                        remaining_budget,
+                    );
+                    used_estimated_operations =
+                        used_estimated_operations.saturating_add(fills.len().max(1));
+                    let filled = fills.len();
+                    data_ops.extend(fills);
+                    if complete {
+                        ops.push(WalOp::AlterPropertyState {
+                            table_kind: table.kind,
+                            table: table.name.clone(),
+                            property: property.name.clone(),
+                            state: SchemaObjectState::Validating,
+                        });
+                    }
+                    actions.push(SchemaMaintenanceAction {
+                        object_type: "property".to_string(),
+                        object: format!("{}.{}", table.name, property.name),
+                        from_state: property.state,
+                        to_state: complete.then_some(SchemaObjectState::Validating),
+                        action: if complete {
+                            "advance".to_string()
+                        } else {
+                            format!("backfill {filled}")
+                        },
+                    });
+                }
                 SchemaObjectState::Backfill => {
                     let estimated_operations =
                         self.schema_table_record_count(catalog, &table).max(1);
@@ -457,12 +517,23 @@ impl GraphStore {
             }
         }
 
-        if ops.is_empty() {
+        if ops.is_empty() && data_ops.is_empty() {
             return Ok(actions);
         }
+        if !data_ops.is_empty() {
+            self.validate_constraints_for_ops(catalog, &data_ops)?;
+        }
+        // Backfill writes precede the state changes in one atomic WAL batch.
+        let data_op_count = data_ops.len();
+        data_ops.extend(ops);
+        let ops = data_ops;
         self.append_graph_wal_and_capture(catalog, &ops, false)?;
-        for op in ops {
-            self.apply_schema_maintenance_op(catalog, op);
+        for (index, op) in ops.into_iter().enumerate() {
+            if index < data_op_count {
+                self.apply_wal_op(catalog, op)?;
+            } else {
+                self.apply_schema_maintenance_op(catalog, op);
+            }
         }
         self.finish_non_relational_commit();
         Ok(actions)
@@ -1280,25 +1351,27 @@ impl GraphStore {
 
     pub(super) fn validate_relationship_endpoints(&self) -> Result<()> {
         if self.canonical_base_out_of_core {
+            // Existence only: collect visible node ids once with an
+            // IDs-only scan instead of decoding a full node per endpoint.
+            // Ids come from the monotonic allocator, so the compressed
+            // bitmap stays a few bits per node rather than 8 bytes.
+            let mut node_ids = roaring::RoaringTreemap::new();
+            self.visit_projected_nodes_owned(None, &BTreeSet::new(), |node| {
+                node_ids.insert(node.id.0);
+                GraphScanControl::Continue
+            })?;
             let mut validation_error = None;
             self.visit_relationships_owned(None, |relationship| {
                 for (kind, node_id) in [
                     ("source", relationship.source),
                     ("target", relationship.target),
                 ] {
-                    match self.node_owned(node_id) {
-                        Ok(Some(_)) => {}
-                        Ok(None) => {
-                            validation_error = Some(HawDBError::Storage(format!(
-                                "relationship {} references missing {kind} node {}",
-                                relationship.id.0, node_id.0
-                            )));
-                            return GraphScanControl::Stop;
-                        }
-                        Err(error) => {
-                            validation_error = Some(error);
-                            return GraphScanControl::Stop;
-                        }
+                    if !node_ids.contains(node_id.0) {
+                        validation_error = Some(HawDBError::Storage(format!(
+                            "relationship {} references missing {kind} node {}",
+                            relationship.id.0, node_id.0
+                        )));
+                        return GraphScanControl::Stop;
                     }
                 }
                 GraphScanControl::Continue

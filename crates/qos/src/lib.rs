@@ -22,6 +22,7 @@ mod runtime;
 use hawdb_core::time::Instant;
 use std::fmt::Debug;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 pub use device::{StorageDeviceDiscoverySource, StorageDeviceProfile, StorageMediaKind};
@@ -145,6 +146,33 @@ pub struct QosTelemetryEvent {
 
 pub trait QosTelemetrySink: Debug + Send + Sync {
     fn record_qos(&self, event: QosTelemetryEvent);
+
+    /// Opt in to per-unit events from batched admissions. A batched owner
+    /// samples this once per admission; sinks that return `false` (the
+    /// default) receive only the per-batch admission/completion events.
+    fn observes_units(&self) -> bool {
+        false
+    }
+
+    /// One bounded unit inside an admitted batch started or ended. Called
+    /// only when [`Self::observes_units`] returned `true` at admission.
+    fn record_qos_unit(&self, _event: QosUnitEvent) {}
+}
+
+/// A unit of work charged to an already admitted batch permit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QosUnitPhase {
+    Started,
+    Finished,
+    Abandoned,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QosUnitEvent {
+    pub phase: QosUnitPhase,
+    pub class: WorkClass,
+    /// One-based position of the unit inside its admitted batch.
+    pub unit_in_batch: usize,
 }
 
 impl WorkPriority {
@@ -393,8 +421,178 @@ pub struct LocalQosScheduler {
 #[derive(Debug)]
 struct LocalQosSchedulerInner {
     policy: LocalQosPolicy,
-    state: Mutex<LocalQosState>,
+    state: Mutex<SchedulerState>,
     telemetry: RwLock<Option<Arc<dyn QosTelemetrySink>>>,
+}
+
+/// Charged operations, including batch permits that are currently idle.
+/// Idle batches are excluded from every observable state and are reclaimed
+/// when they would otherwise refuse another background admission.
+#[derive(Debug, Default)]
+struct SchedulerState {
+    charged: LocalQosState,
+    batches: Vec<Arc<BatchSlot>>,
+}
+
+const BATCH_ACTIVE: u8 = 0;
+const BATCH_IDLE: u8 = 1;
+const BATCH_RECLAIMED: u8 = 2;
+const BATCH_FINISHED: u8 = 3;
+
+#[derive(Debug)]
+struct BatchSlot {
+    state: AtomicU8,
+    request: WorkRequest,
+    started_at: Instant,
+}
+
+/// A background permit that covers a bounded sequence of short units
+/// without one scheduler round trip per unit (#1616).
+///
+/// The batch charges its operations only while a unit runs. Between units
+/// the owner marks it idle with [`Self::idle`]. An idle batch is not visible
+/// in [`LocalQosScheduler::state`] and any background admission that its
+/// charge would refuse reclaims it first; [`Self::resume`] then returns
+/// `false` and the owner must admit a new batch. The owner must still bound
+/// the number of units per batch: that bound is where competing background
+/// work, the deadline and the scheduler policy are observed again.
+#[derive(Debug)]
+pub struct LocalQosBatchPermit {
+    scheduler: Arc<LocalQosSchedulerInner>,
+    slot: Arc<BatchSlot>,
+    finished: bool,
+}
+
+impl SchedulerState {
+    fn charge(&mut self, request: &WorkRequest) {
+        let state = &mut self.charged;
+        state.running_background_operations = state
+            .running_background_operations
+            .saturating_add(request.estimated_operations);
+        let class_index = request.class.as_index();
+        state.running_background_operations_by_class[class_index] = state
+            .running_background_operations_by_class[class_index]
+            .saturating_add(request.estimated_operations);
+    }
+
+    fn refund(state: &mut LocalQosState, request: &WorkRequest) {
+        state.running_background_operations = state
+            .running_background_operations
+            .saturating_sub(request.estimated_operations);
+        let class_index = request.class.as_index();
+        state.running_background_operations_by_class[class_index] = state
+            .running_background_operations_by_class[class_index]
+            .saturating_sub(request.estimated_operations);
+    }
+
+    /// Operations of work that is actually running.
+    fn view(&self) -> LocalQosState {
+        let mut view = self.charged.clone();
+        for slot in &self.batches {
+            if slot.state.load(Ordering::Acquire) == BATCH_IDLE {
+                Self::refund(&mut view, &slot.request);
+            }
+        }
+        view
+    }
+
+    /// Reclaim every idle batch. Each reclaimed owner observes it on resume.
+    fn reclaim_idle(&mut self) -> Vec<Arc<BatchSlot>> {
+        let mut reclaimed = Vec::new();
+        let charged = &mut self.charged;
+        self.batches.retain(|slot| {
+            let idle = slot
+                .state
+                .compare_exchange(
+                    BATCH_IDLE,
+                    BATCH_RECLAIMED,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok();
+            if idle {
+                Self::refund(charged, &slot.request);
+                reclaimed.push(slot.clone());
+            }
+            !idle
+        });
+        reclaimed
+    }
+}
+
+impl LocalQosBatchPermit {
+    pub fn request(&self) -> &WorkRequest {
+        &self.slot.request
+    }
+
+    /// Mark the batch running before its next unit. Returns `false` when the
+    /// scheduler reclaimed it while idle; the owner then admits a new batch.
+    pub fn resume(&self) -> bool {
+        match self.slot.state.compare_exchange(
+            BATCH_IDLE,
+            BATCH_ACTIVE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => true,
+            Err(state) => state == BATCH_ACTIVE,
+        }
+    }
+
+    /// No unit of this batch is running; its charge may be reclaimed.
+    pub fn idle(&self) {
+        let _ = self.slot.state.compare_exchange(
+            BATCH_ACTIVE,
+            BATCH_IDLE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+
+    /// The scheduler reclaimed this batch while it was idle.
+    pub fn is_reclaimed(&self) -> bool {
+        self.slot.state.load(Ordering::Acquire) == BATCH_RECLAIMED
+    }
+
+    pub fn finish_with_outcome(mut self, success: bool) {
+        self.release(success, None);
+    }
+
+    pub fn finish_with_outcome_at(mut self, success: bool, finished_at: Instant) {
+        self.release(success, Some(finished_at));
+    }
+
+    /// Reads the clock only when this batch still owns its completion.
+    fn release(&mut self, success: bool, finished_at: Option<Instant>) {
+        if self.finished {
+            return;
+        }
+        self.finished = true;
+        let owned = {
+            let mut state = self.scheduler.lock();
+            let owned = self.slot.state.swap(BATCH_FINISHED, Ordering::AcqRel) != BATCH_RECLAIMED;
+            if owned {
+                SchedulerState::refund(&mut state.charged, &self.slot.request);
+                state.batches.retain(|slot| !Arc::ptr_eq(slot, &self.slot));
+            }
+            owned
+        };
+        // A reclaimed batch already reported its completion.
+        if owned {
+            self.scheduler.record_completion(
+                &self.slot.request,
+                self.slot.started_at,
+                finished_at.unwrap_or_else(Instant::now),
+                success,
+            );
+        }
+    }
+}
+
+impl Drop for LocalQosBatchPermit {
+    fn drop(&mut self) {
+        self.release(false, None);
+    }
 }
 
 impl PartialEq for LocalQosPermit {
@@ -813,7 +1011,7 @@ impl LocalQosPermit {
         }
         self.released = true;
         self.scheduler
-            .release(&self.request, self.started_at, success);
+            .release(&self.request, self.started_at, Instant::now(), success);
     }
 }
 
@@ -828,13 +1026,17 @@ impl LocalQosScheduler {
         Self {
             inner: Arc::new(LocalQosSchedulerInner {
                 policy,
-                state: Mutex::new(LocalQosState::default()),
+                state: Mutex::new(SchedulerState::default()),
                 telemetry: RwLock::new(None),
             }),
         }
     }
 
+    /// Replace the sink. Idle batches are reclaimed first and report their
+    /// completion to the previous sink, so every later batch admission and
+    /// its units are observed by the new one.
     pub fn set_telemetry_sink(&self, telemetry: Option<Arc<dyn QosTelemetrySink>>) {
+        self.inner.reclaim_idle_batches();
         *self
             .inner
             .telemetry
@@ -870,88 +1072,157 @@ impl LocalQosScheduler {
         self.inner.policy.snapshot(&self.inner.state())
     }
 
-    pub fn try_start(
-        &self,
-        request: WorkRequest,
-    ) -> std::result::Result<LocalQosPermit, QosAdmission> {
-        let admission = {
-            let mut state = self
-                .inner
-                .state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let admission = self.inner.policy.admit(&state, &request);
-            if matches!(admission, QosAdmission::Admit)
-                && request.priority == WorkPriority::Background
-            {
-                state.running_background_operations = state
-                    .running_background_operations
-                    .saturating_add(request.estimated_operations);
-                let class_index = request.class.as_index();
-                state.running_background_operations_by_class[class_index] = state
-                    .running_background_operations_by_class[class_index]
-                    .saturating_add(request.estimated_operations);
-            }
-            admission
-        };
-        match admission {
-            QosAdmission::Admit => {
-                self.inner.record_background_event(
-                    &request,
-                    QosTelemetryPhase::Admission,
-                    QosTelemetryOutcome::Admitted,
-                    None,
-                    0,
-                );
-                Ok(LocalQosPermit {
-                    scheduler: Arc::clone(&self.inner),
-                    request,
-                    started_at: Instant::now(),
-                    released: false,
-                })
-            }
-            admission => {
-                let outcome = match admission {
-                    QosAdmission::Admit => unreachable!("admitted work returns a permit"),
-                    QosAdmission::Defer { .. } => QosTelemetryOutcome::Deferred,
-                    QosAdmission::Reject { .. } => QosTelemetryOutcome::Rejected,
-                };
-                self.inner.record_background_event(
-                    &request,
-                    QosTelemetryPhase::Admission,
-                    outcome,
-                    admission.code(),
-                    0,
-                );
-                Err(admission)
-            }
-        }
-    }
-}
-
-impl LocalQosSchedulerInner {
-    fn state(&self) -> LocalQosState {
-        self.state
-            .lock()
+    /// The sink currently attached to this scheduler.
+    pub fn telemetry_sink(&self) -> Option<Arc<dyn QosTelemetrySink>> {
+        self.inner
+            .telemetry
+            .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
     }
 
-    fn release(&self, request: &WorkRequest, started_at: Instant, success: bool) {
-        if request.priority == WorkPriority::Background {
-            let mut state = self
-                .state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.running_background_operations = state
-                .running_background_operations
-                .saturating_sub(request.estimated_operations);
-            let class_index = request.class.as_index();
-            state.running_background_operations_by_class[class_index] = state
-                .running_background_operations_by_class[class_index]
-                .saturating_sub(request.estimated_operations);
+    pub fn try_start(
+        &self,
+        request: WorkRequest,
+    ) -> std::result::Result<LocalQosPermit, QosAdmission> {
+        let admission = self.admit_and_charge(&request, None);
+        self.record_admission(&request, &admission);
+        match admission {
+            QosAdmission::Admit => Ok(LocalQosPermit {
+                scheduler: Arc::clone(&self.inner),
+                request,
+                started_at: Instant::now(),
+                released: false,
+            }),
+            admission => Err(admission),
         }
-        let elapsed_micros = started_at.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+    }
+
+    /// Admit a [`LocalQosBatchPermit`] at a caller-supplied timestamp. The
+    /// returned batch is running; mark it idle between units.
+    pub fn try_start_batch_at(
+        &self,
+        request: WorkRequest,
+        started_at: Instant,
+    ) -> std::result::Result<LocalQosBatchPermit, QosAdmission> {
+        let slot = Arc::new(BatchSlot {
+            state: AtomicU8::new(BATCH_ACTIVE),
+            request,
+            started_at,
+        });
+        let admission = self.admit_and_charge(&slot.request, Some(&slot));
+        self.record_admission(&slot.request, &admission);
+        match admission {
+            QosAdmission::Admit => Ok(LocalQosBatchPermit {
+                scheduler: Arc::clone(&self.inner),
+                slot,
+                finished: false,
+            }),
+            admission => Err(admission),
+        }
+    }
+
+    /// Admit under the policy and charge background work. Idle batches are
+    /// reclaimed only when their charge would refuse this request.
+    fn admit_and_charge(
+        &self,
+        request: &WorkRequest,
+        batch: Option<&Arc<BatchSlot>>,
+    ) -> QosAdmission {
+        let (admission, reclaimed) = {
+            let mut state = self.inner.lock();
+            let mut admission = self.inner.policy.admit(&state.charged, request);
+            let mut reclaimed = Vec::new();
+            if !matches!(admission, QosAdmission::Admit)
+                && request.priority == WorkPriority::Background
+                && !state.batches.is_empty()
+            {
+                reclaimed = state.reclaim_idle();
+                if !reclaimed.is_empty() {
+                    admission = self.inner.policy.admit(&state.charged, request);
+                }
+            }
+            if matches!(admission, QosAdmission::Admit)
+                && request.priority == WorkPriority::Background
+            {
+                state.charge(request);
+                if let Some(batch) = batch {
+                    state.batches.push(batch.clone());
+                }
+            }
+            (admission, reclaimed)
+        };
+        if !reclaimed.is_empty() {
+            let now = Instant::now();
+            for slot in reclaimed {
+                self.inner
+                    .record_completion(&slot.request, slot.started_at, now, true);
+            }
+        }
+        admission
+    }
+
+    fn record_admission(&self, request: &WorkRequest, admission: &QosAdmission) {
+        let outcome = match admission {
+            QosAdmission::Admit => QosTelemetryOutcome::Admitted,
+            QosAdmission::Defer { .. } => QosTelemetryOutcome::Deferred,
+            QosAdmission::Reject { .. } => QosTelemetryOutcome::Rejected,
+        };
+        self.inner.record_background_event(
+            request,
+            QosTelemetryPhase::Admission,
+            outcome,
+            admission.code(),
+            0,
+        );
+    }
+}
+
+impl LocalQosSchedulerInner {
+    fn lock(&self) -> std::sync::MutexGuard<'_, SchedulerState> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn state(&self) -> LocalQosState {
+        self.lock().view()
+    }
+
+    fn reclaim_idle_batches(&self) {
+        let reclaimed = self.lock().reclaim_idle();
+        if !reclaimed.is_empty() {
+            let now = Instant::now();
+            for slot in reclaimed {
+                self.record_completion(&slot.request, slot.started_at, now, true);
+            }
+        }
+    }
+
+    fn release(
+        &self,
+        request: &WorkRequest,
+        started_at: Instant,
+        finished_at: Instant,
+        success: bool,
+    ) {
+        if request.priority == WorkPriority::Background {
+            SchedulerState::refund(&mut self.lock().charged, request);
+        }
+        self.record_completion(request, started_at, finished_at, success);
+    }
+
+    fn record_completion(
+        &self,
+        request: &WorkRequest,
+        started_at: Instant,
+        finished_at: Instant,
+        success: bool,
+    ) {
+        let elapsed_micros = finished_at
+            .saturating_duration_since(started_at)
+            .as_micros()
+            .min(u128::from(u64::MAX)) as u64;
         self.record_background_event(
             request,
             QosTelemetryPhase::Completion,
@@ -1020,6 +1291,9 @@ fn local_qos_class_snapshot(
             .is_some_and(|limit| running_background_operations > limit),
     }
 }
+
+#[cfg(test)]
+mod batch_tests;
 
 #[cfg(test)]
 mod tests {

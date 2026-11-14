@@ -195,6 +195,9 @@ fn schema_copy(
                 Some(RelationalColumnDefault::Literal(value_copy(value, work)?))
             }
             Some(RelationalColumnDefault::UuidV7) => Some(RelationalColumnDefault::UuidV7),
+            Some(RelationalColumnDefault::CurrentTimestamp(kind)) => {
+                Some(RelationalColumnDefault::CurrentTimestamp(*kind))
+            }
             None => None,
         };
         work.push(
@@ -272,7 +275,10 @@ fn value_copy(value: &RelationalValue, work: &CheckpointDecodeContext) -> Result
         | RelationalValue::Boolean(_)
         | RelationalValue::BigInt(_)
         | RelationalValue::DoublePrecision(_)
+        | RelationalValue::Decimal(_)
         | RelationalValue::Uuid(_)
+        | RelationalValue::Timestamp(_)
+        | RelationalValue::TimestampTz(_)
         | RelationalValue::Overflow(_)) => {
             let unit = start(work)?;
             let value = value.clone();

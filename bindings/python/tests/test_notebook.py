@@ -80,8 +80,7 @@ def test_render_html_counts_rows_beyond_those_passed():
 
 def test_html_notes_empty_results(db):
     html = db.execute("MATCH (s:Missing) RETURN s.code")._repr_html_()
-    assert html == "<p>(no rows)</p>"
-    html = _display.render_html(["s.code"], [])
+    assert html == _display.render_html(["s.code"], [])
     assert "<th>s.code</th>" in html
     assert "<p>(no rows)</p>" in html
 

@@ -999,6 +999,12 @@ fn validate_table_schema_visiting(
                         column.name
                     )));
                 }
+                RelationalColumnDefault::CurrentTimestamp(_) => {
+                    return Err(AppendTableError::Schema(format!(
+                        "append table column {} does not support clock defaults",
+                        column.name
+                    )));
+                }
             }
         }
     }
@@ -1235,7 +1241,7 @@ fn validate_value_type(
             )))
         };
     }
-    if value.scalar_type() != Some(column.scalar_type) {
+    if !column.scalar_type.holds(value.as_ref()) {
         return Err(AppendTableError::Schema(format!(
             "column {} expects {:?} but received {:?}",
             column.name,
@@ -1280,7 +1286,7 @@ fn validate_key_shape(
     }
     for (position, value) in positions.iter().zip(&key.0) {
         if matches!(value, RelationalValue::Null | RelationalValue::Overflow(_))
-            || value.scalar_type() != Some(schema.columns[*position].scalar_type)
+            || !schema.columns[*position].scalar_type.holds(value.as_ref())
         {
             return Err(AppendTableError::Corruption(format!(
                 "append {kind} key does not match schema column {}",

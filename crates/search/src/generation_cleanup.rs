@@ -28,7 +28,15 @@ pub const SEARCH_PROJECTION_CLEANUP_PROTOCOL: &str =
 pub struct SearchProjectionCleanupOptions {
     pub max_pending_files: NonZeroUsize,
     pub max_delete_attempts: NonZeroUsize,
-    /// Declared bytes covered by one captured verification pass, before unlink.
+    /// Active-closure bytes one pass may re-hash before any unlink, per file
+    /// and in total. Re-hashing streams; raising this does not let a pass
+    /// decode a larger resident snapshot in memory, which stays under a fixed
+    /// 128 MiB bound (above it the snapshot is only stream-verified). Files this process already hashed against the same
+    /// reference and that are unchanged since (the publisher verifies every
+    /// installed file) are not re-hashed and not charged, and the first file
+    /// a pass re-hashes is admitted at any size. Every completed hash is
+    /// remembered, so a closure above this ceiling is still verified over
+    /// successive passes; a pass that cannot finish deletes nothing.
     pub max_verification_bytes: NonZeroU64,
     pub max_verification_files: NonZeroUsize,
 }
@@ -67,6 +75,19 @@ pub struct SearchProjectionCleanupReport {
     pub scan_failures: usize,
     pub failure_kinds: BTreeMap<String, usize>,
     pub retry_required: bool,
+    /// Active-closure bytes this pass read and hashed before any unlink.
+    /// Only these count against `max_verification_bytes`.
+    pub verification_rehashed_bytes: u64,
+    /// Active-closure bytes accepted without a re-hash because this process
+    /// already hashed the same unmodified file against the same reference
+    /// (the publisher's post-install check or an earlier cleanup pass).
+    pub verification_reused_bytes: u64,
+    /// Encoded bytes of the resident snapshot this pass decoded in memory to
+    /// check its vector count; 0 when the count was already known or the
+    /// snapshot exceeded the fixed decode bound and was only stream-verified.
+    pub verification_decoded_snapshot_bytes: u64,
+    /// The active closure could not be proven intact; nothing was deleted.
+    pub closure_unverified: bool,
 }
 
 impl Default for SearchProjectionCleanupReport {
@@ -97,6 +118,10 @@ impl Default for SearchProjectionCleanupReport {
             scan_failures: 0,
             failure_kinds: BTreeMap::new(),
             retry_required: false,
+            verification_rehashed_bytes: 0,
+            verification_reused_bytes: 0,
+            verification_decoded_snapshot_bytes: 0,
+            closure_unverified: false,
         }
     }
 }
@@ -125,7 +150,47 @@ impl SearchProjectionCleanupReport {
             "scan_failures": self.scan_failures,
             "failure_kinds": self.failure_kinds,
             "retry_required": self.retry_required,
+            "verification_rehashed_bytes": self.verification_rehashed_bytes,
+            "verification_reused_bytes": self.verification_reused_bytes,
+            "verification_decoded_snapshot_bytes": self.verification_decoded_snapshot_bytes,
+            "closure_unverified": self.closure_unverified,
         })
+    }
+}
+
+/// Compact result of the generation cleanup pass that ran right after a
+/// publication. Hosts read it from [`crate::SearchCheckpointReport`] and
+/// [`crate::SearchProjectionDeltaReport`]; the complete report remains
+/// available from `SearchIndex::projection_cleanup_report`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct SearchProjectionCleanupOutcome {
+    /// Superseded generation files removed by the pass.
+    pub deleted_files: usize,
+    /// Obsolete files still present (queued for retry or over a pass budget).
+    pub pending_files: usize,
+    /// Whether the active closure could not be proven intact, so the pass
+    /// deleted nothing (`captured_closure_unverified`).
+    pub closure_unverified: bool,
+    /// Whether superseded generations may remain; the next publication or an
+    /// explicit cleanup call retries.
+    pub retry_required: bool,
+    /// Active-closure bytes re-hashed by the pass.
+    pub verification_rehashed_bytes: u64,
+    /// Active-closure bytes accepted from an earlier verification in this
+    /// process without a re-hash.
+    pub verification_reused_bytes: u64,
+}
+
+impl From<&SearchProjectionCleanupReport> for SearchProjectionCleanupOutcome {
+    fn from(report: &SearchProjectionCleanupReport) -> Self {
+        Self {
+            deleted_files: report.deleted_files,
+            pending_files: report.deferred_files,
+            closure_unverified: report.closure_unverified,
+            retry_required: report.retry_required,
+            verification_rehashed_bytes: report.verification_rehashed_bytes,
+            verification_reused_bytes: report.verification_reused_bytes,
+        }
     }
 }
 
@@ -209,10 +274,17 @@ impl SearchProjectionCleanupState {
             admission,
         )
         .and_then(|verified| {
+            let work = verified.work();
             verified.with_source(|source, generations| {
-                self.run_with_policy(root, generations, options, Some(source), |name| {
-                    source.remove(name)
-                })
+                let mut report =
+                    self.run_with_policy(root, generations, options, Some(source), |name| {
+                        source.remove(name)
+                    });
+                report.verification_rehashed_bytes = work.rehashed_bytes;
+                report.verification_reused_bytes = work.reused_bytes;
+                report.verification_decoded_snapshot_bytes = work.decoded_snapshot_bytes;
+                self.report = report.clone();
+                report
             })
         });
         match result {
@@ -220,6 +292,7 @@ impl SearchProjectionCleanupState {
             Err(_) => {
                 let mut report = self.defer(options, "captured_closure_unverified");
                 report.generation_discovery_failures = 1;
+                report.closure_unverified = true;
                 self.report = report.clone();
                 report
             }
@@ -539,5 +612,9 @@ fn io_error_code(error: &io::Error) -> &'static str {
 #[cfg(test)]
 #[path = "generation_cleanup/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "generation_cleanup/ceiling_tests.rs"]
+mod ceiling_tests;
 
 pub(crate) mod once;

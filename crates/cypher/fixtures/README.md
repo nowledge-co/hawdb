@@ -62,6 +62,45 @@ Intentional behavior changes require review of the affected case and golden;
 do not regenerate expected values automatically in a test. Preserve case IDs,
 source text and historical provenance when adapting the harness to the new AST.
 
+`migration_main_1550_scalar_regex_peg_baseline_v1.jsonl` records the 44 reviewed
+statement/pipeline transitions introduced by issue #1550. The original
+expression/predicate and diagnostic fixtures remain immutable: scalar-expression
+left operands now parse as regex predicates, while binding and execution retain
+responsibility for rejecting non-string patterns and evaluated operands.
+
+`migration_main_1489_unbounded_var_length_peg_baseline_v1.jsonl` records the 2
+reviewed statement/pipeline transitions introduced by issue #1489: an unbounded
+variable-length relationship pattern (`*`, `*n..`) now parses. Execution
+enumerates its trails and refuses one longer than the streaming depth limit.
+
+`migration_main_1488_pattern_predicates_peg_baseline_v1.jsonl` records the 87
+reviewed statement/pipeline transitions introduced by issue #1488. Each case was
+already accepted and stays accepted with a new AST: a `WHERE` pattern predicate
+whose source node is anonymous (`NOT ((:Item)-[:REL]->())`, `()-[:R*1]->()`)
+used to become the one-hop existence predicate over that anonymous name, which
+no row binds, so it was always false. It is now an existential subquery over the
+whole pattern. The one-hop predicate is kept only from a bound, unlabeled source
+to an anonymous target; named targets, labeled sources, multi-hop paths, type
+disjunctions and relationship properties are part of the pattern. No frozen
+case changes between rejection and acceptance.
+
+`migration_main_1683_property_defaults_peg_baseline_v1.jsonl` records the 30
+reviewed statement transitions introduced by issue #1683. Each case is an
+already accepted `CREATE PROPERTY` statement that stays accepted; its AST gains
+`default: None` (the new optional `DEFAULT <literal>` clause). No frozen case
+changes between rejection and acceptance.
+
+`migration_main_1678_label_peg_baseline_v1.jsonl` records the 18 reviewed
+statement/pipeline transitions introduced by issue #1678. Each case was already
+accepted with Kùzu `label(r)` in RETURN, which used to parse as `type(r)`
+(`RelationshipType`). It now parses as the entity label expression
+`Label { function: Label, .. }`, which also reads node labels. Replacing that
+expression by the former one reproduces every previous AST hash exactly; nothing
+else changes. The planner golden `owner-0090` changes the same way (recorded in
+`migration_default_pipeline_v1.json`). No frozen case changes between rejection
+and acceptance: the Kùzu snapshot cases `mem-0057`..`mem-0060` stay rejected
+because they also use `offset(id(x))`.
+
 Run the default owner and complete local fuzz surface:
 
 ```sh

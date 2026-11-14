@@ -13,9 +13,7 @@
 // limitations under the License.
 
 use crate::blackbox::{write_blackbox_report, BlackboxReportOptions, BlackboxRunStatus};
-use crate::nowledge_mem::{
-    NowledgeMemEmbeddedStore, NowledgeMemOpenOptions, NowledgeMemOpenReport,
-};
+use crate::embedded_store::{EmbeddedStore, EmbeddedStoreOpenOptions, EmbeddedStoreOpenReport};
 use crate::store::DurabilityPolicy;
 use crate::{
     AdaptiveVectorBackendPolicy, Database, DatabaseConfig, DatabaseReadTransaction, HawDBError,
@@ -316,10 +314,26 @@ impl HawDBEmbedded {
     /// storage device is reported as `StorageMediaKind::Memory`; there is no
     /// device to discover and no durability policy to apply.
     pub fn open_in_memory_with_config(config: DatabaseConfig) -> Self {
+        Self::open_in_memory_with_runtime_governor_config(config, None)
+    }
+
+    /// [`Self::open_in_memory_with_config`] with an explicit runtime governor
+    /// configuration; `None` keeps the `SharedHost` default, as
+    /// [`HawDBEmbeddedOpenOptions::runtime_governor_config`] does for a path.
+    pub fn open_in_memory_with_runtime_governor_config(
+        config: DatabaseConfig,
+        runtime_governor_config: Option<RuntimeGovernorConfig>,
+    ) -> Self {
         let deployment_profile = EmbeddedDeploymentProfile::SharedHost;
         let storage_device = StorageDeviceProfile::host_provided(StorageMediaKind::Memory, None);
-        let setup =
-            embedded_runtime_setup(deployment_profile, storage_device, None, None, None, None);
+        let setup = embedded_runtime_setup(
+            deployment_profile,
+            storage_device,
+            None,
+            None,
+            runtime_governor_config,
+            None,
+        );
         let mut database = Database::new_with_config(config);
         database.set_runtime_governor(setup.runtime_governor.clone());
         Self {
@@ -332,10 +346,10 @@ impl HawDBEmbedded {
         }
     }
 
-    pub fn open_nowledge_mem(
-        options: NowledgeMemOpenOptions,
-    ) -> Result<(NowledgeMemEmbeddedStore, NowledgeMemOpenReport)> {
-        NowledgeMemEmbeddedStore::open_with_options(options)
+    pub fn open_embedded_store(
+        options: EmbeddedStoreOpenOptions,
+    ) -> Result<(EmbeddedStore, EmbeddedStoreOpenReport)> {
+        EmbeddedStore::open_with_options(options)
     }
 
     /// Returns the durable project path, or an empty path for an in-memory
@@ -548,6 +562,24 @@ impl HawDBEmbedded {
         &mut self,
         query: crate::SqlQueryRequest<'_>,
     ) -> std::result::Result<QueryOutput, EmbeddedQueryError> {
+        self.query_sql_request_admitted_with_result(query)
+            .map(|result| result.output)
+    }
+
+    /// Admits, executes and commits one SQL statement under this facade's
+    /// runtime governor, returning its rows together with the committed
+    /// RowPage mutation outcome.
+    ///
+    /// `mutation` is what [`Database::query_sql_with_result_and_params`]
+    /// reports. A saturated governor refuses the statement with
+    /// [`EmbeddedQueryError::Admission`] before it is parsed or run, and a
+    /// stopped task context with [`EmbeddedQueryError::Stopped`]. Reads run on
+    /// a pinned snapshot and are recorded in the statement summary and
+    /// slow-query log like the raw database's autocommit reads.
+    pub fn query_sql_request_admitted_with_result(
+        &mut self,
+        query: crate::SqlQueryRequest<'_>,
+    ) -> std::result::Result<crate::SqlStatementResult, EmbeddedQueryError> {
         if self.transaction.is_some() {
             return Err(HawDBError::Execution(
                 "a user transaction is open on this database".into(),
@@ -601,13 +633,26 @@ impl HawDBEmbedded {
         self.check_admitted_query_context(&context)?;
         let (prepared, _planning_memory) = prepared.into_statement(&self.database)?;
         let query = query.with_task_context(&context);
-        let result = if uses_snapshot {
+        // Branch catalog reads need only project metadata, which the raw
+        // database serves without admitting (or waiting for) the runtime.
+        let reads_snapshot =
+            uses_snapshot && !matches!(prepared.statement(), crate::sql::SqlStatement::Branch(_));
+        let result = if reads_snapshot {
+            let started = hawdb_core::time::Instant::now();
+            let statement_kind = crate::api::sql_statement_kind(prepared.statement());
+            let result = self
+                .database
+                .begin_read_transaction_with_shared_plan_cache()
+                .and_then(|snapshot| snapshot.query_sql_with_prepared_request(query, prepared));
             self.database
-                .begin_read_transaction_with_shared_plan_cache()?
-                .query_sql_with_prepared_request(query, prepared)
+                .finish_snapshot_sql_read(query.sql, statement_kind, started, &result);
+            result.map(|output| crate::SqlStatementResult {
+                output,
+                mutation: None,
+            })
         } else {
             self.database
-                .query_sql_with_prepared_request(query, prepared)
+                .query_sql_with_prepared_request_with_result(query, prepared)
         };
         if uses_snapshot {
             self.check_admitted_query_context(&context)?;
@@ -766,14 +811,150 @@ impl HawDBEmbedded {
         &mut self,
         request: crate::SqlQueryRequest<'_>,
     ) -> Result<QueryOutput> {
-        let transaction = self.transaction_mut()?;
-        crate::api::execute_database_transaction_sql_request(
+        self.transaction_query_sql_request_with_result(request)
+            .map(|result| result.output)
+    }
+
+    /// Runs one SQL statement inside the open user transaction and returns
+    /// its rows together with the staged RowPage mutation outcome.
+    ///
+    /// `mutation` is `None` for queries, DDL and Strict Append writes. Its
+    /// counts are provisional (`provisional == true`) until
+    /// [`Self::commit_transaction`] publishes the transaction.
+    pub fn transaction_query_sql_with_result_and_params(
+        &mut self,
+        sql_text: &str,
+        parameters: &[Value],
+    ) -> Result<crate::SqlStatementResult> {
+        self.transaction_query_sql_request_with_result(
+            crate::SqlQueryRequest::new(sql_text).with_params(parameters),
+        )
+    }
+
+    /// Request form of [`Self::transaction_query_sql_with_result_and_params`].
+    ///
+    /// The statement is not admitted by the runtime governor; see
+    /// [`Self::transaction_query_sql_request_admitted_with_result`]. Like
+    /// autocommit SQL it fails closed on a poisoned storage handle, a storage
+    /// integrity failure of a read poisons the handle, and it is recorded in
+    /// the statement summary and slow-query log under its own text and
+    /// statement kind, although its effects stay staged until commit.
+    pub fn transaction_query_sql_request_with_result(
+        &mut self,
+        request: crate::SqlQueryRequest<'_>,
+    ) -> Result<crate::SqlStatementResult> {
+        let transaction = self.transaction.as_mut().ok_or_else(no_user_transaction)?;
+        crate::api::execute_recorded_database_transaction_sql_request(
+            &self.database,
             &transaction.runtime,
             &mut transaction.state,
             request,
             None,
         )
-        .map(|result| result.output)
+    }
+
+    /// Admitted form of [`Self::transaction_query_sql_request`].
+    pub fn transaction_query_sql_request_admitted(
+        &mut self,
+        request: crate::SqlQueryRequest<'_>,
+    ) -> std::result::Result<QueryOutput, EmbeddedQueryError> {
+        self.transaction_query_sql_request_admitted_with_result(request)
+            .map(|result| result.output)
+    }
+
+    /// Admits and runs one SQL statement inside the open user transaction
+    /// under this facade's runtime governor, as
+    /// [`Self::query_sql_request_admitted_with_result`] does for autocommit
+    /// SQL, and returns its rows with the staged RowPage mutation outcome.
+    ///
+    /// A saturated governor refuses the statement with
+    /// [`EmbeddedQueryError::Admission`] before it is parsed or staged, and a
+    /// stopped task context with [`EmbeddedQueryError::Stopped`]; the
+    /// transaction stays open with its earlier statements staged. The
+    /// statement's result budget is the admitted one. Otherwise it behaves
+    /// as [`Self::transaction_query_sql_request_with_result`].
+    pub fn transaction_query_sql_request_admitted_with_result(
+        &mut self,
+        query: crate::SqlQueryRequest<'_>,
+    ) -> std::result::Result<crate::SqlStatementResult, EmbeddedQueryError> {
+        if self.transaction.is_none() {
+            return Err(no_user_transaction().into());
+        }
+        let default_context = RuntimeTaskContext::default();
+        let context = query.task_context.unwrap_or(&default_context);
+        self.check_admitted_query_context(context)?;
+        let planning_request = crate::api::runtime_planning_request(
+            query.sql.len(),
+            hawdb_qos::RuntimeWorkPriority::Foreground,
+        );
+        let prepared = {
+            let permit = self.try_admit_query(planning_request)?;
+            let prepared = self
+                .database
+                .runtime_sql_planning_snapshot()
+                .prepare(query.sql);
+            self.fail_transaction_on_error(prepared)?
+                .with_planning_memory(
+                    permit
+                        .into_retained_memory()
+                        .expect("control work owns fixed memory"),
+                )
+        };
+        let admitted_request = prepared.work_request(self.admitted_result_budget_bytes());
+        let request = admitted_request.with_memory_bytes(
+            admitted_request
+                .memory_bytes
+                .max(planning_request.memory_bytes),
+        );
+        let (prepared, permit) = self.try_admit_prepared(prepared, |_, prepared| {
+            request.with_retained_memory_bytes(
+                prepared.map_or(0, |value| value.planning_memory_bytes()),
+            )
+        })?;
+        let prepared = match prepared {
+            Some(prepared) => prepared,
+            None => {
+                let prepared = self
+                    .database
+                    .runtime_sql_planning_snapshot()
+                    .prepare(query.sql);
+                self.fail_transaction_on_error(prepared)?
+            }
+        };
+        if prepared.work_request(admitted_request.result_bytes) != admitted_request {
+            return Err(HawDBError::Execution(
+                "SQL admission changed during preparation rebuild; retry the query".into(),
+            )
+            .into());
+        }
+        let uses_snapshot = prepared.uses_snapshot();
+        let context = permit.bind_task_context(context.clone());
+        let _permit = permit;
+        self.check_admitted_query_context(&context)?;
+        let (prepared, _planning_memory) = prepared.into_statement(&self.database)?;
+        let transaction = self.transaction.as_mut().ok_or_else(no_user_transaction)?;
+        let result = crate::api::execute_recorded_database_transaction_sql_request(
+            &self.database,
+            &transaction.runtime,
+            &mut transaction.state,
+            query.with_task_context(&context),
+            Some(prepared),
+        );
+        if uses_snapshot {
+            self.check_admitted_query_context(&context)?;
+        }
+        result.map_err(EmbeddedQueryError::Database)
+    }
+
+    /// A statement that fails before reaching the transaction still fails it,
+    /// as one failing inside it does.
+    fn fail_transaction_on_error<T>(&mut self, result: Result<T>) -> Result<T> {
+        if result.is_err()
+            && let Some(transaction) = &mut self.transaction
+        {
+            transaction.state.fail_read_dependencies();
+        }
+        result
     }
 
     /// Publishes the open transaction as one durable commit.
@@ -801,15 +982,11 @@ impl HawDBEmbedded {
     }
 
     fn transaction_mut(&mut self) -> Result<&mut EmbeddedTransaction> {
-        self.transaction.as_mut().ok_or_else(|| {
-            HawDBError::Execution("no user transaction is open on this database".into())
-        })
+        self.transaction.as_mut().ok_or_else(no_user_transaction)
     }
 
     fn take_transaction(&mut self) -> Result<EmbeddedTransaction> {
-        self.transaction.take().ok_or_else(|| {
-            HawDBError::Execution("no user transaction is open on this database".into())
-        })
+        self.transaction.take().ok_or_else(no_user_transaction)
     }
 
     pub fn write_slow_query_log_jsonl(&self, path: impl AsRef<Path>) -> Result<()> {
@@ -842,6 +1019,10 @@ impl HawDBEmbedded {
 struct EmbeddedTransaction {
     runtime: crate::api::DatabaseTransactionRuntime,
     state: crate::api::DatabaseTransactionState,
+}
+
+fn no_user_transaction() -> HawDBError {
+    HawDBError::Execution("no user transaction is open on this database".into())
 }
 
 fn default_database_config(profile: EmbeddedDeploymentProfile) -> DatabaseConfig {
@@ -910,8 +1091,8 @@ fn default_runtime_governor_config(profile: EmbeddedDeploymentProfile) -> Runtim
 mod tests {
     use super::*;
     use crate::{
-        HawDBError, NowledgeMemGraphMode, NowledgeMemReadinessOptions, RuntimeCapability, Value,
-        NOWLEDGE_MEM_LIBRARY_READINESS_PROTOCOL,
+        GraphMode, HawDBError, ReadinessOptions, RuntimeCapability, Value,
+        LIBRARY_READINESS_PROTOCOL,
     };
     use std::collections::BTreeMap;
     use std::num::NonZeroUsize;
@@ -956,25 +1137,25 @@ mod tests {
     }
 
     #[test]
-    fn embedded_handle_opens_nowledge_mem_store() {
+    fn embedded_handle_opens_store() {
         let root = unique_test_dir("embedded-nowledge-mem");
         let graph_path = root.join("graph");
-        let (store, open_report) = HawDBEmbedded::open_nowledge_mem(
-            NowledgeMemOpenOptions::graph_only(&graph_path, NowledgeMemGraphMode::WritableCutover),
+        let (store, open_report) = HawDBEmbedded::open_embedded_store(
+            EmbeddedStoreOpenOptions::graph_only(&graph_path, GraphMode::WritableCutover),
         )
         .unwrap();
 
         let readiness = store
-            .library_readiness(&NowledgeMemReadinessOptions::default())
+            .library_readiness(&ReadinessOptions::default())
             .unwrap();
 
-        assert_eq!(open_report.mode, NowledgeMemGraphMode::WritableCutover);
+        assert_eq!(open_report.mode, GraphMode::WritableCutover);
         assert!(open_report.graph_configured);
         assert!(open_report.graph_opened);
         assert!(!open_report.search_projection_configured);
         assert!(!open_report.search_projection_opened);
-        assert_eq!(readiness.protocol, NOWLEDGE_MEM_LIBRARY_READINESS_PROTOCOL);
-        assert_eq!(readiness.mode, NowledgeMemGraphMode::WritableCutover);
+        assert_eq!(readiness.protocol, LIBRARY_READINESS_PROTOCOL);
+        assert_eq!(readiness.mode, GraphMode::WritableCutover);
         assert!(readiness.graph_open);
     }
 
@@ -1088,6 +1269,600 @@ mod tests {
             .query_admitted("MATCH (i:Item) RETURN i.id AS id")
             .unwrap();
         assert_eq!(published.rows.len(), 1);
+    }
+
+    fn affected_rows(result: &crate::SqlStatementResult) -> Option<usize> {
+        result
+            .mutation
+            .as_ref()
+            .map(|mutation| mutation.affected_rows)
+    }
+
+    fn assert_autocommit_sql_reports_affected_rows(engine: &mut HawDBEmbedded) {
+        let database = engine.database_mut();
+        let ddl = database
+            .query_sql_with_result_and_params(
+                "CREATE TABLE items (id BIGINT PRIMARY KEY, qty BIGINT)",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(affected_rows(&ddl), None);
+        let inserted = database
+            .query_sql_with_result_and_params(
+                "INSERT INTO items (id, qty) VALUES ($1, 1), ($2, 2), ($3, 3)",
+                &[Value::Int(1), Value::Int(2), Value::Int(3)],
+            )
+            .unwrap();
+        assert_eq!(affected_rows(&inserted), Some(3));
+        assert!(!inserted.mutation.as_ref().unwrap().provisional);
+        assert!(inserted.output.rows.is_empty());
+        let returning = database
+            .query_sql_with_result_and_params(
+                "INSERT INTO items (id, qty) VALUES ($1, 4) RETURNING id",
+                &[Value::Int(4)],
+            )
+            .unwrap();
+        assert_eq!(affected_rows(&returning), Some(1));
+        assert_eq!(returning.output.rows.len(), 1);
+        let updated = database
+            .query_sql_with_result_and_params(
+                "UPDATE items SET qty = qty + 10 WHERE qty >= $1",
+                &[Value::Int(2)],
+            )
+            .unwrap();
+        assert_eq!(affected_rows(&updated), Some(3));
+        let unmatched = database
+            .query_sql_with_result_and_params("UPDATE items SET qty = 0 WHERE id = 99", &[])
+            .unwrap();
+        assert_eq!(affected_rows(&unmatched), Some(0));
+        let deleted = database
+            .query_sql_with_result_and_params("DELETE FROM items WHERE id <= $1", &[Value::Int(2)])
+            .unwrap();
+        assert_eq!(affected_rows(&deleted), Some(2));
+        let selected = database
+            .query_sql_with_result_and_params("SELECT id FROM items", &[])
+            .unwrap();
+        assert_eq!(affected_rows(&selected), None);
+        assert_eq!(selected.output.rows.len(), 2);
+        // The output-only entry point is unchanged.
+        assert!(database
+            .query_sql_with_params("DELETE FROM items WHERE id = 3", &[])
+            .unwrap()
+            .rows
+            .is_empty());
+    }
+
+    #[test]
+    fn autocommit_sql_reports_committed_affected_rows() {
+        // Default limits commit count-only RowPage DML in one native pass.
+        assert_autocommit_sql_reports_affected_rows(&mut HawDBEmbedded::open_in_memory());
+        // A custom mutation ceiling validates every DML statement in a
+        // transaction before publication instead.
+        let mut config = DatabaseConfig::default();
+        config.mutation_limits.max_affected_rows = NonZeroUsize::new(1_000).unwrap();
+        assert_autocommit_sql_reports_affected_rows(
+            &mut HawDBEmbedded::open_in_memory_with_config(config),
+        );
+    }
+
+    #[test]
+    fn transaction_sql_reports_provisional_affected_rows() {
+        let mut engine = HawDBEmbedded::open_in_memory();
+        engine
+            .database_mut()
+            .query_sql("CREATE TABLE items (id BIGINT PRIMARY KEY, qty BIGINT)")
+            .unwrap();
+        engine.begin_transaction().unwrap();
+        let ddl = engine
+            .transaction_query_sql_with_result_and_params(
+                "CREATE TABLE other (id BIGINT PRIMARY KEY)",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(affected_rows(&ddl), None);
+        let inserted = engine
+            .transaction_query_sql_with_result_and_params(
+                "INSERT INTO items (id, qty) VALUES ($1, 1), ($2, 2), ($3, 3)",
+                &[Value::Int(1), Value::Int(2), Value::Int(3)],
+            )
+            .unwrap();
+        assert_eq!(affected_rows(&inserted), Some(3));
+        assert!(inserted.mutation.as_ref().unwrap().provisional);
+        let updated = engine
+            .transaction_query_sql_with_result_and_params(
+                "UPDATE items SET qty = 0 WHERE id >= $1",
+                &[Value::Int(2)],
+            )
+            .unwrap();
+        assert_eq!(affected_rows(&updated), Some(2));
+        let deleted = engine
+            .transaction_query_sql_with_result_and_params("DELETE FROM items WHERE id = 1", &[])
+            .unwrap();
+        assert_eq!(affected_rows(&deleted), Some(1));
+        let selected = engine
+            .transaction_query_sql_with_result_and_params("SELECT id FROM items", &[])
+            .unwrap();
+        assert_eq!(affected_rows(&selected), None);
+        assert_eq!(selected.output.rows.len(), 2);
+        engine.commit_transaction().unwrap();
+        assert_eq!(
+            engine
+                .database_mut()
+                .query_sql("SELECT id FROM items")
+                .unwrap()
+                .rows
+                .len(),
+            2
+        );
+    }
+
+    /// The binding's two SQL paths, autocommit through `database_mut` and a
+    /// statement inside an open transaction, carry the relational refusal kind
+    /// with the surface, and so the text, each path has always reported.
+    #[test]
+    fn relational_refusals_carry_their_kind_on_both_sql_paths() {
+        use crate::{RelationalErrorKind, RelationalErrorSurface};
+        const INSERT: &str = "INSERT INTO items (id, name) VALUES ($1, $2)";
+        let root = unique_test_dir("embedded-relational-kind");
+        for mut engine in [
+            HawDBEmbedded::open_in_memory(),
+            HawDBEmbedded::open(root.join("graph")).unwrap(),
+        ] {
+            let database = engine.database_mut();
+            database
+                .query_sql_with_params(
+                    "CREATE TABLE items (id BIGINT PRIMARY KEY, name TEXT NOT NULL)",
+                    &[],
+                )
+                .unwrap();
+            database
+                .query_sql_with_params(INSERT, &[Value::Int(1), Value::String("one".into())])
+                .unwrap();
+            for (parameters, kind) in [
+                (
+                    [Value::Int(1), Value::String("again".into())],
+                    RelationalErrorKind::Constraint,
+                ),
+                (
+                    [Value::Int(2), Value::Null],
+                    RelationalErrorKind::Constraint,
+                ),
+                ([Value::Int(3), Value::Int(3)], RelationalErrorKind::Schema),
+            ] {
+                let autocommit = engine
+                    .database_mut()
+                    .query_sql_with_params(INSERT, &parameters)
+                    .unwrap_err();
+                assert_eq!(
+                    autocommit.relational_error_kind(),
+                    Some(kind),
+                    "{autocommit:?}"
+                );
+                assert_eq!(
+                    autocommit.relational_error_surface(),
+                    Some(RelationalErrorSurface::Storage)
+                );
+                assert!(
+                    autocommit
+                        .to_string()
+                        .starts_with(&format!("storage error: {kind}: ")),
+                    "{autocommit}"
+                );
+
+                engine.begin_transaction().unwrap();
+                let staged = engine
+                    .transaction_query_sql_with_params(INSERT, &parameters)
+                    .unwrap_err();
+                engine.rollback_transaction().unwrap();
+                assert_eq!(staged.relational_error_kind(), Some(kind), "{staged:?}");
+                assert_eq!(
+                    staged.relational_error_surface(),
+                    Some(RelationalErrorSurface::Execution)
+                );
+                assert!(
+                    staged
+                        .to_string()
+                        .starts_with(&format!("execution error: {kind}: ")),
+                    "{staged}"
+                );
+            }
+            // Other failures keep their variants and have no relational kind.
+            let missing = engine
+                .database_mut()
+                .query_sql_with_params("SELECT id FROM missing", &[])
+                .unwrap_err();
+            assert!(matches!(missing, HawDBError::Semantic(_)), "{missing:?}");
+            assert_eq!(missing.relational_error_kind(), None);
+        }
+    }
+
+    /// Holds every CPU slot of `engine`'s governor, so the next admission is
+    /// refused as retryable `CpuSaturated` until the permit drops.
+    fn saturate_admission(engine: &HawDBEmbedded) -> hawdb_qos::RuntimePermit {
+        let governor = engine.runtime_governor();
+        governor
+            .try_admit(
+                hawdb_qos::RuntimeWorkRequest::new(
+                    hawdb_qos::RuntimeWorkPriority::Foreground,
+                    hawdb_qos::RuntimeWorkKind::Control,
+                )
+                .with_cpu_slots(governor.snapshot().limits.effective_cpu_slots.get()),
+            )
+            .unwrap()
+    }
+
+    fn assert_retryable_admission<T: fmt::Debug>(
+        result: std::result::Result<T, EmbeddedQueryError>,
+    ) {
+        match result {
+            Err(EmbeddedQueryError::Admission(error)) => {
+                assert!(error.is_retryable(), "{error}");
+                assert_eq!(error.code, hawdb_qos::RuntimeAdmissionCode::CpuSaturated);
+            }
+            other => panic!("expected a retryable admission refusal, got {other:?}"),
+        }
+    }
+
+    fn assert_governor_idle(engine: &HawDBEmbedded) {
+        let snapshot = engine.runtime_governor().snapshot();
+        assert_eq!(snapshot.admissions, snapshot.completions);
+        assert_eq!(snapshot.admitted_memory_bytes, 0);
+        assert_eq!(snapshot.active_cpu_slots, 0);
+    }
+
+    fn sql(text: &str) -> crate::SqlQueryRequest<'_> {
+        crate::SqlQueryRequest::new(text)
+    }
+
+    #[test]
+    fn admitted_autocommit_sql_is_refused_when_saturated_and_reports_affected_rows() {
+        let mut engine = HawDBEmbedded::open_in_memory();
+        let ddl = engine
+            .query_sql_request_admitted_with_result(sql(
+                "CREATE TABLE items (id BIGINT PRIMARY KEY, qty BIGINT)",
+            ))
+            .unwrap();
+        assert_eq!(affected_rows(&ddl), None);
+
+        let busy = saturate_admission(&engine);
+        assert_retryable_admission(engine.query_sql_request_admitted_with_result(sql(
+            "INSERT INTO items (id, qty) VALUES (1, 1)",
+        )));
+        assert_retryable_admission(
+            engine.query_sql_request_admitted_with_result(sql("SELECT id FROM items")),
+        );
+        // A refusal precedes parsing: malformed text is refused, not rejected.
+        assert_retryable_admission(engine.query_sql_request_admitted_with_result(sql("SELEC")));
+        drop(busy);
+
+        let parameters = [Value::Int(2), Value::Int(3)];
+        let inserted = engine
+            .query_sql_request_admitted_with_result(
+                sql("INSERT INTO items (id, qty) VALUES ($1, 10), ($2, 20)")
+                    .with_params(&parameters),
+            )
+            .unwrap();
+        assert_eq!(affected_rows(&inserted), Some(2));
+        assert!(!inserted.mutation.as_ref().unwrap().provisional);
+        let updated = engine
+            .query_sql_request_admitted_with_result(sql("UPDATE items SET qty = 0 WHERE id = 3"))
+            .unwrap();
+        assert_eq!(affected_rows(&updated), Some(1));
+        let selected = engine
+            .query_sql_request_admitted_with_result(sql("SELECT id FROM items ORDER BY id"))
+            .unwrap();
+        assert_eq!(affected_rows(&selected), None);
+        // The refused INSERT of id 1 never ran.
+        assert_eq!(
+            selected
+                .output
+                .rows
+                .iter()
+                .map(|row| row["id"].clone())
+                .collect::<Vec<_>>(),
+            [Value::Int(2), Value::Int(3)]
+        );
+        assert_governor_idle(&engine);
+    }
+
+    #[test]
+    fn admitted_transaction_sql_is_refused_when_saturated_and_keeps_the_transaction() {
+        let mut engine = HawDBEmbedded::open_in_memory();
+        assert!(matches!(
+            engine.transaction_query_sql_request_admitted_with_result(sql("SELECT 1")),
+            Err(EmbeddedQueryError::Database(HawDBError::Execution(_)))
+        ));
+        engine
+            .query_sql_request_admitted(sql(
+                "CREATE TABLE items (id BIGINT PRIMARY KEY, qty BIGINT)",
+            ))
+            .unwrap();
+        engine.begin_transaction().unwrap();
+        let first = engine
+            .transaction_query_sql_request_admitted_with_result(sql(
+                "INSERT INTO items (id, qty) VALUES (1, 1)",
+            ))
+            .unwrap();
+        assert_eq!(affected_rows(&first), Some(1));
+        assert!(first.mutation.as_ref().unwrap().provisional);
+
+        let busy = saturate_admission(&engine);
+        assert_retryable_admission(
+            engine.transaction_query_sql_request_admitted_with_result(sql(
+                "INSERT INTO items (id, qty) VALUES (2, 2)",
+            )),
+        );
+        assert_retryable_admission(
+            engine.transaction_query_sql_request_admitted_with_result(sql("SELECT id FROM items")),
+        );
+        drop(busy);
+
+        // A stopped task is reported as such and stages nothing either.
+        let cancellation = hawdb_core::RuntimeCancellationToken::new();
+        cancellation.cancel();
+        let cancelled = RuntimeTaskContext::without_deadline(cancellation);
+        assert_eq!(
+            engine
+                .transaction_query_sql_request_admitted_with_result(
+                    sql("INSERT INTO items (id, qty) VALUES (3, 3)").with_task_context(&cancelled),
+                )
+                .unwrap_err(),
+            EmbeddedQueryError::Stopped(RuntimeCancellationReason::Cancelled)
+        );
+
+        assert!(engine.transaction_active());
+        let updated = engine
+            .transaction_query_sql_request_admitted_with_result(sql(
+                "UPDATE items SET qty = 5 WHERE id >= 0",
+            ))
+            .unwrap();
+        // Only the admitted INSERT was staged.
+        assert_eq!(affected_rows(&updated), Some(1));
+        let selected = engine
+            .transaction_query_sql_request_admitted(sql("SELECT id, qty FROM items"))
+            .unwrap();
+        assert_eq!(selected.rows.len(), 1);
+        engine.commit_transaction().unwrap();
+        let published = engine
+            .query_sql_request_admitted(sql("SELECT id, qty FROM items"))
+            .unwrap();
+        assert_eq!(published.rows.len(), 1);
+        assert_eq!(published.rows[0]["qty"], Value::Int(5));
+        assert_governor_idle(&engine);
+    }
+
+    #[test]
+    fn admitted_sql_result_budget_follows_the_governor_and_names_the_read_ceiling() {
+        // About 20 MB of payload: over the 16 MiB shared-host default result
+        // budget, under a 24 MiB ceiling the host aligned the governor with.
+        const CEILING: usize = 24 * 1024 * 1024;
+        let config = DatabaseConfig {
+            max_read_result_payload_bytes: Some(CEILING),
+            ..DatabaseConfig::default()
+        };
+        let mut governor = RuntimeGovernorConfig::shared_host();
+        governor.result_budget_bytes = CEILING as u64;
+        let mut engine =
+            HawDBEmbedded::open_in_memory_with_runtime_governor_config(config, Some(governor));
+        assert_eq!(engine.admitted_result_budget_bytes(), CEILING as u64);
+        engine
+            .query_sql_request_admitted(sql("CREATE TABLE big (id BIGINT PRIMARY KEY, v TEXT)"))
+            .unwrap();
+        let value = Value::String("x".repeat(100_000));
+        for batch in 0..4 {
+            engine.begin_transaction().unwrap();
+            for id in 0..50 {
+                let parameters = [Value::Int(batch * 50 + id), value.clone()];
+                engine
+                    .transaction_query_sql_request_admitted(
+                        sql("INSERT INTO big (id, v) VALUES ($1, $2)").with_params(&parameters),
+                    )
+                    .unwrap();
+            }
+            engine.commit_transaction().unwrap();
+        }
+        const WITHIN: &str = "SELECT id, v FROM big";
+        const BEYOND: &str = "SELECT id, v, v AS w FROM big";
+        let assert_ceiling =
+            |result: std::result::Result<QueryOutput, EmbeddedQueryError>| match result {
+                Err(EmbeddedQueryError::Database(HawDBError::ReadBudgetExceeded(budget))) => {
+                    assert_eq!(budget.resource, crate::ReadBudgetResource::PayloadBytes);
+                    assert_eq!(budget.limit, CEILING);
+                    assert_eq!(
+                        budget.resource.budget_option(),
+                        "max_read_result_payload_bytes"
+                    );
+                }
+                other => panic!("expected the read payload ceiling, got {other:?}"),
+            };
+        assert_eq!(
+            engine
+                .query_sql_request_admitted(sql(WITHIN))
+                .unwrap()
+                .rows
+                .len(),
+            200
+        );
+        assert_ceiling(engine.query_sql_request_admitted(sql(BEYOND)));
+        engine.begin_transaction().unwrap();
+        assert_eq!(
+            engine
+                .transaction_query_sql_request_admitted(sql(WITHIN))
+                .unwrap()
+                .rows
+                .len(),
+            200
+        );
+        assert_ceiling(engine.transaction_query_sql_request_admitted(sql(BEYOND)));
+        engine.rollback_transaction().unwrap();
+        assert_governor_idle(&engine);
+    }
+
+    #[test]
+    fn admitted_branch_catalog_sql_does_not_wait_for_a_busy_runtime() {
+        let path = unique_test_dir("embedded-admitted-branch-catalog").join("graph");
+        let mut writer = HawDBEmbedded::open(&path).unwrap();
+        writer
+            .query_admitted("CREATE (:Memory {id: 'kept'})")
+            .unwrap();
+        let mut reader = HawDBEmbedded::open(&path).unwrap();
+        // The writer holds the runtime, so the reader's runtime stays deferred.
+        assert!(reader
+            .query_admitted("MATCH (m:Memory) RETURN m.id")
+            .is_err());
+        let catalog = reader
+            .query_sql_request_admitted(sql("SHOW BRANCHES LIMIT 1"))
+            .unwrap();
+        assert_eq!(catalog.rows.len(), 1);
+        drop(writer);
+        assert_eq!(
+            reader
+                .query_sql_request_admitted(sql("SHOW BRANCHES LIMIT 1"))
+                .unwrap(),
+            catalog
+        );
+    }
+
+    fn statement_summary(
+        engine: &mut HawDBEmbedded,
+        query_text: &str,
+    ) -> Option<(String, i64, i64, i64, i64)> {
+        let parameters = [Value::String(query_text.into())];
+        let output = engine
+            .database_mut()
+            .query_sql_with_params(
+                "SELECT statement_kind, execution_count, success_count, error_count, \
+                 total_row_count FROM system.statement_summary \
+                 WHERE query_language = 'sql' AND query_text = $1",
+                &parameters,
+            )
+            .unwrap();
+        assert!(output.rows.len() <= 1, "{output:?}");
+        output.rows.first().map(|row| {
+            let int = |name: &str| match &row[name] {
+                Value::Int(value) => *value,
+                other => panic!("{name}: {other:?}"),
+            };
+            let Value::String(kind) = &row["statement_kind"] else {
+                panic!("{row:?}");
+            };
+            (
+                kind.clone(),
+                int("execution_count"),
+                int("success_count"),
+                int("error_count"),
+                int("total_row_count"),
+            )
+        })
+    }
+
+    #[test]
+    fn transaction_and_admitted_sql_are_recorded_like_autocommit_sql() {
+        const INSERT: &str = "INSERT INTO items (id, qty) VALUES ($1, $2)";
+        const TX_SELECT: &str = "SELECT id FROM items WHERE qty >= 0";
+        const ADMITTED_SELECT: &str = "SELECT id, qty FROM items";
+        let mut engine = HawDBEmbedded::open_in_memory_with_config(DatabaseConfig {
+            slow_query_log_threshold_micros: 0,
+            slow_query_log_capacity: 64,
+            statement_summary_capacity: 64,
+            ..DatabaseConfig::default()
+        });
+        engine
+            .database_mut()
+            .query_sql("CREATE TABLE items (id BIGINT PRIMARY KEY, qty BIGINT)")
+            .unwrap();
+        let slow_before = engine.database().slow_query_log_snapshot().len();
+
+        engine.begin_transaction().unwrap();
+        engine
+            .transaction_query_sql_with_params(INSERT, &[Value::Int(1), Value::Int(1)])
+            .unwrap();
+        engine
+            .transaction_query_sql_request_admitted(
+                sql(INSERT).with_params(&[Value::Int(2), Value::Int(2)]),
+            )
+            .unwrap();
+        // A refused statement is counted as an error, not as a success.
+        engine
+            .transaction_query_sql_with_params(INSERT, &[Value::Int(1), Value::Int(9)])
+            .unwrap_err();
+        let staged = engine
+            .transaction_query_sql_request_admitted(sql(TX_SELECT))
+            .unwrap();
+        assert_eq!(staged.rows.len(), 2);
+        // Unparsable text is not recorded, as in autocommit.
+        engine
+            .transaction_query_sql_with_params("SELEC", &[])
+            .unwrap_err();
+        engine.commit_transaction().unwrap();
+
+        let admitted = engine
+            .query_sql_request_admitted(sql(ADMITTED_SELECT))
+            .unwrap();
+        assert_eq!(admitted.rows.len(), 2);
+
+        assert_eq!(
+            statement_summary(&mut engine, INSERT),
+            Some(("insert".into(), 3, 2, 1, 0))
+        );
+        assert_eq!(
+            statement_summary(&mut engine, TX_SELECT),
+            Some(("select".into(), 1, 1, 0, 2))
+        );
+        assert_eq!(
+            statement_summary(&mut engine, ADMITTED_SELECT),
+            Some(("select".into(), 1, 1, 0, 2))
+        );
+        assert_eq!(statement_summary(&mut engine, "SELEC"), None);
+        // With a zero threshold every successful statement is slow: two
+        // INSERTs and two SELECTs, plus the summary reads above.
+        let slow = engine.database().slow_query_log_snapshot();
+        let recorded = &slow[slow_before..];
+        let count = |kind: &str| {
+            recorded
+                .iter()
+                .filter(|record| record.query_language == "sql" && record.statement_kind == kind)
+                .count()
+        };
+        assert_eq!(count("insert"), 2, "{recorded:?}");
+        assert!(count("select") >= 2, "{recorded:?}");
+        assert!(recorded.iter().all(|record| record.success));
+    }
+
+    #[test]
+    fn transaction_sql_fails_closed_on_a_poisoned_handle() {
+        let mut engine = HawDBEmbedded::open_in_memory();
+        engine
+            .database_mut()
+            .query_sql("CREATE TABLE items (id BIGINT PRIMARY KEY, qty BIGINT)")
+            .unwrap();
+        engine.begin_transaction().unwrap();
+        engine
+            .transaction_query_sql_with_params("INSERT INTO items (id, qty) VALUES (1, 1)", &[])
+            .unwrap();
+        engine.database().poison_storage_handle_for_test();
+        assert!(engine.database().storage_handle_poisoned().unwrap());
+        let poisoned = |error: &HawDBError| matches!(error, HawDBError::Storage(message) if message.contains("poisoned"));
+        let read = engine
+            .transaction_query_sql_with_params("SELECT id FROM items", &[])
+            .unwrap_err();
+        assert!(poisoned(&read), "{read:?}");
+        let write = engine
+            .transaction_query_sql_with_params("INSERT INTO items (id, qty) VALUES (2, 2)", &[])
+            .unwrap_err();
+        assert!(poisoned(&write), "{write:?}");
+        match engine.transaction_query_sql_request_admitted(sql("SELECT id FROM items")) {
+            Err(EmbeddedQueryError::Database(error)) => assert!(poisoned(&error), "{error:?}"),
+            other => panic!("expected the poisoned handle, got {other:?}"),
+        }
+        engine.rollback_transaction().unwrap();
+        let autocommit = engine
+            .query_sql_request_admitted(sql("SELECT id FROM items"))
+            .unwrap_err();
+        assert!(
+            matches!(&autocommit, EmbeddedQueryError::Database(error) if poisoned(error)),
+            "{autocommit:?}"
+        );
     }
 
     #[test]

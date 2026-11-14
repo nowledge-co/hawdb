@@ -49,9 +49,110 @@ pub struct RelationalRowPageReadViewIdentity {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelationalRowPageLiveError {
     Admission(String),
+    /// The commit fits in an empty overlay but not in the remaining headroom.
+    /// A drain empties the overlay, so the same commit can be admitted after
+    /// one. Nothing was applied.
+    Headroom(RelationalLiveOverlayShortfall),
     Corrupt(String),
-    RequiresCheckpoint { tables: Vec<String> },
+    RequiresCheckpoint {
+        tables: Vec<String>,
+    },
     Invalidated(String),
+}
+
+/// Which bounded relational live overlay a commit is admitted into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelationalLiveOverlayKind {
+    /// Row overlay: entries and resident bytes.
+    Row,
+    /// Authoritative index overlay: entries and encoded bytes.
+    Index,
+}
+
+impl fmt::Display for RelationalLiveOverlayKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Row => "row",
+            Self::Index => "index",
+        })
+    }
+}
+
+/// A staged commit that its live overlay can hold only after a drain.
+///
+/// `commit_*` is what the commit adds, `retained_*` what the serving overlay
+/// already holds, and `max_*` the admission envelope. The commit alone fits
+/// the envelope; the sum does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RelationalLiveOverlayShortfall {
+    pub overlay: RelationalLiveOverlayKind,
+    pub commit_entries: usize,
+    pub commit_bytes: usize,
+    pub retained_entries: usize,
+    pub retained_bytes: usize,
+    pub max_entries: usize,
+    pub max_bytes: usize,
+}
+
+impl RelationalLiveOverlayShortfall {
+    /// Classifies an admission that does not fit: `Ok(Some)` when an empty
+    /// overlay would hold the commit, `Err` when no drain can make room.
+    pub fn classify(
+        overlay: RelationalLiveOverlayKind,
+        commit: (usize, usize),
+        retained: (usize, usize),
+        limits: (usize, usize),
+    ) -> Result<Option<Self>, String> {
+        let unit = match overlay {
+            RelationalLiveOverlayKind::Row => "resident",
+            RelationalLiveOverlayKind::Index => "encoded",
+        };
+        if commit.0 > limits.0 || commit.1 > limits.1 {
+            return Err(format!(
+                "a single commit adds {} entries/{} {unit} bytes to the live {overlay} overlay, \
+                 exceeding its limits {}/{} even when empty; split it into smaller commits",
+                commit.0, commit.1, limits.0, limits.1
+            ));
+        }
+        let fits = |(retained, commit, limit): (usize, usize, usize)| {
+            retained
+                .checked_add(commit)
+                .is_some_and(|total| total <= limit)
+        };
+        if fits((retained.0, commit.0, limits.0)) && fits((retained.1, commit.1, limits.1)) {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            overlay,
+            commit_entries: commit.0,
+            commit_bytes: commit.1,
+            retained_entries: retained.0,
+            retained_bytes: retained.1,
+            max_entries: limits.0,
+            max_bytes: limits.1,
+        }))
+    }
+}
+
+impl fmt::Display for RelationalLiveOverlayShortfall {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let unit = match self.overlay {
+            RelationalLiveOverlayKind::Row => "resident",
+            RelationalLiveOverlayKind::Index => "encoded",
+        };
+        write!(
+            formatter,
+            "live {} overlay would retain {} entries/{} {unit} bytes, exceeding limits {}/{} \
+             (the commit adds {} entries/{} bytes; a checkpoint must drain the overlay first)",
+            self.overlay,
+            self.retained_entries.saturating_add(self.commit_entries),
+            self.retained_bytes.saturating_add(self.commit_bytes),
+            self.max_entries,
+            self.max_bytes,
+            self.commit_entries,
+            self.commit_bytes,
+        )
+    }
 }
 
 impl fmt::Display for RelationalRowPageLiveError {
@@ -61,6 +162,12 @@ impl fmt::Display for RelationalRowPageLiveError {
                 write!(
                     formatter,
                     "relational row live-view admission failed: {message}"
+                )
+            }
+            Self::Headroom(shortfall) => {
+                write!(
+                    formatter,
+                    "relational row live-view admission failed: {shortfall}"
                 )
             }
             Self::Corrupt(message) => {
@@ -240,7 +347,7 @@ impl RelationalRowPageLiveOverlay {
                 changes,
                 encoded_bytes,
             } => (changes, encoded_bytes),
-            RelationalRowChangeCapture::RequiresCheckpoint { tables } => {
+            RelationalRowChangeCapture::RequiresCheckpoint { tables, .. } => {
                 return Err(RelationalRowPageLiveError::RequiresCheckpoint { tables });
             }
             RelationalRowChangeCapture::Invalidated { reason } => {
@@ -268,10 +375,21 @@ impl RelationalRowPageLiveOverlay {
                 )
             })?;
         if entry_count > limits.max_entries.get() || resident_bytes > limits.max_bytes.get() {
-            return Err(RelationalRowPageLiveError::Admission(format!(
-                "live row overlay would retain {entry_count} entries/{resident_bytes} resident bytes, exceeding limits {}/{}",
-                limits.max_entries, limits.max_bytes
-            )));
+            return Err(
+                match RelationalLiveOverlayShortfall::classify(
+                    RelationalLiveOverlayKind::Row,
+                    (changes.len(), capture_resident_bytes),
+                    (self.entry_count, self.resident_bytes),
+                    (limits.max_entries.get(), limits.max_bytes.get()),
+                ) {
+                    Ok(Some(shortfall)) => RelationalRowPageLiveError::Headroom(shortfall),
+                    Ok(None) => RelationalRowPageLiveError::Admission(format!(
+                        "live row overlay would retain {entry_count} entries/{resident_bytes} resident bytes, exceeding limits {}/{}",
+                        limits.max_entries, limits.max_bytes
+                    )),
+                    Err(message) => RelationalRowPageLiveError::Admission(message),
+                },
+            );
         }
         if changes.is_empty() {
             return Ok(self.clone());
@@ -477,6 +595,11 @@ pub struct RelationalRowPageReadView {
     identity: RelationalRowPageReadViewIdentity,
     base: Arc<RelationalRowPageRootReader>,
     recovery_delta: Option<Arc<RelationalRowDeltaReader>>,
+    /// Live-overlay resident bytes of the changes sealed into
+    /// `recovery_delta`, when this process recorded them. The next checkpoint
+    /// captures those keys together with the live overlay. `None` means the
+    /// delta was opened without its builder and its debt is unknown.
+    recovery_delta_resident_bytes: Option<usize>,
     live: RelationalRowPageLiveOverlay,
 }
 
@@ -493,6 +616,7 @@ impl RelationalRowPageReadView {
             },
             base,
             recovery_delta: None,
+            recovery_delta_resident_bytes: Some(0),
             live: RelationalRowPageLiveOverlay::empty(),
         }
     }
@@ -521,6 +645,7 @@ impl RelationalRowPageReadView {
             },
             base,
             recovery_delta: Some(recovery_delta),
+            recovery_delta_resident_bytes: None,
             live: RelationalRowPageLiveOverlay::empty(),
         })
     }
@@ -539,6 +664,31 @@ impl RelationalRowPageReadView {
 
     pub fn recovery_delta(&self) -> Option<&RelationalRowDeltaReader> {
         self.recovery_delta.as_deref()
+    }
+
+    /// Records the live-overlay resident bytes of the changes its delta
+    /// builder sealed into this view's recovery delta.
+    #[must_use]
+    pub fn with_recovery_delta_resident_bytes(mut self, bytes: usize) -> Self {
+        if self.recovery_delta.is_some() {
+            self.recovery_delta_resident_bytes = Some(bytes);
+        }
+        self
+    }
+
+    /// Entries in the recovery delta. Repeated versions of one key are
+    /// counted once per version, so this bounds the distinct keys from above.
+    pub fn recovery_delta_entries(&self) -> u64 {
+        self.recovery_delta
+            .as_ref()
+            .map_or(0, |delta| delta.manifest().total_entries())
+    }
+
+    /// Live-overlay resident bytes of the changes in the recovery delta, or
+    /// `None` when the delta was opened without the builder that recorded
+    /// them. Zero without a recovery delta.
+    pub const fn recovery_delta_resident_bytes(&self) -> Option<usize> {
+        self.recovery_delta_resident_bytes
     }
 
     pub(super) fn validate_serving_fence(&self) -> Result<(), RelationalRowDeltaError> {
@@ -625,6 +775,7 @@ impl RelationalRowPageReadView {
             identity,
             base: Arc::clone(&self.base),
             recovery_delta: self.recovery_delta.as_ref().map(Arc::clone),
+            recovery_delta_resident_bytes: self.recovery_delta_resident_bytes,
             live,
         })
     }
@@ -1032,13 +1183,11 @@ impl CheckpointChangeKeys {
                         "checkpoint capture encoding-byte accounting overflow".to_string(),
                     )
                 })?;
-                let resident_bytes = estimated_change_resident_bytes(&change)
-                    .and_then(|bytes| bytes.checked_sub(std::mem::size_of::<RelationalRowChange>()))
-                    .ok_or_else(|| {
-                        RelationalRowPageCheckpointError::Admission(
-                            "checkpoint change resident-byte accounting overflow".to_string(),
-                        )
-                    })?;
+                let resident_bytes = checkpoint_capture_change_bytes(&change).ok_or_else(|| {
+                    RelationalRowPageCheckpointError::Admission(
+                        "checkpoint change resident-byte accounting overflow".to_string(),
+                    )
+                })?;
                 capture_resident_bytes = capture_resident_bytes
                     .checked_add(resident_bytes)
                     .ok_or_else(|| {
@@ -1072,6 +1221,28 @@ impl CheckpointChangeKeys {
     }
 }
 
+/// Heap bytes one resolved change adds to a checkpoint capture beyond its slot
+/// in the preallocated change vector.
+///
+/// The primary key is moved out of the admitted key set, whose charge already
+/// covers its allocation, so it is not charged again. A row whose values are
+/// shared with the pinned view or canonical state (a live-overlay batch or a
+/// resident row) adds no allocation; only a row materialized for this capture,
+/// such as one decoded from the recovery delta, is charged. The table name is
+/// cloned per change.
+fn checkpoint_capture_change_bytes(change: &RelationalRowChange) -> Option<usize> {
+    let row_bytes = match change.row.as_ref() {
+        Some(row) if !row.shares_values() => row.values().iter().try_fold(
+            row.values()
+                .len()
+                .checked_mul(std::mem::size_of::<RelationalValue>())?,
+            |bytes, value| bytes.checked_add(value.estimated_payload_bytes()),
+        )?,
+        _ => 0,
+    };
+    change.table.len().checked_add(row_bytes)
+}
+
 fn relational_key_resident_bytes(primary_key: &RelationalKey) -> Option<usize> {
     primary_key.0.iter().try_fold(
         std::mem::size_of::<RelationalKey>()
@@ -1086,7 +1257,8 @@ fn relational_key_resident_bytes(primary_key: &RelationalKey) -> Option<usize> {
     )
 }
 
-fn estimated_change_resident_bytes(change: &RelationalRowChange) -> Option<usize> {
+/// Resident bytes one change retains in a live overlay batch.
+pub(super) fn estimated_change_resident_bytes(change: &RelationalRowChange) -> Option<usize> {
     let key_bytes = change.primary_key.0.iter().try_fold(
         change
             .primary_key
@@ -1238,10 +1410,12 @@ mod tests {
             max_entries: NonZeroUsize::new(1).unwrap(),
             max_bytes: NonZeroUsize::new(encoded_bytes).unwrap(),
         };
+        // A commit the empty overlay cannot hold is never deferred to a drain.
         assert!(matches!(
             RelationalRowPageLiveOverlay::empty().append(2, capture(changes), limits),
             Err(RelationalRowPageLiveError::Admission(reason))
-                if reason.contains("resident bytes")
+                if reason.contains(&format!("a single commit adds 1 entries/{resident_bytes} resident bytes"))
+                    && reason.contains(&format!("limits 1/{encoded_bytes} even when empty"))
         ));
     }
 
@@ -1255,10 +1429,33 @@ mod tests {
         let overlay = RelationalRowPageLiveOverlay::empty()
             .append(2, first, limits)
             .unwrap();
-        let error = overlay
-            .append(3, capture(vec![change(2, Some("two"))]), limits)
-            .unwrap_err();
-        assert!(matches!(error, RelationalRowPageLiveError::Admission(_)));
+        let second = capture(vec![change(2, Some("two"))]);
+        let RelationalRowChangeCapture::Captured {
+            changes,
+            encoded_bytes,
+        } = &second
+        else {
+            unreachable!()
+        };
+        let second_bytes = validate_capture(changes, *encoded_bytes).unwrap();
+        let error = overlay.append(3, second, limits).unwrap_err();
+        // It fits the empty overlay, so only the remaining headroom rejects
+        // it: a drain can make room for the same commit (#1479).
+        assert_eq!(
+            error,
+            RelationalRowPageLiveError::Headroom(RelationalLiveOverlayShortfall {
+                overlay: RelationalLiveOverlayKind::Row,
+                commit_entries: 1,
+                commit_bytes: second_bytes,
+                retained_entries: 1,
+                retained_bytes: overlay.resident_bytes,
+                max_entries: 1,
+                max_bytes: 4096,
+            })
+        );
+        assert!(error
+            .to_string()
+            .contains("live row overlay would retain 2 entries"));
         assert_eq!(overlay.entry_count, 1);
         assert_eq!(overlay.batch_count, 1);
         assert_eq!(
@@ -1323,6 +1520,97 @@ mod tests {
             Err(RelationalRowPageCheckpointError::Admission(reason))
                 if reason.contains("resident-byte") || reason.contains("retains")
         ));
+    }
+
+    fn order_line(line: i64) -> RelationalRowChange {
+        let (order, number) = (line / 10, line % 10);
+        let key = RelationalKey(vec![
+            RelationalValue::BigInt(1),
+            RelationalValue::BigInt(order / 3_000 + 1),
+            RelationalValue::BigInt(order % 3_000),
+            RelationalValue::BigInt(number),
+        ]);
+        let row = RelationalRow::new(vec![
+            RelationalValue::BigInt(order % 3_000),
+            RelationalValue::BigInt(order / 3_000 + 1),
+            RelationalValue::BigInt(1),
+            RelationalValue::BigInt(number),
+            RelationalValue::BigInt(line * 7_919 % 100_000),
+            RelationalValue::BigInt(1),
+            RelationalValue::Text("2026-11-01 00:00:00".to_string()),
+            RelationalValue::BigInt(5),
+            RelationalValue::DoublePrecision(12.5),
+            RelationalValue::Text("x".repeat(24)),
+        ]);
+        RelationalRowChange {
+            table: "order_line".to_string(),
+            primary_key: key,
+            row: Some(row),
+        }
+    }
+
+    /// Pins what one TPC-C ORDER_LINE row (about 120 encoded bytes) costs in
+    /// the live overlay and in the next checkpoint's capture (#1464).
+    #[test]
+    fn order_line_live_overlay_and_checkpoint_capture_charges_are_pinned() {
+        let value = std::mem::size_of::<RelationalValue>();
+        let change = order_line(0);
+        // The overlay retains the decoded row (ten values, 107 payload bytes)
+        // and its four-value primary key (32 payload bytes) in memory. The
+        // inline overflow reference makes every value 56 bytes wide, so the
+        // honest resident charge is about 1 KB per row.
+        assert_eq!(value, 56);
+        let overlay = std::mem::size_of::<RelationalRowChange>() + 10 + 14 * value + 32 + 107;
+        assert_eq!(estimated_change_resident_bytes(&change), Some(overlay));
+        assert_eq!(overlay, 997);
+        assert_eq!(
+            validate_capture(
+                std::slice::from_ref(&change),
+                estimated_row_change_encoding_bytes(&change).unwrap()
+            )
+            .unwrap(),
+            overlay + std::mem::size_of::<RelationalRowPageLiveBatch>() + 32
+        );
+
+        // A capture shares a row resolved from the live overlay or resident
+        // state and moves the primary key out of its key set: the change adds
+        // only its table name. A row decoded for the capture is charged.
+        let key_set = relational_key_resident_bytes(&change.primary_key).unwrap();
+        assert_eq!(
+            key_set,
+            std::mem::size_of::<RelationalKey>() + 32 + 4 * value + 32
+        );
+        let retained = change.row.clone();
+        assert_eq!(checkpoint_capture_change_bytes(&change), Some(10));
+        drop(retained);
+        assert_eq!(
+            checkpoint_capture_change_bytes(&change),
+            Some(10 + 10 * value + 107)
+        );
+
+        // A live overlay filled to its default byte envelope with these rows
+        // is captured in full within the same envelope.
+        let limits = RelationalRowChangeCaptureLimits::default();
+        let lines = limits.max_bytes.get() / overlay;
+        let overlay_rows = (0..lines as i64).map(order_line).collect::<Vec<_>>();
+        let mut keys = CheckpointChangeKeys::new(limits);
+        for change in &overlay_rows {
+            keys.insert(&change.table, &change.primary_key).unwrap();
+        }
+        let per_line = key_set + std::mem::size_of::<RelationalRowChange>() + 10;
+        assert!(lines * per_line < limits.max_bytes.get() / 2, "{per_line}");
+        let mut next = overlay_rows.iter();
+        let RelationalRowChangeCapture::Captured { changes, .. } = keys
+            .into_capture(&mut |_, primary_key| {
+                let change = next.next().unwrap();
+                assert_eq!(&change.primary_key, primary_key);
+                Ok(change.row.clone())
+            })
+            .unwrap()
+        else {
+            panic!("checkpoint capture must remain materialized");
+        };
+        assert_eq!(changes.len(), lines);
     }
 
     fn capture(changes: Vec<RelationalRowChange>) -> RelationalRowChangeCapture {

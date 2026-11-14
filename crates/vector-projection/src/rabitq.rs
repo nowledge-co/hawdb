@@ -29,12 +29,12 @@ pub(crate) struct RaBitQEncoding {
 
 /// Encodes one transformed unit vector in Faiss's scalar RaBitQ code layout:
 /// one LSB-first sign plane followed by an optional LSB-first refinement
-/// plane. The HawDB artifact stores reconstruction factors separately from
+/// plane. The HawDB artifact stores calibration factors separately from
 /// these code planes.
 ///
 /// The reference algorithm chooses the per-vector rescaling factor that
 /// maximizes the alignment between the vector and its offset-binary code. The
-/// returned affine reconstruction is used only for approximate candidate
+/// returned inverse-alignment calibration is used only for approximate candidate
 /// scoring; raw embeddings remain the final ranking source.
 pub(crate) fn encode(
     transformed: &[f32],
@@ -109,7 +109,9 @@ pub(crate) fn encode(
             "RaBitQ produced an invalid reconstruction basis".to_string(),
         ));
     }
-    let reconstruction_scale = (alignment / code_squared_norm) as f32;
+    // RaBitQ estimates the original inner product through inverse alignment.
+    // Least-squares reconstruction would shrink self-similarity, biasing L2.
+    let reconstruction_scale = alignment.recip() as f32;
     if !reconstruction_scale.is_finite() || reconstruction_scale < 0.0 {
         return Err(ProjectionError::InvalidVector(
             "RaBitQ produced an invalid reconstruction scale".to_string(),
@@ -168,6 +170,18 @@ fn extract_refinement_code(packed: &[u8], dimension: usize, refinement_bits: usi
     code
 }
 
+pub(crate) fn scratch_bytes(dimension: usize, bit_width: RaBitQBitWidth) -> usize {
+    let absolute = dimension.saturating_mul(std::mem::size_of::<f64>());
+    if bit_width.refinement_bits() == 0 {
+        absolute
+    } else {
+        absolute.saturating_add(
+            dimension
+                .saturating_mul(std::mem::size_of::<usize>() + std::mem::size_of::<RescaleEvent>()),
+        )
+    }
+}
+
 fn best_rescale_factor(absolute: &[f64], refinement_bits: usize) -> Result<f64> {
     let maximum = absolute.iter().copied().fold(0.0f64, f64::max);
     if maximum <= f64::EPSILON {
@@ -179,7 +193,7 @@ fn best_rescale_factor(absolute: &[f64], refinement_bits: usize) -> Result<f64> 
     let mut codes = Vec::with_capacity(absolute.len());
     let mut squared_norm = absolute.len() as f64 * 0.25;
     let mut alignment = 0.0f64;
-    let mut pending = BinaryHeap::new();
+    let mut pending = BinaryHeap::with_capacity(absolute.len());
     for (index, value) in absolute.iter().copied().enumerate() {
         let code = ((start * value) + RESCALE_EPSILON).floor() as usize;
         codes.push(code);

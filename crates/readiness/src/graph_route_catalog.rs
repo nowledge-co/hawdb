@@ -18,10 +18,10 @@
 //! owns the stable route protocol, its input validation, and the fail-closed
 //! reduction of query reports into route evidence.
 use crate::json_parse::{optional_query_name, parse_parameters_json};
-use hawdb_core::{HawDBError, Result, Value};
+use hawdb_core::{HawDBError, RelationalErrorSurface, Result, Value};
 use hawdb_evidence::inventory::REQUIRED_NOWLEDGE_REPLACEMENT_QUERY_FAMILIES;
 use hawdb_route_ownership::graph::{
-    nowledge_mem_required_query_families_for_route, REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
+    required_query_families_for_route, REQUIRED_BOUNDED_READ_ROUTES,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -48,7 +48,7 @@ pub fn graph_route_evidence_json(
         "mode": mode,
         "ready": !routes.is_empty() && ready,
         "route_count": routes.len(),
-        "required_route_count": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
+        "required_route_count": REQUIRED_BOUNDED_READ_ROUTES.len(),
         "covered_route_count": route_coverage.covered_routes.len(),
         "covered_routes": route_coverage.covered_routes,
         "missing_required_routes": route_coverage.missing_required_routes,
@@ -73,7 +73,7 @@ struct RouteCoverage {
 }
 
 fn route_coverage(routes: &[serde_json::Value]) -> RouteCoverage {
-    let required_routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+    let required_routes = REQUIRED_BOUNDED_READ_ROUTES
         .iter()
         .copied()
         .collect::<BTreeSet<_>>();
@@ -85,12 +85,12 @@ fn route_coverage(routes: &[serde_json::Value]) -> RouteCoverage {
         *route_counts.entry(route).or_default() += 1;
     }
     let route_names = route_counts.keys().copied().collect::<BTreeSet<_>>();
-    let covered_routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+    let covered_routes = REQUIRED_BOUNDED_READ_ROUTES
         .iter()
         .filter(|route| route_names.contains(**route))
         .map(|route| (*route).to_string())
         .collect::<Vec<_>>();
-    let missing_required_routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+    let missing_required_routes = REQUIRED_BOUNDED_READ_ROUTES
         .iter()
         .filter(|route| !route_names.contains(**route))
         .copied()
@@ -173,7 +173,7 @@ impl RouteQuery {
         if self.queries.is_empty() {
             blocker_codes.push("missing_route_queries".to_string());
         }
-        let required_query_families = nowledge_mem_required_query_families_for_route(&self.route);
+        let required_query_families = required_query_families_for_route(&self.route);
         if !required_query_families.is_empty() {
             let observed_query_families = self
                 .queries
@@ -645,21 +645,43 @@ fn error_class(error: &HawDBError) -> &'static str {
         HawDBError::Parse(_) => "parse",
         HawDBError::Semantic(_) => "semantic",
         HawDBError::Storage(_)
+        | HawDBError::Constraint {
+            surface: RelationalErrorSurface::Storage,
+            ..
+        }
+        | HawDBError::Schema {
+            surface: RelationalErrorSurface::Storage,
+            ..
+        }
         | HawDBError::FileDescriptors(_)
         | HawDBError::StorageIntegrity(_)
+        | HawDBError::WalRecoveryIo { .. }
+        | HawDBError::PublishOutcomeUnknown { .. }
         | HawDBError::ProjectionBusy
+        | HawDBError::SearchProjectionMismatch { .. }
         | HawDBError::AppendSequenceExhausted { .. }
         | HawDBError::BranchBusy { .. }
         | HawDBError::BranchReclamationBlocked { .. } => "storage",
         HawDBError::Execution(_)
+        | HawDBError::Constraint {
+            surface: RelationalErrorSurface::Execution,
+            ..
+        }
+        | HawDBError::Schema {
+            surface: RelationalErrorSurface::Execution,
+            ..
+        }
         | HawDBError::BranchEvidenceBudgetExceeded { .. }
         | HawDBError::ReadBudgetExceeded(_)
         | HawDBError::ResourceBudgetExceeded(_)
         | HawDBError::GraphExpansionCandidateLimitExceeded { .. }
         | HawDBError::GraphExpansionPayloadLimitExceeded { .. }
         | HawDBError::TransactionConflict { .. }
+        | HawDBError::TransactionRetryRequired(_)
         | HawDBError::TransactionReadDependencyRefused { .. }
-        | HawDBError::BranchCommandUnsupported { .. } => "execution",
+        | HawDBError::BranchCommandUnsupported { .. }
+        | HawDBError::SearchProjectionRebuildRefused { .. }
+        | HawDBError::SearchProjectionEpochAdvanceRefused { .. } => "execution",
         HawDBError::CapabilityUnavailable { .. } => "capability_unavailable",
     }
 }

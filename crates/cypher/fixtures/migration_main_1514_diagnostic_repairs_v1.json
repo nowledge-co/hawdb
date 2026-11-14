@@ -1,0 +1,3058 @@
+{
+  "reference_commit": "fd10958dd37b8878151aeb73ff0477d189b5db5e",
+  "reference_library_sha256": "9c61459cf030e6df33f1271fcc33b800e3e13e52d1707b853ee8add2dd6ad361",
+  "source_records": 21944,
+  "corrected_records": 610,
+  "cases": [
+    {
+      "entry": "statement",
+      "query": "UNWIND [- 1] AS row CREATE (:Item {value: row.id})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 20 line 1 column 21 near `CREATE (:Item {value: ro`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND [- 1] AS row CREATE (:Item {value: row.id})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 20 line 1 column 21 near `CREATE (:Item {value: ro`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "CREATE (n:Item {value: 9223372036854775808})",
+      "expected": "Err(Parse(\"invalid integer at byte 42 line 1 column 43 near `})`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "CREATE (n:Item {value: 9223372036854775808})",
+      "expected": "Err(Parse(\"invalid integer at byte 42 line 1 column 43 near `})`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "SET SYSTEM.value = 9223372036854775808",
+      "expected": "Err(Parse(\"invalid integer at byte 38 line 1 column 39 near ``\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "SET SYSTEM.value = 9223372036854775808",
+      "expected": "Err(Parse(\"invalid integer at byte 38 line 1 column 39 near ``\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND [9223372036854775808] AS row CREATE (:Item {value: row.id})",
+      "expected": "Err(Parse(\"invalid integer at byte 27 line 1 column 28 near `] AS row CREATE (:Item {`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND [9223372036854775808] AS row CREATE (:Item {value: row.id})",
+      "expected": "Err(Parse(\"invalid integer at byte 27 line 1 column 28 near `] AS row CREATE (:Item {`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND [timestamp.value] AS row CREATE (:Item {value: row.id})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 32 line 1 column 33 near `CREATE (:Item {value: ro`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND [timestamp.value] AS row CREATE (:Item {value: row.id})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 32 line 1 column 33 near `CREATE (:Item {value: ro`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND [null.value] AS row CREATE (:Item {value: row.id})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 27 line 1 column 28 near `CREATE (:Item {value: ro`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND [null.value] AS row CREATE (:Item {value: row.id})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 27 line 1 column 28 near `CREATE (:Item {value: ro`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND row.id.child AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 29 line 1 column 30 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND row.id.child AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 29 line 1 column 30 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (row:Item) UNWIND row.id.child AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 46 line 1 column 47 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (row:Item) UNWIND row.id.child AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 46 line 1 column 47 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND $items AS row UNWIND row.id.child AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 50 line 1 column 51 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND $items AS row UNWIND row.id.child AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 50 line 1 column 51 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n:Item) WITH n.items AS row UNWIND row.id.child AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 64 line 1 column 65 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n:Item) WITH n.items AS row UNWIND row.id.child AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 64 line 1 column 65 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND range(1,2) AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 27 line 1 column 28 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND range(1,2) AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 27 line 1 column 28 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (row:Item) UNWIND range(1,2) AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 44 line 1 column 45 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (row:Item) UNWIND range(1,2) AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 44 line 1 column 45 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND $items AS row UNWIND range(1,2) AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 48 line 1 column 49 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND $items AS row UNWIND range(1,2) AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 48 line 1 column 49 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n:Item) WITH n.items AS row UNWIND range(1,2) AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 62 line 1 column 63 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n:Item) WITH n.items AS row UNWIND range(1,2) AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 62 line 1 column 63 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND true AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 21 line 1 column 22 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND true AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 21 line 1 column 22 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (row:Item) UNWIND true AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 38 line 1 column 39 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (row:Item) UNWIND true AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 38 line 1 column 39 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND $items AS row UNWIND true AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 42 line 1 column 43 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND $items AS row UNWIND true AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 42 line 1 column 43 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n:Item) WITH n.items AS row UNWIND true AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 56 line 1 column 57 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n:Item) WITH n.items AS row UNWIND true AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 56 line 1 column 57 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND null AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 21 line 1 column 22 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND null AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 21 line 1 column 22 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (row:Item) UNWIND null AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 38 line 1 column 39 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (row:Item) UNWIND null AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 38 line 1 column 39 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND $items AS row UNWIND null AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 42 line 1 column 43 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND $items AS row UNWIND null AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 42 line 1 column 43 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n:Item) WITH n.items AS row UNWIND null AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 56 line 1 column 57 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n:Item) WITH n.items AS row UNWIND null AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 56 line 1 column 57 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND 1 AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 18 line 1 column 19 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND 1 AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 18 line 1 column 19 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (row:Item) UNWIND 1 AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 35 line 1 column 36 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (row:Item) UNWIND 1 AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 35 line 1 column 36 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND $items AS row UNWIND 1 AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 39 line 1 column 40 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND $items AS row UNWIND 1 AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 39 line 1 column 40 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n:Item) WITH n.items AS row UNWIND 1 AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 53 line 1 column 54 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n:Item) WITH n.items AS row UNWIND 1 AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 53 line 1 column 54 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND 'str' AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 22 line 1 column 23 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND 'str' AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 22 line 1 column 23 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (row:Item) UNWIND 'str' AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 39 line 1 column 40 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (row:Item) UNWIND 'str' AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 39 line 1 column 40 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND $items AS row UNWIND 'str' AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 43 line 1 column 44 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND $items AS row UNWIND 'str' AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 43 line 1 column 44 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n:Item) WITH n.items AS row UNWIND 'str' AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 57 line 1 column 58 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n:Item) WITH n.items AS row UNWIND 'str' AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 57 line 1 column 58 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND {a:1} AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 22 line 1 column 23 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND {a:1} AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 22 line 1 column 23 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (row:Item) UNWIND {a:1} AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 39 line 1 column 40 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (row:Item) UNWIND {a:1} AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 39 line 1 column 40 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND $items AS row UNWIND {a:1} AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 43 line 1 column 44 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND $items AS row UNWIND {a:1} AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 43 line 1 column 44 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n:Item) WITH n.items AS row UNWIND {a:1} AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 57 line 1 column 58 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n:Item) WITH n.items AS row UNWIND {a:1} AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 57 line 1 column 58 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND date() AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 23 line 1 column 24 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND date() AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 23 line 1 column 24 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (row:Item) UNWIND date() AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 40 line 1 column 41 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (row:Item) UNWIND date() AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 40 line 1 column 41 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND $items AS row UNWIND date() AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 44 line 1 column 45 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND $items AS row UNWIND date() AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 44 line 1 column 45 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n:Item) WITH n.items AS row UNWIND date() AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 58 line 1 column 59 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n:Item) WITH n.items AS row UNWIND date() AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 58 line 1 column 59 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND row[0] AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 23 line 1 column 24 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND row[0] AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 23 line 1 column 24 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (row:Item) UNWIND row[0] AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 40 line 1 column 41 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (row:Item) UNWIND row[0] AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 40 line 1 column 41 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "UNWIND $items AS row UNWIND row[0] AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 44 line 1 column 45 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND $items AS row UNWIND row[0] AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 44 line 1 column 45 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "MATCH (n:Item) WITH n.items AS row UNWIND row[0] AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 58 line 1 column 59 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "MATCH (n:Item) WITH n.items AS row UNWIND row[0] AS value CREATE (n:Node {id: value})",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 58 line 1 column 59 near `CREATE (n:Node {id: valu`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM $f AS row FIELDTERMINATOR $t RETURN row",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 40 line 1 column 41 near `$t RETURN row`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM $f AS row FIELDTERMINATOR $t RETURN row",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 40 line 1 column 41 near `$t RETURN row`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM $f AS row FIELDTERMINATOR $t CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 40 line 1 column 41 near `$t CREATE (:P {id: toInt`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM $f AS row FIELDTERMINATOR $t CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 40 line 1 column 41 near `$t CREATE (:P {id: toInt`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM $f AS row FIELDTERMINATOR $t MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 40 line 1 column 41 near `$t MERGE (p:P {id: row[0`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM $f AS row FIELDTERMINATOR $t MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 40 line 1 column 41 near `$t MERGE (p:P {id: row[0`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM $f AS row FIELDTERMINATOR $t RETURN row",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 53 line 1 column 54 near `$t RETURN row`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM $f AS row FIELDTERMINATOR $t RETURN row",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 53 line 1 column 54 near `$t RETURN row`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM $f AS row FIELDTERMINATOR $t CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 53 line 1 column 54 near `$t CREATE (:P {id: toInt`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM $f AS row FIELDTERMINATOR $t CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 53 line 1 column 54 near `$t CREATE (:P {id: toInt`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM $f AS row FIELDTERMINATOR $t MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 53 line 1 column 54 near `$t MERGE (p:P {id: row[0`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM $f AS row FIELDTERMINATOR $t MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 53 line 1 column 54 near `$t MERGE (p:P {id: row[0`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM 'file:///data/people.csv' AS row FIELDTERMINATOR $t RETURN row",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 63 line 1 column 64 near `$t RETURN row`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM 'file:///data/people.csv' AS row FIELDTERMINATOR $t RETURN row",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 63 line 1 column 64 near `$t RETURN row`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM 'file:///data/people.csv' AS row FIELDTERMINATOR $t CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 63 line 1 column 64 near `$t CREATE (:P {id: toInt`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM 'file:///data/people.csv' AS row FIELDTERMINATOR $t CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 63 line 1 column 64 near `$t CREATE (:P {id: toInt`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM 'file:///data/people.csv' AS row FIELDTERMINATOR $t MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 63 line 1 column 64 near `$t MERGE (p:P {id: row[0`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM 'file:///data/people.csv' AS row FIELDTERMINATOR $t MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 63 line 1 column 64 near `$t MERGE (p:P {id: row[0`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM 'file:///data/people.csv' AS row FIELDTERMINATOR $t RETURN row",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 76 line 1 column 77 near `$t RETURN row`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM 'file:///data/people.csv' AS row FIELDTERMINATOR $t RETURN row",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 76 line 1 column 77 near `$t RETURN row`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM 'file:///data/people.csv' AS row FIELDTERMINATOR $t CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 76 line 1 column 77 near `$t CREATE (:P {id: toInt`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM 'file:///data/people.csv' AS row FIELDTERMINATOR $t CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 76 line 1 column 77 near `$t CREATE (:P {id: toInt`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM 'file:///data/people.csv' AS row FIELDTERMINATOR $t MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 76 line 1 column 77 near `$t MERGE (p:P {id: row[0`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM 'file:///data/people.csv' AS row FIELDTERMINATOR $t MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 76 line 1 column 77 near `$t MERGE (p:P {id: row[0`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM \"人.csv\" AS row FIELDTERMINATOR $t RETURN row",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 47 line 1 column 46 near `$t RETURN row`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM \"人.csv\" AS row FIELDTERMINATOR $t RETURN row",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 47 line 1 column 46 near `$t RETURN row`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM \"人.csv\" AS row FIELDTERMINATOR $t CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 47 line 1 column 46 near `$t CREATE (:P {id: toInt`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM \"人.csv\" AS row FIELDTERMINATOR $t CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 47 line 1 column 46 near `$t CREATE (:P {id: toInt`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM \"人.csv\" AS row FIELDTERMINATOR $t MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 47 line 1 column 46 near `$t MERGE (p:P {id: row[0`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM \"人.csv\" AS row FIELDTERMINATOR $t MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 47 line 1 column 46 near `$t MERGE (p:P {id: row[0`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM \"人.csv\" AS row FIELDTERMINATOR $t RETURN row",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 60 line 1 column 59 near `$t RETURN row`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM \"人.csv\" AS row FIELDTERMINATOR $t RETURN row",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 60 line 1 column 59 near `$t RETURN row`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM \"人.csv\" AS row FIELDTERMINATOR $t CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 60 line 1 column 59 near `$t CREATE (:P {id: toInt`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM \"人.csv\" AS row FIELDTERMINATOR $t CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 60 line 1 column 59 near `$t CREATE (:P {id: toInt`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM \"人.csv\" AS row FIELDTERMINATOR $t MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 60 line 1 column 59 near `$t MERGE (p:P {id: row[0`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM \"人.csv\" AS row FIELDTERMINATOR $t MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"FIELDTERMINATOR requires a string literal at byte 60 line 1 column 59 near `$t MERGE (p:P {id: row[0`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM 42 AS row RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row RETURN row`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM 42 AS row RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row RETURN row`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM 42 AS row CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row CREATE (:P {id`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM 42 AS row CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row CREATE (:P {id`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM 42 AS row MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row MERGE (p:P {id`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM 42 AS row MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row MERGE (p:P {id`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR '|' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR '|' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR '|' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR '|' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR '|' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR '|' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR '\\t' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR '\\t' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR '\\t' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR '\\t' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR '\\t' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR '\\t' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR '||' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR '||' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR '||' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR '||' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR '||' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR '||' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR 'é' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR 'é' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR 'é' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR 'é' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR 'é' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR 'é' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR $t RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR $t RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR $t CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR $t CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR $t MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR $t MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR '' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR '' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR '' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR '' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR '' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR '' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR '\\n' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR '\\n' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR '\\n' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR '\\n' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR '\\n' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM 42 AS row FIELDTERMINATOR '\\n' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row RETURN row`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row RETURN row`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row CREATE (:P {id`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row CREATE (:P {id`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row MERGE (p:P {id`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row MERGE (p:P {id`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR '|' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR '|' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR '|' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR '|' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR '|' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR '|' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR '\\t' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR '\\t' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR '\\t' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR '\\t' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR '\\t' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR '\\t' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR '||' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR '||' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR '||' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR '||' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR '||' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR '||' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR 'é' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR 'é' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR 'é' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR 'é' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR 'é' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR 'é' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR $t RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR $t RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR $t CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR $t CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR $t MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR $t MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR '' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR '' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR '' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR '' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR '' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR '' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR '\\n' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR '\\n' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR '\\n' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR '\\n' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR '\\n' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM 42 AS row FIELDTERMINATOR '\\n' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `42 AS row FIELDTERMINATO`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM ['a.csv'] AS row RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row RETURN `\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM ['a.csv'] AS row RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row RETURN `\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM ['a.csv'] AS row CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row CREATE `\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM ['a.csv'] AS row CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row CREATE `\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM ['a.csv'] AS row MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row MERGE (`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM ['a.csv'] AS row MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row MERGE (`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR '|' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR '|' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR '|' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR '|' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR '|' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR '|' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR '\\t' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR '\\t' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR '\\t' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR '\\t' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR '\\t' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR '\\t' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR '||' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR '||' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR '||' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR '||' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR '||' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR '||' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR 'é' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR 'é' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR 'é' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR 'é' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR 'é' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR 'é' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR $t RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR $t RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR $t CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR $t CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR $t MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR $t MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR '' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR '' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR '' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR '' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR '' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR '' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR '\\n' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR '\\n' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR '\\n' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR '\\n' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR '\\n' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM ['a.csv'] AS row FIELDTERMINATOR '\\n' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row RETURN `\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row RETURN `\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row CREATE `\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row CREATE `\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row MERGE (`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row MERGE (`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR '|' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR '|' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR '|' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR '|' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR '|' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR '|' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR '\\t' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR '\\t' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR '\\t' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR '\\t' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR '\\t' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR '\\t' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR '||' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR '||' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR '||' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR '||' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR '||' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR '||' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR 'é' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR 'é' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR 'é' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR 'é' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR 'é' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR 'é' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR $t RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR $t RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR $t CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR $t CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR $t MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR $t MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR '' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR '' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR '' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR '' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR '' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR '' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR '\\n' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR '\\n' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR '\\n' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR '\\n' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR '\\n' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM ['a.csv'] AS row FIELDTERMINATOR '\\n' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `[\\\\'a.csv\\\\'] AS row FIELDTE`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM row.file AS row RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row RETURN r`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM row.file AS row RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row RETURN r`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM row.file AS row CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row CREATE (`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM row.file AS row CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row CREATE (`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM row.file AS row MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row MERGE (p`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM row.file AS row MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row MERGE (p`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR '|' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR '|' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR '|' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR '|' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR '|' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR '|' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR '\\t' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR '\\t' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR '\\t' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR '\\t' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR '\\t' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR '\\t' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR '||' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR '||' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR '||' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR '||' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR '||' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR '||' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR 'é' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR 'é' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR 'é' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR 'é' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR 'é' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR 'é' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR $t RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR $t RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR $t CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR $t CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR $t MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR $t MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR '' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR '' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR '' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR '' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR '' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR '' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR '\\n' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR '\\n' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR '\\n' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR '\\n' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR '\\n' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM row.file AS row FIELDTERMINATOR '\\n' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row RETURN r`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row RETURN r`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row CREATE (`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row CREATE (`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row MERGE (p`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row MERGE (p`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR '|' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR '|' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR '|' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR '|' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR '|' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR '|' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR '\\t' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR '\\t' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR '\\t' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR '\\t' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR '\\t' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR '\\t' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR '||' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR '||' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR '||' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR '||' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR '||' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR '||' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR 'é' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR 'é' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR 'é' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR 'é' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR 'é' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR 'é' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR $t RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR $t RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR $t CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR $t CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR $t MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR $t MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR '' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR '' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR '' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR '' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR '' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR '' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR '\\n' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR '\\n' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR '\\n' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR '\\n' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR '\\n' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM row.file AS row FIELDTERMINATOR '\\n' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `row.file AS row FIELDTER`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM null AS row RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row RETURN row`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM null AS row RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row RETURN row`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM null AS row CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row CREATE (:P {`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM null AS row CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row CREATE (:P {`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM null AS row MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row MERGE (p:P {`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM null AS row MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row MERGE (p:P {`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR '|' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR '|' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR '|' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR '|' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR '|' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR '|' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR '\\t' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR '\\t' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR '\\t' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR '\\t' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR '\\t' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR '\\t' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR '||' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR '||' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR '||' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR '||' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR '||' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR '||' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR 'é' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR 'é' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR 'é' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR 'é' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR 'é' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR 'é' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR $t RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR $t RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR $t CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR $t CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR $t MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR $t MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR '' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR '' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR '' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR '' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR '' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR '' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR '\\n' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR '\\n' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR '\\n' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR '\\n' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR '\\n' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM null AS row FIELDTERMINATOR '\\n' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row RETURN row`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row RETURN row`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row CREATE (:P {`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row CREATE (:P {`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row MERGE (p:P {`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row MERGE (p:P {`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR '|' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR '|' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR '|' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR '|' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR '|' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR '|' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR '\\t' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR '\\t' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR '\\t' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR '\\t' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR '\\t' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR '\\t' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR '||' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR '||' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR '||' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR '||' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR '||' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR '||' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR 'é' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR 'é' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR 'é' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR 'é' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR 'é' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR 'é' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR $t RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR $t RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR $t CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR $t CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR $t MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR $t MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR '' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR '' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR '' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR '' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR '' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR '' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR '\\n' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR '\\n' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR '\\n' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR '\\n' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR '\\n' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM null AS row FIELDTERMINATOR '\\n' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `null AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM true AS row RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row RETURN row`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM true AS row RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row RETURN row`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM true AS row CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row CREATE (:P {`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM true AS row CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row CREATE (:P {`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM true AS row MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row MERGE (p:P {`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM true AS row MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row MERGE (p:P {`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR '|' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR '|' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR '|' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR '|' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR '|' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR '|' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR '\\t' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR '\\t' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR '\\t' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR '\\t' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR '\\t' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR '\\t' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR '||' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR '||' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR '||' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR '||' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR '||' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR '||' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR 'é' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR 'é' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR 'é' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR 'é' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR 'é' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR 'é' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR $t RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR $t RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR $t CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR $t CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR $t MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR $t MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR '' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR '' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR '' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR '' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR '' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR '' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR '\\n' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR '\\n' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR '\\n' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR '\\n' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR '\\n' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV FROM true AS row FIELDTERMINATOR '\\n' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 14 line 1 column 15 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row RETURN row`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row RETURN row`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row CREATE (:P {`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row CREATE (:P {`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row MERGE (p:P {`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row MERGE (p:P {`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR '|' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR '|' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR '|' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR '|' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR '|' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR '|' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR '\\t' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR '\\t' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR '\\t' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR '\\t' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR '\\t' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR '\\t' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR '||' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR '||' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR '||' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR '||' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR '||' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR '||' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR 'é' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR 'é' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR 'é' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR 'é' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR 'é' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR 'é' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR $t RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR $t RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR $t CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR $t CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR $t MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR $t MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR '' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR '' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR '' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR '' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR '' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR '' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR '\\n' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR '\\n' RETURN row",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR '\\n' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR '\\n' CREATE (:P {id: toInteger(row.id)})",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "statement",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR '\\n' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "LOAD CSV WITH HEADERS FROM true AS row FIELDTERMINATOR '\\n' MERGE (p:P {id: row[0]}) ON CREATE SET p.age = toFloat(row[1])",
+      "expected": "Err(Parse(\"LOAD CSV FROM accepts only a string literal or parameter source at byte 27 line 1 column 28 near `true AS row FIELDTERMINA`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND trim(n.name) AS x CREATE (n:Node)",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 25 line 1 column 26 near `CREATE (n:Node)`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND trim(n.name) AS x SET n.x = 1",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 25 line 1 column 26 near `SET n.x = 1`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND regexp_replace(n.name, 'a', 'b') AS x CREATE (n:Node)",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 45 line 1 column 46 near `CREATE (n:Node)`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND regexp_replace(n.name, 'a', 'b') AS x SET n.x = 1",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 45 line 1 column 46 near `SET n.x = 1`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND range(1,3) AS x CREATE (n:Node)",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 23 line 1 column 24 near `CREATE (n:Node)`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND range(1,3) AS x SET n.x = 1",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 23 line 1 column 24 near `SET n.x = 1`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND 1 AS x CREATE (n:Node)",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 14 line 1 column 15 near `CREATE (n:Node)`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND 1 AS x SET n.x = 1",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 14 line 1 column 15 near `SET n.x = 1`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND NULL AS x CREATE (n:Node)",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 17 line 1 column 18 near `CREATE (n:Node)`\"))"
+    },
+    {
+      "entry": "pipeline",
+      "query": "UNWIND NULL AS x SET n.x = 1",
+      "expected": "Err(Parse(\"computed UNWIND sources require a read pipeline at byte 17 line 1 column 18 near `SET n.x = 1`\"))"
+    }
+  ]
+}

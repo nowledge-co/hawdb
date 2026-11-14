@@ -5,6 +5,195 @@ use super::*;
 use hawdb_core::{RuntimeCancellationToken, RuntimeTaskContext};
 use std::cell::RefCell;
 
+struct FeedbackGraph {
+    count: usize,
+    eligible: usize,
+    sparse_ids: bool,
+    useful_links: bool,
+    scored: RefCell<Vec<u32>>,
+    cancel: Option<(usize, RuntimeCancellationToken)>,
+}
+
+impl DiskAnnRead for FeedbackGraph {
+    fn len(&self) -> usize {
+        self.count
+    }
+    fn dimension(&self) -> usize {
+        2
+    }
+    fn metric(&self) -> VectorDistance {
+        VectorDistance::Euclidean
+    }
+    fn max_degree(&self) -> usize {
+        16
+    }
+    fn entry_point(&self) -> Option<u32> {
+        Some(0)
+    }
+    fn ids_are_sorted(&self) -> bool {
+        true
+    }
+    fn id(&self, ordinal: u32) -> Result<u64> {
+        Ok(if self.sparse_ids {
+            u64::from(ordinal) * 3 + 7
+        } else {
+            u64::from(ordinal)
+        })
+    }
+    fn neighbors(&self, ordinal: u32) -> Result<impl Iterator<Item = u32>> {
+        Ok((0..16).map(move |offset| {
+            (if self.useful_links {
+                (ordinal as usize + offset + 1) % self.eligible
+            } else {
+                self.eligible + (ordinal as usize * 17 + offset) % (self.count - self.eligible)
+            }) as u32
+        }))
+    }
+    fn distance(&self, _: &[f32], ordinal: u32, _: Option<&RuntimeTaskContext>) -> Result<f64> {
+        assert!(
+            (ordinal as usize) < self.eligible,
+            "excluded payload must never be read"
+        );
+        let mut scored = self.scored.borrow_mut();
+        assert!(
+            !scored.contains(&ordinal),
+            "a path switch must not rescore visited candidates"
+        );
+        scored.push(ordinal);
+        if let Some((count, token)) = &self.cancel
+            && scored.len() == *count
+        {
+            token.cancel();
+        }
+        Ok((self.eligible - ordinal as usize) as f64)
+    }
+}
+
+#[test]
+fn diskann_feedback_switches_once_and_matches_the_complete_filtered_domain() {
+    for sparse_ids in [false, true] {
+        for ratio in [10, 100, 1000] {
+            for eligible in [33, 64, 129] {
+                let graph = FeedbackGraph {
+                    count: eligible * ratio,
+                    eligible,
+                    sparse_ids,
+                    useful_links: false,
+                    scored: RefCell::default(),
+                    cancel: None,
+                };
+                let ids: Vec<_> = (0..eligible as u32)
+                    .map(|id| graph.id(id).unwrap())
+                    .collect();
+                let result = search_diskann(
+                    &graph,
+                    &[0.0, 0.0],
+                    5,
+                    Some(CandidateSet::exact(&ids)),
+                    DiskAnnSearchOptions {
+                        beam_width: 8,
+                        max_visited: 8192,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                assert!(
+                    result.report.adaptive_exact_scan,
+                    "ratio={ratio}, eligible={eligible}, sparse={sparse_ids}"
+                );
+                assert_eq!(result.report.distance_comparisons, eligible);
+                assert_eq!(
+                    result.hits,
+                    (eligible - 5..eligible)
+                        .rev()
+                        .map(|ordinal| DiskAnnHit {
+                            id: graph.id(ordinal as u32).unwrap(),
+                            distance: (eligible - ordinal) as f64,
+                        })
+                        .collect::<Vec<_>>()
+                );
+                assert!(
+                    result.report.visited_nodes
+                        + result.report.id_lookup_steps
+                        + result.report.seed_steps
+                        <= 8192
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn diskann_feedback_keeps_productive_navigation_and_preserves_refusal() {
+    for (useful_links, work) in [(true, 8192), (false, 80)] {
+        let graph = FeedbackGraph {
+            count: 6400,
+            eligible: 64,
+            sparse_ids: false,
+            useful_links,
+            scored: RefCell::default(),
+            cancel: None,
+        };
+        let ids: Vec<_> = (0..64).collect();
+        let result = search_diskann(
+            &graph,
+            &[0.0, 0.0],
+            5,
+            Some(CandidateSet::exact(&ids)),
+            DiskAnnSearchOptions {
+                beam_width: 8,
+                max_visited: work,
+                ..Default::default()
+            },
+        );
+        if useful_links {
+            assert!(!result.unwrap().report.adaptive_exact_scan);
+        } else {
+            assert!(matches!(result, Err(ProjectionError::Admission(_))));
+            assert!(graph.scored.borrow().len() < graph.eligible);
+        }
+    }
+}
+
+#[test]
+fn diskann_feedback_cancellation_during_exact_completion_returns_no_output() {
+    let token = RuntimeCancellationToken::new();
+    let task = RuntimeTaskContext::without_deadline(token.clone());
+    let graph = FeedbackGraph {
+        count: 6400,
+        eligible: 64,
+        sparse_ids: false,
+        useful_links: false,
+        scored: RefCell::default(),
+        cancel: Some((12, token)),
+    };
+    let ids: Vec<_> = (0..64).collect();
+    assert!(matches!(
+        search_diskann(
+            &graph,
+            &[0.0, 0.0],
+            5,
+            Some(CandidateSet::exact(&ids)),
+            DiskAnnSearchOptions {
+                beam_width: 8,
+                task: Some(&task),
+                ..Default::default()
+            },
+        ),
+        Err(ProjectionError::Cancelled(_))
+    ));
+    assert_eq!(graph.scored.borrow().len(), 12);
+}
+
+#[test]
+#[ignore = "local filtered DiskANN feedback differential campaign"]
+fn diskann_feedback_differential_campaign() {
+    diskann_feedback_switches_once_and_matches_the_complete_filtered_domain();
+    diskann_feedback_keeps_productive_navigation_and_preserves_refusal();
+    diskann_feedback_cancellation_during_exact_completion_returns_no_output();
+    diskann_small_beam_recall_is_compared_with_exhaustive_filtered_groundtruth();
+}
+
 fn options(count: usize) -> DiskAnnSearchOptions<'static> {
     DiskAnnSearchOptions {
         beam_width: count.max(1),

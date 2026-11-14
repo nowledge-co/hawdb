@@ -157,6 +157,7 @@ fn seed(path: &Path, nodes: usize, edges: usize) {
 fn measure(path: &Path, projection: &str, budget: usize) {
     let mut config = DatabaseConfig {
         read_only: true,
+        recovery_mode: hawdb::RecoveryMode::Strict,
         max_read_result_rows: Some(200000),
         max_read_result_payload_bytes: Some(64 * 1024 * 1024),
         storage_residency_mode: StorageResidencyMode::OutOfCore,

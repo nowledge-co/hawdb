@@ -118,6 +118,8 @@ impl Prepared {
         task: &RuntimeTaskContext,
         has_upserts: bool,
     ) -> Result<Self> {
+        let phase = super::super::io_phase::Scope::acquire(task, memory)?;
+        let task = &phase.task();
         let segments = reader
             .segments
             .len()
@@ -161,6 +163,8 @@ impl Prepared {
         memory: &BuildMemory,
         task: &RuntimeTaskContext,
     ) -> Result<SearchOutOfCoreMetrics> {
+        let phase = super::super::io_phase::Scope::acquire(task, memory)?;
+        let task = &phase.task();
         hydration::visit_target(
             reader,
             id,

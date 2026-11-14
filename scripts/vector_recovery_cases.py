@@ -2,7 +2,7 @@
 # Copyright 2026 Nowledge
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared native recovery selections and complete runtime matrix validation."""
+"""Shared vector power-loss selections and complete recovery matrix validation."""
 
 import argparse
 from collections import Counter
@@ -12,14 +12,36 @@ from pathlib import Path
 import re
 import sys
 
-RECOVERY_PREFIX = "api::tests::power_loss::consumer_vector_incremental::faults::recovery::"
+PUBLICATION_PREFIX = "api::tests::power_loss::consumer_vector_incremental::faults::"
+PUBLICATION_CASES = {
+    "publication-artifacts": (
+        PUBLICATION_PREFIX + "vector_index_incremental_power_loss_retains_the_linked_artifact_closure"
+    ),
+    "publication-selectors": (
+        PUBLICATION_PREFIX + "vector_index_incremental_power_loss_rejects_torn_private_selectors"
+    ),
+    "publication-barriers": (
+        PUBLICATION_PREFIX + "vector_index_incremental_power_loss_recovers_atomic_selector_and_root_barriers"
+    ),
+}
+RECOVERY_PREFIX = PUBLICATION_PREFIX + "recovery::"
 CASE_PREFIX = RECOVERY_PREFIX + "vector_index_incremental_power_loss_recovery_publication_"
 RECOVERY_CASES = {
     "recovery-births": CASE_PREFIX + "retains_unselected_births",
     "recovery-unselected": CASE_PREFIX + "settles_unselected_intents",
     "recovery-selected": CASE_PREFIX + "completes_selected_intents",
-    "recovery-lost-sql": CASE_PREFIX + "preserves_lost_relaxed_sql_sources",
-    "recovery-lost-nodes": CASE_PREFIX + "preserves_lost_relaxed_node_sources",
+    "recovery-lost-sql-link": (
+        CASE_PREFIX + "preserves_lost_relaxed_sql_sources_after_link"
+    ),
+    "recovery-lost-sql-selector": (
+        CASE_PREFIX + "preserves_lost_relaxed_sql_sources_after_selector_write"
+    ),
+    "recovery-lost-nodes-link": (
+        CASE_PREFIX + "preserves_lost_relaxed_node_sources_after_link"
+    ),
+    "recovery-lost-nodes-selector": (
+        CASE_PREFIX + "preserves_lost_relaxed_node_sources_after_selector_write"
+    ),
 }
 CUTS = ("Write", "FileSync(Before)", "FileSync(After)", "Rename(Before)",
         "Rename(After)", "Directory(Before)", "Directory(After)")
@@ -42,9 +64,10 @@ def expected_combinations(shard):
         ))
     if shard not in RECOVERY_CASES:
         raise ValueError(f"unknown vector recovery shard: {shard}")
-    graph = "true" if shard == "recovery-lost-nodes" else "false"
+    graph = "true" if shard.startswith("recovery-lost-nodes-") else "false"
+    origin = "Link" if shard.endswith("-link") else "SelectorWrite"
     return set(itertools.product(
-        ["Link", "SelectorWrite"], CUTS, ["SyncOnCheckpoint"], [graph], ["false"],
+        [origin], CUTS, ["SyncOnCheckpoint"], [graph], ["false"],
     ))
 
 
@@ -80,18 +103,31 @@ def main():
     # Git Bash strips LF from command substitution but would retain a CR.
     sys.stdout.reconfigure(newline="\n")
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("shard", nargs="?", choices=[*RECOVERY_CASES, "full", "remaining"])
-    parser.add_argument("--prefix", action="store_true")
+    parser.add_argument(
+        "shard", nargs="?",
+        choices=[*PUBLICATION_CASES, *RECOVERY_CASES, "full", "remaining"],
+    )
+    prefix = parser.add_mutually_exclusive_group()
+    prefix.add_argument("--prefix", action="store_true")
+    prefix.add_argument("--publication-prefix", action="store_true")
     parser.add_argument("--validate-log", type=Path)
     args = parser.parse_args()
-    if args.prefix and not args.shard and not args.validate_log:
-        print(RECOVERY_PREFIX)
-    elif args.shard and args.validate_log and not args.prefix:
-        print(json.dumps(validate_log(args.shard, args.validate_log.read_text(encoding="utf-8"))))
-    elif args.shard in RECOVERY_CASES and not args.prefix:
+    wants_prefix = args.prefix or args.publication_prefix
+    if wants_prefix and not args.shard and not args.validate_log:
+        print(PUBLICATION_PREFIX if args.publication_prefix else RECOVERY_PREFIX)
+    elif (
+        args.shard in [*RECOVERY_CASES, "full", "remaining"]
+        and args.validate_log
+        and not wants_prefix
+    ):
+        text = args.validate_log.read_text(encoding="utf-8")
+        print(json.dumps(validate_log(args.shard, text)))
+    elif args.shard in PUBLICATION_CASES and not args.validate_log and not wants_prefix:
+        print(PUBLICATION_CASES[args.shard])
+    elif args.shard in RECOVERY_CASES and not args.validate_log and not wants_prefix:
         print(RECOVERY_CASES[args.shard])
     else:
-        parser.error("select a recovery shard, a coverage log, or --prefix")
+        parser.error("select a power-loss case, a recovery coverage log, or a prefix")
 
 
 if __name__ == "__main__":

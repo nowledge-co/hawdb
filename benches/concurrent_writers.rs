@@ -68,13 +68,20 @@ fn expected(value: i64) -> Vec<BTreeMap<String, Value>> {
         .collect()
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WalFixture {
+    PostCheckpoint,
+    Reopened,
+    AfterRelaxed,
+}
+
 fn measure(
     path: &Path,
     durable: bool,
     grouped: bool,
     writers: usize,
     serial: bool,
-    reopen_before_measure: bool,
+    fixture: WalFixture,
     readers: usize,
 ) -> JsonValue {
     let database = if durable {
@@ -109,11 +116,24 @@ fn measure(
     }
     seed.commit().unwrap();
     database.checkpoint().unwrap();
-    let reopened_before_measure = durable && reopen_before_measure;
+    let reopened_before_measure = durable && fixture != WalFixture::PostCheckpoint;
+    let mut relaxed_append_ns = None;
     let database = if reopened_before_measure {
         // Checkpoint rotation clears the captured WAL owner. Reopen before
         // timing to exercise captured append fences on every measured commit.
         drop(database);
+        if fixture == WalFixture::AfterRelaxed {
+            let mut relaxed =
+                Database::open_with_durability(path, hawdb::DurabilityPolicy::SyncOnCheckpoint)
+                    .unwrap();
+            relaxed.commit_epoch().unwrap();
+            // Keep counter rows unchanged while admitting a real relaxed WAL
+            // interval. Measure its first-append fence separately from commits.
+            let started = Instant::now();
+            relaxed.query("CREATE (:FenceSeed {id: 0})").unwrap();
+            relaxed_append_ns = Some(nanos(started));
+            drop(relaxed);
+        }
         ConcurrentDatabase::new_with_wal_group_commit(Database::open(path).unwrap(), config)
     } else {
         database
@@ -260,7 +280,14 @@ fn measure(
     assert_eq!(transaction_samples.len(), COMMITS);
     drop(database);
     if durable {
-        let mut reopened = Database::open(path).unwrap();
+        let mut reopened = Database::open_with_config(
+            path,
+            hawdb::DatabaseConfig {
+                recovery_mode: hawdb::RecoveryMode::Strict,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(
             reopened.commit_epoch().checked(),
             initial_epoch + COMMITS as u64
@@ -292,6 +319,8 @@ fn measure(
             "fsync_micros": after.total_fsync_micros - before.total_fsync_micros,
         },
         "verified_rows": COMMITS, "reopen_verified": durable,
+        "after_relaxed_interval": durable && fixture == WalFixture::AfterRelaxed,
+        "first_relaxed_append_ns": relaxed_append_ns,
     })
 }
 
@@ -299,7 +328,7 @@ fn main() {
     let mut selected_round = None;
     let mut selected_writers = None;
     let mut selected_readers = None;
-    let mut reopen_before_measure = false;
+    let mut fixture = WalFixture::PostCheckpoint;
     let mut fixture_parent = None;
     let mut pessimistic_statements = None;
     let mut args = std::env::args().skip(1);
@@ -307,8 +336,18 @@ fn main() {
         match arg.as_str() {
             "--bench" => {} // Cargo supplies this for harness-free benchmarks.
             "--reopen-before-measure" => {
-                assert!(!reopen_before_measure, "reopen option may appear only once");
-                reopen_before_measure = true;
+                assert!(
+                    fixture == WalFixture::PostCheckpoint,
+                    "choose one WAL fixture"
+                );
+                fixture = WalFixture::Reopened;
+            }
+            "--after-relaxed-interval" => {
+                assert!(
+                    fixture == WalFixture::PostCheckpoint,
+                    "choose one WAL fixture"
+                );
+                fixture = WalFixture::AfterRelaxed;
             }
             "--pessimistic-statements" => {
                 assert!(
@@ -374,6 +413,10 @@ fn main() {
     }
     if pessimistic_statements.is_some() {
         assert!(
+            fixture != WalFixture::AfterRelaxed,
+            "relaxed fixture requires the optimistic workload"
+        );
+        assert!(
             selected_readers.unwrap_or(0) == 0,
             "covered graph workload has no reader workers"
         );
@@ -419,7 +462,7 @@ fn main() {
                     durable,
                     writers,
                     statements,
-                    reopen_before_measure,
+                    fixture == WalFixture::Reopened,
                 );
                 println!(
                     "{}",
@@ -447,7 +490,7 @@ fn main() {
                 grouped,
                 writers,
                 serial,
-                reopen_before_measure,
+                fixture,
                 selected_readers.unwrap_or(0),
             );
             println!(
@@ -553,7 +596,14 @@ fn measure_covered_graph(
     assert_eq!(database.query(READ).unwrap().rows, expected);
     drop(database);
     if durable {
-        let mut reopened = Database::open(path).unwrap();
+        let mut reopened = Database::open_with_config(
+            path,
+            hawdb::DatabaseConfig {
+                recovery_mode: hawdb::RecoveryMode::Strict,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(reopened.query(READ).unwrap().rows, expected);
         assert_eq!(reopened.commit_epoch().checked(), epoch + COMMITS as u64);
         drop(reopened);

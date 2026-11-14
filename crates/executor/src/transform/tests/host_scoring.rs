@@ -246,6 +246,7 @@ fn host_cohort_uses_late_maximum_once_and_preserves_stable_top_n_across_batches_
                 memory_ledger: &ledger,
                 task_context: None,
                 observer: &reports,
+                graph: None,
             },
             ExecutionLimit {
                 output_rows: Some(8),
@@ -311,6 +312,7 @@ fn host_cohort_row_memory_and_source_failures_emit_nothing_and_never_call_host()
                 memory_ledger: &ledger,
                 task_context: None,
                 observer: &NoopExecutionObserver,
+                graph: None,
             },
             ExecutionLimit::unlimited(),
             &mut |batch| {
@@ -377,6 +379,7 @@ fn host_cohort_callback_error_and_cancellation_release_all_staged_rows_before_de
                 memory_ledger: &ledger,
                 task_context: Some(&task),
                 observer: &NoopExecutionObserver,
+                graph: None,
             },
             ExecutionLimit::unlimited(),
             &mut |batch| {
@@ -462,6 +465,7 @@ fn scoring_overwrite_uses_final_resident_values_at_the_candidate_cap() {
             memory_ledger: &ledger,
             task_context: None,
             observer: &crate::observer::NoopExecutionObserver,
+            graph: None,
         };
         let mut source = Source::new(vec![candidate], 1);
         let mut output = Vec::new();

@@ -15,9 +15,9 @@
 use super::{
     parse_postgres_sql, prepare_postgres_sql, BranchSqlSelector, BranchSqlStatement,
     BranchSqlValue, SelectProjection, ShowBranchStatement, ShowBranchesStatement,
-    SqlArithmeticOperand, SqlArithmeticOperator, SqlAssignmentValue, SqlBound, SqlColumnRef,
-    SqlComparisonOp, SqlConflictAction, SqlDataType, SqlFunctionArgument, SqlJoinKind,
-    SqlLikeEscape, SqlLockStrength, SqlOrderDirection, SqlStatement, SqlTableName, SqlValue,
+    SqlAssignmentValue, SqlBound, SqlColumnRef, SqlComparisonOp, SqlConflictAction, SqlDataType,
+    SqlFunctionArgument, SqlJoinKind, SqlLikeEscape, SqlLockStrength, SqlOrderDirection,
+    SqlStatement, SqlTableName, SqlValue,
 };
 use crate::{Expr, ExprKind};
 use hawdb_core::Value;
@@ -534,37 +534,47 @@ fn parses_prepared_bigint_update_arithmetic() {
     let SqlStatement::Update(update) = prepared.statement else {
         panic!("expected UPDATE statement");
     };
-    assert!(matches!(
-        update.assignments[0].value,
-        SqlAssignmentValue::Arithmetic {
-            left: SqlArithmeticOperand::Column(_),
-            operator: SqlArithmeticOperator::Add,
-            right: SqlArithmeticOperand::Value(SqlValue::Parameter(2)),
-        }
-    ));
-    assert!(matches!(
-        update.assignments[1].value,
-        SqlAssignmentValue::Arithmetic {
-            left: SqlArithmeticOperand::Value(SqlValue::Parameter(3)),
-            operator: SqlArithmeticOperator::Add,
-            right: SqlArithmeticOperand::Column(_),
-        }
-    ));
-    assert!(matches!(
-        update.assignments[2].value,
-        SqlAssignmentValue::Arithmetic {
-            left: SqlArithmeticOperand::Column(_),
-            operator: SqlArithmeticOperator::Subtract,
-            right: SqlArithmeticOperand::Value(SqlValue::Parameter(4)),
-        }
-    ));
+    for (assignment, parameter, operator, parameter_on_left) in [
+        (
+            &update.assignments[0],
+            2,
+            hawdb_core::numeric::NumericBinaryOp::Add,
+            false,
+        ),
+        (
+            &update.assignments[1],
+            3,
+            hawdb_core::numeric::NumericBinaryOp::Add,
+            true,
+        ),
+        (
+            &update.assignments[2],
+            4,
+            hawdb_core::numeric::NumericBinaryOp::Subtract,
+            false,
+        ),
+    ] {
+        let SqlAssignmentValue::Expression(expression) = &assignment.value else {
+            panic!("expected shared numeric expression");
+        };
+        let ExprKind::Arithmetic { left, op, right } = &expression.kind else {
+            panic!("expected arithmetic");
+        };
+        assert_eq!(*op, operator);
+        let (column, value) = if parameter_on_left {
+            (right, left)
+        } else {
+            (left, right)
+        };
+        assert!(matches!(column.kind, ExprKind::Column(_)));
+        assert_eq!(value.kind, ExprKind::Value(SqlValue::Parameter(parameter)));
+    }
 
     for sql in [
         "UPDATE feeds SET failure_count = 1 - failure_count WHERE id = $1",
         "UPDATE feeds SET failure_count = failure_count * 2 WHERE id = $1",
     ] {
-        let error = parse_postgres_sql(sql).expect_err("unsupported arithmetic shape");
-        assert!(error.to_string().contains("arithmetic"));
+        assert!(parse_postgres_sql(sql).is_ok(), "{sql}");
     }
 }
 

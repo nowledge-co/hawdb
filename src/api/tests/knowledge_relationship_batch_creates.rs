@@ -174,6 +174,7 @@ fn read_only_database_rejects_knowledge_relationship_batch_create_queries() {
             &path,
             DatabaseConfig {
                 read_only: true,
+                recovery_mode: crate::RecoveryMode::Strict,
                 ..DatabaseConfig::default()
             },
         )

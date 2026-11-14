@@ -96,8 +96,9 @@ fn source(composite: bool) -> Source {
                                 key(row.wrapping_mul(104_729) % GROUPS, composite),
                             )]),
                         },
-                    )]),
-                    relationships: BTreeMap::new(),
+                    )])
+                    .into(),
+                    relationships: BTreeMap::new().into(),
                 })
                 .collect(),
         );
@@ -158,6 +159,7 @@ fn main() {
                     memory_ledger: &ledger,
                     task_context: None,
                     observer: &report,
+                    graph: None,
                 },
                 ExecutionLimit::unlimited(),
                 &mut |batch| {

@@ -124,7 +124,7 @@ passing the equality assertion alone is not performance acceptance.
 The ranked aggregate normalizes its declared input through the existing read-plan
 rules and required-property scan selection. It preserves outer aggregate aliases
 so ORDER BY/LIMIT can keep bounded TopN selection after all groups are finalized.
-This opt-in path leaves the legacy multi-WITH plan contract intact. Simple repeated
+Other multi-WITH statements normalize their whole plan. Simple repeated
 empty or scalar-column group keys borrow the retained key for lookup instead of
 allocating another owned copy. New groups and computed/compound keys retain the
 original admitted key-preparation path. `borrowed_group_key_rows` records actual

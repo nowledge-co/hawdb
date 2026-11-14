@@ -28,6 +28,66 @@ OPENER_IDS = ["open", "Database", "connect"]
 
 
 @pytest.mark.parametrize("opener", OPENERS[:2], ids=OPENER_IDS[:2])
+@pytest.mark.parametrize("as_string", [False, True])
+def test_namespace_anchor_commits_and_reopens_with_read_limits(
+    tmp_path, opener, as_string
+):
+    anchor = str(tmp_path) if as_string else tmp_path
+    path = tmp_path / "anchored"
+    options = {"namespace_durability_anchor": anchor, "max_read_result_rows": 1}
+    with opener(path, **options) as db:
+        with db.transaction() as tx:
+            tx.execute("CREATE (:Anchored {id: 1})")
+            tx.execute("CREATE (:Anchored {id: 2})")
+            tx.execute_sql("CREATE TABLE anchored (id BIGINT PRIMARY KEY)")
+            tx.execute_sql("INSERT INTO anchored VALUES (1)")
+
+    for read_only in (False, True):
+        with opener(path, read_only=read_only, **options) as db:
+            with pytest.raises(exceptions.ExecutionError, match="max_read_result_rows"):
+                db.execute("MATCH (n:Anchored) RETURN n.id AS id")
+            assert db.execute(
+                "MATCH (n:Anchored) RETURN n.id AS id ORDER BY id LIMIT 1"
+            ).fetchall() == [{"id": 1}]
+            assert db.execute_sql("SELECT id FROM anchored").fetchall() == [{"id": 1}]
+
+
+@pytest.mark.parametrize("opener", OPENERS, ids=OPENER_IDS)
+@pytest.mark.parametrize("invalid", ["missing", "file", "outside"])
+def test_namespace_anchor_rejects_invalid_boundary_before_project_creation(
+    tmp_path, opener, invalid
+):
+    anchor = tmp_path / "anchor"
+    if invalid == "file":
+        anchor.write_bytes(b"preserved")
+    elif invalid == "outside":
+        anchor.mkdir()
+    before = list(tmp_path.iterdir())
+    with pytest.raises(exceptions.StorageError):
+        opener(tmp_path / "graph", namespace_durability_anchor=anchor)
+    assert list(tmp_path.iterdir()) == before
+    if invalid == "file":
+        assert anchor.read_bytes() == b"preserved"
+
+
+@pytest.mark.parametrize("opener", OPENERS, ids=OPENER_IDS)
+def test_namespace_anchor_requires_a_persistent_path(tmp_path, opener):
+    with pytest.raises(ValueError, match="namespace_durability_anchor requires"):
+        opener(namespace_durability_anchor=tmp_path)
+
+
+@pytest.mark.parametrize("opener", OPENERS, ids=OPENER_IDS)
+def test_namespace_anchor_cannot_change_for_an_open_project(tmp_path, opener):
+    anchor = tmp_path / "anchor"
+    anchor.mkdir()
+    path = anchor / "graph"
+    with opener(path, namespace_durability_anchor=anchor):
+        for requested in (None, tmp_path):
+            with pytest.raises(exceptions.StorageError, match="anchor conflicts"):
+                opener(path, namespace_durability_anchor=requested)
+
+
+@pytest.mark.parametrize("opener", OPENERS[:2], ids=OPENER_IDS[:2])
 def test_file_open_reports_path_and_persists(tmp_path, opener):
     path = tmp_path / "graph"
     with opener(path) as db:
@@ -88,15 +148,19 @@ def test_open_rejects_read_only_without_existing_path(tmp_path, opener):
 @pytest.mark.parametrize("opener", OPENERS, ids=OPENER_IDS)
 @pytest.mark.parametrize("read_only", [False, True])
 @pytest.mark.parametrize("as_parent", [False, True])
+@pytest.mark.parametrize("relative", [False, True])
 def test_open_rejects_regular_files_without_changing_them(
-    tmp_path, opener, read_only, as_parent
+    tmp_path, monkeypatch, opener, read_only, as_parent, relative
 ):
     existing = tmp_path / "app.db"
     content = b"SQLite format 3\x00preserve this file"
     existing.write_bytes(content)
     path = existing / "child" if as_parent else existing
+    if relative:
+        monkeypatch.chdir(tmp_path)
+    requested = path.relative_to(tmp_path) if relative else path
     with pytest.raises(exceptions.StorageError) as caught:
-        with opener(path, read_only=read_only):
+        with opener(requested, read_only=read_only):
             pass
     assert str(path) in str(caught.value)
     if not as_parent:

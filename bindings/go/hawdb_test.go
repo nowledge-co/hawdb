@@ -137,6 +137,45 @@ func TestSmoke(t *testing.T) {
 	}
 }
 
+func TestTemporalValuesRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(filepath.Join(dir, "temporal"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	want := map[string]any{
+		"d":   Date("2026-10-30"),
+		"t":   LocalTime("12:30:00.000000001"),
+		"ldt": LocalDateTime("2026-10-30T12:30:00"),
+		"dt":  DateTime("2026-10-30T12:00:00+02:00"),
+		"dur": Duration("P1M2DT3.5S"),
+	}
+	if _, err := db.Query("CREATE (:E {d: $d, t: $t, ldt: $ldt, dt: $dt, dur: $dur})", want); err != nil {
+		t.Fatalf("CREATE: %v", err)
+	}
+	res, err := db.Query(
+		"MATCH (e:E) RETURN e.d AS d, e.t AS t, e.ldt AS ldt, e.dt AS dt, e.dur AS dur, e.d.year AS year",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("MATCH: %v", err)
+	}
+	row := res.Dicts()[0]
+	for key, value := range want {
+		if row[key] != value {
+			t.Fatalf("%s: got %#v, want %#v", key, row[key], value)
+		}
+	}
+	if row["year"] != int64(2026) {
+		t.Fatalf("year: got %#v", row["year"])
+	}
+	if _, err := db.Query("CREATE (:E {d: $d})", map[string]any{"d": Date("2026-02-30")}); err == nil {
+		t.Fatalf("invalid date was accepted")
+	}
+}
+
 func TestShortestPath(t *testing.T) {
 	dir := t.TempDir()
 	db, err := Open(filepath.Join(dir, "path"))

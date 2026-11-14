@@ -381,6 +381,18 @@ impl<R> DiskAnnRead for FileDiskAnn<R> {
                 .distance_slice_to_vector_with_work(query, vector, checkpoint)
         })
     }
+    fn distance_prepared(
+        &self,
+        query: &hawdb_core::vector::PreparedVectorQuery<'_>,
+        ordinal: u32,
+        task: Option<&RuntimeTaskContext>,
+    ) -> Result<f64> {
+        checkpoint(task)?;
+        let vector = self.vector(ordinal, task)?;
+        with_distance_work(task, |checkpoint| {
+            query.distance_to_vector_with_work(self.metric(), vector, checkpoint)
+        })
+    }
 }
 
 impl DiskAnnArtifactMetadata {
@@ -475,6 +487,7 @@ impl DiskAnnArtifactMetadata {
                 alpha: metadata.alpha,
                 lsg,
                 max_working_bytes: 0,
+                max_build_threads: std::num::NonZeroUsize::MAX,
             },
         )
         .map_err(|_| corrupt("invalid DiskANN construction settings"))?;

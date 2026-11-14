@@ -492,6 +492,14 @@ fn synthetic_value(
                 .saturating_add(i64::try_from(salt).unwrap_or(i64::MAX))
                 .saturating_add(i64::try_from(ordinal).unwrap_or(i64::MAX)),
         ),
+        RelationalScalarType::Decimal(kind) => {
+            let limit = 10_i128.pow(u32::from(kind.precision()));
+            let coefficient = -((salt as i128).saturating_add(ordinal as i128) % limit);
+            RelationalValue::Decimal(
+                hawdb_core::Decimal::new(coefficient, kind.scale())
+                    .map_err(|error| hawdb_core::HawDBError::Semantic(error.to_string()))?,
+            )
+        }
         RelationalScalarType::DoublePrecision => {
             RelationalValue::DoublePrecision(-1.0e300 + salt as f64 + ordinal as f64 / 64.0)
         }
@@ -506,6 +514,20 @@ fn synthetic_value(
         RelationalScalarType::Uuid => RelationalValue::Uuid(hawdb_core::Uuid::from_u128(
             ((salt as u128) << 64) | ordinal as u128,
         )),
+        RelationalScalarType::Timestamp(_) | RelationalScalarType::TimestampTz(_) => {
+            // Whole seconds from the earliest instant satisfy every precision.
+            let offset = i64::try_from(salt.saturating_add(ordinal))
+                .unwrap_or(i64::MAX)
+                .saturating_mul(1_000_000);
+            let micros = hawdb_core::sql_timestamp::checked(
+                hawdb_core::sql_timestamp::min_micros().saturating_add(offset),
+            )?;
+            if matches!(kind, RelationalScalarType::Timestamp(_)) {
+                RelationalValue::Timestamp(micros)
+            } else {
+                RelationalValue::TimestampTz(micros)
+            }
+        }
         RelationalScalarType::Vector(_) => {
             return Err(hawdb_core::HawDBError::Semantic(
                 "VECTOR columns cannot be constraint keys".into(),

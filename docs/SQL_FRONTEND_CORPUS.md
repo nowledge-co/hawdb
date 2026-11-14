@@ -106,19 +106,18 @@ All three owned statement families (`select`, `select_graph_table`, and
 Any accept/reject disagreement requires a waiver with the matching family and
 direction, a reason, and an issue link. Unexpected outcomes, missing waivers,
 waivers on converged cases, unknown waivers and unreferenced waivers fail.
-The current matrix has 43 cases accepted by both frontends and 334 rejected by
-both. The remaining 632 cases use these ten explicit waivers:
+The current matrix has 48 cases accepted by both frontends and 328 rejected by
+both. The remaining 633 cases use these nine explicit waivers:
 
 | Waiver | Cases | Recorded gap |
 | --- | ---: | --- |
 | `production-pgq` | 275 | Owned SQL/PGQ syntax is not routed through production preparation. |
-| `production-expressions` | 119 | Production expression/predicate representation remains limited; see #156. |
+| `production-expressions` | 121 | Production expression/predicate representation remains limited; see #156. |
 | `production-column-alias-list` | 112 | Production lowering rejects table column alias lists. |
-| `owned-ddl-dml` | 104 | Owned statement routing supports SELECT and CREATE PROPERTY GRAPH only. |
+| `owned-ddl-dml` | 106 | Owned statement routing supports SELECT and CREATE PROPERTY GRAPH only. |
 | `owned-alias-boundary` | 14 | Explicit keyword aliases have different acceptance contracts. |
-| `owned-aggregate-filter` | 2 | Owned aggregate FILTER syntax is missing. |
-| `owned-like` | 2 | Owned LIKE/ILIKE/ESCAPE shape is missing. |
 | `owned-explain` | 1 | Owned EXPLAIN routing is missing. |
+| `owned-fromless-select` | 1 | Owned SELECT routing still requires FROM. |
 | `owned-empty-projection` | 1 | Production accepts the empty SELECT target list; owned syntax rejects it. |
 | `prepare-dense-parameters` | 2 | Only production preparation validates dense parameter positions. |
 
@@ -129,6 +128,12 @@ creation binder has its own source-schema and bound-outcome verification; the
 frontend acceptance counts do not substitute for that evidence.
 
 ## Maintaining the corpus
+
+Issue #1419 extends the reviewed production outcomes of `case-0021` and
+`case-0022` to general numeric UPDATE subtraction/multiplication, and
+`case-1005` to arithmetic over HAVING aggregates. Their SQL inputs and IDs are
+unchanged. WHERE/JOIN aggregates remain rejected; the creation-binding corpus
+still has identical property-graph inputs and expected bindings.
 
 When a source hash changes, inspect its diff and re-inventory added, removed or
 changed SQL inputs before updating the hash. Keep IDs stable for unchanged

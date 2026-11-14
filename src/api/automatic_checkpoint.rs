@@ -24,6 +24,7 @@ use hawdb_qos::{
 use hawdb_storage::background::{
     CheckpointOperationError, CheckpointWorkContext, CheckpointWorkError,
 };
+use hawdb_storage::relational::{RelationalLiveOverlayKind, RelationalLiveOverlayShortfall};
 use hawdb_storage::store::{
     CheckpointCandidate, CheckpointDebtSnapshot, CheckpointReclamationContext,
     CheckpointSourceIdentity,
@@ -45,11 +46,17 @@ const PREPARATION_CAPACITY_WAIT_LIMIT: Duration = Duration::from_secs(5);
 const PLANNING_MEMORY_BYTES: u64 = 64 * 1024;
 const OWNER_MEMORY_BYTES: u64 = 64 * 1024;
 const MAX_OPERATION_FAILURES: u8 = 3;
+// An exhausted circuit stays stopped while nothing presses on capacity. A
+// writer that would wait for checkpoint headroom grants the owner one more
+// attempt, no sooner than this backoff after the circuit stopped. The backoff
+// doubles while those attempts keep failing in one WAL generation (#1618).
+const OPERATION_REARM_BASE_DELAY: Duration = Duration::from_secs(1);
+const OPERATION_REARM_MAX_DELAY: Duration = Duration::from_secs(30);
 // Cap the serialized suffix admitted while new writers yield to publication.
 // This is not a bound on schema replay, allocation or physical synchronization.
 const MAX_FINAL_DRAIN_BYTES: u64 = 32 * 1024;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AutomaticCheckpointReport {
     pub preparing: bool,
     pub waiting_for_handoff: bool,
@@ -60,10 +67,19 @@ pub struct AutomaticCheckpointReport {
     pub failed_attempts: u64,
     /// Non-admission preparation, replay or publication failures.
     pub operation_failures: u64,
+    /// The diagnostic of the latest operation failure, kept after later
+    /// successes so a stopped circuit can be explained (#1618).
+    pub last_operation_error: Option<String>,
     /// The owner released its private candidate after three operation failures
-    /// in one durable WAL generation. A successful manual checkpoint resets
-    /// this circuit. Foreground integrity checks continue to apply.
+    /// in one durable WAL generation. A completed checkpoint, automatic or
+    /// manual, resets this circuit. While it is set, background work stops
+    /// until a writer needs checkpoint headroom; that writer re-arms one
+    /// attempt after a bounded backoff (#1618). Foreground integrity checks
+    /// continue to apply.
     pub operation_retry_exhausted: bool,
+    /// Attempts granted to an exhausted circuit by writers that needed
+    /// checkpoint headroom.
+    pub operation_retry_rearms: u64,
     /// Source-size traversals started, excluding scalar-only admission retries.
     pub planning_scans: u64,
     pub planning_cache_hits: u64,
@@ -74,6 +90,10 @@ pub struct AutomaticCheckpointReport {
     /// The latest concrete allocation denial. Its requested size, pressure
     /// and retryability are preserved without counting an operation failure.
     pub preparation_memory_denial: Option<RuntimeMemoryError>,
+    /// The refusal reason of a required relational schema checkpoint that
+    /// is still pending. Background attempts follow the ordinary operation
+    /// failure circuit; an explicit or recovery checkpoint retries (#1593).
+    pub relational_schema_checkpoint_pending: Option<String>,
 }
 
 #[derive(Default)]
@@ -265,8 +285,16 @@ pub(super) struct State {
     attempts_started: u64,
     operation_failures_in_generation: u8,
     operation_generation: Option<u64>,
+    /// Earliest frontend time at which a writer that needs headroom may
+    /// re-arm the exhausted circuit, and the backoff of the next stop.
+    operation_rearm_at: Option<Instant>,
+    operation_rearm_delay: Duration,
     retirement_deferrals: u64,
     debt: Option<CheckpointDebtSnapshot>,
+    /// What the waiting frontend writer's next commit adds to a relational
+    /// live overlay that cannot hold it beside the retained overlay (#1479).
+    /// Set only while that writer waits in `lock_frontend_for_headroom`.
+    headroom_demand: Option<RelationalLiveOverlayShortfall>,
     selected: Option<Selected>,
     retired: Option<Retired>,
     task: Option<RuntimeTaskContext>,
@@ -400,9 +428,58 @@ impl Control {
     }
 
     pub(super) fn lock_frontend(&self) -> Result<MutexGuard<'_, State>> {
+        self.lock_frontend_for_headroom(None)
+    }
+
+    /// Acquires the frontend publication barrier. With `demand`, the writer's
+    /// next commit does not fit beside the retained live overlay: the owner
+    /// is asked to drain it, and the writer waits for that drain under the
+    /// same bounded waits as live-overlay capacity. It waits here, before it
+    /// holds the runtime or this barrier, so the drain can complete (#1479).
+    pub(super) fn lock_frontend_for_headroom(
+        &self,
+        demand: Option<RelationalLiveOverlayShortfall>,
+    ) -> Result<MutexGuard<'_, State>> {
         self.ensure_healthy()?;
         let mut state = self.lock()?;
-        let observed_attempts = state.attempts_started;
+        state.headroom_demand = demand;
+        match self.wait_frontend(state) {
+            Ok(mut state) => {
+                state.headroom_demand = None;
+                Ok(state)
+            }
+            Err(error) => {
+                if let Ok(mut state) = self.lock() {
+                    state.headroom_demand = None;
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// Whether a live-overlay headroom shortfall can be resolved by waiting:
+    /// a healthy automatic owner can start a drain. An exhausted operation
+    /// circuit still can: the waiting writer re-arms it (#1618). Builds and
+    /// handles without background maintenance, and stopped, suspended or
+    /// failed owners, fail closed instead.
+    pub(super) fn can_drain_for_headroom(&self) -> bool {
+        if self.failed.load(Ordering::Acquire) {
+            return false;
+        }
+        self.lock()
+            .is_ok_and(|state| state.enabled && !state.stopping && state.suspensions == 0)
+    }
+
+    pub(super) fn completed_checkpoints(&self) -> u64 {
+        self.lock()
+            .map_or(0, |state| state.report.completed_checkpoints)
+    }
+
+    fn wait_frontend<'a>(
+        &'a self,
+        mut state: MutexGuard<'a, State>,
+    ) -> Result<MutexGuard<'a, State>> {
+        let mut observed_attempts = state.attempts_started;
         let observed_retirement_deferrals = state.retirement_deferrals;
         let mut notified_owner = false;
         let mut preparation_deadline = None;
@@ -426,11 +503,16 @@ impl Control {
             // Handoff lets the frontend adopt the published generation before
             // mutation. Retiring has its own pressure gate below, including
             // the denial escape for callers holding admission needed by cleanup.
+            // After the circuit stopped in this WAL generation, a re-armed
+            // attempt may fail again. Until a checkpoint completes, writers
+            // near the base-relative limit wait for it instead of growing
+            // the debt its retry must capture (#1618).
             let waits_for_capacity = matches!(
                 state.phase,
                 Phase::Preparing | Phase::Discarding | Phase::Releasing
             ) && !state.sync_group_active
-                && preparation_needs_capacity(&state);
+                && (preparation_needs_capacity(&state)
+                    || (state.operation_rearm_at.is_some() && needs_headroom(&state)));
             let capacity_remaining = if waits_for_capacity {
                 let deadline = capacity_deadline
                     .get_or_insert_with(|| self.frontend_now() + PREPARATION_CAPACITY_WAIT_LIMIT);
@@ -445,6 +527,45 @@ impl Control {
             } else {
                 None
             };
+            // An exhausted circuit starts no drain by itself. A writer that
+            // would fence for headroom re-arms it once its backoff expires,
+            // and meanwhile waits within the same capacity deadline. It never
+            // grows the debt past what one drain can capture (#1618).
+            let rearm_remaining = if state.phase == Phase::Idle
+                && state.enabled
+                && !state.stopping
+                && state.suspensions == 0
+                && !state.sync_group_active
+                && state.report.operation_retry_exhausted
+                && pressure_pending(&state)
+                && needs_headroom(&state)
+            {
+                let now = self.frontend_now();
+                match state.operation_rearm_at {
+                    Some(at) if at > now => {
+                        let deadline = capacity_deadline
+                            .get_or_insert_with(|| now + PREPARATION_CAPACITY_WAIT_LIMIT);
+                        let remaining = deadline.saturating_duration_since(now);
+                        if remaining.is_zero() {
+                            self.ensure_healthy()?;
+                            return Err(HawDBError::BranchBusy {
+                                resource: "automatic checkpoint capacity",
+                            });
+                        }
+                        Some(remaining.min(at - now))
+                    }
+                    _ => {
+                        rearm_operation_retry(&mut state);
+                        self.notify_all();
+                        // Wait for the attempt this re-arm grants, not one
+                        // that failed before it.
+                        observed_attempts = state.attempts_started;
+                        None
+                    }
+                }
+            } else {
+                None
+            };
             let preparation_remaining = if state.phase == Phase::Preparing
                 && !state.sync_group_active
                 && needs_headroom(&state)
@@ -456,6 +577,7 @@ impl Control {
                 None
             };
             let must_fence = state.phase == Phase::Finalizing
+                || rearm_remaining.is_some()
                 || (self.publication_requested.load(Ordering::Acquire) && !state.sync_group_active)
                 || (state.phase == Phase::Draining && !state.sync_group_active)
                 || waits_for_capacity
@@ -495,7 +617,7 @@ impl Control {
                 let _ = probe.send(state.phase);
             }
             let timeout = if must_fence {
-                capacity_remaining
+                capacity_remaining.or(rearm_remaining)
             } else {
                 preparation_remaining
             };
@@ -562,6 +684,8 @@ impl Control {
             state.operation_generation = generation;
             state.operation_failures_in_generation = 0;
             state.report.operation_retry_exhausted = false;
+            state.operation_rearm_at = None;
+            state.operation_rearm_delay = Duration::ZERO;
         }
         let identity = store.checkpoint_source_identity();
         let changed = identity != state.last_identity;
@@ -768,7 +892,7 @@ impl Control {
 
     pub(super) fn report(&self) -> Result<Option<AutomaticCheckpointReport>> {
         let state = self.lock()?;
-        Ok(state.enabled.then_some(state.report))
+        Ok(state.enabled.then_some(state.report.clone()))
     }
 }
 
@@ -1166,12 +1290,14 @@ fn run(
                     control.notify_all();
                     continue;
                 }
+                // A writer that declared a commit too large for the remaining
+                // live-overlay headroom also makes the source due (#1479).
                 let due = state.latest.as_ref().is_some_and(|source| {
                     due(source, max_age)
                         || state.debt.is_some_and(|debt| {
                             !debt.read_only
                                 && debt.commit_epoch > debt.checkpoint_commit_epoch
-                                && soft_pressure(debt)
+                                && (soft_pressure(debt) || headroom_demand_short(&state))
                         })
                 });
                 if state.phase == Phase::Idle
@@ -1310,8 +1436,9 @@ fn run(
                     .lock()
                     .unwrap_or_else(|error| error.into_inner());
                 if result.is_err() {
-                    if preparation_report.operation_failed {
-                        record_operation_failure(&mut state);
+                    if let (true, Err(error)) = (preparation_report.operation_failed, &result) {
+                        let now = control.frontend_now();
+                        record_operation_failure(&mut state, error, now);
                         state.report.failed_attempts += 1;
                     } else {
                         state.report.deferred_attempts += 1;
@@ -1623,8 +1750,9 @@ fn run(
                     .state
                     .lock()
                     .unwrap_or_else(|error| error.into_inner());
-                if matches!(result, Err(CheckpointOperationError::Operation(_))) {
-                    record_operation_failure(&mut state);
+                if let Err(CheckpointOperationError::Operation(error)) = &result {
+                    let now = control.frontend_now();
+                    record_operation_failure(&mut state, error, now);
                 }
                 state.report.operation_retry_exhausted
             };
@@ -1706,6 +1834,9 @@ fn run(
 }
 
 fn needs_headroom(state: &State) -> bool {
+    if headroom_demand_short(state) {
+        return true;
+    }
     let Some(debt) = state.debt else {
         return false;
     };
@@ -1719,10 +1850,13 @@ fn needs_headroom(state: &State) -> bool {
     .into_iter()
     .any(|(bytes, limit)| {
         limit.is_some_and(|limit| near_limit(bytes, limit, reserve.unwrap_or(limit)))
-    })
+    }) || live_overlay_needs_capacity(debt.relational_live.pairs())
 }
 
 fn preparation_needs_capacity(state: &State) -> bool {
+    if headroom_demand_short(state) {
+        return true;
+    }
     let Some(debt) = state.debt else {
         return false;
     };
@@ -1736,7 +1870,46 @@ fn preparation_needs_capacity(state: &State) -> bool {
         // Keep a tenth of the configured capacity before its existing defer
         // threshold; near exhaustion, generation progress must free capacity.
         limit.is_some_and(|limit| near_limit(bytes, limit, limit / 10))
-    })
+    }) || live_overlay_needs_capacity(debt.relational_live.admission_pairs())
+}
+
+/// Relational live row/index overlays grow by whole commit captures, and only a
+/// published checkpoint folds them into a new canonical base. Their cumulative
+/// envelope rejects a commit before WAL append, so the frontend keeps the same
+/// tenth-of-capacity reserve below the defer threshold as preparation capacity:
+/// writers wait for the running drain instead of reaching that hard rejection.
+///
+/// Headroom (which fences writers until an idle owner starts its drain) uses
+/// the base-relative capture debt, including the recovery delta. Capacity
+/// waits during a running drain use the live overlay alone: that drain's
+/// capture already includes the delta, and commits made meanwhile become the
+/// next drain's delta while counting against the live admission envelope.
+fn live_overlay_needs_capacity(pairs: [(u64, Option<u64>); 4]) -> bool {
+    pairs
+        .into_iter()
+        .any(|(retained, limit)| limit.is_some_and(|limit| near_limit(retained, limit, limit / 10)))
+}
+
+/// The waiting writer's declared commit does not fit beside what the serving
+/// live overlay retains now. Only a drain empties that overlay, so this is
+/// checkpoint pressure regardless of the soft ratio. An adopted drain makes
+/// it false again; a commit that can never fit is never declared.
+fn headroom_demand_short(state: &State) -> bool {
+    let (Some(debt), Some(demand)) = (state.debt, state.headroom_demand) else {
+        return false;
+    };
+    let live = debt.relational_live;
+    let [row_entries, row_bytes, index_entries, index_bytes] = live.admission_pairs();
+    let (entries, bytes) = match demand.overlay {
+        RelationalLiveOverlayKind::Row => (row_entries, row_bytes),
+        RelationalLiveOverlayKind::Index => (index_entries, index_bytes),
+    };
+    let exceeds = |(retained, limit): (u64, Option<u64>), commit: usize| {
+        limit.is_some_and(|limit| {
+            retained.saturating_add(u64::try_from(commit).unwrap_or(u64::MAX)) > limit
+        })
+    };
+    exceeds(entries, demand.commit_entries) || exceeds(bytes, demand.commit_bytes)
 }
 
 fn near_limit(bytes: u64, limit: u64, reserve: u64) -> bool {
@@ -1751,16 +1924,20 @@ fn pressure_pending(state: &State) -> bool {
         && state.debt.is_some_and(|debt| {
             !debt.read_only
                 && debt.commit_epoch > debt.checkpoint_commit_epoch
-                && soft_pressure(debt)
+                && (soft_pressure(debt) || headroom_demand_short(state))
         })
 }
 
 fn soft_pressure(debt: CheckpointDebtSnapshot) -> bool {
+    // Live-overlay occupancy schedules a drain at the shared soft ratio. A
+    // published checkpoint empties the serving overlay, so the next trigger
+    // needs another soft-ratio worth of commits (hysteresis by construction).
     [
         (debt.wal_bytes, debt.max_wal_bytes),
         (debt.delta_bytes, debt.max_delta_bytes),
     ]
     .into_iter()
+    .chain(debt.relational_live.pairs())
     .any(|(bytes, limit)| {
         limit.is_some_and(|limit| {
             u128::from(bytes) * 1_000_000
@@ -1945,12 +2122,30 @@ fn preparation_result<T>(
     })
 }
 
-fn record_operation_failure(state: &mut State) {
+fn record_operation_failure(state: &mut State, error: &HawDBError, now: Instant) {
     state.report.operation_failures += 1;
+    state.report.last_operation_error = Some(error.to_string());
     state.operation_failures_in_generation =
         state.operation_failures_in_generation.saturating_add(1);
-    state.report.operation_retry_exhausted =
-        state.operation_failures_in_generation >= MAX_OPERATION_FAILURES;
+    let exhausted = state.operation_failures_in_generation >= MAX_OPERATION_FAILURES;
+    if exhausted && !state.report.operation_retry_exhausted {
+        // Each stop in one WAL generation doubles the wait before a writer
+        // may re-arm it; a completed checkpoint resets the schedule.
+        let delay = state.operation_rearm_delay.max(OPERATION_REARM_BASE_DELAY);
+        state.operation_rearm_at = Some(now + delay);
+        state.operation_rearm_delay = delay.saturating_mul(2).min(OPERATION_REARM_MAX_DELAY);
+    }
+    state.report.operation_retry_exhausted = exhausted;
+}
+
+/// Grants an exhausted circuit exactly one more attempt. Only a writer that
+/// needs checkpoint headroom calls this, after the backoff has expired, so a
+/// persistent fault costs at most one attempt per backoff while writers wait,
+/// and none while the database is idle.
+fn rearm_operation_retry(state: &mut State) {
+    state.operation_failures_in_generation = MAX_OPERATION_FAILURES - 1;
+    state.report.operation_retry_exhausted = false;
+    state.report.operation_retry_rearms += 1;
 }
 
 #[derive(Clone, Copy)]
@@ -2018,12 +2213,14 @@ fn release_retired_state(retired: Retired) {
 
 #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
 mod tests {
+    mod branch_wal_reclamation;
     mod coalesced_capture;
     mod discard;
     mod execution_progress;
     mod handoff_execution;
     mod idle_handoff;
     mod memory_progress;
+    mod object_reclamation;
     mod operation_retry;
     mod planning_recovery;
     mod planning_retry;
@@ -2034,6 +2231,8 @@ mod tests {
     mod read_access;
     mod read_gate;
     mod read_handoff;
+    mod relational_live_overlay;
+    mod relational_schema_pending;
     mod retirement_io;
 
     use super::*;
@@ -2115,7 +2314,7 @@ mod tests {
                 .automatic_checkpoint_report()
                 .unwrap()
                 .expect("persistent owner");
-            if predicate(report) {
+            if predicate(report.clone()) {
                 return;
             }
             assert!(
@@ -2853,6 +3052,7 @@ mod tests {
             &fixture.0,
             DatabaseConfig {
                 read_only: true,
+                recovery_mode: crate::RecoveryMode::Strict,
                 automatic_checkpoint_max_age: Duration::ZERO,
                 ..DatabaseConfig::default()
             },

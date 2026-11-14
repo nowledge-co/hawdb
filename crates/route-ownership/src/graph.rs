@@ -25,16 +25,14 @@ mod catalog;
 mod differential;
 
 pub use catalog::{
-    nowledge_mem_graph_read_route_catalog_digest, nowledge_mem_graph_read_route_spec,
-    nowledge_mem_graph_read_route_spec_json, nowledge_mem_graph_read_route_specs_json,
-    nowledge_mem_required_query_families_for_route, NowledgeMemGraphReadRouteEvidenceKind,
-    NowledgeMemGraphReadRouteOwner, NowledgeMemGraphReadRouteSpec,
-    NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION, NOWLEDGE_MEM_GRAPH_READ_ROUTE_SPECS,
-    NOWLEDGE_MEM_SEARCH_ROUTE, REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
+    graph_read_route_catalog_digest, graph_read_route_spec, graph_read_route_spec_json,
+    graph_read_route_specs_json, required_query_families_for_route, GraphReadRouteEvidenceKind,
+    GraphReadRouteOwner, GraphReadRouteSpec, GRAPH_READ_ROUTE_CATALOG_VERSION,
+    GRAPH_READ_ROUTE_SPECS, REQUIRED_BOUNDED_READ_ROUTES, SEARCH_ROUTE,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemRouteReadinessSummary {
+pub struct RouteReadinessSummary {
     pub route_primary_ready: bool,
     pub primary_ready_routes: Vec<String>,
     pub route_query_plan_evidence_ready: bool,
@@ -45,14 +43,14 @@ pub struct NowledgeMemRouteReadinessSummary {
     pub route_relationship_property_pruning_evidence_ready: bool,
 }
 
-pub const NOWLEDGE_MEM_ROUTE_OWNERSHIP_PROTOCOL: &str = "hawdb-nowledge-mem-route-ownership-v1";
+pub const ROUTE_OWNERSHIP_PROTOCOL: &str = "hawdb-nowledge-mem-route-ownership-v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NowledgeMemRouteOwnershipPolicy {
+pub struct RouteOwnershipPolicy {
     pub require_all_hawdb: bool,
 }
 
-impl NowledgeMemRouteOwnershipPolicy {
+impl RouteOwnershipPolicy {
     pub const fn migration() -> Self {
         Self {
             require_all_hawdb: false,
@@ -66,19 +64,19 @@ impl NowledgeMemRouteOwnershipPolicy {
     }
 }
 
-impl Default for NowledgeMemRouteOwnershipPolicy {
+impl Default for RouteOwnershipPolicy {
     fn default() -> Self {
         Self::migration()
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum NowledgeMemRouteReadEngine {
+pub enum RouteReadEngine {
     Legacy,
     HawDB,
 }
 
-impl NowledgeMemRouteReadEngine {
+impl RouteReadEngine {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Legacy => "legacy",
@@ -88,13 +86,13 @@ impl NowledgeMemRouteReadEngine {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemRouteOwnership {
+pub struct RouteOwnership {
     pub route: String,
-    pub read_engine: NowledgeMemRouteReadEngine,
+    pub read_engine: RouteReadEngine,
 }
 
-impl NowledgeMemRouteOwnership {
-    pub fn new(route: impl Into<String>, read_engine: NowledgeMemRouteReadEngine) -> Self {
+impl RouteOwnership {
+    pub fn new(route: impl Into<String>, read_engine: RouteReadEngine) -> Self {
         Self {
             route: route.into(),
             read_engine,
@@ -103,7 +101,7 @@ impl NowledgeMemRouteOwnership {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemRouteOwnershipReadinessReport {
+pub struct RouteOwnershipReadinessReport {
     pub protocol: String,
     pub ready: bool,
     pub production_cutover_ready: bool,
@@ -112,7 +110,7 @@ pub struct NowledgeMemRouteOwnershipReadinessReport {
     pub explicit_route_count: usize,
     pub hawdb_route_count: usize,
     pub legacy_route_count: usize,
-    pub routes: Vec<NowledgeMemRouteOwnership>,
+    pub routes: Vec<RouteOwnership>,
     pub hawdb_routes: Vec<String>,
     pub legacy_routes: Vec<String>,
     pub missing_required_routes: Vec<String>,
@@ -127,7 +125,7 @@ pub struct NowledgeMemRouteOwnershipReadinessReport {
     pub blocker_codes: Vec<String>,
 }
 
-impl NowledgeMemRouteOwnershipReadinessReport {
+impl RouteOwnershipReadinessReport {
     pub fn json(&self) -> serde_json::Value {
         serde_json::json!({
             "protocol": self.protocol,
@@ -155,34 +153,32 @@ impl NowledgeMemRouteOwnershipReadinessReport {
     }
 }
 
-pub fn nowledge_mem_route_ownership_all_legacy() -> Vec<NowledgeMemRouteOwnership> {
-    nowledge_mem_route_ownership_for_engine(NowledgeMemRouteReadEngine::Legacy)
+pub fn route_ownership_all_legacy() -> Vec<RouteOwnership> {
+    route_ownership_for_engine(RouteReadEngine::Legacy)
 }
 
-pub fn nowledge_mem_route_ownership_all_hawdb() -> Vec<NowledgeMemRouteOwnership> {
-    nowledge_mem_route_ownership_for_engine(NowledgeMemRouteReadEngine::HawDB)
+pub fn route_ownership_all_hawdb() -> Vec<RouteOwnership> {
+    route_ownership_for_engine(RouteReadEngine::HawDB)
 }
 
-pub fn nowledge_mem_route_ownership_for_engine(
-    read_engine: NowledgeMemRouteReadEngine,
-) -> Vec<NowledgeMemRouteOwnership> {
-    REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+pub fn route_ownership_for_engine(read_engine: RouteReadEngine) -> Vec<RouteOwnership> {
+    REQUIRED_BOUNDED_READ_ROUTES
         .iter()
-        .map(|route| NowledgeMemRouteOwnership::new(*route, read_engine))
+        .map(|route| RouteOwnership::new(*route, read_engine))
         .collect()
 }
 
-pub fn nowledge_mem_route_ownership_readiness(
-    routes: &[NowledgeMemRouteOwnership],
-    route_readiness: Option<&NowledgeMemRouteReadinessSummary>,
-    policy: NowledgeMemRouteOwnershipPolicy,
-) -> NowledgeMemRouteOwnershipReadinessReport {
-    let required_routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+pub fn route_ownership_readiness(
+    routes: &[RouteOwnership],
+    route_readiness: Option<&RouteReadinessSummary>,
+    policy: RouteOwnershipPolicy,
+) -> RouteOwnershipReadinessReport {
+    let required_routes = REQUIRED_BOUNDED_READ_ROUTES
         .iter()
         .copied()
         .collect::<BTreeSet<_>>();
     let mut route_counts = BTreeMap::<&str, usize>::new();
-    let mut route_engines = BTreeMap::<&str, BTreeSet<NowledgeMemRouteReadEngine>>::new();
+    let mut route_engines = BTreeMap::<&str, BTreeSet<RouteReadEngine>>::new();
     for route in routes {
         *route_counts.entry(route.route.as_str()).or_default() += 1;
         route_engines
@@ -196,7 +192,7 @@ pub fn nowledge_mem_route_ownership_readiness(
         .copied()
         .filter(|route| required_routes.contains(route))
         .collect::<BTreeSet<_>>();
-    let missing_required_routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+    let missing_required_routes = REQUIRED_BOUNDED_READ_ROUTES
         .iter()
         .copied()
         .filter(|route| !explicit_required_routes.contains(route))
@@ -219,8 +215,8 @@ pub fn nowledge_mem_route_ownership_readiness(
         .map(|(route, _)| (*route).to_string())
         .collect::<Vec<_>>();
 
-    let hawdb_routes = routes_by_engine(routes, NowledgeMemRouteReadEngine::HawDB);
-    let legacy_routes = routes_by_engine(routes, NowledgeMemRouteReadEngine::Legacy);
+    let hawdb_routes = routes_by_engine(routes, RouteReadEngine::HawDB);
+    let legacy_routes = routes_by_engine(routes, RouteReadEngine::Legacy);
     let primary_ready_routes = route_readiness
         .map(|summary| {
             summary
@@ -263,12 +259,12 @@ pub fn nowledge_mem_route_ownership_readiness(
     let ready = blocker_codes.is_empty();
     let production_cutover_ready = ready && legacy_routes.is_empty();
 
-    NowledgeMemRouteOwnershipReadinessReport {
-        protocol: NOWLEDGE_MEM_ROUTE_OWNERSHIP_PROTOCOL.to_string(),
+    RouteOwnershipReadinessReport {
+        protocol: ROUTE_OWNERSHIP_PROTOCOL.to_string(),
         ready,
         production_cutover_ready,
         require_all_hawdb: policy.require_all_hawdb,
-        required_route_count: REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
+        required_route_count: REQUIRED_BOUNDED_READ_ROUTES.len(),
         explicit_route_count: explicit_required_routes.len(),
         hawdb_route_count: hawdb_routes.len(),
         legacy_route_count: legacy_routes.len(),
@@ -282,23 +278,20 @@ pub fn nowledge_mem_route_ownership_readiness(
         hawdb_not_ready_routes,
         route_readiness_present: route_readiness.is_some(),
         route_readiness_ready,
-        route_catalog_version: NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION.to_string(),
-        route_catalog_digest: nowledge_mem_graph_read_route_catalog_digest(),
+        route_catalog_version: GRAPH_READ_ROUTE_CATALOG_VERSION.to_string(),
+        route_catalog_digest: graph_read_route_catalog_digest(),
         blocker_codes,
     }
 }
 
-fn route_ownership_json(route: &NowledgeMemRouteOwnership) -> serde_json::Value {
+fn route_ownership_json(route: &RouteOwnership) -> serde_json::Value {
     serde_json::json!({
         "route": route.route,
         "read_engine": route.read_engine.as_str(),
     })
 }
 
-fn routes_by_engine(
-    routes: &[NowledgeMemRouteOwnership],
-    read_engine: NowledgeMemRouteReadEngine,
-) -> Vec<String> {
+fn routes_by_engine(routes: &[RouteOwnership], read_engine: RouteReadEngine) -> Vec<String> {
     routes
         .iter()
         .filter(|route| route.read_engine == read_engine)
@@ -308,7 +301,7 @@ fn routes_by_engine(
         .collect()
 }
 
-fn route_readiness_summary_ready(summary: &NowledgeMemRouteReadinessSummary) -> bool {
+fn route_readiness_summary_ready(summary: &RouteReadinessSummary) -> bool {
     summary.route_primary_ready
         && summary.route_query_plan_evidence_ready
         && summary.route_query_profile_evidence_ready
@@ -324,27 +317,27 @@ mod tests {
 
     #[test]
     fn migration_readiness_allows_explicit_legacy_routes() {
-        let report = nowledge_mem_route_ownership_readiness(
-            &nowledge_mem_route_ownership_all_legacy(),
+        let report = route_ownership_readiness(
+            &route_ownership_all_legacy(),
             None,
-            NowledgeMemRouteOwnershipPolicy::migration(),
+            RouteOwnershipPolicy::migration(),
         );
 
         assert!(report.ready);
         assert!(!report.production_cutover_ready);
         assert_eq!(
             report.legacy_route_count,
-            REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len()
+            REQUIRED_BOUNDED_READ_ROUTES.len()
         );
         assert!(report.blocker_codes.is_empty());
     }
 
     #[test]
     fn production_cutover_rejects_legacy_routes() {
-        let report = nowledge_mem_route_ownership_readiness(
-            &nowledge_mem_route_ownership_all_legacy(),
+        let report = route_ownership_readiness(
+            &route_ownership_all_legacy(),
             None,
-            NowledgeMemRouteOwnershipPolicy::production_cutover(),
+            RouteOwnershipPolicy::production_cutover(),
         );
 
         assert!(!report.ready);
@@ -357,10 +350,10 @@ mod tests {
 
     #[test]
     fn hawdb_routes_require_primary_ready_evidence() {
-        let report = nowledge_mem_route_ownership_readiness(
-            &nowledge_mem_route_ownership_all_hawdb(),
+        let report = route_ownership_readiness(
+            &route_ownership_all_hawdb(),
             None,
-            NowledgeMemRouteOwnershipPolicy::production_cutover(),
+            RouteOwnershipPolicy::production_cutover(),
         );
 
         assert!(!report.ready);
@@ -373,25 +366,22 @@ mod tests {
             .contains(&"route_ownership_hawdb_routes_not_ready".to_string()));
         assert_eq!(
             report.hawdb_not_ready_routes.len(),
-            REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len()
+            REQUIRED_BOUNDED_READ_ROUTES.len()
         );
     }
 
     #[test]
     fn production_cutover_accepts_all_hawdb_with_ready_evidence() {
         let readiness = ready_route_readiness();
-        let report = nowledge_mem_route_ownership_readiness(
-            &nowledge_mem_route_ownership_all_hawdb(),
+        let report = route_ownership_readiness(
+            &route_ownership_all_hawdb(),
             Some(&readiness),
-            NowledgeMemRouteOwnershipPolicy::production_cutover(),
+            RouteOwnershipPolicy::production_cutover(),
         );
 
         assert!(report.ready);
         assert!(report.production_cutover_ready);
-        assert_eq!(
-            report.hawdb_route_count,
-            REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len()
-        );
+        assert_eq!(report.hawdb_route_count, REQUIRED_BOUNDED_READ_ROUTES.len());
         assert!(report.legacy_routes.is_empty());
         assert!(report.hawdb_not_ready_routes.is_empty());
     }
@@ -401,17 +391,17 @@ mod tests {
         let mut readiness = ready_route_readiness();
         readiness.route_query_api_behavior_evidence_ready = false;
 
-        let report = nowledge_mem_route_ownership_readiness(
-            &nowledge_mem_route_ownership_all_hawdb(),
+        let report = route_ownership_readiness(
+            &route_ownership_all_hawdb(),
             Some(&readiness),
-            NowledgeMemRouteOwnershipPolicy::production_cutover(),
+            RouteOwnershipPolicy::production_cutover(),
         );
 
         assert!(!report.ready);
         assert!(!report.production_cutover_ready);
         assert_eq!(
             report.hawdb_not_ready_routes.len(),
-            REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len()
+            REQUIRED_BOUNDED_READ_ROUTES.len()
         );
         assert!(report
             .blocker_codes
@@ -421,41 +411,30 @@ mod tests {
     #[test]
     fn ownership_fails_closed_on_missing_unknown_duplicate_or_conflicting_routes() {
         let readiness = ready_route_readiness();
-        let first_route = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES[0];
-        let mut routes = nowledge_mem_route_ownership_all_hawdb();
+        let first_route = REQUIRED_BOUNDED_READ_ROUTES[0];
+        let mut routes = route_ownership_all_hawdb();
         routes.pop();
-        routes.push(NowledgeMemRouteOwnership::new(
-            "/unknown",
-            NowledgeMemRouteReadEngine::HawDB,
-        ));
-        routes.push(NowledgeMemRouteOwnership::new(
-            first_route,
-            NowledgeMemRouteReadEngine::Legacy,
-        ));
+        routes.push(RouteOwnership::new("/unknown", RouteReadEngine::HawDB));
+        routes.push(RouteOwnership::new(first_route, RouteReadEngine::Legacy));
 
-        let report = nowledge_mem_route_ownership_readiness(
-            &routes,
-            Some(&readiness),
-            NowledgeMemRouteOwnershipPolicy::migration(),
-        );
+        let report =
+            route_ownership_readiness(&routes, Some(&readiness), RouteOwnershipPolicy::migration());
 
         assert!(!report.ready);
         assert!(!report.production_cutover_ready);
         assert_eq!(
             report.missing_required_routes,
-            vec![REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
-                [REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len() - 1]
-                .to_string()]
+            vec![REQUIRED_BOUNDED_READ_ROUTES[REQUIRED_BOUNDED_READ_ROUTES.len() - 1].to_string()]
         );
         assert_eq!(report.unknown_routes, vec!["/unknown".to_string()]);
         assert_eq!(report.duplicate_routes, vec![first_route.to_string()]);
         assert_eq!(report.conflicting_routes, vec![first_route.to_string()]);
     }
 
-    fn ready_route_readiness() -> NowledgeMemRouteReadinessSummary {
-        NowledgeMemRouteReadinessSummary {
+    fn ready_route_readiness() -> RouteReadinessSummary {
+        RouteReadinessSummary {
             route_primary_ready: true,
-            primary_ready_routes: REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+            primary_ready_routes: REQUIRED_BOUNDED_READ_ROUTES
                 .iter()
                 .map(|route| (*route).to_string())
                 .collect(),

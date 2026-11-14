@@ -297,6 +297,7 @@ impl GraphStore {
         admit: &mut ControlledGraphReadAllocator<'_>,
         consumer: &mut dyn FnMut(AdmittedNodeRecord) -> Result<GraphScanControl>,
     ) -> Result<GraphScanControl> {
+        crate::store::record_node_scan();
         let admission = ProjectionAdmission::new_controlled(admit);
         let result = self.visit_selected_nodes_with_admission(label_id, None, &admission, |node| {
             admission.consume_allocated(node, &mut |input| {

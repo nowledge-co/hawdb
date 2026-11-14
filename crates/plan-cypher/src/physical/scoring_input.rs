@@ -328,6 +328,8 @@ fn public_expression_at(expression: &ProjectionExpression, depth: usize) -> bool
         | ProjectionExpression::Property { variable, .. }
         | ProjectionExpression::Id { variable }
         | ProjectionExpression::RelationshipType { variable }
+        | ProjectionExpression::Label { variable, .. }
+        | ProjectionExpression::RelationshipEndpoint { variable, .. }
         | ProjectionExpression::DatePart { variable, .. }
         | ProjectionExpression::DefaultIfNullOrEq { variable, .. }
         | ProjectionExpression::DefaultIfNull { variable, .. }
@@ -343,7 +345,8 @@ fn public_expression_at(expression: &ProjectionExpression, depth: usize) -> bool
         | ProjectionExpression::ColumnValueDefaultIfNull { column, .. }
         | ProjectionExpression::ColumnValueCasePropertyNotNullOrEq { column, .. }
         | ProjectionExpression::Column(column)
-        | ProjectionExpression::ColumnProperty { column, .. } => public_name(column),
+        | ProjectionExpression::ColumnProperty { column, .. }
+        | ProjectionExpression::Path { column, .. } => public_name(column),
         ProjectionExpression::Literal(_)
         | ProjectionExpression::Coalesce(_)
         | ProjectionExpression::JsonValue { .. }
@@ -353,7 +356,34 @@ fn public_expression_at(expression: &ProjectionExpression, depth: usize) -> bool
         | ProjectionExpression::VectorDistance { .. }
         | ProjectionExpression::Binary { .. }
         | ProjectionExpression::Not(_)
-        | ProjectionExpression::IsNull { .. } => true,
+        | ProjectionExpression::IsNull { .. }
+        | ProjectionExpression::ListFunction { .. }
+        | ProjectionExpression::StringFunction { .. }
+        | ProjectionExpression::List(_)
+        | ProjectionExpression::ListIndex { .. }
+        | ProjectionExpression::Conversion { .. }
+        | ProjectionExpression::NumericFunction { .. }
+        | ProjectionExpression::ListSlice { .. }
+        | ProjectionExpression::TemporalFunction { .. }
+        | ProjectionExpression::PropertyAccess { .. }
+        | ProjectionExpression::MapLiteral(_) => true,
+        ProjectionExpression::ListComprehension(comprehension) => {
+            public_name(&comprehension.variable)
+        }
+        ProjectionExpression::Reduce(reduce) => {
+            public_name(&reduce.accumulator) && public_name(&reduce.variable)
+        }
+        ProjectionExpression::LocalVariable { name, .. } => public_name(name),
+        ProjectionExpression::RelationshipValueEndpoint { .. } => true,
+        ProjectionExpression::Pattern(pattern) => {
+            pattern.graph_variables.iter().all(|name| public_name(name))
+                && pattern.columns.iter().all(|name| public_name(name))
+                && pattern
+                    .program
+                    .introduced
+                    .iter()
+                    .all(|name| public_name(name))
+        }
     };
     own_names && expression.all_children(|child| public_expression_at(child, depth + 1))
 }
@@ -397,6 +427,9 @@ fn public_predicate(predicate: &Predicate, depth: usize) -> bool {
         }
         | Predicate::ExpressionContains { expression, value } => {
             public_expression_at(expression, depth + 1) && public_expression_at(value, depth + 1)
+        }
+        Predicate::ExpressionRegexMatch { expression, .. } => {
+            public_expression_at(expression, depth + 1)
         }
         Predicate::ExpressionIn { expression, .. } => public_expression_at(expression, depth + 1),
     }
@@ -702,13 +735,20 @@ mod tests {
             program: crate::GraphMatchProgram {
                 imports: vec![],
                 introduced: vec![],
+                projected_nodes: std::collections::BTreeMap::new(),
+                projected_relationships: std::collections::BTreeMap::new(),
                 steps: vec![crate::GraphMatchStep::Node(crate::GraphMatchNode {
                     variable: "seed".into(),
                     label: "Memory".into(),
                     properties: Default::default(),
                 })],
                 predicate: Some(predicate),
+                predicate_steps: Vec::new(),
+                edge_predicates: Vec::new(),
                 optional: false,
+                hash_join: None,
+                id_set_conjuncts: Vec::new(),
+                seeded_union: Vec::new(),
             },
             input: Some(Box::new(lookup(vec![known_id()]))),
         });
@@ -745,3 +785,13 @@ mod tests {
         });
     }
 }
+
+// Retained query ownership: ScoringSeedGraphInput.
+hawdb_core::impl_retained_heap_for_struct!(ScoringSeedGraphInput {
+    kind,
+    seed_variable,
+    candidate_variable
+});
+
+// Retained query ownership: ScoringSeedKind.
+hawdb_core::impl_retained_heap_for_copy!(ScoringSeedKind);

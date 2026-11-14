@@ -24,7 +24,7 @@ pub(super) struct ScalarState {
 impl ScalarState {
     pub(super) fn coerce(&mut self, target: Option<RelationalScalarType>) -> Result<()> {
         if let (Some(source), Some(target)) = (self.scalar_type, target)
-            && source != target
+            && !source.same_value_domain(Some(target))
             && !self.coercible
             && !numeric_pair(source, target)
         {
@@ -42,7 +42,10 @@ impl ScalarState {
     pub(super) fn output_memory_bytes(&self) -> usize {
         fn bytes(state: &AggregateExpressionState) -> usize {
             match state {
-                AggregateExpressionState::Having(_) => std::mem::size_of::<Value>(),
+                AggregateExpressionState::Having(_)
+                | AggregateExpressionState::Arithmetic { .. }
+                | AggregateExpressionState::Negate(_)
+                | AggregateExpressionState::Cast { .. } => std::mem::size_of::<Value>(),
                 AggregateExpressionState::Constant(value) => {
                     hawdb_executor::binding::value_memory_bytes(value)
                 }
@@ -64,16 +67,13 @@ impl ScalarState {
 }
 
 fn numeric_pair(left: RelationalScalarType, right: RelationalScalarType) -> bool {
-    matches!(
-        (left, right),
-        (
-            RelationalScalarType::BigInt,
-            RelationalScalarType::DoublePrecision
-        ) | (
-            RelationalScalarType::DoublePrecision,
-            RelationalScalarType::BigInt
+    left.logical_type().is_numeric()
+        && right.logical_type().is_numeric()
+        && hawdb_core::numeric::common_numeric_type(
+            Some(left.logical_type()),
+            Some(right.logical_type()),
         )
-    )
+        .is_ok()
 }
 
 pub(super) fn comparison_type(inputs: &[&ScalarState]) -> Result<Option<RelationalScalarType>> {
@@ -87,7 +87,13 @@ pub(super) fn comparison_type(inputs: &[&ScalarState]) -> Result<Option<Relation
             && current != candidate
         {
             if numeric_pair(current, candidate) {
-                target = Some(RelationalScalarType::DoublePrecision);
+                target = Some(if matches!(current, RelationalScalarType::Decimal(_)) {
+                    current
+                } else if matches!(candidate, RelationalScalarType::Decimal(_)) {
+                    candidate
+                } else {
+                    RelationalScalarType::DoublePrecision
+                });
             } else if !input.coercible {
                 return Err(HawDBError::Semantic(
                     "HAVING operands have incompatible scalar types".into(),
@@ -102,21 +108,10 @@ pub(super) fn coerce_value(
     value: Value,
     target: Option<RelationalScalarType>,
 ) -> Result<RelationalValue> {
-    let mut value = value_to_relational(value)?;
-    if let Some(target) = target {
-        if matches!(target, RelationalScalarType::DoublePrecision)
-            && let RelationalValue::BigInt(integer) = value
-        {
-            value = RelationalValue::DoublePrecision(integer as f64);
-        }
-        value = crate::coerce_relational_value(value, target)?;
-        if value.scalar_type().is_some_and(|actual| actual != target) {
-            return Err(HawDBError::Semantic(
-                "HAVING operands have incompatible scalar types".into(),
-            ));
-        }
+    match target {
+        Some(target) => crate::query_value::value_to_relational_as(value, target),
+        None => value_to_relational(value),
     }
-    Ok(value)
 }
 
 pub(super) struct HavingBindings<'a> {
@@ -228,6 +223,11 @@ impl<'a> HavingBindings<'a> {
         grouped: bool,
     ) -> Result<Option<RelationalScalarType>> {
         match &expression.kind {
+            ExprKind::Arithmetic { .. } | ExprKind::Negate(_) | ExprKind::Cast { .. } => {
+                crate::query_value::infer_numeric_type(expression, &|child| {
+                    self.scalar_type(child, grouped)
+                })
+            }
             ExprKind::Column(column) => self.column_type(column, grouped).map(Some),
             ExprKind::Value(value) => {
                 Ok(value_to_relational(bind_sql_value(value, self.parameters)?)?.scalar_type())
@@ -252,7 +252,9 @@ impl<'a> HavingBindings<'a> {
                             ));
                         };
                         if let Some(candidate) = self.scalar_type(expression, grouped)? {
-                            if result.is_some_and(|current| current != candidate) {
+                            if result.is_some_and(|current: RelationalScalarType| {
+                                !current.same_value_domain(Some(candidate))
+                            }) {
                                 return Err(HawDBError::Semantic(
                                     "COALESCE arguments have incompatible scalar types".into(),
                                 ));
@@ -302,12 +304,11 @@ impl<'a> HavingBindings<'a> {
                                     scalar_type,
                                     RelationalScalarType::BigInt
                                         | RelationalScalarType::DoublePrecision
+                                        | RelationalScalarType::Decimal(_)
                                 )
                             })
                         {
-                            return Err(HawDBError::Semantic(
-                                "SUM requires BIGINT or DOUBLE PRECISION input".into(),
-                            ));
+                            return Err(HawDBError::Semantic("SUM requires numeric input".into()));
                         }
                         Ok(scalar_type)
                     }
@@ -324,6 +325,11 @@ impl<'a> HavingBindings<'a> {
 
     fn aggregate_input_type(&self, expression: &Expr) -> Result<Option<RelationalScalarType>> {
         match &expression.kind {
+            ExprKind::Arithmetic { .. } | ExprKind::Negate(_) | ExprKind::Cast { .. } => {
+                crate::query_value::infer_numeric_type(expression, &|child| {
+                    self.aggregate_input_type(child)
+                })
+            }
             ExprKind::Column(column) => self.column_type(column, false).map(Some),
             ExprKind::Value(value) => {
                 Ok(value_to_relational(bind_sql_value(value, self.parameters)?)?.scalar_type())

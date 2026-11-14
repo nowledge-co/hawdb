@@ -27,6 +27,7 @@ use std::sync::Arc;
 
 mod compaction;
 mod pool;
+mod sort_keys;
 
 pub(crate) use compaction::{
     compact_runs_serial, compact_runs_with_memory, default_compaction_worker_limit,
@@ -58,6 +59,7 @@ pub struct SpillRun {
 struct RunMemory {
     record: AtomicUsize,
     staging: AtomicUsize,
+    sort_key: AtomicUsize,
 }
 
 impl SpillRun {
@@ -67,6 +69,10 @@ impl SpillRun {
 
     pub(crate) fn staging_bytes(&self) -> usize {
         self.memory.staging.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn sort_key_bytes(&self) -> usize {
+        self.memory.sort_key.load(Ordering::Relaxed)
     }
 
     pub(crate) fn create_with_buffer_bytes(
@@ -133,9 +139,15 @@ impl SpillRun {
         &self,
         buffer_bytes: NonZeroUsize,
     ) -> Result<SpillReader> {
-        let file = self
-            .lease
-            .file_descriptors()
+        self.reader_with_context(buffer_bytes, self.lease.file_descriptors())
+    }
+
+    pub(crate) fn reader_with_context(
+        &self,
+        buffer_bytes: NonZeroUsize,
+        context: &hawdb_storage::file_descriptors::FileOpenContext,
+    ) -> Result<SpillReader> {
+        let file = context
             .open(OpenOptions::new().read(true), self.lease.path())
             .map_err(|error| spill_io_error("open spill run", self.lease.path(), error))?;
         Ok(SpillReader {
@@ -152,6 +164,10 @@ pub struct SpillWriter {
 }
 
 impl SpillWriter {
+    pub(crate) fn note_sort_key_bytes(&self, bytes: usize) {
+        self.memory.sort_key.fetch_max(bytes, Ordering::Relaxed);
+    }
+
     pub(crate) fn note_merge_record_bytes(&self, bytes: usize) {
         self.memory.record.fetch_max(bytes, Ordering::Relaxed);
     }
@@ -514,16 +530,14 @@ fn estimate_binding_memory_bytes(input: &mut Cursor<&[u8]>) -> Result<usize> {
         let (properties, _) = estimate_value_map_memory(input, 0, true)?;
         payload_bytes = encoded_len_add(payload_bytes, properties)?;
     }
-    let entry_count = values
-        .checked_add(nodes)
-        .and_then(|count| count.checked_add(relationships))
-        .ok_or_else(|| HawDBError::Execution("spill binding entry count overflow".to_string()))?;
+    let values_layout = encoded_len_mul(values, std::mem::size_of::<usize>() * 6)?;
+    let graph_layout = encoded_len_add(
+        crate::binding::graph_slot_memory_bytes(nodes),
+        crate::binding::graph_slot_memory_bytes(relationships),
+    )?;
     encoded_len_add(
         std::mem::size_of::<Binding>(),
-        encoded_len_add(
-            payload_bytes,
-            encoded_len_mul(entry_count, std::mem::size_of::<usize>() * 6)?,
-        )?,
+        encoded_len_add(payload_bytes, encoded_len_add(values_layout, graph_layout)?)?,
     )
 }
 
@@ -614,6 +628,20 @@ fn estimate_value_memory(
                 HawDBError::Execution(format!("truncated UUID in spill record: {error}"))
             })?;
             (bytes.len(), 0)
+        }
+        15 => {
+            let mut bytes = [0_u8; 17];
+            input.read_exact(&mut bytes).map_err(|error| {
+                HawDBError::Execution(format!("truncated Decimal in spill record: {error}"))
+            })?;
+            hawdb_core::Decimal::from_le_bytes(bytes)
+                .map_err(|error| HawDBError::Execution(error.to_string()))?;
+            (0, 17)
+        }
+        tag if spill_temporal_kind(tag).is_some() => {
+            let kind = spill_temporal_kind(tag).expect("checked tag");
+            read_spill_temporal(input, kind)?;
+            (kind.payload_len().max(kind.heap_bytes()), 0)
         }
         tag => {
             return Err(HawDBError::Execution(format!(
@@ -708,6 +736,16 @@ fn value_encoded_len(value: &Value, depth: usize) -> Result<usize> {
         Value::Binary(value) => encoded_len_add(9, value.len()),
         Value::Vector(value) => encoded_len_add(9, value.encoded().len()),
         Value::Uuid(_) => Ok(17),
+        Value::Decimal(_) => Ok(18),
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => Ok(
+            1 + hawdb_core::temporal::codec::TemporalValueKind::of(value)
+                .expect("temporal value")
+                .payload_len(),
+        ),
         Value::List(values) => values.iter().try_fold(9usize, |bytes, value| {
             encoded_len_add(bytes, value_encoded_len(value, depth + 1)?)
         }),
@@ -753,6 +791,14 @@ fn write_binding(output: &mut impl Write, binding: &Binding) -> Result<()> {
     Ok(())
 }
 
+/// Writes and reads `binding` with the spill record codec.
+#[cfg(test)]
+pub(crate) fn round_trip_binding_for_tests(binding: &Binding) -> Result<Binding> {
+    let mut encoded = Vec::new();
+    write_binding(&mut encoded, binding)?;
+    read_binding(&mut Cursor::new(encoded.as_slice()))
+}
+
 fn read_binding(input: &mut Cursor<&[u8]>) -> Result<Binding> {
     let values = read_value_map(input, 0)?;
     let mut nodes = BTreeMap::new();
@@ -789,8 +835,8 @@ fn read_binding(input: &mut Cursor<&[u8]>) -> Result<Binding> {
     }
     Ok(Binding {
         values,
-        nodes,
-        relationships,
+        nodes: nodes.into(),
+        relationships: relationships.into(),
     })
 }
 
@@ -832,6 +878,10 @@ fn write_value(output: &mut impl Write, value: &Value, depth: usize) -> Result<(
             write_bytes(output, &[3])?;
             write_bytes(output, &value.to_bits().to_le_bytes())?;
         }
+        Value::Decimal(value) => {
+            write_bytes(output, &[15])?;
+            write_bytes(output, &value.to_le_bytes())?;
+        }
         Value::String(value) => {
             write_bytes(output, &[4])?;
             write_string(output, value)?;
@@ -849,6 +899,22 @@ fn write_value(output: &mut impl Write, value: &Value, depth: usize) -> Result<(
         Value::Uuid(value) => {
             write_bytes(output, &[8])?;
             write_bytes(output, value.as_bytes())?;
+        }
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => {
+            let mut encoded = Vec::with_capacity(29);
+            encoded.push(0);
+            let kind = hawdb_core::temporal::codec::encode_payload(value, &mut encoded)
+                .expect("temporal values have a payload");
+            encoded[0] = SPILL_TEMPORAL_TAGS
+                .iter()
+                .find(|(_, candidate)| *candidate == kind)
+                .map(|(tag, _)| *tag)
+                .expect("every temporal kind has a spill tag");
+            write_bytes(output, &encoded)?;
         }
         Value::List(values) => {
             write_bytes(output, &[5])?;
@@ -920,12 +986,61 @@ fn read_value(input: &mut Cursor<&[u8]>, depth: usize) -> Result<Value> {
             })?;
             Value::Uuid(hawdb_core::Uuid::from_bytes(bytes))
         }
+        15 => {
+            let mut bytes = [0_u8; 17];
+            input.read_exact(&mut bytes).map_err(|error| {
+                HawDBError::Execution(format!("truncated Decimal in spill record: {error}"))
+            })?;
+            Value::Decimal(
+                hawdb_core::Decimal::from_le_bytes(bytes)
+                    .map_err(|error| HawDBError::Execution(error.to_string()))?,
+            )
+        }
+        tag if spill_temporal_kind(tag).is_some() => {
+            read_spill_temporal(input, spill_temporal_kind(tag).expect("checked tag"))?
+        }
         tag => {
             return Err(HawDBError::Execution(format!(
                 "invalid value tag in spill record: {tag}"
             )));
         }
     })
+}
+
+/// Spill tags 10..=14 carry temporal values as their fixed-width
+/// `hawdb_core::temporal::codec` payload.
+const SPILL_TEMPORAL_TAGS: [(u8, hawdb_core::temporal::codec::TemporalValueKind); 5] = [
+    (10, hawdb_core::temporal::codec::TemporalValueKind::Date),
+    (
+        11,
+        hawdb_core::temporal::codec::TemporalValueKind::LocalTime,
+    ),
+    (
+        12,
+        hawdb_core::temporal::codec::TemporalValueKind::LocalDateTime,
+    ),
+    (13, hawdb_core::temporal::codec::TemporalValueKind::DateTime),
+    (14, hawdb_core::temporal::codec::TemporalValueKind::Duration),
+];
+
+fn spill_temporal_kind(tag: u8) -> Option<hawdb_core::temporal::codec::TemporalValueKind> {
+    SPILL_TEMPORAL_TAGS
+        .iter()
+        .find(|(candidate, _)| *candidate == tag)
+        .map(|(_, kind)| *kind)
+}
+
+fn read_spill_temporal(
+    input: &mut Cursor<&[u8]>,
+    kind: hawdb_core::temporal::codec::TemporalValueKind,
+) -> Result<Value> {
+    let mut bytes = [0_u8; 28];
+    let bytes = &mut bytes[..kind.payload_len()];
+    input.read_exact(bytes).map_err(|error| {
+        HawDBError::Execution(format!("truncated temporal value in spill record: {error}"))
+    })?;
+    hawdb_core::temporal::codec::decode_payload(kind, bytes)
+        .map_err(|error| HawDBError::Execution(format!("spill record {error}")))
 }
 
 fn check_depth(depth: usize) -> Result<()> {
@@ -1043,6 +1158,38 @@ mod tests {
     }
 
     #[test]
+    fn temporal_spill_values_round_trip_with_exact_lengths_and_reject_corruption() {
+        use hawdb_core::temporal;
+        let values = vec![
+            Value::Date(temporal::parse_date("-0044-03-15").unwrap()),
+            Value::LocalTime(temporal::parse_local_time("23:59:59.999999999").unwrap()),
+            Value::LocalDateTime(temporal::parse_local_datetime("2026-10-30T12:00").unwrap()),
+            Value::DateTime(temporal::parse_datetime("2026-10-30T12:00:00-05:30").unwrap()),
+            Value::duration(temporal::parse_duration("-P1Y2M3DT4.5S").unwrap()),
+        ];
+        for value in values.iter().cloned().chain([Value::List(values.clone())]) {
+            let mut encoded = Vec::new();
+            write_value(&mut encoded, &value, 0).unwrap();
+            assert_eq!(encoded.len(), value_encoded_len(&value, 0).unwrap());
+            assert_eq!(
+                read_value(&mut Cursor::new(encoded.as_slice()), 0).unwrap(),
+                value
+            );
+            assert!(estimate_value_memory(&mut Cursor::new(encoded.as_slice()), 0, true).is_ok());
+        }
+        // Tag 10 (date) with an out-of-range day, a truncated duration, and
+        // an unknown tag all fail closed.
+        for corrupt in [
+            vec![10, 0xff, 0xff, 0xff, 0x7f],
+            vec![14, 0, 0, 0],
+            vec![15, 0, 0, 0, 0],
+        ] {
+            assert!(read_value(&mut Cursor::new(corrupt.as_slice()), 0).is_err());
+            assert!(estimate_value_memory(&mut Cursor::new(corrupt.as_slice()), 0, true).is_err());
+        }
+    }
+
+    #[test]
     fn spill_write_does_not_stage_a_second_copy_of_a_large_binding() {
         let mut memory = test_memory("query-ledger");
         let binding = Binding {
@@ -1050,8 +1197,8 @@ mod tests {
                 "payload".to_string(),
                 Value::String("x".repeat(256 * 1024)),
             )]),
-            nodes: BTreeMap::new(),
-            relationships: BTreeMap::new(),
+            nodes: BTreeMap::new().into(),
+            relationships: BTreeMap::new().into(),
         };
         let binding_bytes = binding_memory_bytes(&binding);
         memory.query_memory_bytes = NonZeroUsize::new(binding_bytes).unwrap();
@@ -1100,8 +1247,8 @@ mod tests {
         let (run, mut writer) = spill_budget.create_run("read-query-ledger").unwrap();
         let binding = Binding {
             values: BTreeMap::from([("payload".to_string(), Value::String("x".repeat(64)))]),
-            nodes: BTreeMap::new(),
-            relationships: BTreeMap::new(),
+            nodes: BTreeMap::new().into(),
+            relationships: BTreeMap::new().into(),
         };
 
         writer.write(0, &binding, &spill_budget).unwrap();
@@ -1142,8 +1289,8 @@ mod tests {
         let spill_budget = SpillBudgetTracker::with_ledger("Test", &memory, &ledger);
         let binding = Binding {
             values: BTreeMap::from([("payload".to_string(), Value::String("x".repeat(64)))]),
-            nodes: BTreeMap::new(),
-            relationships: BTreeMap::new(),
+            nodes: BTreeMap::new().into(),
+            relationships: BTreeMap::new().into(),
         };
         let (run, mut writer) = spill_budget.create_run("decode-query-ledger").unwrap();
         writer.write(0, &binding, &spill_budget).unwrap();
@@ -1265,8 +1412,8 @@ mod tests {
     fn empty_binding() -> Binding {
         Binding {
             values: BTreeMap::new(),
-            nodes: BTreeMap::new(),
-            relationships: BTreeMap::new(),
+            nodes: BTreeMap::new().into(),
+            relationships: BTreeMap::new().into(),
         }
     }
 
@@ -1397,6 +1544,10 @@ mod tests {
                 ("null".to_string(), Value::Null),
                 ("false".to_string(), Value::Bool(false)),
                 ("negative".to_string(), Value::Int(i64::MIN)),
+                (
+                    "decimal".to_string(),
+                    Value::Decimal("9007199254740993.0100".parse().unwrap()),
+                ),
                 ("uuid".to_string(), uuid.clone()),
                 ("binary".to_string(), Value::Binary(vec![0, 1, 0xfe, 0xff])),
                 (
@@ -1423,7 +1574,8 @@ mod tests {
                         ("vector".to_string(), vector.clone()),
                     ]),
                 },
-            )]),
+            )])
+            .into(),
             relationships: BTreeMap::from([(
                 "r".to_string(),
                 RelRecord {
@@ -1437,7 +1589,8 @@ mod tests {
                         ("vector".to_string(), vector),
                     ]),
                 },
-            )]),
+            )])
+            .into(),
         };
         let memory = test_memory("codec");
         let spill_budget = SpillBudgetTracker::new("CodecTest", &memory);
@@ -1471,6 +1624,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(decoded, (42, binding));
+        let Value::Decimal(value) = decoded.1.values["decimal"] else {
+            panic!("native Decimal");
+        };
+        assert_eq!(value.to_string(), "9007199254740993.0100");
         assert_eq!(tracker.used_bytes, binding_memory_bytes(&decoded.1));
         tracker.reset();
         drop(accounted_reader);
@@ -1637,6 +1794,31 @@ mod tests {
             assert_eq!(read_value(&mut cursor, 0).unwrap(), Value::Int(42));
             assert_eq!(cursor.position() as usize, encoded.len());
         }
+    }
+
+    #[test]
+    fn decimal_spill_preflight_rejects_corruption_and_preserves_alignment() {
+        let value = Value::Decimal("-9007199254740993.0100".parse().unwrap());
+        let mut encoded = Vec::new();
+        write_value(&mut encoded, &value, 0).unwrap();
+        assert_eq!(encoded.len(), 18);
+        assert_eq!(encoded[0], 15);
+        for end in 0..encoded.len() {
+            assert!(estimate_value_memory(&mut Cursor::new(&encoded[..end]), 0, false).is_err());
+            assert!(read_value(&mut Cursor::new(&encoded[..end]), 0).is_err());
+        }
+        let mut corrupt = encoded.clone();
+        corrupt[17] = 39;
+        assert!(estimate_value_memory(&mut Cursor::new(corrupt.as_slice()), 0, false).is_err());
+        assert!(read_value(&mut Cursor::new(corrupt.as_slice()), 0).is_err());
+        let date = Value::Date(hawdb_core::temporal::parse_date("2026-11-01").unwrap());
+        write_value(&mut encoded, &date, 0).unwrap();
+        write_value(&mut encoded, &Value::Int(42), 0).unwrap();
+        let mut cursor = Cursor::new(encoded.as_slice());
+        assert_eq!(estimate_value_memory(&mut cursor, 0, false).unwrap(), 17);
+        assert_eq!(read_value(&mut cursor, 0).unwrap(), date);
+        assert_eq!(read_value(&mut cursor, 0).unwrap(), Value::Int(42));
+        assert_eq!(cursor.position() as usize, encoded.len());
     }
 
     #[test]

@@ -14,6 +14,14 @@
 
 use super::*;
 
+mod encoded;
+
+fn has_expression_key(items: &[SortItem]) -> bool {
+    items
+        .iter()
+        .any(|item| matches!(item.key, hawdb_plan_cypher::SortKey::Expression(_)))
+}
+
 struct SortRunRow {
     sort_values: Vec<(Value, SortDirection)>,
     ordinal: u64,
@@ -76,10 +84,8 @@ fn compare_sort_values(
 ) -> Ordering {
     for ((left, direction), (right, other_direction)) in left.iter().zip(right) {
         debug_assert_eq!(direction, other_direction);
-        let ordering = match direction {
-            SortDirection::Asc => left.cmp(right),
-            SortDirection::Desc => left.cmp(right).reverse(),
-        };
+        // openCypher NULL placement; see `SortDirection::compare`.
+        let ordering = direction.compare(left, right);
         if ordering != Ordering::Equal {
             return ordering;
         }
@@ -184,13 +190,21 @@ impl<'plan, 'runtime> SortOperator<'plan, 'runtime> {
         )?;
         let bytes = row.memory_bytes();
         ensure_operator_item_fits("SortExec", bytes, &self.tracker)?;
-        if self.tracker.would_exceed(bytes) {
+        if self.tracker.should_spill(bytes, self.task_context) {
             self.runs.push(spill_sort_run(
                 &mut self.rows,
                 &mut self.spill_budget,
                 self.task_context,
             )?);
             self.tracker.reset();
+            // A pressure spill must release the row-vector backing as well as
+            // its payloads; ordinary capacity spills can reuse that allocation.
+            if self.task_context.is_some_and(|task| {
+                task.working_memory_target(self.tracker.budget_bytes as u64)
+                    < self.tracker.budget_bytes as u64
+            }) {
+                self.rows = Vec::new();
+            }
         }
         self.tracker.try_charge_from(&mut allocation, bytes)?;
         self.rows.push(row);
@@ -387,6 +401,8 @@ impl<'plan, 'runtime> TopNOperator<'plan, 'runtime> {
         self.input_rows = self.input_rows.saturating_add(1);
         let bytes = candidate.memory_bytes();
         ensure_operator_item_fits("TopNExec", bytes, &self.tracker)?;
+        // TopN already bounds its state by retained. Soft-pressure spills would
+        // discard its cutoff and write otherwise rejected input repeatedly.
         if self.heap.len() < self.retained {
             if self.tracker.would_exceed(bytes) {
                 self.spill_heap()?;
@@ -553,6 +569,7 @@ fn spill_sort_run(
     for row in rows.drain(..) {
         runtime_checkpoint(task_context)?;
         writer.note_merge_record_bytes(row.memory_bytes());
+        writer.note_sort_key_bytes(crate::binding::sort_values_memory_bytes(&row.sort_values));
         writer.write(row.ordinal, &row.binding, spill_budget)?;
     }
     runtime_checkpoint(task_context)?;
@@ -572,6 +589,7 @@ pub fn spill_top_n_run(
     for row in rows {
         runtime_checkpoint(task_context)?;
         writer.note_merge_record_bytes(row.memory_bytes());
+        writer.note_sort_key_bytes(crate::binding::sort_values_memory_bytes(&row.sort_values));
         writer.write(row.ordinal, &row.binding, spill_budget)?;
     }
     runtime_checkpoint(task_context)?;
@@ -588,10 +606,7 @@ pub fn compact_sort_runs(
     blocking_account: &QueryMemoryAccount,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<Vec<spill::SpillRun>> {
-    if items
-        .iter()
-        .any(|item| matches!(item.key, hawdb_plan_cypher::SortKey::Expression(_)))
-    {
+    if has_expression_key(items) {
         // Record-size child allowances cannot bound expression scratch space.
         // Share the query root serially until merges can reserve both separately.
         return spill::compact_runs_serial(
@@ -612,27 +627,10 @@ pub fn compact_sort_runs(
             },
         );
     }
-    spill::compact_runs_with_memory(
+    encoded::Merge::new(items, spill_budget, task_context).compact_levels(
         runs,
-        NonZeroUsize::new(2).expect("two-way merge fan-in"),
-        spill::CompactionMemory {
-            blocking: blocking_account,
-            spill: spill_budget,
-            worker_limit: spill::default_compaction_worker_limit(),
-        },
-        task_context,
-        |left, right, blocking_account, spill_budget| {
-            merge_sort_run_pair(
-                left,
-                right,
-                items,
-                catalog,
-                memory,
-                spill_budget,
-                blocking_account,
-                task_context,
-            )
-        },
+        memory.blocking_operator_bytes,
+        blocking_account,
     )
 }
 
@@ -648,6 +646,15 @@ fn merge_sort_run_pair(
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<spill::SpillRun> {
     runtime_checkpoint(task_context)?;
+    if !has_expression_key(items) {
+        return encoded::Merge::new(items, spill_budget, task_context).compact(
+            &[left, right],
+            OperatorMemoryTracker::with_blocking_account(
+                memory.blocking_operator_bytes,
+                blocking_account.clone(),
+            ),
+        );
+    }
     let mut readers = [left.reader()?, right.reader()?];
     let mut tracker = OperatorMemoryTracker::with_blocking_account(
         memory.blocking_operator_bytes,
@@ -770,6 +777,16 @@ fn merge_sort_runs_with_output(
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
     runtime_checkpoint(task_context)?;
+    if !has_expression_key(items) {
+        return encoded::Merge::new(items, spill_budget, task_context).emit(
+            runs,
+            tracker,
+            output,
+            skip_rows,
+            output_rows,
+            emit,
+        );
+    }
     let mut readers = runs
         .iter()
         .map(spill::SpillRun::reader)

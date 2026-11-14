@@ -67,6 +67,7 @@ impl Totals {
             );
             total.generation = next.generation;
             total.cleanup_retry_required |= next.cleanup_retry_required;
+            total.cleanup_closure_unverified |= next.cleanup_closure_unverified;
             total.lexical_generation = next.lexical_generation;
             total.document_count = next.document_count;
             total.documents_digest = next.documents_digest;
@@ -193,6 +194,7 @@ pub(super) fn publish(
     );
     report.cleanup_deleted_files = cleanup.deleted_files;
     report.cleanup_pending_files = cleanup.pending_files;
+    report.cleanup_closure_unverified |= cleanup.closure_unverified;
     report.cleanup_pending_stages = report
         .cleanup_pending_stages
         .checked_add(usize::from(writer.stage.cleanup()))

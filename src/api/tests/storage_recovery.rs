@@ -16,6 +16,7 @@ use super::*;
 use crate::store::set_wal_apply_failpoint;
 use crate::{HawDBError, StorageResidencyMode};
 
+mod composite_mutations;
 #[path = "storage_recovery/wal_tail.rs"]
 mod wal_tail;
 
@@ -404,6 +405,68 @@ fn forced_out_of_core_checkpoint_reopen_and_mutation_are_equivalent() {
         let cache = db.segment_cache_snapshot().unwrap().unwrap();
         assert!(cache.resident_bytes <= cache.capacity_bytes);
     }
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn out_of_core_sql_scan_admits_consecutive_pages_wider_than_the_writer_target() {
+    let path = unique_test_dir("wide_row_page_scan_budget");
+    let row_count = 20usize;
+    let property_count = 64usize;
+    let config = DatabaseConfig {
+        storage_residency_mode: StorageResidencyMode::OutOfCore,
+        segment_cache_capacity_bytes: 1024 * 1024,
+        max_read_result_rows: Some(row_count),
+        ..DatabaseConfig::default()
+    };
+    let property_definitions = (0..property_count)
+        .map(|index| format!("p{index} TEXT NOT NULL"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let property_names = (0..property_count)
+        .map(|index| format!("p{index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let property_parameters = (0..property_count)
+        .map(|index| format!("${}", index + 3))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let payload = "x".repeat(3_500);
+    {
+        let mut db = Database::open_with_config(&path, config.clone()).unwrap();
+        db.query_sql(&format!(
+            "CREATE TABLE wide_rows (id BIGINT PRIMARY KEY, marker TEXT NOT NULL, \
+             {property_definitions})"
+        ))
+        .unwrap();
+        let insert = format!(
+            "INSERT INTO wide_rows (id, marker, {property_names}) \
+             VALUES ($1, $2, {property_parameters})"
+        );
+        for id in 0..row_count {
+            let mut parameters = vec![
+                Value::Int(id as i64),
+                Value::String(if id + 1 == row_count { "hit" } else { "miss" }.into()),
+            ];
+            parameters.extend(
+                std::iter::repeat_with(|| Value::String(payload.clone())).take(property_count),
+            );
+            db.query_sql_with_params(&insert, &parameters).unwrap();
+        }
+        db.checkpoint().unwrap();
+        assert!(db.storage_residency_report().unwrap().out_of_core);
+    }
+
+    let db = Database::open_with_config(&path, config).unwrap();
+    let read = db.begin_read_transaction().unwrap();
+    let output = read
+        .query_sql_bounded("SELECT id FROM wide_rows WHERE marker = 'hit'", Some(1))
+        .unwrap();
+    assert_eq!(output.rows.len(), 1);
+    assert_eq!(output.rows[0]["id"], Value::Int((row_count - 1) as i64));
+
+    drop(read);
+    drop(db);
     std::fs::remove_dir_all(path).unwrap();
 }
 
@@ -1013,13 +1076,41 @@ fn external_optimizer_statistics_refresh_spills_and_persists_exact_stats() {
             },
         )
         .unwrap();
-        assert_eq!(db.statistics().unwrap(), refreshed_statistics);
+        let statistics = db.statistics().unwrap();
+        // The 8-KiB external budget omits row reservoirs; materialized capture
+        // can rebuild that optional family while preserving every legacy field.
+        assert!(refreshed_statistics.property_distributions.is_empty());
+        assert!(refreshed_statistics.rel_property_distributions.is_empty());
+        let id_distribution = statistics
+            .property_distributions
+            .iter()
+            .find(|((_, property), histogram)| {
+                property == "id" && histogram.population_count == 130
+            })
+            .unwrap()
+            .1;
+        assert_eq!(
+            id_distribution
+                .equality(&Value::String("filler".into()), 130, Some(3))
+                .rows,
+            128
+        );
+        assert!(!statistics
+            .property_distributions
+            .keys()
+            .any(|(_, property)| property == "body" || property == "mixed_value"));
+        let mut legacy = statistics;
+        legacy.property_distributions.clear();
+        legacy.rel_property_distributions.clear();
+        assert_eq!(legacy, refreshed_statistics);
     }
 
     {
         let db = Database::open_with_config(&path, config).unwrap();
         let statistics = db.statistics().unwrap();
         assert!(statistics.advanced_statistics_complete);
+        assert!(statistics.property_distributions.is_empty());
+        assert!(statistics.rel_property_distributions.is_empty());
         assert_eq!(
             statistics
                 .rel_property_distinct_counts
@@ -1549,7 +1640,14 @@ fn legacy_text_wal_is_rejected_by_the_single_v1_reader() {
     )
     .unwrap();
 
-    let strict = Database::open(&path).unwrap();
+    let strict = Database::open_with_config(
+        &path,
+        DatabaseConfig {
+            recovery_mode: RecoveryMode::Strict,
+            ..DatabaseConfig::default()
+        },
+    )
+    .unwrap();
     let error = strict.commit_epoch().unwrap_err();
     assert!(
         error
@@ -1570,39 +1668,29 @@ fn legacy_text_wal_is_rejected_by_the_single_v1_reader() {
 }
 
 #[test]
-fn stale_generation_wal_fragment_reads_as_clean_end_of_log() {
+fn stale_generation_wal_fragment_requires_an_unsynchronized_fence() {
     let path = unique_test_dir("stale_generation_wal_tail");
     {
         let mut db = Database::open(&path).unwrap();
         db.query("CREATE (:Memory {id: 1, title: 'Graph foundations'})")
             .unwrap();
     }
-    // A well-formed fragment carrying a stale WAL generation past the
-    // logical tail must read as clean end of log (recyclable-log
-    // discipline), not as a torn tail and not as corruption.
-    crate::store::append_stale_generation_wal_fragment(&active_wal_path(&path)).unwrap();
-    {
-        let mut db = Database::open(&path).unwrap();
-        let output = db
-            .query("MATCH (m:Memory) WHERE m.id = 1 RETURN m.title AS title")
-            .unwrap();
-        assert_eq!(
-            output.rows[0].get("title"),
-            Some(&Value::String("Graph foundations".to_string()))
-        );
-        let recovery = db.storage_recovery_report().unwrap();
-        assert!(recovery.replayed_wal_entries >= 1);
-        assert!(!recovery.torn_tail_ignored);
-        assert!(!recovery.torn_tail_repaired);
-        assert_eq!(recovery.discarded_wal_tail_bytes, 0);
-        assert!(recovery.torn_tail_reason.is_none());
-    }
-    // The stale fragment is not doctor-repairable damage either.
+    // No relaxed interval was admitted. A fully present stale fragment has
+    // no proof that its bytes lie beyond a durability barrier.
+    let wal = active_wal_path(&path);
+    crate::store::append_stale_generation_wal_fragment(&wal).unwrap();
+    let original = std::fs::read(&wal).unwrap();
+    let db = Database::open(&path).unwrap();
+    assert!(db
+        .commit_epoch()
+        .unwrap_err()
+        .to_string()
+        .contains("stale WAL"));
+    drop(db);
+    assert_eq!(std::fs::read(&wal).unwrap(), original);
     let error =
         DatabaseDoctor::plan_wal_tail_repair(&path, WalDoctorOptions::default()).unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("no repairable incomplete final record"));
+    assert!(error.to_string().contains("rejected corruption"));
     std::fs::remove_dir_all(path).unwrap();
 }
 
@@ -1628,7 +1716,7 @@ fn persists_nodes_across_reopen_with_wal_replay() {
 }
 
 #[test]
-fn default_recovery_rejects_torn_wal_tail_until_explicit_doctor_repair() {
+fn strict_recovery_rejects_torn_wal_tail_until_explicit_doctor_repair() {
     let path = unique_test_dir("strict_torn_wal");
     {
         let mut db = Database::open(&path).unwrap();
@@ -1642,7 +1730,14 @@ fn default_recovery_rejects_torn_wal_tail_until_explicit_doctor_repair() {
         .write_all(b"torn-entry-without-checksum")
         .unwrap();
 
-    let strict = Database::open(&path).unwrap();
+    let strict = Database::open_with_config(
+        &path,
+        DatabaseConfig {
+            recovery_mode: RecoveryMode::Strict,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let error = strict.commit_epoch().unwrap_err();
     assert!(error
         .to_string()
@@ -1825,7 +1920,7 @@ fn storage_recovery_report_tracks_wal_replay_boundary() {
     .unwrap();
     let report = db.storage_recovery_report().unwrap();
     assert!(report.durable);
-    assert_eq!(report.recovery_mode, RecoveryMode::Strict);
+    assert_eq!(report.recovery_mode, RecoveryMode::AutoRepairTornTail);
     assert_eq!(report.max_wal_replay_entries, Some(8));
     assert_eq!(report.checkpoint_epoch, Some(checkpoint_generation));
     assert_eq!(report.checkpoint_commit_epoch, Some(2));
@@ -2153,7 +2248,7 @@ fn mem_shaped_graph_mutations_recover_across_checkpoint_and_wal() {
         assert_eq!(recovery.max_wal_replay_entries, Some(8));
         assert_eq!(recovery.recovered_commit_epoch, 5);
 
-        let mem_recovery = NowledgeMemStorageRecoveryReport::from_storage_report(&recovery);
+        let mem_recovery = EmbeddedStorageRecoveryReport::from_storage_report(&recovery);
         assert!(mem_recovery.ready);
         assert!(mem_recovery.durable_recovery_observed);
         assert!(mem_recovery.checkpoint_boundary_present);
@@ -2245,7 +2340,7 @@ fn mem_shaped_post_checkpoint_batch_replays_before_torn_tail() {
         assert_eq!(recovery.discarded_wal_tail_bytes, 0);
         assert!(recovery.torn_tail_reason.is_none());
 
-        let mem_recovery = NowledgeMemStorageRecoveryReport::from_storage_report(&recovery);
+        let mem_recovery = EmbeddedStorageRecoveryReport::from_storage_report(&recovery);
         assert!(mem_recovery.ready);
         assert!(mem_recovery.durable_recovery_observed);
         assert!(mem_recovery.checkpoint_boundary_present);
@@ -2276,6 +2371,7 @@ fn read_only_open_does_not_create_missing_database_path() {
         &path,
         DatabaseConfig {
             read_only: true,
+            recovery_mode: crate::RecoveryMode::Strict,
             ..DatabaseConfig::default()
         },
     )
@@ -2298,6 +2394,7 @@ fn durable_database_data_admission_is_exclusive_until_owner_drops() {
         &path,
         DatabaseConfig {
             read_only: true,
+            recovery_mode: crate::RecoveryMode::Strict,
             ..DatabaseConfig::default()
         },
     )
@@ -2349,6 +2446,7 @@ fn read_only_open_loads_existing_database_without_allowing_writes() {
             &path,
             DatabaseConfig {
                 read_only: true,
+                recovery_mode: crate::RecoveryMode::Strict,
                 ..DatabaseConfig::default()
             },
         )

@@ -233,6 +233,7 @@ fn durable_database_exposes_projection_generations_across_reopen() {
             &path,
             DatabaseConfig {
                 read_only: true,
+                recovery_mode: crate::RecoveryMode::Strict,
                 ..DatabaseConfig::default()
             },
         )

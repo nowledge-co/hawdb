@@ -445,6 +445,7 @@ fn validate_root(
 mod builder;
 pub(crate) mod demand;
 pub use builder::GraphDescriptorTreeBuilder;
+pub use demand::{descriptor_retained_leaf_hits_for_test, DescriptorLeafScope};
 
 #[derive(Debug)]
 pub struct PreparedGraphDescriptorTree {
@@ -464,7 +465,7 @@ impl PreparedGraphDescriptorTree {
         &mut self,
         work: &crate::background::CheckpointWorkContext,
     ) {
-        self.work = work.clone();
+        self.work.rebind(work);
     }
 
     pub fn root(&self) -> &GraphDescriptorTreeRoot {

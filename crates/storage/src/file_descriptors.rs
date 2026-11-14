@@ -74,6 +74,15 @@ pub struct FileDescriptorMetrics {
     pub cache_hits: u64,
     pub cache_misses: u64,
     pub cache_evictions: u64,
+    /// Immutable-object bytes that passed a whole-object identity hash in
+    /// branch mount or cold handle validation. Refused objects are not counted.
+    pub identity_verified_bytes: u64,
+    /// Cold handle validations that skipped the identity hash because the
+    /// preceding mount had just hashed the same unmodified inode.
+    pub mount_verification_reuses: u64,
+    /// Unconsumed mount-verification records evicted to stay within the
+    /// per-project cap. Each eviction only restores one full identity hash.
+    pub mount_verification_evictions: u64,
 }
 
 #[derive(Debug, Default)]
@@ -87,6 +96,9 @@ struct Counts {
     cache_hits: u64,
     cache_misses: u64,
     cache_evictions: u64,
+    identity_verified_bytes: u64,
+    mount_verification_reuses: u64,
+    mount_verification_evictions: u64,
 }
 
 impl Counts {
@@ -217,6 +229,9 @@ impl BudgetState {
             cache_hits: counts.cache_hits,
             cache_misses: counts.cache_misses,
             cache_evictions: counts.cache_evictions,
+            identity_verified_bytes: counts.identity_verified_bytes,
+            mount_verification_reuses: counts.mount_verification_reuses,
+            mount_verification_evictions: counts.mount_verification_evictions,
         }
     }
 
@@ -248,6 +263,25 @@ impl BudgetState {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .cache_misses += 1;
+    }
+    pub(crate) fn record_identity_verified(&self, bytes: u64) {
+        let mut counts = self
+            .counts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        counts.identity_verified_bytes = counts.identity_verified_bytes.saturating_add(bytes);
+    }
+    pub(crate) fn record_mount_verification_reuse(&self) {
+        self.counts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .mount_verification_reuses += 1;
+    }
+    pub(crate) fn record_mount_verification_eviction(&self) {
+        self.counts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .mount_verification_evictions += 1;
     }
     pub(crate) fn record_cache_evictions(&self, count: usize) {
         self.counts
@@ -368,6 +402,28 @@ impl ProjectFileDescriptors {
                 Ok(project)
             }
             None => Self::acquire_root(root, DEFAULT_MAX_OPEN_FILES, create, None, None),
+        }
+    }
+
+    /// Admit a related component under the host's explicit namespace boundary.
+    /// Existing containing domains retain their capacity and must agree on the
+    /// canonical anchor; standalone components retain the finite default limit.
+    #[doc(hidden)]
+    pub fn acquire_component_with_namespace_anchor(
+        root: &Path,
+        create: bool,
+        anchor: &Path,
+    ) -> Result<Self, HawDBError> {
+        let anchor = Some(validate_namespace_anchor(root, anchor)?);
+        match Self::containing(root)? {
+            Some(project) => {
+                require_namespace_anchor(&project.state, Some(&anchor))?;
+                if create {
+                    ensure_project_namespace(&project.state, project.root())?;
+                }
+                Ok(project)
+            }
+            None => Self::acquire_root(root, DEFAULT_MAX_OPEN_FILES, create, None, Some(&anchor)),
         }
     }
 
@@ -946,6 +1002,10 @@ impl FileOpenContext {
 
     pub(crate) fn project_root(&self) -> &Path {
         &self.state.root
+    }
+
+    pub(crate) fn namespace_anchor(&self) -> Option<&Path> {
+        self.state.namespace_anchor.as_deref()
     }
 
     pub(crate) fn metadata(&self, path: &Path) -> io::Result<std::fs::Metadata> {

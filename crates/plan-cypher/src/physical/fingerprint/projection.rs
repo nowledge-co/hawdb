@@ -99,6 +99,12 @@ pub fn write_projection_expression(output: &mut String, expression: &ProjectionE
             write_projection_expression(output, right);
             output.push(')');
         }
+        ProjectionExpression::Conversion { function, argument } => {
+            output.push_str(function.function_name());
+            output.push('(');
+            write_projection_expression(output, argument);
+            output.push(')');
+        }
         ProjectionExpression::Not(child) => {
             output.push_str("Not(");
             write_projection_expression(output, child);
@@ -131,6 +137,15 @@ pub fn write_projection_expression(output: &mut String, expression: &ProjectionE
             write_identifier(output, variable);
             output.push(')');
         }
+        // Distinct from `type(r)` above, which also renders as `label(`:
+        // this form also reads node labels.
+        ProjectionExpression::Label { function, variable } => {
+            output.push_str("entity_");
+            output.push_str(function.function_name());
+            output.push('(');
+            write_identifier(output, variable);
+            output.push(')');
+        }
         ProjectionExpression::Literal(value) => {
             write_value(output, value);
         }
@@ -144,11 +159,18 @@ pub fn write_projection_expression(output: &mut String, expression: &ProjectionE
             }
             output.push(')');
         }
-        ProjectionExpression::JsonValue { expression, path } => {
+        ProjectionExpression::JsonValue {
+            expression,
+            path,
+            null_on_non_scalar,
+        } => {
             output.push_str("json_value(");
             write_projection_expression(output, expression);
             output.push(',');
             write_identifier(output, path);
+            if *null_on_non_scalar {
+                output.push_str(" null on nonscalar");
+            }
             output.push(')');
         }
         ProjectionExpression::Left { expression, length } => {
@@ -377,6 +399,217 @@ pub fn write_projection_expression(output: &mut String, expression: &ProjectionE
             write_identifier(output, property);
             output.push(')');
         }
+        ProjectionExpression::List(elements) => {
+            output.push_str("list(");
+            for (index, element) in elements.iter().enumerate() {
+                if index > 0 {
+                    output.push(',');
+                }
+                write_projection_expression(output, element);
+            }
+            output.push(')');
+        }
+        ProjectionExpression::ListFunction {
+            function,
+            arguments,
+        } => {
+            output.push_str("list_function(");
+            output.push_str(function.function_name());
+            for argument in arguments {
+                output.push(',');
+                write_projection_expression(output, argument);
+            }
+            output.push(')');
+        }
+        ProjectionExpression::StringFunction {
+            function,
+            arguments,
+            ..
+        } => {
+            output.push_str("string_function(");
+            output.push_str(function.function_name());
+            for argument in arguments {
+                output.push(',');
+                write_projection_expression(output, argument);
+            }
+            output.push(')');
+        }
+        ProjectionExpression::ListComprehension(comprehension) => {
+            output.push_str("list_comprehension(");
+            write_identifier(output, &comprehension.variable);
+            output.push(',');
+            write_projection_expression(output, &comprehension.list);
+            output.push_str(",where=");
+            if let Some(predicate) = &comprehension.predicate {
+                write_projection_expression(output, predicate);
+            }
+            output.push_str(",map=");
+            if let Some(projection) = &comprehension.projection {
+                write_projection_expression(output, projection);
+            }
+            output.push(')');
+        }
+        ProjectionExpression::NumericFunction { function, argument } => {
+            output.push_str("numeric_function(");
+            output.push_str(function.function_name());
+            output.push(',');
+            write_projection_expression(output, argument);
+            output.push(')');
+        }
+        ProjectionExpression::Reduce(reduce) => {
+            output.push_str("reduce(");
+            write_identifier(output, &reduce.accumulator);
+            output.push('=');
+            write_projection_expression(output, &reduce.initial);
+            output.push(',');
+            write_identifier(output, &reduce.variable);
+            output.push_str(",in=");
+            write_projection_expression(output, &reduce.list);
+            output.push_str(",map=");
+            write_projection_expression(output, &reduce.expression);
+            output.push(')');
+        }
+        ProjectionExpression::RelationshipEndpoint {
+            endpoint,
+            variable,
+            endpoints,
+        } => {
+            output.push_str(endpoint.function_name());
+            output.push('(');
+            write_identifier(output, variable);
+            for node in endpoints.iter().flatten() {
+                output.push(',');
+                write_identifier(output, node);
+            }
+            output.push(')');
+        }
+        ProjectionExpression::RelationshipValueEndpoint {
+            endpoint,
+            relationship,
+            visibility,
+        } => {
+            output.push_str(endpoint.function_name());
+            output.push_str("_value(");
+            write_projection_expression(output, relationship);
+            if let Some(visibility) = visibility {
+                output.push_str(",visible=");
+                super::predicate::write_predicate(output, visibility);
+            }
+            output.push(')');
+        }
+        ProjectionExpression::Pattern(pattern) => {
+            output.push_str("pattern(");
+            super::graph_match::write_program(output, &pattern.program);
+            output.push_str(",graph=");
+            super::common::write_identifier_list(output, &pattern.graph_variables);
+            output.push_str(",arguments=");
+            for (column, argument) in &pattern.arguments {
+                write_identifier(output, column);
+                output.push(':');
+                write_projection_expression(output, argument);
+                output.push(';');
+            }
+            if let Some(seeds) = &pattern.seeds {
+                output.push_str(",seeds=");
+                write_identifier(output, &seeds.variable);
+                output.push(':');
+                write_identifier(output, &seeds.column);
+                output.push(':');
+                for expression in &seeds.expressions {
+                    write_projection_expression(output, expression);
+                    output.push(';');
+                }
+                super::graph_match::write_program(output, &seeds.program);
+            }
+            output.push_str(",identity=");
+            super::common::write_identifier_list(output, &pattern.identity_columns);
+            output.push_str(",columns=");
+            super::common::write_identifier_list(output, &pattern.columns);
+            output.push_str(",where=");
+            if let Some(predicate) = &pattern.predicate {
+                write_projection_expression(output, predicate);
+            }
+            output.push_str(",map=");
+            if let Some(projection) = &pattern.projection {
+                write_projection_expression(output, projection);
+            }
+            output.push(')');
+        }
+        ProjectionExpression::LocalVariable { name, property } => {
+            output.push_str("local(");
+            write_identifier(output, name);
+            if let Some(property) = property {
+                output.push('.');
+                write_identifier(output, property);
+            }
+            output.push(')');
+        }
+        ProjectionExpression::ListIndex { list, index } => {
+            output.push_str("list_index(");
+            write_projection_expression(output, list);
+            output.push(',');
+            write_projection_expression(output, index);
+            output.push(')');
+        }
+        ProjectionExpression::ListSlice { list, start, end } => {
+            output.push_str("list_slice(");
+            write_projection_expression(output, list);
+            output.push_str(",start=");
+            if let Some(start) = start {
+                write_projection_expression(output, start);
+            }
+            output.push_str(",end=");
+            if let Some(end) = end {
+                write_projection_expression(output, end);
+            }
+            output.push(')');
+        }
+        ProjectionExpression::Path { function, column } => {
+            output.push_str("path_");
+            match function {
+                PathFunction::Length => output.push_str("length("),
+                PathFunction::Nodes => output.push_str("nodes("),
+                PathFunction::Relationships => output.push_str("relationships("),
+                PathFunction::NodeProperties(property) => {
+                    output.push_str("node_properties(");
+                    write_identifier(output, property);
+                    output.push(',');
+                }
+            }
+            write_identifier(output, column);
+            output.push(')');
+        }
+        ProjectionExpression::TemporalFunction {
+            function,
+            arguments,
+        } => {
+            output.push_str("temporal_function(");
+            output.push_str(&function.function_name());
+            for argument in arguments {
+                output.push(',');
+                write_projection_expression(output, argument);
+            }
+            output.push(')');
+        }
+        ProjectionExpression::PropertyAccess { expression, key } => {
+            output.push_str("property_access(");
+            write_projection_expression(output, expression);
+            output.push('.');
+            write_identifier(output, key);
+            output.push(')');
+        }
+        ProjectionExpression::MapLiteral(entries) => {
+            output.push_str("map(");
+            for (index, (key, value)) in entries.iter().enumerate() {
+                if index > 0 {
+                    output.push(',');
+                }
+                write_identifier(output, key);
+                output.push(':');
+                write_projection_expression(output, value);
+            }
+            output.push(')');
+        }
     }
 }
 
@@ -395,6 +628,7 @@ fn write_aggregation(output: &mut String, item: &Aggregation) {
     output.push_str("Aggregation(");
     match item.function {
         AggregateFunction::Count => output.push_str("count"),
+        AggregateFunction::Sum => output.push_str("sum"),
         AggregateFunction::Min => output.push_str("min"),
         AggregateFunction::Max => output.push_str("max"),
         AggregateFunction::Avg => output.push_str("avg"),
@@ -431,6 +665,10 @@ fn write_aggregation(output: &mut String, item: &Aggregation) {
             output.push('.');
             write_identifier(output, property);
         }
+        AggregateTarget::Expression(expression) => {
+            output.push_str("expression:");
+            write_projection_expression(output, expression);
+        }
     }
     output.push_str(") as ");
     write_identifier(output, &item.name);
@@ -466,4 +704,32 @@ pub(super) fn write_sort_list(output: &mut String, items: &[SortItem]) {
         output.push(')');
     }
     output.push(']');
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn json_value_fingerprint(null_on_non_scalar: bool) -> String {
+        let expression = ProjectionExpression::JsonValue {
+            expression: Box::new(ProjectionExpression::Column("metadata".into())),
+            path: "$.state".into(),
+            null_on_non_scalar,
+        };
+        let mut output = String::new();
+        write_projection_expression(&mut output, &expression);
+        output
+    }
+
+    #[test]
+    fn json_value_nonscalar_mode_has_a_distinct_fingerprint() {
+        let strict = json_value_fingerprint(false);
+        let null_on_non_scalar = json_value_fingerprint(true);
+        assert_ne!(strict, null_on_non_scalar);
+        assert!(!strict.contains("null on nonscalar"), "{strict}");
+        assert!(
+            null_on_non_scalar.contains("null on nonscalar"),
+            "{null_on_non_scalar}"
+        );
+    }
 }

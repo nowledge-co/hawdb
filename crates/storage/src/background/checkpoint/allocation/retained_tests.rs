@@ -41,7 +41,7 @@ fn fixture() -> (RuntimeGovernor, RuntimePermit, CheckpointWorkContext) {
 }
 
 fn available(work: &CheckpointWorkContext) -> u64 {
-    match work.task.reserve_working_memory(10_000) {
+    match work.task_context().reserve_working_memory(10_000) {
         Err(RuntimeMemoryError::ReservationExceeded {
             available_bytes, ..
         }) => available_bytes,
@@ -144,8 +144,8 @@ fn cancellation_before_retained_transfer_preserves_both_owners_and_charges() {
     let before = available(&work);
     let target_head = Arc::as_ptr(target.head.as_ref().unwrap());
     let incoming_head = Arc::as_ptr(incoming.head.as_ref().unwrap());
-    let cancelled = CheckpointWorkContext::new(work.task.child());
-    cancelled.task.cancellation().cancel();
+    let cancelled = CheckpointWorkContext::new(work.task_context().child());
+    cancelled.task_context().cancellation().cancel();
     assert!(target.append_retained(&mut incoming, &cancelled).is_err());
     assert_eq!(Arc::as_ptr(target.head.as_ref().unwrap()), target_head);
     assert_eq!(Arc::as_ptr(incoming.head.as_ref().unwrap()), incoming_head);

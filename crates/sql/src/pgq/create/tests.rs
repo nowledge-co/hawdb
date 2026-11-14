@@ -17,7 +17,9 @@
 //! These tests exercise the explicitly supported six-scalar profile.
 
 use super::*;
-use hawdb_sql_syntax::{parse_postgres_statement, ExpressionKindSyntax, PostgresStatementSyntax};
+use hawdb_sql_syntax::{
+    parse_postgres_statement, ExpressionKindSyntax, PostgresStatementSyntax, SyntaxErrorCode,
+};
 
 #[derive(Default, Clone)]
 struct Snapshot(BTreeMap<Vec<String>, PgqSourceTableSchema>);
@@ -526,6 +528,17 @@ fn expression_profile_resolves_constants_and_preserves_types() {
 }
 
 #[test]
+fn malformed_numeric_separators_are_rejected_before_creation_binding() {
+    for number in ["1_", "1__0", "1._5"] {
+        let sql =
+            format!("CREATE PROPERTY GRAPH g VERTEX TABLES (vertices PROPERTIES ({number} AS p))");
+        let error = parse_postgres_statement(&sql).unwrap_err();
+        assert_eq!(error.code, SyntaxErrorCode::InvalidCharacter, "{sql}");
+        assert_eq!(&sql[error.span.start..error.span.end], "_");
+    }
+}
+
+#[test]
 fn unsupported_and_ill_typed_expressions_fail_explicitly() {
     for (expression, expected) in [
         ("unknown(id)", Code::UnsupportedExpression),
@@ -697,6 +710,7 @@ fn typed_string_public_ast_and_resolved_literal_identity_use_the_six_type_profil
         let ExpressionKindSyntax::Cast {
             expression,
             data_type,
+            ..
         } = &properties[0].expression.kind
         else {
             panic!()
@@ -708,6 +722,7 @@ fn typed_string_public_ast_and_resolved_literal_identity_use_the_six_type_profil
         };
         properties[0].expression.kind = ExpressionKindSyntax::TypedString {
             data_type: data_type.parts[0].clone(),
+            time_zone: None,
             value,
         };
         assert_eq!(

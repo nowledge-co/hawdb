@@ -149,6 +149,7 @@ and are materialized in isolated directories. Recovery uses ordinary
 | Logical deletion | Both policies, before/after Deleting and Deleted catalog replacement; repeat the original UUID/revision request, preserve one tombstone, and recover the unleased descendant. |
 | GC | Both policies, acknowledged deletion plus actual orphan unlink, deleted-directory retirement before its name barrier, first retired child unlink, and final directory unlink through `Database::reclaim_branch_storage` while main remains admitted. Crash images resume cleanup through the same API, repeat it idempotently, and reopen the exact main/descendant schema, SQL rows and graph data; the deleted UUID remains tombstoned. |
 | Registered-root GC | Both policies, a historical reader and pending job across head advancement; actual unrelated orphan unlink while pinned, historical root unlink only after both guards retire, and completed sweep. Lost/isolated/reordered uncovered operations preserve complete checkpointed schema/SQL/graph state; ordinary reopen and repeated maintenance validate each image. |
+| Automatic object sweep ([#1736](https://github.com/nowledge-co/hawdb/issues/1736)) | Both policies, before/after the first superseded sealed-root unlink of a `Database::checkpoint` sweep, with a child created from an older parent root; every image recovers the checkpointed epoch, the next checkpoint reclaims a lost unlink with no debt, and the child admits from its base root and checkpoints. A process crash after the head rename but before its directory barrier restarts on the visible state (`PowerLossModel::resume_after_process_crash`), the restarted checkpoints sweep objects only the older head referenced, and every later image keeps the adopted head and its data (`api::tests::power_loss::object_reclamation`). |
 | Admission | Before/after actual checkpoint hard-link alias installation; exact committed schema/data survive replay without copying a parent dataset. |
 | Configurations | `Auto`, `Materialized`, and `OutOfCore` crossed with all four existing relational index modes; indexed queries, child DDL/DML/checkpoint, nested fork, parent deletion and reopen under a 32-FD domain. |
 
@@ -260,6 +261,49 @@ keeps strict foreground capacity configured, while internal recovery/publication
 and cleanup retain their documented capacity exception; complete runtime closure
 must restore the original open/reserved counts. The global high-water metric is
 recorded rather than treated as a hard bound on those internal operations.
+
+## Default WAL recovery and synchronization fences (#995)
+
+The storage `store::doctor::recovery_tests::recovery_995_*` cases exercise the
+real IO recorder and reopen its materialized lost/torn/reordered relaxed WAL
+images. The matrix includes a middle hole with a later complete transaction,
+a full-length zero region, strict synchronous acknowledgement preservation,
+source synchronization, policy changes and grouped sync. Separate corruption
+injections verify protected-prefix and missing/invalid-fence refusal; these
+are not presented as loss of bytes covered by a model-completed barrier.
+Repair tests inject permission/sharing-like lost replies at each evidence,
+audit and truncate persistence step and verify unchanged WAL before truncation,
+identity-bound retry, and repeated reopen. Real recorder images cut before and
+after every native write, file/directory sync, rename, truncate and removal in
+repair, with both lost and fully surviving unsynchronized operations. Each
+image must reopen with its original complete prefix and validated suffix audit.
+The facade WAL-tail family covers
+subprocess append/repair interruptions, branch publication boundaries, complete
+schema/data transactions and typed open/readiness reporting.
+
+The Windows native storage shard explicitly selects the `recovery_995` storage
+family and the facade `storage_recovery::wal_tail` family. Its recorder now runs
+on Windows as well as Unix. Test registration is a required execution gate,
+not evidence of a successful Windows run; source-bound CI outcomes belong in
+the PR evidence. These tests require no mapped WAL: repair opens ordinary
+read/write file handles before any repaired generation is admitted.
+
+Required behavior is a complete prefix after unsynchronized damage, with no
+repair before either the durable synchronization fence or published branch
+prefix. The fence is durably advanced *before* WAL sync. An interrupted barrier
+may conservatively protect additional bytes and fail closed. Evidence-store
+failure must not authorize truncation. The writer does not preallocate; zero
+extension is still modeled because surviving file length need not imply that
+all newly extended bytes survived. Detailed classification and the v2 bounded
+suffix protocol are in [Storage](STORAGE.md#repair-evidence-and-retry).
+
+On Windows, both Rust `sync_data` and `sync_all` use `FlushFileBuffers`; no
+cheaper data-only primitive is assumed. Native rename alone has no namespace
+persistence guarantee. Evidence create/rename, fence selection, WAL truncation
+and audit retirement require their documented file/directory barriers. The
+recorder credits them only under the existing conditional Windows directory
+flush assumption. Passing native tests still does not qualify NTFS/device
+power-cycle persistence or close the broader #820 qualification work.
 
 ## Model mapping and limits
 

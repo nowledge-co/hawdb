@@ -57,8 +57,8 @@ fn preparation_borrows_the_original_plan_and_preserves_storage_capability() {
 fn binding(value: Value) -> Binding {
     Binding {
         values: BTreeMap::from([("value".into(), value)]),
-        nodes: BTreeMap::new(),
-        relationships: BTreeMap::new(),
+        nodes: BTreeMap::new().into(),
+        relationships: BTreeMap::new().into(),
     }
 }
 

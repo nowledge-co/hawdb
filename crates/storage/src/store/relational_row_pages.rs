@@ -54,7 +54,53 @@ pub use hawdb_storage::relational::RelationalRowPageRecoveryStatus;
 
 pub(super) use hawdb_storage::relational::{
     RelationalRowLiveUnavailable, RelationalRowPageServingResources, RelationalRowPageState,
+    RelationalRowSchemaRewrite,
 };
+
+// Test hooks stay compiled in every build, like the other `*_for_test`
+// storage hooks, because Bazel builds root tests against the non-test
+// storage library. The fast path is one relaxed load.
+static ROW_PUBLICATION_CONFIG_OVERRIDE_ACTIVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+static ROW_PUBLICATION_CONFIG_OVERRIDES: std::sync::Mutex<
+    Vec<(std::path::PathBuf, RelationalRowPagePublicationConfig)>,
+> = std::sync::Mutex::new(Vec::new());
+
+/// Overrides the canonical checkpoint row-page publication config for
+/// databases below `directory`, or removes the override. Test support only:
+/// it lets tests force a small dirty budget for one database (#1593).
+#[doc(hidden)]
+pub fn set_relational_row_publication_config_override_for_test(
+    directory: &std::path::Path,
+    config: Option<RelationalRowPagePublicationConfig>,
+) {
+    let mut overrides = ROW_PUBLICATION_CONFIG_OVERRIDES
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    overrides.retain(|(path, _)| path != directory);
+    if let Some(config) = config {
+        overrides.push((directory.to_path_buf(), config));
+    }
+    ROW_PUBLICATION_CONFIG_OVERRIDE_ACTIVE
+        .store(!overrides.is_empty(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The row-page publication config of an ordinary canonical checkpoint.
+pub(super) fn canonical_row_publication_config(
+    root: &std::path::Path,
+) -> RelationalRowPagePublicationConfig {
+    if ROW_PUBLICATION_CONFIG_OVERRIDE_ACTIVE.load(std::sync::atomic::Ordering::Relaxed)
+        && let Some((_, config)) = ROW_PUBLICATION_CONFIG_OVERRIDES
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .iter()
+            .find(|(path, _)| root.starts_with(path))
+    {
+        return *config;
+    }
+    RelationalRowPagePublicationConfig::default()
+}
 
 pub(super) struct RelationalRowPageCheckpointPlan {
     pub base: Option<Arc<RelationalRowPageRootReader>>,
@@ -131,9 +177,35 @@ impl GraphStore {
         let Some(base) = base else {
             return self.plan_relational_row_page_rebuild(generation, source_commit_epoch, config);
         };
-        let Some(view) = self.relational_row_pages.read_view.as_ref() else {
-            return self.plan_relational_row_page_rebuild(generation, source_commit_epoch, config);
+        // A pending schema checkpoint keeps the other tables incremental when
+        // its rewrite view is current and every rewritten table still exists
+        // with resident rows. A dropped table, a later commit or an
+        // out-of-core state falls back to a full rebuild (#1593).
+        let (view, rewritten) = match self.relational_row_pages.read_view.as_ref() {
+            Some(view) => (view, None),
+            None => match self
+                .relational_row_pages
+                .schema_rewrite
+                .as_ref()
+                .filter(|rewrite| {
+                    rewrite.view.identity().visible_commit_epoch == source_commit_epoch
+                        && !self.relational_state.canonical_row_metadata_only()
+                        && rewrite
+                            .tables
+                            .iter()
+                            .all(|table| self.relational_state.table_schema(table).is_some())
+                }) {
+                Some(rewrite) => (&rewrite.view, Some(&rewrite.tables)),
+                None => {
+                    return self.plan_relational_row_page_rebuild(
+                        generation,
+                        source_commit_epoch,
+                        config,
+                    );
+                }
+            },
         };
+        let is_rewritten = |table: &str| rewritten.is_some_and(|tables| tables.contains(table));
         let base = Arc::new(base);
         let identity = view.identity();
         let base_manifest = base.manifest();
@@ -177,23 +249,35 @@ impl GraphStore {
             ));
         };
         let mut changes_by_table = BTreeMap::<String, Vec<_>>::new();
-        for change in changes {
+        // A rewritten table is replaced whole; its earlier changes are in it.
+        for change in changes
+            .into_iter()
+            .filter(|change| !is_rewritten(&change.table))
+        {
             changes_by_table
                 .entry(change.table.clone())
                 .or_default()
                 .push(change);
         }
-        if changes_by_table.len() > config.max_tables.get() {
+        // An insert followed by deletion can leave no row changes while still
+        // advancing the allocation fence. Publish that metadata at checkpoint.
+        for table in &base_manifest.tables {
+            if !is_rewritten(&table.table)
+                && self.relational_state.last_row_id(&table.table) != table.last_row_id
+            {
+                changes_by_table.entry(table.table.clone()).or_default();
+            }
+        }
+        let changed_tables = changes_by_table.len() + rewritten.map_or(0, BTreeSet::len);
+        if changed_tables > config.max_tables.get() {
             return Err(crate::error::HawDBError::Storage(format!(
-                "relational row checkpoint changes reference {} tables, exceeding limit {}",
-                changes_by_table.len(),
+                "relational row checkpoint changes reference {changed_tables} tables, exceeding limit {}",
                 config.max_tables
             )));
         }
         let mut deltas = Vec::with_capacity(changes_by_table.len());
         let mut planned_dirty_pages = 0usize;
         let mut planned_dirty_bytes = 0u64;
-        let slot_bytes = config.page_limits.max_page_bytes.get() as u64;
         for (table, changes) in changes_by_table {
             let remaining_pages = config
                 .max_dirty_pages
@@ -242,7 +326,7 @@ impl GraphStore {
                         "relational row checkpoint cannot derive schema digest for {table}"
                     ))
                 })?;
-            let plan = planner
+            let mut plan = planner
                 .plan_table(&table, schema_digest, schema.columns.len(), changes)
                 .map_err(crate::error::HawDBError::from_storage_error)?;
             planned_dirty_pages = planned_dirty_pages
@@ -252,14 +336,20 @@ impl GraphStore {
                         "relational row checkpoint dirty-page accounting overflow".to_string(),
                     )
                 })?;
-            let table_dirty_bytes = u64::try_from(plan.dirty_pages)
-                .ok()
-                .and_then(|pages| pages.checked_mul(slot_bytes))
-                .ok_or_else(|| {
-                    crate::error::HawDBError::Storage(
-                        "relational row checkpoint dirty-byte accounting overflow".to_string(),
-                    )
-                })?;
+            // Encoded page bytes, not the v1 slot (#1593); see
+            // `RelationalRowPagePublicationConfig::max_dirty_bytes`.
+            let mut table_dirty_bytes = 0u64;
+            for page in &plan.delta.dirty_pages {
+                table_dirty_bytes = page
+                    .encoded_len(config.page_limits)
+                    .ok()
+                    .and_then(|bytes| table_dirty_bytes.checked_add(bytes))
+                    .ok_or_else(|| {
+                        crate::error::HawDBError::Storage(
+                            "relational row checkpoint dirty-byte accounting overflow".to_string(),
+                        )
+                    })?;
+            }
             planned_dirty_bytes = planned_dirty_bytes
                 .checked_add(table_dirty_bytes)
                 .ok_or_else(|| {
@@ -267,7 +357,72 @@ impl GraphStore {
                         "relational row checkpoint dirty-byte accounting overflow".to_string(),
                     )
                 })?;
+            plan.delta.last_row_id = self.relational_state.last_row_id(&table);
             deltas.push(plan.delta);
+        }
+        for table in rewritten.into_iter().flatten() {
+            let remaining_pages = config
+                .max_dirty_pages
+                .get()
+                .checked_sub(planned_dirty_pages)
+                .and_then(NonZeroUsize::new)
+                .ok_or_else(|| {
+                    crate::error::HawDBError::Storage(format!(
+                        "relational row checkpoint exhausted its {} dirty-page limit before rewriting table {table}",
+                        config.max_dirty_pages
+                    ))
+                })?;
+            let remaining_bytes = config
+                .max_dirty_bytes
+                .get()
+                .checked_sub(planned_dirty_bytes)
+                .and_then(NonZeroU64::new)
+                .ok_or_else(|| {
+                    crate::error::HawDBError::Storage(format!(
+                        "relational row checkpoint exhausted its {} dirty-byte limit before rewriting table {table}",
+                        config.max_dirty_bytes
+                    ))
+                })?;
+            // Continue the base table's page-id allocator.
+            let next_page_id = base
+                .table_root(table)
+                .ok()
+                .map_or(NonZeroU64::MIN, |root| root.next_page_id);
+            // `table_root` reports a table absent from the base (CREATE
+            // TABLE) as an error; such a table starts its allocator at 1.
+            let delta = self
+                .relational_state
+                .row_page_table_replacement_delta(
+                    table,
+                    generation,
+                    source_commit_epoch,
+                    next_page_id,
+                    RelationalRowPagePublicationConfig {
+                        max_dirty_pages: remaining_pages,
+                        max_dirty_bytes: remaining_bytes,
+                        ..config
+                    },
+                )
+                .map_err(crate::error::HawDBError::from_storage_error)?;
+            planned_dirty_pages = planned_dirty_pages
+                .checked_add(delta.dirty_pages.len())
+                .ok_or_else(|| {
+                    crate::error::HawDBError::Storage(
+                        "relational row checkpoint dirty-page accounting overflow".to_string(),
+                    )
+                })?;
+            for page in &delta.dirty_pages {
+                planned_dirty_bytes = page
+                    .encoded_len(config.page_limits)
+                    .ok()
+                    .and_then(|bytes| planned_dirty_bytes.checked_add(bytes))
+                    .ok_or_else(|| {
+                        crate::error::HawDBError::Storage(
+                            "relational row checkpoint dirty-byte accounting overflow".to_string(),
+                        )
+                    })?;
+            }
+            deltas.push(delta);
         }
         Ok(RelationalRowPageCheckpointPlan {
             base: Some(base),
@@ -348,6 +503,8 @@ impl GraphStore {
             }));
         self.relational_row_pages.recovery_report = None;
         self.relational_row_pages.schema_checkpoint_required = false;
+        self.relational_row_pages.schema_checkpoint_deferred = None;
+        self.relational_row_pages.schema_rewrite = None;
         self.relational_row_pages.recovery_status =
             RelationalRowPageRecoveryStatus::CheckpointReady {
                 generation,
@@ -774,7 +931,7 @@ impl GraphStore {
         let Some(capture) = capture else {
             return Ok(());
         };
-        if let RelationalRowChangeCapture::RequiresCheckpoint { tables } = &capture {
+        if let RelationalRowChangeCapture::RequiresCheckpoint { tables, .. } = &capture {
             self.mark_relational_row_page_schema_checkpoint_required(epoch, tables.clone());
             return Ok(());
         }
@@ -875,6 +1032,7 @@ impl GraphStore {
                     )))
                 }
                 RelationalRowPageLiveError::Admission(_)
+                | RelationalRowPageLiveError::Headroom(_)
                 | RelationalRowPageLiveError::Invalidated(_) => {
                     Err(crate::error::HawDBError::Storage(format!(
                         "canonical relational row view rejected commit {next_epoch} before WAL append: {}",
@@ -887,11 +1045,62 @@ impl GraphStore {
                 self.relational_row_pages.recovery_status,
                 RelationalRowPageRecoveryStatus::Missing
             ) => Ok(()),
+            // A pending schema checkpoint dropped the view. Resident rows
+            // remain authoritative with the WAL; the checkpoint rebuilds the
+            // row root from them (#1593).
+            None if self.relational_row_pages.schema_checkpoint_required
+                && !self.relational_state.canonical_row_metadata_only() =>
+            {
+                Ok(())
+            }
+            None if self.relational_row_pages.schema_checkpoint_required => Err(
+                self.relational_row_schema_checkpoint_pending_error(&format!(
+                    "out-of-core relational commit {next_epoch}"
+                )),
+            ),
             None => Err(crate::error::HawDBError::StorageIntegrity(format!(
                 "canonical relational row view has no current reader for commit {next_epoch}: {:?}",
                 self.relational_row_pages.recovery_status
             ))),
         }
+    }
+
+    /// The live-overlay shortfall when headroom alone rejects a staged commit:
+    /// every failing required publication fits its empty overlay, so a drain
+    /// can make room for the same commit (#1479).
+    pub(super) fn relational_live_headroom_shortfall(
+        &self,
+        index: &Option<
+            Result<
+                Arc<hawdb_storage::relational_index_view::RelationalIndexReadView>,
+                hawdb_storage::relational::RelationalIndexLiveUnavailable,
+            >,
+        >,
+        rows: &Option<Result<Arc<RelationalRowPageReadView>, RelationalRowLiveUnavailable>>,
+    ) -> Option<hawdb_storage::relational::RelationalLiveOverlayShortfall> {
+        let index = if self
+            .relational_index_shadow
+            .mode
+            .requires_authoritative_indexes()
+        {
+            match index {
+                Some(Err(unavailable)) => Some(unavailable.shortfall?),
+                _ => None,
+            }
+        } else {
+            // A non-authoritative index view degrades instead of rejecting.
+            None
+        };
+        let rows = match rows {
+            Some(Err(unavailable)) => match &unavailable.error {
+                RelationalRowPageLiveError::Headroom(shortfall) => Some(*shortfall),
+                RelationalRowPageLiveError::RequiresCheckpoint { .. } => None,
+                _ => return None,
+            },
+            _ => None,
+        };
+        // Row admission is the larger envelope; report it when both fall short.
+        rows.or(index)
     }
 
     pub(super) fn publish_relational_row_live_view(
@@ -903,6 +1112,8 @@ impl GraphStore {
             Some(Ok(view)) => {
                 let identity = view.identity();
                 self.relational_row_pages.schema_checkpoint_required = false;
+                self.relational_row_pages.schema_checkpoint_deferred = None;
+                self.relational_row_pages.schema_rewrite = None;
                 self.relational_row_pages.recovery_status =
                     RelationalRowPageRecoveryStatus::LiveCurrent {
                         base_generation: identity.base_generation,
@@ -922,6 +1133,17 @@ impl GraphStore {
                 );
                 self.relational_row_pages.read_view = None;
                 self.relational_row_pages.schema_checkpoint_required = checkpoint_required;
+                self.relational_row_pages.schema_checkpoint_deferred = None;
+                self.relational_row_pages.schema_rewrite = match &unavailable.error {
+                    RelationalRowPageLiveError::RequiresCheckpoint { tables } => unavailable
+                        .schema_rewrite_view
+                        .clone()
+                        .map(|view| RelationalRowSchemaRewrite {
+                            view,
+                            tables: tables.iter().cloned().collect(),
+                        }),
+                    _ => None,
+                };
                 self.relational_row_pages.recovery_status =
                     RelationalRowPageRecoveryStatus::LiveUnavailable {
                         base_generation: unavailable.identity.base_generation,
@@ -955,15 +1177,16 @@ impl GraphStore {
                     );
                     return;
                 };
-                match self.open_relational_row_delta_view(self.commit_epoch, recovery_source) {
+                // No builder recorded this published delta; its debt is unknown.
+                match self.open_relational_row_delta_view(self.commit_epoch, recovery_source, None)
+                {
                     Ok((view, delta)) => {
                         let manifest = delta.manifest();
                         if self.relational_state.canonical_row_metadata_only()
                             && let Err(error) = self.relational_state.adopt_recovered_row_counts(
-                                manifest
-                                    .tables()
-                                    .iter()
-                                    .map(|table| (table.table.as_str(), table.row_count)),
+                                manifest.tables().iter().map(|table| {
+                                    (table.table.as_str(), table.row_count, table.last_row_id)
+                                }),
                             )
                         {
                             self.mark_relational_row_page_recovery_unavailable(
@@ -1020,7 +1243,11 @@ impl GraphStore {
             &self.relational_state,
         ) {
             Ok(report) => {
-                match self.open_relational_row_delta_view(self.commit_epoch, recovery_source) {
+                match self.open_relational_row_delta_view(
+                    self.commit_epoch,
+                    recovery_source,
+                    Some(report.recorded_resident_bytes),
+                ) {
                     Ok((view, _delta)) => {
                         self.relational_row_pages.read_view = Some(view);
                         self.relational_row_pages.recovery_status =
@@ -1052,6 +1279,7 @@ impl GraphStore {
         &self,
         expected_visible_commit_epoch: u64,
         expected_recovery_source: RelationalRecoverySourceIdentity,
+        recorded_resident_bytes: Option<usize>,
     ) -> Result<
         (
             Arc<RelationalRowPageReadView>,
@@ -1065,6 +1293,7 @@ impl GraphStore {
             None,
             None,
             None,
+            recorded_resident_bytes,
         )
     }
 
@@ -1075,6 +1304,7 @@ impl GraphStore {
         generation: Option<crate::relational::RelationalRowDeltaGeneration>,
         prefix: Option<&std::path::Path>,
         work: Option<&crate::background::CheckpointWorkContext>,
+        recorded_resident_bytes: Option<usize>,
     ) -> Result<
         (
             Arc<RelationalRowPageReadView>,
@@ -1137,10 +1367,11 @@ impl GraphStore {
             })?,
         };
         let delta = Arc::new(delta);
-        let view = Arc::new(RelationalRowPageReadView::from_recovery_delta(
-            base,
-            Arc::clone(&delta),
-        )?);
+        let view = RelationalRowPageReadView::from_recovery_delta(base, Arc::clone(&delta))?;
+        let view = Arc::new(match recorded_resident_bytes {
+            Some(bytes) => view.with_recovery_delta_resident_bytes(bytes),
+            None => view,
+        });
         Ok((view, delta))
     }
 
@@ -1186,6 +1417,7 @@ impl GraphStore {
                 None,
                 Some(&immutable),
                 Some(work),
+                Some(report.recorded_resident_bytes),
             )
             .map_err(|error| {
                 super::HawDBError::Storage(format!("pin private row recovery: {error}"))
@@ -1253,6 +1485,8 @@ impl GraphStore {
         self.relational_row_pages.recovery_builder = None;
         self.relational_row_pages.read_view = None;
         self.relational_row_pages.schema_checkpoint_required = checkpoint_required;
+        self.relational_row_pages.schema_checkpoint_deferred = None;
+        self.relational_row_pages.schema_rewrite = None;
         self.relational_row_pages.recovery_status = RelationalRowPageRecoveryStatus::Unavailable {
             base_generation,
             base_commit_epoch,
@@ -1265,6 +1499,44 @@ impl GraphStore {
     #[doc(hidden)]
     pub fn relational_row_schema_checkpoint_required(&self) -> bool {
         self.relational_row_pages.schema_checkpoint_required
+    }
+
+    /// Records a resource or budget failure of the required schema
+    /// checkpoint. The checkpoint stays pending and the WAL stays
+    /// authoritative; commits stop retrying it until a checkpoint succeeds
+    /// or the database reopens (#1593).
+    #[doc(hidden)]
+    pub fn defer_relational_row_schema_checkpoint(&mut self, reason: String) {
+        if self.relational_row_pages.schema_checkpoint_required {
+            self.relational_row_pages.schema_checkpoint_deferred = Some(reason);
+        }
+    }
+
+    /// The deferred failure of a still-pending schema checkpoint.
+    #[doc(hidden)]
+    pub fn relational_row_schema_checkpoint_deferred(&self) -> Option<&str> {
+        self.relational_row_pages
+            .schema_checkpoint_deferred
+            .as_deref()
+            .filter(|_| self.relational_row_pages.schema_checkpoint_required)
+    }
+
+    /// The error for out-of-core relational row access while a required
+    /// schema checkpoint is pending: rows are served only by canonical row
+    /// pages, which do not yet reflect the schema change.
+    fn relational_row_schema_checkpoint_pending_error(
+        &self,
+        access: &str,
+    ) -> crate::error::HawDBError {
+        crate::error::HawDBError::Storage(format!(
+            "{access} is unavailable: a relational schema checkpoint is pending at commit epoch {}{}; out-of-core relational rows are served by canonical row pages, which do not reflect the schema change until a checkpoint succeeds",
+            self.commit_epoch,
+            self.relational_row_pages
+                .schema_checkpoint_deferred
+                .as_deref()
+                .map(|reason| format!(" (last attempt: {reason})"))
+                .unwrap_or_default(),
+        ))
     }
 
     pub fn relational_row_page_recovery_status(&self) -> &RelationalRowPageRecoveryStatus {
@@ -1282,15 +1554,23 @@ impl GraphStore {
         if !self.relational_state.canonical_row_metadata_only() {
             return Ok(None);
         }
-        let view = self
+        let view = match self
             .relational_row_pages
             .current_read_view(self.commit_epoch)
             .cloned()
-            .ok_or_else(|| {
-                crate::error::HawDBError::StorageIntegrity(
+        {
+            Some(view) => view,
+            None if self.relational_row_pages.schema_checkpoint_required => {
+                return Err(self.relational_row_schema_checkpoint_pending_error(
+                    "out-of-core relational transaction",
+                ));
+            }
+            None => {
+                return Err(crate::error::HawDBError::StorageIntegrity(
                     "metadata-only transaction requires a current canonical row view".to_string(),
-                )
-            })?;
+                ));
+            }
+        };
         Ok(Some(RelationalTransactionRowView::new(
             view,
             self.relational_row_pages.live_limits,
@@ -1308,6 +1588,15 @@ impl GraphStore {
         else {
             return match &self.relational_row_pages.recovery_status {
                 RelationalRowPageRecoveryStatus::Missing => Ok(None),
+                // Resident rows serve reads while a schema checkpoint is
+                // pending; out-of-core rows have no current reader (#1593).
+                _ if self.relational_row_pages.schema_checkpoint_required
+                    && !self.relational_state.canonical_row_metadata_only() =>
+                {
+                    Ok(None)
+                }
+                _ if self.relational_row_pages.schema_checkpoint_required => Err(self
+                    .relational_row_schema_checkpoint_pending_error("out-of-core relational read")),
                 status => Err(crate::error::HawDBError::StorageIntegrity(format!(
                     "canonical relational row reader is unavailable at commit epoch {}: {status:?}",
                     self.commit_epoch
@@ -1370,16 +1659,23 @@ impl GraphStore {
                 config.max_scan_pages
             )));
         }
-        let page_bytes = usize::try_from(manifest.page_bytes).map_err(|_| {
+        // A table's read budget bounds each page by the writer's maximum.
+        let page_bytes = usize::try_from(manifest.max_page_bytes).map_err(|_| {
             crate::error::HawDBError::Storage(
                 "overflow compaction page size exceeds this target".to_string(),
             )
         })?;
-        let estimated_scan_bytes = root_pages.checked_mul(page_bytes).ok_or_else(|| {
-            crate::error::HawDBError::Storage(
-                "overflow compaction scan byte count overflow".to_string(),
-            )
-        })?;
+        // v2 pages have exact lengths: the live inventory is the scan size.
+        let estimated_scan_bytes = manifest
+            .physical_generations
+            .iter()
+            .try_fold(0u64, |total, entry| total.checked_add(entry.live_bytes))
+            .and_then(|bytes| usize::try_from(bytes).ok())
+            .ok_or_else(|| {
+                crate::error::HawDBError::Storage(
+                    "overflow compaction scan byte count overflow".to_string(),
+                )
+            })?;
         if estimated_scan_bytes > config.max_scan_bytes.get() {
             return Err(crate::error::HawDBError::Storage(format!(
                 "overflow compaction needs {estimated_scan_bytes} row bytes, exceeding limit {}",
@@ -1695,6 +1991,7 @@ fn map_sparse_snapshot_read_error(error: RelationalRowPageSnapshotReadError) -> 
 #[cfg(test)]
 mod tests {
     mod overflow_compaction;
+    mod relational_row_bytes;
 
     use super::*;
     use crate::schema::Catalog;
@@ -1877,9 +2174,11 @@ mod tests {
             } if reason.contains("requires a schema checkpoint")
         ));
         assert!(store.relational_row_pages.read_view.is_none());
+        // Resident rows serve reads while the schema checkpoint is pending
+        // (#1593); there is no canonical row reader to open.
         assert!(matches!(
             store.open_relational_row_snapshot_reader(),
-            Err(crate::error::HawDBError::StorageIntegrity(_))
+            Ok(None)
         ));
         assert!(Arc::ptr_eq(
             &pinned_epoch_four,
@@ -2481,10 +2780,50 @@ mod tests {
         assert_eq!(fast.range_reads, 0, "fast report: {fast:?}");
         assert_eq!(fallback.monotonic_append_attempts, 0);
         assert_eq!(fallback.point_reads, 64, "fallback report: {fallback:?}");
-        assert_eq!(fast.pages_read, 0, "fast report: {fast:?}");
-        assert_eq!(fast.bytes_read, 0, "fast report: {fast:?}");
-        assert_eq!(fallback.pages_read, 0, "fallback report: {fallback:?}");
-        assert_eq!(fallback.bytes_read, 0, "fallback report: {fallback:?}");
+        // The b-gap falls inside a v2 page that also holds partition c, so the
+        // proof reads that one page and the hydration report charges it.
+        assert_eq!(fast.pages_read, 1, "fast report: {fast:?}");
+        assert_eq!(fast.rows_decoded, 1, "fast report: {fast:?}");
+        assert!(fast.bytes_read > 0, "fast report: {fast:?}");
+        let probe_bytes = fast.bytes_read;
+        // Format v2 packs rows by bytes, so the appended keys fall inside the
+        // page that also holds the next partition. Each fallback point read
+        // must read that page to prove absence (v1's 256-row pages happened
+        // to end at the partition gap, so descriptor bounds sufficed).
+        assert_eq!(fallback.pages_read, 64, "fallback report: {fallback:?}");
+        assert!(fallback.bytes_read > 0, "fallback report: {fallback:?}");
+
+        // The proof reads under the hydration's remaining budget, and a
+        // serving-cache hit is charged like a file read.
+        let hydrate_append = |row_limits| {
+            store.hydrate_sparse_relational_workspace_with_report(
+                &store.relational_state,
+                store
+                    .open_relational_row_snapshot_reader()
+                    .unwrap()
+                    .unwrap(),
+                &transaction(
+                    (0..64)
+                        .map(|sequence| event("b", sequence))
+                        .collect::<Vec<_>>(),
+                ),
+                index_limits,
+                row_limits,
+                &constraint_index,
+            )
+        };
+        let (_, cached, _) = hydrate_append(row_limits).expect("hydrate cached append batch");
+        assert_eq!(cached.monotonic_append_hits, 1, "cached report: {cached:?}");
+        assert_eq!(cached.pages_read, 1, "cached report: {cached:?}");
+        assert_eq!(cached.bytes_read, probe_bytes, "cached report: {cached:?}");
+        let short = RelationalRowChangeCaptureLimits {
+            max_bytes: NonZeroUsize::new(probe_bytes - 1).unwrap(),
+            ..row_limits
+        };
+        let Err(error) = hydrate_append(short) else {
+            panic!("a byte budget below the straddling page rejects the proof");
+        };
+        assert!(error.to_string().contains("byte limit"), "{error}");
 
         drop(store);
         std::fs::remove_dir_all(path).unwrap();
@@ -2693,6 +3032,7 @@ mod tests {
             &mut read_only_catalog,
             DurabilityPolicy::default(),
             WalReplayConfig {
+                recovery_mode: crate::config::RecoveryMode::Strict,
                 residency_mode: StorageResidencyMode::OutOfCore,
                 relational_index_mode: RelationalIndexMode::Shadow,
                 ..WalReplayConfig::default()
@@ -2762,6 +3102,7 @@ mod tests {
             &mut read_only_catalog,
             DurabilityPolicy::default(),
             WalReplayConfig {
+                recovery_mode: crate::config::RecoveryMode::Strict,
                 residency_mode: StorageResidencyMode::OutOfCore,
                 relational_index_mode: RelationalIndexMode::Authoritative,
                 ..WalReplayConfig::default()
@@ -2828,6 +3169,7 @@ mod tests {
             &mut missing_index_catalog,
             DurabilityPolicy::default(),
             WalReplayConfig {
+                recovery_mode: crate::config::RecoveryMode::Strict,
                 residency_mode: StorageResidencyMode::OutOfCore,
                 relational_index_mode: RelationalIndexMode::Authoritative,
                 ..WalReplayConfig::default()
@@ -2881,6 +3223,7 @@ mod tests {
             &mut catalog,
             DurabilityPolicy::default(),
             WalReplayConfig {
+                recovery_mode: crate::config::RecoveryMode::Strict,
                 residency_mode: StorageResidencyMode::OutOfCore,
                 relational_index_mode: RelationalIndexMode::Authoritative,
                 ..WalReplayConfig::default()
@@ -2959,6 +3302,7 @@ mod tests {
     #[test]
     fn canonical_checkpoint_rewrites_only_dirty_relational_pages() {
         let path = unique_test_dir("canonical-dirty-pages");
+        let _row_cap = LegacyRowCap::new(&path);
         let replay = WalReplayConfig::default();
         let mut catalog = Catalog::default();
         let mut store = GraphStore::open_with_durability_and_replay_config(
@@ -3111,6 +3455,7 @@ mod tests {
     #[test]
     fn schema_change_rebuilds_the_complete_relational_row_root() {
         let path = unique_test_dir("schema-rebuild");
+        let _row_cap = LegacyRowCap::new(&path);
         let replay = WalReplayConfig::default();
         let mut catalog = Catalog::default();
         let mut store = GraphStore::open_with_durability_and_replay_config(
@@ -3167,6 +3512,223 @@ mod tests {
         assert_eq!(rebuilt.manifest().root_page_count, 2);
         assert_eq!(physical_generations(&rebuilt), vec![2, 2]);
 
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    /// `(logical page id, physical generation)` of every page of `table`.
+    fn table_pages(reader: &RelationalRowPageRootReader, table: &str) -> Vec<(u64, u64)> {
+        let mut pages = Vec::new();
+        reader
+            .visit_table_pages(table, |descriptor| {
+                pages.push((
+                    descriptor.logical_page_id.get(),
+                    descriptor.physical_generation,
+                ));
+                Ok(())
+            })
+            .unwrap();
+        pages
+    }
+
+    fn bound_row_root(store: &GraphStore, path: &std::path::Path) -> RelationalRowPageRootReader {
+        let generation = store
+            .storage_residency_report()
+            .relational_rows
+            .base_generation
+            .unwrap();
+        RelationalRowPageRootReader::open_generation(
+            path,
+            generation,
+            RelationalRowPagePublicationConfig::default(),
+        )
+        .unwrap()
+    }
+
+    fn bodies(store: &GraphStore, table: &str) -> Vec<i64> {
+        store
+            .relational_state()
+            .rows(table)
+            .map(|(_, row)| match &row.values()[0] {
+                RelationalValue::BigInt(id) => *id,
+                value => panic!("unexpected id {value:?}"),
+            })
+            .collect()
+    }
+
+    /// A schema change rewrites only the tables whose schema or row encoding
+    /// changed (#1593). Other tables keep every page, including their
+    /// physical generation; a rewritten table continues its page allocator.
+    #[test]
+    fn schema_change_rewrites_only_the_changed_tables() {
+        let path = unique_test_dir("schema-per-table");
+        let _row_cap = LegacyRowCap::new(&path);
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            DurabilityPolicy::default(),
+            WalReplayConfig::default(),
+        )
+        .unwrap();
+        let tables = ["documents", "messages", "notes"];
+        let mut writes = Vec::new();
+        for table in tables {
+            writes.push(RelationalWrite::CreateTable(named_schema(table)));
+            writes.push(RelationalWrite::Insert {
+                table: table.to_string(),
+                rows: (0..300)
+                    .map(|id| row(id, &format!("{table}-{id}")))
+                    .collect(),
+                mode: RelationalInsertMode::Error,
+            });
+        }
+        store
+            .commit_relational_transaction(&mut catalog, RelationalTransaction { writes })
+            .unwrap();
+        store.checkpoint(&catalog).unwrap();
+        let first = bound_row_root(&store, &path);
+        let first_pages = tables.map(|table| table_pages(&first, table));
+        assert!(first_pages.iter().all(|pages| pages.len() == 2));
+
+        // CREATE TABLE plus a row change to another table in the same commit
+        // writes only that table's leaf and an empty new table.
+        store
+            .commit_relational_transaction(
+                &mut catalog,
+                RelationalTransaction {
+                    writes: vec![
+                        RelationalWrite::CreateTable(named_schema("fresh")),
+                        RelationalWrite::Insert {
+                            table: "messages".to_string(),
+                            rows: vec![row(1_000, "late")],
+                            mode: RelationalInsertMode::Error,
+                        },
+                    ],
+                },
+            )
+            .unwrap();
+        assert!(store.relational_row_schema_checkpoint_required());
+        store.checkpoint(&catalog).unwrap();
+        assert!(!store.relational_row_schema_checkpoint_required());
+        let second = bound_row_root(&store, &path);
+        assert_eq!(second.manifest().dirty_page_count, 1);
+        assert_eq!(table_pages(&second, "documents"), first_pages[0]);
+        assert_eq!(table_pages(&second, "notes"), first_pages[2]);
+        assert_ne!(table_pages(&second, "messages"), first_pages[1]);
+        assert!(table_pages(&second, "fresh").is_empty());
+        assert_eq!(second.table_root("fresh").unwrap().row_count, 0);
+        // Root artifacts of older generations are reclaimed by later
+        // checkpoints; keep what later steps compare against.
+        let second_messages = table_pages(&second, "messages");
+        let documents_allocator = second.table_root("documents").unwrap().next_page_id.get();
+        drop(second);
+
+        // An uncheckpointed insert, then ALTER TABLE: the altered table is
+        // rewritten whole, including the insert, with page ids above its
+        // previous allocator; the others are untouched.
+        store
+            .commit_relational_transaction(
+                &mut catalog,
+                RelationalTransaction {
+                    writes: vec![RelationalWrite::Insert {
+                        table: "documents".to_string(),
+                        rows: vec![row(2_000, "before-alter")],
+                        mode: RelationalInsertMode::Error,
+                    }],
+                },
+            )
+            .unwrap();
+        store
+            .commit_relational_transaction(
+                &mut catalog,
+                RelationalTransaction {
+                    writes: vec![RelationalWrite::AddColumn {
+                        table: "documents".to_string(),
+                        column: RelationalColumnSchema {
+                            name: "archived".to_string(),
+                            scalar_type: RelationalScalarType::Boolean,
+                            nullable: false,
+                            default: Some(RelationalColumnDefault::Literal(
+                                RelationalValue::Boolean(false),
+                            )),
+                        },
+                    }],
+                },
+            )
+            .unwrap();
+        store.checkpoint(&catalog).unwrap();
+        let third = bound_row_root(&store, &path);
+        let generation = third.manifest().generation;
+        let documents = table_pages(&third, "documents");
+        assert_eq!(third.manifest().dirty_page_count, documents.len() as u64);
+        assert!(documents
+            .iter()
+            .all(|(id, physical)| *id >= documents_allocator && *physical == generation));
+        assert_eq!(third.table_root("documents").unwrap().row_count, 301);
+        assert_eq!(third.table_root("documents").unwrap().column_count.get(), 3);
+        assert_eq!(table_pages(&third, "messages"), second_messages);
+        assert_eq!(table_pages(&third, "notes"), first_pages[2]);
+        drop(third);
+
+        // CREATE INDEX changes the schema digest every page header carries,
+        // so it rewrites that table only.
+        store
+            .commit_relational_transaction(
+                &mut catalog,
+                RelationalTransaction {
+                    writes: vec![RelationalWrite::CreateIndex {
+                        table: "notes".to_string(),
+                        index: hawdb_storage::relational::RelationalIndexSchema {
+                            name: "notes_body".to_string(),
+                            columns: vec!["body".to_string()],
+                            unique: false,
+                        },
+                    }],
+                },
+            )
+            .unwrap();
+        store.checkpoint(&catalog).unwrap();
+        let fourth = bound_row_root(&store, &path);
+        let notes = table_pages(&fourth, "notes");
+        assert_eq!(fourth.manifest().dirty_page_count, notes.len() as u64);
+        assert!(notes.iter().all(|(id, _)| *id >= 3));
+        assert_eq!(table_pages(&fourth, "documents"), documents);
+        assert_eq!(table_pages(&fourth, "messages"), second_messages);
+        drop(store);
+
+        // Reopen recovers every table from the rewritten root.
+        let mut catalog = Catalog::default();
+        let store = GraphStore::open_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            DurabilityPolicy::default(),
+            WalReplayConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(bodies(&store, "documents").len(), 301);
+        assert!(bodies(&store, "documents").contains(&2_000));
+        assert_eq!(bodies(&store, "messages").len(), 301);
+        assert_eq!(bodies(&store, "notes").len(), 300);
+        assert!(bodies(&store, "fresh").is_empty());
+        assert_eq!(
+            store
+                .relational_state()
+                .table_schema("documents")
+                .unwrap()
+                .columns
+                .len(),
+            3
+        );
+        assert_eq!(
+            store
+                .relational_state()
+                .table_schema("notes")
+                .unwrap()
+                .indexes
+                .len(),
+            1
+        );
+        drop(store);
         std::fs::remove_dir_all(path).unwrap();
     }
 
@@ -3951,6 +4513,27 @@ mod tests {
 
     fn key(id: i64) -> RelationalKey {
         RelationalKey(vec![RelationalValue::BigInt(id)])
+    }
+
+    /// Keeps the 256-row page split these layout tests were written for
+    /// (no byte target below the page limit): format v2 otherwise packs
+    /// their narrow rows by size.
+    struct LegacyRowCap(std::path::PathBuf);
+
+    impl LegacyRowCap {
+        fn new(path: &std::path::Path) -> Self {
+            let mut config = RelationalRowPagePublicationConfig::default();
+            config.page_limits.max_rows = NonZeroUsize::new(256).unwrap();
+            config.target_page_bytes = config.page_limits.max_page_bytes;
+            super::set_relational_row_publication_config_override_for_test(path, Some(config));
+            Self(path.to_path_buf())
+        }
+    }
+
+    impl Drop for LegacyRowCap {
+        fn drop(&mut self) {
+            super::set_relational_row_publication_config_override_for_test(&self.0, None);
+        }
     }
 
     fn unique_test_dir(label: &str) -> std::path::PathBuf {

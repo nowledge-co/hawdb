@@ -354,22 +354,23 @@ fn input_build_and_publish_wait_before_native_changes_and_cancel_cleanly() {
     }
 }
 
+use std::io::{self, Cursor, Read};
+struct GovernedBody {
+    task: RuntimeTaskContext,
+    input: Cursor<&'static [u8]>,
+}
+impl Read for GovernedBody {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        let _wave = self
+            .task
+            .acquire_io_wave(NonZeroUsize::MIN)
+            .map_err(io::Error::other)?;
+        self.input.read(bytes)
+    }
+}
+
 #[test]
 fn streamed_input_yields_output_wave_to_a_governed_reader_at_depth_one() {
-    use std::io::{self, Cursor, Read};
-    struct GovernedBody {
-        task: RuntimeTaskContext,
-        input: Cursor<&'static [u8]>,
-    }
-    impl Read for GovernedBody {
-        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-            let _wave = self
-                .task
-                .acquire_io_wave(NonZeroUsize::MIN)
-                .map_err(io::Error::other)?;
-            self.input.read(bytes)
-        }
-    }
     for task_scope in [false, true] {
         let root = test_dir("streamed-source-wave");
         let governor = governor();
@@ -595,3 +596,5 @@ fn manual_bulk_input_admission_profile() {
         }
     }
 }
+
+mod mutation_phases;

@@ -20,6 +20,15 @@ pub enum PgqStatement {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelationalStatementSyntax {
+    Select(Box<PostgresSelectSyntax>),
+    Explain {
+        analyze: bool,
+        select: Box<PostgresSelectSyntax>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PostgresStatementSyntax {
     CreatePropertyGraph(CreatePropertyGraph),
     Select(Box<PostgresSelectSyntax>),
@@ -90,6 +99,7 @@ pub enum NullOrderSyntax {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LockingClauseSyntax {
+    pub nonblocking: bool,
     pub strength: LockStrengthSyntax,
     pub span: Span,
 }
@@ -101,8 +111,15 @@ pub enum LockStrengthSyntax {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableFunctionArgumentSyntax {
+    pub name: Option<Identifier>,
+    pub expression: ExpressionSyntax,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationTableSyntax {
     pub name: QualifiedName,
+    pub arguments: Option<Vec<TableFunctionArgumentSyntax>>,
     pub alias: Option<TableAlias>,
     pub span: Span,
 }
@@ -262,6 +279,13 @@ pub struct GraphPatternQuantifier {
     pub span: Span,
 }
 
+/// The time zone clause of `TIMESTAMP [ (p) ] { WITH | WITHOUT } TIME ZONE`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeZoneSyntax {
+    With,
+    Without,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExpressionSyntax {
     pub kind: ExpressionKindSyntax,
@@ -276,6 +300,8 @@ pub enum ExpressionKindSyntax {
     Literal(LiteralSyntax),
     TypedString {
         data_type: Identifier,
+        /// `WITH TIME ZONE` or `WITHOUT TIME ZONE` after the type name.
+        time_zone: Option<TimeZoneSyntax>,
         value: Span,
     },
     Unary {
@@ -286,6 +312,17 @@ pub enum ExpressionKindSyntax {
         left: Box<ExpressionSyntax>,
         operator: BinaryOperatorSyntax,
         right: Box<ExpressionSyntax>,
+    },
+    Like {
+        expression: Box<ExpressionSyntax>,
+        pattern: Box<ExpressionSyntax>,
+        escape: Option<Box<ExpressionSyntax>>,
+        negated: bool,
+        case_insensitive: bool,
+    },
+    Filtered {
+        function: Box<ExpressionSyntax>,
+        predicate: Box<ExpressionSyntax>,
     },
     IsNull {
         expression: Box<ExpressionSyntax>,
@@ -310,6 +347,9 @@ pub enum ExpressionKindSyntax {
     Cast {
         expression: Box<ExpressionSyntax>,
         data_type: QualifiedName,
+        type_parameters: Vec<Span>,
+        /// `WITH TIME ZONE` or `WITHOUT TIME ZONE` after the type modifiers.
+        time_zone: Option<TimeZoneSyntax>,
     },
     Collate {
         expression: Box<ExpressionSyntax>,

@@ -20,8 +20,7 @@ use crate::evidence_json::{
 };
 use crate::graph_route::{NMEM_GRAPH_ROUTE_EVIDENCE_PROTOCOL, NMEM_GRAPH_ROUTE_READINESS_PROTOCOL};
 use hawdb_route_ownership::graph::{
-    nowledge_mem_graph_read_route_spec, nowledge_mem_graph_read_route_specs_json,
-    REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
+    graph_read_route_spec, graph_read_route_specs_json, REQUIRED_BOUNDED_READ_ROUTES,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -67,7 +66,7 @@ impl GraphRouteReadinessSummary {
             "required_route_count": self.required_route_count,
             "covered_route_count": self.covered_route_count,
             "covered_routes": self.covered_routes,
-            "required_covered_routes": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
+            "required_covered_routes": REQUIRED_BOUNDED_READ_ROUTES,
             "missing_required_routes": self.missing_required_routes,
             "unknown_routes": self.unknown_routes,
             "duplicate_routes": self.duplicate_routes,
@@ -83,7 +82,7 @@ impl GraphRouteReadinessSummary {
             "route_relationship_property_pruning_evidence_ready": self.route_relationship_property_pruning_evidence_ready,
             "route_primary_ready": self.route_primary_ready,
             "primary_ready_route_count": self.primary_ready_route_count,
-            "route_catalog": nowledge_mem_graph_read_route_specs_json(),
+            "route_catalog": graph_read_route_specs_json(),
             "route_catalog_metadata_ready": self.route_catalog_metadata_ready,
             "missing_route_catalog_metadata_routes": self.missing_route_catalog_metadata_routes,
             "route_catalog_metadata_mismatch_routes": self.route_catalog_metadata_mismatch_routes,
@@ -124,7 +123,7 @@ fn graph_route_readiness_summary_at(
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
-    let missing_required_routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+    let missing_required_routes = REQUIRED_BOUNDED_READ_ROUTES
         .iter()
         .copied()
         .filter(|route| !covered_route_set.contains(route))
@@ -132,7 +131,7 @@ fn graph_route_readiness_summary_at(
     let unknown_routes = covered_routes
         .iter()
         .map(String::as_str)
-        .filter(|route| !REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.contains(route))
+        .filter(|route| !REQUIRED_BOUNDED_READ_ROUTES.contains(route))
         .map(str::to_string)
         .collect::<Vec<_>>();
     let duplicate_routes = duplicate_strings(&covered_routes);
@@ -165,7 +164,7 @@ fn graph_route_readiness_summary_at(
     let route_primary_ready = json_get_bool_path_from_dynamic(bundle, path, "route_primary_ready");
     let primary_ready_route_count =
         json_get_u64_path_from_dynamic(bundle, path, "primary_ready_route_count");
-    let required_route_len = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len() as u64;
+    let required_route_len = REQUIRED_BOUNDED_READ_ROUTES.len() as u64;
     let relationship_property_pruning_counts_match =
         relationship_property_pruning_required_count == relationship_property_pruning_report_count;
     let route_catalog_metadata = graph_route_catalog_metadata_summary(bundle, path);
@@ -238,7 +237,7 @@ fn graph_route_catalog_metadata_summary(
     path: &[&str],
 ) -> GraphRouteCatalogMetadataSummary {
     let catalog_matches = json_get_path_from_dynamic(bundle, path, "route_catalog")
-        == Some(&nowledge_mem_graph_read_route_specs_json());
+        == Some(&graph_read_route_specs_json());
     let routes = json_get_path_from_dynamic(bundle, path, "routes")
         .and_then(serde_json::Value::as_array)
         .into_iter()
@@ -248,7 +247,7 @@ fn graph_route_catalog_metadata_summary(
     let mut missing_routes = Vec::new();
     let mut mismatch_routes = Vec::new();
 
-    for route in REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES {
+    for route in REQUIRED_BOUNDED_READ_ROUTES {
         let Some(entry) = routes.get(route) else {
             missing_routes.push(*route);
             continue;
@@ -283,7 +282,7 @@ fn graph_route_catalog_metadata_entry_state(
     route: &str,
     entry: &serde_json::Value,
 ) -> GraphRouteCatalogMetadataEntryState {
-    let Some(spec) = nowledge_mem_graph_read_route_spec(route) else {
+    let Some(spec) = graph_read_route_spec(route) else {
         return GraphRouteCatalogMetadataEntryState::Mismatch;
     };
     let owner = json_get_str_path(entry, &["owner"]);

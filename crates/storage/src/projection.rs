@@ -230,6 +230,7 @@ fn projection_value_to_string(value: &Value) -> String {
         Value::Null => String::new(),
         Value::Bool(value) => value.to_string(),
         Value::Int(value) => value.to_string(),
+        Value::Decimal(value) => value.to_string(),
         Value::Float(value) => value.to_string(),
         Value::String(value) => value.clone(),
         Value::Binary(value) => format!(
@@ -240,7 +241,12 @@ fn projection_value_to_string(value: &Value) -> String {
                 .collect::<String>()
         ),
         Value::Uuid(value) => value.to_string(),
-        Value::Vector(_) => value.to_string(),
+        Value::Vector(_)
+        | Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => value.to_string(),
         Value::List(values) => values
             .iter()
             .map(projection_value_to_string)
@@ -449,6 +455,7 @@ pub struct StorageRecoveryReport {
     pub torn_tail_repaired: bool,
     pub discarded_wal_tail_bytes: u64,
     pub torn_tail_reason: Option<String>,
+    pub wal_repair: Option<crate::doctor::WalTailRepairReport>,
     pub recovered_commit_epoch: u64,
 }
 

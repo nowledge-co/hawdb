@@ -13,21 +13,88 @@
 // limitations under the License.
 
 use super::*;
+use std::sync::Arc;
 
 const COMPACT_AGGREGATE_ROW: &str = "__hawdb_compact_aggregate";
 
 pub(super) fn encode_compact_group_binding(
-    key: Vec<Value>,
+    key: Vec<GroupKeyValue>,
     inputs: Vec<AggregateInput>,
 ) -> Binding {
     let inputs = inputs
         .into_iter()
         .map(encode_aggregate_input)
         .collect::<Vec<_>>();
-    Binding::scalar(
-        COMPACT_AGGREGATE_ROW,
-        Value::List(vec![Value::List(key), Value::List(inputs)]),
+    let mut binding = Binding::values(BTreeMap::new());
+    let key = encode_group_key(key, &mut binding);
+    binding.values.insert(
+        COMPACT_AGGREGATE_ROW.to_string(),
+        Value::List(vec![key, Value::List(inputs)]),
+    );
+    binding
+}
+
+/// Spill form of a group key (#1615). Value elements stay in the key list.
+/// An entity element leaves NULL at its position and its record in the graph
+/// slot named by that position, which the binding codec writes with its id,
+/// labels or endpoints and every property. The merge has no graph access and
+/// emits the record it reads back, so the record is written, not re-read.
+pub(super) fn encode_group_key(key: Vec<GroupKeyValue>, binding: &mut Binding) -> Value {
+    Value::List(
+        key.into_iter()
+            .enumerate()
+            .map(|(position, value)| match value {
+                GroupKeyValue::Value(value) => value,
+                GroupKeyValue::Node(node) => {
+                    binding.nodes.insert_arc(position.to_string(), node);
+                    Value::Null
+                }
+                GroupKeyValue::Relationship(relationship) => {
+                    binding
+                        .relationships
+                        .insert_arc(position.to_string(), relationship);
+                    Value::Null
+                }
+            })
+            .collect(),
     )
+}
+
+/// Reverses [`encode_group_key`]; `binding` must hold only the key's slots.
+pub(super) fn decode_group_key(
+    key: Vec<Value>,
+    binding: &Binding,
+    invalid: fn(&str) -> HawDBError,
+) -> Result<Vec<GroupKeyValue>> {
+    let mut decoded = key
+        .into_iter()
+        .map(GroupKeyValue::Value)
+        .collect::<Vec<_>>();
+    let mut place = |name: &str, entity: GroupKeyValue| {
+        let slot = name
+            .parse::<usize>()
+            .ok()
+            .filter(|position| position.to_string() == name)
+            .and_then(|position| decoded.get_mut(position))
+            .ok_or_else(|| invalid("has a graph key slot outside its key"))?;
+        if *slot != GroupKeyValue::Value(Value::Null) {
+            return Err(invalid("has a graph key slot over a non-null key value"));
+        }
+        *slot = entity;
+        Ok(())
+    };
+    for name in binding.nodes.keys() {
+        let node = binding.nodes.get_shared(name).expect("listed slot exists");
+        place(name, GroupKeyValue::Node(Arc::clone(node)))?;
+    }
+    for name in binding.relationships.keys() {
+        let relationship = binding
+            .relationships
+            .get_shared(name)
+            .expect("listed slot exists");
+        place(name, GroupKeyValue::Relationship(Arc::clone(relationship)))?;
+    }
+    Ok(decoded)
 }
 
 pub(super) fn decode_compact_group_binding(
@@ -35,7 +102,7 @@ pub(super) fn decode_compact_group_binding(
     mut binding: Binding,
     expected_inputs: usize,
 ) -> Result<GroupRunRow> {
-    if !binding.nodes.is_empty() || !binding.relationships.is_empty() || binding.values.len() != 1 {
+    if binding.values.len() != 1 {
         return Err(invalid_compact_row("has an invalid binding shape"));
     }
     let Some(Value::List(mut encoded)) = binding.values.remove(COMPACT_AGGREGATE_ROW) else {
@@ -58,7 +125,7 @@ pub(super) fn decode_compact_group_binding(
         .map(decode_aggregate_input)
         .collect::<Result<Vec<_>>>()?;
     Ok(GroupRunRow {
-        key,
+        key: decode_group_key(key, &binding, invalid_compact_row)?,
         ordinal,
         inputs,
     })
@@ -126,7 +193,7 @@ mod tests {
         let row = decode_compact_group_binding(
             7,
             encode_compact_group_binding(
-                vec![Value::String("group".to_string())],
+                vec![GroupKeyValue::Value(Value::String("group".to_string()))],
                 vec![
                     AggregateInput::Missing,
                     AggregateInput::Present,
@@ -139,7 +206,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(row.ordinal, 7);
-        assert_eq!(row.key, vec![Value::String("group".to_string())]);
+        assert_eq!(
+            row.key,
+            vec![GroupKeyValue::Value(Value::String("group".to_string()))]
+        );
         assert!(matches!(row.inputs[0], AggregateInput::Missing));
         assert!(matches!(row.inputs[1], AggregateInput::Present));
         assert!(matches!(

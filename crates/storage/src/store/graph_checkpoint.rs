@@ -1134,7 +1134,7 @@ impl GraphStore {
                     .sum()
             });
             let row_publication_config = row_compaction.as_ref().map_or_else(
-                RelationalRowPagePublicationConfig::default,
+                || super::relational_row_pages::canonical_row_publication_config(durable.root_path()),
                 |row| {
                     hawdb_storage::relational::relational_row_page_compaction_publication_config(
                         row.config,
@@ -1464,7 +1464,7 @@ impl GraphStore {
     }
 
     /// Publication with an explicit pre-admitted shadow context: callers
-    /// that already hold a governor permit (the nowledge_mem typed
+    /// that already hold a governor permit (the embedded_store typed
     /// checkpoint) extend that single admission by
     /// [`GraphStore::columnar_shadow_admission_bytes`] and pass the token
     /// here; `None` lets the shadow acquire its own single non-nested
@@ -1599,11 +1599,13 @@ impl GraphStore {
         // Generation reclamation is post-commit maintenance. It must run only
         // after every in-memory view has adopted the published generation, and
         // its failure must not change the checkpoint outcome.
+        let owner = self.branch_lease.clone();
         if let Some(durable) = self.durable.as_mut() {
             durable.reclaim_old_generations(
                 generation,
                 prepared.source_checkpoint_epoch,
                 pinned_reader_generations,
+                owner.as_deref(),
             );
         }
         self.reclaim_version_history();
@@ -1905,10 +1907,10 @@ impl GraphStore {
             generation_reclamation_retry_required,
             generation_reclamation_pending_files,
             generation_reclamation_pending_bytes,
-        ) = self
-            .durable
-            .as_ref()
-            .map_or((0, 0, None, 0, false, 0, 0), |durable| {
+            objects,
+        ) = self.durable.as_ref().map_or(
+            (0, 0, None, 0, false, 0, 0, Default::default()),
+            |durable| {
                 let reclamation = durable.generation_reclamation_debt();
                 (
                     durable.wal_bytes,
@@ -1921,8 +1923,10 @@ impl GraphStore {
                     reclamation.retry_required,
                     reclamation.pending_file_count,
                     reclamation.pending_bytes,
+                    reclamation.objects,
                 )
-            });
+            },
+        );
         let has_checkpoint_debt =
             self.durable.is_some() && self.commit_epoch > checkpoint_commit_epoch;
         let estimated_checkpoint_temporary_bytes = if has_checkpoint_debt {
@@ -1965,6 +1969,16 @@ impl GraphStore {
             generation_reclamation_retry_required,
             generation_reclamation_pending_files,
             generation_reclamation_pending_bytes,
+            object_store_files: objects.store_objects,
+            object_store_bytes: objects.store_bytes,
+            object_reclamation_retry_required: objects.retry_required,
+            object_reclamation_pending_files: objects.pending_objects,
+            object_reclamation_pending_bytes: objects.pending_bytes,
+            object_reclamation_skipped_files: objects.skipped_objects,
+            object_reclamation_skipped_bytes: objects.skipped_bytes,
+            object_reclamation_corrupt_object: objects.corrupt_object,
+            object_reclamation_quarantine_unverified: objects.quarantine_unverified,
+            object_reclamation_damaged_live_root: objects.damaged_live_root,
             oldest_reader_commit_epoch,
             obsolete_generation_bytes,
             estimated_checkpoint_temporary_bytes,

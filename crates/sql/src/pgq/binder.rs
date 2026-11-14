@@ -504,6 +504,13 @@ impl<'a> GraphTableBinder<'a> {
         expression: &ExpressionSyntax,
     ) -> Result<BoundPgqExpression, PgqBindError> {
         let (kind, data_type) = match &expression.kind {
+            ExpressionKindSyntax::Like { .. } | ExpressionKindSyntax::Filtered { .. } => {
+                return Err(PgqBindError::new(
+                    PgqBindErrorCode::UnsupportedExpression,
+                    expression.span,
+                    "relational LIKE and FILTER are not qualified GRAPH_TABLE expressions",
+                ));
+            }
             ExpressionKindSyntax::Column(name) => self.bind_column_reference(name)?,
             ExpressionKindSyntax::Wildcard(_) => {
                 return Err(PgqBindError::new(
@@ -520,7 +527,20 @@ impl<'a> GraphTableBinder<'a> {
                 let (literal, data_type) = bind_literal(self.input, literal)?;
                 (BoundPgqExpressionKind::Literal(literal), data_type)
             }
-            ExpressionKindSyntax::TypedString { data_type, value } => {
+            ExpressionKindSyntax::TypedString {
+                time_zone: Some(_), ..
+            } => {
+                return Err(PgqBindError::new(
+                    PgqBindErrorCode::UnsupportedExpression,
+                    expression.span,
+                    "TIMESTAMP literals are not supported in PGQ",
+                ));
+            }
+            ExpressionKindSyntax::TypedString {
+                data_type,
+                value,
+                time_zone: None,
+            } => {
                 let data_type_name = normalize_identifier(self.input, data_type);
                 let value = decode_string(self.input, *value).ok_or_else(|| {
                     PgqBindError::new(
@@ -668,7 +688,16 @@ impl<'a> GraphTableBinder<'a> {
             ExpressionKindSyntax::Cast {
                 expression: inner,
                 data_type,
+                type_parameters,
+                time_zone,
             } => {
+                if !type_parameters.is_empty() || time_zone.is_some() {
+                    return Err(PgqBindError::new(
+                        PgqBindErrorCode::UnsupportedExpression,
+                        expression.span,
+                        "parameterized scalar casts are not supported in PGQ",
+                    ));
+                }
                 let inner = self.bind_expression(inner)?;
                 let data_type_name = normalize_qualified_name(self.input, data_type);
                 let result_type = cast_result_type(&data_type_name);

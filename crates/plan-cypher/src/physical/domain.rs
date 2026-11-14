@@ -107,6 +107,7 @@ impl PhysicalPlan {
             }
             PhysicalPlan::CreateNode { .. }
             | PhysicalPlan::UnwindMutation { .. }
+            | PhysicalPlan::LoadCsvMutation { .. }
             | PhysicalPlan::MergeNode { .. }
             | PhysicalPlan::MergeRelationship { .. }
             | PhysicalPlan::MergeMatchedRelationship { .. }
@@ -126,6 +127,7 @@ impl PhysicalPlan {
                 PhysicalPlanDomainRef::Mutation(MutationPhysicalPlanRef::new(self))
             }
             PhysicalPlan::SeqNodeScan { .. }
+            | PhysicalPlan::RelationshipSeededNodeScan { .. }
             | PhysicalPlan::NodeProjectionScanExec { .. }
             | PhysicalPlan::SourceSegmentScan { .. }
             | PhysicalPlan::NodeColumnLookupExec { .. }
@@ -148,6 +150,8 @@ impl PhysicalPlan {
             }
             PhysicalPlan::NodeCountExec { .. }
             | PhysicalPlan::RelationshipCountExec { .. }
+            | PhysicalPlan::UnwindExec { .. }
+            | PhysicalPlan::UnwindRowsExec { .. }
             | PhysicalPlan::EmptyExec
             | PhysicalPlan::NodeCartesianProductExec { .. }
             | PhysicalPlan::HashJoinExec { .. }
@@ -170,6 +174,7 @@ impl PhysicalPlan {
             | PhysicalPlan::GraphSeedScan { .. }
             | PhysicalPlan::VectorIndexScan(_)
             | PhysicalPlan::TextSeedScan { .. }
+            | PhysicalPlan::LoadCsvExec { .. }
             | PhysicalPlan::ThreadRepairStatsExec { .. } => {
                 PhysicalPlanDomainRef::Procedure(ProcedurePhysicalPlanRef::new(self))
             }

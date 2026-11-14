@@ -14,6 +14,13 @@
 
 use super::*;
 
+/// Cooperative target for revocable operator state in an already admitted task.
+/// This is a hint to spill at safe points, never a replacement for hard budgets
+/// or permission to revoke an allocation, result, or runtime reservation.
+pub trait RuntimeMemoryTarget: std::fmt::Debug + Send + Sync {
+    fn target_bytes(&self, hard_limit: u64) -> u64;
+}
+
 /// Ownership of memory admitted before an allocation is attempted.
 /// Keep this lease until the allocation is destroyed, including retained state.
 pub trait RuntimeMemoryPermit: std::fmt::Debug + Send + Sync {

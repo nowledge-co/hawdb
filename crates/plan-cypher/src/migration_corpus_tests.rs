@@ -25,6 +25,71 @@ const MANIFEST: &str = include_str!("../../cypher/fixtures/migration_manifest_v1
 // Expect its explicit None default without rewriting that historical corpus;
 // a populated policy or any other plan change still fails the exact comparison.
 fn frozen_plan_text(case: &Value) -> String {
+    with_default_property_default(&with_default_graph_keys(&frozen_lookup_text(case)))
+}
+
+/// Frozen plans also predate the `CreateProperty` default slot (#1683).
+/// Expect its explicit `None` without rewriting them; a declared default or
+/// any other change still fails the exact comparison.
+fn with_default_property_default(text: &str) -> String {
+    if !text.starts_with("CreateProperty {") {
+        return text.to_string();
+    }
+    match text.strip_suffix(" }") {
+        Some(fields) if !fields.contains("default: ") => format!("{fields}, default: None }}"),
+        _ => text.to_string(),
+    }
+}
+
+/// Frozen plans also predate the aggregate graph key output slot (#1615).
+/// Expect its explicit `Values` default without rewriting them; a slotted
+/// grouping or any other change still fails the exact comparison.
+fn with_default_graph_keys(text: &str) -> String {
+    const AGGREGATE: &str = "Aggregate { ";
+    let mut output = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find(AGGREGATE) {
+        let fields = start + AGGREGATE.len();
+        output.push_str(&rest[..fields]);
+        rest = &rest[fields..];
+        // Find this aggregate's own `input: ` field, outside nested values.
+        let (mut depth, mut quoted, mut escaped) = (0usize, false, false);
+        let mut input = None;
+        for (index, character) in rest.char_indices() {
+            if quoted {
+                match (escaped, character) {
+                    (true, _) => escaped = false,
+                    (false, '\\') => escaped = true,
+                    (false, '"') => quoted = false,
+                    _ => {}
+                }
+                continue;
+            }
+            match character {
+                '"' => quoted = true,
+                '[' | '{' | '(' => depth += 1,
+                ']' | '}' | ')' if depth == 0 => break,
+                ']' | '}' | ')' => depth -= 1,
+                _ if depth == 0 && rest[index..].starts_with("input: ") => {
+                    input = Some(index);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        if let Some(input) = input
+            && !rest[..input].contains("graph_keys: ")
+        {
+            output.push_str(&rest[..input]);
+            output.push_str("graph_keys: Values, ");
+            rest = &rest[input..];
+        }
+    }
+    output.push_str(rest);
+    output
+}
+
+fn frozen_lookup_text(case: &Value) -> String {
     let baseline = case["plan"]["text"].as_str().unwrap();
     let mut parts = baseline.split("NodeColumnLookup {");
     let mut expected = parts.next().unwrap().to_owned();
@@ -37,6 +102,10 @@ fn frozen_plan_text(case: &Value) -> String {
     }
     expected
 }
+
+/// Corpus cases #1489 moves from parser rejection to acceptance; see the
+/// parser corpus test of the same name.
+const MAIN_1489_UNBOUNDED_TRANSITIONS: [&str; 1] = ["owner-0094"];
 
 #[test]
 fn migration_corpus_preserves_bindings_and_logical_plans() {
@@ -52,6 +121,19 @@ fn migration_corpus_preserves_bindings_and_logical_plans() {
         *outcomes.entry(kind.to_owned()).or_insert(0usize) += 1;
         let statement = hawdb_cypher::parse(query);
         if kind == "parse_rejected" {
+            // #1489 admits unbounded variable-length patterns: the reviewed
+            // case now parses and plans a variable-length expand.
+            if MAIN_1489_UNBOUNDED_TRANSITIONS.contains(&id) {
+                let statement = statement.unwrap_or_else(|error| panic!("{id}: {error}"));
+                let plan = crate::plan_with_params(&statement, &parameters(&case["parameters"]))
+                    .unwrap_or_else(|error| panic!("{id}: {error}"));
+                let text = format!("{plan:?}");
+                assert!(
+                    text.contains(&format!("max_hops: {}", usize::MAX)),
+                    "{id}: {text}"
+                );
+                continue;
+            }
             if let Some(change) = migration["parser_stage_changes"].get(id) {
                 let statement = statement.unwrap_or_else(|error| panic!("{id}: {error}"));
                 let error = crate::plan_with_params(&statement, &parameters(&case["parameters"]))
@@ -83,7 +165,7 @@ fn migration_corpus_preserves_bindings_and_logical_plans() {
                     format!("{plan:?}"),
                     migration["logical_plan_representations"]
                         .get(id)
-                        .map(|text| text.as_str().unwrap().to_owned())
+                        .map(|text| with_default_graph_keys(text.as_str().unwrap()))
                         .unwrap_or_else(|| frozen_plan_text(&case)),
                     "{id}: logical plan changed"
                 );
@@ -273,7 +355,7 @@ fn ordered_procedure_and_shortest_path_plans_preserve_frozen_outcomes() {
         };
         let expected = migration["logical_plan_representations"]
             .get(case["id"].as_str().unwrap())
-            .map(|plan| plan.as_str().unwrap().to_owned())
+            .map(|plan| with_default_graph_keys(plan.as_str().unwrap()))
             .unwrap_or_else(|| frozen_plan_text(&case));
         assert_eq!(text, expected, "{}: {query}", case["id"]);
     }
@@ -363,7 +445,7 @@ fn normalized_pipeline_frozen_plan_coverage() {
     );
     assert_eq!(
         exact,
-        361,
+        353,
         "{}",
         serde_json::to_string_pretty(&differences).unwrap()
     );
@@ -377,12 +459,18 @@ fn normalized_pipeline_frozen_plan_coverage() {
     );
     for difference in &differences {
         assert_eq!(
-            difference["actual"],
-            migration["logical_plan_representations"][difference["id"].as_str().unwrap()]
+            difference["actual"].as_str().unwrap(),
+            with_default_graph_keys(
+                migration["logical_plan_representations"][difference["id"].as_str().unwrap()]
+                    .as_str()
+                    .unwrap()
+            )
         );
     }
     // Every difference is explicitly qualified in the migration fixture.
-    // The two probe differences are not permission to restore the incorrect
+    // probe-0034..0038, 0050 and 0051 carry a grouped WITH variable as a graph
+    // slot (#1615). owner-0090 plans Kuzu label(r) as the entity label
+    // expression (#1678). The two original probe differences are not permission to restore the incorrect
     // group-key or pre-lookup RETURN window (#757).
     assert_eq!(
         differences
@@ -397,9 +485,17 @@ fn normalized_pipeline_frozen_plan_coverage() {
             "owner-0059",
             "owner-0060",
             "owner-0061",
+            "owner-0090",
             "probe-0008",
+            "probe-0034",
+            "probe-0035",
+            "probe-0036",
+            "probe-0037",
+            "probe-0038",
             "probe-0040",
             "probe-0042",
+            "probe-0050",
+            "probe-0051",
         ]
     );
 }
@@ -434,10 +530,40 @@ fn default_pipeline_stage_qualification() {
                 hawdb_core::Value::String("newer".to_string()),
             ),
         ]);
+        let mut supplied = supplied;
+        supplied.extend([
+            (
+                "thread_uuid".into(),
+                hawdb_core::Value::String("thread".into()),
+            ),
+            ("message_count".into(), hawdb_core::Value::Int(2)),
+            ("first_message_at".into(), hawdb_core::Value::Int(20)),
+            ("last_message_at".into(), hawdb_core::Value::Int(20)),
+            (
+                "preserve_existing_range".into(),
+                hawdb_core::Value::Bool(true),
+            ),
+            ("mutation_at".into(), hawdb_core::Value::Null),
+            ("source_time_metadata".into(), hawdb_core::Value::Null),
+        ]);
         let planned = crate::plan_with_params(&statement, &supplied);
         match change["supplied_parameters"].as_str().unwrap() {
             "accepted" => assert!(
-                matches!(planned, Ok(crate::LogicalPlan::Aggregate { .. })),
+                matches!(
+                    (&planned, change["supplied_plan"].as_str().unwrap()),
+                    (Ok(crate::LogicalPlan::Aggregate { .. }), "aggregate")
+                        | (
+                            Ok(crate::LogicalPlan::UnwindMutation {
+                                operation: crate::BatchMutationOperation::SetMatchedNodes(_),
+                                ..
+                            }),
+                            "matched_node_sets"
+                        )
+                        | (
+                            Ok(crate::LogicalPlan::SetNodeProperties { .. }),
+                            "node_properties"
+                        )
+                ),
                 "{id}: {planned:?}"
             ),
             "rejected" => assert_eq!(
@@ -450,6 +576,10 @@ fn default_pipeline_stage_qualification() {
     }
     assert_eq!(
         qualified,
-        std::collections::BTreeSet::from(["mem-0344".to_string(), "mem-0361".to_string()])
+        std::collections::BTreeSet::from([
+            "mem-0344".to_string(),
+            "mem-0361".to_string(),
+            "mem-0420".to_string()
+        ])
     );
 }

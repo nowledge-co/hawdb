@@ -5,22 +5,27 @@
 The generic clause pipeline uses `GraphMatch` until a structural normalization
 can express the same operation with conventional operators. Its bounded
 traversal supplies endpoint nodes. It does not supply a scalar relationship
-binding for a multi-hop path, per-edge property filtering, an untyped traversal,
-or a non-outgoing traversal. Single-hop matching has those capabilities.
+binding for a multi-hop path, per-edge property filtering, or an untyped
+traversal. Single-hop matching has those capabilities. Bounded traversal
+follows outgoing, incoming or undirected relationships and enumerates trails:
+a relationship appears at most once per match, including relationships bound
+by earlier steps of the same pattern (openCypher relationship isomorphism). An
+undirected traversal crosses a self-loop once, as single-hop matching does.
 
 Let `H` mean both hop bounds equal one, `T` mean a nonempty relationship type,
-`O` mean outgoing direction, `R` mean a relationship variable is requested and
-`P` mean relationship properties are specified. The admitted relationship shape
-is
+`R` mean a relationship variable is requested and `P` mean relationship
+properties are specified. The admitted relationship shape is
 
 ```
-A = H or (T and O and not R and not P).
+A = H or (T and not R and not P).
 ```
 
 Endpoint properties are a different operation: filtering the selected endpoint
 remains representable and is not rejected by this predicate. Unused path aliases
-also retain their existing scope behavior. ALL SHORTEST and mutation commands
-have separate lowering contracts; this change does not add capabilities there.
+also retain their existing scope behavior. Shortest-path patterns
+(`shortestPath`, `allShortestPaths`, `* ANY|ALL SHORTEST`) and mutation
+commands have separate lowering contracts; see
+[shortest-path execution](SHORTEST_PATH_EXECUTION.md).
 
 ## Why validation precedes execution and normalization
 
@@ -41,9 +46,9 @@ by the legacy statement binder.
 ## Deductive argument
 
 For `H`, validation returns successfully without rejecting single-hop features.
-For `not H`, its four ordered tests reject `P`, `not T`, `not O` and `R`.
-Reaching success therefore entails `T and O and not R and not P`; conversely
-those four facts make every rejection test false. This proves success iff `A`
+For `not H`, its three ordered tests reject `P`, `not T` and `R`.
+Reaching success therefore entails `T and not R and not P`; conversely
+those three facts make every rejection test false. This proves success iff `A`
 for this shape check. Other binding checks may still reject the statement.
 
 Induct over relationship steps within a MATCH clause. Before the first step no

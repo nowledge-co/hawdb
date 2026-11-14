@@ -25,6 +25,7 @@ use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 
 mod host_scoring;
+mod limit_admission;
 mod owned_budget;
 mod scoring;
 
@@ -97,6 +98,7 @@ fn with_context<T>(
         memory_ledger: &ledger,
         task_context: None,
         observer: &NoopExecutionObserver,
+        graph: None,
     });
     let snapshot = ledger.snapshot();
     assert_eq!(snapshot.used_bytes, 0);
@@ -124,7 +126,8 @@ fn rows(count: usize, seed: usize) -> Vec<Binding> {
                         labels: BTreeSet::from([LabelId(3)]),
                         properties: BTreeMap::new(),
                     },
-                )]),
+                )])
+                .into(),
                 relationships: BTreeMap::from([(
                     "r".into(),
                     RelRecord {
@@ -134,7 +137,8 @@ fn rows(count: usize, seed: usize) -> Vec<Binding> {
                         rel_type: RelTypeId(4),
                         properties: BTreeMap::new(),
                     },
-                )]),
+                )])
+                .into(),
             }
         })
         .collect()
@@ -145,6 +149,127 @@ fn items(column: &str) -> Vec<Projection> {
         name: "alias".into(),
         expression: ProjectionExpression::Column(column.into()),
     }]
+}
+
+#[test]
+fn column_literal_projection_reserves_the_actual_transfer_under_a_small_query_budget() {
+    let projections = vec![
+        items("value").remove(0),
+        Projection {
+            name: "count".into(),
+            expression: ProjectionExpression::Literal(Value::Int(1)),
+        },
+    ];
+    let input = Binding::values(BTreeMap::from([(
+        "value".into(),
+        Value::String("x".repeat(64)),
+    )]));
+    let mut source = Source::new(vec![input], 16);
+    let mut output = Vec::new();
+    with_context(16, 2048, |context| {
+        stream_projection_batches(
+            &projections,
+            &PhysicalPlan::EmptyExec,
+            &mut source,
+            context,
+            ExecutionLimit::unlimited(),
+            &mut |batch| {
+                output.extend(batch);
+                Ok(BatchControl::Continue)
+            },
+        )
+    })
+    .unwrap();
+    assert_eq!(output.len(), 1);
+    assert_eq!(
+        output[0].values,
+        BTreeMap::from([
+            ("alias".into(), Value::String("x".repeat(64))),
+            ("count".into(), Value::Int(1))
+        ])
+    );
+}
+
+#[test]
+fn duplicate_projection_aliases_preserve_suffixes_without_a_false_payload_refusal() {
+    let projections = [
+        Projection {
+            name: "alias".into(),
+            expression: ProjectionExpression::Literal(Value::Int(1)),
+        },
+        Projection {
+            name: "alias".into(),
+            expression: ProjectionExpression::Literal(Value::Int(2)),
+        },
+    ];
+    let mut source = Source::new(vec![Binding::values(BTreeMap::new())], 1);
+    let mut output = Vec::new();
+    with_context(16, 64 * 1024, |context| {
+        stream_projection_batches(
+            &projections,
+            &PhysicalPlan::EmptyExec,
+            &mut source,
+            context,
+            ExecutionLimit::unlimited(),
+            &mut |batch| {
+                output.extend(batch);
+                Ok(BatchControl::Continue)
+            },
+        )
+    })
+    .unwrap();
+    assert_eq!(output.len(), 1);
+    assert_eq!(
+        output[0].values,
+        BTreeMap::from([
+            ("alias".into(), Value::Int(1)),
+            ("alias#2".into(), Value::Int(2))
+        ])
+    );
+}
+
+#[test]
+fn projection_budget_keeps_the_ceiling_for_graph_columns_and_computed_evaluators() {
+    let input = rows(1, 0);
+    let ceiling = NonZeroUsize::new(4096).unwrap();
+    assert_eq!(
+        projection_batch_budget(&items("n"), &input, ceiling, false),
+        ceiling
+    );
+    let pure = items("value");
+    assert_eq!(
+        projection_batch_budget(&pure, &input, ceiling, false),
+        ceiling
+    );
+    let input = vec![Binding::values(input[0].values.clone())];
+    assert_eq!(
+        projection_batch_budget(
+            &[Projection {
+                name: "value".into(),
+                expression: ProjectionExpression::IsNull {
+                    expression: Box::new(ProjectionExpression::Column("value".into())),
+                    negated: false
+                }
+            }],
+            &input,
+            ceiling,
+            false
+        ),
+        ceiling
+    );
+    assert_eq!(
+        projection_batch_budget(&pure, &input, ceiling, true),
+        ceiling
+    );
+    let sized = projection_batch_budget(&pure, &input, ceiling, false);
+    assert!(sized.get() < ceiling.get());
+    assert_eq!(
+        sized.get(),
+        binding_memory_bytes_with_values(
+            &input[0],
+            std::iter::once(("alias", &input[0].values["value"]))
+        )
+    );
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -633,4 +758,204 @@ fn aggregate_arithmetic_projects_one_row_for_empty_global_input() {
             );
         });
     }
+}
+
+#[test]
+fn row_unwind_stops_and_releases_memory_on_cancellation_errors_and_refusal() {
+    let expression = ProjectionExpression::Literal(Value::List(vec![Value::Int(1); 8]));
+    for cancel in [false, true] {
+        let token = RuntimeCancellationToken::new();
+        let task = RuntimeTaskContext::without_deadline(token.clone());
+        let mut source = Source::new(vec![Binding::values(BTreeMap::new()); 3], 1);
+        let mut emitted = 0;
+        let result = with_context(1, 8192, |context| {
+            stream_unwind_rows_batches(
+                UnwindRows {
+                    expression: &expression,
+                    variable: "item",
+                    consumes_source: false,
+                },
+                &PhysicalPlan::EmptyExec,
+                &mut source,
+                BatchExecutionContext {
+                    task_context: Some(&task),
+                    ..context
+                },
+                ExecutionLimit::unlimited(),
+                &mut |batch| {
+                    assert_eq!(batch.len(), 1);
+                    emitted += 1;
+                    if cancel {
+                        token.cancel();
+                        Ok(BatchControl::Continue)
+                    } else {
+                        Ok(BatchControl::Stop)
+                    }
+                },
+            )
+        });
+        assert_eq!(emitted, 1);
+        assert_eq!(source.calls, 1);
+        if cancel {
+            assert!(result.unwrap_err().to_string().contains("cancelled"));
+        } else {
+            assert_eq!(result.unwrap(), BatchControl::Stop);
+        }
+    }
+    for (expression, budget, expected) in [
+        (
+            ProjectionExpression::Literal(Value::String("bad".into())),
+            8192,
+            "list value",
+        ),
+        (expression.clone(), 1, "memory"),
+        (
+            ProjectionExpression::Literal(Value::List(vec![Value::String("x".repeat(8192))])),
+            16384,
+            "batch_payload_bytes",
+        ),
+    ] {
+        let mut source = Source::new(vec![Binding::values(BTreeMap::new())], 1);
+        let error = with_context(2, budget, |context| {
+            stream_unwind_rows_batches(
+                UnwindRows {
+                    expression: &expression,
+                    variable: "item",
+                    consumes_source: false,
+                },
+                &PhysicalPlan::EmptyExec,
+                &mut source,
+                context,
+                ExecutionLimit::unlimited(),
+                &mut |_| panic!("refused output"),
+            )
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains(expected), "{error}");
+    }
+}
+
+/// A consuming unwind takes its source column out of each input row: the
+/// output rows carry the element and every other column, but not the list
+/// (#1606). A non-consuming unwind keeps the list in every row.
+#[test]
+fn consuming_row_unwind_moves_the_source_column_out_of_the_rows() {
+    let list = Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+    let input = Binding::values(BTreeMap::from([
+        ("xs".to_string(), list.clone()),
+        ("k".to_string(), Value::Int(7)),
+    ]));
+    let expression = ProjectionExpression::Column("xs".to_string());
+    for consumes_source in [true, false] {
+        let mut source = Source::new(vec![input.clone()], 8);
+        let mut rows = Vec::new();
+        with_context(8, 8192, |context| {
+            stream_unwind_rows_batches(
+                UnwindRows {
+                    expression: &expression,
+                    variable: "x",
+                    consumes_source,
+                },
+                &PhysicalPlan::EmptyExec,
+                &mut source,
+                context,
+                ExecutionLimit::unlimited(),
+                &mut |batch| {
+                    rows.extend(batch.into_iter().map(|row| row.values));
+                    Ok(BatchControl::Continue)
+                },
+            )
+        })
+        .unwrap();
+        let expected = (1..=3)
+            .map(|item| {
+                let mut values = BTreeMap::from([
+                    ("x".to_string(), Value::Int(item)),
+                    ("k".to_string(), Value::Int(7)),
+                ]);
+                if !consumes_source {
+                    values.insert("xs".to_string(), list.clone());
+                }
+                values
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(rows, expected, "consumes_source={consumes_source}");
+    }
+}
+
+/// Unchanged column transfers move out of the consumed input row (#1615):
+/// the output equals copying every value, nested and computed values are
+/// copied, and a column projected twice moves once and is copied once.
+#[test]
+fn projection_moves_unchanged_columns_and_copies_everything_else() {
+    let input = BTreeMap::from([
+        ("int".to_string(), Value::Int(7)),
+        (
+            "list".to_string(),
+            Value::List(vec![Value::String("x".repeat(64))]),
+        ),
+        (
+            "map".to_string(),
+            Value::Map(BTreeMap::from([(
+                "inner".to_string(),
+                Value::String("inner".repeat(8)),
+            )])),
+        ),
+        ("text".to_string(), Value::String("t".repeat(32))),
+        ("unused".to_string(), Value::String("dropped".into())),
+    ]);
+    let Value::Map(map) = &input["map"] else {
+        unreachable!()
+    };
+    let Value::String(text) = &input["text"] else {
+        unreachable!()
+    };
+    let text_buffer = text.as_ptr();
+    let values = BTreeMap::from([
+        (
+            "a_text".to_string(),
+            ProjectedValue::borrowed(&input["text"]),
+        ),
+        (
+            "b_text_again".to_string(),
+            ProjectedValue::borrowed(&input["text"]),
+        ),
+        ("c_int".to_string(), ProjectedValue::borrowed(&input["int"])),
+        (
+            "d_list".to_string(),
+            ProjectedValue::borrowed(&input["list"]),
+        ),
+        ("e_map".to_string(), ProjectedValue::borrowed(&input["map"])),
+        (
+            "f_nested".to_string(),
+            ProjectedValue::borrowed(&map["inner"]),
+        ),
+        (
+            "g_computed".to_string(),
+            ProjectedValue::scalar(Value::String("computed".into())),
+        ),
+    ]);
+    let expected = values
+        .iter()
+        .map(|(name, value)| (name.clone(), value.as_ref().clone()))
+        .collect::<BTreeMap<_, _>>();
+    let sources = claim_projection_values(values, &input);
+    let claimed = sources
+        .iter()
+        .filter_map(|(name, source)| {
+            matches!(source, ProjectedSource::Column(_)).then_some(name.as_str())
+        })
+        .collect::<Vec<_>>();
+    // Inline scalars, nested values and computed values are never moved.
+    assert_eq!(claimed, ["a_text", "d_list", "e_map"]);
+    let output = owned_projection_values(sources, input);
+    assert_eq!(output, expected);
+    let Value::String(moved) = &output["a_text"] else {
+        unreachable!()
+    };
+    assert_eq!(moved.as_ptr(), text_buffer, "the column moved, not copied");
+    let Value::String(copied) = &output["b_text_again"] else {
+        unreachable!()
+    };
+    assert_ne!(copied.as_ptr(), text_buffer);
 }

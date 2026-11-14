@@ -142,7 +142,7 @@ bounded multi-statement workflow. New single-query route wrappers and their
 request/output DTOs MUST NOT be added to the embedded facade.
 
 A bounded workflow combining Cypher and PostgreSQL reads MUST use one
-`NowledgeMemReadSnapshot` through `with_bounded_graph_read_snapshot` or
+`EmbeddedReadSnapshot` through `with_bounded_graph_read_snapshot` or
 `with_bounded_read_snapshot`. The graph-only entrypoint and `with_read_transaction` acquire the last committed
 canonical view through a short publication lock after admission by the existing
 runtime governor. A writer staging graph and SQL changes MUST NOT block new
@@ -174,7 +174,7 @@ the last committed state and permit later work. Publication retains the current
 COW roots and one current pin; compaction paths that use only the oldest logical
 epoch may conservatively postpone reclamation until a later checkpoint.
 
-`NowledgeMemEmbeddedStoreHandle::with_transaction` supplies the existing
+`EmbeddedStoreHandle::with_transaction` supplies the existing
 `ConcurrentDatabaseTransaction` workspace. Transaction callbacks stage outside
 the store publication lock, retain their admitted permit, and publish through
 the ordinary lock manager, commit validation and WAL coordinator. The statement
@@ -231,7 +231,7 @@ charged to the cumulative budget. Qualification for a mixed workflow MUST fail
 closed when either required statement class is absent; a graph-only query
 report cannot stand in for the relational half of the workflow. The report
 MUST NOT retain query text, parameters, result rows, or payload values.
-`NowledgeMemReadSnapshotReport::json` emits the versioned
+`EmbeddedReadSnapshotReport::json` emits the versioned
 `hawdb-nowledge-mem-read-snapshot-report-v1` representation of exactly those
 redacted fields; it is evidence input and does not claim route readiness by
 itself.
@@ -313,6 +313,42 @@ namespace with WAL rotation and uses `max(checkpoint_generation, wal_generation)
 + 1`. Physical generation IDs may skip; logical WAL replay boundaries remain
 contiguous. Reclamation must preserve the actual previous checkpoint, rather
 than assuming it has ID `current - 1`.
+
+`EmbeddedStoreHandle::storage_pressure_snapshot` returns the same
+`StoragePressureSnapshot` as `Database::storage_pressure_snapshot` for the
+handle's database, under the store read guard used by
+`storage_residency_report`; it takes no runtime-governor admission and adds no
+new semantics. Failed obsolete-generation deletions appear as
+`generation_reclamation_retry_required` and
+`generation_reclamation_pending_files`/`_bytes` until a later checkpoint
+retries them. Every live reader pin contributes to
+`oldest_reader_commit_epoch`, including the handle's standing read
+publication, which reports the current epoch with zero lag. A held older reader
+therefore reports positive `oldest_reader_lag` and `obsolete_generation_bytes`
+rather than pending reclamation debt. Hosts that disable background
+maintenance can assert, after their final explicit checkpoint, that no
+reclamation debt or reader lag remains.
+
+`EmbeddedStoreHandle::property_schemas` and
+`EmbeddedStoreHandle::plan_schema_maintenance` return the same
+`Vec<PropertySchema>` and dry-run `QueryOutput` as the `Database` methods under
+the store read guard, without runtime-governor admission.
+`EmbeddedStoreHandle::run_bounded_schema_maintenance(max_estimated_operations)`
+takes one `Foreground` `Maintenance` admission (the `checkpoint` pattern: one
+CPU slot, one I/O slot, the blocking-operator working memory), then runs
+`Database::run_bounded_schema_maintenance` under the exclusive write guard,
+which recaptures the standing read publication when it drops, as for
+`checkpoint`. It returns the same action rows. The call is explicit and
+works whether `RuntimeCapabilities::background_maintenance` is enabled or not;
+HawDB itself never schedules schema maintenance, so a host that declares a
+property DEFAULT on existing data (descriptor in `BACKFILL`) repeats it until
+the plan is empty (nowledge-co/hawdb#1739). Fills resume under any budget; the
+`VALIDATING` advance is one descriptor action and needs at least its planned
+`estimated_operations`. It scans the whole table under the exclusive write
+guard and therefore blocks writes for that scan, so hosts schedule it like
+`checkpoint` on large tables. A `CREATE PROPERTY` re-declaration that conflicts
+with the existing descriptor fails with `HawDBError::Schema` (storage surface),
+which does not poison the handle.
 
 Allocating beyond the active WAL prevents checkpoint preparation from replacing
 acknowledged recovery bytes. A torn unpublished candidate is not an active WAL
@@ -434,6 +470,14 @@ requests MAY use the effective CPU budget. Internal background tasks MUST use a
 separate conservative budget and pass QoS admission. Background saturation MUST
 NOT reject an explicit foreground request.
 
+The embedded Search catch-up facade MUST allow an explicit host operation to
+select its runtime priority through a typed library entrypoint. Selection MUST
+preserve the same bounded catch-up, projection publication and task-bound I/O
+context; it MUST NOT bypass the chosen lane's task, CPU, memory or I/O limits.
+Compatibility catch-up methods and scheduled maintenance retain Background
+priority. Holding an automatic checkpoint's Background physical wave is not
+itself a reason to reject caller-selected Foreground catch-up.
+
 `SharedHost` defaults reserve most process memory for the host application.
 Its stable HawDB capacity is one quarter of the effective host or cgroup policy
 ceiling, and its dynamic budget is further bounded by one quarter of sensed
@@ -474,6 +518,15 @@ reservations and live wave-scoped reads independently for each priority class.
   bounded upper limit. `MobileEmbedded` defaults MUST use a lower depth.
 - The host MAY override I/O depth using device-specific knowledge. The library
   MUST NOT infer a precise hardware queue count from CPU count alone.
+
+For known SSD/non-rotational media without a queue-depth hint, `SharedHost`
+defaults to 12 foreground and 3 background slots. This is a bounded concurrency
+policy, not a throughput guarantee. Supplied hints retain the foreground clamp
+of 4..32 and background depth of one quarter, clamped to 1..4. Explicit budgets,
+other media defaults and `MobileEmbedded` are unchanged. An unknown device does
+not receive the SSD default merely because its filesystem commonly runs on SSDs.
+This capacity adjustment does not resolve incorrect priority, permit retention
+or resource-wait behavior.
 
 Device discovery is path-specific and evidence preserving:
 

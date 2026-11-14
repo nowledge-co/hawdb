@@ -30,6 +30,10 @@ pub(super) fn lower(logical: &LogicalPlan) -> Option<PhysicalPlan> {
             variable: variable.clone(),
             operation: operation.clone(),
         }),
+        LogicalPlan::LoadCsvMutation { source, operation } => Some(PhysicalPlan::LoadCsvMutation {
+            source: source.clone(),
+            operation: operation.clone(),
+        }),
         LogicalPlan::MergeNode {
             label,
             match_properties,

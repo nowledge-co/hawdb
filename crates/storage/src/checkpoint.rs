@@ -305,6 +305,18 @@ pub(crate) fn encode_checkpoint_body_with_changes<'a>(
             encode_schema_object_state(property.state)
         ));
     }
+    // A separate record kind: checkpoints without defaults keep their exact
+    // pre-default bytes, and older binaries reject this line explicitly.
+    for property in image.catalog.property_descriptors() {
+        if let Some(default) = &property.default {
+            body.push_str(&format!(
+                "property_default\t{}\t{}\t{}\n",
+                property.id.0,
+                encode_string(&crate::text::encode_property_default(&default.value)),
+                encode_string(&crate::text::encode_value(&default.backfill_value))
+            ));
+        }
+    }
     for constraint in image.catalog.unique_constraints() {
         let ConstraintSubject::Node(label_id) = constraint.subject else {
             continue;
@@ -363,6 +375,9 @@ pub(crate) fn encode_checkpoint_body_with_changes<'a>(
         statistics.histogram_sample_limit
     ));
     body.push_str(&format!("stat_node_count\t{}\n", statistics.node_count));
+    if let Some(hops) = statistics.bounded_path_complete_through_hop {
+        body.push_str(&format!("stat_bounded_path_complete_through_hop\t{hops}\n"));
+    }
     body.push_str(&format!(
         "stat_relationship_count\t{}\n",
         statistics.relationship_count
@@ -490,6 +505,22 @@ pub(crate) fn encode_checkpoint_body_with_changes<'a>(
             label_id.0,
             encode_string(property),
             encode_bool(*sampled)
+        ));
+    }
+    for ((label, property), distribution) in &statistics.property_distributions {
+        body.push_str(&format!(
+            "stat_property_distribution\t{}\t{}\t{}\n",
+            label.0,
+            encode_string(property),
+            crate::statistics::distribution::encode(distribution)?
+        ));
+    }
+    for ((rel_type, property), distribution) in &statistics.rel_property_distributions {
+        body.push_str(&format!(
+            "stat_rel_property_distribution\t{}\t{}\t{}\n",
+            rel_type.0,
+            encode_string(property),
+            crate::statistics::distribution::encode(distribution)?
         ));
     }
     for (name, definition) in image.projected_graphs {
@@ -896,6 +927,19 @@ pub fn parse_checkpoint(
                     decode_schema_object_state(raw_state)?,
                 );
             }
+            ["property_default", raw_id, raw_default, raw_backfill] => {
+                let id = PropertyId(parse_u32(raw_id, "property default id")?);
+                let default = hawdb_core::DeclaredPropertyDefault {
+                    value: crate::text::decode_property_default(&decode_string(raw_default)?)?,
+                    backfill_value: crate::text::decode_value(&decode_string(raw_backfill)?)?,
+                };
+                if !catalog.set_property_default(id, Some(default)) {
+                    return Err(HawDBError::Storage(format!(
+                        "checkpoint property default references missing property {}",
+                        id.0
+                    )));
+                }
+            }
             ["unique_constraint", raw_id, raw_label_id, raw_property] => {
                 catalog.import_unique_constraint(
                     ConstraintId(parse_u32(raw_id, "unique constraint id")?),
@@ -954,6 +998,23 @@ pub fn parse_checkpoint(
             ["stat_histogram_sample_limit", raw] => {
                 state.checkpoint_statistics.histogram_sample_limit =
                     parse_usize(raw, "statistics histogram sample limit")?;
+            }
+            ["stat_bounded_path_complete_through_hop", raw] => {
+                if state
+                    .checkpoint_statistics
+                    .bounded_path_complete_through_hop
+                    .is_some()
+                {
+                    return Err(HawDBError::Storage(
+                        "checkpoint contains duplicate bounded path coverage".into(),
+                    ));
+                }
+                state
+                    .checkpoint_statistics
+                    .bounded_path_complete_through_hop = Some(parse_usize(
+                    raw,
+                    "statistics bounded path complete horizon",
+                )?);
             }
             ["stat_node_count", raw] => {
                 let count = parse_u64(raw, "statistics node count")?;
@@ -1160,6 +1221,34 @@ pub fn parse_checkpoint(
                         decode_bool(raw_sampled, "statistics sampled flag")?,
                     );
             }
+            ["stat_property_distribution", raw_label, raw_property, raw_distribution] => {
+                let key = (
+                    LabelId(parse_u32(raw_label, "distribution label")?),
+                    decode_string(raw_property)?,
+                );
+                if let Some(distribution) =
+                    crate::statistics::distribution::decode(raw_distribution)
+                {
+                    state
+                        .checkpoint_statistics
+                        .property_distributions
+                        .insert(key, distribution);
+                }
+            }
+            ["stat_rel_property_distribution", raw_rel_type, raw_property, raw_distribution] => {
+                let key = (
+                    RelTypeId(parse_u32(raw_rel_type, "distribution relationship type")?),
+                    decode_string(raw_property)?,
+                );
+                if let Some(distribution) =
+                    crate::statistics::distribution::decode(raw_distribution)
+                {
+                    state
+                        .checkpoint_statistics
+                        .rel_property_distributions
+                        .insert(key, distribution);
+                }
+            }
             ["project_graph", raw_name, raw_node_labels, raw_rel_types] => {
                 state.projected_graphs.insert(
                     decode_string(raw_name)?,
@@ -1223,6 +1312,68 @@ pub fn parse_checkpoint(
 mod shared_change_tests {
     use super::*;
     use std::sync::Arc;
+
+    #[test]
+    fn bounded_path_coverage_roundtrips_and_legacy_absence_remains_unknown() {
+        let statistics = GraphStatistics {
+            advanced_statistics_complete: true,
+            bounded_path_complete_through_hop: Some(3),
+            bounded_path_counts: BTreeMap::from([((LabelId(0), RelTypeId(0), LabelId(0), 1), 7)]),
+            ..GraphStatistics::default()
+        };
+        let catalog = Catalog::default();
+        let projected_graphs = BTreeMap::new();
+        let image = CheckpointImage {
+            catalog: &catalog,
+            commit_epoch: 0,
+            next_node_id: 0,
+            next_rel_id: 0,
+            search_projection_change_log_start_epoch: 0,
+            search_projection_graph_changes: &[],
+            statistics: &statistics,
+            projected_graphs: &projected_graphs,
+            initial_import_source_fingerprint: None,
+            search_projection_database_identity: None,
+            relational_checkpoint: None,
+        };
+        let encoded = encode_checkpoint_body(&image, 0).unwrap();
+        let mut decoded = DecodedCheckpoint::default();
+        parse_checkpoint(&encoded, &mut Catalog::default(), &mut decoded).unwrap();
+        assert_eq!(
+            decoded
+                .checkpoint_statistics
+                .bounded_path_complete_through_hop,
+            Some(3)
+        );
+        assert_eq!(
+            decoded.checkpoint_statistics.bounded_path_counts,
+            statistics.bounded_path_counts
+        );
+        let legacy = encoded
+            .lines()
+            .filter(|line| !line.starts_with("stat_bounded_path_complete_through_hop\t"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut decoded = DecodedCheckpoint::default();
+        parse_checkpoint(&legacy, &mut Catalog::default(), &mut decoded).unwrap();
+        assert_eq!(
+            decoded
+                .checkpoint_statistics
+                .bounded_path_complete_through_hop,
+            None
+        );
+        assert_eq!(
+            decoded.checkpoint_statistics.bounded_path_counts,
+            statistics.bounded_path_counts
+        );
+        let duplicate = format!("{encoded}stat_bounded_path_complete_through_hop\t3\n");
+        assert!(parse_checkpoint(
+            &duplicate,
+            &mut Catalog::default(),
+            &mut DecodedCheckpoint::default()
+        )
+        .is_err());
+    }
 
     #[test]
     fn shared_projection_changes_preserve_checkpoint_encoding_and_validation() {

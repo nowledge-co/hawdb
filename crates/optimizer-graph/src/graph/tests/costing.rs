@@ -101,3 +101,60 @@ fn recursive_plan_scalar_cost_is_the_breakdown_projection() {
 
     assert_scalar_cost_matches_breakdown(&plan, &catalog);
 }
+
+/// A relationship-seeded scan is costed at its estimated seeds: an `IN` list
+/// scales the one-value estimate by its distinct non-NULL values, an empty or
+/// all-NULL list seeds nothing, and an unlabeled scan counts every node
+/// (#1548).
+#[test]
+fn relationship_seeded_scan_costs_in_lists_and_unlabeled_sources() {
+    let catalog = OptimizerCatalog::new(
+        OptimizerCatalogIndexes::default(),
+        OptimizerCatalogStatistics {
+            label_counts: BTreeMap::from([("Entity".to_string(), 1_000)]),
+            rel_type_counts: BTreeMap::from([("LINK".to_string(), 2_000)]),
+            rel_property_distinct_counts: BTreeMap::from([(
+                ("LINK".to_string(), "offset".to_string()),
+                2_000,
+            )]),
+            ..OptimizerCatalogStatistics::default()
+        }
+        .with_node_count(5_000),
+    );
+    let seeded = |label: &str, values: Option<Vec<hawdb_core::Value>>| {
+        let plan = PhysicalPlan::RelationshipSeededNodeScan {
+            variable: "s".to_string(),
+            label: label.to_string(),
+            rel_type: "LINK".to_string(),
+            rel_properties: BTreeMap::new(),
+            rel_property_in: values.map(|values| ("offset".to_string(), values)),
+            direction: hawdb_cypher::RelationshipDirection::Outgoing,
+        };
+        assert_scalar_cost_matches_breakdown(&plan, &catalog);
+        estimate_physical_plan_cost_breakdown(&plan, &catalog).estimated_rows
+    };
+    use hawdb_core::Value::{Int, Null};
+    let one = seeded("", Some(vec![Int(1)]));
+    assert_eq!(one, 1);
+    assert_eq!(
+        seeded("", Some(vec![Int(1), Int(2), Int(2), Null])),
+        2 * one
+    );
+    assert!(seeded("", Some(vec![Int(1), Int(2), Int(3)])) > one);
+    // Nothing matches; the cost keeps its one-row floor.
+    for values in [Vec::new(), vec![Null]] {
+        assert_eq!(
+            catalog.estimate_seeded_relationships(
+                "LINK",
+                &BTreeMap::new(),
+                Some(("offset", &values))
+            ),
+            0
+        );
+        assert_eq!(seeded("", Some(values)), 1);
+    }
+    // Without constraints every relationship of the type is a candidate.
+    assert_eq!(seeded("", None), 2_000);
+    assert_eq!(catalog.scan_population(""), 5_000);
+    assert_eq!(catalog.scan_population("Entity"), 1_000);
+}

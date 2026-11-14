@@ -285,9 +285,15 @@ fn materialized_torn_transaction_fails_closed_without_discarding_evidence() {
     let complete = std::fs::read(&wal).unwrap();
     let torn = &complete[..complete.len() - 5];
     std::fs::write(&wal, torn).unwrap();
-    assert!(Database::open(&path)
-        .and_then(|mut db| db.query_sql("SELECT * FROM stats"))
-        .is_err());
+    assert!(Database::open_with_config(
+        &path,
+        crate::DatabaseConfig {
+            recovery_mode: crate::RecoveryMode::Strict,
+            ..Default::default()
+        },
+    )
+    .and_then(|mut db| db.query_sql("SELECT * FROM stats"))
+    .is_err());
     assert_eq!(std::fs::read(&wal).unwrap(), torn);
     std::fs::write(&wal, complete).unwrap();
     {

@@ -1,7 +1,7 @@
 // Copyright 2026 Nowledge
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::case::{Case, Operation, Rows};
+use crate::case::{Case, Mode, Operation, Rows};
 use crate::oracle::Oracle;
 use hawdb::{
     ConcurrentDatabase, ConcurrentDatabaseTransaction, ConcurrentTransactionOptions, Database,
@@ -198,7 +198,11 @@ pub fn observe(case: &Case) -> Result<Observation, String> {
         trace: Vec::new(),
         failure: None,
     };
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(case, &mut observation))) {
+    let execute = |observation: &mut Observation| match case.mode {
+        Mode::Optimistic => run(case, observation),
+        Mode::Pessimistic => crate::pessimistic::run(case, observation),
+    };
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| execute(&mut observation))) {
         Ok(Ok(())) => {}
         Ok(Err(error)) => observation.failure = Some(error),
         Err(payload) => {

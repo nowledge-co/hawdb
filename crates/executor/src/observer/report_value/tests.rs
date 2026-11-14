@@ -94,6 +94,8 @@ fn pipeline_fixture(data: &mut Data, case: usize) -> (PipelineMemoryReport, Valu
         peak_batch_rows: data.size(),
         peak_batch_payload_bytes: data.size(),
         borrowed_node_projection_rows: data.size(),
+        simple_case_dispatch_tables: data.size(),
+        simple_case_dispatch_lookups: data.size(),
         native_projection_rows: data.size(),
         columnar_batches: data.size(),
         columnar_input_rows: data.size(),
@@ -153,6 +155,14 @@ fn pipeline_fixture(data: &mut Data, case: usize) -> (PipelineMemoryReport, Valu
         (
             "native_projection_rows",
             number(report.native_projection_rows as u128),
+        ),
+        (
+            "simple_case_dispatch_tables",
+            number(report.simple_case_dispatch_tables as u128),
+        ),
+        (
+            "simple_case_dispatch_lookups",
+            number(report.simple_case_dispatch_lookups as u128),
         ),
         ("columnar_batches", number(report.columnar_batches as u128)),
         (
@@ -567,6 +577,7 @@ fn vector_fixture(data: &mut Data, case: usize) -> (VectorExecutionReport, Value
             filtered_document_count: data.size(),
             scanned_block_count: data.size(),
             skipped_block_count: data.size(),
+            adaptive_exact_scan_count: data.size(),
             payload_bytes_read: data.next(),
             admitted_working_bytes: data.size(),
         }),
@@ -648,6 +659,10 @@ fn vector_fixture(data: &mut Data, case: usize) -> (VectorExecutionReport, Value
         (
             "candidate_scan_skipped_block_count",
             metrics.map_or(Value::Null, |m| number(m.skipped_block_count as u128)),
+        ),
+        (
+            "candidate_scan_adaptive_exact_scan_count",
+            metrics.map_or(Value::Null, |m| number(m.adaptive_exact_scan_count as u128)),
         ),
         (
             "candidate_scan_payload_bytes_read",

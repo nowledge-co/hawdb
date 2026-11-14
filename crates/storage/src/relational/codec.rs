@@ -42,12 +42,19 @@ use std::sync::Arc;
 pub(crate) mod schema_encoding;
 
 #[cfg(test)]
+mod decimal_tests;
+#[cfg(test)]
+mod read_ahead_tests;
+#[cfg(test)]
+mod timestamp_tests;
+#[cfg(test)]
 mod vector_schema_tests;
 
 #[cfg(test)]
 mod compatibility_tests;
 
 mod checkpoint;
+mod numeric;
 pub(crate) use checkpoint::{
     clone_string_with_work_context, decode_relational_checkpoint_file_with_work_context,
     decode_relational_table_schema_with_work_context, decode_row_owned, decode_schema_owned,
@@ -59,7 +66,7 @@ pub(crate) use checkpoint::{
 
 const WAL_MAGIC: &[u8; 8] = b"SKRLWAL1";
 const CHECKPOINT_MAGIC: &[u8; 8] = b"SKRLCKP1";
-const CODEC_VERSION: u16 = 2;
+const CODEC_VERSION: u16 = 3;
 const HEADER_BYTES: usize = 64;
 const RELATIONAL_CHECKPOINT_ARTIFACT_ID: u64 = 1;
 
@@ -168,7 +175,9 @@ impl RelationalDecodeLimits {
             max_record_bytes: DEFAULT_MAX_WAL_RECORD_BYTES,
             max_tables: 1_024,
             max_writes: 100_000,
-            max_rows: 100_000,
+            // Tightening foreground work admission must not shrink durable
+            // replay's decode allowance. Keep compatibility checked in tests.
+            max_rows: 1_000_000,
             max_values: 2_000_000,
             max_value_bytes: 64 * 1024 * 1024,
             max_overflow_segments: 0,
@@ -223,7 +232,13 @@ pub fn encode_relational_wal_batch(
     epoch: u64,
     transaction: &RelationalTransaction,
 ) -> Result<Vec<u8>, RelationalError> {
-    encode_relational_wal_batch_inner(epoch, transaction, None, None)
+    encode_relational_wal_batch_inner(
+        epoch,
+        transaction,
+        None,
+        None,
+        RelationalDecodeLimits::wal(),
+    )
 }
 
 pub fn encode_relational_wal_batch_with_replay_access(
@@ -231,7 +246,13 @@ pub fn encode_relational_wal_batch_with_replay_access(
     transaction: &RelationalTransaction,
     replay_access: Option<&RelationalReplayAccessSet>,
 ) -> Result<Vec<u8>, RelationalError> {
-    encode_relational_wal_batch_inner(epoch, transaction, replay_access, None)
+    encode_relational_wal_batch_inner(
+        epoch,
+        transaction,
+        replay_access,
+        None,
+        RelationalDecodeLimits::wal(),
+    )
 }
 
 pub fn encode_relational_wal_batch_with_captures(
@@ -245,6 +266,7 @@ pub fn encode_relational_wal_batch_with_captures(
         transaction,
         replay_access,
         Some(primary_key_changes),
+        RelationalDecodeLimits::wal(),
     ) {
         Ok(record) => Ok(EncodedRelationalWalBatch {
             record,
@@ -264,6 +286,7 @@ pub fn encode_relational_wal_batch_with_captures(
                 transaction,
                 replay_access,
                 Some(&fallback),
+                RelationalDecodeLimits::wal(),
             ) {
                 Ok(record) => Ok(EncodedRelationalWalBatch {
                     record,
@@ -276,18 +299,25 @@ pub fn encode_relational_wal_batch_with_captures(
     }
 }
 
-fn encode_relational_wal_batch_inner(
+pub(super) fn encode_relational_wal_batch_inner(
     epoch: u64,
     transaction: &RelationalTransaction,
     replay_access: Option<&RelationalReplayAccessSet>,
     primary_key_changes: Option<&RelationalPrimaryKeyChangeCapture>,
+    limits: RelationalDecodeLimits,
 ) -> Result<Vec<u8>, RelationalError> {
-    let limits = RelationalDecodeLimits::wal();
     if transaction.writes.len() > limits.max_writes {
         return Err(RelationalError::Admission(format!(
             "WAL contains {} writes, exceeding decoder limit {}",
             transaction.writes.len(),
             limits.max_writes
+        )));
+    }
+    let rows = transaction.estimated_mutation_rows();
+    if rows > limits.max_rows {
+        return Err(RelationalError::Admission(format!(
+            "WAL contains {rows} rows, exceeding decoder limit {} before WAL append",
+            limits.max_rows
         )));
     }
     if replay_access.is_some_and(|access| access.entries().len() > limits.max_rows) {
@@ -605,10 +635,15 @@ pub fn encode_relational_checkpoint_to_writer<W: Write + Seek>(
         let mut table = Encoder::default();
         table.string(name)?;
         table.table_schema(schema)?;
+        table.u64(segment.last_row_id as u64);
         table.count(segment.rows.len(), "checkpoint rows")?;
         payload.write_all(&table.finish())?;
-        for row in segment.rows.values() {
+        for (key, row) in segment.rows.iter() {
             let mut encoded_row = Encoder::default();
+            if schema.primary_key.is_empty() {
+                super::validate_hidden_row_handle(key, segment.last_row_id)?;
+                encoded_row.key(key)?;
+            }
             encoded_row.row(row)?;
             payload.write_all(&encoded_row.finish())?;
         }
@@ -702,7 +737,7 @@ pub(crate) fn validate_relational_checkpoint_file_format(
         input.verify_remaining()?;
         return Err(error);
     }
-    let mut decoder = Decoder::new(input, limits, false);
+    let mut decoder = Decoder::new(ReadAheadFileInput::new(input), limits, false);
     let table_count = decoder.count(limits.max_tables, "checkpoint tables")?;
     for _ in 0..table_count {
         let name = decoder.string()?;
@@ -718,8 +753,18 @@ pub(crate) fn validate_relational_checkpoint_file_format(
                 "checkpoint has a mismatched table {name}"
             )));
         }
+        let last_row_id = i64::try_from(decoder.u64()?)
+            .map_err(|_| RelationalError::Corruption("invalid row ID high-water mark".into()))?;
+        if !schema.primary_key.is_empty() && last_row_id != 0 {
+            return Err(RelationalError::Corruption(
+                "primary-key table has a hidden row ID allocator".into(),
+            ));
+        }
         let row_count = decoder.row_count()?;
         for _ in 0..row_count {
+            if schema.primary_key.is_empty() {
+                super::validate_hidden_row_handle(&decoder.key()?, last_row_id)?;
+            }
             // Reuse value decoding to reach the next schema without building row maps.
             drop(decoder.row()?);
         }
@@ -763,7 +808,7 @@ pub fn decode_relational_checkpoint_file_with_index_load(
     reader.register(RELATIONAL_CHECKPOINT_ARTIFACT_ID, path);
     decode_relational_checkpoint_from_decoder(
         epoch,
-        Decoder::new(input, limits, false),
+        Decoder::new(ReadAheadFileInput::new(input), limits, false),
         limits,
         OverflowDecodeStorage::File(Arc::new(reader)),
         index_load,
@@ -836,6 +881,13 @@ fn decode_relational_checkpoint_from_decoder<I: DecodeInput>(
             validate_table_schema(&schema)?;
             None
         };
+        let last_row_id = i64::try_from(decoder.u64()?)
+            .map_err(|_| RelationalError::Corruption("invalid row ID high-water mark".into()))?;
+        if !schema.primary_key.is_empty() && last_row_id != 0 {
+            return Err(RelationalError::Corruption(
+                "primary-key table has a hidden row ID allocator".into(),
+            ));
+        }
         let row_count = decoder.row_count()?;
         let primary_key = if let (Some(work), Some(positions)) = (&work, &positions) {
             checkpoint::primary_key_positions_with_work_context(&schema, positions, work)?
@@ -844,13 +896,22 @@ fn decode_relational_checkpoint_from_decoder<I: DecodeInput>(
         };
         let mut rows = BTreeMap::new();
         for _ in 0..row_count {
+            let hidden_key = if schema.primary_key.is_empty() {
+                let key = decoder.key()?;
+                super::validate_hidden_row_handle(&key, last_row_id)?;
+                Some(key)
+            } else {
+                None
+            };
             let row = decoder.row()?;
             if let Some(work) = &work {
                 checkpoint::validate_row_with_work_context(&schema, &row, work)?;
             } else {
                 validate_row(&schema, &row)?;
             }
-            let key = if let Some(work) = &work {
+            let key = if let Some(key) = hidden_key {
+                key
+            } else if let Some(work) = &work {
                 checkpoint::row_key_with_work_context(&row, &primary_key, work)?
             } else {
                 super::row_key(&row, &primary_key)
@@ -886,6 +947,7 @@ fn decode_relational_checkpoint_from_decoder<I: DecodeInput>(
         state.segments.insert(
             name,
             Arc::new(RelationalTableSegment {
+                last_row_id,
                 rows,
                 indexes: BTreeMap::new(),
                 _memory: Default::default(),
@@ -1178,7 +1240,7 @@ fn validate_codec_version(version: u16) -> Result<(), RelationalError> {
     if version != CODEC_VERSION {
         return Err(RelationalError::UnsupportedFormat(
             hawdb_core::StorageFormatError::UnsupportedVersion {
-                format: "relational durable codec",
+                format: hawdb_core::RELATIONAL_DURABLE_CODEC_FORMAT,
                 found: version,
                 supported: CODEC_VERSION,
             },
@@ -1261,9 +1323,21 @@ impl Encoder {
             RelationalScalarType::Bytea => 5,
             RelationalScalarType::Uuid => 6,
             RelationalScalarType::Vector(_) => 7,
+            RelationalScalarType::Decimal(_) => 8,
+            RelationalScalarType::Timestamp(_) => 9,
+            RelationalScalarType::TimestampTz(_) => 10,
         });
         if let RelationalScalarType::Vector(dimension) = scalar_type {
             self.u32(dimension.get());
+        }
+        if let RelationalScalarType::Decimal(kind) = scalar_type {
+            self.u8(kind.precision());
+            self.u8(kind.scale());
+        }
+        if let RelationalScalarType::Timestamp(precision)
+        | RelationalScalarType::TimestampTz(precision) = scalar_type
+        {
+            self.u8(precision.get());
         }
     }
 
@@ -1301,6 +1375,12 @@ impl Encoder {
                 self.logical_value(value)?;
             }
             Some(RelationalColumnDefault::UuidV7) => self.u8(2),
+            Some(RelationalColumnDefault::CurrentTimestamp(kind)) => {
+                self.u8(3);
+                for byte in super::clock_default_bytes(*kind) {
+                    self.u8(byte);
+                }
+            }
         }
         Ok(())
     }
@@ -1428,6 +1508,10 @@ impl Encoder {
                 for assignment in assignments {
                     self.string(&assignment.column)?;
                     match &assignment.value {
+                        RelationalUpdateValue::Numeric(expression) => {
+                            self.u8(3);
+                            numeric::encode(self, expression)?;
+                        }
                         RelationalUpdateValue::Column(column) => {
                             self.u8(0);
                             self.string(column)?;
@@ -1514,6 +1598,91 @@ trait DecodeInput {
             self.read_exact(&mut buffer[..count])?;
         }
         self.finish()
+    }
+}
+
+/// Read-ahead for the ordinary (uncontrolled) checkpoint decode and format
+/// validation passes. The decoder pulls fields of a few bytes each; reading
+/// them straight from `FileDecodeInput` costs one positioned read and one
+/// checksum update per field (#1440). This reads and hashes the payload in
+/// blocks of at most `READ_AHEAD_BYTES`, the block size of the controlled
+/// `CheckpointFileInput`, and serves fields from the block. The block is
+/// a fixed allocation, not charged to a memory owner: the ordinary path has
+/// none, like the WAL reader's `BufReader`.
+struct ReadAheadFileInput {
+    inner: FileDecodeInput,
+    buffer: Vec<u8>,
+    buffer_position: usize,
+    consumed: usize,
+}
+
+impl ReadAheadFileInput {
+    const READ_AHEAD_BYTES: usize = 64 * 1024;
+
+    fn new(inner: FileDecodeInput) -> Self {
+        Self {
+            buffer: Vec::with_capacity(inner.payload_len.min(Self::READ_AHEAD_BYTES)),
+            inner,
+            buffer_position: 0,
+            consumed: 0,
+        }
+    }
+
+    fn refill(&mut self) -> Result<(), RelationalError> {
+        let length = self
+            .inner
+            .payload_len
+            .saturating_sub(self.inner.offset)
+            .min(Self::READ_AHEAD_BYTES);
+        self.buffer.resize(length, 0);
+        self.inner.read_exact(&mut self.buffer)?;
+        self.buffer_position = 0;
+        Ok(())
+    }
+}
+
+impl DecodeInput for ReadAheadFileInput {
+    fn codec_version(&self) -> Option<u16> {
+        self.inner.codec_version()
+    }
+
+    fn len(&self) -> usize {
+        self.inner.payload_len
+    }
+
+    fn position(&self) -> usize {
+        self.consumed
+    }
+
+    fn read_exact(&mut self, output: &mut [u8]) -> Result<(), RelationalError> {
+        // Check the whole request first, so truncation and overflow keep the
+        // diagnostics and logical offsets of the unbuffered input.
+        let end = self
+            .consumed
+            .checked_add(output.len())
+            .ok_or_else(|| RelationalError::Corruption("durable decoder offset overflow".into()))?;
+        if end > self.len() {
+            return Err(RelationalError::Corruption(
+                "truncated relational durable payload".into(),
+            ));
+        }
+        let mut written = 0;
+        while written < output.len() {
+            if self.buffer_position == self.buffer.len() {
+                self.refill()?;
+            }
+            let length = (output.len() - written).min(self.buffer.len() - self.buffer_position);
+            output[written..written + length]
+                .copy_from_slice(&self.buffer[self.buffer_position..self.buffer_position + length]);
+            self.buffer_position += length;
+            written += length;
+        }
+        self.consumed = end;
+        Ok(())
+    }
+
+    fn finish(self) -> Result<(), RelationalError> {
+        self.inner.finish()
     }
 }
 
@@ -1903,11 +2072,15 @@ impl<I: DecodeInput> Decoder<I> {
             4 => Ok(RelationalScalarType::Text),
             5 => Ok(RelationalScalarType::Bytea),
             6 => Ok(RelationalScalarType::Uuid),
+            8 => hawdb_core::DecimalType::new(self.u8()?, self.u8()?)
+                .map(RelationalScalarType::Decimal)
+                .map_err(|error| RelationalError::Corruption(error.to_string())),
             7 => hawdb_core::VectorDimension::new(self.u32()?)
                 .map(RelationalScalarType::Vector)
                 .ok_or_else(|| RelationalError::Corruption("zero VECTOR dimension".into())),
+            tag @ (9 | 10) => super::decode_timestamp_type(tag, self.u8()?),
             tag => Err(RelationalError::Corruption(format!(
-                "invalid relational scalar type tag {tag}"
+                "invalid relational scalar type tag {tag} (corrupt, or written by a newer HawDB)"
             ))),
         }
     }
@@ -1979,6 +2152,12 @@ impl<I: DecodeInput> Decoder<I> {
                 }))
             }
             7 => Ok(RelationalValue::Uuid(Uuid::from_bytes(self.fixed()?))),
+            9 => hawdb_core::Decimal::from_le_bytes(self.fixed()?)
+                .map(RelationalValue::Decimal)
+                .map_err(|error| RelationalError::Corruption(error.to_string())),
+            tag @ (10 | 11) => {
+                super::decode_timestamp_value(tag, i64::from_le_bytes(self.fixed()?))
+            }
             8 => {
                 let bytes = self.bounded_bytes(self.limits.max_value_bytes, "VECTOR value")?;
                 self.value_bytes = self.value_bytes.checked_add(bytes.len()).ok_or_else(|| {
@@ -1988,7 +2167,7 @@ impl<I: DecodeInput> Decoder<I> {
                     .map(RelationalValue::Vector)
             }
             tag => Err(RelationalError::Corruption(format!(
-                "invalid relational value tag {tag}"
+                "invalid relational value tag {tag} (corrupt, or written by a newer HawDB)"
             ))),
         }
     }
@@ -2072,7 +2251,52 @@ impl<I: DecodeInput> Decoder<I> {
         let foreign_keys = self.repeated(foreign_key_count, Self::foreign_key)?;
         let index_count = self.count(self.limits.max_values, "indexes")?;
         let indexes = self.repeated(index_count, Self::index)?;
-        let materialized_view = if self.boolean("materialized view")? {
+        let derived_relation = self.u8()?;
+        let materialized_view = if derived_relation == 2 {
+            let source = self.string()?;
+            let column = self.string()?;
+            let tag = self.u8()?;
+            let analyzer = super::materialized_view::SearchIndexAnalyzer::from_tag(tag)
+                .ok_or_else(|| {
+                    RelationalError::UnsupportedFormat(
+                        hawdb_core::StorageFormatError::UnsupportedFeature {
+                            format: hawdb_core::RELATIONAL_SCHEMA_FORMAT,
+                            feature: "search index analyzer",
+                            tag: u64::from(tag),
+                        },
+                    )
+                })?;
+            let layout = self.u8()?;
+            if layout != super::materialized_view::SEARCH_INDEX_LAYOUT_TAG {
+                return Err(RelationalError::UnsupportedFormat(
+                    hawdb_core::StorageFormatError::UnsupportedFeature {
+                        format: hawdb_core::RELATIONAL_SCHEMA_FORMAT,
+                        feature: "search index layout",
+                        tag: u64::from(layout),
+                    },
+                ));
+            }
+            if let Some(context) = self.input.checkpoint_allocation_context() {
+                context
+                    .reserve(std::mem::size_of::<MaterializedViewDefinition>())
+                    .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            }
+            Some(Box::new(MaterializedViewDefinition {
+                source,
+                group_by: Vec::new(),
+                columns: Vec::new(),
+                filter: None,
+                search: Some(super::materialized_view::SearchIndexSpec { column, analyzer }),
+            }))
+        } else if derived_relation > 1 {
+            return Err(RelationalError::UnsupportedFormat(
+                hawdb_core::StorageFormatError::UnsupportedFeature {
+                    format: hawdb_core::RELATIONAL_SCHEMA_FORMAT,
+                    feature: "derived relation",
+                    tag: u64::from(derived_relation),
+                },
+            ));
+        } else if derived_relation == 1 {
             let source = self.string()?;
             let group_by = self.string_list()?;
             let count = self.count(self.limits.max_values, "materialized view columns")?;
@@ -2088,7 +2312,7 @@ impl<I: DecodeInput> Decoder<I> {
                     tag => {
                         return Err(RelationalError::UnsupportedFormat(
                             hawdb_core::StorageFormatError::UnsupportedFeature {
-                                format: "relational schema",
+                                format: hawdb_core::RELATIONAL_SCHEMA_FORMAT,
                                 feature: "materialized view expression",
                                 tag: u64::from(tag),
                             },
@@ -2112,6 +2336,7 @@ impl<I: DecodeInput> Decoder<I> {
                 group_by,
                 columns,
                 filter,
+                search: None,
             }))
         } else {
             None
@@ -2142,8 +2367,9 @@ impl<I: DecodeInput> Decoder<I> {
             0 => Ok(None),
             1 => Ok(Some(RelationalColumnDefault::Literal(self.value()?))),
             2 => Ok(Some(RelationalColumnDefault::UuidV7)),
+            3 => super::decode_clock_default(self.u8()?, self.u8()?).map(Some),
             tag => Err(RelationalError::Corruption(format!(
-                "invalid column default tag {tag}"
+                "invalid column default tag {tag} (corrupt, or written by a newer HawDB)"
             ))),
         }
     }
@@ -2157,8 +2383,9 @@ impl<I: DecodeInput> Decoder<I> {
                 self.logical_value()?,
             ))),
             2 => Ok(Some(RelationalColumnDefault::UuidV7)),
+            3 => super::decode_clock_default(self.u8()?, self.u8()?).map(Some),
             tag => Err(RelationalError::Corruption(format!(
-                "invalid column default tag {tag}"
+                "invalid column default tag {tag} (corrupt, or written by a newer HawDB)"
             ))),
         }
     }
@@ -2280,6 +2507,7 @@ impl<I: DecodeInput> Decoder<I> {
                 for _ in 0..count {
                     let column = self.string()?;
                     let value = match self.u8()? {
+                        3 => RelationalUpdateValue::Numeric(self.numeric_expression()?),
                         0 => RelationalUpdateValue::Column(self.string()?),
                         1 => RelationalUpdateValue::Value(self.logical_value()?),
                         2 => RelationalUpdateValue::BigIntArithmetic {
@@ -2361,8 +2589,31 @@ impl<I: DecodeInput> Decoder<I> {
         Ok(Box::new(predicate))
     }
 
+    fn comparison_op(&mut self) -> Result<RelationalComparisonOp, RelationalError> {
+        match self.u8()? {
+            0 => Ok(RelationalComparisonOp::Eq),
+            1 => Ok(RelationalComparisonOp::NotEq),
+            2 => Ok(RelationalComparisonOp::Lt),
+            3 => Ok(RelationalComparisonOp::Lte),
+            4 => Ok(RelationalComparisonOp::Gt),
+            5 => Ok(RelationalComparisonOp::Gte),
+            tag => Err(RelationalError::Corruption(format!(
+                "invalid comparison operator tag {tag}"
+            ))),
+        }
+    }
+
     fn predicate(&mut self) -> Result<RelationalPredicate, RelationalError> {
         match self.u8()? {
+            5 => Ok(RelationalPredicate::NumericCompare {
+                left: self.numeric_expression()?,
+                op: self.comparison_op()?,
+                right: self.numeric_expression()?,
+            }),
+            6 => Ok(RelationalPredicate::NumericIsNull {
+                expression: self.numeric_expression()?,
+                negated: self.boolean("numeric predicate negation")?,
+            }),
             0 => Ok(RelationalPredicate::And(
                 self.boxed_predicate()?,
                 self.boxed_predicate()?,
@@ -2374,19 +2625,7 @@ impl<I: DecodeInput> Decoder<I> {
             2 => Ok(RelationalPredicate::Not(self.boxed_predicate()?)),
             3 => {
                 let column = self.string()?;
-                let op = match self.u8()? {
-                    0 => RelationalComparisonOp::Eq,
-                    1 => RelationalComparisonOp::NotEq,
-                    2 => RelationalComparisonOp::Lt,
-                    3 => RelationalComparisonOp::Lte,
-                    4 => RelationalComparisonOp::Gt,
-                    5 => RelationalComparisonOp::Gte,
-                    tag => {
-                        return Err(RelationalError::Corruption(format!(
-                            "invalid comparison operator tag {tag}"
-                        )))
-                    }
-                };
+                let op = self.comparison_op()?;
                 Ok(RelationalPredicate::Compare {
                     column,
                     op,

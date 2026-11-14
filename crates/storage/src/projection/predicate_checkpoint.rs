@@ -168,6 +168,10 @@ fn value(sink: &mut impl Sink, value: &Value, layers: u32) -> Result<()> {
         Value::Null => sink.bytes(b"n", layers),
         Value::Bool(false) => sink.bytes(b"b0", layers),
         Value::Bool(true) => sink.bytes(b"b1", layers),
+        Value::Decimal(number) => {
+            sink.bytes(b"d", layers)?;
+            scalar(sink, number, layers)
+        }
         Value::Int(number) => {
             sink.bytes(b"i", layers)?;
             scalar(sink, number, layers)
@@ -188,6 +192,15 @@ fn value(sink: &mut impl Sink, value: &Value, layers: u32) -> Result<()> {
         Value::Vector(vector) => {
             sink.bytes(b"v", layers)?;
             sink.bytes(vector.encoded(), layers + 1)
+        }
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => {
+            // The shared text grammar: tag plus canonical ISO text.
+            let tag = crate::text::temporal_text_tag(value).expect("temporal value");
+            sink.bytes(format!("{tag}{value}").as_bytes(), layers)
         }
         Value::List(values) => {
             sink.bytes(b"l", layers)?;

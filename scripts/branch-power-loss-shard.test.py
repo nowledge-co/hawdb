@@ -44,6 +44,7 @@ class PowerLossShardTests(unittest.TestCase):
         self.names = (
             [SHARD.AUTOMATIC_PREFIX + name for name in SHARD.AUTOMATIC_CASES.values()]
             + list(SHARD.RECOVERY_CASES.values())
+            + list(SHARD.PUBLICATION_CASES.values())
             + [SHARD.ABANDONMENT_PREFIX + f"case_{index}" for index in range(8)]
             + [
                 SHARD.CONSUMER_PREFIX + "reclamation::case",
@@ -75,6 +76,7 @@ class PowerLossShardTests(unittest.TestCase):
                 "full",
                 *SHARD.AUTOMATIC_CASES,
                 *SHARD.RECOVERY_CASES,
+                *SHARD.PUBLICATION_CASES,
                 *SHARD.FAMILY_SHARDS,
                 "remaining",
             ]:
@@ -108,6 +110,7 @@ class PowerLossShardTests(unittest.TestCase):
                     if (
                         shard in SHARD.AUTOMATIC_CASES
                         or shard in SHARD.RECOVERY_CASES
+                        or shard in SHARD.PUBLICATION_CASES
                         or shard == "branch-gc"
                         or shard == "remaining"
                     ):
@@ -147,6 +150,10 @@ class PowerLossShardTests(unittest.TestCase):
                 next(iter(SHARD.RECOVERY_CASES.values())) + ": test\n", ""
             ),
             self.discovery + SHARD.RECOVERY_PREFIX + "unexpected: test\n",
+            self.discovery.replace(
+                next(iter(SHARD.PUBLICATION_CASES.values())) + ": test\n", ""
+            ),
+            self.discovery + SHARD.PUBLICATION_PREFIX + "unexpected: test\n",
             self.discovery.replace(SHARD.ABANDONMENT_PREFIX + "case_0: test\n", ""),
             self.discovery.replace(SHARD.SEARCH_PREFIX + "case: test\n", ""),
             self.discovery.replace(SHARD.GC_CASE + ": test\n", ""),
@@ -183,6 +190,20 @@ class PowerLossShardTests(unittest.TestCase):
         self.assertCountEqual(
             re.findall(r"consumers-(recovery-[a-z-]+)", native), SHARD.RECOVERY_CASES
         )
+        publication = (
+            root / "src/api/tests/power_loss/consumer_vector_incremental/faults.rs"
+        ).read_text()
+        actual = {
+            SHARD.PUBLICATION_PREFIX + name
+            for name in re.findall(r"#\[test\]\s+fn ([a-z_]+)\(", publication)
+        }
+        self.assertEqual(actual, set(SHARD.PUBLICATION_CASES.values()))
+        self.assertCountEqual(
+            re.findall(r"shard: (publication-[a-z-]+)", weekly), SHARD.PUBLICATION_CASES
+        )
+        self.assertCountEqual(
+            re.findall(r"consumers-(publication-[a-z-]+)", native), SHARD.PUBLICATION_CASES
+        )
         automatic = (
             root / "src/api/tests/power_loss/automatic_checkpoint.rs"
         ).read_text()
@@ -199,6 +220,7 @@ class PowerLossShardTests(unittest.TestCase):
             [
                 *SHARD.AUTOMATIC_CASES,
                 *SHARD.RECOVERY_CASES,
+                *SHARD.PUBLICATION_CASES,
                 *SHARD.FAMILY_SHARDS,
                 "remaining",
             ],
@@ -255,7 +277,7 @@ class PowerLossShardTests(unittest.TestCase):
         all_lines = []
         for shard in SHARD.RECOVERY_CASES:
             combinations = sorted(expected_combinations(shard))
-            self.assertEqual(len(combinations), 14 if "lost" in shard else 28)
+            self.assertEqual(len(combinations), 7 if "lost" in shard else 28)
             lines = [
                 "canonical-vector-recovery-power-v1 "
                 f"origin={origin} cut={cut} durability={durability} graph={graph} "
@@ -269,6 +291,8 @@ class PowerLossShardTests(unittest.TestCase):
                 lines[:-1],
                 lines + lines[:1],
                 [lines[0].replace("source_updated=", "wrong_field=")] + lines[1:],
+                [lines[0].replace("origin=", "origin=Wrong")] + lines[1:],
+                [lines[0].replace("graph=", "graph=Wrong")] + lines[1:],
             ):
                 with self.subTest(shard=shard):
                     with self.assertRaises(ValueError):
@@ -287,7 +311,10 @@ class PowerLossShardTests(unittest.TestCase):
             validate_log("remaining", all_lines[0])
 
     def test_recovery_cli_preserves_lf_for_windows_bash(self):
-        for arguments in (["--prefix"], ["recovery-selected"]):
+        for arguments in (
+            ["--prefix"], ["--publication-prefix"], ["publication-artifacts"],
+            ["recovery-selected"], ["recovery-lost-sql-link"],
+        ):
             with self.subTest(arguments=arguments):
                 buffer = io.BytesIO()
                 output = io.TextIOWrapper(buffer, encoding="utf-8", newline="\r\n")

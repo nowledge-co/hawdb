@@ -3,6 +3,13 @@ load(":storage_models.bzl", "STORAGE_MODELS")
 
 package(default_visibility = ["//visibility:public"])
 
+# Inventory validation needs every checked-in pair, including undeclared files,
+# without depending on any TLC action or its generated evidence.
+filegroup(
+    name = "storage_model_inventory",
+    srcs = ["storage_models.bzl"] + glob(["*.tla", "*.cfg"]),
+)
+
 tla_library(
     name = "governed_writer_progress",
     srcs = ["HawDBGovernedWriterProgress.tla"],

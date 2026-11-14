@@ -102,6 +102,9 @@ impl Fixture {
                 reconstruction_offsets: (0..descriptor.row_count)
                     .map(|row| parts.reconstruction_offset(row))
                     .collect(),
+                original_norms: (0..descriptor.row_count)
+                    .map(|row| parts.original_norm(row))
+                    .collect(),
                 codes: parts.codes.to_vec(),
             });
         }
@@ -148,7 +151,7 @@ fn fill_vector(id: u64, vector: &mut [f32]) {
     }
 }
 
-pub(super) fn hit_bits(hits: &[ProjectionHit]) -> Vec<(u64, u32)> {
+pub(super) fn hit_bits(hits: &[ProjectionHit]) -> Vec<(u64, u64)> {
     hits.iter()
         .map(|hit| (hit.id, hit.score.to_bits()))
         .collect()

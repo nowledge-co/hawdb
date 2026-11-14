@@ -52,6 +52,7 @@ fn assert_inline_checkpoint_statistics(include_statistics: bool) {
             &root.0,
             DatabaseConfig {
                 read_only,
+                recovery_mode: hawdb_storage::config::RecoveryMode::Strict,
                 ..Default::default()
             },
         )

@@ -87,6 +87,7 @@ fn assert_spilled_output_has_its_own_account(top_n: bool) {
         memory_ledger: &ledger,
         task_context: None,
         observer: &NoopExecutionObserver,
+        graph: None,
     };
     let mut output = Vec::new();
     let mut emit = |batch: BindingBatch| {
@@ -148,6 +149,143 @@ fn spilled_top_n_output_does_not_compete_with_merge_heap_account() {
     assert_spilled_output_has_its_own_account(true);
 }
 
+/// Sorts `value` (NULL for every third row) by itself, then `id`, through the
+/// complete sort or top-k operator, resident or spilled with encoded or
+/// re-evaluated expression keys.
+fn null_ordered_ids(
+    top_n: bool,
+    spill: bool,
+    expression: bool,
+    direction: SortDirection,
+) -> Vec<Value> {
+    let directory = Directory::new();
+    let memory = ExecutionMemoryConfig {
+        blocking_operator_bytes: NonZeroUsize::new(if spill { 1024 } else { 1 << 20 }).unwrap(),
+        batch_rows: NonZeroUsize::new(4).unwrap(),
+        min_spill_free_bytes: NonZeroU64::MIN,
+        spill_directory: directory.0.clone(),
+        ..ExecutionMemoryConfig::default()
+    };
+    let catalog = Catalog::default();
+    let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+    let input = PhysicalPlan::SeqNodeScan {
+        variable: "n".to_string(),
+        label: String::new(),
+    };
+    let rows = (0..12)
+        .rev()
+        .map(|id| {
+            let mut binding = Binding::scalar("id", Value::Int(id));
+            let value = if id % 3 == 0 {
+                Value::Null
+            } else {
+                Value::Int(id % 4)
+            };
+            binding.values.insert("value".to_string(), value);
+            binding
+        })
+        .collect();
+    let value = if expression {
+        SortKey::Expression(hawdb_plan_cypher::ProjectionExpression::Binary {
+            left: Box::new(hawdb_plan_cypher::ProjectionExpression::Column(
+                "value".to_string(),
+            )),
+            op: hawdb_plan_cypher::ScalarBinaryOp::Add,
+            right: Box::new(hawdb_plan_cypher::ProjectionExpression::Literal(
+                Value::Int(0),
+            )),
+        })
+    } else {
+        SortKey::Column("value".to_string())
+    };
+    let items = [
+        SortItem {
+            key: value,
+            direction,
+        },
+        SortItem {
+            key: SortKey::Column("id".to_string()),
+            direction: SortDirection::Asc,
+        },
+    ];
+    let context = BlockingExecutionContext {
+        catalog: &catalog,
+        memory: &memory,
+        memory_ledger: &ledger,
+        task_context: None,
+        observer: &NoopExecutionObserver,
+        graph: None,
+    };
+    let mut output = Vec::new();
+    let mut emit = |batch: BindingBatch| {
+        output.extend(
+            batch
+                .into_iter()
+                .map(|binding| binding.values["id"].clone()),
+        );
+        Ok(BatchControl::Continue)
+    };
+    let mut source = Rows(rows);
+    if top_n {
+        stream_top_n_batches(
+            &input,
+            &items,
+            1,
+            10,
+            &mut source,
+            context,
+            ExecutionLimit::unlimited(),
+            &mut emit,
+        )
+    } else {
+        stream_sort_batches(
+            &input,
+            &items,
+            &mut source,
+            context,
+            ExecutionLimit::unlimited(),
+            &mut emit,
+        )
+    }
+    .unwrap();
+    assert_eq!(memory.spill_pool_snapshot().unwrap().active_runs, 0);
+    let spilled = ledger
+        .snapshot()
+        .classes
+        .iter()
+        .any(|class| class.class == QueryMemoryClass::SpillStaging && class.peak_bytes > 0);
+    assert_eq!(spilled, spill);
+    output
+}
+
+#[test]
+fn sort_and_top_n_place_null_last_ascending_and_first_descending() {
+    // Non-null values by id: 1→1, 2→2, 4→0, 5→1, 7→3, 8→0, 10→2, 11→3.
+    let ascending = [4, 8, 1, 5, 2, 10, 7, 11, 0, 3, 6, 9].map(Value::Int);
+    let descending = [0, 3, 6, 9, 7, 11, 2, 10, 1, 5, 4, 8].map(Value::Int);
+    for top_n in [false, true] {
+        for spill in [false, true] {
+            for expression in [false, true] {
+                for (direction, expected) in [
+                    (SortDirection::Asc, &ascending),
+                    (SortDirection::Desc, &descending),
+                ] {
+                    let expected = if top_n {
+                        &expected[1..11]
+                    } else {
+                        &expected[..]
+                    };
+                    assert_eq!(
+                        null_ordered_ids(top_n, spill, expression, direction),
+                        expected,
+                        "top_n={top_n} spill={spill} expression={expression} {direction:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 fn check_in_memory_output_accounting(top_n: bool) {
     for exit in [Exit::Complete, Exit::Stop, Exit::Error, Exit::Cancel] {
         check_in_memory_output_exit(top_n, exit);
@@ -182,6 +320,7 @@ fn check_in_memory_output_exit(top_n: bool, exit: Exit) {
         memory_ledger: &ledger,
         task_context: Some(&task),
         observer: &NoopExecutionObserver,
+        graph: None,
     };
     let mut output = Vec::new();
     let mut emit = |batch: BindingBatch| {
@@ -297,6 +436,7 @@ fn capped_resident_sort_and_top_n_release_discarded_rows_before_parent_admission
                 memory_ledger: &ledger,
                 task_context: None,
                 observer: &NoopExecutionObserver,
+                graph: None,
             };
             let mut output = Vec::new();
             let mut emit = |batch: BindingBatch| {
@@ -455,6 +595,7 @@ fn run_case(
         memory_ledger: &ledger,
         task_context: Some(&task),
         observer: &NoopExecutionObserver,
+        graph: None,
     };
     let input = PhysicalPlan::SeqNodeScan {
         variable: "n".to_string(),
@@ -631,8 +772,9 @@ fn empty_merge_results_emit_no_batch_and_release_all_resources() {
 }
 
 #[test]
-fn spilled_merges_keep_exact_query_root_admission() {
+fn spilled_merges_adapt_without_exceeding_query_root_admission() {
     let rows = tied_rows(19);
+    let mut adapted_below_observed_peak = false;
     for top_n in [None, Some((2, 12))] {
         let case = Case {
             top_n,
@@ -641,27 +783,38 @@ fn spilled_merges_keep_exact_query_root_admission() {
         let (result, expected, snapshot) = run_case(&rows, case);
         result.unwrap();
         let peak = snapshot.peak_bytes;
-        let (result, output, _) = run_case(
-            &rows,
-            Case {
-                root_bytes: peak,
-                ..case
-            },
-        );
-        result.expect("the observed exact peak must be sufficient");
-        assert_eq!(output, expected);
-        let (result, _, _) = run_case(
-            &rows,
-            Case {
-                root_bytes: peak - 1,
-                ..case
-            },
-        );
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("query_memory_bytes"));
+        for root_bytes in [peak, peak - 1, peak * 3 / 4] {
+            let (result, output, snapshot) = run_case(&rows, Case { root_bytes, ..case });
+            assert!(snapshot.peak_bytes <= root_bytes);
+            match result {
+                Ok(_) => {
+                    assert_eq!(output, expected);
+                    adapted_below_observed_peak |= root_bytes < peak;
+                }
+                Err(HawDBError::ResourceBudgetExceeded(cause)) => {
+                    assert!(root_bytes < peak, "the observed peak must be sufficient");
+                    assert_eq!(cause.scope, hawdb_core::ResourceBudgetScope::Query);
+                    assert_eq!(cause.budget, root_bytes as u64);
+                    assert!(cause.used + cause.requested > cause.budget);
+                }
+                Err(error) => panic!("unexpected merge error: {error}"),
+            }
+        }
+        // Flexible IO buffers cannot make an owned output row fit below its
+        // irreducible allocation. Keep a definite hard-refusal boundary too.
+        let root_bytes = binding_memory_bytes(&rows[0]) - 1;
+        let (result, output, snapshot) = run_case(&rows, Case { root_bytes, ..case });
+        let HawDBError::ResourceBudgetExceeded(cause) = result.unwrap_err() else {
+            panic!("an insufficient query budget must fail explicitly");
+        };
+        assert_eq!(cause.resource, hawdb_core::ResourceBudgetKind::MemoryBytes);
+        assert_eq!(cause.scope, hawdb_core::ResourceBudgetScope::Query);
+        assert_eq!(cause.budget, root_bytes as u64);
+        assert!(cause.used + cause.requested > cause.budget);
+        assert!(snapshot.peak_bytes <= root_bytes);
+        assert!(output.is_empty());
     }
+    assert!(adapted_below_observed_peak);
 }
 
 #[test]
@@ -754,12 +907,12 @@ fn legacy_merge_refusal_preserves_explicit_budget_origin_and_releases_state() {
         })
         .collect();
     let item_bytes = rows[0].memory_bytes();
-    let decoded_bytes = binding_memory_bytes(&rows[0].binding);
+    let key_bytes = std::mem::size_of::<Vec<(Value, SortDirection)>>();
     let mut runs = Vec::new();
     for row in rows {
         runs.push(spill_sort_run(&mut vec![row], &mut spill, None).unwrap());
     }
-    for (budget, should_pass) in [(item_bytes, false), (item_bytes * 2, true)] {
+    for (budget, should_pass) in [(key_bytes, false), (item_bytes * 2, true)] {
         let mut output = Vec::new();
         let result = merge_sort_runs(
             &runs,
@@ -795,8 +948,8 @@ fn legacy_merge_refusal_preserves_explicit_budget_origin_and_releases_state() {
             assert_eq!(cause.owner, "legacy merge");
             assert_eq!(cause.memory_class, Some("blocking_state"));
             assert_eq!(cause.budget, budget as u64);
-            assert_eq!(cause.used, item_bytes as u64);
-            assert_eq!(cause.requested, decoded_bytes as u64);
+            assert_eq!(cause.used, key_bytes as u64);
+            assert_eq!(cause.requested, key_bytes as u64);
             assert_eq!(
                 cause.budget_option,
                 "OperatorMemoryTracker::with_account(budget_bytes)"
@@ -843,6 +996,7 @@ fn spilled_json_sort_keys_use_query_working_memory_during_merge_and_compaction()
                 key: SortKey::Expression(ProjectionExpression::JsonValue {
                     expression: Box::new(ProjectionExpression::Column("metadata".into())),
                     path: "$.rank".into(),
+                    null_on_non_scalar: false,
                 }),
                 direction: SortDirection::Asc,
             }];
@@ -951,6 +1105,11 @@ fn spilled_json_sort_keys_use_query_working_memory_during_merge_and_compaction()
 #[test]
 #[ignore = "deterministic local sort merge differential campaign"]
 fn sort_merge_account_differential_campaign() {
+    spilled_merges_adapt_without_exceeding_query_root_admission();
+    active_sort_releases_rows_and_capacity_under_host_pressure();
+    top_n_keeps_its_cutoff_under_sustained_pressure();
+    encoded_merge_copies_wide_payloads_with_a_key_sized_working_budget();
+    adaptive_merge_fan_in_respects_memory_and_descriptor_capacity();
     in_place_sort_preserves_tie_order_with_and_without_spilling();
     spilled_sort_and_top_n_preserve_wide_rows();
     let mut cases = 0;
@@ -992,4 +1151,325 @@ fn sort_merge_account_differential_campaign() {
     }
     assert_eq!(cases, 72);
     eprintln!("sort merge differential campaign: {cases} cases, 1728 input rows");
+}
+
+#[test]
+fn active_sort_releases_rows_and_capacity_under_host_pressure() {
+    use hawdb_qos::{
+        IoConcurrencyBudget, ProcessMemoryCapabilities, ProcessMemoryPolicy,
+        ProcessMemoryPolicyConfig, ProcessMemorySnapshot, RuntimeGovernor, RuntimeGovernorConfig,
+        RuntimeMemorySnapshot, RuntimeResourceBudget, RuntimeResourceSnapshot, RuntimeWorkRequest,
+    };
+    let directory = Directory::new();
+    let memory = ExecutionMemoryConfig {
+        blocking_operator_bytes: NonZeroUsize::new(128 * 1024).unwrap(),
+        query_memory_bytes: NonZeroUsize::new(1024 * 1024).unwrap(),
+        min_spill_free_bytes: NonZeroU64::MIN,
+        spill_directory: directory.0.clone(),
+        ..ExecutionMemoryConfig::default()
+    };
+    let policy = ProcessMemoryPolicy::new(ProcessMemoryPolicyConfig::new(
+        NonZeroU64::new(16 * 1024 * 1024).unwrap(),
+    ));
+    let snapshot = |resident_bytes| ProcessMemorySnapshot {
+        capabilities: ProcessMemoryCapabilities {
+            resident_memory: true,
+            ..Default::default()
+        },
+        resident_bytes,
+        peak_resident_bytes: resident_bytes,
+        total_page_faults: None,
+        minor_page_faults: None,
+        major_page_faults: None,
+    };
+    policy.update(snapshot(1024 * 1024));
+    let governor = RuntimeGovernor::new_with_process_memory_policy(
+        RuntimeGovernorConfig::shared_host(),
+        RuntimeResourceSnapshot::from_parts(
+            RuntimeResourceBudget::from_limits(NonZeroUsize::new(4).unwrap(), None, None),
+            RuntimeMemorySnapshot::from_limits(Some(1 << 30), Some(1 << 30), None, None, None),
+        ),
+        IoConcurrencyBudget::new(4, 1),
+        policy.clone(),
+    );
+    let permit = governor
+        .try_admit(RuntimeWorkRequest::foreground_query(1024 * 1024, 0))
+        .unwrap();
+    let task = permit.bind_task_context(RuntimeTaskContext::default());
+    let ledger = QueryMemoryLedger::for_query(&memory, Some(&task)).unwrap();
+    let catalog = Catalog::default();
+    let items = [SortItem {
+        key: SortKey::Column("key".into()),
+        direction: SortDirection::Asc,
+    }];
+    let mut sort = SortOperator::new(
+        &items,
+        BlockingExecutionContext {
+            catalog: &catalog,
+            memory: &memory,
+            memory_ledger: &ledger,
+            task_context: Some(&task),
+            observer: &NoopExecutionObserver,
+            graph: None,
+        },
+    );
+    let binding = |key| {
+        Binding::values(BTreeMap::from([
+            ("key".into(), Value::Int(key)),
+            ("body".into(), Value::String("x".repeat(1024))),
+        ]))
+    };
+    for key in (0..48).rev() {
+        sort.push(binding(key)).unwrap();
+    }
+    assert!(sort.runs.is_empty());
+    let retained = sort.tracker.used_bytes;
+    let capacity = sort.rows.capacity();
+    policy.update(snapshot(16 * 1024 * 1024));
+    // Feedback is sampled within 64 safe points, before the hard limit.
+    for key in 48..65 {
+        sort.push(binding(key)).unwrap();
+    }
+    assert_eq!(sort.runs.len(), 1);
+    assert!(sort.tracker.used_bytes < retained / 4);
+    assert!(sort.rows.capacity() < capacity);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 1024 * 1024);
+    assert_eq!(
+        task.memory_reservation().unwrap().memory_bytes(),
+        1024 * 1024
+    );
+    // The progress floor permits a useful batch even under sustained pressure.
+    for key in 65..72 {
+        sort.push(binding(key)).unwrap();
+    }
+    assert_eq!(sort.runs.len(), 1);
+    let mut actual = Vec::new();
+    sort.finish(ExecutionLimit::unlimited(), &mut |batch| {
+        actual.extend(batch);
+        Ok(BatchControl::Continue)
+    })
+    .unwrap();
+    assert_eq!(actual, (0..72).map(binding).collect::<Vec<_>>());
+    assert_eq!(ledger.snapshot().used_bytes, 0);
+    drop(permit);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+}
+
+#[test]
+fn encoded_merge_copies_wide_payloads_with_a_key_sized_working_budget() {
+    let directory = Directory::new();
+    let memory = ExecutionMemoryConfig {
+        blocking_operator_bytes: NonZeroUsize::new(256 * 1024).unwrap(),
+        query_memory_bytes: NonZeroUsize::new(1024 * 1024).unwrap(),
+        min_spill_free_bytes: NonZeroU64::MIN,
+        spill_directory: directory.0.clone(),
+        ..ExecutionMemoryConfig::default()
+    };
+    let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+    let account = ledger.account(
+        QueryMemoryClass::BlockingState,
+        "encoded merge",
+        NonZeroUsize::new(256).unwrap(),
+    );
+    let spill = SpillBudgetTracker::with_ledger("encoded merge", &memory, &ledger);
+    let items = [SortItem {
+        key: SortKey::Column("key".into()),
+        direction: SortDirection::Asc,
+    }];
+    let binding = |key| {
+        Binding::values(BTreeMap::from([
+            ("key".into(), Value::Int(key)),
+            (
+                "payload".into(),
+                Value::List(vec![Value::Map(BTreeMap::from([(
+                    "body".into(),
+                    Value::String("x".repeat(64 * 1024)),
+                )]))]),
+            ),
+        ]))
+    };
+    let mut runs = Vec::new();
+    for key in [1, 0] {
+        let (run, mut writer) = spill.create_run("wide").unwrap();
+        writer.write(key as u64, &binding(key), &spill).unwrap();
+        writer.finish().unwrap();
+        runs.push(run);
+    }
+    let tracker =
+        OperatorMemoryTracker::with_account(NonZeroUsize::new(256).unwrap(), account.clone());
+    let merged = encoded::Merge::new(&items, &spill, None)
+        .compact(&[&runs[0], &runs[1]], tracker)
+        .unwrap();
+    assert!(
+        account.peak_bytes() <= 256,
+        "wide non-key payload must remain encoded"
+    );
+    assert_eq!(ledger.snapshot().used_bytes, 0);
+    let mut reader = merged.reader().unwrap();
+    assert_eq!(reader.read(usize::MAX).unwrap(), Some((0, binding(0))));
+    assert_eq!(reader.read(usize::MAX).unwrap(), Some((1, binding(1))));
+    assert_eq!(reader.read(usize::MAX).unwrap(), None);
+}
+
+#[test]
+fn adaptive_merge_fan_in_respects_memory_and_descriptor_capacity() {
+    for (query_bytes, descriptor_limit, expected_passes, blocking_bytes, width) in [
+        (2 * 1024 * 1024, 32, 2, 1024 * 1024, 64 * 1024),
+        (300 * 1024, 32, 3, 1024 * 1024, 64 * 1024),
+        (150 * 1024, 32, 5, 1024 * 1024, 64 * 1024),
+        (2 * 1024 * 1024, 5, 3, 1024 * 1024, 64 * 1024),
+        (2 * 1024 * 1024, 3, 5, 1024 * 1024, 64 * 1024),
+        (16 * 1024 * 1024, 32, 2, 128 * 1024, 4096),
+    ] {
+        let directory = Directory::new();
+        let memory = ExecutionMemoryConfig {
+            blocking_operator_bytes: NonZeroUsize::new(blocking_bytes).unwrap(),
+            query_memory_bytes: NonZeroUsize::new(query_bytes).unwrap(),
+            min_spill_free_bytes: NonZeroU64::MIN,
+            spill_directory: directory.0.join("spill"),
+            ..ExecutionMemoryConfig::default()
+        };
+        let files =
+            hawdb_storage::file_descriptors::ProjectFileDescriptors::acquire_with_capacity_limit(
+                &directory.0,
+                descriptor_limit,
+                true,
+            )
+            .unwrap();
+        let ledger = QueryMemoryLedger::new(memory.query_memory_bytes)
+            .with_file_descriptors(Some(files.io_context()));
+        let account = ledger.account(
+            QueryMemoryClass::BlockingState,
+            "adaptive merge",
+            memory.blocking_operator_bytes,
+        );
+        let mut spill = SpillBudgetTracker::with_ledger("adaptive merge", &memory, &ledger);
+        let items = [SortItem {
+            key: SortKey::Column("key".into()),
+            direction: SortDirection::Asc,
+        }];
+        let mut runs = Vec::new();
+        for key in (0..64).rev() {
+            let binding = Binding::values(BTreeMap::from([
+                ("key".into(), Value::Int(key)),
+                ("payload".into(), Value::String("x".repeat(width))),
+            ]));
+            runs.push(
+                spill_sort_run(
+                    &mut vec![SortRunRow {
+                        sort_values: vec![(Value::Int(key), SortDirection::Asc)],
+                        ordinal: key as u64,
+                        binding,
+                    }],
+                    &mut spill,
+                    None,
+                )
+                .unwrap(),
+            );
+        }
+        let original_bytes = spill.used_bytes();
+        let runs = compact_sort_runs(
+            runs,
+            &items,
+            &Catalog::default(),
+            &memory,
+            &spill,
+            &account,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            spill.used_bytes() - original_bytes,
+            original_bytes * expected_passes
+        );
+        assert_eq!(runs.len(), if expected_passes == 5 { 2 } else { 1 });
+        assert!(files.metrics().high_water <= descriptor_limit);
+        assert_eq!(ledger.snapshot().used_bytes, 0);
+        assert!(ledger.snapshot().peak_bytes <= query_bytes);
+        assert!(
+            ledger.snapshot().peak_bytes <= blocking_bytes,
+            "parallel buffers must stay bounded by the work area, not the query root"
+        );
+        let mut keys = Vec::new();
+        for run in &runs {
+            let mut reader = run.reader().unwrap();
+            while let Some((_, binding)) = reader.read(usize::MAX).unwrap() {
+                keys.push(binding.values["key"].clone());
+            }
+        }
+        keys.sort();
+        assert_eq!(keys, (0..64).map(Value::Int).collect::<Vec<_>>());
+        drop(runs);
+        assert_eq!(memory.spill_pool_snapshot().unwrap().active_bytes, 0);
+    }
+}
+
+#[test]
+fn top_n_keeps_its_cutoff_under_sustained_pressure() {
+    #[derive(Debug)]
+    struct CriticalPressure;
+    impl hawdb_core::RuntimeMemoryTarget for CriticalPressure {
+        fn target_bytes(&self, hard: u64) -> u64 {
+            hard / 4
+        }
+    }
+    let task =
+        RuntimeTaskContext::default().with_memory_target(std::sync::Arc::new(CriticalPressure));
+    let binding = |key| {
+        Binding::values(BTreeMap::from([
+            ("key".into(), Value::Int(key)),
+            ("body".into(), Value::String("x".repeat(1024))),
+        ]))
+    };
+    // Exercise both rejected candidates and continual replacement of the cutoff.
+    for reverse in [false, true] {
+        let directory = Directory::new();
+        let memory = ExecutionMemoryConfig {
+            blocking_operator_bytes: NonZeroUsize::new(128 * 1024).unwrap(),
+            query_memory_bytes: NonZeroUsize::new(1024 * 1024).unwrap(),
+            max_spill_runs: NonZeroUsize::MIN,
+            max_total_spill_runs: NonZeroUsize::MIN,
+            min_spill_free_bytes: NonZeroU64::MIN,
+            spill_directory: directory.0.clone(),
+            ..ExecutionMemoryConfig::default()
+        };
+        let ledger = QueryMemoryLedger::for_query(&memory, Some(&task)).unwrap();
+        let catalog = Catalog::default();
+        let items = [SortItem {
+            key: SortKey::Column("key".into()),
+            direction: SortDirection::Asc,
+        }];
+        let mut top_n = TopNOperator::new(
+            &items,
+            3,
+            45,
+            BlockingExecutionContext {
+                catalog: &catalog,
+                memory: &memory,
+                memory_ledger: &ledger,
+                task_context: Some(&task),
+                observer: &NoopExecutionObserver,
+                graph: None,
+            },
+        );
+        for index in 0..4096 {
+            top_n
+                .push(binding(if reverse { 4095 - index } else { index }))
+                .unwrap();
+            assert!(top_n.runs.is_empty());
+            assert!(top_n.heap.len() <= 48);
+            assert!(top_n.tracker.used_bytes <= memory.blocking_operator_bytes.get());
+        }
+        assert!(top_n.tracker.used_bytes > memory.blocking_operator_bytes.get() / 4);
+        let mut actual = Vec::new();
+        top_n
+            .finish(ExecutionLimit::unlimited(), &mut |batch| {
+                actual.extend(batch);
+                Ok(BatchControl::Continue)
+            })
+            .unwrap();
+        assert_eq!(actual, (3..48).map(binding).collect::<Vec<_>>());
+        assert_eq!(ledger.snapshot().used_bytes, 0);
+        assert_eq!(memory.spill_pool_snapshot().unwrap().active_runs, 0);
+    }
 }

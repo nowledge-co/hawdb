@@ -17,6 +17,8 @@
 #[doc(hidden)]
 pub mod checkpoint;
 #[doc(hidden)]
+pub mod distribution;
+#[doc(hidden)]
 pub mod node_index_updates;
 
 use crate::cow::NodeRecordRead;
@@ -200,6 +202,9 @@ pub fn compute_statistics_with_basic(
     let mut rel_property_values = BTreeMap::<(RelTypeId, String), BTreeSet<Value>>::new();
     let mut excluded_property_groups = BTreeSet::<(LabelId, String)>::new();
     let mut excluded_rel_property_groups = BTreeSet::<(RelTypeId, String)>::new();
+    let mut property_budget = distribution::PropertyValueBudget::default();
+    let mut node_distributions = distribution::PropertyDistributionCollector::default();
+    let mut rel_distributions = distribution::PropertyDistributionCollector::default();
     let mut rel_type_sources = BTreeMap::<RelTypeId, BTreeSet<NodeId>>::new();
     let mut rel_type_targets = BTreeMap::<RelTypeId, BTreeSet<NodeId>>::new();
     let mut path_sources = BTreeMap::<(LabelId, RelTypeId, LabelId), BTreeSet<NodeId>>::new();
@@ -210,7 +215,15 @@ pub fn compute_statistics_with_basic(
         for label_id in &node.labels {
             for (property, value) in &node.properties {
                 let key = (*label_id, property.clone());
-                collect_property_statistic_value(
+                node_distributions.observe(
+                    key.clone(),
+                    property.len(),
+                    value,
+                    node_property_supports_optimizer_statistics(
+                        catalog, *label_id, property, value,
+                    ),
+                );
+                drop(collect_property_statistic_value(
                     &mut property_values,
                     &mut excluded_property_groups,
                     key,
@@ -218,7 +231,8 @@ pub fn compute_statistics_with_basic(
                     node_property_supports_optimizer_statistics(
                         catalog, *label_id, property, value,
                     ),
-                );
+                    &mut property_budget,
+                ));
             }
         }
     }
@@ -237,7 +251,18 @@ pub fn compute_statistics_with_basic(
             .push(relationship.target);
         for (property, value) in &relationship.properties {
             let key = (relationship.rel_type, property.clone());
-            collect_property_statistic_value(
+            rel_distributions.observe(
+                key.clone(),
+                property.len(),
+                value,
+                relationship_property_supports_optimizer_statistics(
+                    catalog,
+                    relationship.rel_type,
+                    property,
+                    value,
+                ),
+            );
+            drop(collect_property_statistic_value(
                 &mut rel_property_values,
                 &mut excluded_rel_property_groups,
                 key,
@@ -248,7 +273,8 @@ pub fn compute_statistics_with_basic(
                     property,
                     value,
                 ),
-            );
+                &mut property_budget,
+            ));
         }
         if let (Some(source), Some(target)) = (
             nodes.get(&relationship.source),
@@ -318,23 +344,50 @@ pub fn compute_statistics_with_basic(
         MAX_BOUNDED_PATH_STAT_HOPS,
     );
     statistics.bounded_path_counts = bounded_path_statistics.counts;
+    statistics.bounded_path_complete_through_hop =
+        (!bounded_path_statistics.truncated).then_some(MAX_BOUNDED_PATH_STAT_HOPS);
     statistics.bounded_path_source_distinct_counts = bounded_path_statistics.source_distinct_counts;
     statistics.bounded_path_target_distinct_counts = bounded_path_statistics.target_distinct_counts;
+    statistics.property_distributions = node_distributions
+        .finish(|(label, _)| statistics.label_counts.get(label).copied().unwrap_or(0));
+    statistics.rel_property_distributions = rel_distributions.finish(|(rel_type, _)| {
+        statistics
+            .rel_type_counts
+            .get(rel_type)
+            .copied()
+            .unwrap_or(0)
+    });
     statistics
 }
 
-pub fn collect_property_statistic_value<K: Ord>(
+pub fn collect_property_statistic_value<K: Ord + Clone + hawdb_core::RetainedHeapBytes>(
     values: &mut BTreeMap<K, BTreeSet<Value>>,
     excluded: &mut BTreeSet<K>,
     key: K,
     value: &Value,
     eligible: bool,
-) {
-    if !eligible {
-        values.remove(&key);
+    budget: &mut distribution::PropertyValueBudget,
+) -> Option<BTreeSet<Value>> {
+    if excluded.contains(&key) {
+        return None;
+    }
+    if !values.contains_key(&key) {
+        if !budget.admit_group(&key) {
+            return None;
+        }
+        values.insert(key.clone(), BTreeSet::new());
+    }
+    let group = values.get_mut(&key).expect("admitted distinct group");
+    if eligible && group.contains(value) {
+        return None;
+    }
+    if eligible && budget.admit_value(value) {
+        group.insert(value.clone());
+        None
+    } else {
+        let retired = values.remove(&key);
         excluded.insert(key);
-    } else if !excluded.contains(&key) {
-        values.entry(key).or_default().insert(value.clone());
+        retired
     }
 }
 
@@ -636,6 +689,26 @@ mod tests {
         assert!(stats.counts.is_empty());
         assert!(stats.source_distinct_counts.is_empty());
         assert!(stats.target_distinct_counts.is_empty());
+        let mut relationships = crate::cow::CowRelMap::default();
+        for from in 0..SIZE {
+            for to in 0..SIZE {
+                let id = RelId(from * SIZE + to);
+                relationships.insert(
+                    id,
+                    RelRecord {
+                        id,
+                        source: NodeId(from),
+                        target: NodeId(to),
+                        rel_type,
+                        properties: BTreeMap::new(),
+                    },
+                );
+            }
+        }
+        let published = compute_statistics(&nodes, &relationships, 1);
+        assert!(published.advanced_statistics_complete);
+        assert!(published.bounded_path_counts.is_empty());
+        assert_eq!(published.bounded_path_complete_through_hop, None);
     }
 
     /// Below the budget the pass must still publish exact counts and distinct

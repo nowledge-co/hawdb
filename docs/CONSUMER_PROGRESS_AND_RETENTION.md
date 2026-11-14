@@ -84,8 +84,8 @@ relaxation is introduced.
 
 ## Embedded handle integration (#1171)
 
-`NowledgeMemEmbeddedStoreHandle::open_or_create_search_projection_consumer`
-returns a `NowledgeMemSearchProjectionConsumer` bound to that handle's original
+`EmbeddedStoreHandle::open_or_create_search_projection_consumer`
+returns a `RegisteredSearchProjectionConsumer` bound to that handle's original
 publication owner. Its lifecycle keeps the source open even after other handle
 clones close. The returned staging session borrows that lifecycle; private
 progress can be paused and resumed with one-operation steps. Dropping the session

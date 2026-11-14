@@ -83,6 +83,9 @@ impl CheckpointText {
                 self.escaped(if *value { b"b1" } else { b"b0" }, escapes, work)?;
             }
             Value::Int(value) => self.escaped_scalar(format_args!("i{value}"), escapes, work)?,
+            Value::Decimal(value) => {
+                self.escaped_scalar(format_args!("d{value}"), escapes, work)?
+            }
             Value::Float(value) => {
                 self.escaped_scalar(format_args!("f{}", value.to_bits()), escapes, work)?;
             }
@@ -100,6 +103,16 @@ impl CheckpointText {
             Value::Vector(value) => {
                 self.escaped(b"v", escapes, work)?;
                 self.escaped(value.encoded(), escapes + 1, work)?;
+            }
+            Value::Date(_)
+            | Value::LocalTime(_)
+            | Value::LocalDateTime(_)
+            | Value::DateTime(_)
+            | Value::Duration(_) => {
+                // Matches `text::encode_value`: tag plus canonical ISO text. A
+                // duration can exceed the 64-byte scalar scratch buffer.
+                let tag = crate::text::temporal_text_tag(value).expect("temporal value");
+                self.escaped(format!("{tag}{value}").as_bytes(), escapes, work)?;
             }
             Value::List(values) => {
                 self.escaped(b"l", escapes, work)?;

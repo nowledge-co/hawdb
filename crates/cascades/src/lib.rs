@@ -18,6 +18,7 @@ pub mod context;
 pub mod cost;
 pub mod memo;
 pub mod properties;
+pub mod qualification;
 pub mod rule;
 pub mod search;
 pub mod stage;
@@ -26,7 +27,10 @@ pub use context::{
     ExplainMode, OptimizerConfig, OptimizerContext, QueryFamily, ResourceHints, StatementClass,
     TraceSink,
 };
-pub use cost::{PlanCost, PlanCostBreakdown};
+pub use cost::{
+    PlanCost, PlanCostBreakdown, PlanCostWeights, DEFAULT_PLAN_COST_POLICY_ID,
+    DEFAULT_PLAN_COST_WEIGHTS,
+};
 pub use memo::{GroupId, Memo, MemoGroup};
 pub use properties::{
     Distribution, MemoryBudgetClass, PhysicalProperties, RequiredProperties, ScanPruningSupport,
@@ -42,4 +46,13 @@ pub use search::{
 pub use stage::{
     ApplyOrder, OptimizationPipeline, OptimizationStage, PipelineExecution, RuleStage,
     StageRuleBatch, StageStats, StageTrace,
+};
+
+pub use qualification::{
+    InvalidOptimizerCostPerturbation, OptimizerBoundedOrderAlternative, OptimizerCostPerturbation,
+    OptimizerQualificationOptions, OptionalOptimizerRule, BOUNDED_ORDER_QUALIFICATION_RULE,
+};
+
+pub use qualification::{
+    verify_optimizer_rule_assertions, OptimizerRuleAssertion, OptimizerRuleAssertionError,
 };

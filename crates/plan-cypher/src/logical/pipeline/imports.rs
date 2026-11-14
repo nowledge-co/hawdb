@@ -1,3 +1,6 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
 //! Restore typed graph identities only for expressions that require native records.
 
 use super::*;
@@ -15,9 +18,16 @@ pub(super) fn restore(input: LogicalPlan, scope: &Scope, needed: &BTreeSet<Strin
         program: GraphMatchProgram {
             imports,
             introduced: Vec::new(),
+            projected_nodes: BTreeMap::new(),
+            projected_relationships: BTreeMap::new(),
             steps: Vec::new(),
             predicate: None,
+            predicate_steps: Vec::new(),
+            edge_predicates: Vec::new(),
             optional: false,
+            hash_join: None,
+            id_set_conjuncts: Vec::new(),
+            seeded_union: Vec::new(),
         },
         input: Some(Box::new(input)),
     }
@@ -29,7 +39,7 @@ pub(super) fn for_returns(returns: &mut PlannedReturns, scope: &Scope) -> Result
         PlannedReturns::Projections(items) => projections(items, scope, &mut needed)?,
         PlannedReturns::Aggregations { group_keys, items } => {
             projections(group_keys, scope, &mut needed)?;
-            aggregations(items, scope, &mut needed);
+            aggregations(items, scope, &mut needed)?;
         }
         PlannedReturns::AggregateProjection {
             group_keys,
@@ -37,10 +47,19 @@ pub(super) fn for_returns(returns: &mut PlannedReturns, scope: &Scope) -> Result
             projections: output,
         } => {
             projections(group_keys, scope, &mut needed)?;
-            aggregations(items, scope, &mut needed);
+            aggregations(items, scope, &mut needed)?;
             projections(output, scope, &mut needed)?;
         }
     }
+    Ok(needed)
+}
+
+pub(super) fn for_expression(
+    expression: &mut ProjectionExpression,
+    scope: &Scope,
+) -> Result<BTreeSet<String>> {
+    let mut needed = BTreeSet::new();
+    projection(expression, scope, &mut needed)?;
     Ok(needed)
 }
 
@@ -55,8 +74,15 @@ fn projections(
     Ok(())
 }
 
-fn aggregations(items: &mut [Aggregation], scope: &Scope, needed: &mut BTreeSet<String>) {
+fn aggregations(
+    items: &mut [Aggregation],
+    scope: &Scope,
+    needed: &mut BTreeSet<String>,
+) -> Result<()> {
     for item in items {
+        if let AggregateTarget::Expression(expression) = &mut item.target {
+            projection(expression, scope, needed)?;
+        }
         if let AggregateTarget::ColumnProperty { column, property } = &item.target
             && metadata_property(scope, column, property)
         {
@@ -71,6 +97,7 @@ fn aggregations(items: &mut [Aggregation], scope: &Scope, needed: &mut BTreeSet<
             needed.insert(variable.clone());
         }
     }
+    Ok(())
 }
 
 fn metadata_property(scope: &Scope, variable: &str, property: &str) -> bool {
@@ -135,6 +162,8 @@ fn native_projection_self(expression: &ProjectionExpression, needed: &mut BTreeS
         | ProjectionExpression::Property { variable, .. }
         | ProjectionExpression::Id { variable }
         | ProjectionExpression::RelationshipType { variable }
+        | ProjectionExpression::Label { variable, .. }
+        | ProjectionExpression::RelationshipEndpoint { variable, .. }
         | ProjectionExpression::DatePart { variable, .. }
         | ProjectionExpression::DefaultIfNullOrEq { variable, .. }
         | ProjectionExpression::DefaultIfNull { variable, .. }
@@ -146,6 +175,10 @@ fn native_projection_self(expression: &ProjectionExpression, needed: &mut BTreeS
         }
         ProjectionExpression::CaseEntitySearchRank(rank) => {
             needed.insert(rank.variable.clone());
+        }
+        // The subquery row copies these from the enclosing row's records.
+        ProjectionExpression::Pattern(pattern) => {
+            needed.extend(pattern.graph_variables.iter().cloned());
         }
         ProjectionExpression::Literal(_)
         | ProjectionExpression::Coalesce(_)
@@ -162,7 +195,22 @@ fn native_projection_self(expression: &ProjectionExpression, needed: &mut BTreeS
         | ProjectionExpression::ColumnValueDefaultIfNull { .. }
         | ProjectionExpression::ColumnValueCasePropertyNotNullOrEq { .. }
         | ProjectionExpression::Column(_)
-        | ProjectionExpression::ColumnProperty { .. } => {}
+        | ProjectionExpression::ColumnProperty { .. }
+        | ProjectionExpression::ListFunction { .. }
+        | ProjectionExpression::StringFunction { .. }
+        | ProjectionExpression::ListComprehension(_)
+        | ProjectionExpression::LocalVariable { .. }
+        | ProjectionExpression::List(_)
+        | ProjectionExpression::ListIndex { .. }
+        | ProjectionExpression::Conversion { .. }
+        | ProjectionExpression::NumericFunction { .. }
+        | ProjectionExpression::Reduce(_)
+        | ProjectionExpression::ListSlice { .. }
+        | ProjectionExpression::Path { .. }
+        | ProjectionExpression::TemporalFunction { .. }
+        | ProjectionExpression::PropertyAccess { .. }
+        | ProjectionExpression::RelationshipValueEndpoint { .. }
+        | ProjectionExpression::MapLiteral(_) => {}
     }
 }
 
@@ -197,6 +245,9 @@ fn collect_predicate(predicate: &Predicate, needed: &mut BTreeSet<String>) {
         | Predicate::ExpressionContains { expression, value } => {
             native_projection(expression, needed);
             native_projection(value, needed);
+        }
+        Predicate::ExpressionRegexMatch { expression, .. } => {
+            native_projection(expression, needed);
         }
         Predicate::ExpressionIn { expression, .. } => native_projection(expression, needed),
         Predicate::RelationshipExists { variable, .. }

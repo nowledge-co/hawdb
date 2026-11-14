@@ -1,0 +1,133 @@
+{
+  "issue": "https://github.com/nowledge-co/hawdb/issues/1287",
+  "base_head": "51f78587e921d17671904f39620acc5da74b6a40",
+  "capture_time_source_status": "uncommitted final byte-budget plus request-owned CASE physical-template follow-up; source patch reverses cleanly against base",
+  "runtime_and_test_sources": {
+    "benches/mem_query_resources.rs": "f5fd5758b8781320c9569b3bf5aa89792d6f77d3700b402cd28189020fa0530f",
+    "benches/mem_query_alloc.rs": "7a0db0b6ed03ef900fb28b2d6c9844cf1b758693edff9d48c98fb1abe08ce174",
+    "src/api/mod.rs": "a56221dad03a44cd5902b4a63b4b43e27f4b213c5c00b2026e659f6ef9fbbe4e",
+    "src/api/plan_cache.rs": "1ce0eecbb320ac44d4ca0746e2a8c475b9b9859b0c469d4b19e4c1f3a4c6d117",
+    "crates/plan-cache/src/lib.rs": "ff5260b0feddc5192cc4e58bbda2c9b639187bcc25056de8f73516ed4718e435",
+    "crates/plan-cache/src/template.rs": "8e0371747ff430f0fd39e44fee695077f9498cf16688738750db0c2f515523fb",
+    "crates/plan-cache/src/template/retained.rs": "e52f9cf1c339a27551c362dc32218c999c9ac96d7dd03d727614118bcad7f5bf",
+    "src/api/tests/simple_case_dispatch.rs": "c2d07f269f9a7feb07dbdd85796a9330d5a1523012778f16c51c8ca717de6dd7",
+    "crates/plan-cache/tests/template_retention.rs": "b5a7e4fb17c9e860d728af6243a05b322a9920e67e3303186c0e6141bb499677",
+    "crates/plan-cache/BUILD.bazel": "845cd18bf6c5600aa69e99375de8f82155bcfef193277db756b601747739bb47"
+  },
+  "binaries": {
+    "qualification": {
+      "path": "/private/tmp/hawdb-mem-performance/case-owner-engine-qualification",
+      "sha256": "91b3411923b01ecc377c26b5f13751ae99c0bebcf9be2974d6f0a4cd5ad809cf"
+    },
+    "release": {
+      "path": "/private/tmp/hawdb-mem-performance/case-owner-engine-release",
+      "sha256": "7d8285084a81d02d8b08a11c9d8a68eb552b0045f0131ab464594bfc8b08e035"
+    }
+  },
+  "release_cells": 30,
+  "instrumented_cells": 6,
+  "paired_release_cells": 48,
+  "pair_protocol": "four alternating-order fresh-process pairs per candidate count/workload;80requests per variant per cell,8192rows/Space,16KiBbody,foreground;pooled80sample p95 and meanCPU;medianfourprocess RSS highwater",
+  "reference_source_archive": "../mem_query_resources_2026_10_28/review-manifest.json",
+  "default_logical_template_byte_cap": 16777216,
+  "physical_case_marker_policy": "request-owned;no count-only physical-cache admission;explicitparameterized_case_template bypass;logicalreuse active",
+  "allocation_probe": "charged template >=actual retained requested bytes;4096weightedcache insertions eachactual<=charged<=64KiB;standalone test covers largeExactmap/list/binary/vector and bothRust1.97.1/1.98.1",
+  "local_checks": {
+    "plan_cache_unit": "39pass",
+    "root_cache": "58pass0fail",
+    "scoring_cache": "3pass0fail",
+    "facade": "2pass0fail",
+    "retention_allocator": "1pass perRust1.97.1/1.98.1",
+    "bazel_fuzz_and_focused": "100/100PASS;17executed83cached",
+    "wasm": "strict minimal ClippyPASS",
+    "native": "fmt+strictworkspacealltargetsallfeaturesClippy+stagedhooksPASS",
+    "all_files_hooks": "FAIL626unchangedbaseline licenseheaders;fail-fast;nativefmt/Clippy passed independently"
+  },
+  "reference_host": "mergedMem044a0c2f3ed6c8dbd76142a234558e1c81bdf602+currentengineSourceOverride;20pass0fail0ignored60filtered;notpublishedpinoractivation",
+  "limits": [
+    "shared workstation;ownbuilds/testscompletebeforetimedmatrix;externalworkloaduncontrolled",
+    "quiescentlogicalrequestedheapbound;excludesallocatorrounding/fixedmetadata/inflightreaders",
+    "existingnonCASEphysicalandrelationalcachesremaincount-only;no totalprocessmemoryclaim",
+    "MemreadforksbypassCASEphysicalcache;notpersistentphysicalcachehitqualification"
+  ],
+  "files": {
+    "case-owner-qualification.jsonl.gz": {
+      "raw_sha256": "c631c1dd5cdb9c671664cfd495f265750a00f04ea49f5df7a9d4603306cc0160",
+      "archive_sha256": "975e2b25e845a519fa7f4842825ab603e4d055777dd40328656155125d1a8ba0"
+    },
+    "case-owner-release.jsonl.gz": {
+      "raw_sha256": "3fca591335b72916b8c628a15c481fd6b77667bcea8b3babdfc5e87133b6597b",
+      "archive_sha256": "ddc63b7bfe6fef173e288668038cf3b48a36f212ba6a391ef2cd61660dc8cbb6"
+    },
+    "case-owner-paired-release.jsonl.gz": {
+      "raw_sha256": "56c7529be7763756a4b4acf66077850649fb939fdcb07da269edb5c150a906d6",
+      "archive_sha256": "641555791374aa95b703db152a8e079bf1318941a0829e3f369a31ae3def2cfc"
+    },
+    "case-owner-qualification-manifest.json": {
+      "sha256": "49c251cdc5e219997045bd8aba424eac967cc9d0f6c27cd0900add6ddc71c89d"
+    },
+    "case-owner-paired-manifest.json": {
+      "sha256": "5e8f29428d23ec6cc09a6fa36e4e20728613eaf5dea6f2ecd966dcda79010b1c"
+    },
+    "case-owner-paired-summary.json": {
+      "sha256": "c7c22c86bc5b2f70fddff5f67ac54f739c52e1603366196f323afb0ed568f66e"
+    },
+    "engine-owner-byte-control-receipt.json": {
+      "sha256": "06aaf1eec506223a93037d29f0d9dadd138db83b68e2079270ca52a0aa3e6ef6"
+    },
+    "engine-case-owner-control-receipt.json": {
+      "sha256": "b90ce2581b913fc411a03e7af0359eaa38032608090c680791f12877e72a2941"
+    },
+    "app-owner-current-engine-host-receipt.json": {
+      "sha256": "2d22d2fe9ba73b4c96b19cf257925408df7b1c60839bbd9e5af2a2b40200ef73"
+    },
+    "engine-owner-byte-control-red.log.gz": {
+      "raw_sha256": "18076d813908fab355f29d0b08d52e6dcf8c6a7fddcb2cb86b78c3a9969a7b97",
+      "archive_sha256": "ccd9b1a871144a747992640e088c28459c93d0555b2461bbc319c3b431605eeb"
+    },
+    "engine-owner-byte-control-green.log.gz": {
+      "raw_sha256": "acfcc42844c30e6e2b222d200a58a430e34076ab28908a22d7139e9d271bab35",
+      "archive_sha256": "926f102cc7af3e4b85b515631229c802708ce94a2ef70419b7f4b6547d805295"
+    },
+    "engine-case-owner-control-red.log.gz": {
+      "raw_sha256": "731b15f7e93acff3d1035a96c3ae84f35a588a2358e649f05a03820e1dee6399",
+      "archive_sha256": "d81d17104ec59f7c8f6f3bd26956310143e0ddd2545635ad280bad1a24eda263"
+    },
+    "engine-case-owner-control-green.log.gz": {
+      "raw_sha256": "6371f1ba718862219c40c2104c8ee2d416a612852b95d6620f708e46c33cd1b8",
+      "archive_sha256": "892affce01e0b8fadfa600991120655511a451e571e59473beef85b19714bbbd"
+    },
+    "engine-owner-allocation-197.log.gz": {
+      "raw_sha256": "ca43babcc4bd541a9a9b7339351eaa97ad60fcc39659fdbc96c5bc0d07000f28",
+      "archive_sha256": "dccf196557816f65215823215c111ece535edd1b6b3676a9e81a8c7fa59b3563"
+    },
+    "engine-owner-allocation-198.log.gz": {
+      "raw_sha256": "585f7bee5cc18c7ee9757db6b5f4df448136fa97a4ac7f6cac9dca527d5decbb",
+      "archive_sha256": "7bd1a15899e33664fce3e473c2852406ca8b250bd71ce100c5aa757f68d1b429"
+    },
+    "mem_query_resources.rs": {
+      "sha256": "f5fd5758b8781320c9569b3bf5aa89792d6f77d3700b402cd28189020fa0530f"
+    },
+    "mem_query_alloc.rs": {
+      "sha256": "7a0db0b6ed03ef900fb28b2d6c9844cf1b758693edff9d48c98fb1abe08ce174"
+    },
+    "template_retention.rs": {
+      "sha256": "b5a7e4fb17c9e860d728af6243a05b322a9920e67e3303186c0e6141bb499677"
+    },
+    "engine-source.patch.gz": {
+      "raw_sha256": "d962dd9c1d35ad83c8f7371bba449cf1e68230d43bc95f8769b88ddc6649cd0d",
+      "archive_sha256": "78a602483bcbf8efcd5180b3fbc432a66022fe52db36ee813eecde4ed9e714ca"
+    },
+    "release-matrix.csv": {
+      "sha256": "3bcef1efca681a3f61c7f8db442bc39a35a5fba7a68e3f41826b29413087ba0c"
+    }
+  },
+  "host": {
+    "platform": "macOS-27.0.1-arm64-arm-64bit",
+    "architecture": "arm64",
+    "cpu": "Apple M3 Max",
+    "memory_bytes": 137438953472,
+    "rust_197": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "rust_198": "rustc 1.98.1 (48a229cea 2026-09-01)"
+  }
+}

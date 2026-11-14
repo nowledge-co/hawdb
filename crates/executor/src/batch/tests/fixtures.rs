@@ -20,13 +20,36 @@ use std::collections::BTreeMap;
 pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
     vec![
         (
+            PhysicalPlan::UnwindRowsExec {
+                expression: ProjectionExpression::Literal(Value::List(vec![Value::Int(1)])),
+                variable: "item".into(),
+                consumes_source: false,
+                input: Box::new(PhysicalPlan::EmptyExec),
+            },
+            true,
+        ),
+        (
+            PhysicalPlan::UnwindExec {
+                rows: vec![Value::Int(1)],
+                variable: "value".into(),
+            },
+            true,
+        ),
+        (
             PhysicalPlan::GraphMatchExec {
                 program: GraphMatchProgram {
                     imports: Vec::new(),
                     introduced: Vec::new(),
+                    projected_nodes: BTreeMap::new(),
+                    projected_relationships: BTreeMap::new(),
                     steps: Vec::new(),
                     predicate: None,
+                    predicate_steps: Vec::new(),
+                    edge_predicates: Vec::new(),
                     optional: false,
+                    hash_join: None,
+                    id_set_conjuncts: Vec::new(),
+                    seeded_union: Vec::new(),
                 },
                 input: None,
             },
@@ -63,6 +86,7 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
                 property: String::new(),
                 value_type: hawdb_plan_cypher::SchemaPropertyType::Any,
                 nullable: false,
+                default: None,
             },
             false,
         ),
@@ -231,6 +255,21 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
             PhysicalPlan::UnwindMutation {
                 rows: Vec::new(),
                 variable: String::new(),
+                operation: BatchMutationOperation::CreateNode {
+                    label: String::new(),
+                    properties: BTreeMap::new(),
+                },
+            },
+            false,
+        ),
+        (
+            PhysicalPlan::LoadCsvMutation {
+                source: hawdb_plan_cypher::LoadCsvSource {
+                    location: hawdb_plan_cypher::CsvLocation::Parameter("f".to_string()),
+                    with_headers: false,
+                    field_terminator: b',',
+                    variable: "row".to_string(),
+                },
                 operation: BatchMutationOperation::CreateNode {
                     label: String::new(),
                     properties: BTreeMap::new(),
@@ -441,9 +480,31 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
         ),
         (PhysicalPlan::EmptyExec, true),
         (
+            PhysicalPlan::LoadCsvExec {
+                source: hawdb_plan_cypher::LoadCsvSource {
+                    location: hawdb_plan_cypher::CsvLocation::Parameter("f".to_string()),
+                    with_headers: false,
+                    field_terminator: b',',
+                    variable: "row".to_string(),
+                },
+            },
+            true,
+        ),
+        (
             PhysicalPlan::SeqNodeScan {
                 variable: String::new(),
                 label: String::new(),
+            },
+            true,
+        ),
+        (
+            PhysicalPlan::RelationshipSeededNodeScan {
+                variable: String::new(),
+                label: String::new(),
+                rel_type: String::new(),
+                rel_properties: BTreeMap::new(),
+                rel_property_in: None,
+                direction: RelationshipDirection::Outgoing,
             },
             true,
         ),
@@ -678,6 +739,7 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
         ),
         (
             PhysicalPlan::AggregateExec {
+                graph_keys: Default::default(),
                 group_keys: Vec::new(),
                 items: Vec::new(),
                 input: Box::new(PhysicalPlan::EmptyExec),

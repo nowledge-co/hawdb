@@ -164,16 +164,23 @@ impl CapturedDirectoryRelabel<'_> {
             let source = self.source_name();
             let target = self.target_name();
             let prepared = self.parent.root.with_native(|root| {
-                if platform::entry_exists(root, target)? {
+                let occupied = platform::entry_exists(root, target);
+                #[cfg(test)]
+                hooks::trace_result("target probe", &occupied);
+                if occupied? {
                     return Err(io::Error::new(
                         io::ErrorKind::AlreadyExists,
                         "directory relabel target occupied",
                     ));
                 }
-                let child = platform::open_directory_for_relabel(root, source)?;
-                if SourceDirectoryIdentity(crate::native_file_identity::of_file(&child)?)
-                    != self.child.identity
-                {
+                let child = platform::open_directory_for_relabel(root, source);
+                #[cfg(test)]
+                hooks::trace_result("source helper open", &child);
+                let child = child?;
+                let identity = crate::native_file_identity::of_file(&child);
+                #[cfg(test)]
+                hooks::trace_result("source helper identity", &identity);
+                if SourceDirectoryIdentity(identity?) != self.child.identity {
                     return Err(binding_error());
                 }
                 Ok(child)
@@ -203,7 +210,10 @@ impl CapturedDirectoryRelabel<'_> {
                 hooks::invoke(hooks::Boundary::BeforeNative)?;
                 *state = State::Attempted;
                 parent.root.with_native(|root| {
-                    platform::relabel_directory_new(root, &helper, source, target)
+                    let result = platform::relabel_directory_new(root, &helper, source, target);
+                    #[cfg(test)]
+                    hooks::trace_result("native rename", &result);
+                    result
                 })?;
                 // Private collaborator models a lost native reply AFTER the real
                 // syscall, never a fake successful operation. Unknown stays Attempted.
@@ -353,6 +363,17 @@ fn binding_error() -> io::Error {
 #[cfg(test)]
 mod hooks {
     use super::*;
+
+    pub(super) fn trace_result<T>(phase: &str, result: &io::Result<T>) {
+        if let Err(error) = result {
+            eprintln!(
+                "captured relabel {phase}: kind={:?}, raw_os_error={:?}, error={error}",
+                error.kind(),
+                error.raw_os_error()
+            );
+        }
+    }
+
     #[derive(Clone, Copy, PartialEq, Eq)]
     pub(super) enum Boundary {
         BeforeNative,

@@ -25,6 +25,7 @@ use std::collections::BTreeMap;
 #[test]
 fn aggregate_group_keys_use_node_property_distinct_counts() {
     let logical = LogicalPlan::Aggregate {
+        graph_keys: Default::default(),
         group_keys: vec![
             Projection {
                 expression: ProjectionExpression::Property {
@@ -155,6 +156,7 @@ fn aggregate_group_keys_use_node_property_distinct_counts() {
 #[test]
 fn aggregate_group_keys_use_relationship_property_distinct_counts() {
     let logical = LogicalPlan::Aggregate {
+        graph_keys: Default::default(),
         group_keys: vec![Projection {
             expression: ProjectionExpression::Property {
                 variable: "r".to_string(),
@@ -233,6 +235,7 @@ fn aggregate_group_keys_use_relationship_property_distinct_counts() {
 #[test]
 fn aggregate_distinct_property_targets_add_bounded_work_cost() {
     let logical = LogicalPlan::Aggregate {
+        graph_keys: Default::default(),
         group_keys: vec![Projection {
             expression: ProjectionExpression::Property {
                 variable: "m".to_string(),
@@ -285,6 +288,7 @@ fn aggregate_distinct_property_targets_add_bounded_work_cost() {
 #[test]
 fn aggregate_distinct_variable_targets_add_bounded_work_cost() {
     let logical = LogicalPlan::Aggregate {
+        graph_keys: Default::default(),
         group_keys: vec![Projection {
             expression: ProjectionExpression::Property {
                 variable: "m".to_string(),
@@ -331,6 +335,7 @@ fn aggregate_distinct_variable_targets_add_bounded_work_cost() {
 #[test]
 fn aggregate_distinct_variable_targets_use_path_target_coverage() {
     let logical = LogicalPlan::Aggregate {
+        graph_keys: Default::default(),
         group_keys: vec![Projection {
             expression: ProjectionExpression::Property {
                 variable: "m".to_string(),
@@ -413,6 +418,7 @@ fn aggregate_distinct_variable_targets_use_path_target_coverage() {
 #[test]
 fn aggregate_distinct_variable_targets_use_bounded_path_target_coverage() {
     let logical = LogicalPlan::Aggregate {
+        graph_keys: Default::default(),
         group_keys: vec![Projection {
             expression: ProjectionExpression::Property {
                 variable: "m".to_string(),

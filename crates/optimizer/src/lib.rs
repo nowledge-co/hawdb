@@ -26,7 +26,10 @@ pub use hawdb_optimizer_vector::vector;
 pub use context::{
     ExplainMode, OptimizerContext, QueryFamily, ResourceHints, StatementClass, TraceSink,
 };
-pub use cost::{PlanCost, PlanCostBreakdown};
+pub use cost::{
+    PlanCost, PlanCostBreakdown, PlanCostWeights, DEFAULT_PLAN_COST_POLICY_ID,
+    DEFAULT_PLAN_COST_WEIGHTS,
+};
 pub use graph::{
     CascadesOptimizer, FastPathPhysicalPhase, FastPathPhysicalPlanRoot, LogicalPhase,
     LogicalPlanRoot, LoweringReadyLogicalPlanRoot, LoweringReadyPhase, OptimizerCatalog,
@@ -111,4 +114,13 @@ pub use vector::{
     AdaptiveVectorBackend, AdaptiveVectorBackendDecision, AdaptiveVectorBackendInput,
     AdaptiveVectorBackendPolicy, PlannedVectorSearch, VectorCompressionPreference, VectorPlanError,
     VectorPlanProperties,
+};
+
+pub use hawdb_cascades::qualification::{
+    InvalidOptimizerCostPerturbation, OptimizerBoundedOrderAlternative, OptimizerCostPerturbation,
+    OptimizerQualificationOptions, OptionalOptimizerRule, BOUNDED_ORDER_QUALIFICATION_RULE,
+};
+
+pub use hawdb_cascades::qualification::{
+    verify_optimizer_rule_assertions, OptimizerRuleAssertion, OptimizerRuleAssertionError,
 };

@@ -1,0 +1,102 @@
+{"kind":"accept","sql":"SELECT 'a''b' AS item FROM items","ast_sha256":"5cbfa3a1c7ba0c382da80aa7e8148b57aca6fc9c2d83647bbf7767554bfd8b79"}
+{"kind":"accept","sql":"-- lead\nSELECT 'a''b' AS item FROM items","ast_sha256":"f579181086645758b46322816a38844ed62e7e0c8d6e8f2ed65f4ba8507c2a61"}
+{"kind":"accept","sql":"/* 知識 */\nSELECT 'a''b' AS item FROM items","ast_sha256":"f579181086645758b46322816a38844ed62e7e0c8d6e8f2ed65f4ba8507c2a61"}
+{"kind":"accept","sql":"SELECT 'a\\b' AS item FROM items","ast_sha256":"de0669591b6414dd97459daa42deed74eea08caab232a2a6c04a33f839b0984b"}
+{"kind":"accept","sql":"-- lead\nSELECT 'a\\b' AS item FROM items","ast_sha256":"99bffde8b09ff9feb85a59c3520a5ed6801d7f8efe2706c96b9e845a80a3dacd"}
+{"kind":"accept","sql":"/* 知識 */\nSELECT 'a\\b' AS item FROM items","ast_sha256":"99bffde8b09ff9feb85a59c3520a5ed6801d7f8efe2706c96b9e845a80a3dacd"}
+{"kind":"accept","sql":"SELECT E'a\\n' AS item FROM items","ast_sha256":"f24da86f57dccb5d8109a332485b2c56df54e93c4ab1ad9e77363d82a13ed82b"}
+{"kind":"accept","sql":"-- lead\nSELECT E'a\\n' AS item FROM items","ast_sha256":"b79ea18c4cd42ad87f5e80d8a3a17089ada9cd9ec053380d6b345b581fa961b0"}
+{"kind":"accept","sql":"/* 知識 */\nSELECT E'a\\n' AS item FROM items","ast_sha256":"b79ea18c4cd42ad87f5e80d8a3a17089ada9cd9ec053380d6b345b581fa961b0"}
+{"kind":"accept","sql":"SELECT E'a\\'b' AS item FROM items","ast_sha256":"f24eba355f7ee5f2428f40ee3ffe931b5454cfa230a882ad68065fade0e1b4ea"}
+{"kind":"accept","sql":"-- lead\nSELECT E'a\\'b' AS item FROM items","ast_sha256":"acc909200609547480ff62e51dcfa3b989f377f8eb0522c5fc3902e2bc564862"}
+{"kind":"accept","sql":"/* 知識 */\nSELECT E'a\\'b' AS item FROM items","ast_sha256":"acc909200609547480ff62e51dcfa3b989f377f8eb0522c5fc3902e2bc564862"}
+{"kind":"accept","sql":"SELECT E'\\\\' AS item FROM items","ast_sha256":"dacd78a1df94d13e7215bcd2b94cd54db8e2588eb2817ffe933a1add64d243ba"}
+{"kind":"accept","sql":"-- lead\nSELECT E'\\\\' AS item FROM items","ast_sha256":"ba8d34448ec6483855b59eefe130b150bcf2cc13809d3c3ad13fa7936441daf1"}
+{"kind":"accept","sql":"/* 知識 */\nSELECT E'\\\\' AS item FROM items","ast_sha256":"ba8d34448ec6483855b59eefe130b150bcf2cc13809d3c3ad13fa7936441daf1"}
+{"kind":"accept","sql":"SELECT E'\\b\\f\\n\\r\\t' AS item FROM items","ast_sha256":"cbd0009f3e07ae69e1ce186ec0e0879279cd0ad10c883bd0df9414e57df4efe6"}
+{"kind":"accept","sql":"-- lead\nSELECT E'\\b\\f\\n\\r\\t' AS item FROM items","ast_sha256":"53b297af35938e2cb20c6eeae7610ab0d7e08fdea805f2272ecd748381161297"}
+{"kind":"accept","sql":"/* 知識 */\nSELECT E'\\b\\f\\n\\r\\t' AS item FROM items","ast_sha256":"53b297af35938e2cb20c6eeae7610ab0d7e08fdea805f2272ecd748381161297"}
+{"kind":"accept","sql":"SELECT E'\\x' AS item FROM items","ast_sha256":"ddbc8fd6d34f8833e92b72494e0f1554c90ba4bc12c7b092029951339b811e05"}
+{"kind":"accept","sql":"-- lead\nSELECT E'\\x' AS item FROM items","ast_sha256":"d577b6f6bccf8decbc9e6ad6764b771bcb26867784a7347ae1f9a727cfebe8a1"}
+{"kind":"accept","sql":"/* 知識 */\nSELECT E'\\x' AS item FROM items","ast_sha256":"d577b6f6bccf8decbc9e6ad6764b771bcb26867784a7347ae1f9a727cfebe8a1"}
+{"kind":"accept","sql":"SELECT E'\\x1' AS item FROM items","ast_sha256":"4209458687ac61609f6121f108afef1eba7235610607bb9ff84b7f3ed4418e09"}
+{"kind":"accept","sql":"-- lead\nSELECT E'\\x1' AS item FROM items","ast_sha256":"18162619110765000cf8bb57725e2a3458900a8dacfbb925e6c662d212087dbe"}
+{"kind":"accept","sql":"/* 知識 */\nSELECT E'\\x1' AS item FROM items","ast_sha256":"18162619110765000cf8bb57725e2a3458900a8dacfbb925e6c662d212087dbe"}
+{"kind":"accept","sql":"SELECT E'\\x41Z' AS item FROM items","ast_sha256":"62a4aef1d42e07253bf19feedbed03bcec81cdbe79216d9123770e5ae2da7daf"}
+{"kind":"accept","sql":"-- lead\nSELECT E'\\x41Z' AS item FROM items","ast_sha256":"5996552505b3b91c90c7a538b3e7e63b4392a6bd058a748fbf1f1d8f953ee90d"}
+{"kind":"accept","sql":"/* 知識 */\nSELECT E'\\x41Z' AS item FROM items","ast_sha256":"5996552505b3b91c90c7a538b3e7e63b4392a6bd058a748fbf1f1d8f953ee90d"}
+{"kind":"accept","sql":"SELECT E'\\x7f' AS item FROM items","ast_sha256":"62b7f34faf51f7e6350a7b4a8751aa9c8998a3cc35a72e96d83f306e07b95cb0"}
+{"kind":"accept","sql":"-- lead\nSELECT E'\\x7f' AS item FROM items","ast_sha256":"fae45d86dbd4741fdf24d0355788cb2573ff9b626dc07f26b5c61954cfe514bd"}
+{"kind":"accept","sql":"/* 知識 */\nSELECT E'\\x7f' AS item FROM items","ast_sha256":"fae45d86dbd4741fdf24d0355788cb2573ff9b626dc07f26b5c61954cfe514bd"}
+{"kind":"Parse","sql":"SELECT E'\\x80' AS item FROM items","ast_sha256":null}
+{"kind":"Parse","sql":"-- lead\nSELECT E'\\x80' AS item FROM items","ast_sha256":null}
+{"kind":"Parse","sql":"/* 知識 */\nSELECT E'\\x80' AS item FROM items","ast_sha256":null}
+{"kind":"Parse","sql":"SELECT E'\\x00' AS item FROM items","ast_sha256":null}
+{"kind":"Parse","sql":"-- lead\nSELECT E'\\x00' AS item FROM items","ast_sha256":null}
+{"kind":"Parse","sql":"/* 知識 */\nSELECT E'\\x00' AS item FROM items","ast_sha256":null}
+{"kind":"accept","sql":"SELECT E'\\101' AS item FROM items","ast_sha256":"b7ba8bdaa04dc71c73af438ec117d49708584041c2508e081dc938ed2a4d85e6"}
+{"kind":"accept","sql":"-- lead\nSELECT E'\\101' AS item FROM items","ast_sha256":"0d4f65c30b12a1affe2e1737582c5c1c8b0cbfb6bf173bf873a06961c6780dd8"}
+{"kind":"accept","sql":"/* 知識 */\nSELECT E'\\101' AS item FROM items","ast_sha256":"0d4f65c30b12a1affe2e1737582c5c1c8b0cbfb6bf173bf873a06961c6780dd8"}
+{"kind":"accept","sql":"SELECT E'\\7' AS item FROM items","ast_sha256":"0bade32ba73cde5179c6c896aadbd79be76a1285e8b8d07ea80e05e77c00b425"}
+{"kind":"accept","sql":"-- lead\nSELECT E'\\7' AS item FROM items","ast_sha256":"a38c0b5e4905a57daf4c7e837a9e7fdc2115714910a770f733f36b37f87d2eea"}
+{"kind":"accept","sql":"/* 知識 */\nSELECT E'\\7' AS item FROM items","ast_sha256":"a38c0b5e4905a57daf4c7e837a9e7fdc2115714910a770f733f36b37f87d2eea"}
+{"kind":"Parse","sql":"SELECT E'\\377' AS item FROM items","ast_sha256":null}
+{"kind":"Parse","sql":"-- lead\nSELECT E'\\377' AS item FROM items","ast_sha256":null}
+{"kind":"Parse","sql":"/* 知識 */\nSELECT E'\\377' AS item FROM items","ast_sha256":null}
+{"kind":"Parse","sql":"SELECT E'\\400' AS item FROM items","ast_sha256":null}
+{"kind":"Parse","sql":"-- lead\nSELECT E'\\400' AS item FROM items","ast_sha256":null}
+{"kind":"Parse","sql":"/* 知識 */\nSELECT E'\\400' AS item FROM items","ast_sha256":null}
+{"kind":"Parse","sql":"SELECT E'\\000' AS item FROM items","ast_sha256":null}
+{"kind":"Parse","sql":"-- lead\nSELECT E'\\000' AS item FROM items","ast_sha256":null}
+{"kind":"Parse","sql":"/* 知識 */\nSELECT E'\\000' AS item FROM items","ast_sha256":null}
+{"kind":"accept","sql":"SELECT E'\\u00e9\\U0001F680' AS item FROM items","ast_sha256":"1cec6ee9dc66c06561115b9b244810cd008ec854cacbf41f2929487724bc2a41"}
+{"kind":"accept","sql":"-- lead\nSELECT E'\\u00e9\\U0001F680' AS item FROM items","ast_sha256":"4b7626409c4fcf047b5ac1a2da670069f5ea7ccb7c39bc70b44df72a2b7c59ee"}
+{"kind":"accept","sql":"/* 知識 */\nSELECT E'\\u00e9\\U0001F680' AS item FROM items","ast_sha256":"4b7626409c4fcf047b5ac1a2da670069f5ea7ccb7c39bc70b44df72a2b7c59ee"}
+{"kind":"Parse","sql":"SELECT E'\\uD800' AS item FROM items","ast_sha256":null}
+{"kind":"Parse","sql":"-- lead\nSELECT E'\\uD800' AS item FROM items","ast_sha256":null}
+{"kind":"Parse","sql":"/* 知識 */\nSELECT E'\\uD800' AS item FROM items","ast_sha256":null}
+{"kind":"Parse","sql":"SELECT E'\\u123' AS item FROM items","ast_sha256":null}
+{"kind":"Parse","sql":"-- lead\nSELECT E'\\u123' AS item FROM items","ast_sha256":null}
+{"kind":"Parse","sql":"/* 知識 */\nSELECT E'\\u123' AS item FROM items","ast_sha256":null}
+{"kind":"accept","sql":"SELECT U&'d\\0061t' AS item FROM items","ast_sha256":"55f8fc5040ca7047cd06a6dda23bc6b0a83c82f79eb7b7a206e065d912827d17"}
+{"kind":"accept","sql":"-- lead\nSELECT U&'d\\0061t' AS item FROM items","ast_sha256":"5f6393e54dce4a88f0e2133f243d2973bacf5484807080e30a8498ac5929600c"}
+{"kind":"accept","sql":"/* 知識 */\nSELECT U&'d\\0061t' AS item FROM items","ast_sha256":"5f6393e54dce4a88f0e2133f243d2973bacf5484807080e30a8498ac5929600c"}
+{"kind":"accept","sql":"SELECT U&'\\+01F680' AS item FROM items","ast_sha256":"5ac787fa5380c3dad20fe36e767f2c9a74a01c805d606e963fce439d7c7c7110"}
+{"kind":"accept","sql":"-- lead\nSELECT U&'\\+01F680' AS item FROM items","ast_sha256":"996cbc259b27c9f38bd499d3c64603204a6d4bbdf12ce1cb13a94430b28f423a"}
+{"kind":"accept","sql":"/* 知識 */\nSELECT U&'\\+01F680' AS item FROM items","ast_sha256":"996cbc259b27c9f38bd499d3c64603204a6d4bbdf12ce1cb13a94430b28f423a"}
+{"kind":"accept","sql":"SELECT U&'\\\\' AS item FROM items","ast_sha256":"33212b8e31618a75e61e34de6a9e1479b172e189446dc45f8f8073543a694c69"}
+{"kind":"accept","sql":"-- lead\nSELECT U&'\\\\' AS item FROM items","ast_sha256":"b9455e9a6a2bdc02c56c200cf96ecdaedfbe4cc01fea7c59e6e5a14657d968e0"}
+{"kind":"accept","sql":"/* 知識 */\nSELECT U&'\\\\' AS item FROM items","ast_sha256":"b9455e9a6a2bdc02c56c200cf96ecdaedfbe4cc01fea7c59e6e5a14657d968e0"}
+{"kind":"accept","sql":"SELECT U&'\\0000' AS item FROM items","ast_sha256":"cd001cd8b39933095a9211643d4423a09745cce935103e429879ddfdbf8dad96"}
+{"kind":"accept","sql":"-- lead\nSELECT U&'\\0000' AS item FROM items","ast_sha256":"a91bdfb7bce03bddb4b7ad2243e0aa03662a8f1063f44eeec15006eb2305ab9b"}
+{"kind":"accept","sql":"/* 知識 */\nSELECT U&'\\0000' AS item FROM items","ast_sha256":"a91bdfb7bce03bddb4b7ad2243e0aa03662a8f1063f44eeec15006eb2305ab9b"}
+{"kind":"Parse","sql":"SELECT U&'\\D800' AS item FROM items","ast_sha256":null}
+{"kind":"Parse","sql":"-- lead\nSELECT U&'\\D800' AS item FROM items","ast_sha256":null}
+{"kind":"Parse","sql":"/* 知識 */\nSELECT U&'\\D800' AS item FROM items","ast_sha256":null}
+{"kind":"Parse","sql":"SELECT U&'\\+110000' AS item FROM items","ast_sha256":null}
+{"kind":"Parse","sql":"-- lead\nSELECT U&'\\+110000' AS item FROM items","ast_sha256":null}
+{"kind":"Parse","sql":"/* 知識 */\nSELECT U&'\\+110000' AS item FROM items","ast_sha256":null}
+{"kind":"Parse","sql":"SELECT U&'\\000' AS item FROM items","ast_sha256":null}
+{"kind":"Parse","sql":"-- lead\nSELECT U&'\\000' AS item FROM items","ast_sha256":null}
+{"kind":"Parse","sql":"/* 知識 */\nSELECT U&'\\000' AS item FROM items","ast_sha256":null}
+{"kind":"accept","sql":"SELECT E'你好\n世界' AS item FROM items","ast_sha256":"236bee2edb5997e5103d8b93d6d01bf090abe127e0acd0cbe744ca027f38e340"}
+{"kind":"accept","sql":"-- lead\nSELECT E'你好\n世界' AS item FROM items","ast_sha256":"c014ad1dcc8916e776d7879baff72dbae23c92471d574e2005bf1f4975beae5e"}
+{"kind":"accept","sql":"/* 知識 */\nSELECT E'你好\n世界' AS item FROM items","ast_sha256":"c014ad1dcc8916e776d7879baff72dbae23c92471d574e2005bf1f4975beae5e"}
+{"kind":"accept","sql":"SELECT -1 AS item FROM items","ast_sha256":"def0f01bf2253aedf9740ea674c2b654e65f1ae535767faa4c60636cd59dab29"}
+{"kind":"accept","sql":"-- lead\nSELECT -1 AS item FROM items","ast_sha256":"c9edeb6f4045d2e4e0a6ed56f3458b9daf0c847b6fcece546d45251b2f1c8975"}
+{"kind":"accept","sql":"/* 知識 */\nSELECT -1 AS item FROM items","ast_sha256":"c9edeb6f4045d2e4e0a6ed56f3458b9daf0c847b6fcece546d45251b2f1c8975"}
+{"kind":"accept","sql":"SELECT (-1) AS item FROM items","ast_sha256":"b993ff99d4dbb15e782bc068fcf33a11fcc0ed3c0bc979b39b69af257afcc7b4"}
+{"kind":"accept","sql":"-- lead\nSELECT (-1) AS item FROM items","ast_sha256":"05736bfc733adba82cf119e12c3b21cc8687224f39f7f14501f815e9f3c89990"}
+{"kind":"accept","sql":"/* 知識 */\nSELECT (-1) AS item FROM items","ast_sha256":"05736bfc733adba82cf119e12c3b21cc8687224f39f7f14501f815e9f3c89990"}
+{"kind":"accept","sql":"SELECT ((1.25)) AS item FROM items","ast_sha256":"709625f04ee1d0da023be170481f8b5d01487663ca9002058bc519310dcdfa33"}
+{"kind":"accept","sql":"-- lead\nSELECT ((1.25)) AS item FROM items","ast_sha256":"009b4e853f878eb654497939a13c0456a5b6f50b07fb907e4d0109f820c5afe8"}
+{"kind":"accept","sql":"/* 知識 */\nSELECT ((1.25)) AS item FROM items","ast_sha256":"009b4e853f878eb654497939a13c0456a5b6f50b07fb907e4d0109f820c5afe8"}
+{"kind":"accept","sql":"SELECT count(*) AS item FROM items","ast_sha256":"ed599e456ae4917b9972d35236c401575e99f29cd26d91aeee860ea3f292c94d"}
+{"kind":"accept","sql":"-- lead\nSELECT count(*) AS item FROM items","ast_sha256":"f9344cc1de7efe7c27be64a0bef8e59008a1ceec7ed9c53ae4edda1529441308"}
+{"kind":"accept","sql":"/* 知識 */\nSELECT count(*) AS item FROM items","ast_sha256":"f9344cc1de7efe7c27be64a0bef8e59008a1ceec7ed9c53ae4edda1529441308"}
+{"kind":"accept","sql":"SELECT count(DISTINCT id) AS item FROM items","ast_sha256":"7aeb91c0f9d60e8fd4f8eb4f57f1ce65f901ef143103799778b917291398d200"}
+{"kind":"accept","sql":"-- lead\nSELECT count(DISTINCT id) AS item FROM items","ast_sha256":"62bd1711ec58a871649223d865b4b4118af1ba155d0f37fbe5294602cdb508b0"}
+{"kind":"accept","sql":"/* 知識 */\nSELECT count(DISTINCT id) AS item FROM items","ast_sha256":"62bd1711ec58a871649223d865b4b4118af1ba155d0f37fbe5294602cdb508b0"}
+{"kind":"accept","sql":"SELECT count(*) FILTER (WHERE id > 1) AS item FROM items","ast_sha256":"87d322d2a4d86612ed19943e6d7d65b9031e9511fbbede41f9690e08ab4f1737"}
+{"kind":"accept","sql":"-- lead\nSELECT count(*) FILTER (WHERE id > 1) AS item FROM items","ast_sha256":"cb35518c15c7054379b244a04fdc47bb4b2afa5b24bd0c3fac2a1263e9ea74f3"}
+{"kind":"accept","sql":"/* 知識 */\nSELECT count(*) FILTER (WHERE id > 1) AS item FROM items","ast_sha256":"cb35518c15c7054379b244a04fdc47bb4b2afa5b24bd0c3fac2a1263e9ea74f3"}

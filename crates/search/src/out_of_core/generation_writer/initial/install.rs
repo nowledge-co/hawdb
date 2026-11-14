@@ -96,6 +96,12 @@ pub(super) fn install(
     let update = update::prepare(writer, envelope.body, decode)?;
     let manifest = update.manifest();
     manifest.validate_names()?;
+    // This head is serialized without `stamp_reader_version`; the initial
+    // body never carries a field above the base version (#1763).
+    debug_assert_eq!(
+        manifest.min_reader_version,
+        manifest.required_reader_version()
+    );
     let final_head = json::encode_with_context(
         manifest,
         MAX_OUT_OF_CORE_MANIFEST_BYTES,

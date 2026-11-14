@@ -171,8 +171,8 @@ impl TextSeedScanSpec<'_> {
             }
             bindings.push(Binding {
                 values,
-                nodes: BTreeMap::new(),
-                relationships: BTreeMap::new(),
+                nodes: BTreeMap::new().into(),
+                relationships: BTreeMap::new().into(),
             });
             if self.complete && bindings.len() == context.memory.batch_rows.get() {
                 let control = emit(std::mem::take(&mut bindings))?;

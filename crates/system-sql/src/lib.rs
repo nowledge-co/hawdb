@@ -735,12 +735,7 @@ fn bind_predicate(mut predicate: SqlPredicate, parameters: &[Value]) -> Result<S
 }
 
 fn bind_value(value: SqlValue, parameters: &[Value]) -> Result<Value> {
-    match value {
-        SqlValue::Literal(value) => Ok(value),
-        SqlValue::Parameter(position) => parameters.get(position - 1).cloned().ok_or_else(|| {
-            HawDBError::Semantic(format!("missing PostgreSQL parameter ${position}"))
-        }),
-    }
+    hawdb_sql::bind_sql_value(&value, parameters)
 }
 
 fn bind_bound(bound: SqlBound, parameters: &[Value], name: &str) -> Result<u64> {
@@ -814,7 +809,14 @@ fn execute_system_table_scan<Store: SystemSqlStore>(
     };
 
     if let Some(predicate) = &scan.predicate {
-        rows.retain(|row| predicate_matches(predicate, row));
+        let mut retained = 0;
+        for index in 0..rows.len() {
+            if predicate_matches(predicate, &rows[index])? {
+                rows.swap(retained, index);
+                retained += 1;
+            }
+        }
+        rows.truncate(retained);
     }
 
     if !scan.order_by.is_empty() {
@@ -926,6 +928,8 @@ fn table_rows(catalog: &Catalog) -> Vec<Row> {
 fn information_schema_table_rows(state: &RelationalState) -> Vec<Row> {
     state
         .table_schemas()
+        // Search index postings are an index, not a relation.
+        .filter(|schema| schema.search_index().is_none())
         .map(|schema| {
             BTreeMap::from([
                 (
@@ -1053,7 +1057,10 @@ fn information_schema_column_rows(state: &RelationalState) -> Vec<Row> {
                             "numeric_scale".to_string(),
                             option_i64_value(type_info.numeric_scale),
                         ),
-                        ("datetime_precision".to_string(), Value::Null),
+                        (
+                            "datetime_precision".to_string(),
+                            option_i64_value(type_info.datetime_precision),
+                        ),
                         ("interval_type".to_string(), Value::Null),
                         ("interval_precision".to_string(), Value::Null),
                         ("character_set_catalog".to_string(), Value::Null),
@@ -1124,10 +1131,21 @@ struct InformationSchemaType {
     numeric_precision: Option<i64>,
     numeric_precision_radix: Option<i64>,
     numeric_scale: Option<i64>,
+    datetime_precision: Option<i64>,
 }
 
 fn information_schema_type(scalar_type: RelationalScalarType) -> InformationSchemaType {
     match scalar_type {
+        RelationalScalarType::Decimal(kind) => InformationSchemaType {
+            data_type: "numeric",
+            udt_name: "numeric",
+            character_maximum_length: None,
+            character_octet_length: None,
+            numeric_precision: Some(i64::from(kind.precision())),
+            numeric_precision_radix: Some(10),
+            numeric_scale: Some(i64::from(kind.scale())),
+            datetime_precision: None,
+        },
         RelationalScalarType::Boolean => InformationSchemaType {
             data_type: "boolean",
             udt_name: "bool",
@@ -1136,6 +1154,7 @@ fn information_schema_type(scalar_type: RelationalScalarType) -> InformationSche
             numeric_precision: None,
             numeric_precision_radix: None,
             numeric_scale: None,
+            datetime_precision: None,
         },
         RelationalScalarType::BigInt => InformationSchemaType {
             data_type: "bigint",
@@ -1145,6 +1164,7 @@ fn information_schema_type(scalar_type: RelationalScalarType) -> InformationSche
             numeric_precision: Some(64),
             numeric_precision_radix: Some(2),
             numeric_scale: Some(0),
+            datetime_precision: None,
         },
         RelationalScalarType::DoublePrecision => InformationSchemaType {
             data_type: "double precision",
@@ -1154,6 +1174,7 @@ fn information_schema_type(scalar_type: RelationalScalarType) -> InformationSche
             numeric_precision: Some(53),
             numeric_precision_radix: Some(2),
             numeric_scale: None,
+            datetime_precision: None,
         },
         RelationalScalarType::Text => InformationSchemaType {
             data_type: "text",
@@ -1163,6 +1184,7 @@ fn information_schema_type(scalar_type: RelationalScalarType) -> InformationSche
             numeric_precision: None,
             numeric_precision_radix: None,
             numeric_scale: None,
+            datetime_precision: None,
         },
         RelationalScalarType::Bytea => InformationSchemaType {
             data_type: "bytea",
@@ -1172,6 +1194,7 @@ fn information_schema_type(scalar_type: RelationalScalarType) -> InformationSche
             numeric_precision: None,
             numeric_precision_radix: None,
             numeric_scale: None,
+            datetime_precision: None,
         },
         RelationalScalarType::Uuid => InformationSchemaType {
             data_type: "uuid",
@@ -1181,7 +1204,26 @@ fn information_schema_type(scalar_type: RelationalScalarType) -> InformationSche
             numeric_precision: None,
             numeric_precision_radix: None,
             numeric_scale: None,
+            datetime_precision: None,
         },
+        RelationalScalarType::Timestamp(precision)
+        | RelationalScalarType::TimestampTz(precision) => {
+            let zoned = matches!(scalar_type, RelationalScalarType::TimestampTz(_));
+            InformationSchemaType {
+                data_type: if zoned {
+                    "timestamp with time zone"
+                } else {
+                    "timestamp without time zone"
+                },
+                udt_name: if zoned { "timestamptz" } else { "timestamp" },
+                character_maximum_length: None,
+                character_octet_length: None,
+                numeric_precision: None,
+                numeric_precision_radix: None,
+                numeric_scale: None,
+                datetime_precision: Some(i64::from(precision.get())),
+            }
+        }
         RelationalScalarType::Vector(_) => InformationSchemaType {
             data_type: "USER-DEFINED",
             udt_name: "vector",
@@ -1190,6 +1232,7 @@ fn information_schema_type(scalar_type: RelationalScalarType) -> InformationSche
             numeric_precision: None,
             numeric_precision_radix: None,
             numeric_scale: None,
+            datetime_precision: None,
         },
     }
 }
@@ -1204,6 +1247,9 @@ fn relational_default_value(default: Option<&RelationalColumnDefault>) -> Value 
             Value::String(value.to_string())
         }
         Some(RelationalColumnDefault::Literal(RelationalValue::BigInt(value))) => {
+            Value::String(value.to_string())
+        }
+        Some(RelationalColumnDefault::Literal(RelationalValue::Decimal(value))) => {
             Value::String(value.to_string())
         }
         Some(RelationalColumnDefault::Literal(RelationalValue::DoublePrecision(value))) => {
@@ -1221,7 +1267,31 @@ fn relational_default_value(default: Option<&RelationalColumnDefault>) -> Value 
         Some(RelationalColumnDefault::Literal(RelationalValue::Vector(value))) => {
             Value::String(Value::Vector(value.clone()).to_string())
         }
+        Some(RelationalColumnDefault::Literal(RelationalValue::Timestamp(value))) => {
+            hawdb_core::sql_timestamp::format_timestamp(*value).map_or(Value::Null, |text| {
+                Value::String(format!("'{text}'::timestamp without time zone"))
+            })
+        }
+        Some(RelationalColumnDefault::Literal(RelationalValue::TimestampTz(value))) => {
+            hawdb_core::sql_timestamp::format_timestamptz(*value).map_or(Value::Null, |text| {
+                Value::String(format!("'{text}'::timestamp with time zone"))
+            })
+        }
         Some(RelationalColumnDefault::UuidV7) => Value::String("uuidv7()".to_string()),
+        Some(RelationalColumnDefault::CurrentTimestamp(kind)) => {
+            let name = if kind.zoned {
+                "CURRENT_TIMESTAMP"
+            } else {
+                "LOCALTIMESTAMP"
+            };
+            Value::String(
+                if kind.precision == hawdb_core::TimestampPrecision::DEFAULT {
+                    name.to_string()
+                } else {
+                    format!("{name}({})", kind.precision.get())
+                },
+            )
+        }
     }
 }
 
@@ -1238,6 +1308,8 @@ fn encode_hex(bytes: &[u8]) -> String {
 fn pg_table_rows(state: &RelationalState) -> Vec<Row> {
     state
         .table_schemas()
+        // Search index postings are an index, not a relation.
+        .filter(|schema| schema.search_index().is_none())
         .map(|schema| {
             BTreeMap::from([
                 (
@@ -1266,8 +1338,37 @@ fn pg_table_rows(state: &RelationalState) -> Vec<Row> {
 fn pg_index_rows(state: &RelationalState) -> Vec<Row> {
     state
         .table_schemas()
-        .flat_map(relational_schema_index_rows)
+        .flat_map(|schema| match schema.search_index() {
+            Some(spec) => search_index_rows(schema, spec),
+            None => relational_schema_index_rows(schema),
+        })
         .collect()
+}
+
+fn search_index_rows(
+    schema: &RelationalTableSchema,
+    spec: &hawdb_storage::relational::SearchIndexSpec,
+) -> Vec<Row> {
+    let Some(view) = schema.materialized_view.as_deref() else {
+        return Vec::new();
+    };
+    let index_definition = format!(
+        "CREATE SEARCH INDEX {} ON public.{} ({}) WITH (analyzer = '{}')",
+        quote_postgres_identifier(&schema.name),
+        quote_postgres_identifier(&view.source),
+        quote_postgres_identifier(&spec.column),
+        spec.analyzer.name(),
+    );
+    vec![BTreeMap::from([
+        (
+            "schemaname".to_string(),
+            Value::String("public".to_string()),
+        ),
+        ("tablename".to_string(), Value::String(view.source.clone())),
+        ("indexname".to_string(), Value::String(schema.name.clone())),
+        ("tablespace".to_string(), Value::Null),
+        ("indexdef".to_string(), Value::String(index_definition)),
+    ])]
 }
 
 fn relational_schema_index_rows(schema: &RelationalTableSchema) -> Vec<Row> {
@@ -2067,6 +2168,10 @@ const fn constraint_kind_name(kind: ConstraintKind) -> &'static str {
 fn plan_cache_rows(stats: &PlanCacheStats) -> Vec<Row> {
     [
         ("max_entries", option_usize_value(stats.max_entries)),
+        ("max_bytes", option_usize_value(stats.max_bytes)),
+        ("max_entry_bytes", option_usize_value(stats.max_entry_bytes)),
+        ("charged_bytes", option_usize_value(stats.charged_bytes)),
+        ("rejected_admissions", u64_value(stats.rejected_admissions)),
         ("entries", usize_value(stats.entries)),
         ("hits", u64_value(stats.hits)),
         ("misses", u64_value(stats.misses)),
@@ -2222,24 +2327,34 @@ fn statement_summary_rows(records: &[StatementSummaryRecord]) -> Vec<Row> {
         .collect()
 }
 
-fn predicate_matches(predicate: &SqlPredicate, row: &Row) -> bool {
-    match &predicate.kind {
-        ExprKind::And(left, right) => predicate_matches(left, row) && predicate_matches(right, row),
-        ExprKind::Or(left, right) => predicate_matches(left, row) || predicate_matches(right, row),
-        ExprKind::Not(inner) => !predicate_matches(inner, row),
-        ExprKind::Compare { left, op, right } => system_expression_value(left, row)
-            .zip(system_expression_value(right, row))
-            .is_some_and(|(left, right)| compare_values(left, *op, right)),
+fn predicate_matches(predicate: &SqlPredicate, row: &Row) -> Result<bool> {
+    Ok(match &predicate.kind {
+        ExprKind::And(left, right) => {
+            predicate_matches(left, row)? && predicate_matches(right, row)?
+        }
+        ExprKind::Or(left, right) => {
+            predicate_matches(left, row)? || predicate_matches(right, row)?
+        }
+        ExprKind::Not(inner) => !predicate_matches(inner, row)?,
+        ExprKind::Compare { left, op, right } => {
+            let left = system_expression_value(left, row)?;
+            let right = system_expression_value(right, row)?;
+            compare_values(&left, *op, &right)?
+        }
         ExprKind::InList {
             left,
             values,
             negated,
         } => {
-            let matched = system_expression_value(left, row).is_some_and(|left| {
-                values.iter().any(|value| {
-                    system_expression_value(value, row).is_some_and(|value| left == value)
-                })
-            });
+            let left = system_expression_value(left, row)?;
+            let mut matched = false;
+            for value in values {
+                let value = system_expression_value(value, row)?;
+                if compare_values(&left, SqlComparisonOp::Eq, &value)? {
+                    matched = true;
+                    break;
+                }
+            }
             matched != *negated
         }
         ExprKind::Like {
@@ -2249,46 +2364,89 @@ fn predicate_matches(predicate: &SqlPredicate, row: &Row) -> bool {
             negated,
             escape,
         } => {
-            let Some((Value::String(value), Value::String(pattern))) =
-                system_expression_value(left, row).zip(system_expression_value(pattern, row))
+            let left = system_expression_value(left, row)?;
+            let pattern = system_expression_value(pattern, row)?;
+            let (Value::String(value), Value::String(pattern)) = (left.as_ref(), pattern.as_ref())
             else {
-                return false;
+                return Ok(false);
             };
-            hawdb_sql::sql_like_matches(value, pattern, *escape, *case_insensitive)
-                .is_ok_and(|matched| matched != *negated)
+            hawdb_sql::sql_like_matches(value, pattern, *escape, *case_insensitive)? != *negated
         }
         ExprKind::IsNull {
             expression,
             negated,
         } => {
-            let matched = system_expression_value(expression, row)
-                .is_none_or(|value| matches!(value, Value::Null));
-            matched != *negated
+            matches!(
+                system_expression_value(expression, row)?.as_ref(),
+                Value::Null
+            ) != *negated
         }
-        _ => false,
-    }
+        _ => {
+            return Err(HawDBError::Semantic(
+                "unsupported system SQL predicate".into(),
+            ))
+        }
+    })
 }
 
-fn system_expression_value<'a>(expression: &'a Expr, row: &'a Row) -> Option<&'a Value> {
-    match &expression.kind {
-        ExprKind::Column(column) => row.get(&column.name),
-        ExprKind::Value(SqlValue::Literal(value)) => Some(value),
-        _ => None,
-    }
+fn system_expression_value<'a>(
+    expression: &'a Expr,
+    row: &'a Row,
+) -> Result<std::borrow::Cow<'a, Value>> {
+    use std::borrow::Cow;
+    let value = match &expression.kind {
+        ExprKind::Column(column) => Cow::Borrowed(row.get(&column.name).unwrap_or(&Value::Null)),
+        ExprKind::Value(SqlValue::Literal(value)) => Cow::Borrowed(value),
+        ExprKind::Arithmetic { left, op, right } => {
+            let left = system_expression_value(left, row)?;
+            let right = system_expression_value(right, row)?;
+            Cow::Owned(hawdb_core::numeric::evaluate_numeric(
+                left.as_ref().as_ref(),
+                *op,
+                right.as_ref().as_ref(),
+            )?)
+        }
+        ExprKind::Negate(expression) => {
+            let value = system_expression_value(expression, row)?;
+            Cow::Owned(hawdb_core::numeric::negate_numeric(
+                value.as_ref().as_ref(),
+            )?)
+        }
+        ExprKind::Cast { expression, target } => {
+            let value = system_expression_value(expression, row)?;
+            Cow::Owned(hawdb_core::numeric::cast_numeric(
+                value.as_ref().as_ref(),
+                *target,
+            )?)
+        }
+        _ => {
+            return Err(HawDBError::Semantic(
+                "unsupported system SQL scalar expression".into(),
+            ))
+        }
+    };
+    Ok(value)
 }
 
-fn compare_values(left: &Value, op: SqlComparisonOp, right: &Value) -> bool {
+fn compare_values(left: &Value, op: SqlComparisonOp, right: &Value) -> Result<bool> {
     if matches!(left, Value::Null) || matches!(right, Value::Null) {
-        return false;
+        return Ok(false);
     }
-    match op {
-        SqlComparisonOp::Eq => left == right,
-        SqlComparisonOp::NotEq => left != right,
-        SqlComparisonOp::Lt => left < right,
-        SqlComparisonOp::Lte => left <= right,
-        SqlComparisonOp::Gt => left > right,
-        SqlComparisonOp::Gte => left >= right,
-    }
+    let ordering = if left.logical_type().is_some_and(|kind| kind.is_numeric())
+        && right.logical_type().is_some_and(|kind| kind.is_numeric())
+    {
+        hawdb_core::numeric::compare_numeric(left.as_ref(), right.as_ref())?
+    } else {
+        left.cmp(right)
+    };
+    Ok(match op {
+        SqlComparisonOp::Eq => ordering.is_eq(),
+        SqlComparisonOp::NotEq => !ordering.is_eq(),
+        SqlComparisonOp::Lt => ordering.is_lt(),
+        SqlComparisonOp::Lte => !ordering.is_gt(),
+        SqlComparisonOp::Gt => ordering.is_gt(),
+        SqlComparisonOp::Gte => !ordering.is_lt(),
+    })
 }
 
 fn compare_ordered_rows(left: &Row, right: &Row, order_by: &[SqlOrderItem]) -> Ordering {
@@ -2732,6 +2890,33 @@ mod statement_summary_tests;
 mod tests {
     use super::*;
 
+    #[test]
+    fn catalog_numeric_predicates_share_exact_arithmetic_and_comparison() {
+        let row = BTreeMap::from([("value".into(), Value::Int(9_007_199_254_740_993))]);
+        for sql in [
+            "SELECT value FROM system.plan_cache WHERE value = 9007199254740993.00",
+            "SELECT value FROM system.plan_cache WHERE CAST(value AS DECIMAL(38,2)) + 0.01 = $1",
+            "SELECT value FROM system.plan_cache WHERE value IN (9007199254740993.00)",
+        ] {
+            let SqlStatement::Select(select) = hawdb_sql::parse_postgres_sql(sql).unwrap() else {
+                panic!("SELECT");
+            };
+            let predicate = bind_predicate(
+                select.selection.unwrap(),
+                &[Value::Decimal("9007199254740993.01".parse().unwrap())],
+            )
+            .unwrap();
+            assert!(predicate_matches(&predicate, &row).unwrap(), "{sql}");
+        }
+        let SqlStatement::Select(select) = hawdb_sql::parse_postgres_sql(
+            "SELECT value FROM system.plan_cache WHERE value / 0 > 1",
+        )
+        .unwrap() else {
+            panic!("SELECT");
+        };
+        assert!(predicate_matches(&select.selection.unwrap(), &row).is_err());
+    }
+
     #[derive(Debug, Default)]
     struct TestStore;
 
@@ -2819,7 +3004,8 @@ mod tests {
                 ("value".to_owned(), Value::Null),
                 ("metric".to_owned(), Value::String("misses".to_owned())),
             ])
-        ));
+        )
+        .unwrap());
         assert!(bind_predicate(
             predicate,
             &[
@@ -2841,6 +3027,10 @@ mod tests {
         let relational_state = RelationalState::default();
         let append_state = AppendState::default();
         let stats = PlanCacheStats {
+            max_bytes: Some(16384),
+            max_entry_bytes: Some(8192),
+            charged_bytes: Some(4096),
+            rejected_admissions: 2,
             max_entries: Some(128),
             entries: 3,
             hits: 5,
@@ -2870,6 +3060,24 @@ mod tests {
             vec![BTreeMap::from([("value".to_string(), Value::Int(5))])]
         );
         let payload_bytes = output.payload_bytes();
+        for (metric, expected) in [
+            ("max_bytes", 16384),
+            ("max_entry_bytes", 8192),
+            ("charged_bytes", 4096),
+            ("rejected_admissions", 2),
+        ] {
+            let output = query_sql(
+                &format!("SELECT value FROM system.plan_cache WHERE metric = '{metric}'"),
+                Some(1),
+                Some(1024),
+                &context,
+            )
+            .unwrap();
+            assert_eq!(
+                output.rows,
+                vec![BTreeMap::from([("value".into(), Value::Int(expected))])]
+            );
+        }
         let exact = query_sql(sql, Some(1), Some(payload_bytes), &context).unwrap();
         assert_eq!(exact.rows, output.rows);
         for (rows, payload, resource, limit) in [
@@ -2897,6 +3105,10 @@ mod tests {
         let relational_state = RelationalState::default();
         let append_state = AppendState::default();
         let stats = PlanCacheStats {
+            max_bytes: None,
+            max_entry_bytes: None,
+            charged_bytes: None,
+            rejected_admissions: 0,
             max_entries: Some(128),
             entries: 3,
             hits: 5,
@@ -2949,6 +3161,10 @@ mod tests {
         let relational_state = RelationalState::default();
         let append_state = AppendState::default();
         let stats = PlanCacheStats {
+            max_bytes: None,
+            max_entry_bytes: None,
+            charged_bytes: None,
+            rejected_admissions: 0,
             max_entries: None,
             entries: 0,
             hits: 0,
@@ -3000,6 +3216,10 @@ mod tests {
         let relational_state = RelationalState::default();
         let append_state = AppendState::default();
         let stats = PlanCacheStats {
+            max_bytes: None,
+            max_entry_bytes: None,
+            charged_bytes: None,
+            rejected_admissions: 0,
             max_entries: None,
             entries: 0,
             hits: 0,
@@ -3101,6 +3321,10 @@ mod tests {
         catalog.get_or_create_property_index_with_kind(memory_label, "id", IndexKind::Equality);
         catalog.get_or_create_unique_constraint(memory_label, "id");
         let stats = PlanCacheStats {
+            max_bytes: None,
+            max_entry_bytes: None,
+            charged_bytes: None,
+            rejected_admissions: 0,
             max_entries: None,
             entries: 0,
             hits: 0,

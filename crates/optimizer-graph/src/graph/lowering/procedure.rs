@@ -128,6 +128,9 @@ pub(super) fn lower(
             memory_rel_type: memory_rel_type.clone(),
             memory_label: memory_label.clone(),
         }),
+        LogicalPlan::LoadCsv { source } => Some(PhysicalPlan::LoadCsvExec {
+            source: source.clone(),
+        }),
         _ => None,
     }
 }

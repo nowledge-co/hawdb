@@ -17,7 +17,8 @@
 use crate::binding::{binding_memory_bytes, value_memory_bytes, Binding, TopNBinding};
 use crate::expression::{
     binding_has_variable, binding_identity_key, binding_property, binding_value,
-    insert_projected_value, KeyMemory, PreparedKey,
+    evaluate_projection_in_graph, group_key_memory_bytes, group_output_binding,
+    insert_projected_value, ExpressionGraph, GroupKeyValue, KeyMemory, PreparedKey,
 };
 use crate::kernel::{ensure_operator_item_fits, OperatorMemoryTracker, SpillBudgetTracker};
 use crate::observer::ExecutionObserver;
@@ -29,8 +30,8 @@ use crate::{
 };
 use hawdb_core::{Catalog, HawDBError, Result, RuntimeTaskContext, Value};
 use hawdb_plan_cypher::{
-    AggregateFunction, AggregateTarget, Aggregation, PhysicalPlan, Projection, SortDirection,
-    SortItem,
+    AggregateFunction, AggregateTarget, Aggregation, GraphGroupKeys, PhysicalPlan, Projection,
+    SortDirection, SortItem,
 };
 use std::cmp::Ordering;
 use std::collections::{hash_map::RandomState, BTreeMap, BinaryHeap, HashMap, HashSet};
@@ -317,9 +318,9 @@ fn merge_cartesian_bindings(left: &Binding, right: &Binding) -> Binding {
     let mut values = left.values.clone();
     values.extend(right.values.clone());
     let mut nodes = left.nodes.clone();
-    nodes.extend(right.nodes.clone());
+    nodes.extend_shared(&right.nodes);
     let mut relationships = left.relationships.clone();
-    relationships.extend(right.relationships.clone());
+    relationships.extend_shared(&right.relationships);
     Binding {
         values,
         nodes,
@@ -387,8 +388,8 @@ mod tests {
     fn value_binding(value: i64) -> Binding {
         Binding {
             values: BTreeMap::from([("value".to_string(), Value::Int(value))]),
-            nodes: BTreeMap::new(),
-            relationships: BTreeMap::new(),
+            nodes: BTreeMap::new().into(),
+            relationships: BTreeMap::new().into(),
         }
     }
 
@@ -437,6 +438,7 @@ mod tests {
                 memory_ledger: &memory_ledger,
                 task_context: None,
                 observer: &observer,
+                graph: None,
             },
             ExecutionLimit::unlimited(),
             &mut |batch| {
@@ -479,6 +481,7 @@ mod tests {
                 memory_ledger: &memory_ledger,
                 task_context: None,
                 observer: &observer,
+                graph: None,
             },
             ExecutionLimit::unlimited(),
             &mut |batch| {
@@ -528,6 +531,7 @@ mod tests {
                 memory_ledger: &memory_ledger,
                 task_context: None,
                 observer: &observer,
+                graph: None,
             },
             ExecutionLimit::unlimited(),
             &mut |batch| {
@@ -586,6 +590,7 @@ mod tests {
                 memory_ledger: &memory_ledger,
                 task_context: None,
                 observer: &observer,
+                graph: None,
             },
             ExecutionLimit {
                 output_rows: Some(2),

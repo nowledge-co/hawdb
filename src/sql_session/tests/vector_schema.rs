@@ -103,6 +103,7 @@ fn nullable_vectors_survive_wal_and_checkpoint_reopen() {
                 &root,
                 crate::DatabaseConfig {
                     read_only: true,
+                    recovery_mode: crate::RecoveryMode::Strict,
                     ..Default::default()
                 },
             )
@@ -295,6 +296,7 @@ fn shared_vector_values_distances_and_traversal_survive_reopen() {
                 &root,
                 crate::DatabaseConfig {
                     read_only: true,
+                    recovery_mode: crate::RecoveryMode::Strict,
                     ..Default::default()
                 },
             )
@@ -429,7 +431,7 @@ fn shared_vector_sql_scalar_projection_dispatch_and_nested_validation() {
     let query = vector_value(&[1.0, 0.0]);
     for projection in [
         "l2_distance(embedding, $1)",
-        "coalesce(l2_distance(embedding, $1), 9.0)",
+        "coalesce(l2_distance(embedding, $1), CAST(9.0 AS DOUBLE PRECISION))",
     ] {
         let rows = database
             .sql_session()
@@ -459,6 +461,21 @@ fn shared_vector_sql_scalar_projection_dispatch_and_nested_validation() {
         )
         .unwrap();
     for table in ["vector_rows", "empty_vectors"] {
+        let error = database
+            .sql_session()
+            .query(
+                &format!(
+                    "SELECT coalesce(l2_distance(embedding, $1), 9.0) AS distance FROM {table}"
+                ),
+                std::slice::from_ref(&query),
+            )
+            .expect_err("Decimal fallback requires a cast to the vector distance's DOUBLE domain");
+        assert!(
+            error
+                .to_string()
+                .contains("COALESCE arguments have incompatible scalar types"),
+            "{table}: {error}"
+        );
         assert!(database
             .sql_session()
             .query(

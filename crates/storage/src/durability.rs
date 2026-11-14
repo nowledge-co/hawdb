@@ -16,7 +16,43 @@ use crate::file_io as fs;
 #[cfg(test)]
 use std::ffi::OsString;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+#[derive(Debug)]
+struct DirectorySyncError {
+    operation: &'static str,
+    path: PathBuf,
+    source: io::Error,
+}
+
+impl std::fmt::Display for DirectorySyncError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{} namespace directory '{}': {}",
+            self.operation,
+            self.path.display(),
+            self.source
+        )
+    }
+}
+
+impl std::error::Error for DirectorySyncError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+fn directory_sync_error(operation: &'static str, path: &Path, source: io::Error) -> io::Error {
+    io::Error::new(
+        source.kind(),
+        DirectorySyncError {
+            operation,
+            path: path.to_path_buf(),
+            source,
+        },
+    )
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct WalSyncGroupProgress {
@@ -196,7 +232,8 @@ pub fn sync_parent_directory(path: &Path) -> io::Result<()> {
 
 /// Persists pending directory entry changes when supported by the platform.
 pub fn sync_directory(directory: &Path) -> io::Result<()> {
-    let context = crate::file_descriptors::context_for_path(directory)?;
+    let context = crate::file_descriptors::context_for_path(directory)
+        .map_err(|error| directory_sync_error("resolve", directory, error))?;
     sync_directory_with_context(directory, &context)
 }
 
@@ -213,17 +250,18 @@ pub(crate) fn sync_directory_with_context(
                 .is_some_and(|path| path == directory)
         });
         if should_fail {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                format!(
-                    "injected directory sync failure for {}",
-                    directory.display()
+            return Err(directory_sync_error(
+                "flush",
+                directory,
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "injected directory sync failure",
                 ),
             ));
         }
     }
     #[cfg(windows)]
-    {
+    let handle = {
         use std::os::windows::fs::OpenOptionsExt;
 
         // Opening a directory requires BACKUP_SEMANTICS; FlushFileBuffers also
@@ -237,16 +275,16 @@ pub(crate) fn sync_directory_with_context(
             .read(true)
             .write(true)
             .custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
-        let directory = context.open(&options, directory)?;
-        require_directory(&directory)?;
-        directory.sync_all()
-    }
+        context.open(&options, directory)
+    };
     #[cfg(not(windows))]
-    {
-        let directory = context.open(fs::OpenOptions::new().read(true), directory)?;
-        require_directory(&directory)?;
-        directory.sync_all()
-    }
+    let handle = context.open(fs::OpenOptions::new().read(true), directory);
+    let handle = handle.map_err(|error| directory_sync_error("open", directory, error))?;
+    require_directory(&handle)
+        .map_err(|error| directory_sync_error("inspect", directory, error))?;
+    handle
+        .sync_all()
+        .map_err(|error| directory_sync_error("flush", directory, error))
 }
 
 fn require_directory(file: &fs::File) -> io::Result<()> {
@@ -264,7 +302,8 @@ fn require_directory(file: &fs::File) -> io::Result<()> {
 /// Existing directories can be leftovers of an interrupted attempt: existence
 /// alone never replaces these barriers. The project root's own ancestry is
 /// synchronized during writable project admission. Detached component scratch
-/// can borrow project accounting; its namespace still needs a full mount walk.
+/// can borrow project accounting. Scratch within the explicit host anchor can
+/// use that boundary; scratch outside it still needs a full mount walk.
 #[doc(hidden)]
 pub fn sync_directory_ancestors(directory: &Path) -> io::Result<()> {
     let context = crate::file_descriptors::context_for_path(directory)?;
@@ -276,14 +315,26 @@ pub fn sync_directory_ancestors(directory: &Path) -> io::Result<()> {
 /// Explicit context avoids reentering the project registry during bootstrap.
 /// Open one directory at a time, charging even ancestor IO to this project.
 /// With no enclosing project boundary, stop at the existing filesystem mount:
-/// persistence of the mount itself is an external platform assumption. Windows
-/// requests actual directory-handle flushes; their namespace semantics remain unqualified.
+/// persistence of the mount itself is an external platform assumption. Without
+/// an explicit anchor Windows walks through the volume root, requiring writable
+/// directory handles at every level. It never treats access denial as an anchor;
+/// native directory-flush namespace semantics remain unqualified.
 pub(crate) fn sync_directory_tree_with_context(
     directory: &Path,
     context: &crate::file_descriptors::FileOpenContext,
     stop: Option<&Path>,
 ) -> io::Result<()> {
-    let mut current = context.canonicalize(directory)?;
+    let mut current = context
+        .canonicalize(directory)
+        .map_err(|error| directory_sync_error("resolve", directory, error))?;
+    let stop =
+        if stop == Some(context.project_root()) && !current.starts_with(context.project_root()) {
+            context
+                .namespace_anchor()
+                .filter(|anchor| current.starts_with(anchor))
+        } else {
+            stop
+        };
     loop {
         sync_directory_with_context(&current, context)?;
         if stop.is_some_and(|root| current == root) {
@@ -295,7 +346,15 @@ pub(crate) fn sync_directory_tree_with_context(
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
-            if context.metadata(&current)?.dev() != context.metadata(parent)?.dev() {
+            let current_device = context
+                .metadata(&current)
+                .map_err(|error| directory_sync_error("inspect", &current, error))?
+                .dev();
+            let parent_device = context
+                .metadata(parent)
+                .map_err(|error| directory_sync_error("inspect", parent, error))?
+                .dev();
+            if current_device != parent_device {
                 break;
             }
         }
@@ -345,6 +404,36 @@ mod tests {
     }
 
     #[test]
+    fn directory_sync_errors_retain_operation_path_and_native_cause() {
+        let root = unique_test_dir();
+        fs::create_dir_all(&root).unwrap();
+        let missing = root.join("missing");
+        let error = sync_directory(&missing).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        let detail = error
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<DirectorySyncError>()
+            .unwrap();
+        assert_eq!(detail.path, missing);
+        assert!(detail.source.raw_os_error().is_some());
+        assert!(error.to_string().contains("namespace directory"));
+        assert!(error.to_string().contains(&missing.display().to_string()));
+
+        let failure = fail_sync_directory_for(&root);
+        let error = sync_directory(&root).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(error.to_string().starts_with("flush namespace directory"));
+        assert!(error.to_string().contains(&root.display().to_string()));
+        assert!(error
+            .to_string()
+            .contains("injected directory sync failure"));
+        drop(failure);
+        sync_directory(&root).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn directory_sync_charges_and_releases_its_project_handle() {
         let root = unique_test_dir();
         let project = crate::file_descriptors::ProjectFileDescriptors::acquire_with_capacity_limit(
@@ -360,11 +449,7 @@ mod tests {
         let before = project.metrics();
         let error = sync_directory(&root).unwrap_err();
         assert!(
-            error.get_ref().is_some_and(|error| {
-                error
-                    .downcast_ref::<hawdb_core::error::FileDescriptorError>()
-                    .is_some()
-            }),
+            hawdb_core::error::file_descriptor_error(&error).is_some(),
             "unexpected directory sync error: {error:?}"
         );
         assert_eq!(project.metrics().open, before.open);

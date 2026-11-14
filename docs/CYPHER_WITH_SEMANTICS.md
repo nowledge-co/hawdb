@@ -70,6 +70,31 @@ Rust implementation. It assumes the existing aggregate, lookup, sort and limit
 operators obey their contracts. It makes no claim that order among equal sort
 keys is defined without a query-specified tie breaker.
 
+## ORDER BY after aggregation and NULL placement
+
+The grouping argument above also bounds `ORDER BY`. After an aggregating
+`RETURN` or `WITH` only the projected names are in scope
+([issue #1408](https://github.com/nowledge-co/hawdb/issues/1408)). A sort key
+may use a projected name or alias, an aggregate the same clause projects, a
+key equal to a projected grouping expression (`ORDER BY n.lastName` for
+`n.lastName AS last`), or an expression built only from such values. Any other
+key, whether a plain property such as `ORDER BY n.age`, `id(n)`, an earlier
+column or an expression, is a semantic error. Adding it as a hidden grouping
+key would refine the equivalence relation and silently split the groups.
+Non-aggregating, non-DISTINCT projections keep openCypher's
+access to pre-projection values.
+
+Cypher `ORDER BY` places NULL as the greatest value: last ascending and first
+descending ([issue #1407](https://github.com/nowledge-co/hawdb/issues/1407)).
+This is the comparator of the shared `SortExec`/`TopNExec` operators, in memory,
+spilled and merged; `Value`'s own order, which ranks NULL lowest for sets, maps,
+DISTINCT, grouping and index keys, is unchanged. SQL reaches those operators with
+keys that already encode `NULLS FIRST`/`NULLS LAST` and its PostgreSQL default
+as a non-null rank, so SQL ordering is unchanged. Index-served Cypher orders
+remain exact: a range seek exists only for a NULL-rejecting comparison, and an
+ordered composite seek requires non-nullable ordered columns. Mixed-type order
+among non-null values is unchanged.
+
 ## Regression and migration evidence
 
 The embedded aggregate regressions cover:

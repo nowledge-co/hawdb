@@ -13,11 +13,11 @@
 // limitations under the License.
 
 use super::{
-    RelationalError, RelationalOverflowSegment, RelationalProjectedRow, RelationalRow,
-    RelationalScalarType, RelationalState, RelationalTableSchema, RelationalValue,
+    RelationalError, RelationalKey, RelationalOverflowSegment, RelationalProjectedRow,
+    RelationalRow, RelationalScalarType, RelationalState, RelationalTableSchema, RelationalValue,
 };
 use hawdb_integrity::Sha256Digest;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 pub(super) mod checkpoint;
@@ -471,7 +471,216 @@ fn runtime_checkpoint(
     })
 }
 
+thread_local! {
+    static REACHABILITY_ROWS_VISITED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Rows this thread has examined to keep `overflow_segments` equal to the set
+/// of reachable overflow digests after a transaction. A test hook: the
+/// structural bound that pruning work follows the rows a transaction changed,
+/// not the size of the database, is asserted on this counter.
+#[doc(hidden)]
+pub fn relational_overflow_reachability_rows_visited() -> u64 {
+    REACHABILITY_ROWS_VISITED.with(std::cell::Cell::get)
+}
+
+fn note_reachability_rows_visited(rows: usize) {
+    REACHABILITY_ROWS_VISITED.with(|visited| {
+        visited.set(
+            visited
+                .get()
+                .saturating_add(u64::try_from(rows).unwrap_or(u64::MAX)),
+        );
+    });
+}
+
+fn overflow_digests(row: &RelationalRow) -> impl Iterator<Item = Sha256Digest> + '_ {
+    row.values.iter().filter_map(|value| match value {
+        RelationalValue::Overflow(reference) => Some(reference.digest),
+        _ => None,
+    })
+}
+
+/// Rows of `table` at `keys` in `state`, or `None` for an absent key.
+fn rows_at_keys<'a>(
+    state: &'a RelationalState,
+    table: &str,
+    keys: &'a BTreeSet<RelationalKey>,
+) -> impl Iterator<Item = Option<&'a RelationalRow>> + 'a {
+    let segment = state.segments.get(table);
+    keys.iter()
+        .map(move |key| segment.and_then(|segment| segment.rows.get(key)))
+}
+
+/// Keeps `next.overflow_segments` equal to the digests its rows reference,
+/// examining only the rows the transaction changed whenever that is exact.
+///
+/// `previous` is the committed state the transaction started from; its
+/// segments are exactly its reachable digests (every commit leaves that
+/// invariant, and checkpoint decode rejects anything else). Segments are only
+/// added during a transaction. So for a transaction whose row changes are all
+/// listed in `changed_keys`:
+///
+/// - a new digest can only be referenced by a changed row;
+/// - a previous digest stays reachable unless a changed row dropped a
+///   reference to it; only then does a row scan decide, stopping as soon as
+///   every such digest is found.
+///
+/// An insert-only transaction (bulk load) therefore costs its own rows, not
+/// the database. Whole-table changes (DDL, view drops, column rewrites) and
+/// non-resident row states use the full reachability pass.
+pub(super) fn prune_unreachable_segments_after_changes(
+    previous: &RelationalState,
+    next: &mut RelationalState,
+    changed_keys: &BTreeMap<String, BTreeSet<RelationalKey>>,
+    whole_table_changes: bool,
+    allocations: Option<&crate::background::CheckpointDecodeContext>,
+) -> Result<(), RelationalError> {
+    if whole_table_changes
+        || !previous.materialized_rows_resident
+        || !next.materialized_rows_resident
+    {
+        return prune_unreachable_segments_with_allocations(next, allocations);
+    }
+    #[cfg(debug_assertions)]
+    let expected = {
+        let mut full = next.clone();
+        let visited = relational_overflow_reachability_rows_visited();
+        prune_unreachable_segments(&mut full);
+        REACHABILITY_ROWS_VISITED.with(|counter| counter.set(visited));
+        full.overflow_segments.keys().copied().collect::<Vec<_>>()
+    };
+    prune_changed_segments(previous, next, changed_keys, allocations)?;
+    #[cfg(debug_assertions)]
+    debug_assert!(
+        next.overflow_segments.keys().copied().eq(expected),
+        "incremental overflow pruning diverged from full reachability"
+    );
+    Ok(())
+}
+
+fn admission(error: impl ToString) -> RelationalError {
+    RelationalError::Admission(error.to_string())
+}
+
+fn prune_changed_segments(
+    previous: &RelationalState,
+    next: &mut RelationalState,
+    changed_keys: &BTreeMap<String, BTreeSet<RelationalKey>>,
+    allocations: Option<&crate::background::CheckpointDecodeContext>,
+) -> Result<(), RelationalError> {
+    if next.overflow_segments.is_empty() {
+        return Ok(());
+    }
+    let scratch = allocations.map(|context| crate::background::CheckpointDecodeContext {
+        work: context.work.clone(),
+        memory: Default::default(),
+    });
+    let charge_unit = || -> Result<(), RelationalError> {
+        if let Some(scratch) = &scratch {
+            scratch.start_unit().map_err(admission)?.finish();
+        }
+        Ok(())
+    };
+    let insert_digest =
+        |set: &mut BTreeSet<Sha256Digest>, digest: Sha256Digest| -> Result<(), RelationalError> {
+            if let Some(scratch) = &scratch
+                && !set.contains(&digest)
+            {
+                scratch
+                    .reserve(crate::cow::checkpoint_tree_node_bytes::<Sha256Digest, ()>())
+                    .map_err(admission)?;
+            }
+            set.insert(digest);
+            Ok(())
+        };
+    let mut retained = BTreeSet::new();
+    let mut released = BTreeSet::new();
+    let mut visited = 0usize;
+    for (table, keys) in changed_keys {
+        for row in rows_at_keys(next, table, keys).flatten() {
+            visited = visited.saturating_add(1);
+            for digest in overflow_digests(row) {
+                charge_unit()?;
+                insert_digest(&mut retained, digest)?;
+            }
+        }
+        for row in rows_at_keys(previous, table, keys).flatten() {
+            visited = visited.saturating_add(1);
+            for digest in overflow_digests(row) {
+                charge_unit()?;
+                if !retained.contains(&digest) {
+                    insert_digest(&mut released, digest)?;
+                }
+            }
+        }
+    }
+    // Digests released by one changed row may be retained by a later one.
+    released.retain(|digest| !retained.contains(digest));
+    let mut unreachable = BTreeSet::new();
+    // Segments are only added during a transaction: when the counts match,
+    // every new segment is referenced by a changed row.
+    let retained_new = retained
+        .iter()
+        .filter(|digest| {
+            !previous.overflow_segments.contains_key(*digest)
+                && next.overflow_segments.contains_key(*digest)
+        })
+        .count();
+    let added = next
+        .overflow_segments
+        .len()
+        .checked_sub(previous.overflow_segments.len())
+        .ok_or_else(|| {
+            RelationalError::Corruption(
+                "relational overflow segments shrank before transaction pruning".to_string(),
+            )
+        })?;
+    if retained_new != added {
+        // An externalized value whose row was not stored (for example an
+        // upsert that did nothing). Only segments, not rows, are visited.
+        for digest in next.overflow_segments.keys() {
+            charge_unit()?;
+            if !previous.overflow_segments.contains_key(digest) && !retained.contains(digest) {
+                insert_digest(&mut unreachable, *digest)?;
+            }
+        }
+    }
+    if !released.is_empty() {
+        // A released digest may still be shared by an unchanged row.
+        'scan: for segment in next.segments.values() {
+            for row in segment.rows.values() {
+                visited = visited.saturating_add(1);
+                for digest in overflow_digests(row) {
+                    charge_unit()?;
+                    released.remove(&digest);
+                }
+                if released.is_empty() {
+                    break 'scan;
+                }
+            }
+        }
+        unreachable.append(&mut released);
+    }
+    note_reachability_rows_visited(visited);
+    for digest in &unreachable {
+        charge_unit()?;
+        next.overflow_segments.remove(digest);
+    }
+    if let Some(scratch) = &scratch {
+        scratch.checkpoint().map_err(admission)?;
+    }
+    Ok(())
+}
+
 pub(super) fn prune_unreachable_segments(state: &mut RelationalState) {
+    note_reachability_rows_visited(
+        state
+            .segments
+            .values()
+            .map(|segment| segment.rows.len())
+            .sum(),
+    );
     let reachable = state
         .segments
         .values()
@@ -500,6 +709,13 @@ pub(super) fn prune_unreachable_segments_with_allocations(
         memory: Default::default(),
     };
     let mut reachable = BTreeSet::new();
+    note_reachability_rows_visited(
+        state
+            .segments
+            .values()
+            .map(|segment| segment.rows.len())
+            .sum(),
+    );
     for segment in state.segments.values() {
         for row in segment.rows.values() {
             for value in row.values.iter() {

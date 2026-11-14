@@ -15,9 +15,7 @@ fn definition(version: u64, scope: ProjectionSourceScope) -> SearchProjectionDef
     .unwrap()
 }
 
-fn finish_defined(
-    consumer: &NowledgeMemDefinedSearchProjectionConsumer,
-) -> ProjectionCoveredConsumerUpdate {
+fn finish_defined(consumer: &DefinedSearchProjectionConsumer) -> ProjectionCoveredConsumerUpdate {
     let receipt = consumer.consumer().projection().receipt();
     let mut session = consumer.begin_catch_up(consumer_config()).unwrap();
     let mut complete = false;
@@ -280,7 +278,7 @@ fn registered_consumer_defined_cancel_drop_and_source_conflict_preserve_the_rece
     );
 }
 
-fn open_embedded(root: &Root) -> NowledgeMemEmbeddedStoreHandle {
+fn open_embedded(root: &Root) -> EmbeddedStoreHandle {
     let mut config = DatabaseConfig {
         max_read_result_payload_bytes: Some(1 << 20),
         ..Default::default()
@@ -289,10 +287,10 @@ fn open_embedded(root: &Root) -> NowledgeMemEmbeddedStoreHandle {
     config.execution_memory.query_memory_bytes = nz(64 << 20);
     config.execution_memory.blocking_operator_bytes = nz(16 << 20);
     let db = Database::open_with_config(root.0.join("graph"), config).unwrap();
-    NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(
-        NowledgeMemGraph::from_database_with_runtime_governor(
+    EmbeddedStoreHandle::new(EmbeddedStore::new(
+        EmbeddedGraph::from_database_with_runtime_governor(
             db,
-            NowledgeMemGraphMode::WritableCutover,
+            GraphMode::WritableCutover,
             governor(),
         ),
         None,
@@ -325,10 +323,7 @@ fn rebuild(snapshot: &mut DatabaseReadTransaction, index: &mut SearchIndex) -> R
     Ok(())
 }
 
-fn acquire(
-    handle: &NowledgeMemEmbeddedStoreHandle,
-    root: &Root,
-) -> NowledgeMemSearchProjectionConsumer {
+fn acquire(handle: &EmbeddedStoreHandle, root: &Root) -> RegisteredSearchProjectionConsumer {
     handle
         .open_or_create_search_projection_consumer(
             SearchProjectionConsumerId::new("embedded-graph-sql-v1").unwrap(),
@@ -347,7 +342,7 @@ fn scope() -> ProjectionSourceScope {
 }
 
 fn finish_private(
-    consumer: &NowledgeMemSearchProjectionConsumer,
+    consumer: &RegisteredSearchProjectionConsumer,
 ) -> ProjectionCoveredConsumerUpdate {
     let before = consumer.consumer().projection().receipt();
     let mut session = consumer
@@ -598,15 +593,15 @@ fn registered_consumer_embedded_legacy_modes_keep_complete_interval_compatibilit
         index.checkpoint().unwrap();
         drop(index);
         drop(db);
-        let mut options = NowledgeMemOpenOptions::with_search_projection(
+        let mut options = EmbeddedStoreOpenOptions::with_search_projection(
             root.0.join("graph"),
             &path,
-            NowledgeMemGraphMode::WritableCutover,
+            GraphMode::WritableCutover,
         );
         if incremental {
             options = options.with_incremental_search_maintenance(Default::default());
         }
-        let (handle, _) = NowledgeMemEmbeddedStoreHandle::open_with_options(options).unwrap();
+        let (handle, _) = EmbeddedStoreHandle::open_with_options(options).unwrap();
         for id in ["a", "b"] {
             handle
                 .with_transaction(|tx| {

@@ -147,13 +147,26 @@ impl Binder<'_> {
                         self.error(
                             Code::UnsupportedExpression,
                             span,
-                            "VECTOR graph properties are not supported",
+                            super::unsupported_property_type(source.columns[index].data_type),
                         )
                     })?,
                 ));
             }
             Syntax::Literal(literal) => return self.literal(literal, span),
-            Syntax::TypedString { data_type, value } => {
+            Syntax::TypedString {
+                time_zone: Some(_), ..
+            } => {
+                return Err(self.error(
+                    Code::UnsupportedExpression,
+                    span,
+                    "TIMESTAMP literals are not supported in PGQ",
+                ))
+            }
+            Syntax::TypedString {
+                data_type,
+                value,
+                time_zone: None,
+            } => {
                 let target = self.type_name(&[self.identifier(data_type)?], data_type.span)?;
                 return self.typed_literal(&self.string(*value)?, target, span);
             }
@@ -323,7 +336,16 @@ impl Binder<'_> {
             Syntax::Cast {
                 expression,
                 data_type,
+                type_parameters,
+                time_zone,
             } => {
+                if !type_parameters.is_empty() || time_zone.is_some() {
+                    return Err(self.error(
+                        Code::UnsupportedExpression,
+                        span,
+                        "parameterized scalar casts are not supported in PGQ",
+                    ));
+                }
                 let target = self.type_name(&self.name(data_type)?, data_type.span)?;
                 let mut inner = bind(expression)?;
                 if unknown(inner.data_type) {
@@ -338,7 +360,11 @@ impl Binder<'_> {
                 }
                 (Kind::Cast(Box::new(inner)), target)
             }
-            Syntax::Wildcard(_) | Syntax::Parameter(_) | Syntax::Collate { .. } => {
+            Syntax::Like { .. }
+            | Syntax::Filtered { .. }
+            | Syntax::Wildcard(_)
+            | Syntax::Parameter(_)
+            | Syntax::Collate { .. } => {
                 return Err(self.error(
                     Code::UnsupportedExpression,
                     span,

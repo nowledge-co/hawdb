@@ -14,7 +14,7 @@
 
 use crate::error::{ProjectionError, Result};
 
-pub(crate) fn normalize_and_transform(input: &[f32], seed: u64, output: &mut [f32]) -> Result<()> {
+pub(crate) fn normalize_and_transform(input: &[f32], seed: u64, output: &mut [f32]) -> Result<f64> {
     if input.len() != output.len() {
         return Err(ProjectionError::InvalidVector(format!(
             "expected dimension {}, got {}",
@@ -37,18 +37,18 @@ pub(crate) fn normalize_and_transform(input: &[f32], seed: u64, output: &mut [f3
         .iter()
         .map(|value| f64::from(*value) * f64::from(*value))
         .sum::<f64>();
-    if squared_norm <= f64::EPSILON {
+    if squared_norm == 0.0 {
         output.fill(0.0);
-        return Ok(());
+        return Ok(0.0);
     }
-    let inverse_norm = squared_norm.sqrt().recip() as f32;
+    let norm = squared_norm.sqrt();
     for (index, (source, target)) in input.iter().zip(output.iter_mut()).enumerate() {
         let sign = if splitmix64(seed ^ index as u64) & 1 == 0 {
             1.0
         } else {
             -1.0
         };
-        *target = *source * inverse_norm * sign;
+        *target = (f64::from(*source) / norm) as f32 * sign;
     }
 
     let mut offset = 0;
@@ -61,7 +61,7 @@ pub(crate) fn normalize_and_transform(input: &[f32], seed: u64, output: &mut [f3
         }
         offset += block_len;
     }
-    Ok(())
+    Ok(norm)
 }
 
 fn largest_power_of_two(value: usize) -> usize {

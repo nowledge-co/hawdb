@@ -23,7 +23,7 @@ use std::collections::HashSet;
 fn readiness_campaign(policy_count: u16) {
     for policy in 0..policy_count {
         let bit = |index: u32| policy & (1_u16 << index) != 0_u16;
-        let options = NowledgeMemSearchCandidateReadinessOptions {
+        let options = SearchCandidateReadinessOptions {
             require_hits: bit(0),
             require_metadata_pushdown: bit(1),
             require_segment_descriptor: bit(2),
@@ -115,10 +115,8 @@ fn readiness_campaign(policy_count: u16) {
                 _ => unreachable!(),
             }
             expected.sort_unstable();
-            let result = NowledgeMemSearchCandidateReadinessReport::from_candidate_report(
-                report.clone(),
-                &options,
-            );
+            let result =
+                SearchCandidateReadinessReport::from_candidate_report(report.clone(), &options);
             assert_eq!(
                 result.blocker_codes, expected,
                 "policy={policy} fault={fault}"
@@ -126,17 +124,14 @@ fn readiness_campaign(policy_count: u16) {
             assert_eq!(result.ready, expected.is_empty());
             assert!(result.present);
             assert_eq!(result.candidate_report, report);
-            assert_eq!(
-                result.protocol,
-                NOWLEDGE_MEM_SEARCH_CANDIDATE_READINESS_PROTOCOL
-            );
+            assert_eq!(result.protocol, SEARCH_CANDIDATE_READINESS_PROTOCOL);
         }
     }
 }
 
 fn accumulator_campaign(seeds: u32) {
     for seed in 0..seeds {
-        let mut accumulator = NowledgeMemSearchCandidateShadowAccumulator::new();
+        let mut accumulator = SearchCandidateShadowAccumulator::new();
         let mut counts = [0_u64; 4];
         let mut overlap_seen = false;
         for step in 0..32_u32 {

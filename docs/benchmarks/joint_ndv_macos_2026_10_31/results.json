@@ -1,0 +1,995 @@
+{
+  "base": "22e98c2547fe8b5a800992da886686ecefa1437e",
+  "runtime_revision": "6e6d3066f29a1e72f4ecb958845a2b55a847072a",
+  "processes": 42,
+  "queries": 504,
+  "complete_output_rows": 262080,
+  "cells": [
+    {
+      "scenario": "group-correlated",
+      "rows": 400,
+      "baseline": {
+        "runs": [
+          {
+            "round": 0,
+            "warm_elapsed_median_ns": 347583,
+            "warm_plan_median_ns": 23708,
+            "first_query_ns": 822542,
+            "explain_ns": 439625,
+            "setup_ns": 4010833,
+            "query_peak_bytes": 181023,
+            "blocking_peak_bytes": 6536,
+            "intermediate_rows": 440,
+            "output_rows_per_query": 20,
+            "process_max_rss_bytes": 17350656
+          },
+          {
+            "round": 1,
+            "warm_elapsed_median_ns": 295708,
+            "warm_plan_median_ns": 23667,
+            "first_query_ns": 416750,
+            "explain_ns": 240750,
+            "setup_ns": 1772625,
+            "query_peak_bytes": 181023,
+            "blocking_peak_bytes": 6536,
+            "intermediate_rows": 440,
+            "output_rows_per_query": 20,
+            "process_max_rss_bytes": 17350656
+          },
+          {
+            "round": 2,
+            "warm_elapsed_median_ns": 299291,
+            "warm_plan_median_ns": 24208,
+            "first_query_ns": 419708,
+            "explain_ns": 238709,
+            "setup_ns": 1747875,
+            "query_peak_bytes": 181023,
+            "blocking_peak_bytes": 6536,
+            "intermediate_rows": 440,
+            "output_rows_per_query": 20,
+            "process_max_rss_bytes": 17350656
+          }
+        ],
+        "warm_elapsed_median_ns": 299291,
+        "warm_plan_median_ns": 23708,
+        "query_peak_bytes": 181023,
+        "blocking_peak_bytes": 6536,
+        "estimates": [
+          {
+            "operator": "TopNExec",
+            "rows": 40
+          },
+          {
+            "operator": "AggregateExec",
+            "rows": 400
+          },
+          {
+            "operator": "NodeProjectionScanExec",
+            "rows": 400
+          }
+        ],
+        "selected_plan": "TopNExec keys=[SortItem { key: Column(\"a\"), direction: Asc }, SortItem { key: Column(\"b\"), direction: Asc }] offset=0 limit=40\n  AggregateExec columns=[a, b, total]\n    NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"a\", \"b\"] predicate=None output=node_binding columns=[]",
+        "statistics_decisions": []
+      },
+      "candidate": {
+        "runs": [
+          {
+            "round": 0,
+            "warm_elapsed_median_ns": 295042,
+            "warm_plan_median_ns": 23792,
+            "first_query_ns": 835750,
+            "explain_ns": 437250,
+            "setup_ns": 3898000,
+            "query_peak_bytes": 181023,
+            "blocking_peak_bytes": 6536,
+            "intermediate_rows": 460,
+            "output_rows_per_query": 20,
+            "process_max_rss_bytes": 17711104
+          },
+          {
+            "round": 1,
+            "warm_elapsed_median_ns": 292209,
+            "warm_plan_median_ns": 22958,
+            "first_query_ns": 423083,
+            "explain_ns": 244209,
+            "setup_ns": 1764458,
+            "query_peak_bytes": 181023,
+            "blocking_peak_bytes": 6536,
+            "intermediate_rows": 460,
+            "output_rows_per_query": 20,
+            "process_max_rss_bytes": 17907712
+          },
+          {
+            "round": 2,
+            "warm_elapsed_median_ns": 292833,
+            "warm_plan_median_ns": 23583,
+            "first_query_ns": 429292,
+            "explain_ns": 243834,
+            "setup_ns": 1773083,
+            "query_peak_bytes": 181023,
+            "blocking_peak_bytes": 6536,
+            "intermediate_rows": 460,
+            "output_rows_per_query": 20,
+            "process_max_rss_bytes": 17580032
+          }
+        ],
+        "warm_elapsed_median_ns": 292833,
+        "warm_plan_median_ns": 23583,
+        "query_peak_bytes": 181023,
+        "blocking_peak_bytes": 6536,
+        "estimates": [
+          {
+            "operator": "LimitExec",
+            "rows": 20
+          },
+          {
+            "operator": "SortExec",
+            "rows": 20
+          },
+          {
+            "operator": "AggregateExec",
+            "rows": 20
+          },
+          {
+            "operator": "NodeProjectionScanExec",
+            "rows": 400
+          }
+        ],
+        "selected_plan": "LimitExec offset=0 limit=Some(40)\n  SortExec keys=[SortItem { key: Column(\"a\"), direction: Asc }, SortItem { key: Column(\"b\"), direction: Asc }]\n    AggregateExec columns=[a, b, total]\n      NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"a\", \"b\"] predicate=None output=node_binding columns=[]",
+        "statistics_decisions": [
+          "cardinality statistics: operator_id=2 operator=AggregateExec source=catalog_composite_ndv operation=group keys=2 population=400 complete_key_rows=400 joint_ndv=20 missing_key_rows=0"
+        ]
+      }
+    },
+    {
+      "scenario": "group-correlated",
+      "rows": 100000,
+      "baseline": {
+        "runs": [
+          {
+            "round": 0,
+            "warm_elapsed_median_ns": 55998916,
+            "warm_plan_median_ns": 31750,
+            "first_query_ns": 56320250,
+            "explain_ns": 30160583,
+            "setup_ns": 309401125,
+            "query_peak_bytes": 1244703,
+            "blocking_peak_bytes": 31900,
+            "intermediate_rows": 100200,
+            "output_rows_per_query": 100,
+            "process_max_rss_bytes": 207929344
+          },
+          {
+            "round": 1,
+            "warm_elapsed_median_ns": 55388291,
+            "warm_plan_median_ns": 29750,
+            "first_query_ns": 55867750,
+            "explain_ns": 29308208,
+            "setup_ns": 307235166,
+            "query_peak_bytes": 1244703,
+            "blocking_peak_bytes": 31900,
+            "intermediate_rows": 100200,
+            "output_rows_per_query": 100,
+            "process_max_rss_bytes": 207257600
+          },
+          {
+            "round": 2,
+            "warm_elapsed_median_ns": 56480959,
+            "warm_plan_median_ns": 31792,
+            "first_query_ns": 56813166,
+            "explain_ns": 30108375,
+            "setup_ns": 309684042,
+            "query_peak_bytes": 1244703,
+            "blocking_peak_bytes": 31900,
+            "intermediate_rows": 100200,
+            "output_rows_per_query": 100,
+            "process_max_rss_bytes": 207929344
+          }
+        ],
+        "warm_elapsed_median_ns": 55998916,
+        "warm_plan_median_ns": 31750,
+        "query_peak_bytes": 1244703,
+        "blocking_peak_bytes": 31900,
+        "estimates": [
+          {
+            "operator": "TopNExec",
+            "rows": 200
+          },
+          {
+            "operator": "AggregateExec",
+            "rows": 10000
+          },
+          {
+            "operator": "NodeProjectionScanExec",
+            "rows": 100000
+          }
+        ],
+        "selected_plan": "TopNExec keys=[SortItem { key: Column(\"a\"), direction: Asc }, SortItem { key: Column(\"b\"), direction: Asc }] offset=0 limit=200\n  AggregateExec columns=[a, b, total]\n    NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"a\", \"b\"] predicate=None output=node_binding columns=[]",
+        "statistics_decisions": []
+      },
+      "candidate": {
+        "runs": [
+          {
+            "round": 0,
+            "warm_elapsed_median_ns": 54560000,
+            "warm_plan_median_ns": 26208,
+            "first_query_ns": 55674042,
+            "explain_ns": 30963000,
+            "setup_ns": 308949917,
+            "query_peak_bytes": 1244703,
+            "blocking_peak_bytes": 31900,
+            "intermediate_rows": 100300,
+            "output_rows_per_query": 100,
+            "process_max_rss_bytes": 208879616
+          },
+          {
+            "round": 1,
+            "warm_elapsed_median_ns": 53887334,
+            "warm_plan_median_ns": 30459,
+            "first_query_ns": 54710334,
+            "explain_ns": 29937042,
+            "setup_ns": 321751958,
+            "query_peak_bytes": 1244703,
+            "blocking_peak_bytes": 31900,
+            "intermediate_rows": 100300,
+            "output_rows_per_query": 100,
+            "process_max_rss_bytes": 208601088
+          },
+          {
+            "round": 2,
+            "warm_elapsed_median_ns": 58598292,
+            "warm_plan_median_ns": 46333,
+            "first_query_ns": 55146750,
+            "explain_ns": 30332708,
+            "setup_ns": 319037709,
+            "query_peak_bytes": 1244703,
+            "blocking_peak_bytes": 31900,
+            "intermediate_rows": 100300,
+            "output_rows_per_query": 100,
+            "process_max_rss_bytes": 209567744
+          }
+        ],
+        "warm_elapsed_median_ns": 54560000,
+        "warm_plan_median_ns": 30459,
+        "query_peak_bytes": 1244703,
+        "blocking_peak_bytes": 31900,
+        "estimates": [
+          {
+            "operator": "LimitExec",
+            "rows": 100
+          },
+          {
+            "operator": "SortExec",
+            "rows": 100
+          },
+          {
+            "operator": "AggregateExec",
+            "rows": 100
+          },
+          {
+            "operator": "NodeProjectionScanExec",
+            "rows": 100000
+          }
+        ],
+        "selected_plan": "LimitExec offset=0 limit=Some(200)\n  SortExec keys=[SortItem { key: Column(\"a\"), direction: Asc }, SortItem { key: Column(\"b\"), direction: Asc }]\n    AggregateExec columns=[a, b, total]\n      NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"a\", \"b\"] predicate=None output=node_binding columns=[]",
+        "statistics_decisions": [
+          "cardinality statistics: operator_id=2 operator=AggregateExec source=catalog_composite_ndv operation=group keys=2 population=100000 complete_key_rows=100000 joint_ndv=100 missing_key_rows=0"
+        ]
+      }
+    },
+    {
+      "scenario": "group-independent",
+      "rows": 100000,
+      "baseline": {
+        "runs": [
+          {
+            "round": 0,
+            "warm_elapsed_median_ns": 62379333,
+            "warm_plan_median_ns": 39250,
+            "first_query_ns": 62209000,
+            "explain_ns": 30322792,
+            "setup_ns": 353579125,
+            "query_peak_bytes": 4495903,
+            "blocking_peak_bytes": 3276936,
+            "intermediate_rows": 110200,
+            "output_rows_per_query": 200,
+            "process_max_rss_bytes": 214499328
+          },
+          {
+            "round": 1,
+            "warm_elapsed_median_ns": 60508250,
+            "warm_plan_median_ns": 33625,
+            "first_query_ns": 61416542,
+            "explain_ns": 29083958,
+            "setup_ns": 348798334,
+            "query_peak_bytes": 4495903,
+            "blocking_peak_bytes": 3276936,
+            "intermediate_rows": 110200,
+            "output_rows_per_query": 200,
+            "process_max_rss_bytes": 214482944
+          },
+          {
+            "round": 2,
+            "warm_elapsed_median_ns": 59885916,
+            "warm_plan_median_ns": 26584,
+            "first_query_ns": 61168000,
+            "explain_ns": 29701959,
+            "setup_ns": 348482250,
+            "query_peak_bytes": 4495903,
+            "blocking_peak_bytes": 3276936,
+            "intermediate_rows": 110200,
+            "output_rows_per_query": 200,
+            "process_max_rss_bytes": 213123072
+          }
+        ],
+        "warm_elapsed_median_ns": 60508250,
+        "warm_plan_median_ns": 33625,
+        "query_peak_bytes": 4495903,
+        "blocking_peak_bytes": 3276936,
+        "estimates": [
+          {
+            "operator": "TopNExec",
+            "rows": 200
+          },
+          {
+            "operator": "AggregateExec",
+            "rows": 10000
+          },
+          {
+            "operator": "NodeProjectionScanExec",
+            "rows": 100000
+          }
+        ],
+        "selected_plan": "TopNExec keys=[SortItem { key: Column(\"a\"), direction: Asc }, SortItem { key: Column(\"b\"), direction: Asc }] offset=0 limit=200\n  AggregateExec columns=[a, b, total]\n    NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"a\", \"b\"] predicate=None output=node_binding columns=[]",
+        "statistics_decisions": []
+      },
+      "candidate": {
+        "runs": [
+          {
+            "round": 0,
+            "warm_elapsed_median_ns": 64380375,
+            "warm_plan_median_ns": 61958,
+            "first_query_ns": 66423959,
+            "explain_ns": 31008459,
+            "setup_ns": 366800417,
+            "query_peak_bytes": 4495903,
+            "blocking_peak_bytes": 3276936,
+            "intermediate_rows": 110200,
+            "output_rows_per_query": 200,
+            "process_max_rss_bytes": 217677824
+          },
+          {
+            "round": 1,
+            "warm_elapsed_median_ns": 58189041,
+            "warm_plan_median_ns": 27042,
+            "first_query_ns": 59670250,
+            "explain_ns": 29891959,
+            "setup_ns": 348237500,
+            "query_peak_bytes": 4495903,
+            "blocking_peak_bytes": 3276936,
+            "intermediate_rows": 110200,
+            "output_rows_per_query": 200,
+            "process_max_rss_bytes": 214351872
+          },
+          {
+            "round": 2,
+            "warm_elapsed_median_ns": 58457833,
+            "warm_plan_median_ns": 31750,
+            "first_query_ns": 60170500,
+            "explain_ns": 29845667,
+            "setup_ns": 349155708,
+            "query_peak_bytes": 4495903,
+            "blocking_peak_bytes": 3276936,
+            "intermediate_rows": 110200,
+            "output_rows_per_query": 200,
+            "process_max_rss_bytes": 216481792
+          }
+        ],
+        "warm_elapsed_median_ns": 58457833,
+        "warm_plan_median_ns": 31750,
+        "query_peak_bytes": 4495903,
+        "blocking_peak_bytes": 3276936,
+        "estimates": [
+          {
+            "operator": "TopNExec",
+            "rows": 200
+          },
+          {
+            "operator": "AggregateExec",
+            "rows": 10000
+          },
+          {
+            "operator": "NodeProjectionScanExec",
+            "rows": 100000
+          }
+        ],
+        "selected_plan": "TopNExec keys=[SortItem { key: Column(\"a\"), direction: Asc }, SortItem { key: Column(\"b\"), direction: Asc }] offset=0 limit=200\n  AggregateExec columns=[a, b, total]\n    NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"a\", \"b\"] predicate=None output=node_binding columns=[]",
+        "statistics_decisions": [
+          "cardinality statistics: operator_id=1 operator=AggregateExec source=catalog_composite_ndv operation=group keys=2 population=100000 complete_key_rows=100000 joint_ndv=10000 missing_key_rows=0"
+        ]
+      }
+    },
+    {
+      "scenario": "group-noindex",
+      "rows": 400,
+      "baseline": {
+        "runs": [
+          {
+            "round": 0,
+            "warm_elapsed_median_ns": 300000,
+            "warm_plan_median_ns": 24084,
+            "first_query_ns": 426125,
+            "explain_ns": 260500,
+            "setup_ns": 1392667,
+            "query_peak_bytes": 181023,
+            "blocking_peak_bytes": 6536,
+            "intermediate_rows": 440,
+            "output_rows_per_query": 20,
+            "process_max_rss_bytes": 16580608
+          },
+          {
+            "round": 1,
+            "warm_elapsed_median_ns": 297791,
+            "warm_plan_median_ns": 22458,
+            "first_query_ns": 429833,
+            "explain_ns": 260250,
+            "setup_ns": 1409833,
+            "query_peak_bytes": 181023,
+            "blocking_peak_bytes": 6536,
+            "intermediate_rows": 440,
+            "output_rows_per_query": 20,
+            "process_max_rss_bytes": 17121280
+          },
+          {
+            "round": 2,
+            "warm_elapsed_median_ns": 296833,
+            "warm_plan_median_ns": 22208,
+            "first_query_ns": 431875,
+            "explain_ns": 259250,
+            "setup_ns": 1410791,
+            "query_peak_bytes": 181023,
+            "blocking_peak_bytes": 6536,
+            "intermediate_rows": 440,
+            "output_rows_per_query": 20,
+            "process_max_rss_bytes": 17154048
+          }
+        ],
+        "warm_elapsed_median_ns": 297791,
+        "warm_plan_median_ns": 22458,
+        "query_peak_bytes": 181023,
+        "blocking_peak_bytes": 6536,
+        "estimates": [
+          {
+            "operator": "TopNExec",
+            "rows": 40
+          },
+          {
+            "operator": "AggregateExec",
+            "rows": 400
+          },
+          {
+            "operator": "NodeProjectionScanExec",
+            "rows": 400
+          }
+        ],
+        "selected_plan": "TopNExec keys=[SortItem { key: Column(\"a\"), direction: Asc }, SortItem { key: Column(\"b\"), direction: Asc }] offset=0 limit=40\n  AggregateExec columns=[a, b, total]\n    NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"a\", \"b\"] predicate=None output=node_binding columns=[]",
+        "statistics_decisions": []
+      },
+      "candidate": {
+        "runs": [
+          {
+            "round": 0,
+            "warm_elapsed_median_ns": 293500,
+            "warm_plan_median_ns": 18917,
+            "first_query_ns": 428709,
+            "explain_ns": 271417,
+            "setup_ns": 1497333,
+            "query_peak_bytes": 181023,
+            "blocking_peak_bytes": 6536,
+            "intermediate_rows": 440,
+            "output_rows_per_query": 20,
+            "process_max_rss_bytes": 17530880
+          },
+          {
+            "round": 1,
+            "warm_elapsed_median_ns": 293792,
+            "warm_plan_median_ns": 23042,
+            "first_query_ns": 433042,
+            "explain_ns": 261958,
+            "setup_ns": 1490125,
+            "query_peak_bytes": 181023,
+            "blocking_peak_bytes": 6536,
+            "intermediate_rows": 440,
+            "output_rows_per_query": 20,
+            "process_max_rss_bytes": 17481728
+          },
+          {
+            "round": 2,
+            "warm_elapsed_median_ns": 297250,
+            "warm_plan_median_ns": 23666,
+            "first_query_ns": 428125,
+            "explain_ns": 262250,
+            "setup_ns": 1445875,
+            "query_peak_bytes": 181023,
+            "blocking_peak_bytes": 6536,
+            "intermediate_rows": 440,
+            "output_rows_per_query": 20,
+            "process_max_rss_bytes": 17498112
+          }
+        ],
+        "warm_elapsed_median_ns": 293792,
+        "warm_plan_median_ns": 23042,
+        "query_peak_bytes": 181023,
+        "blocking_peak_bytes": 6536,
+        "estimates": [
+          {
+            "operator": "TopNExec",
+            "rows": 40
+          },
+          {
+            "operator": "AggregateExec",
+            "rows": 400
+          },
+          {
+            "operator": "NodeProjectionScanExec",
+            "rows": 400
+          }
+        ],
+        "selected_plan": "TopNExec keys=[SortItem { key: Column(\"a\"), direction: Asc }, SortItem { key: Column(\"b\"), direction: Asc }] offset=0 limit=40\n  AggregateExec columns=[a, b, total]\n    NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"a\", \"b\"] predicate=None output=node_binding columns=[]",
+        "statistics_decisions": []
+      }
+    },
+    {
+      "scenario": "group-noindex",
+      "rows": 100000,
+      "baseline": {
+        "runs": [
+          {
+            "round": 0,
+            "warm_elapsed_median_ns": 55587166,
+            "warm_plan_median_ns": 26959,
+            "first_query_ns": 56669083,
+            "explain_ns": 30793958,
+            "setup_ns": 222309917,
+            "query_peak_bytes": 1244703,
+            "blocking_peak_bytes": 31900,
+            "intermediate_rows": 100200,
+            "output_rows_per_query": 100,
+            "process_max_rss_bytes": 122798080
+          },
+          {
+            "round": 1,
+            "warm_elapsed_median_ns": 55636542,
+            "warm_plan_median_ns": 29250,
+            "first_query_ns": 56312334,
+            "explain_ns": 30418250,
+            "setup_ns": 223714709,
+            "query_peak_bytes": 1244703,
+            "blocking_peak_bytes": 31900,
+            "intermediate_rows": 100200,
+            "output_rows_per_query": 100,
+            "process_max_rss_bytes": 122830848
+          },
+          {
+            "round": 2,
+            "warm_elapsed_median_ns": 57856125,
+            "warm_plan_median_ns": 33041,
+            "first_query_ns": 56013000,
+            "explain_ns": 30240708,
+            "setup_ns": 222732834,
+            "query_peak_bytes": 1244703,
+            "blocking_peak_bytes": 31900,
+            "intermediate_rows": 100200,
+            "output_rows_per_query": 100,
+            "process_max_rss_bytes": 122847232
+          }
+        ],
+        "warm_elapsed_median_ns": 55636542,
+        "warm_plan_median_ns": 29250,
+        "query_peak_bytes": 1244703,
+        "blocking_peak_bytes": 31900,
+        "estimates": [
+          {
+            "operator": "TopNExec",
+            "rows": 200
+          },
+          {
+            "operator": "AggregateExec",
+            "rows": 10000
+          },
+          {
+            "operator": "NodeProjectionScanExec",
+            "rows": 100000
+          }
+        ],
+        "selected_plan": "TopNExec keys=[SortItem { key: Column(\"a\"), direction: Asc }, SortItem { key: Column(\"b\"), direction: Asc }] offset=0 limit=200\n  AggregateExec columns=[a, b, total]\n    NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"a\", \"b\"] predicate=None output=node_binding columns=[]",
+        "statistics_decisions": []
+      },
+      "candidate": {
+        "runs": [
+          {
+            "round": 0,
+            "warm_elapsed_median_ns": 53971250,
+            "warm_plan_median_ns": 27042,
+            "first_query_ns": 54116500,
+            "explain_ns": 30772041,
+            "setup_ns": 224143084,
+            "query_peak_bytes": 1244703,
+            "blocking_peak_bytes": 31900,
+            "intermediate_rows": 100200,
+            "output_rows_per_query": 100,
+            "process_max_rss_bytes": 123781120
+          },
+          {
+            "round": 1,
+            "warm_elapsed_median_ns": 54774334,
+            "warm_plan_median_ns": 28792,
+            "first_query_ns": 58462208,
+            "explain_ns": 32489292,
+            "setup_ns": 224206333,
+            "query_peak_bytes": 1244703,
+            "blocking_peak_bytes": 31900,
+            "intermediate_rows": 100200,
+            "output_rows_per_query": 100,
+            "process_max_rss_bytes": 122978304
+          },
+          {
+            "round": 2,
+            "warm_elapsed_median_ns": 53584541,
+            "warm_plan_median_ns": 24458,
+            "first_query_ns": 54845125,
+            "explain_ns": 30711666,
+            "setup_ns": 224866875,
+            "query_peak_bytes": 1244703,
+            "blocking_peak_bytes": 31900,
+            "intermediate_rows": 100200,
+            "output_rows_per_query": 100,
+            "process_max_rss_bytes": 123486208
+          }
+        ],
+        "warm_elapsed_median_ns": 53971250,
+        "warm_plan_median_ns": 27042,
+        "query_peak_bytes": 1244703,
+        "blocking_peak_bytes": 31900,
+        "estimates": [
+          {
+            "operator": "TopNExec",
+            "rows": 200
+          },
+          {
+            "operator": "AggregateExec",
+            "rows": 10000
+          },
+          {
+            "operator": "NodeProjectionScanExec",
+            "rows": 100000
+          }
+        ],
+        "selected_plan": "TopNExec keys=[SortItem { key: Column(\"a\"), direction: Asc }, SortItem { key: Column(\"b\"), direction: Asc }] offset=0 limit=200\n  AggregateExec columns=[a, b, total]\n    NodeProjectionScanExec variable=n label=Item access=SeqNodeScan access_detail=LabelScan properties=[\"a\", \"b\"] predicate=None output=node_binding columns=[]",
+        "statistics_decisions": []
+      }
+    },
+    {
+      "scenario": "join",
+      "rows": 200,
+      "baseline": {
+        "runs": [
+          {
+            "round": 0,
+            "warm_elapsed_median_ns": 582541,
+            "warm_plan_median_ns": 14834,
+            "first_query_ns": 832458,
+            "explain_ns": 323000,
+            "setup_ns": 2024542,
+            "query_peak_bytes": 18047608,
+            "blocking_peak_bytes": 363400,
+            "intermediate_rows": 1400,
+            "output_rows_per_query": 200,
+            "process_max_rss_bytes": 16760832
+          },
+          {
+            "round": 1,
+            "warm_elapsed_median_ns": 584167,
+            "warm_plan_median_ns": 15917,
+            "first_query_ns": 753500,
+            "explain_ns": 277917,
+            "setup_ns": 2019000,
+            "query_peak_bytes": 18047608,
+            "blocking_peak_bytes": 363400,
+            "intermediate_rows": 1400,
+            "output_rows_per_query": 200,
+            "process_max_rss_bytes": 16777216
+          },
+          {
+            "round": 2,
+            "warm_elapsed_median_ns": 580583,
+            "warm_plan_median_ns": 15750,
+            "first_query_ns": 752750,
+            "explain_ns": 280042,
+            "setup_ns": 2020000,
+            "query_peak_bytes": 18047608,
+            "blocking_peak_bytes": 363400,
+            "intermediate_rows": 1400,
+            "output_rows_per_query": 200,
+            "process_max_rss_bytes": 16711680
+          }
+        ],
+        "warm_elapsed_median_ns": 582541,
+        "warm_plan_median_ns": 15750,
+        "query_peak_bytes": 18047608,
+        "blocking_peak_bytes": 363400,
+        "estimates": [
+          {
+            "operator": "TopNExec",
+            "rows": 400
+          },
+          {
+            "operator": "ProjectExec",
+            "rows": 20000
+          },
+          {
+            "operator": "FilterExec",
+            "rows": 20000
+          },
+          {
+            "operator": "HashJoinExec",
+            "rows": 40000
+          },
+          {
+            "operator": "SeqNodeScan",
+            "rows": 200
+          },
+          {
+            "operator": "SeqNodeScan",
+            "rows": 200
+          }
+        ],
+        "selected_plan": "TopNExec keys=[SortItem { key: Column(\"left_id\"), direction: Asc }, SortItem { key: Column(\"right_id\"), direction: Asc }] offset=0 limit=400\n  ProjectExec columns=[left_id, right_id]\n    FilterExec predicate=And([ExpressionEq { expression: Property { variable: \"l\", property: \"a\" }, value: Property { variable: \"r\", property: \"a\" } }, ExpressionEq { expression: Property { variable: \"l\", property: \"b\" }, value: Property { variable: \"r\", property: \"b\" } }])\n      HashJoinExec left=l.a right=r.a\n        SeqNodeScan variable=l label=Left\n        SeqNodeScan variable=r label=Right",
+        "statistics_decisions": []
+      },
+      "candidate": {
+        "runs": [
+          {
+            "round": 0,
+            "warm_elapsed_median_ns": 593875,
+            "warm_plan_median_ns": 15500,
+            "first_query_ns": 808334,
+            "explain_ns": 326292,
+            "setup_ns": 2076958,
+            "query_peak_bytes": 18047608,
+            "blocking_peak_bytes": 363400,
+            "intermediate_rows": 1600,
+            "output_rows_per_query": 200,
+            "process_max_rss_bytes": 16908288
+          },
+          {
+            "round": 1,
+            "warm_elapsed_median_ns": 605833,
+            "warm_plan_median_ns": 15083,
+            "first_query_ns": 763042,
+            "explain_ns": 281250,
+            "setup_ns": 1997250,
+            "query_peak_bytes": 18047608,
+            "blocking_peak_bytes": 363400,
+            "intermediate_rows": 1600,
+            "output_rows_per_query": 200,
+            "process_max_rss_bytes": 16908288
+          },
+          {
+            "round": 2,
+            "warm_elapsed_median_ns": 598834,
+            "warm_plan_median_ns": 15250,
+            "first_query_ns": 766583,
+            "explain_ns": 287542,
+            "setup_ns": 2038750,
+            "query_peak_bytes": 18047608,
+            "blocking_peak_bytes": 363400,
+            "intermediate_rows": 1600,
+            "output_rows_per_query": 200,
+            "process_max_rss_bytes": 16891904
+          }
+        ],
+        "warm_elapsed_median_ns": 598834,
+        "warm_plan_median_ns": 15250,
+        "query_peak_bytes": 18047608,
+        "blocking_peak_bytes": 363400,
+        "estimates": [
+          {
+            "operator": "LimitExec",
+            "rows": 200
+          },
+          {
+            "operator": "SortExec",
+            "rows": 200
+          },
+          {
+            "operator": "ProjectExec",
+            "rows": 200
+          },
+          {
+            "operator": "FilterExec",
+            "rows": 200
+          },
+          {
+            "operator": "HashJoinExec",
+            "rows": 400
+          },
+          {
+            "operator": "SeqNodeScan",
+            "rows": 200
+          },
+          {
+            "operator": "SeqNodeScan",
+            "rows": 200
+          }
+        ],
+        "selected_plan": "LimitExec offset=0 limit=Some(400)\n  SortExec keys=[SortItem { key: Column(\"left_id\"), direction: Asc }, SortItem { key: Column(\"right_id\"), direction: Asc }]\n    ProjectExec columns=[left_id, right_id]\n      FilterExec predicate=And([ExpressionEq { expression: Property { variable: \"l\", property: \"a\" }, value: Property { variable: \"r\", property: \"a\" } }, ExpressionEq { expression: Property { variable: \"l\", property: \"b\" }, value: Property { variable: \"r\", property: \"b\" } }])\n        HashJoinExec left=l.a right=r.a\n          SeqNodeScan variable=l label=Left\n          SeqNodeScan variable=r label=Right",
+        "statistics_decisions": [
+          "cardinality statistics: operator_id=4 operator=HashJoinExec source=catalog_property_ndv operation=hash_join left_ndv=100 right_ndv=100",
+          "cardinality statistics: operator_id=3 operator=FilterExec source=catalog_composite_ndv operation=join_filter keys=2 left_joint_ndv=200 right_joint_ndv=200 enforced_key_ndv=100 complete_domains=true"
+        ]
+      }
+    },
+    {
+      "scenario": "join",
+      "rows": 3000,
+      "baseline": {
+        "runs": [
+          {
+            "round": 0,
+            "warm_elapsed_median_ns": 37261292,
+            "warm_plan_median_ns": 14708,
+            "first_query_ns": 38033125,
+            "explain_ns": 1770958,
+            "setup_ns": 24570541,
+            "query_peak_bytes": 26055187,
+            "blocking_peak_bytes": 5451000,
+            "intermediate_rows": 105000,
+            "output_rows_per_query": 3000,
+            "process_max_rss_bytes": 40484864
+          },
+          {
+            "round": 1,
+            "warm_elapsed_median_ns": 37710917,
+            "warm_plan_median_ns": 17709,
+            "first_query_ns": 37886917,
+            "explain_ns": 1790292,
+            "setup_ns": 24589792,
+            "query_peak_bytes": 26055187,
+            "blocking_peak_bytes": 5451000,
+            "intermediate_rows": 105000,
+            "output_rows_per_query": 3000,
+            "process_max_rss_bytes": 37191680
+          },
+          {
+            "round": 2,
+            "warm_elapsed_median_ns": 37676125,
+            "warm_plan_median_ns": 16916,
+            "first_query_ns": 38097250,
+            "explain_ns": 1843834,
+            "setup_ns": 24552042,
+            "query_peak_bytes": 26055187,
+            "blocking_peak_bytes": 5451000,
+            "intermediate_rows": 105000,
+            "output_rows_per_query": 3000,
+            "process_max_rss_bytes": 40730624
+          }
+        ],
+        "warm_elapsed_median_ns": 37676125,
+        "warm_plan_median_ns": 16916,
+        "query_peak_bytes": 26055187,
+        "blocking_peak_bytes": 5451000,
+        "estimates": [
+          {
+            "operator": "TopNExec",
+            "rows": 6000
+          },
+          {
+            "operator": "ProjectExec",
+            "rows": 4500000
+          },
+          {
+            "operator": "FilterExec",
+            "rows": 4500000
+          },
+          {
+            "operator": "HashJoinExec",
+            "rows": 9000000
+          },
+          {
+            "operator": "SeqNodeScan",
+            "rows": 3000
+          },
+          {
+            "operator": "SeqNodeScan",
+            "rows": 3000
+          }
+        ],
+        "selected_plan": "TopNExec keys=[SortItem { key: Column(\"left_id\"), direction: Asc }, SortItem { key: Column(\"right_id\"), direction: Asc }] offset=0 limit=6000\n  ProjectExec columns=[left_id, right_id]\n    FilterExec predicate=And([ExpressionEq { expression: Property { variable: \"l\", property: \"a\" }, value: Property { variable: \"r\", property: \"a\" } }, ExpressionEq { expression: Property { variable: \"l\", property: \"b\" }, value: Property { variable: \"r\", property: \"b\" } }])\n      HashJoinExec left=l.a right=r.a\n        SeqNodeScan variable=l label=Left\n        SeqNodeScan variable=r label=Right",
+        "statistics_decisions": []
+      },
+      "candidate": {
+        "runs": [
+          {
+            "round": 0,
+            "warm_elapsed_median_ns": 37423958,
+            "warm_plan_median_ns": 17041,
+            "first_query_ns": 38216042,
+            "explain_ns": 1842000,
+            "setup_ns": 24916708,
+            "query_peak_bytes": 26055187,
+            "blocking_peak_bytes": 5451000,
+            "intermediate_rows": 108000,
+            "output_rows_per_query": 3000,
+            "process_max_rss_bytes": 41287680
+          },
+          {
+            "round": 1,
+            "warm_elapsed_median_ns": 37568208,
+            "warm_plan_median_ns": 15125,
+            "first_query_ns": 38378250,
+            "explain_ns": 1798458,
+            "setup_ns": 24763209,
+            "query_peak_bytes": 26055187,
+            "blocking_peak_bytes": 5451000,
+            "intermediate_rows": 108000,
+            "output_rows_per_query": 3000,
+            "process_max_rss_bytes": 38764544
+          },
+          {
+            "round": 2,
+            "warm_elapsed_median_ns": 37386375,
+            "warm_plan_median_ns": 18583,
+            "first_query_ns": 40513000,
+            "explain_ns": 2033167,
+            "setup_ns": 25898125,
+            "query_peak_bytes": 26055187,
+            "blocking_peak_bytes": 5451000,
+            "intermediate_rows": 108000,
+            "output_rows_per_query": 3000,
+            "process_max_rss_bytes": 41582592
+          }
+        ],
+        "warm_elapsed_median_ns": 37423958,
+        "warm_plan_median_ns": 17041,
+        "query_peak_bytes": 26055187,
+        "blocking_peak_bytes": 5451000,
+        "estimates": [
+          {
+            "operator": "LimitExec",
+            "rows": 3000
+          },
+          {
+            "operator": "SortExec",
+            "rows": 3000
+          },
+          {
+            "operator": "ProjectExec",
+            "rows": 3000
+          },
+          {
+            "operator": "FilterExec",
+            "rows": 3000
+          },
+          {
+            "operator": "HashJoinExec",
+            "rows": 90000
+          },
+          {
+            "operator": "SeqNodeScan",
+            "rows": 3000
+          },
+          {
+            "operator": "SeqNodeScan",
+            "rows": 3000
+          }
+        ],
+        "selected_plan": "LimitExec offset=0 limit=Some(6000)\n  SortExec keys=[SortItem { key: Column(\"left_id\"), direction: Asc }, SortItem { key: Column(\"right_id\"), direction: Asc }]\n    ProjectExec columns=[left_id, right_id]\n      FilterExec predicate=And([ExpressionEq { expression: Property { variable: \"l\", property: \"a\" }, value: Property { variable: \"r\", property: \"a\" } }, ExpressionEq { expression: Property { variable: \"l\", property: \"b\" }, value: Property { variable: \"r\", property: \"b\" } }])\n        HashJoinExec left=l.a right=r.a\n          SeqNodeScan variable=l label=Left\n          SeqNodeScan variable=r label=Right",
+        "statistics_decisions": [
+          "cardinality statistics: operator_id=4 operator=HashJoinExec source=catalog_property_ndv operation=hash_join left_ndv=100 right_ndv=100",
+          "cardinality statistics: operator_id=3 operator=FilterExec source=catalog_composite_ndv operation=join_filter keys=2 left_joint_ndv=3000 right_joint_ndv=3000 enforced_key_ndv=100 complete_domains=true"
+        ]
+      }
+    }
+  ]
+}

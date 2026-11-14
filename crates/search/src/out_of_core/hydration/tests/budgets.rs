@@ -103,10 +103,32 @@ fn hydration_byte_refusal_preserves_the_complete_operation_budget() {
         },
     )
     .unwrap();
-    assert!(matches!(
+    // Too many requested ids is a typed budget refusal, not a storage fault,
+    // for hydration by id and for mutation-target loading (#1754).
+    let assert_count_refusal = |error: HawDBError, owner: &str| match error {
+        HawDBError::ResourceBudgetExceeded(details) => {
+            assert_eq!(details.resource, ResourceBudgetKind::MetadataEntries);
+            assert_eq!(details.scope, ResourceBudgetScope::Operator);
+            assert_eq!(details.owner, owner, "{details:?}");
+            assert_eq!(details.requested, 3, "{details:?}");
+            assert_eq!(details.budget, 2, "{details:?}");
+            assert_eq!(
+                details.budget_option, "SearchOutOfCoreConfig.max_hydrated_documents",
+                "{details:?}"
+            );
+        }
+        other => panic!("{other:?}"),
+    };
+    assert_count_refusal(
         count_limited.hydrate_documents(&ids).unwrap_err(),
-        HawDBError::Storage(message) if message.contains("requires 3 documents, exceeding 2")
-    ));
+        "search mutation target resolution",
+    );
+    assert_count_refusal(
+        count_limited
+            .resolve_mutation_targets(&ids.iter().cloned().collect())
+            .unwrap_err(),
+        "search mutation target resolution",
+    );
     drop((reference, reader, exact, count_limited));
     fs::remove_dir_all(root).unwrap();
 }

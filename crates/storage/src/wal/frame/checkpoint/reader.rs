@@ -328,29 +328,14 @@ impl<R: Read> CheckpointBinaryWalReader<R> {
                 reason: format!("valid fragments follow an end-of-log marker ({marker_reason})"),
             });
         }
-        match self.chain.take() {
-            Some(chain) => Ok(CheckpointWalReadEvent::TornTail {
-                valid_prefix_len: chain.start_offset,
-                reason: format!("fragment chain is incomplete at end of log ({marker_reason})"),
-            }),
-            None => Ok(CheckpointWalReadEvent::Eof),
-        }
+        Ok(CheckpointWalReadEvent::Corrupt {
+            offset: self.chain.take().map_or(offset, |chain| chain.start_offset),
+            reason: format!("unwritten or stale WAL suffix ({marker_reason})"),
+        })
     }
 
     fn chain_violation(&mut self, offset: u64, reason: String) -> Result<CheckpointWalReadEvent> {
         self.finished = true;
-        if self.chain.is_some() {
-            // Skip past the violating fragment, then resynchronize on block
-            // boundaries: live data after it means mid-log damage.
-            if self.live_fragment_after()? {
-                return Ok(CheckpointWalReadEvent::Corrupt { offset, reason });
-            }
-            let chain = self.chain.take().expect("pending chain");
-            return Ok(CheckpointWalReadEvent::TornTail {
-                valid_prefix_len: chain.start_offset,
-                reason: format!("fragment chain is incomplete at end of file ({reason})"),
-            });
-        }
         Ok(CheckpointWalReadEvent::Corrupt { offset, reason })
     }
 

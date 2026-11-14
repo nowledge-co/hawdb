@@ -488,8 +488,8 @@ impl AlgorithmRows {
                     ("node".into(), Value::Int(row.node.0 as i64)),
                     (score_column.into(), Value::Float(row.score)),
                 ]),
-                nodes: BTreeMap::new(),
-                relationships: BTreeMap::new(),
+                nodes: BTreeMap::new().into(),
+                relationships: BTreeMap::new().into(),
             })),
             Self::Louvain(rows) => Box::new(rows.into_iter().map(|row| Binding {
                 values: BTreeMap::from([
@@ -497,8 +497,8 @@ impl AlgorithmRows {
                     ("level".into(), Value::Int(row.level as i64)),
                     ("louvain_id".into(), Value::Int(row.community.0 as i64)),
                 ]),
-                nodes: BTreeMap::new(),
-                relationships: BTreeMap::new(),
+                nodes: BTreeMap::new().into(),
+                relationships: BTreeMap::new().into(),
             })),
         }
     }

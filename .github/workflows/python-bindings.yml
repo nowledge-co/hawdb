@@ -5,6 +5,7 @@ on:
   pull_request:
     paths:
       - "bindings/python/**"
+      - "integrations/llama-index-graph-stores-hawdb/**"
       - "crates/core/src/error.rs"
       - "MODULE.bazel"
       - "BUILD.bazel"
@@ -16,6 +17,7 @@ on:
     branches: [main]
     paths:
       - "bindings/python/**"
+      - "integrations/llama-index-graph-stores-hawdb/**"
       - "crates/core/src/error.rs"
       - "MODULE.bazel"
       - "BUILD.bazel"
@@ -57,10 +59,19 @@ jobs:
         run: bazel test //bindings/python/...
 
   test:
-    name: Build and test
-    runs-on: ubuntu-24.04
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            name: Build and test
+          - os: windows-2025
+            name: Windows Python wheel
     defaults:
       run:
+        shell: bash
         working-directory: bindings/python
     steps:
       - name: Checkout
@@ -77,19 +88,29 @@ jobs:
           python-version: "3.11"
 
       - name: Install maturin and pytest
-        run: pip install "maturin>=1.8,<2.0" "pytest>=8.0"
+        run: pip install "maturin==1.15.0" "pytest>=8.0"
+
+      - name: Validate the reviewed binding dependency lock
+        run: |
+          python -m unittest test_check_lock
+          python check_lock.py --root ../../Cargo.lock --binding Cargo.lock
+
+      - name: Check the independent binding workspace
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: Build the extension wheel
-        run: maturin build --release --out dist
+        run: maturin build --release --locked --out dist
 
-      - name: Test capsule unwind containment and error retry classification
-        run: cargo test --release --locked --lib -- retained::arrow::destructor_tests errors::tests --test-threads=1
+      - name: Test capsule unwind containment, error retry classification and SQL admission
+        run: cargo test --release --locked --lib -- retained::arrow::destructor_tests errors::tests database::tests --test-threads=1
 
       - name: Install the built wheel
         run: pip install dist/*.whl
 
       - name: Run tests
-        run: pytest
+        run: pytest tests
 
       - name: Install the pydantic extra
         run: pip install "$(echo dist/*.whl)[pydantic]"
@@ -98,17 +119,41 @@ jobs:
         run: pytest tests/test_pydantic*.py
 
       - name: Provision the optional public Arrow consumer
+        if: matrix.os == 'ubuntu-24.04'
         run: pip install "pyarrow==26.0.0"
 
       - name: Test public Arrow protocols against the installed wheel
+        if: matrix.os == 'ubuntu-24.04'
         run: |
           python -c 'import pyarrow; print(pyarrow.__version__)'
           pytest tests/test_arrow_consumer.py
 
       - name: Provision the optional pandas DB-API consumer
+        if: matrix.os == 'ubuntu-24.04'
         run: pip install "pandas==3.1.0"
 
       - name: Test pandas.read_sql over the DB-API against the installed wheel
+        if: matrix.os == 'ubuntu-24.04'
         run: |
           python -c 'import pandas; print(pandas.__version__)'
           pytest tests/test_dbapi.py -k pandas
+
+      - name: Provision the optional LlamaIndex consumer
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          pip install "llama-index-core==0.14.25"
+          # Keep the wheel built above instead of a hawdb release from PyPI.
+          pip install --no-deps ../../integrations/llama-index-graph-stores-hawdb
+          pip check
+
+      - name: Test the LlamaIndex property graph store against the installed wheel
+        if: matrix.os == 'ubuntu-24.04'
+        run: pytest ../../integrations/llama-index-graph-stores-hawdb/tests
+
+      - name: Retain the tested native wheel for host verification
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-wheel-${{ runner.os }}-${{ github.sha }}
+          path: bindings/python/dist/*.whl
+          if-no-files-found: error
+          retention-days: 7

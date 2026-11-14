@@ -299,6 +299,15 @@ impl ExecutionObserver for QueryExecutionObserver {
         *count = count.saturating_add(rows);
     }
 
+    fn record_simple_case_dispatch(&self, tables: usize, lookups: usize) {
+        let mut reports = self.reports.borrow_mut();
+        let memory = &mut reports.pipeline_memory;
+        memory.simple_case_dispatch_tables =
+            memory.simple_case_dispatch_tables.saturating_add(tables);
+        memory.simple_case_dispatch_lookups =
+            memory.simple_case_dispatch_lookups.saturating_add(lookups);
+    }
+
     fn record_scan_pruning_report(&self, report: ScanPruningReport) {
         self.reports.borrow_mut().scan_pruning.push(report);
     }

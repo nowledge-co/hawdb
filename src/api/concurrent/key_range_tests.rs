@@ -376,3 +376,38 @@ fn key_range_differential_smoke() {
 fn key_range_differential_campaign() {
     run_campaign(1024);
 }
+
+#[test]
+fn hidden_row_id_writes_and_explicit_locks_share_the_table_lock() {
+    let database = Database::new().into_concurrent();
+    database
+        .query_sql("CREATE TABLE bag (value BIGINT)")
+        .unwrap();
+    database
+        .query_sql("INSERT INTO bag VALUES (1), (1)")
+        .unwrap();
+    let mut first = immediate_transaction(&database);
+    first
+        .query_sql("SELECT value FROM bag WHERE value = 1 FOR UPDATE")
+        .unwrap();
+    let mut conflicting = immediate_transaction(&database);
+    let error = conflicting
+        .query_sql("INSERT INTO bag VALUES (2)")
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("transaction lock wait timed out"));
+    drop(conflicting);
+    first
+        .query_sql("UPDATE bag SET value = 3 WHERE value = 1")
+        .unwrap();
+    first.commit().unwrap();
+    assert_eq!(
+        database
+            .query_sql("SELECT value FROM bag WHERE value = 3")
+            .unwrap()
+            .rows
+            .len(),
+        2
+    );
+}

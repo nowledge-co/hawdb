@@ -52,13 +52,33 @@ use hawdb::{
 };
 use serde_json::json;
 
+mod dump;
+mod maintenance;
+mod open_options;
 mod retained;
+mod transaction;
+pub use dump::*;
+pub use maintenance::*;
 pub use retained::*;
+pub use transaction::*;
 
+#[cfg(test)]
+mod dump_tests;
 #[cfg(test)]
 mod error_tests;
 #[cfg(test)]
+mod maintenance_tests;
+#[cfg(test)]
+mod open_options_tests;
+#[cfg(test)]
+mod temporal_tests;
+#[cfg(test)]
+mod transaction_tests;
+#[cfg(test)]
 mod vector_tests;
+
+#[cfg(test)]
+mod decimal_tests;
 
 /// Developer profiling build only. This observation is not an admission ledger
 /// or an allocator-capacity bound. NULL output is a no-op; no buffer is allocated.
@@ -78,6 +98,14 @@ pub struct HawdbDatabase {
     inner: Mutex<HawDBEmbedded>,
 }
 
+impl HawdbDatabase {
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, HawDBEmbedded>, FfiError> {
+        self.inner
+            .lock()
+            .map_err(|_| FfiError::invalid("hawdb: database mutex poisoned"))
+    }
+}
+
 /// A byte buffer the library hands to the caller.
 ///
 /// `ptr` is `len` bytes of UTF-8 text; it is NUL-terminated as a courtesy
@@ -93,6 +121,7 @@ pub struct HawdbBuffer {
 
 /// An error reported by this crate: an engine or contract `kind` plus a
 /// human-readable `message`.
+#[derive(Debug)]
 struct FfiError {
     kind: String,
     message: String,
@@ -105,6 +134,24 @@ impl FfiError {
     fn invalid(message: impl Into<String>) -> Self {
         Self {
             kind: "invalid_argument".to_string(),
+            message: message.into(),
+            resource_budget: None,
+        }
+    }
+
+    /// A call that needs an open transaction on a handle that has none.
+    fn no_transaction(message: impl Into<String>) -> Self {
+        Self {
+            kind: "no_transaction".to_string(),
+            message: message.into(),
+            resource_budget: None,
+        }
+    }
+
+    /// A call that is refused because a transaction is open on the handle.
+    fn transaction_open(message: impl Into<String>) -> Self {
+        Self {
+            kind: "transaction_open".to_string(),
             message: message.into(),
             resource_budget: None,
         }
@@ -269,6 +316,9 @@ unsafe fn read_opt_str<'a>(text: FfiStr, name: &str) -> Result<Option<&'a str>, 
 /// `Binary` becomes `{"$binary": "<base64>"}` and `Uuid` becomes
 /// `{"$uuid": "<canonical>"}` so both stay distinguishable from plain
 /// strings. `Vector` uses `{"$vector": [1.0, 0.0]}` with Float32 coordinates.
+/// Temporal values use ISO 8601 text under `$date`, `$localtime`,
+/// `$localdatetime`, `$datetime` and `$duration`, for example
+/// `{"$datetime": "2026-10-30T12:00:00+02:00"}`.
 fn value_to_json(value: &Value) -> serde_json::Value {
     match value {
         Value::Null => serde_json::Value::Null,
@@ -279,8 +329,16 @@ fn value_to_json(value: &Value) -> serde_json::Value {
         Value::String(item) => json!(item),
         Value::Binary(item) => json!({ "$binary": BASE64.encode(item) }),
         Value::Uuid(item) => json!({ "$uuid": item.to_string() }),
+        Value::Decimal(item) => json!({ "$decimal": item.to_string() }),
         Value::Vector(item) => {
             json!({ "$vector": item.as_ref().coordinates().collect::<Vec<_>>() })
+        }
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => {
+            json!({ hawdb::temporal::json_tag(value).expect("temporal value"): value.to_string() })
         }
         Value::List(items) => serde_json::Value::Array(items.iter().map(value_to_json).collect()),
         Value::Map(items) => serde_json::Value::Object(
@@ -295,9 +353,9 @@ fn value_to_json(value: &Value) -> serde_json::Value {
 /// Convert a `serde_json::Value` into a HawDB [`Value`] for parameters.
 ///
 /// This is the inverse of [`value_to_json`]: the single-key objects
-/// `{"$binary": "<base64>"}`, `{"$uuid": "<canonical>"}` and
-/// `{"$vector": [1.0, 0.0]}` decode to their typed values; other objects
-/// become maps.
+/// `{"$binary": "<base64>"}`, `{"$uuid": "<canonical>"}`,
+/// `{"$vector": [1.0, 0.0]}` and the temporal tags (`{"$date": "..."}`,
+/// ...) decode to their typed values; other objects become maps.
 fn json_to_value(value: &serde_json::Value) -> Result<Value, String> {
     Ok(match value {
         serde_json::Value::Null => Value::Null,
@@ -317,6 +375,14 @@ fn json_to_value(value: &serde_json::Value) -> Result<Value, String> {
         }
         serde_json::Value::Object(items) => {
             if items.len() == 1 {
+                if let Some(encoded) = items.get("$decimal") {
+                    return encoded
+                        .as_str()
+                        .ok_or("$decimal must be a decimal string")?
+                        .parse::<hawdb::Decimal>()
+                        .map(Value::Decimal)
+                        .map_err(|error| format!("invalid $decimal parameter: {error}"));
+                }
                 if let Some(encoded) = items.get("$vector") {
                     let coordinates = encoded
                         .as_array()
@@ -345,6 +411,16 @@ fn json_to_value(value: &serde_json::Value) -> Result<Value, String> {
                         .map(Value::Uuid)
                         .map_err(|error| format!("invalid $uuid parameter: {error}"));
                 }
+                if let Some((tag, encoded)) = items.iter().next()
+                    && hawdb::temporal::JSON_TAGS.contains(&tag.as_str())
+                {
+                    let encoded = encoded
+                        .as_str()
+                        .ok_or_else(|| format!("{tag} must be an ISO 8601 string"))?;
+                    return hawdb::temporal::from_json_tag(tag, encoded)
+                        .expect("checked temporal tag")
+                        .map_err(|error| format!("invalid {tag} parameter: {error}"));
+                }
             }
             Value::Map(
                 items
@@ -370,8 +446,34 @@ fn output_to_json(output: &QueryOutput) -> serde_json::Value {
 /// Open a HawDB database at `path`, creating it if needed.
 ///
 /// `path` is `path_len` UTF-8 bytes and must not be NULL. `options_json`
-/// may be NULL or a JSON object; currently supported keys:
-/// `{"read_only": bool}`.
+/// may be NULL or a JSON object. Every key is optional and names the typed
+/// Rust configuration field it sets; an absent key keeps the embedded
+/// default. Unknown keys and ill-typed values fail with `invalid_argument`.
+///
+/// - `"read_only": bool` (default false). A read-only open uses strict
+///   recovery and never repairs a torn WAL tail.
+/// - `"durability": "sync_on_every_write" | "sync_on_checkpoint"` (default
+///   `"sync_on_every_write"`, power-loss safe). `"sync_on_checkpoint"`
+///   flushes each committed transaction's WAL to the OS before acknowledging
+///   it but synchronizes storage only at checkpoint boundaries, so a power
+///   failure may lose recently acknowledged transactions (never part of one).
+///   Branch creation, deletion and head publication stay power-loss safe.
+/// - `"max_read_result_rows": integer >= 0 | null` (default null). Host-wide
+///   read row ceiling; 0 and null mean no row ceiling.
+/// - `"max_read_intermediate_rows": integer >= 0 | null` (default null).
+///   Host-wide ceiling on the rows one relational SQL statement may scan,
+///   join or aggregate, independent of the rows it returns. null inherits
+///   `max_read_result_rows`; 0 means no intermediate row ceiling.
+/// - `"max_read_result_payload_bytes": integer > 0` (default 67108864).
+///   Host-wide read result payload budget; it can be tuned but not removed.
+/// - `"relational_monotonic_append_fast_path": bool` (default false). Opt-in
+///   metadata-only INSERT path for RowPage tables whose primary keys arrive
+///   in increasing order; other inserts fall back to the ordinary path.
+///
+/// A read that exceeds a budget fails (`read_budget_exceeded`, or
+/// `resource_budget_exceeded` with a `resource_budget` object) rather than
+/// returning a partial result. Calls on one handle are serialized, so the
+/// handle has no group commit to configure.
 ///
 /// Returns a handle to pass to the other functions, or NULL on failure
 /// with `err_out` filled. Close the handle with [`hawdb_close`].
@@ -428,12 +530,7 @@ unsafe fn hawdb_open_inner(
         let object = parsed
             .as_object()
             .ok_or_else(|| FfiError::invalid("hawdb: options_json must be a JSON object"))?;
-        if let Some(read_only) = object.get("read_only") {
-            let read_only = read_only
-                .as_bool()
-                .ok_or_else(|| FfiError::invalid("hawdb: \"read_only\" must be a bool"))?;
-            options.config.read_only = read_only;
-        }
+        open_options::apply_open_options(&mut options, object)?;
     }
     let database =
         HawDBEmbedded::open_with_options(options).map_err(|error| FfiError::open(&error))?;
@@ -463,6 +560,10 @@ pub unsafe extern "C" fn hawdb_open_in_memory(err_out: *mut HawdbBuffer) -> *mut
 }
 
 /// Close a database handle and release its resources.
+///
+/// A transaction still open on the handle (see
+/// [`hawdb_begin_transaction`]) is rolled back: none of its statements are
+/// committed or visible after a reopen.
 ///
 /// # Safety
 /// `db` must be a handle returned by [`hawdb_open`] and not already
@@ -513,6 +614,7 @@ pub unsafe extern "C" fn hawdb_query(
                 len: params_len,
             },
             false,
+            false,
             result_out,
             err_out,
         )
@@ -549,17 +651,22 @@ pub unsafe extern "C" fn hawdb_query_sql(
                 len: params_len,
             },
             true,
+            false,
             result_out,
             err_out,
         )
     }
 }
 
+/// Run one statement: autocommit when `transaction` is false, otherwise
+/// inside the handle's open transaction. Each mode refuses the other's
+/// state so a statement never silently runs outside the caller's intent.
 unsafe fn query_impl(
     db: *mut HawdbDatabase,
     text: FfiStr,
     params_json: FfiStr,
     sql: bool,
+    transaction: bool,
     result_out: *mut HawdbBuffer,
     err_out: *mut HawdbBuffer,
 ) -> bool {
@@ -578,23 +685,31 @@ unsafe fn query_impl(
             let params = parse_sql_params(params_json)?;
             #[cfg(feature = "boundary-profiling")]
             let _engine = boundary_profile::PhaseTimer::start(boundary_profile::Phase::Engine);
-            database
-                .inner
-                .lock()
-                .map_err(|_| FfiError::invalid("hawdb: database mutex poisoned"))?
-                .database_mut()
-                .query_sql_with_params(text, &params)
-                .map_err(|error| FfiError::open(&error))
+            let mut inner = database.lock()?;
+            if transaction {
+                transaction::ensure_open(&inner)?;
+                inner.transaction_query_sql_with_params(text, &params)
+            } else {
+                transaction::ensure_none(&inner)?;
+                inner.database_mut().query_sql_with_params(text, &params)
+            }
+            .map_err(|error| FfiError::open(&error))
         } else {
             let params = parse_cypher_params(params_json)?;
             #[cfg(feature = "boundary-profiling")]
             let _engine = boundary_profile::PhaseTimer::start(boundary_profile::Phase::Engine);
-            database
-                .inner
-                .lock()
-                .map_err(|_| FfiError::invalid("hawdb: database mutex poisoned"))?
-                .query_with_params_admitted(text, &params)
-                .map_err(|error| FfiError::query(&error))
+            let mut inner = database.lock()?;
+            if transaction {
+                transaction::ensure_open(&inner)?;
+                inner
+                    .transaction_query_with_params(text, &params)
+                    .map_err(|error| FfiError::open(&error))
+            } else {
+                transaction::ensure_none(&inner)?;
+                inner
+                    .query_with_params_admitted(text, &params)
+                    .map_err(|error| FfiError::query(&error))
+            }
         }
     }));
     match result {

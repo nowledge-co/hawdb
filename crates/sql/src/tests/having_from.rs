@@ -98,6 +98,7 @@ fn having_parameters_and_source_metadata_survive_template_caching() {
 fn having_lowers_group_predicates_without_expanding_where_or_join_profiles() {
     for sql in [
         "SELECT a.id FROM a HAVING COUNT(*) > 1",
+        "SELECT owner FROM items HAVING COUNT(*) + 1 > 2",
         "SELECT owner, COUNT(*) FROM items GROUP BY owner HAVING COUNT(*) > 1",
         "SELECT 1 FROM items HAVING TRUE",
         "SELECT owner FROM items GROUP BY owner HAVING SUM(amount) IN (MAX(amount), NULL)",
@@ -109,7 +110,6 @@ fn having_lowers_group_predicates_without_expanding_where_or_join_profiles() {
     for sql in [
         "SELECT owner FROM items WHERE COUNT(*) > 1",
         "SELECT owner FROM items JOIN owners ON COUNT(*) > 1",
-        "SELECT owner FROM items HAVING COUNT(*) + 1 > 2",
         "SELECT owner FROM items HAVING EXISTS (SELECT id FROM owners)",
         "SELECT owner FROM items HAVING owner LIKE ANY ('a%')",
     ] {

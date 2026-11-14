@@ -657,6 +657,7 @@ fn validate_source_database(
 ) -> Result<(), HawDBError> {
     let mut source_config = config.database_config.clone();
     source_config.read_only = true;
+    source_config.recovery_mode = hawdb::RecoveryMode::Strict;
     let source = Database::open_with_durability_and_config(
         &config.source_database_path,
         DurabilityPolicy::SyncOnEveryWrite,
@@ -1365,6 +1366,7 @@ mod tests {
 
         let mut source_config = database_config(&seed, RelationalIndexMode::Authoritative);
         source_config.read_only = true;
+        source_config.recovery_mode = hawdb::RecoveryMode::Strict;
         let source = Database::open_with_config(&source_path, source_config).unwrap();
         assert_eq!(
             source.commit_epoch().unwrap(),

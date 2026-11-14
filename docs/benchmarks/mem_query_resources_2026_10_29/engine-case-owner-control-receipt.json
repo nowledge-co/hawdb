@@ -1,0 +1,18 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "hawdb",
+    "--lib",
+    "simple_case_dispatch_rebinds_values_through_scan_and_projection"
+  ],
+  "control": "Allow parameterized CASE physical templates back into count-only cache; zero retained physical entries assertion must fail",
+  "original_sha256": "1ce0eecbb320ac44d4ca0746e2a8c475b9b9859b0c469d4b19e4c1f3a4c6d117",
+  "mutation_sha256": "bdb59195bc8272d396af064b9b8b30a8aa81dd9a4019757bf8cf66f7740d4868",
+  "red_exit": 101,
+  "restored_sha256": "1ce0eecbb320ac44d4ca0746e2a8c475b9b9859b0c469d4b19e4c1f3a4c6d117",
+  "green_exit": 0,
+  "zero_entries_oracle_red": true
+}

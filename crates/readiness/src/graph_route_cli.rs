@@ -98,7 +98,7 @@ mod tests {
             "nmem-graph-route-evidence-v1"
         );
         assert_eq!(
-            hawdb_evidence::inventory::NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL,
+            hawdb_evidence::inventory::QUERY_REPORT_PROTOCOL,
             "hawdb-nowledge-mem-query-report-v1"
         );
     }

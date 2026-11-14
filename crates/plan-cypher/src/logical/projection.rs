@@ -1,3 +1,6 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
 use super::*;
 
 pub(super) fn plan_comparison_op(op: CypherComparisonOp) -> ComparisonOp {
@@ -65,6 +68,22 @@ pub(super) fn plan_sort_items(
                 OrderExpression::Value(expression) => SortKey::Expression(
                     plan_order_value_expression(scope, projection_names, expression, parameters)?,
                 ),
+                OrderExpression::Projection(expression) => {
+                    // `bind_projection` resolves aggregate keys before it gets
+                    // here; this guards any other caller.
+                    if super::arithmetic::contains_aggregate(expression) {
+                        return Err(HawDBError::Semantic(
+                            "aggregate ORDER BY keys require a RETURN or WITH projection"
+                                .to_string(),
+                        ));
+                    }
+                    SortKey::Expression(super::arithmetic::bind_composed_expression(
+                        scope,
+                        projection_names,
+                        expression,
+                        parameters,
+                    )?)
+                }
                 OrderExpression::Column(name) => {
                     if !projection_names.contains(name) {
                         return Err(HawDBError::Semantic(format!(
@@ -81,6 +100,53 @@ pub(super) fn plan_sort_items(
             Ok(SortItem { key, direction })
         })
         .collect()
+}
+
+/// Resolves an aggregate `ORDER BY` key to the column its projection already
+/// computes: the alias of an equal projected item, else the key's default
+/// name. Ordering never introduces an aggregate of its own.
+pub(super) fn plan_aggregate_sort_item(
+    scope: &BTreeSet<String>,
+    columns: &BTreeSet<String>,
+    projection: (&[ReturnItem], &BTreeSet<String>),
+    item: &OrderItem,
+    expression: &ReturnExpression,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<SortItem> {
+    let (items, projection_names) = projection;
+    let alias = items
+        .iter()
+        .find(|projected| &projected.expression == expression)
+        .and_then(|projected| projected.alias.clone());
+    let name = match alias {
+        Some(alias) => alias,
+        None => {
+            let returned = AstNode::synthetic(ReturnItemKind {
+                expression: expression.clone(),
+                alias: None,
+            });
+            plan_return_items_with_columns(
+                scope,
+                columns,
+                std::slice::from_ref(&returned),
+                parameters,
+            )?
+            .names()
+            .swap_remove(0)
+        }
+    };
+    if !projection_names.contains(&name) {
+        return Err(HawDBError::Semantic(format!(
+            "aggregate ORDER BY key '{name}' must also be projected by the RETURN or WITH"
+        )));
+    }
+    Ok(SortItem {
+        key: SortKey::Column(name),
+        direction: match item.direction {
+            CypherOrderDirection::Asc => SortDirection::Asc,
+            CypherOrderDirection::Desc => SortDirection::Desc,
+        },
+    })
 }
 
 pub(super) fn plan_order_value_expression(
@@ -223,6 +289,17 @@ pub(super) enum PlannedReturns {
 }
 
 impl PlannedReturns {
+    /// The grouping keys of an aggregating projection.
+    pub(super) fn group_keys(&self) -> Option<&[Projection]> {
+        match self {
+            Self::Projections(_) => None,
+            Self::Aggregations { group_keys, .. }
+            | Self::AggregateProjection { group_keys, .. } => Some(group_keys),
+        }
+    }
+}
+
+impl PlannedReturns {
     pub(super) fn names(&self) -> Vec<String> {
         match self {
             PlannedReturns::Projections(items) => {
@@ -262,6 +339,7 @@ impl PlannedReturns {
             PlannedReturns::Aggregations { group_keys, items } => LogicalPlan::Aggregate {
                 group_keys,
                 items,
+                graph_keys: GraphGroupKeys::Values,
                 input: Box::new(input),
             },
             PlannedReturns::AggregateProjection {
@@ -273,6 +351,7 @@ impl PlannedReturns {
                 input: Box::new(LogicalPlan::Aggregate {
                     group_keys,
                     items,
+                    graph_keys: GraphGroupKeys::Values,
                     input: Box::new(input),
                 }),
             },
@@ -330,7 +409,7 @@ pub(super) fn plan_return_items_with_columns(
     if items.iter().any(|item| {
         matches!(
             item.expression.kind,
-            ReturnExpressionKind::Arithmetic { .. }
+            ReturnExpressionKind::Arithmetic { .. } | ReturnExpressionKind::ListFunction { .. }
         )
     }) {
         return super::arithmetic::plan_composed_returns(scope, column_scope, items, parameters);
@@ -351,7 +430,8 @@ pub(super) fn plan_return_items_with_columns(
             match &item.expression.kind {
                 ReturnExpressionKind::Value(_)
                 | ReturnExpressionKind::Path(_)
-                | ReturnExpressionKind::Arithmetic { .. } => {
+                | ReturnExpressionKind::Arithmetic { .. }
+                | ReturnExpressionKind::ListFunction { .. } => {
                     group_keys.push(plan_projection_with_columns(
                         scope,
                         column_scope,
@@ -396,16 +476,23 @@ pub(super) fn plan_projection_with_columns(
     item: &ReturnItem,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<Projection> {
-    let AstNode {
-        kind: ReturnExpressionKind::Value(value),
-        ..
-    } = &item.expression
-    else {
-        return Err(HawDBError::Semantic(
-            "expected projection return item".to_string(),
-        ));
+    let value = match &item.expression.kind {
+        ReturnExpressionKind::Value(value) => value,
+        ReturnExpressionKind::Path(path) => {
+            let (expression, name) = plan_path_function(column_scope, path)?;
+            return Ok(Projection {
+                expression,
+                name: item.alias.clone().unwrap_or(name),
+            });
+        }
+        _ => {
+            return Err(HawDBError::Semantic(
+                "expected projection return item".to_string(),
+            ))
+        }
     };
     let (expression, default_name) = match &value.kind {
+        ScalarExpressionKind::Path(path) => plan_path_function(column_scope, path)?,
         ScalarExpressionKind::Variable(variable) => {
             if column_scope.contains(variable) {
                 return Ok(Projection {
@@ -477,6 +564,10 @@ pub(super) fn plan_projection_with_columns(
                 format!("label({variable})"),
             )
         }
+        ScalarExpressionKind::Label { function, variable } => (
+            plan_label(scope, *function, variable)?,
+            format!("{}({variable})", function.function_name()),
+        ),
         ScalarExpressionKind::Value(value) => (
             ProjectionExpression::Literal(bind_value(value, parameters)?),
             "literal".to_string(),
@@ -497,7 +588,11 @@ pub(super) fn plan_projection_with_columns(
             ),
             "coalesce".to_string(),
         ),
-        ScalarExpressionKind::JsonValue { expression, path } => (
+        ScalarExpressionKind::JsonValue {
+            expression,
+            path,
+            null_on_non_scalar,
+        } => (
             ProjectionExpression::JsonValue {
                 expression: Box::new(plan_scalar_expression_with_columns(
                     scope,
@@ -506,6 +601,7 @@ pub(super) fn plan_projection_with_columns(
                     parameters,
                 )?),
                 path: bind_json_value_path(path, parameters)?,
+                null_on_non_scalar: *null_on_non_scalar,
             },
             "json_value".to_string(),
         ),
@@ -706,6 +802,66 @@ pub(super) fn plan_projection_with_columns(
             plan_case_scalar(scope, column_scope, value, parameters, true)?,
             "case".to_string(),
         ),
+        ScalarExpressionKind::ListFunction { function, .. } => (
+            plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
+            function.function_name().to_string(),
+        ),
+        ScalarExpressionKind::StringFunction { function, .. } => (
+            plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
+            function.function_name().to_string(),
+        ),
+        ScalarExpressionKind::List(_) => (
+            plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
+            "list".to_string(),
+        ),
+        ScalarExpressionKind::ListComprehension { .. } => (
+            plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
+            "list_comprehension".to_string(),
+        ),
+        ScalarExpressionKind::NumericFunction { function, .. } => (
+            plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
+            function.function_name().to_string(),
+        ),
+        ScalarExpressionKind::Reduce { .. } => (
+            plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
+            "reduce".to_string(),
+        ),
+        ScalarExpressionKind::RelationshipEndpoint { endpoint, variable } => (
+            plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
+            format!("{}({variable})", endpoint.function_name()),
+        ),
+        ScalarExpressionKind::ListIndex { .. } => (
+            plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
+            "list_index".to_string(),
+        ),
+        ScalarExpressionKind::Conversion { function, .. } => (
+            plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
+            function.function_name().to_string(),
+        ),
+        ScalarExpressionKind::ListSlice { .. } => (
+            plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
+            "list_slice".to_string(),
+        ),
+        ScalarExpressionKind::TemporalFunction { function, .. } => (
+            plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
+            function.function_name(),
+        ),
+        ScalarExpressionKind::PropertyAccess { .. } => (
+            plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
+            property_access_name(value),
+        ),
+        ScalarExpressionKind::MapLiteral(_) => (
+            plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
+            "map".to_string(),
+        ),
+        ScalarExpressionKind::PatternPredicate(_) => (
+            plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
+            "pattern".to_string(),
+        ),
+        ScalarExpressionKind::PatternComprehension { .. } => (
+            plan_scalar_expression_with_columns(scope, column_scope, value, parameters)?,
+            "pattern_comprehension".to_string(),
+        ),
     };
     Ok(Projection {
         expression,
@@ -727,6 +883,7 @@ pub(super) fn bind_relationship_set_value(
         | hawdb_cypher::SetValueExpression::CoalesceProperty { .. }
         | hawdb_cypher::SetValueExpression::DecrementFloorZero { .. }
         | hawdb_cypher::SetValueExpression::PreserveNewerExisting { .. }
+        | hawdb_cypher::SetValueExpression::PreserveOlderExisting { .. }
         | hawdb_cypher::SetValueExpression::CoalescePropertyAdd { .. } => {
             Err(HawDBError::Semantic(
                 "relationship property increment SET is not supported".to_string(),
@@ -817,6 +974,29 @@ pub(super) fn plan_set_value(
                 preserve,
             })
         }
+        hawdb_cypher::SetValueExpression::PreserveOlderExisting {
+            variable,
+            property,
+            incoming,
+            preserve,
+        } => {
+            if variable != &set.variable || property != &set.property {
+                return Err(HawDBError::Semantic(
+                    "CASE preserve SET must read the same variable property it writes".to_string(),
+                ));
+            }
+            let preserve = bind_value(preserve, parameters)?;
+            let Value::Bool(preserve) = preserve else {
+                return Err(HawDBError::Semantic(
+                    "CASE preserve SET requires a boolean preserve flag".to_string(),
+                ));
+            };
+            Ok(SetValue::PreserveOlderExisting {
+                property: property.clone(),
+                incoming: bind_value(incoming, parameters)?,
+                preserve,
+            })
+        }
         hawdb_cypher::SetValueExpression::CoalescePropertyAdd {
             variable,
             property,
@@ -860,6 +1040,16 @@ pub(super) fn plan_aggregation_with_columns(
         ReturnExpressionKind::Aggregate(aggregate) => aggregate,
         _ => return plan_aggregation(scope, item),
     };
+    if let AggregateExpression::Expression {
+        function,
+        distinct,
+        argument,
+    } = aggregate
+    {
+        return plan_expression_aggregation(
+            scope, columns, item, *function, *distinct, argument, parameters,
+        );
+    }
     let direct = match aggregate {
         AggregateExpression::MaxVariable { variable } => {
             if !columns.contains(variable) {
@@ -912,8 +1102,10 @@ pub(super) fn plan_aggregation_with_columns(
         });
     }
     let variable = match aggregate {
-        AggregateExpression::MaxVariable { .. } | AggregateExpression::CollectTop { .. } => {
-            unreachable!("scalar aggregates bound above")
+        AggregateExpression::MaxVariable { .. }
+        | AggregateExpression::CollectTop { .. }
+        | AggregateExpression::Expression { .. } => {
+            unreachable!("scalar and expression aggregates bound above")
         }
         AggregateExpression::CountAll => return plan_aggregation(scope, item),
         AggregateExpression::CountVariable { variable, .. }
@@ -941,6 +1133,61 @@ pub(super) fn plan_aggregation_with_columns(
     Ok(result)
 }
 
+/// Plans an aggregate over a general argument expression. Plain variable and
+/// property arguments reuse the direct targets; any other aggregate-free
+/// argument is evaluated per input row by the aggregate operator itself.
+fn plan_expression_aggregation(
+    scope: &BTreeSet<String>,
+    columns: &BTreeSet<String>,
+    item: &ReturnItem,
+    function: AggregateFunctionName,
+    distinct: bool,
+    argument: &ReturnExpression,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<Aggregation> {
+    let function = match function {
+        AggregateFunctionName::Count => AggregateFunction::Count,
+        AggregateFunctionName::Sum => AggregateFunction::Sum,
+        AggregateFunctionName::Min => AggregateFunction::Min,
+        AggregateFunctionName::Max => AggregateFunction::Max,
+        AggregateFunctionName::Avg => AggregateFunction::Avg,
+        AggregateFunctionName::Collect => AggregateFunction::Collect,
+    };
+    let (expression, argument_name) =
+        super::arithmetic::bind_aggregate_argument(scope, columns, argument, parameters)?;
+    let argument_name = match &argument.kind {
+        ReturnExpressionKind::Arithmetic { .. } => argument_name
+            .strip_prefix('(')
+            .and_then(|name| name.strip_suffix(')'))
+            .map(str::to_string)
+            .unwrap_or(argument_name),
+        _ => argument_name,
+    };
+    let target = match expression {
+        ProjectionExpression::Column(column) => AggregateTarget::Column(column),
+        ProjectionExpression::ColumnProperty { column, property } => {
+            AggregateTarget::ColumnProperty { column, property }
+        }
+        ProjectionExpression::Property { variable, property } => {
+            AggregateTarget::Property { variable, property }
+        }
+        expression => AggregateTarget::Expression(expression),
+    };
+    let name = item.alias.clone().unwrap_or_else(|| {
+        format!(
+            "{}({}{argument_name})",
+            function.as_str(),
+            if distinct { "DISTINCT " } else { "" }
+        )
+    });
+    Ok(Aggregation {
+        function,
+        target,
+        distinct,
+        name,
+    })
+}
+
 pub(super) fn plan_aggregation(scope: &BTreeSet<String>, item: &ReturnItem) -> Result<Aggregation> {
     let AstNode {
         kind: ReturnExpressionKind::Aggregate(value),
@@ -952,7 +1199,9 @@ pub(super) fn plan_aggregation(scope: &BTreeSet<String>, item: &ReturnItem) -> R
         ));
     };
     let (function, target, distinct) = match value {
-        AggregateExpression::MaxVariable { .. } | AggregateExpression::CollectTop { .. } => {
+        AggregateExpression::MaxVariable { .. }
+        | AggregateExpression::CollectTop { .. }
+        | AggregateExpression::Expression { .. } => {
             return Err(HawDBError::Semantic(
                 "scalar aggregate requires column-aware binding".into(),
             ));
@@ -1143,6 +1392,9 @@ pub(super) fn plan_scalar_expression_with_columns(
                 variable: variable.clone(),
             })
         }
+        ScalarExpressionKind::Label { function, variable } => {
+            plan_label(scope, *function, variable)
+        }
         ScalarExpressionKind::Value(value) => Ok(ProjectionExpression::Literal(bind_value(
             value, parameters,
         )?)),
@@ -1154,17 +1406,20 @@ pub(super) fn plan_scalar_expression_with_columns(
                 })
                 .collect::<Result<Vec<_>>>()?,
         )),
-        ScalarExpressionKind::JsonValue { expression, path } => {
-            Ok(ProjectionExpression::JsonValue {
-                expression: Box::new(plan_scalar_expression_with_columns(
-                    scope,
-                    column_scope,
-                    expression,
-                    parameters,
-                )?),
-                path: bind_json_value_path(path, parameters)?,
-            })
-        }
+        ScalarExpressionKind::JsonValue {
+            expression,
+            path,
+            null_on_non_scalar,
+        } => Ok(ProjectionExpression::JsonValue {
+            expression: Box::new(plan_scalar_expression_with_columns(
+                scope,
+                column_scope,
+                expression,
+                parameters,
+            )?),
+            path: bind_json_value_path(path, parameters)?,
+            null_on_non_scalar: *null_on_non_scalar,
+        }),
         ScalarExpressionKind::Left { expression, length } => Ok(ProjectionExpression::Left {
             expression: Box::new(plan_scalar_expression_with_columns(
                 scope,
@@ -1196,6 +1451,9 @@ pub(super) fn plan_scalar_expression_with_columns(
         ScalarExpressionKind::Lower(expression) => Ok(ProjectionExpression::Lower(Box::new(
             plan_scalar_expression_with_columns(scope, column_scope, expression, parameters)?,
         ))),
+        ScalarExpressionKind::Path(path) => {
+            plan_path_function(column_scope, path).map(|(expression, _)| expression)
+        }
         ScalarExpressionKind::DatePart {
             part,
             variable,
@@ -1325,7 +1583,440 @@ pub(super) fn plan_scalar_expression_with_columns(
         | ScalarExpressionKind::IsNull { .. } => {
             plan_case_scalar(scope, column_scope, expression, parameters, false)
         }
+        ScalarExpressionKind::List(elements) => Ok(ProjectionExpression::List(
+            elements
+                .iter()
+                .map(|element| {
+                    plan_scalar_expression_with_columns(scope, column_scope, element, parameters)
+                })
+                .collect::<Result<Vec<_>>>()?,
+        )),
+        ScalarExpressionKind::ListFunction {
+            function,
+            arguments,
+        } => Ok(ProjectionExpression::ListFunction {
+            function: *function,
+            arguments: arguments
+                .iter()
+                .map(|argument| {
+                    plan_scalar_expression_with_columns(scope, column_scope, argument, parameters)
+                })
+                .collect::<Result<Vec<_>>>()?,
+        }),
+        ScalarExpressionKind::StringFunction {
+            function,
+            arguments,
+        } => {
+            let arguments = arguments
+                .iter()
+                .map(|argument| {
+                    plan_scalar_expression_with_columns(scope, column_scope, argument, parameters)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let pattern = match (function, arguments.get(1)) {
+                (
+                    hawdb_core::StringFunction::RegexpReplace,
+                    Some(ProjectionExpression::Literal(Value::String(source))),
+                ) => Some(Box::new(ValidatedRegex::new(source.clone())?)),
+                _ => None,
+            };
+            Ok(ProjectionExpression::StringFunction {
+                function: *function,
+                arguments,
+                pattern,
+            })
+        }
+        ScalarExpressionKind::ListComprehension {
+            variable,
+            list,
+            predicate,
+            projection,
+        } => plan_list_comprehension(
+            scope,
+            column_scope,
+            ListComprehensionParts {
+                variable,
+                list,
+                predicate: predicate.as_deref(),
+                projection: projection.as_deref(),
+            },
+            parameters,
+        ),
+        ScalarExpressionKind::NumericFunction { function, argument } => {
+            Ok(ProjectionExpression::NumericFunction {
+                function: *function,
+                argument: Box::new(plan_scalar_expression_with_columns(
+                    scope,
+                    column_scope,
+                    argument,
+                    parameters,
+                )?),
+            })
+        }
+        ScalarExpressionKind::Reduce {
+            accumulator,
+            initial,
+            variable,
+            list,
+            expression,
+        } => plan_reduce(
+            scope,
+            column_scope,
+            ReduceParts {
+                accumulator,
+                initial,
+                variable,
+                list,
+                expression,
+            },
+            parameters,
+        ),
+        ScalarExpressionKind::RelationshipEndpoint { endpoint, variable } => {
+            if column_scope.contains(variable) {
+                // A relationship value, such as an element of
+                // `relationships(p)`, records the ids of its endpoints.
+                return Ok(ProjectionExpression::RelationshipValueEndpoint {
+                    endpoint: *endpoint,
+                    relationship: Box::new(ProjectionExpression::Column(variable.clone())),
+                    visibility: None,
+                });
+            }
+            if !scope.contains(variable) {
+                return Err(HawDBError::Semantic(format!(
+                    "unknown variable '{variable}' in return item"
+                )));
+            }
+            // The binding pattern step is resolved once the plan is built.
+            Ok(ProjectionExpression::RelationshipEndpoint {
+                endpoint: *endpoint,
+                variable: variable.clone(),
+                endpoints: None,
+            })
+        }
+        ScalarExpressionKind::Conversion { function, argument } => {
+            Ok(ProjectionExpression::Conversion {
+                function: *function,
+                argument: Box::new(plan_scalar_expression_with_columns(
+                    scope,
+                    column_scope,
+                    argument,
+                    parameters,
+                )?),
+            })
+        }
+        ScalarExpressionKind::ListIndex { list, index } => Ok(ProjectionExpression::ListIndex {
+            list: Box::new(plan_scalar_expression_with_columns(
+                scope,
+                column_scope,
+                list,
+                parameters,
+            )?),
+            index: Box::new(plan_scalar_expression_with_columns(
+                scope,
+                column_scope,
+                index,
+                parameters,
+            )?),
+        }),
+        ScalarExpressionKind::ListSlice { list, start, end } => {
+            let bind = |expression: &ScalarExpression| {
+                plan_scalar_expression_with_columns(scope, column_scope, expression, parameters)
+                    .map(Box::new)
+            };
+            Ok(ProjectionExpression::ListSlice {
+                list: bind(list)?,
+                start: start.as_deref().map(bind).transpose()?,
+                end: end.as_deref().map(bind).transpose()?,
+            })
+        }
+        ScalarExpressionKind::TemporalFunction {
+            function,
+            arguments,
+        } => {
+            if function.reads_clock(arguments.len()) {
+                // `date()`, `datetime()`, ...: one statement clock, bound now.
+                return hawdb_core::temporal::evaluate(
+                    *function,
+                    &[],
+                    hawdb_core::temporal::statement_now(),
+                )
+                .map(ProjectionExpression::Literal)
+                .map_err(|error| HawDBError::Semantic(error.to_string()));
+            }
+            Ok(ProjectionExpression::TemporalFunction {
+                function: *function,
+                arguments: arguments
+                    .iter()
+                    .map(|argument| {
+                        plan_scalar_expression_with_columns(
+                            scope,
+                            column_scope,
+                            argument,
+                            parameters,
+                        )
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            })
+        }
+        ScalarExpressionKind::PropertyAccess { expression, key } => {
+            Ok(ProjectionExpression::PropertyAccess {
+                expression: Box::new(plan_scalar_expression_with_columns(
+                    scope,
+                    column_scope,
+                    expression,
+                    parameters,
+                )?),
+                key: key.clone(),
+            })
+        }
+        ScalarExpressionKind::PatternPredicate(pattern) => {
+            super::pattern_expression::plan_pattern_expression(
+                scope,
+                column_scope,
+                super::pattern_expression::PatternParts {
+                    pattern,
+                    predicate: None,
+                    projection: None,
+                },
+                parameters,
+            )
+        }
+        ScalarExpressionKind::PatternComprehension {
+            pattern,
+            predicate,
+            projection,
+        } => super::pattern_expression::plan_pattern_expression(
+            scope,
+            column_scope,
+            super::pattern_expression::PatternParts {
+                pattern,
+                predicate: predicate.as_deref(),
+                projection: Some(projection),
+            },
+            parameters,
+        ),
+        ScalarExpressionKind::MapLiteral(entries) => Ok(ProjectionExpression::MapLiteral(
+            entries
+                .iter()
+                .map(|(key, value)| {
+                    Ok((
+                        key.clone(),
+                        plan_scalar_expression_with_columns(
+                            scope,
+                            column_scope,
+                            value,
+                            parameters,
+                        )?,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?,
+        )),
     }
+}
+
+/// The default column name of `a.b.c`-style access: the dotted path when
+/// the base is a variable or property, otherwise the final key.
+fn property_access_name(expression: &ScalarExpression) -> String {
+    fn path(expression: &ScalarExpression) -> Option<String> {
+        match &expression.kind {
+            ScalarExpressionKind::Variable(variable) => Some(variable.clone()),
+            ScalarExpressionKind::Property { variable, property } => {
+                Some(format!("{variable}.{property}"))
+            }
+            ScalarExpressionKind::PropertyAccess { expression, key } => {
+                Some(format!("{}.{key}", path(expression)?))
+            }
+            _ => None,
+        }
+    }
+    path(expression).unwrap_or_else(|| match &expression.kind {
+        ScalarExpressionKind::PropertyAccess { key, .. } => key.clone(),
+        _ => "property".to_string(),
+    })
+}
+
+struct ListComprehensionParts<'a> {
+    variable: &'a str,
+    list: &'a ScalarExpression,
+    predicate: Option<&'a ScalarExpression>,
+    projection: Option<&'a ScalarExpression>,
+}
+
+/// `label(x)` or `labels(n)` over a graph variable in scope. Whether `x` is a
+/// node or a relationship is decided by the bound record at execution time.
+fn plan_label(
+    scope: &BTreeSet<String>,
+    function: hawdb_core::LabelFunction,
+    variable: &str,
+) -> Result<ProjectionExpression> {
+    if !scope.contains(variable) {
+        return Err(HawDBError::Semantic(format!(
+            "unknown variable '{variable}' in return item"
+        )));
+    }
+    Ok(ProjectionExpression::Label {
+        function,
+        variable: variable.to_owned(),
+    })
+}
+
+/// Plans `[variable IN list WHERE predicate | projection]`.
+///
+/// The element variable must not shadow a graph variable or a column that is
+/// already visible; reusing a name would make `x` mean different values inside
+/// and outside the brackets. Inside the body the element is planned as a
+/// column and then rebound to [`ProjectionExpression::LocalVariable`], so no
+/// row-column analysis ever sees it.
+fn plan_list_comprehension(
+    scope: &BTreeSet<String>,
+    column_scope: &BTreeSet<String>,
+    parts: ListComprehensionParts<'_>,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<ProjectionExpression> {
+    let variable = parts.variable;
+    if scope.contains(variable) || column_scope.contains(variable) {
+        return Err(HawDBError::Semantic(format!(
+            "list comprehension variable '{variable}' shadows a variable that is already in scope; use a different name"
+        )));
+    }
+    let list = plan_scalar_expression_with_columns(scope, column_scope, parts.list, parameters)?;
+    let mut body_columns = column_scope.clone();
+    body_columns.insert(variable.to_string());
+    let bind_body = |expression: &ScalarExpression| {
+        let mut planned =
+            plan_scalar_expression_with_columns(scope, &body_columns, expression, parameters)?;
+        bind_list_local(&mut planned, variable)?;
+        Ok::<_, HawDBError>(planned)
+    };
+    Ok(ProjectionExpression::ListComprehension(Box::new(
+        ListComprehensionProjection {
+            variable: variable.to_string(),
+            list,
+            predicate: parts.predicate.map(bind_body).transpose()?,
+            projection: parts.projection.map(bind_body).transpose()?,
+        },
+    )))
+}
+
+struct ReduceParts<'a> {
+    accumulator: &'a str,
+    initial: &'a ScalarExpression,
+    variable: &'a str,
+    list: &'a ScalarExpression,
+    expression: &'a ScalarExpression,
+}
+
+/// Plans `reduce(accumulator = initial, variable IN list | expression)`.
+///
+/// `initial` and `list` are planned in the enclosing scope. As for list
+/// comprehensions, neither local name may shadow a visible variable or
+/// column, and the two names must differ; inside `expression` both are
+/// planned as columns and rebound to [`ProjectionExpression::LocalVariable`].
+fn plan_reduce(
+    scope: &BTreeSet<String>,
+    column_scope: &BTreeSet<String>,
+    parts: ReduceParts<'_>,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<ProjectionExpression> {
+    let ReduceParts {
+        accumulator,
+        variable,
+        ..
+    } = parts;
+    for name in [accumulator, variable] {
+        if scope.contains(name) || column_scope.contains(name) {
+            return Err(HawDBError::Semantic(format!(
+                "reduce() variable '{name}' shadows a variable that is already in scope; use a different name"
+            )));
+        }
+    }
+    if accumulator == variable {
+        return Err(HawDBError::Semantic(format!(
+            "reduce() accumulator and list variable must differ, both are '{variable}'"
+        )));
+    }
+    let initial =
+        plan_scalar_expression_with_columns(scope, column_scope, parts.initial, parameters)?;
+    let list = plan_scalar_expression_with_columns(scope, column_scope, parts.list, parameters)?;
+    let mut body_columns = column_scope.clone();
+    body_columns.insert(accumulator.to_string());
+    body_columns.insert(variable.to_string());
+    let mut expression =
+        plan_scalar_expression_with_columns(scope, &body_columns, parts.expression, parameters)?;
+    bind_list_local(&mut expression, accumulator)?;
+    bind_list_local(&mut expression, variable)?;
+    Ok(ProjectionExpression::Reduce(Box::new(ReduceProjection {
+        accumulator: accumulator.to_string(),
+        initial,
+        variable: variable.to_string(),
+        list,
+        expression,
+    })))
+}
+
+pub(super) fn bind_list_local(expression: &mut ProjectionExpression, variable: &str) -> Result<()> {
+    match expression {
+        ProjectionExpression::Column(column) if column == variable => {
+            *expression = ProjectionExpression::LocalVariable {
+                name: variable.to_string(),
+                property: None,
+            };
+            Ok(())
+        }
+        ProjectionExpression::ColumnProperty { column, property } if column == variable => {
+            *expression = ProjectionExpression::LocalVariable {
+                name: variable.to_string(),
+                property: Some(property.clone()),
+            };
+            Ok(())
+        }
+        ProjectionExpression::ColumnDefaultIfNullOrEq { column, .. }
+        | ProjectionExpression::ColumnValueDefaultIfNull { column, .. }
+        | ProjectionExpression::ColumnValueCasePropertyNotNullOrEq { column, .. }
+            if column == variable =>
+        {
+            Err(unsupported_list_local(variable))
+        }
+        ProjectionExpression::CaseColumnSearchRank(rank) if rank.column == variable => {
+            Err(unsupported_list_local(variable))
+        }
+        _ => expression.try_for_each_child_mut(|child| bind_list_local(child, variable)),
+    }
+}
+
+fn unsupported_list_local(variable: &str) -> HawDBError {
+    HawDBError::Semantic(format!(
+        "this CASE form is not supported over list comprehension variable '{variable}'; use a generic CASE WHEN expression"
+    ))
+}
+
+/// Lowers a path function over a path column bound by a shortest-path MATCH.
+/// Other path aliases are never materialized and cannot be projected.
+pub(super) fn plan_path_function(
+    column_scope: &BTreeSet<String>,
+    path: &hawdb_cypher::ShortestPathReturnExpression,
+) -> Result<(ProjectionExpression, String)> {
+    use hawdb_cypher::ShortestPathReturnExpression as Path;
+    let column = path.path_variable();
+    if !column_scope.contains(column) {
+        return Err(HawDBError::Semantic(format!(
+            "path function requires a path value (bound by shortestPath or allShortestPaths, or carried through WITH), got unknown variable '{column}'"
+        )));
+    }
+    let function = match path {
+        Path::Length { .. } => PathFunction::Length,
+        Path::Nodes { .. } => PathFunction::Nodes,
+        Path::Relationships { .. } => PathFunction::Relationships,
+        Path::NodePropertyList { property, .. } => PathFunction::NodeProperties(property.clone()),
+    };
+    let name = function.display(column);
+    Ok((
+        ProjectionExpression::Path {
+            function,
+            column: column.to_string(),
+        },
+        name,
+    ))
 }
 
 pub(super) fn bind_coalesce_difference_terms(
@@ -1398,6 +2089,7 @@ pub(super) fn default_aggregation_name(
                 distinct,
             )
         }
+        AggregateTarget::Expression(_) => return format!("{}(?)", function.as_str()),
         _ => {}
     }
     match (function, target) {
@@ -1415,6 +2107,12 @@ pub(super) fn default_aggregation_name(
         }
         (AggregateFunction::Count, AggregateTarget::Property { variable, property }) => {
             format!("count({variable}.{property})")
+        }
+        (AggregateFunction::Sum, AggregateTarget::Property { variable, property }) => {
+            format!("sum({variable}.{property})")
+        }
+        (AggregateFunction::Sum, AggregateTarget::All | AggregateTarget::Variable(_)) => {
+            "sum(?)".to_string()
         }
         (AggregateFunction::Min, AggregateTarget::Property { variable, property }) => {
             format!("min({variable}.{property})")
@@ -1452,7 +2150,8 @@ pub(super) fn default_aggregation_name(
             _,
             AggregateTarget::Ranked { .. }
             | AggregateTarget::Column(_)
-            | AggregateTarget::ColumnProperty { .. },
+            | AggregateTarget::ColumnProperty { .. }
+            | AggregateTarget::Expression(_),
         ) => {
             unreachable!("columns normalized before naming")
         }

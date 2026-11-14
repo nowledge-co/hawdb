@@ -57,15 +57,15 @@ SQL dependency exposed to the root crate.
 
 Tokens and syntax nodes retain byte spans into the caller-owned SQL text rather
 than cloning identifiers and literal payloads. Scalar expressions use a bounded
-Pratt AST; semantic binding owns only normalized names and typed values that
+precedence AST recognized by PEG rules; semantic binding owns only normalized names and typed values that
 survive past parsing. This keeps parse memory proportional to token and node
 count while preserving exact source locations for diagnostics.
 
 The owned statement envelopes use token PEG rules with ordered alternatives,
 packrat caching of successes and failures, and a separate AST transformer.
 SQL/PGQ composes into the statement and FROM-item rules before matching starts.
-Bounded native terminals retain the Pratt expression parser, graph patterns,
-and property-graph element definitions. See [SQL PEG parser](../SQL_PEG_PARSER.md)
+Expressions, graph patterns and property-graph definitions are recognized by
+pure PEG rules; the recursive syntax parsers and native SQL callbacks are removed. See [SQL PEG parser](../SQL_PEG_PARSER.md)
 for the resource and grammar-validation contract. This internal composition
 mechanism does not establish a public loadable-dialect API.
 
@@ -79,9 +79,14 @@ The first owned `SELECT` slice recognizes `GRAPH_TABLE` and qualified relations
 as `FROM` items, bounded scalar expressions, `INNER`, `LEFT`, and `CROSS` joins,
 projection, filtering, grouping, ordering, limits, offsets, and locking clauses.
 It deliberately rejects subqueries, right/full/natural joins, join `USING`,
-`DISTINCT ON`, and other unqualified shapes. These syntax nodes are not a
-production execution contract: existing relational SQL continues through the
-upstream parser until logical-plan lowering has equivalent corpus coverage. An
+`DISTINCT ON`, and other unqualified shapes. The default relational SELECT and EXPLAIN SELECT paths now use the PEG
+relational entry and lower into the existing relational IR, including constants,
+vector search, aggregate FILTER and LIKE/ILIKE. Supported DDL/DML and
+materialized-view statements now use an executable PEG grammar importing the
+same expression/SELECT rules and lowering directly to HawDB IR. Branch commands
+also use PEG. The upstream SQL parser and its live test oracle are removed;
+independently exported frozen IR/error fixtures preserve migration coverage.
+PGQ syntax nodes alone do not establish a production execution contract. An
 owned-parser failure MUST be returned directly and MUST NOT trigger a retry
 through the upstream parser.
 
@@ -109,6 +114,206 @@ the exact upstream revision and source files. HawDB may reduce and rename those
 scenarios, but MUST preserve whether PostgreSQL accepts them in raw parsing or
 rejects them later during graph binding. PostgreSQL output strings and C parser
 implementation details are not part of the HawDB test contract.
+
+## Exact numeric execution
+
+Relational SQL supports native `DECIMAL(p,s)` / `NUMERIC(p,s)` with precision
+1 through 38 and scale 0 through precision. Omitted precision/scale means
+`DECIMAL(38,0)`. The Rust facade exposes `Decimal`, `DecimalType`, and
+`Value::Decimal` / `ValueRef::Decimal`. A scalar stores a signed coefficient
+of at most 38 digits and scale 0 through 38 in 17 inline bytes.
+
+Integer literals fitting BIGINT remain integers. Other numeric literals,
+including decimal points and exponents, retain their exact decimal digits;
+they no longer pass through `f64`. `+`, `-`, `*`, `/`, `%`, unary signs,
+parameters and numeric `CAST` / `::` share one kernel across projections,
+predicates, INSERT values, defaults, UPDATE assignments and aggregate inputs.
+UPDATE expressions read the original row. An expression, conversion or
+constraint failure must leave the statement's changes unpublished.
+Numeric arithmetic propagates NULL after operand type validation. Assigning
+that NULL to a NOT NULL column still fails the complete statement.
+
+BIGINT and Decimal promote exactly. Decimal addition, subtraction,
+multiplication and remainder reject unrepresentable results, including
+nonzero underflow; they never silently round. Division rounds once from the
+original rational to at most 38 coefficient digits and scale 38, with ties
+away from zero; very small quotients may round to zero. Assignment and an
+explicit Decimal cast rescale with the same tie rule and check declared
+precision after rounding. Division's result rounding and a subsequent column
+assignment are separate SQL operations. Division by zero and overflow fail.
+SUM uses these checked semantics; NULL-only and empty inputs yield NULL.
+
+BIGINT/DOUBLE PRECISION comparisons use numeric ordering without first rounding
+the integer through `f64`. Serializable dependency capture still refuses a
+cross-domain primary-key point it cannot represent; an exactly integral Decimal
+can instead bind to a BIGINT key. Valid ordinary execution does not bypass that
+capture boundary.
+
+Decimal/DOUBLE PRECISION arithmetic and comparisons require an explicit cast.
+COALESCE retains its same-domain argument rule; for example, a DOUBLE vector
+distance needs `CAST(9.0 AS DOUBLE PRECISION)` as a decimal-literal fallback.
+Assignment to a declared DOUBLE PRECISION column permits approximate conversion;
+assignment of a floating value to Decimal requires a cast. Decimal-to-BIGINT
+casts reject fractions. Float-to-Decimal casts parse the float's shortest
+round-trip decimal spelling and apply the declared rescale; they do not recover
+precision already lost in a float. Explicit text-to-numeric casts reject invalid
+or out-of-range values. NaN and infinity are not Decimal values.
+
+This bounded numeric contract is not PostgreSQL numeric compatibility: division
+uses HawDB's 38-digit/scale ceiling, fractional Decimal-to-BIGINT casts fail,
+and exact multiplication fails when its nonzero result requires scale above 38.
+Decimal literals keep that type beside DOUBLE operands; callers must cast the
+literal or the operand explicitly rather than relying on contextual coercion.
+
+Decimal equality, hashing and ordered keys compare numeric value, so `1.0` and
+`1.00` identify the same key. Index predicates and joins must not rescale their
+query boundaries to the stored column's scale. Row, WAL, checkpoint and spill
+payloads preserve the original scale. New scalar/schema/expression tags are
+additive; older readers cannot read databases containing the new values or
+expressions. Existing tags retain their meaning. Decimal graph properties use
+residual storage instead of float or dictionary coercion. This extension does
+not enable Decimal property types in the separate SQL/PGQ creation binder.
+
+Cypher graph range predicates compare Decimal/Decimal and Decimal/Int exactly,
+including integer boundaries above 2^53. Decimal/Float pairs remain incomparable
+under the existing graph mixed-kind predicate rules. Equality and IN preserve
+typed identity, while Decimal values with different scales compare equal.
+ORDER BY orders Decimal values numerically and retains the existing type order
+for mixed kinds. Scalar/composite range indexes and checkpoint pruning preserve
+the same results. Decimal values do not yet populate property histograms, so
+cost-based planning may use fallback selectivity and choose a scan despite an
+available range index. Decimal and native temporal values have distinct wire tags.
+
+Cypher temporal values retain their behavior and persisted representation;
+relational SQL timestamps are specified below.
+
+## SQL timestamps
+
+Relational SQL supports `TIMESTAMP [ (p) ] [ WITHOUT TIME ZONE ]` and
+`TIMESTAMP [ (p) ] WITH TIME ZONE` / `TIMESTAMPTZ [ (p) ]` (#1453), following
+PostgreSQL 18 [date/time types](https://www.postgresql.org/docs/18/datatype-datetime.html).
+Both store a signed 64-bit count of microseconds since 1970-01-01 00:00:00.
+`TIMESTAMP` is a local date and time without a zone. `TIMESTAMPTZ` is a UTC
+instant: an input offset is applied and then discarded. HawDB has no session
+`TimeZone`, so it behaves like PostgreSQL with `TimeZone = 'UTC'`: zone-less
+`TIMESTAMPTZ` text is UTC, output is UTC, and conversions between the two types
+go through UTC. The precision `p` is 0 to 6 (default 6). Assignment rounds to
+it, with halfway values rounded away from 2000-01-01, as PostgreSQL's
+`AdjustTimestampForTypmod` does. Text with more than six fractional digits is
+rounded half up to the microsecond.
+
+Accepted text is `YYYY-MM-DD` (meaning midnight), optionally followed by a
+space or `T` and `HH:MM[:SS[.fraction]]`, with surrounding whitespace. For
+`TIMESTAMPTZ` an optional offset follows: `Z`, `±HH`, `±HHMM`, `±HH:MM` or
+`±HH:MM:SS` up to ±15:59:59, optionally after one space. The forms are
+`TIMESTAMP '…'`, `TIMESTAMPTZ '…'`, `TIMESTAMP WITH TIME ZONE '…'`, string
+literals and text parameters assigned to a timestamp column, and string
+literals or text parameters compared with a timestamp column. A comparison
+operand is parsed as the column's type but is not rounded to its precision.
+`CAST(x AS TIMESTAMP[(p)] [WITH[OUT] TIME ZONE])`, `CAST(x AS TIMESTAMPTZ[(p)])`,
+`CAST(x AS TEXT)` and the `::` forms convert between TEXT and both types, in
+projections and in constant expressions such as `VALUES`, defaults and comparison
+operands. TEXT output uses PostgreSQL's ISO style without trailing fractional
+zeros (`2026-11-05 12:00:00.5`); `TIMESTAMPTZ` text ends in `+00`.
+
+Equality, ordering, `ORDER BY`, `GROUP BY`, `DISTINCT`, `MIN`/`MAX`, joins,
+primary keys, unique constraints, secondary indexes, range seeks and range
+locks order values chronologically, and `NULL` keeps its usual SQL semantics.
+Comparing a `TIMESTAMP` with a `TIMESTAMPTZ` is an error; cast one side
+explicitly. Host parameters and results use the Cypher temporal values:
+`Value::LocalDateTime` for `TIMESTAMP` and a UTC `Value::DateTime` for
+`TIMESTAMPTZ`. A zoned parameter keeps its instant, and nanoseconds round half
+up to the microsecond. `Value::Date`, `Value::LocalTime` and `Value::Duration`
+are not SQL values. `information_schema.columns` reports `timestamp without
+time zone` / `timestamp with time zone`, the `timestamp` / `timestamptz` UDT
+names and `datetime_precision`.
+
+Deviations from PostgreSQL:
+
+- The range is chrono's: proleptic Gregorian dates from -262143-01-01 through
+  +262142-12-31 23:59:59.999999. PostgreSQL accepts 4713 BC through 294276 AD.
+  Years follow ISO 8601 astronomical numbering (year 0 is 1 BC, earlier years
+  are negative). Years outside 0000–9999 carry an explicit sign on input and
+  output; the `BC` suffix is not accepted.
+- An offset in `TIMESTAMP` text is rejected, where PostgreSQL silently ignores it.
+- `TIMESTAMP(7)` and higher are rejected, where PostgreSQL warns and uses 6.
+- Special values (`infinity`, `-infinity`, `epoch`, `now`, `today`, …), named
+  time zones, `AT TIME ZONE`, other PostgreSQL date styles and session
+  `TimeZone` are not supported.
+- Comparing `TIMESTAMP` with `TIMESTAMPTZ` needs an explicit `CAST`.
+- Foreign keys, column-to-column `UPDATE … SET a = b` assignments and
+  dependency-read join keys require identical precision (`TIMESTAMP(0)` and
+  `TIMESTAMP(6)` do not match; a dependency-read join falls back to a
+  database-wide key). This is stricter than PostgreSQL and matches Decimal.
+- Strict append tables apply the same assignment conversion as ordinary tables,
+  and their partition and order-key lookups parse text without rounding, so a
+  finer-precision partition value matches no rows.
+- `CAST` to TEXT accepts only TEXT, `TIMESTAMP` and `TIMESTAMPTZ` operands.
+  Timestamp casts of columns inside `WHERE`, `HAVING` or `UPDATE` arithmetic are
+  not supported; cast the constant operand instead.
+- `DATE`, `TIME` and `INTERVAL` types and literals, interval arithmetic,
+  `EXTRACT`/`date_part`/`date_trunc`, `CURRENT_DATE`, `CURRENT_TIME`,
+  `statement_timestamp()` and `clock_timestamp()` are not supported yet.
+- `LOCALTIMESTAMP` is the UTC wall-clock time, and comparing a `TIMESTAMP`
+  column with `CURRENT_TIMESTAMP` needs a cast (use `LOCALTIMESTAMP`).
+- `ALTER TABLE … ADD COLUMN` with a clock default is refused on a non-empty
+  table (PostgreSQL fills existing rows with the transaction time).
+- SQL/PGQ property graphs refuse timestamp columns as properties and refuse
+  timestamp literals and time-zone casts in property expressions.
+
+### Current date and time
+
+`CURRENT_TIMESTAMP[(p)]` and `now()` return `TIMESTAMPTZ`; `LOCALTIMESTAMP[(p)]`
+returns `TIMESTAMP` (the UTC wall-clock time, since there is no session time
+zone). As in PostgreSQL's
+[current date/time functions](https://www.postgresql.org/docs/18/functions-datetime.html#FUNCTIONS-DATETIME-CURRENT),
+the value is the start time of the current transaction and does not change
+within it: an explicit read or write transaction captures one instant when it
+begins and pins it as the statement clock for each SQL statement, and an
+auto-commit statement uses its own start time. The optional precision rounds
+like a `TIMESTAMP(p)` assignment. A quoted `"current_timestamp"` stays a column
+name.
+
+The functions lower to a constant expression bound from the pinned clock on
+every execution. Cached statement templates never contain the instant, so a
+reused template returns a fresh value, and the bound value reaches `VALUES`,
+projections, `WHERE`, `UPDATE … SET` and index bounds: `WHERE due >
+CURRENT_TIMESTAMP` range-seeks an index on a `TIMESTAMPTZ` column.
+
+`DEFAULT CURRENT_TIMESTAMP[(p)]`, `DEFAULT now()` and `DEFAULT
+LOCALTIMESTAMP[(p)]` are clock column defaults on `TIMESTAMP` or
+`TIMESTAMPTZ` columns. They are materialized for each inserted row before the
+row is written, then converted and rounded to the column's type, so WAL replay
+and checkpoints keep the recorded instant. A clock function nested inside a
+larger default expression is rejected, as are clock defaults on append tables.
+
+SQL and Cypher keep separate clocks inside one HawDB transaction. SQL follows
+PostgreSQL's transaction clock. Cypher `datetime()`, `localdatetime()` and the
+other zero-argument constructors keep the per-statement clock from
+[Cypher temporal types](../CYPHER_TEMPORAL.md), which matches Neo4j, whose
+[temporal instant functions](https://neo4j.com/docs/cypher-manual/current/functions/temporal/)
+default to the statement clock and expose the transaction clock only through the
+explicit `datetime.transaction()` family. Driving Cypher from the SQL transaction
+clock would silently change existing Cypher results and diverge from Neo4j. A
+later `datetime.transaction()` can read the same transaction instant.
+
+Persistence uses new additive tags with an 8-byte little-endian payload: value tag
+10 (`TIMESTAMP`) and 11 (`TIMESTAMPTZ`) in row pages, relational WAL and
+checkpoint values and schema defaults; scalar type tags 9 and 10 followed by the
+precision byte in schemas and index-shadow digests; and ordered-key tags 10 and
+11 with a sign-flipped big-endian payload. No format version changed. Existing
+tags keep their meaning, so new binaries read old databases, and older binaries
+reject databases containing timestamps on the first unknown tag. Binaries
+released before this change report that as an invalid tag (for example
+"invalid relational scalar type tag 9" or "invalid relational row value tag
+10") rather than as data written by a newer version; their messages cannot be
+changed. From this change on, the relational schema, value, row-page,
+column-default and ordered-key decoders say that an unknown tag is "corrupt, or
+written by a newer HawDB". Decoders treat an out-of-range microsecond count or
+precision as corruption. Clock defaults
+add column default tag 3, followed by a zoned flag byte (0 or 1) and the
+precision byte, in relational WAL/checkpoint schemas and index-shadow digests;
+older binaries reject it as an unknown default tag.
 
 ## Property Graph Catalog
 

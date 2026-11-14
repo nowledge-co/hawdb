@@ -1,5 +1,5 @@
 // Copyright 2026 Nowledge
-// Licensed under the Apache License, Version 2.0.
+// SPDX-License-Identifier: Apache-2.0
 
 //! Selected owned numeric inputs. Source permits follow buffered rows, and
 //! preflight can flush/stop before the next selected payload is decoded.

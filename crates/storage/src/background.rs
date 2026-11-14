@@ -18,6 +18,8 @@ use std::fmt::Debug;
 
 mod checkpoint;
 #[cfg(test)]
+pub(crate) use checkpoint::tests::rebinds as checkpoint_rebinds;
+#[cfg(test)]
 pub(crate) use checkpoint::tests::CheckpointWorkProbe;
 pub(crate) use checkpoint::{
     checkpoint_decode_allocation, CheckpointBytes, CheckpointDecodeContext, CheckpointVectorPush,
@@ -29,8 +31,8 @@ pub(crate) use checkpoint::{
 };
 #[doc(hidden)]
 pub use checkpoint::{
-    CheckpointOperationError, CheckpointSharedBytes, CheckpointText, CheckpointWorkContext,
-    CheckpointWorkError,
+    CheckpointOperationError, CheckpointSharedBytes, CheckpointText, CheckpointUnitBatchStats,
+    CheckpointWorkContext, CheckpointWorkError, CHECKPOINT_UNITS_PER_ADMISSION,
 };
 pub(crate) use checkpoint::{CheckpointSharedValues, CheckpointValues};
 

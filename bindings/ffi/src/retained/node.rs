@@ -155,10 +155,18 @@ impl NodeValue {
                 Value::Bool(value) => scalar!(value, HAWDB_RETAINED_BOOL),
                 Value::Int(value) => scalar!(value, HAWDB_RETAINED_NODE_INT64),
                 Value::Float(value) => scalar!(value, HAWDB_RETAINED_NODE_FLOAT64),
+                Value::Decimal(_) => return Err(HAWDB_RETAINED_UNSUPPORTED_TYPE),
                 Value::String(value) => bytes!(value.as_bytes(), HAWDB_RETAINED_UTF8),
                 Value::Binary(value) => bytes!(value, HAWDB_RETAINED_BINARY),
                 Value::Uuid(value) => bytes!(value.as_bytes(), HAWDB_RETAINED_UUID),
                 Value::Vector(value) => bytes!(value.encoded(), HAWDB_RETAINED_VECTOR),
+                // Temporal values have no retained (zero-copy) layout yet;
+                // callers use the JSON result API instead.
+                Value::Date(_)
+                | Value::LocalTime(_)
+                | Value::LocalDateTime(_)
+                | Value::DateTime(_)
+                | Value::Duration(_) => return Err(HAWDB_RETAINED_UNSUPPORTED_TYPE),
                 Value::List(value) => {
                     out.kind = HAWDB_RETAINED_LIST;
                     out.child_count = value.len() as u64;

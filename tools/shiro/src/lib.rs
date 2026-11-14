@@ -14,17 +14,22 @@
 
 use hawdb::api::{Database, DatabaseReadTransaction};
 use hawdb::executor::Row;
-use hawdb::optimizer::OptimizerSearchDirective;
-use hawdb::{HawDBError, Value};
-use serde_json::{json, Map as JsonMap, Value as JsonValue};
+pub use hawdb::optimizer::{
+    OptimizerCostPerturbation, OptimizerQualificationOptions, OptimizerRuleAssertion,
+    OptimizerSearchDirective, OptionalOptimizerRule,
+};
+use hawdb::{HawDBError, RelationalErrorSurface, Value};
+use serde_json::{json, Value as JsonValue};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
 mod append_oracle;
+mod capability_oracle;
 mod coverage;
 mod generator;
+mod optimizer_qualification;
 mod output;
 mod parser_oracle;
 mod predicate_rewrite;
@@ -40,10 +45,16 @@ use predicate_rewrite::PREDICATE_REWRITE_SHAPES;
 use query_ast::QueryAst;
 
 pub use append_oracle::{run_append_state_machine_case, APPEND_STATE_MACHINE_PROTOCOL};
+pub use capability_oracle::capabilities_cli;
 pub use coverage::PlanCoverageReport;
 pub use hawdb_fuzz_contracts::{
     NowledgeQueryFuzzCaseReport, NowledgeQueryFuzzHarnessOptions, NowledgeQueryFuzzHarnessReport,
     NOWLEDGE_QUERY_FUZZ_HARNESS_PROTOCOL,
+};
+pub use optimizer_qualification::{
+    qualify_generated_optimizer_case, qualify_optimizer_read,
+    GeneratedOptimizerQualificationReport, OptimizerQualificationComparison,
+    OptimizerQualificationReport, OptimizerQualificationVariant, PlanAgreement,
 };
 pub use output::{
     emit_fuzz_report, fuzz_current_report_path, read_fuzz_current_report,
@@ -113,101 +124,23 @@ mod capability_parity_tests {
     }
 }
 
-pub const CAMPAIGN_PROTOCOL: &str = "shiro-multi-oracle-fuzz-v4";
+pub const CAMPAIGN_PROTOCOL: &str = "shiro-multi-oracle-fuzz-v6";
 pub const GRAPH_PREDICATE_REWRITE_PROTOCOL: &str = "hawdb-graph-predicate-rewrite-fuzz-v1";
 pub const GRAPH_TLP_AGGREGATE_PROTOCOL: &str = "hawdb-graph-tlp-aggregate-fuzz-v1";
 pub const GRAPH_TLP_PROTOCOL: &str = "hawdb-graph-tlp-fuzz-v1";
 pub const METAMORPHIC_PROTOCOL: &str = "hawdb-graph-metamorphic-fuzz-v1";
-pub const PLAN_DIFFERENTIAL_PROTOCOL: &str = "hawdb-plan-differential-fuzz-v1";
+pub const PLAN_DIFFERENTIAL_PROTOCOL: &str = "hawdb-plan-differential-fuzz-v2";
 pub const REPLAY_BUNDLE_PROTOCOL: &str = "shiro-multi-oracle-replay-v2";
-pub(crate) const QUERY_SHAPE_COUNT: usize = 12;
+#[cfg(test)]
+pub(crate) use query_workloads::QUERY_SHAPE_COUNT;
 const DEFAULT_CASE_COUNT: usize = 128;
 const MAX_CASE_COUNT: usize = 10_000;
 const MAX_REDUCTION_ATTEMPTS: usize = 64;
 
-pub type Parameters = BTreeMap<String, Value>;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResultSemantics {
-    Ordered,
-    Bag,
-}
-
-impl ResultSemantics {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Ordered => "ordered",
-            Self::Bag => "bag",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Mutation {
-    pub cypher: String,
-    pub parameters: Parameters,
-}
-
-impl Mutation {
-    pub fn new(cypher: impl Into<String>) -> Self {
-        Self {
-            cypher: cypher.into(),
-            parameters: Parameters::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FuzzCase {
-    pub seed: u64,
-    pub shape: String,
-    pub mutations: Vec<Mutation>,
-    pub query: QueryInvocation,
-    pub(crate) query_ast: QueryAst,
-    pub graph_tlp: GraphTlpCase,
-    pub graph_tlp_aggregate: GraphTlpCase,
-    pub graph_predicate_rewrite: GraphPredicateRewriteCase,
-    pub metamorphic: MetamorphicCase,
-    pub index_enabled: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QueryInvocation {
-    pub cypher: String,
-    pub parameters: Parameters,
-    pub result_semantics: ResultSemantics,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GraphTlpCase {
-    pub name: String,
-    pub original: QueryInvocation,
-    pub predicate_true: QueryInvocation,
-    pub predicate_false: QueryInvocation,
-    pub predicate_null: QueryInvocation,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GraphPredicateRewriteCase {
-    pub name: String,
-    pub original: QueryInvocation,
-    pub rewritten: QueryInvocation,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MetamorphicCase {
-    pub graph_isomorphism: MetamorphicRelation,
-    pub direction_reversal: Option<MetamorphicRelation>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MetamorphicRelation {
-    pub name: &'static str,
-    pub applicability_guard: &'static str,
-    pub mutations: Vec<Mutation>,
-    pub query: QueryInvocation,
-    pub identifier_prefix_to_strip: Option<String>,
-}
+pub use query_workloads::{
+    FuzzCase, GraphPredicateRewriteCase, GraphTlpCase, MetamorphicCase, MetamorphicRelation,
+    Mutation, Parameters, QueryInvocation, ResultSemantics,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilityProfile {
@@ -234,6 +167,7 @@ impl CapabilityProfile {
                 "aggregate",
                 "top_n",
                 "missing_or_null",
+                "scalar_regex_filter",
             ],
             compares_duplicates: true,
             compares_missing_and_null: true,
@@ -491,6 +425,7 @@ pub struct ReplayBundle {
     pub graph_predicate_rewrite: GraphPredicateRewriteCase,
     pub metamorphic: MetamorphicCase,
     pub index_enabled: bool,
+    statement_clock: String,
 }
 
 impl ReplayBundle {
@@ -506,6 +441,7 @@ impl ReplayBundle {
             graph_predicate_rewrite: case.graph_predicate_rewrite.clone(),
             metamorphic: case.metamorphic.clone(),
             index_enabled: case.index_enabled,
+            statement_clock: optimizer_qualification::qualification_clock().to_rfc3339(),
         }
     }
 
@@ -516,6 +452,7 @@ impl ReplayBundle {
             "shape": self.shape,
             "index_enabled": self.index_enabled,
             "optimizer_search_variants": ["memo", "direct_fallback"],
+            "statement_clock": self.statement_clock,
             "mutations": self.mutations.iter().map(mutation_json).collect::<Vec<_>>(),
             "query": query_invocation_json(&self.query),
             "query_ast": self.query_ast.json(),
@@ -558,6 +495,7 @@ pub struct ExecutionObservation {
     pub optimizer_search: Option<String>,
     pub search_mode: Option<String>,
     pub plan_fingerprint: Option<String>,
+    pub query_digest: Option<String>,
     pub optimizer_stages: Vec<String>,
     pub outcome: ExecutionOutcome,
 }
@@ -569,6 +507,7 @@ impl ExecutionObservation {
             "optimizer_search": self.optimizer_search,
             "search_mode": self.search_mode,
             "plan_fingerprint": self.plan_fingerprint,
+            "query_digest": self.query_digest,
             "optimizer_stages": self.optimizer_stages,
             "outcome": self.outcome.json(),
         })
@@ -943,62 +882,15 @@ fn execute_snapshot_case(
     query: &QueryInvocation,
     optimizer_search: OptimizerSearchDirective,
 ) -> ExecutionObservation {
-    let snapshot_epoch = Some(snapshot_epoch);
-    let optimizer_search_name = optimizer_search.as_str();
-    let hinted_cypher = format!(
-        "CYPHER system.optimizer_search = '{optimizer_search_name}' {}",
-        query.cypher
-    );
-
-    let explain = match snapshot.explain_query_with_params(&hinted_cypher, &query.parameters) {
-        Ok(explain) => explain,
-        Err(error) => {
-            return snapshot_error_observation(
-                snapshot_epoch,
-                Some(optimizer_search_name.to_string()),
-                "explain",
-                error,
-            );
-        }
-    };
-    let search_mode = Some(explain.trace.search_mode.as_str().to_string());
-    let plan_fingerprint = Some(explain.trace.selected_plan_fingerprint.clone());
-    let optimizer_stages = explain
-        .trace
-        .stage_events
-        .iter()
-        .map(|stage| {
-            let stats = stage.stats();
-            format!(
-                "{}:{}:{}:{}:{}:{}",
-                stage.name(),
-                stage.apply_order().as_str(),
-                stats.input_count,
-                stats.output_count,
-                stats.applied_rules,
-                stats.skipped_rules,
-            )
-        })
-        .collect();
-
-    match snapshot.query_with_params(&hinted_cypher, &query.parameters) {
-        Ok(output) => ExecutionObservation {
-            snapshot_epoch,
-            optimizer_search: Some(optimizer_search_name.to_string()),
-            search_mode,
-            plan_fingerprint,
-            optimizer_stages,
-            outcome: ExecutionOutcome::Rows(output.rows.into_rows()),
-        },
-        Err(error) => ExecutionObservation {
-            snapshot_epoch,
-            optimizer_search: Some(optimizer_search_name.to_string()),
-            search_mode,
-            plan_fingerprint,
-            optimizer_stages,
-            outcome: error_outcome("execute", error),
-        },
-    }
+    optimizer_qualification::execute_qualified(
+        snapshot,
+        snapshot_epoch,
+        query,
+        hawdb::optimizer::OptimizerQualificationOptions::default(),
+        optimizer_search,
+        &[],
+    )
+    .0
 }
 
 fn execute_graph_tlp_case(case: &FuzzCase) -> GraphTlpEvidence {
@@ -1383,6 +1275,7 @@ fn snapshot_error_observation(
         optimizer_search,
         search_mode: None,
         plan_fingerprint: None,
+        query_digest: None,
         optimizer_stages: Vec::new(),
         outcome: error_outcome(phase, error),
     }
@@ -1611,9 +1504,16 @@ fn has_index_mutation(mutations: &[Mutation]) -> bool {
 }
 
 pub fn compare_rows(left: &[Row], right: &[Row], semantics: ResultSemantics) -> Result<(), String> {
+    let equal = |left: &[Row], right: &[Row]| {
+        left.len() == right.len()
+            && left
+                .iter()
+                .zip(right)
+                .all(|(left, right)| compare_row(left, right).is_eq())
+    };
     match semantics {
         ResultSemantics::Ordered => {
-            if left == right {
+            if equal(left, right) {
                 Ok(())
             } else {
                 Err(format!(
@@ -1628,7 +1528,7 @@ pub fn compare_rows(left: &[Row], right: &[Row], semantics: ResultSemantics) -> 
             let mut right = right.to_vec();
             left.sort_by(compare_row);
             right.sort_by(compare_row);
-            if left == right {
+            if equal(&left, &right) {
                 Ok(())
             } else {
                 Err(format!(
@@ -1642,7 +1542,33 @@ pub fn compare_rows(left: &[Row], right: &[Row], semantics: ResultSemantics) -> 
 }
 
 fn compare_row(left: &Row, right: &Row) -> Ordering {
-    left.iter().cmp(right.iter())
+    left.iter()
+        .zip(right)
+        .map(|((left_name, left), (right_name, right))| {
+            left_name
+                .cmp(right_name)
+                .then_with(|| compare_value(left, right))
+        })
+        .find(|order| !order.is_eq())
+        .unwrap_or_else(|| left.len().cmp(&right.len()))
+}
+
+fn compare_value(left: &Value, right: &Value) -> Ordering {
+    match (left, right) {
+        // SQL numeric identity intentionally ignores scale. The result oracle
+        // must also detect representation changes, including nested values.
+        (Value::Decimal(left), Value::Decimal(right)) => {
+            left.to_le_bytes().cmp(&right.to_le_bytes())
+        }
+        (Value::List(left), Value::List(right)) => left
+            .iter()
+            .zip(right)
+            .map(|(left, right)| compare_value(left, right))
+            .find(|order| !order.is_eq())
+            .unwrap_or_else(|| left.len().cmp(&right.len())),
+        (Value::Map(left), Value::Map(right)) => compare_row(left, right),
+        _ => left.cmp(right),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1738,6 +1664,7 @@ pub struct CampaignCaseReport {
     pub optimizer_stages: Vec<String>,
     pub plan_coverage_novel: bool,
     pub sql: SqlCaseReport,
+    pub capabilities: JsonValue,
     pub failure: Option<FailureReport>,
     pub graph_tlp_failure: Option<GraphTlpFailureReport>,
     pub graph_tlp_aggregate_failure: Option<GraphTlpAggregateFailureReport>,
@@ -1768,6 +1695,7 @@ impl CampaignCaseReport {
             "optimizer_stages": self.optimizer_stages,
             "plan_coverage_novel": self.plan_coverage_novel,
             "sql": self.sql.json(),
+            "capabilities": self.capabilities,
             "failure": self.failure.as_ref().map(FailureReport::json),
             "graph_tlp_failure": self.graph_tlp_failure.as_ref().map(GraphTlpFailureReport::json),
             "graph_tlp_aggregate_failure": self.graph_tlp_aggregate_failure.as_ref().map(GraphTlpAggregateFailureReport::json),
@@ -1800,6 +1728,11 @@ impl CampaignReport {
         let tlp_aggregate_profile = CapabilityProfile::graph_tlp_aggregate_v1();
         let predicate_rewrite_profile = CapabilityProfile::graph_predicate_rewrite_v1();
         let metamorphic_profile = CapabilityProfile::graph_metamorphic_v1();
+        let cases = self
+            .cases
+            .iter()
+            .map(CampaignCaseReport::json)
+            .collect::<Vec<_>>();
         json!({
             "protocol": CAMPAIGN_PROTOCOL,
             "success": self.success(),
@@ -1810,7 +1743,7 @@ impl CampaignReport {
             "failed_case_count": self.failed_case_count,
             "complete_shape_coverage": self.complete_shape_coverage,
             "plan_coverage": self.plan_coverage.json(),
-            "oracles": ["plan_differential", "graph_tlp", "graph_tlp_aggregate", "graph_predicate_rewrite", "graph_metamorphic", "sql_tlp", "sql_tlp_aggregate", "sql_predicate_rewrite", "sql_join_rewrite", "sql_operator_relations", "sql_maintenance"],
+            "oracles": ["plan_differential", "graph_tlp", "graph_tlp_aggregate", "graph_predicate_rewrite", "graph_metamorphic", "sql_tlp", "sql_tlp_aggregate", "sql_predicate_rewrite", "sql_join_rewrite", "sql_operator_relations", "sql_maintenance", "capabilities"],
             "oracle_protocols": {
                 "plan_differential": PLAN_DIFFERENTIAL_PROTOCOL,
                 "graph_tlp": GRAPH_TLP_PROTOCOL,
@@ -1823,6 +1756,7 @@ impl CampaignReport {
                 "sql_join_rewrite": SQL_JOIN_REWRITE_PROTOCOL,
                 "sql_operator_relations": sql_oracle::extended_protocol(),
                 "sql_maintenance": sql_oracle::stateful::PROTOCOL,
+                "capabilities": capability_oracle::PROTOCOL,
             },
             "capability_profiles": {
                 "plan_differential": capability_profile_json(&plan_profile),
@@ -1834,12 +1768,14 @@ impl CampaignReport {
                 "sql_tlp_aggregate": sql_oracle::sql_capability_profile_json(true),
                 "sql_predicate_rewrite": sql_oracle::sql_predicate_rewrite_capability_profile_json(),
                 "sql_join_rewrite": sql_oracle::sql_join_rewrite_capability_profile_json(),
+                "capabilities": { "families": capability_oracle::FAMILIES, "reference": "bounded_independent_models", "replay": "shiro capabilities replay FILE" },
                 "sql_maintenance": { "materialized_views": ["projection", "grouped", "global", "indexed_projection"], "aggregates": ["count", "sum", "min", "max"], "reference": "unindexed_table_full_select", "transactions": ["commit", "rollback", "pinned_old_snapshot"], "index_ranges": ["interval", "equal", "reversed", "null"], "storage_profiles": ["memory", "disk_shadow", "disk_demand_paged"], "persistence": ["wal_replay", "checkpoint_reopen", "checkpoint_plus_wal"], "power_loss_qualification": false },
                 "sql_operator_relations": { "oracles": ["norec_filter", "dqp", "having_tlp", "distinct_tlp", "sum_tlp", "distinct_count", "cross_join", "ordered_limit"], "norec_reference": "sum_filter_not_case_when", "dqp_same_sql": true, "dqp_distinct_plan_reported_separately": true },
             },
-            "sql_maintenance_coverage": sql_oracle::stateful::coverage(&self.cases.iter().map(CampaignCaseReport::json).collect::<Vec<_>>()),
-            "sql_operator_coverage": sql_oracle::extended_coverage(&self.cases.iter().map(CampaignCaseReport::json).collect::<Vec<_>>()),
-            "cases": self.cases.iter().map(CampaignCaseReport::json).collect::<Vec<_>>(),
+            "capability_coverage": capability_oracle::coverage(&cases),
+            "sql_maintenance_coverage": sql_oracle::stateful::coverage(&cases),
+            "sql_operator_coverage": sql_oracle::extended_coverage(&cases),
+            "cases": cases,
         })
     }
 }
@@ -1958,13 +1894,20 @@ pub fn run_campaign_until(
             MetamorphicOracleResult::Failure(failure) => (false, Some(failure)),
         };
         let sql = sql_oracle::evaluate_sql_case(case.seed, index, case.index_enabled);
+        let capabilities = capability_oracle::evaluate(case.seed, index);
         let success = plan_differential_success
             && graph_tlp_success
             && graph_tlp_aggregate_success
             && graph_predicate_rewrite_success
             && metamorphic_success
-            && sql.success;
+            && sql.success
+            && capabilities["success"] == true;
         let plan_coverage_novel = plan_coverage.observe(
+            memo_plan_fingerprint.as_deref(),
+            direct_fallback_plan_fingerprint.as_deref(),
+        );
+        plan_coverage.observe_agreement(
+            plan_differential_success,
             memo_plan_fingerprint.as_deref(),
             direct_fallback_plan_fingerprint.as_deref(),
         );
@@ -1996,6 +1939,7 @@ pub fn run_campaign_until(
             optimizer_stages,
             plan_coverage_novel,
             sql,
+            capabilities,
             failure,
             graph_tlp_failure,
             graph_tlp_aggregate_failure,
@@ -2068,6 +2012,11 @@ pub fn merge_campaign_report_json(
             case["memo_plan_fingerprint"].as_str(),
             case["direct_fallback_plan_fingerprint"].as_str(),
         );
+        plan_coverage.observe_agreement(
+            case["plan_differential_success"].as_bool() == Some(true),
+            case["memo_plan_fingerprint"].as_str(),
+            case["direct_fallback_plan_fingerprint"].as_str(),
+        );
         case["plan_coverage_novel"] = JsonValue::Bool(novel);
         if let Some(stages) = case["optimizer_stages"].as_array() {
             let stages = stages
@@ -2101,6 +2050,7 @@ pub fn merge_campaign_report_json(
         complete && campaign.case_index.is_none() && has_complete_shape_coverage_json(&cases),
     );
     json["plan_coverage"] = plan_coverage.report().json();
+    json["capability_coverage"] = capability_oracle::coverage(&cases);
     json["sql_operator_coverage"] = sql_oracle::extended_coverage(&cases);
     json["sql_maintenance_coverage"] = sql_oracle::stateful::coverage(&cases);
     json["cases"] = JsonValue::Array(cases);
@@ -2108,23 +2058,28 @@ pub fn merge_campaign_report_json(
 }
 
 fn has_complete_shape_coverage_json(cases: &[JsonValue]) -> bool {
-    json_observes_all(
-        cases,
-        &["shape"],
-        &CapabilityProfile::plan_differential_v1().shapes,
-    ) && json_observes_all(
-        cases,
-        &["graph_tlp_shape"],
-        &CapabilityProfile::graph_tlp_v1().shapes,
-    ) && json_observes_all(
-        cases,
-        &["graph_tlp_aggregate_shape"],
-        &CapabilityProfile::graph_tlp_aggregate_v1().shapes,
-    ) && json_observes_all(
-        cases,
-        &["graph_predicate_rewrite_shape"],
-        &CapabilityProfile::graph_predicate_rewrite_v1().shapes,
-    ) && json_observes_all(cases, &["sql", "shape"], &sql_oracle::SQL_QUERY_SHAPES)
+    capability_oracle::coverage(cases)["complete"] == true
+        && json_observes_all(
+            cases,
+            &["shape"],
+            &CapabilityProfile::plan_differential_v1().shapes,
+        )
+        && json_observes_all(
+            cases,
+            &["graph_tlp_shape"],
+            &CapabilityProfile::graph_tlp_v1().shapes,
+        )
+        && json_observes_all(
+            cases,
+            &["graph_tlp_aggregate_shape"],
+            &CapabilityProfile::graph_tlp_aggregate_v1().shapes,
+        )
+        && json_observes_all(
+            cases,
+            &["graph_predicate_rewrite_shape"],
+            &CapabilityProfile::graph_predicate_rewrite_v1().shapes,
+        )
+        && json_observes_all(cases, &["sql", "shape"], &sql_oracle::SQL_QUERY_SHAPES)
         && json_observes_all(
             cases,
             &["sql", "predicate_rewrite_shape"],
@@ -2158,7 +2113,11 @@ fn has_complete_shape_coverage(cases: &[CampaignCaseReport]) -> bool {
     let graph_tlp_aggregate_profile = CapabilityProfile::graph_tlp_aggregate_v1();
     let graph_predicate_rewrite_profile = CapabilityProfile::graph_predicate_rewrite_v1();
 
-    observes_all_shapes(
+    capability_oracle::FAMILIES.iter().all(|family| {
+        cases.iter().any(|case| {
+            case.capabilities["family"] == *family && case.capabilities["success"] == true
+        })
+    }) && observes_all_shapes(
         cases.iter().map(|case| case.shape.as_str()),
         &plan_profile.shapes,
     ) && observes_all_shapes(
@@ -2202,16 +2161,38 @@ fn error_class(error: &HawDBError) -> &'static str {
         HawDBError::Parse(_) => "parse",
         HawDBError::Semantic(_) => "semantic",
         HawDBError::Execution(_)
+        | HawDBError::Constraint {
+            surface: RelationalErrorSurface::Execution,
+            ..
+        }
+        | HawDBError::Schema {
+            surface: RelationalErrorSurface::Execution,
+            ..
+        }
         | HawDBError::ReadBudgetExceeded(_)
         | HawDBError::ResourceBudgetExceeded(_)
         | HawDBError::GraphExpansionCandidateLimitExceeded { .. }
         | HawDBError::GraphExpansionPayloadLimitExceeded { .. }
         | HawDBError::TransactionConflict { .. }
+        | HawDBError::TransactionRetryRequired(_)
         | HawDBError::TransactionReadDependencyRefused { .. }
-        | HawDBError::BranchCommandUnsupported { .. } => "execution",
+        | HawDBError::BranchCommandUnsupported { .. }
+        | HawDBError::SearchProjectionRebuildRefused { .. }
+        | HawDBError::SearchProjectionEpochAdvanceRefused { .. } => "execution",
         HawDBError::Storage(_)
+        | HawDBError::Constraint {
+            surface: RelationalErrorSurface::Storage,
+            ..
+        }
+        | HawDBError::Schema {
+            surface: RelationalErrorSurface::Storage,
+            ..
+        }
         | HawDBError::FileDescriptors(_)
         | HawDBError::StorageIntegrity(_)
+        | HawDBError::WalRecoveryIo { .. }
+        | HawDBError::PublishOutcomeUnknown { .. }
+        | HawDBError::SearchProjectionMismatch { .. }
         | HawDBError::AppendSequenceExhausted { .. }
         | HawDBError::BranchBusy { .. }
         | HawDBError::BranchReclamationBlocked { .. } => "storage",
@@ -2297,38 +2278,7 @@ fn row_json(row: &Row) -> JsonValue {
     )
 }
 
-fn typed_value_json(value: &Value) -> JsonValue {
-    match value {
-        Value::Null => json!({"type": "null"}),
-        Value::Bool(value) => json!({"type": "bool", "value": value}),
-        Value::Int(value) => json!({"type": "int", "value": value}),
-        Value::Float(value) => json!({
-            "type": "float",
-            "bits": format!("{:016x}", value.to_bits()),
-        }),
-        Value::String(value) => json!({"type": "string", "value": value}),
-        Value::Uuid(value) => json!({"type": "uuid", "value": value.to_string()}),
-        Value::Vector(value) => json!({
-            "type": "vector",
-            "hex": value.encoded().iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
-        }),
-        Value::Binary(value) => json!({
-            "type": "binary",
-            "hex": value.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
-        }),
-        Value::List(values) => json!({
-            "type": "list",
-            "values": values.iter().map(typed_value_json).collect::<Vec<_>>(),
-        }),
-        Value::Map(values) => {
-            let values = values
-                .iter()
-                .map(|(key, value)| (key.clone(), typed_value_json(value)))
-                .collect::<JsonMap<_, _>>();
-            json!({"type": "map", "values": values})
-        }
-    }
-}
+use query_workloads::typed_value_json;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FuzzError {
@@ -2413,6 +2363,68 @@ mod tests {
             json!({
                 "type": "vector", "hex": "020000000000803f00000080"
             })
+        );
+    }
+
+    #[test]
+    fn decimal_report_preserves_exact_digits_and_scale() {
+        let value = Value::Decimal("9007199254740993.0100".parse().unwrap());
+        assert_eq!(
+            typed_value_json(&value),
+            json!({"type": "decimal", "value": "9007199254740993.0100"})
+        );
+        let same_number = Value::Decimal("9007199254740993.01".parse().unwrap());
+        assert_eq!(value, same_number);
+        let wrap = |value: Value| {
+            [
+                value.clone(),
+                Value::List(vec![value.clone()]),
+                Value::Map(BTreeMap::from([(
+                    "nested".into(),
+                    Value::List(vec![value]),
+                )])),
+            ]
+        };
+        for (left, right) in wrap(value).into_iter().zip(wrap(same_number)) {
+            let left = row([("value", left)]);
+            let right = row([("value", right)]);
+            for semantics in [ResultSemantics::Ordered, ResultSemantics::Bag] {
+                assert!(compare_rows(
+                    std::slice::from_ref(&left),
+                    std::slice::from_ref(&left),
+                    semantics
+                )
+                .is_ok());
+                assert!(compare_rows(
+                    std::slice::from_ref(&left),
+                    std::slice::from_ref(&right),
+                    semantics
+                )
+                .is_err());
+                assert!(compare_rows(
+                    &[left.clone(), right.clone()],
+                    &[left.clone(), left.clone()],
+                    semantics
+                )
+                .is_err());
+            }
+            assert!(compare_rows(
+                &[left.clone(), right.clone(), left.clone()],
+                &[right, left.clone(), left],
+                ResultSemantics::Bag
+            )
+            .is_ok());
+        }
+    }
+
+    #[test]
+    fn typed_value_json_preserves_temporal_values() {
+        let value = Value::DateTime(
+            hawdb::temporal::parse_datetime("2026-10-30T12:00:00+02:00").expect("datetime"),
+        );
+        assert_eq!(
+            typed_value_json(&value),
+            json!({"type": "datetime", "value": "2026-10-30T12:00:00+02:00"})
         );
     }
 
@@ -2532,6 +2544,32 @@ mod tests {
         assert_eq!(
             json["oracle_protocols"]["sql_join_rewrite"],
             SQL_JOIN_REWRITE_PROTOCOL
+        );
+    }
+
+    #[test]
+    fn scalar_regex_plan_differential_fuzzes_literal_and_parameter_patterns() {
+        let mut generator = StateAwareCaseGenerator::new(7);
+        let mut literal = false;
+        let mut parameter = false;
+        for index in 0..QUERY_SHAPE_COUNT * 32 {
+            let case = generator.case(index);
+            if case.shape != "scalar_regex_filter" {
+                continue;
+            }
+            literal |= case.query.cypher.contains(" =~ '");
+            parameter |= case.query.cypher.contains(" =~ $pattern");
+            hawdb::cypher::parse(&case.query.cypher).unwrap();
+            assert!(
+                PlanDifferentialOracle.evaluate(&case).is_equivalent(),
+                "{}",
+                case.query.cypher
+            );
+        }
+        assert!(literal, "scalar regex literal pattern was not generated");
+        assert!(
+            parameter,
+            "scalar regex parameter pattern was not generated"
         );
     }
 

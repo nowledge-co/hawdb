@@ -1,7 +1,7 @@
 // Copyright 2026 Nowledge
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::case::{Case, Operation, Program, FORMAT_VERSION};
+use crate::case::{Case, Mode, Operation, Program, FORMAT_VERSION};
 use crate::engine::Observation;
 use std::fmt::Write;
 
@@ -10,6 +10,7 @@ pub fn parse(text: &str) -> Result<Case, String> {
         format_version: FORMAT_VERSION,
         seed: 0,
         index: 0,
+        mode: Mode::Optimistic,
         initial: Default::default(),
         transactions: std::array::from_fn(|_| Program {
             operations: Vec::new(),
@@ -19,6 +20,7 @@ pub fn parse(text: &str) -> Result<Case, String> {
     };
     let mut finished = [false; 2];
     let mut metadata = [false; 2];
+    let mut mode_seen = false;
     for (index, line) in text.lines().enumerate() {
         let fields: Vec<_> = line
             .split('#')
@@ -49,6 +51,20 @@ pub fn parse(text: &str) -> Result<Case, String> {
             }
             continue;
         }
+        if command == "MODE" {
+            if fields.len() != 2 || !case.schedule.is_empty() || mode_seen {
+                return Err(error(
+                    "MODE OPTIMISTIC|PESSIMISTIC must appear once before transaction steps",
+                ));
+            }
+            mode_seen = true;
+            case.mode = match fields[1].to_ascii_uppercase().as_str() {
+                "OPTIMISTIC" => Mode::Optimistic,
+                "PESSIMISTIC" => Mode::Pessimistic,
+                _ => return Err(error("expected MODE OPTIMISTIC or MODE PESSIMISTIC")),
+            };
+            continue;
+        }
         if command == "SEED" || command == "INDEX" {
             let slot = usize::from(command == "INDEX");
             if fields.len() != 2 || !case.schedule.is_empty() || metadata[slot] {
@@ -70,7 +86,7 @@ pub fn parse(text: &str) -> Result<Case, String> {
         let tx = match command.as_str() {
             "T1" => 0,
             "T2" => 1,
-            _ => return Err(error("expected ROW, SEED, INDEX, T1 or T2")),
+            _ => return Err(error("expected ROW, SEED, INDEX, MODE, T1 or T2")),
         };
         if finished[tx] || fields.len() < 2 {
             return Err(error("missing operation or transaction already finished"));
@@ -78,6 +94,10 @@ pub fn parse(text: &str) -> Result<Case, String> {
         let op = fields[1].to_ascii_uppercase();
         let operation = match (op.as_str(), fields.len()) {
             ("READ", 2) => Some(Operation::Read),
+            ("READ_FOR_SHARE", 2) => Some(Operation::LockingRead { exclusive: false }),
+            ("READ_FOR_UPDATE", 2) => Some(Operation::LockingRead { exclusive: true }),
+            ("GRAPH_READ", 2) => Some(Operation::GraphRead),
+            ("GRAPH_UPDATE", 4) => Some(Operation::GraphUpdate { id: number(fields[2])?, value: number(fields[3])? }),
             ("UPDATE", 4) => Some(Operation::Update { id: number(fields[2])?, value: number(fields[3])? }),
             ("INSERT", 4) => Some(Operation::Insert { id: number(fields[2])?, value: number(fields[3])? }),
             ("DELETE", 3) => Some(Operation::Delete { id: number(fields[2])? }),
@@ -87,7 +107,7 @@ pub fn parse(text: &str) -> Result<Case, String> {
                 case.transactions[tx].rollback = op == "ROLLBACK";
                 None
             }
-            _ => return Err(error("use READ, UPDATE <id> <value>, INSERT <id> <value>, DELETE <id>, BROAD_UPDATE <minimum> <value>, COMMIT or ROLLBACK")),
+            _ => return Err(error("use READ, READ_FOR_SHARE, READ_FOR_UPDATE, GRAPH_READ, GRAPH_UPDATE <id> <value>, UPDATE <id> <value>, INSERT <id> <value>, DELETE <id>, BROAD_UPDATE <minimum> <value>, COMMIT or ROLLBACK")),
         };
         if let Some(operation) = operation {
             case.transactions[tx].operations.push(operation);
@@ -111,6 +131,10 @@ fn operation(op: &Operation) -> String {
         Operation::Insert { id, value } => format!("INSERT {id} {value}"),
         Operation::Delete { id } => format!("DELETE {id}"),
         Operation::BroadUpdate { minimum, value } => format!("BROAD_UPDATE {minimum} {value}"),
+        Operation::LockingRead { exclusive: false } => "READ_FOR_SHARE".into(),
+        Operation::LockingRead { exclusive: true } => "READ_FOR_UPDATE".into(),
+        Operation::GraphRead => "GRAPH_READ".into(),
+        Operation::GraphUpdate { id, value } => format!("GRAPH_UPDATE {id} {value}"),
     }
 }
 
@@ -119,6 +143,9 @@ pub fn format(case: &Case) -> String {
         "# HawDB MVCC case v1; both snapshots are captured before step 1.\nSEED {}\nINDEX {}\n",
         case.seed, case.index
     );
+    if case.mode == Mode::Pessimistic {
+        text.push_str("MODE PESSIMISTIC\n");
+    }
     for (id, value) in &case.initial {
         let _ = writeln!(text, "ROW {id} {value}");
     }
@@ -164,7 +191,8 @@ pub fn explain(case: &Case, observation: &Observation) -> String {
         let _ = writeln!(text, "{status} {:03} T{} {name}", step + 1, tx + 1);
         if let Some(op) = op {
             let (sql, parameters) = op.sql();
-            let _ = writeln!(text, "  SQL: {sql}\n  parameters: {parameters:?}");
+            let language = if op.is_graph() { "Cypher" } else { "SQL" };
+            let _ = writeln!(text, "  {language}: {sql}\n  parameters: {parameters:?}");
         }
         for event in observation
             .trace
@@ -172,12 +200,18 @@ pub fn explain(case: &Case, observation: &Observation) -> String {
             .filter(|event| event["step"].as_u64() == Some(step as u64))
         {
             for (key, label) in [
+                ("expected_wait", "expected to wait"),
+                ("expected_outcome", "expected outcome"),
+                ("outcome", "actual outcome"),
+                ("error", "error"),
                 ("expected_read", "expected rows"),
                 ("read", "actual rows"),
                 ("expected_terminal", "expected outcome"),
                 ("terminal", "actual outcome"),
                 ("expected_visible", "expected visible"),
                 ("visible", "actual visible"),
+                ("expected_visible_graph", "expected visible nodes"),
+                ("visible_graph", "actual visible nodes"),
             ] {
                 if let Some(value) = event.get(key) {
                     let _ = writeln!(text, "  {label}: {value}");

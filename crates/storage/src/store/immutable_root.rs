@@ -94,6 +94,10 @@ impl BranchRuntimeBinding {
         &self.immutable_store_root
     }
 
+    pub(super) fn catalog_path(&self) -> &Path {
+        &self.catalog_path
+    }
+
     pub(super) fn head_path(&self) -> &Path {
         &self.head_path
     }
@@ -254,7 +258,9 @@ impl GraphStore {
     pub(super) fn prepare_checkpoint_branch_root(
         &self,
         manifest: DurableManifest,
+        work: Option<&crate::background::CheckpointWorkContext>,
     ) -> Result<Option<PreparedCheckpointBranchRoot>> {
+        let work = crate::immutable_object::BlockWork(work);
         let durable = self.durable.as_ref().ok_or_else(|| {
             HawDBError::StorageIntegrity("checkpoint root has no durable store".into())
         })?;
@@ -285,10 +291,10 @@ impl GraphStore {
         objects
             .publish(durable_manifest, &manifest_bytes)
             .map_err(HawDBError::from_storage_error)?;
-        let plan = durable.checkpoint_closure_plan(manifest)?;
+        let plan = durable.checkpoint_closure_plan_with_work(manifest, work)?;
         let checkpoint_bindings = checkpoint_artifact_bindings(&durable.root_path, plan.inputs())?;
         let closure = plan
-            .publish(&mut objects)
+            .publish_with_work(&mut objects, work)
             .map_err(HawDBError::from_storage_error)?;
         let root = SealedRoot {
             checkpoint_epoch: manifest.checkpoint_commit_epoch,
@@ -418,13 +424,30 @@ impl GraphStore {
         let lease = self.branch_lease.as_ref().ok_or_else(|| {
             HawDBError::StorageIntegrity("admitted branch has no ownership lease".into())
         })?;
-        crate::branch_reclamation::reclaim_owned_project(
+        let report = crate::branch_reclamation::reclaim_owned_project(
             &branch.catalog_path,
             &branch.immutable_store_root,
             lease,
             &branch.head,
             limits,
-        )
+            crate::branch_reclamation::ReclamationTrigger::Explicit,
+        )?;
+        durable.record_object_reclamation(&report);
+        Ok(report)
+    }
+
+    /// Retries the automatic immutable-object sweep when an earlier pass left
+    /// debt, for a checkpoint request that had nothing new to publish (#1736).
+    /// Like every automatic pass, a failure is recorded, never returned.
+    #[doc(hidden)]
+    pub fn retry_pending_object_reclamation(&self) {
+        if self.ensure_usable().is_err() {
+            return;
+        }
+        if let (Some(durable), Some(owner)) = (self.durable.as_ref(), self.branch_lease.as_deref())
+        {
+            durable.retry_object_reclamation(owner);
+        }
     }
 
     #[doc(hidden)]
@@ -763,7 +786,7 @@ impl GraphStore {
         // pinned by the main UUID lease throughout this operation.
         for reference in &root.checkpoint_references {
             objects
-                .read(*reference)
+                .verify_stored_trusting_publication(*reference)
                 .map_err(HawDBError::from_storage_error)?;
         }
         objects
@@ -877,10 +900,7 @@ impl GraphStore {
             .map_err(|error| {
                 BranchAdmissionError::Recovery(HawDBError::from_storage_error(error))
             })?;
-        if matches!(
-            request.replay_config.recovery_mode,
-            RecoveryMode::AutoRepairTornTail | RecoveryMode::DoctorRepairTornTail
-        ) {
+        if request.replay_config.recovery_mode == RecoveryMode::DoctorRepairTornTail {
             return Err(BranchAdmissionError::Recovery(HawDBError::Storage(
                 "automatic repair of a branch private WAL requires branch-aware repair publication"
                     .into(),
@@ -1935,7 +1955,11 @@ impl GraphStore {
             .as_ref()
             .and_then(|durable| durable.branch_runtime.clone())
             .ok_or_else(|| HawDBError::Storage("store has no admitted branch".to_string()))?;
-        ready_branch_record(
+        // The writer already owns its branch; this is a revalidation before a
+        // publication that waits for the metadata lock anyway. Wait here too,
+        // so another owner's publication or object sweep (#1736) cannot fail
+        // this branch's checkpoint as "busy".
+        ready_branch_record_waiting(
             &branch.catalog_path,
             branch_catalog::BranchId::new(hawdb_core::Uuid::from_bytes(branch.head.branch_id))
                 .map_err(HawDBError::from_storage_error)?,
@@ -2614,6 +2638,29 @@ pub(super) fn ready_branch_record(
     )
 }
 
+/// [`ready_branch_record`] for an owner that already holds its branch and is
+/// about to publish: waits for the catalog metadata lock instead of
+/// reporting the project busy.
+fn ready_branch_record_waiting(
+    catalog_path: &Path,
+    branch_id: branch_catalog::BranchId,
+    expected_metadata_revision: u64,
+) -> std::result::Result<ReadyBranchRecord, BranchAdmissionError> {
+    let project_directory = catalog_path
+        .parent()
+        .ok_or(BranchAdmissionError::IdentityMismatch(
+            "branch catalog has no project directory",
+        ))?;
+    let metadata = branch_catalog::CatalogMetadataLease::acquire_blocking(project_directory)
+        .map_err(BranchAdmissionError::Catalog)?;
+    ready_branch_record_with_metadata(
+        catalog_path,
+        branch_id,
+        expected_metadata_revision,
+        &metadata,
+    )
+}
+
 fn validate_captured_admission_namespace(
     project: &CapturedProject,
     branch: &DatabaseDirectoryLease,
@@ -2922,6 +2969,7 @@ fn combine_recovery_reports(
         .saturating_add(private_wal.replayed_wal_bytes);
     sealed_root.torn_tail_ignored |= private_wal.torn_tail_ignored;
     sealed_root.torn_tail_repaired |= private_wal.torn_tail_repaired;
+    sealed_root.wal_repair = private_wal.wal_repair.or(sealed_root.wal_repair);
     sealed_root.discarded_wal_tail_bytes = sealed_root
         .discarded_wal_tail_bytes
         .saturating_add(private_wal.discarded_wal_tail_bytes);
@@ -3681,6 +3729,7 @@ mod tests {
         for read_only in [false, true] {
             let mut request = request();
             request.read_only = read_only;
+            request.replay_config.recovery_mode = RecoveryMode::Strict;
             let admitted = GraphStore::admit_captured_branch(request).unwrap();
             assert_eq!(admitted.store().node_count_for_label(None), 2);
             assert_eq!(
@@ -4057,6 +4106,9 @@ mod tests {
             )
             .unwrap();
     }
+
+    mod branch_wal_reclamation;
+    mod object_reclamation;
 
     fn write_row(branch: &mut AdmittedBranchStore, body: &str) {
         let (store, catalog) = branch.store_and_catalog_mut();
@@ -4625,6 +4677,12 @@ mod tests {
                     candidate.catch_up(&captured).unwrap();
                     assert_eq!(candidate.commit_epoch(), branch.store().commit_epoch());
                 }
+                // Allocation skipped the uncertain name; the candidate never
+                // overwrote or removed it while no newer head was durable.
+                assert_eq!(
+                    fs::read(&orphan_path).unwrap(),
+                    b"uncertain prior checkpoint publication"
+                );
                 let epoch = branch.store().commit_epoch();
                 let expected_rows = branch
                     .store()
@@ -4677,10 +4735,11 @@ mod tests {
                 reader.ensure_usable().unwrap();
                 assert_eq!(branch.head().logical_commit_epoch, source_epoch);
                 assert!(branch.head().active_wal.generation > orphan_generation);
-                assert_eq!(
-                    fs::read(&orphan_path).unwrap(),
-                    b"uncertain prior checkpoint publication"
-                );
+                // The durable head now selects a newer generation, which
+                // resolves the earlier uncertainty: like a data-root generation
+                // below the selected checkpoint, the unselected name is
+                // reclaimed (#1727).
+                assert!(!orphan_path.exists());
                 assert!(branch.head().physical_generation > original_head.physical_generation);
                 assert_eq!(fs::read(&fixture.catalog_path).unwrap(), original_catalog);
                 let durable = branch.store().durable.as_ref().unwrap();

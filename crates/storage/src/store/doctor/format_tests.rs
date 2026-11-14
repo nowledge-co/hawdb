@@ -53,7 +53,8 @@ fn incompatible_record_refuses_apply_and_interrupted_repair_without_mutation() {
         )
         .unwrap();
         let mut record = encode_relational_wal_batch(1, &RelationalTransaction::default()).unwrap();
-        record[8..10].copy_from_slice(&3_u16.to_le_bytes());
+        let supported = u16::from_le_bytes(record[8..10].try_into().unwrap());
+        record[8..10].copy_from_slice(&(supported + 1).to_le_bytes());
         let payload = crate::wal::binary::encode_binary_wal_record(
             &WalEntry {
                 lsn: boundary.wal_replay_start_lsn,
@@ -105,8 +106,8 @@ fn incompatible_record_refuses_apply_and_interrupted_repair_without_mutation() {
             error,
             HawDBError::UnsupportedStorageFormat(StorageFormatError::UnsupportedVersion {
                 format: "relational durable codec",
-                found: 3,
-                supported: 2,
+                found: supported + 1,
+                supported,
             })
         );
         assert_eq!(files(&path), before);

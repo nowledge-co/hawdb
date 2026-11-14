@@ -1735,11 +1735,13 @@ fn decode_stable_value(encoded: &[u8]) -> Result<Value, StableIdentityMappingErr
 
 fn estimated_value_resident_bytes(value: &Value) -> usize {
     std::mem::size_of::<Value>().saturating_add(match value {
-        Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) => 0,
+        Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Decimal(_) => 0,
         Value::String(value) => value.len(),
         Value::Binary(value) => value.len(),
         Value::Vector(value) => value.encoded().len(),
         Value::Uuid(_) => 16,
+        Value::Date(_) | Value::LocalTime(_) | Value::LocalDateTime(_) | Value::DateTime(_) => 0,
+        Value::Duration(_) => std::mem::size_of::<hawdb_core::temporal::Duration>(),
         Value::List(values) => values
             .iter()
             .map(estimated_value_resident_bytes)

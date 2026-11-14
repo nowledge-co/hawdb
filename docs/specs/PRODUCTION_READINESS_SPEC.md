@@ -69,7 +69,7 @@ as production-unready because it has no release binding.
 
 The preferred executable contract is
 `run_production_graph_storage_qualification`. It opens the representative copy
-through `NowledgeMemEmbeddedStoreHandle`, applies an explicit out-of-core
+through `EmbeddedStoreHandle`, applies an explicit out-of-core
 `DatabaseConfig`, acquires a runtime-governor permit for every measurement,
 and emits `hawdb-production-graph-storage-qualification-v1`. The report stores
 only query and parameter digests, retains every raw cold and warm resource run,
@@ -518,8 +518,8 @@ admission-safe path is only one input to production qualification and MUST NOT
 replace revision-, dataset-, and workload-bound evidence.
 
 The Nowledge production facade follows the same boundary. Its parameterized
-query and bounded streaming-read entrypoints on `NowledgeMemGraph`,
-`NowledgeMemEmbeddedStore`, and `NowledgeMemEmbeddedStoreHandle` MUST acquire a
+query and bounded streaming-read entrypoints on `EmbeddedGraph`,
+`EmbeddedStore`, and `EmbeddedStoreHandle` MUST acquire a
 `RuntimeGovernor` permit before execution. Streaming reads MUST admit the
 minimum of the governor result budget, database result limit, and route payload
 limit, and MUST retain the permit until the consumer returns. Task-context
@@ -534,7 +534,7 @@ I/O limits.
 
 The real Mem runtime MUST publish
 `hawdb-nowledge-mem-serving-path-readiness-v1` from its long-lived
-`NowledgeMemEmbeddedStoreHandle`. The report MUST bind a non-empty host runtime
+`EmbeddedStoreHandle`. The report MUST bind a non-empty host runtime
 identity and prove shared-governor admission for foreground parameterized
 Cypher, bounded streaming reads, typed mutation, typed analytics, and typed
 maintenance. An unbound handle is admission-safe but is not production-path
@@ -543,7 +543,7 @@ host identity is present.
 
 Parallel morsel qualification uses `run_production_morsel_profile` and
 `evaluate_production_morsel_matrix`. Each profile MUST run through the
-read-only `NowledgeMemEmbeddedStoreHandle`, contain at least 100 measured
+read-only `EmbeddedStoreHandle`, contain at least 100 measured
 samples after at least three warmups, observe the requested 4, 8, or 16 active
 workers, execute the typed columnar morsel fragment, and prove that completed
 outputs and ordinal reorder entries remain within the admitted worker window.
@@ -584,20 +584,26 @@ in-process failpoints. The crash matrix MUST cover at least:
 Each crash point MUST reopen the database in a fresh process and verify that a
 mutation batch is either entirely absent or entirely recovered. The harness
 MUST verify commit epoch, replay LSN, endpoint integrity, projection watermark,
-and the absence of partially published artifacts. Default strict startup MUST reject
-a torn WAL tail without changing it. Writable startup MAY explicitly opt into
-`RecoveryMode::AutoRepairTornTail`, which MUST apply only to physically incomplete
-final records through the same audited doctor protocol. Read-only startup MUST
-reject that option. Complete-record corruption MUST remain fatal in every mode.
-Automatic repair MUST retain prior doctor evidence within the configured
-quarantine byte limit, and MUST fail without truncation when it cannot do so.
-Both automatic and explicit doctor repair MUST preserve
-structured prepared and applied repair records, retain a verified copy of the
-original WAL, and report discarded bytes before normal serving can resume. The
-explicit repair MUST use a separate typed API: a read-only generation-bound dry run,
-followed by explicit acknowledgement and state revalidation. A pending repair
-record MUST block strict open; opt-in automatic repair MAY resume it. An interrupted repair may be finalized
-only when the manifest, retained WAL, and quarantine identities still match.
+and the absence of partially published artifacts. Writable startup defaults to
+`RecoveryMode::AutoRepairTornTail`. Explicit `Strict` startup MUST reject damage
+without changing the WAL, and read-only startup MUST reject automatic repair.
+Automatic repair MUST stop at a complete transaction prefix and preserve a
+durable discarded suffix plus retained/original identities and prepared/applied
+audits before truncation. Physical EOF truncation is repairable; complete-record
+corruption, zero/stale regions and sequence errors are repairable only when a
+valid durable synchronization fence proves the retained prefix covers every
+protected byte/LSN. Published branch prefixes and synchronized data MUST NOT be
+discarded. The fence MUST become durable before a WAL synchronization can be
+acknowledged; interrupted barriers may conservatively fail closed.
+Automatic repair MUST retain prior evidence within its configured aggregate
+suffix-byte limit and fail without truncation when evidence cannot be stored.
+The typed recovery report MUST identify discarded bytes, retained LSN, reason
+and evidence location before serving resumes. Explicit repair uses a separate
+typed generation-bound dry run, exact acknowledgement and state revalidation.
+Pending repair records MUST block strict open; automatic retry may resume only
+when selector, retained WAL and suffix identities still match. Retry MUST
+re-establish file and directory durability, including visible but previously
+unacknowledged evidence/audit renames. See [Storage](../STORAGE.md#wal-recovery).
 An append write failure MUST truncate and sync back to the preceding valid WAL
 boundary before allowing another mutation. If rollback fails, or a complete
 record's synchronization fails, the handle MUST be poisoned because the durable
@@ -701,7 +707,7 @@ RaBitQ artifact and the active manifest; either corruption MUST be rejected
 during open.
 
 The embedded serving entrypoint is
-`NowledgeMemOpenOptions::with_qualified_out_of_core_search_projection`. It MUST
+`EmbeddedStoreOpenOptions::with_qualified_out_of_core_search_projection`. It MUST
 receive the raw lexical qualification report, the exact current release
 identity, and explicit out-of-core budgets. Open MUST reject a graph whose
 canonical commit epoch differs from the bound release identity and MUST expose

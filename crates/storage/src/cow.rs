@@ -160,10 +160,16 @@ fn estimated_value_bytes(value: &Value) -> u64 {
     match value {
         Value::Null | Value::Bool(_) => 1,
         Value::Int(_) | Value::Float(_) => 8,
+        Value::Decimal(_) => 17,
         Value::String(value) => value.len() as u64,
         Value::Binary(value) => value.len() as u64,
         Value::Vector(value) => value.encoded().len() as u64,
         Value::Uuid(_) => 16,
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => 28,
         Value::List(values) => values.iter().fold(16u64, |bytes, value| {
             bytes.saturating_add(estimated_value_bytes(value))
         }),

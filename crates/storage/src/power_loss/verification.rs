@@ -1,5 +1,5 @@
 // Copyright 2026 Nowledge
-// Licensed under the Apache License, Version 2.0.
+// SPDX-License-Identifier: Apache-2.0
 
 //! Complete read-only verification through the recorder's captured directory.
 //! Child namespace exclusion remains a host premise. The native walker charges

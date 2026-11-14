@@ -179,20 +179,17 @@ const DIGEST: &str = "fnv1a64:80816a4f519d9693";
 #[test]
 fn catalog_preserves_routes_roles_families_and_digest() {
     let routes: Vec<_> = CATALOG.iter().map(|entry| entry.0).collect();
-    assert_eq!(REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES, routes);
-    assert_eq!(NOWLEDGE_MEM_GRAPH_READ_ROUTE_SPECS.len(), CATALOG.len());
+    assert_eq!(REQUIRED_BOUNDED_READ_ROUTES, routes);
+    assert_eq!(GRAPH_READ_ROUTE_SPECS.len(), CATALOG.len());
     let expected = serde_json::Value::Array(
         CATALOG
             .iter()
             .map(|entry| {
-                let spec = nowledge_mem_graph_read_route_spec(entry.0).unwrap();
+                let spec = graph_read_route_spec(entry.0).unwrap();
                 assert_eq!(spec.owner.as_str(), entry.1);
                 assert_eq!(spec.required_evidence_kind.as_str(), entry.2);
                 assert!(spec.stale_on_catalog_change);
-                assert_eq!(
-                    nowledge_mem_required_query_families_for_route(entry.0),
-                    &[entry.3]
-                );
+                assert_eq!(required_query_families_for_route(entry.0), &[entry.3]);
                 serde_json::json!({
                     "route": entry.0,
                     "owner": entry.1,
@@ -202,10 +199,10 @@ fn catalog_preserves_routes_roles_families_and_digest() {
             })
             .collect(),
     );
-    assert_eq!(nowledge_mem_graph_read_route_specs_json(), expected);
-    assert_eq!(nowledge_mem_graph_read_route_catalog_digest(), DIGEST);
+    assert_eq!(graph_read_route_specs_json(), expected);
+    assert_eq!(graph_read_route_catalog_digest(), DIGEST);
     assert_eq!(
-        NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION,
+        GRAPH_READ_ROUTE_CATALOG_VERSION,
         "nowledge-mem-graph-read-route-catalog-v1"
     );
     for route in [
@@ -216,22 +213,22 @@ fn catalog_preserves_routes_roles_families_and_digest() {
         "/\u{65e5}\u{672c}\u{8a9e}",
         "/graph/overview\0",
     ] {
-        assert!(nowledge_mem_graph_read_route_spec(route).is_none());
-        assert!(nowledge_mem_required_query_families_for_route(route).is_empty());
+        assert!(graph_read_route_spec(route).is_none());
+        assert!(required_query_families_for_route(route).is_empty());
     }
 }
 
-fn inventory(seed: usize, layout: usize) -> Vec<NowledgeMemRouteOwnership> {
+fn inventory(seed: usize, layout: usize) -> Vec<RouteOwnership> {
     let mut routes: Vec<_> = CATALOG
         .iter()
         .enumerate()
         .map(|(index, entry)| {
-            NowledgeMemRouteOwnership::new(
+            RouteOwnership::new(
                 entry.0,
                 if layout == 0 || (layout == 2 && (index + seed).is_multiple_of(3)) {
-                    NowledgeMemRouteReadEngine::Legacy
+                    RouteReadEngine::Legacy
                 } else {
-                    NowledgeMemRouteReadEngine::HawDB
+                    RouteReadEngine::HawDB
                 },
             )
         })
@@ -243,30 +240,21 @@ fn inventory(seed: usize, layout: usize) -> Vec<NowledgeMemRouteOwnership> {
             routes.remove(selected);
         }
         4 => routes.push(routes[selected].clone()),
-        5 => routes.push(NowledgeMemRouteOwnership::new(
+        5 => routes.push(RouteOwnership::new(
             routes[selected].route.clone(),
-            NowledgeMemRouteReadEngine::Legacy,
+            RouteReadEngine::Legacy,
         )),
-        6 => routes.push(NowledgeMemRouteOwnership::new(
-            "/unknown",
-            NowledgeMemRouteReadEngine::Legacy,
-        )),
-        7 => routes.push(NowledgeMemRouteOwnership::new(
+        6 => routes.push(RouteOwnership::new("/unknown", RouteReadEngine::Legacy)),
+        7 => routes.push(RouteOwnership::new(
             "/\u{65e5}\u{672c}\u{8a9e}",
-            NowledgeMemRouteReadEngine::HawDB,
+            RouteReadEngine::HawDB,
         )),
         8 => routes.clear(),
         9 => {
             routes.remove(selected);
             routes.push(routes[seed % routes.len()].clone());
-            routes.push(NowledgeMemRouteOwnership::new(
-                "/unknown",
-                NowledgeMemRouteReadEngine::HawDB,
-            ));
-            routes.push(NowledgeMemRouteOwnership::new(
-                "/unknown",
-                NowledgeMemRouteReadEngine::Legacy,
-            ));
+            routes.push(RouteOwnership::new("/unknown", RouteReadEngine::HawDB));
+            routes.push(RouteOwnership::new("/unknown", RouteReadEngine::Legacy));
         }
         _ => unreachable!(),
     }
@@ -280,11 +268,11 @@ fn inventory(seed: usize, layout: usize) -> Vec<NowledgeMemRouteOwnership> {
     routes
 }
 
-fn readiness(seed: usize, state: usize) -> Option<NowledgeMemRouteReadinessSummary> {
+fn readiness(seed: usize, state: usize) -> Option<RouteReadinessSummary> {
     if state == 0 {
         return None;
     }
-    let mut summary = NowledgeMemRouteReadinessSummary {
+    let mut summary = RouteReadinessSummary {
         route_primary_ready: state != 2,
         primary_ready_routes: CATALOG.iter().map(|entry| entry.0.to_string()).collect(),
         route_query_plan_evidence_ready: state != 3,
@@ -319,8 +307,8 @@ fn sorted_unique(mut names: Vec<String>) -> Vec<String> {
 // Use direct occurrence scans instead of the production count/engine maps.
 // The reference never calls a production catalog, readiness, or JSON helper.
 fn reference(
-    routes: &[NowledgeMemRouteOwnership],
-    evidence: Option<&NowledgeMemRouteReadinessSummary>,
+    routes: &[RouteOwnership],
+    evidence: Option<&RouteReadinessSummary>,
     require_all_hawdb: bool,
 ) -> serde_json::Value {
     let required: Vec<_> = CATALOG.iter().map(|entry| entry.0).collect();
@@ -343,25 +331,26 @@ fn reference(
     let conflicts: Vec<_> = observed
         .iter()
         .filter(|name| {
-            routes.iter().any(|route| {
-                route.route == **name && route.read_engine == NowledgeMemRouteReadEngine::Legacy
-            }) && routes.iter().any(|route| {
-                route.route == **name && route.read_engine == NowledgeMemRouteReadEngine::HawDB
-            })
+            routes
+                .iter()
+                .any(|route| route.route == **name && route.read_engine == RouteReadEngine::Legacy)
+                && routes.iter().any(|route| {
+                    route.route == **name && route.read_engine == RouteReadEngine::HawDB
+                })
         })
         .cloned()
         .collect();
     let hawdb = sorted_unique(
         routes
             .iter()
-            .filter(|route| route.read_engine == NowledgeMemRouteReadEngine::HawDB)
+            .filter(|route| route.read_engine == RouteReadEngine::HawDB)
             .map(|route| route.route.clone())
             .collect(),
     );
     let legacy = sorted_unique(
         routes
             .iter()
-            .filter(|route| route.read_engine == NowledgeMemRouteReadEngine::Legacy)
+            .filter(|route| route.read_engine == RouteReadEngine::Legacy)
             .map(|route| route.route.clone())
             .collect(),
     );
@@ -416,8 +405,8 @@ fn reference(
             serde_json::json!({
                 "route": route.route,
                 "read_engine": match route.read_engine {
-                    NowledgeMemRouteReadEngine::Legacy => "legacy",
-                    NowledgeMemRouteReadEngine::HawDB => "hawdb",
+                    RouteReadEngine::Legacy => "legacy",
+                    RouteReadEngine::HawDB => "hawdb",
                 },
             })
         })
@@ -455,10 +444,10 @@ fn campaign(seeds: usize) {
             for state in 0..11 {
                 let evidence = readiness(seed, state);
                 for require_all_hawdb in [false, true] {
-                    let report = nowledge_mem_route_ownership_readiness(
+                    let report = route_ownership_readiness(
                         &routes,
                         evidence.as_ref(),
-                        NowledgeMemRouteOwnershipPolicy { require_all_hawdb },
+                        RouteOwnershipPolicy { require_all_hawdb },
                     );
                     assert_eq!(report.json(), reference(&routes, evidence.as_ref(), require_all_hawdb),
                         "seed {seed}, layout {layout}, readiness {state}, all_hawdb {require_all_hawdb}");

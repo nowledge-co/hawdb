@@ -110,6 +110,7 @@ fn equality_keys(
 fn binds_node(plan: &PhysicalPlan, name: &str) -> bool {
     match plan {
         PhysicalPlan::SeqNodeScan { variable, .. }
+        | PhysicalPlan::RelationshipSeededNodeScan { variable, .. }
         | PhysicalPlan::SourceSegmentScan { variable, .. }
         | PhysicalPlan::IndexNodeSeek { variable, .. }
         | PhysicalPlan::IndexNodeMultiSeek { variable, .. }

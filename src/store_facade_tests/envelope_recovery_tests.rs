@@ -49,6 +49,7 @@ fn assert_rejected_without_writes(root: &Path, limit: Option<u64>, expected: &st
             root,
             DatabaseConfig {
                 read_only,
+                recovery_mode: hawdb_storage::config::RecoveryMode::Strict,
                 max_checkpoint_decoded_bytes: limit,
                 ..Default::default()
             },
@@ -87,6 +88,7 @@ fn storage_owned_envelope_preserves_checkpoint_reopen_and_caller_limits() {
             &fixture.0,
             DatabaseConfig {
                 read_only: true,
+                recovery_mode: crate::RecoveryMode::Strict,
                 max_checkpoint_decoded_bytes: Some(length),
                 ..Default::default()
             },

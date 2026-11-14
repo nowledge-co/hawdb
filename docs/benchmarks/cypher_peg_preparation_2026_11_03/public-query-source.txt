@@ -1,0 +1,51 @@
+use hawdb::{Database, Value};
+use std::{collections::BTreeMap, hint::black_box, time::Instant};
+const ITERATIONS: usize = 2_000;
+const SAMPLES: usize = 11;
+fn main() {
+    let mut db = Database::new();
+    db.query("CREATE NODE TABLE Memory").unwrap();
+    for id in 0..64 {
+        let params = BTreeMap::from([
+            ("id".into(), Value::String(format!("memory-{id}"))),
+            ("title".into(), Value::String(format!("Memory {id}"))),
+            ("workspace".into(), Value::String(format!("space-{}", id % 2))),
+            ("kind".into(), Value::Int(id % 4)),
+        ]);
+        db.query_with_params("CREATE (:Memory {id: $id, title: $title, workspace_id: $workspace, kind: $kind})", &params).unwrap();
+    }
+    db.query("CREATE CONSTRAINT ON :Memory(id) ASSERT UNIQUE").unwrap();
+    let params = BTreeMap::from([
+        ("id".into(), Value::String("memory-0".into())),
+        ("workspace".into(), Value::String("space-0".into())),
+        ("limit".into(), Value::Int(2)),
+        ("offset".into(), Value::Int(0)),
+    ]);
+    let cases: [(&str, &str, Vec<BTreeMap<String, Value>>); 2] = [
+        ("public_exact_lookup", "MATCH (m:Memory) WHERE m.id = $id RETURN m.title AS title LIMIT 1", vec![BTreeMap::from([("title".into(), Value::String("Memory 0".into()))])]),
+        ("public_aggregate_page", "MATCH (m:Memory) WHERE m.workspace_id = $workspace RETURN m.kind AS kind, count(m) AS count ORDER BY kind ASC SKIP $offset LIMIT $limit", vec![
+            BTreeMap::from([("kind".into(), Value::Int(0)), ("count".into(), Value::Int(16))]),
+            BTreeMap::from([("kind".into(), Value::Int(2)), ("count".into(), Value::Int(16))]),
+        ]),
+    ];
+    println!("case,median_ns,iterations,samples");
+    for (name, query, expected) in cases {
+        let columns: &[&str] = if name == "public_exact_lookup" { &["title"] } else { &["kind", "count"] };
+        for _ in 0..10 {
+            let actual = db.query_with_params(query, &params).unwrap();
+            assert_eq!(actual.schema().columns(), columns);
+            assert_eq!(actual.rows, expected);
+        }
+        let mut samples = Vec::with_capacity(SAMPLES);
+        for _ in 0..SAMPLES {
+            let started = Instant::now();
+            for _ in 0..ITERATIONS { drop(black_box(db.query_with_params(black_box(query), black_box(&params)).unwrap())); }
+            samples.push(started.elapsed().as_nanos());
+        }
+        let actual = db.query_with_params(query, &params).unwrap();
+        assert_eq!(actual.schema().columns(), columns);
+        assert_eq!(actual.rows, expected);
+        samples.sort_unstable();
+        println!("{name},{},{ITERATIONS},{SAMPLES}", samples[SAMPLES / 2] / ITERATIONS as u128);
+    }
+}

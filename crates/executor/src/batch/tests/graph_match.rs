@@ -1,5 +1,25 @@
+// Copyright 2026 Nowledge
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use super::*;
 use hawdb_plan_cypher::{GraphMatchStep, LogicalPlan, ProjectionExpression};
+
+mod identity_group_keys;
+mod indexed_node;
+mod ledger_accounting;
+mod pattern_identity_imports;
+mod seeded_union;
 
 // The oracle lowers the generic operators directly, independently of optimizer fast paths.
 fn lower(plan: LogicalPlan) -> PhysicalPlan {
@@ -15,10 +35,12 @@ fn lower(plan: LogicalPlan) -> PhysicalPlan {
         LogicalPlan::Aggregate {
             group_keys,
             items,
+            graph_keys,
             input,
         } => PhysicalPlan::AggregateExec {
             group_keys,
             items,
+            graph_keys,
             input: Box::new(lower(*input)),
         },
         LogicalPlan::Filter { predicate, input } => PhysicalPlan::FilterExec {
@@ -39,6 +61,16 @@ fn lower(plan: LogicalPlan) -> PhysicalPlan {
             input: Box::new(lower(*input)),
         },
         LogicalPlan::Distinct { input } => PhysicalPlan::DistinctExec {
+            input: Box::new(lower(*input)),
+        },
+        LogicalPlan::UnwindRows {
+            expression,
+            variable,
+            input,
+        } => PhysicalPlan::UnwindRowsExec {
+            expression,
+            variable,
+            consumes_source: false,
             input: Box::new(lower(*input)),
         },
         _ => panic!("unexpected generic plan: {plan:?}"),
@@ -189,27 +221,12 @@ fn unsupported_bounded_match_is_independent_of_input_and_relationship_type(
                     );
                     assert!(
                         matches!(result, Err(HawDBError::Execution(ref message))
-                            if message.contains("bounded MATCH expansion requires an outgoing typed pattern without relationship bindings")),
+                            if message.contains("bounded MATCH expansion requires a typed pattern without relationship bindings")),
                         "graph={graph}, query={query}: {result:?}"
                     );
                 }
             });
         }
-    }
-}
-
-#[test]
-fn bounded_match_direction_rejection_is_independent_of_relationship_type() {
-    for unsupported in [
-        RelationshipDirection::Incoming,
-        RelationshipDirection::Undirected,
-    ] {
-        unsupported_bounded_match_is_independent_of_input_and_relationship_type(|step| {
-            let GraphMatchStep::Expand { direction, .. } = step else {
-                panic!("expected expansion");
-            };
-            *direction = unsupported;
-        });
     }
 }
 
@@ -962,6 +979,241 @@ fn optional_seed_null_hop_uses_final_batch_row_size() {
                 assert!(actual.is_empty());
             }
             assert_eq!(ledger.snapshot().used_bytes, 0);
+        }
+    });
+}
+
+/// Plans `query` and places the conjuncts of its first predicated MATCH the
+/// way lowering would, at the given step counts.
+fn execute_placed(query: &str, predicate_steps: Vec<usize>) -> Result<Vec<Binding>> {
+    execute_placed_on_edges(query, predicate_steps, Vec::new())
+}
+
+/// [`execute_placed`] that also runs the conjuncts `edge_predicates` names on
+/// each relationship before its target is read.
+fn execute_placed_on_edges(
+    query: &str,
+    predicate_steps: Vec<usize>,
+    edge_predicates: Vec<usize>,
+) -> Result<Vec<Binding>> {
+    fn place(plan: &mut LogicalPlan, predicate_steps: &mut Option<(Vec<usize>, Vec<usize>)>) {
+        match plan {
+            LogicalPlan::GraphMatch { program, input } => {
+                if program.predicate.is_some()
+                    && let Some((steps, edges)) = predicate_steps.take()
+                {
+                    program.predicate_steps = steps;
+                    program.edge_predicates = edges;
+                    return;
+                }
+                if let Some(input) = input {
+                    place(input, predicate_steps);
+                }
+            }
+            LogicalPlan::Project { input, .. } | LogicalPlan::Filter { input, .. } => {
+                place(input, predicate_steps)
+            }
+            plan => panic!("unexpected generic plan: {plan:?}"),
+        }
+    }
+    let mut logical = hawdb_plan_cypher::plan_pipeline_query(query, &BTreeMap::new())?;
+    let mut predicate_steps = Some((predicate_steps, edge_predicates));
+    place(&mut logical, &mut predicate_steps);
+    assert!(predicate_steps.is_none(), "no predicated MATCH in {query}");
+    execute_logical(logical)
+}
+
+#[test]
+fn early_conjunct_matches_the_end_of_match_result() {
+    for (query, steps) in [
+        (
+            "MATCH (a:Memory)-[:MENTIONS]->(b:Memory) WHERE a.id = 1 AND b.id = 2 RETURN a.id AS a, b.id AS b",
+            vec![1, 2],
+        ),
+        (
+            "MATCH (a:Memory)-[:MENTIONS]->(b:Memory) WHERE a.id = 2 AND b.id = 2 RETURN a.id AS a, b.id AS b",
+            vec![1, 2],
+        ),
+        (
+            "MATCH (a:Memory) OPTIONAL MATCH (a)-[:MENTIONS]->(b:Memory) WHERE a.id = 2 RETURN a.id AS a, b.id AS b",
+            vec![0],
+        ),
+        (
+            "MATCH (a:Memory) OPTIONAL MATCH (a)-[:MENTIONS]->(b:Memory) WHERE a.missing IS NULL AND (a.id = 1 OR b.id = 2) RETURN a.id AS a, b.id AS b",
+            vec![0, 2],
+        ),
+    ] {
+        let mut expected = execute(query).unwrap();
+        let mut actual = execute_placed(query, steps).unwrap();
+        let key = |row: &Binding| format!("{:?}", row.values);
+        expected.sort_by_key(key);
+        actual.sort_by_key(key);
+        assert_eq!(actual, expected, "{query}");
+    }
+}
+
+#[test]
+fn optional_match_pads_when_an_early_conjunct_rejects_every_candidate() {
+    let rows = execute_placed(
+        "MATCH (a:Memory) OPTIONAL MATCH (a)-[:MENTIONS]->(b:Memory) WHERE a.id = 5 AND b.id = 2 RETURN a.id AS a, b",
+        vec![0, 2],
+    )
+    .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|row| row.values["b"] == Value::Null));
+}
+
+#[test]
+fn early_conjunct_error_on_a_candidate_that_never_completes_is_not_raised() {
+    // Only `a.id = 1` has an outgoing MENTIONS. `head()` fails for `a.id = 2`,
+    // but the match never completes for it, so the end-of-match evaluation
+    // never saw that error. Running the conjunct early must not raise it.
+    let query = "MATCH (a:Memory)-[:MENTIONS]->(b:Memory) WHERE (head(CASE WHEN a.id = 2 THEN a.id ELSE [1] END)) = 1 AND b.id = 2 RETURN a.id AS a";
+    let expected = execute(query).unwrap();
+    assert_eq!(expected.len(), 1);
+    assert_eq!(execute_placed(query, vec![1, 2]).unwrap(), expected);
+    // The candidate that completes still raises an error the end raised.
+    let query = "MATCH (a:Memory)-[:MENTIONS]->(b:Memory) WHERE (head(CASE WHEN a.id = 1 THEN a.id ELSE [1] END)) = 1 RETURN a.id AS a";
+    assert!(execute(query).is_err());
+    assert!(execute_placed(query, vec![1]).is_err());
+}
+
+#[test]
+fn malformed_predicate_placement_is_refused() {
+    let query =
+        "MATCH (a:Memory)-[:MENTIONS]->(b:Memory) WHERE a.id = 1 AND b.id = 2 RETURN a.id AS a";
+    for steps in [vec![1], vec![1, 2, 2], vec![1, 3]] {
+        let error = execute_placed(query, steps).unwrap_err();
+        assert!(
+            error.to_string().contains("MATCH predicate placement"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn edge_conjuncts_match_the_end_of_match_result() {
+    for (query, steps, edges) in [
+        (
+            "MATCH (a:Memory)-[r:MENTIONS]->(b:Memory) WHERE id(r) >= 0 AND b.id = 2 RETURN a.id AS a, b.id AS b",
+            vec![2, 2],
+            vec![0],
+        ),
+        (
+            "MATCH (a:Memory)-[r:MENTIONS]->(b:Memory) WHERE b.id = 2 AND id(r) <> 999 RETURN a.id AS a",
+            vec![2, 2],
+            vec![1],
+        ),
+        (
+            "MATCH (a:Memory) OPTIONAL MATCH (a)-[r:MENTIONS]->(b:Memory) WHERE id(r) < 0 RETURN a.id AS a, b",
+            vec![2],
+            vec![0],
+        ),
+    ] {
+        let mut expected = execute(query).unwrap();
+        let mut actual = execute_placed_on_edges(query, steps, edges).unwrap();
+        let key = |row: &Binding| format!("{:?}", row.values);
+        expected.sort_by_key(key);
+        actual.sort_by_key(key);
+        assert_eq!(actual, expected, "{query}");
+    }
+}
+
+#[test]
+fn edge_conjunct_error_is_deferred_to_the_end_of_the_match() {
+    // `head()` of an integer fails for every relationship. With a target that
+    // never matches, the end-of-match evaluation never runs, so the edge
+    // evaluation must not raise it either.
+    let query = "MATCH (a:Memory)-[r:MENTIONS]->(b:Missing) WHERE head(CASE WHEN id(r) >= 0 THEN id(r) ELSE [1] END) = 1 RETURN a.id AS a";
+    assert!(execute(query).unwrap().is_empty());
+    assert!(execute_placed_on_edges(query, vec![2], vec![0])
+        .unwrap()
+        .is_empty());
+    // With matching targets, the deferred evaluation raises it.
+    let query = "MATCH (a:Memory)-[r:MENTIONS]->(b:Memory) WHERE head(CASE WHEN id(r) >= 0 THEN id(r) ELSE [1] END) = 1 RETURN a.id AS a";
+    assert!(execute(query).is_err());
+    assert!(execute_placed_on_edges(query, vec![2], vec![0]).is_err());
+}
+
+#[test]
+fn malformed_edge_placement_is_refused() {
+    let query =
+        "MATCH (a:Memory)-[r:MENTIONS]->(b:Memory) WHERE a.id = 1 AND id(r) >= 0 RETURN a.id AS a";
+    // An edge conjunct after a node step, out of range, or out of order.
+    for (steps, edges) in [
+        (vec![1, 2], vec![0]),
+        (vec![1, 2], vec![2]),
+        (vec![2, 2], vec![1, 0]),
+        (Vec::new(), vec![0]),
+    ] {
+        let error = execute_placed_on_edges(query, steps, edges).unwrap_err();
+        assert!(
+            error.to_string().contains("MATCH predicate placement"),
+            "{error}"
+        );
+    }
+}
+
+/// Projections move unchanged columns and MATCH moves each consumed input
+/// row, including NULL-extended OPTIONAL rows, instead of copying (#1615).
+/// Results are those of the copying paths and the ledger settles to zero.
+#[test]
+fn moved_projection_and_match_rows_preserve_results_and_settle_the_ledger() {
+    let query = "MATCH (n:Memory) \
+        WITH n AS a, n AS b, [n.id, 'x'] AS l, {k: n.id, s: 'text'} AS m, 'text' AS s \
+        WITH a, b, l, l AS l2, m, m.k AS k, s \
+        OPTIONAL MATCH (a)-[:MENTIONS]->(t:Memory) \
+        WITH a, b, l, l2, m, k, s, t \
+        RETURN a.id AS aid, b.id AS bid, l, l2, m, k, s, t.id AS tid ORDER BY k";
+    let plan = lower(hawdb_plan_cypher::plan_pipeline_query(query, &BTreeMap::new()).unwrap());
+    with_context(None, |context| {
+        for batch_rows in [1, 1024] {
+            let memory = ExecutionMemoryConfig {
+                batch_rows: std::num::NonZeroUsize::new(batch_rows).unwrap(),
+                ..context.memory.clone()
+            };
+            let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+            let context = BatchReadContext {
+                memory: &memory,
+                memory_ledger: &ledger,
+                ..context
+            };
+            let mut rows = Vec::new();
+            execute_binding_batches(&plan, context, ExecutionLimit::unlimited(), &mut |batch| {
+                rows.extend(batch);
+                Ok(BatchControl::Continue)
+            })
+            .unwrap();
+            assert_eq!(ledger.snapshot().used_bytes, 0);
+            let expected = |id: i64, target: Value| {
+                BTreeMap::from([
+                    ("aid".to_string(), Value::Int(id)),
+                    ("bid".to_string(), Value::Int(id)),
+                    (
+                        "l".to_string(),
+                        Value::List(vec![Value::Int(id), Value::String("x".into())]),
+                    ),
+                    (
+                        "l2".to_string(),
+                        Value::List(vec![Value::Int(id), Value::String("x".into())]),
+                    ),
+                    (
+                        "m".to_string(),
+                        Value::Map(BTreeMap::from([
+                            ("k".to_string(), Value::Int(id)),
+                            ("s".to_string(), Value::String("text".into())),
+                        ])),
+                    ),
+                    ("k".to_string(), Value::Int(id)),
+                    ("s".to_string(), Value::String("text".into())),
+                    ("tid".to_string(), target),
+                ])
+            };
+            assert_eq!(
+                rows.into_iter().map(|row| row.values).collect::<Vec<_>>(),
+                vec![expected(1, Value::Int(2)), expected(2, Value::Null)],
+                "batch_rows {batch_rows}"
+            );
         }
     });
 }

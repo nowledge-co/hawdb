@@ -18,7 +18,6 @@ use super::*;
 pub(crate) enum SegmentKind {
     Documents,
     Metadata { vector_ordinal_base: u64 },
-    Vectors { vector_ordinal_base: u64 },
 }
 
 impl SegmentKind {
@@ -26,7 +25,6 @@ impl SegmentKind {
         match self {
             Self::Documents => "document",
             Self::Metadata { .. } => "metadata",
-            Self::Vectors { .. } => "vector",
         }
     }
 }
@@ -126,12 +124,6 @@ fn write_segment<T: RecordSource>(
             sink.write_str("HAWDB_SEARCH_METADATA_SEGMENT_V1\n")?;
             vector_ordinal_base
         }
-        SegmentKind::Vectors {
-            vector_ordinal_base,
-        } => {
-            sink.write_str("HAWDB_SEARCH_VECTOR_SEGMENT_V1\n")?;
-            vector_ordinal_base
-        }
     };
     for document in documents {
         let document = document.header();
@@ -151,15 +143,6 @@ fn write_segment<T: RecordSource>(
                 sink.write_char('\t')?;
                 write_metadata(sink, document.metadata)?;
                 sink.write_char('\n')?;
-            }
-            SegmentKind::Vectors { .. } => {
-                if let Some(embedding) = document.embedding {
-                    write!(sink, "vector\t{ordinal}\t")?;
-                    sink.write_hex(document.id)?;
-                    sink.write_char('\t')?;
-                    write_embedding(sink, Some(embedding))?;
-                    sink.write_char('\n')?;
-                }
             }
         }
         if document.embedding.is_some() {
