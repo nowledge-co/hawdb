@@ -78,6 +78,7 @@ impl PhysicalPlan {
                 PhysicalPlanKind::SetNodePropertiesReturn
             }
             PhysicalPlan::MatchSetExec(_) => PhysicalPlanKind::MatchSetExec,
+            PhysicalPlan::MutationReturn { .. } => PhysicalPlanKind::MutationReturn,
             PhysicalPlan::SetRelationshipProperty { .. } => {
                 PhysicalPlanKind::SetRelationshipProperty
             }
@@ -167,6 +168,7 @@ impl PhysicalPlan {
             | PhysicalPlan::ScoringRerankExec { input, .. }
             | PhysicalPlan::ScoringProgramExec { input, .. }
             | PhysicalPlan::HostScoringExec { input, .. } => PlanChildren::Unary(input),
+            PhysicalPlan::MutationReturn { mutation, .. } => PlanChildren::Unary(mutation),
             PhysicalPlan::CreateNodeLabel { .. }
             | PhysicalPlan::CreateRelationshipType { .. }
             | PhysicalPlan::CreateNodeTable { .. }

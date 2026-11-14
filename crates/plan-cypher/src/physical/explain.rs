@@ -356,6 +356,18 @@ impl PhysicalPlan {
                     "{pad}MatchSetExec bindings=[{bindings}] assignments=[{assignments}] returns={returns}"
                 )
             }
+            PhysicalPlan::MutationReturn { returns, .. } => {
+                let bindings = returns
+                    .bindings
+                    .iter()
+                    .map(|binding| format!("{}<-{}", binding.variable, binding.column))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(
+                    "{pad}MutationReturn bindings=[{bindings}] returns={}",
+                    set_return_mode_summary(&returns.mode)
+                )
+            }
             PhysicalPlan::SetRelationshipProperty {
                 source_variable,
                 source_label,

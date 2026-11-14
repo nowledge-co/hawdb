@@ -64,7 +64,11 @@ pub(super) fn logical_output_columns(
                     .map(|item| item.name.clone())
                     .collect();
             }
-            LogicalPlan::SetNodePropertiesReturn { returns, .. } => {
+            LogicalPlan::SetNodePropertiesReturn { returns, .. }
+            | LogicalPlan::MutationReturn {
+                returns: hawdb_plan_cypher::MutationReturn { mode: returns, .. },
+                ..
+            } => {
                 break match returns {
                     SetNodePropertiesReturnMode::Project(items) => {
                         items.iter().map(|item| item.name.clone()).collect()

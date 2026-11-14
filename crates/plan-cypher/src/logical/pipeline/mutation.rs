@@ -13,6 +13,7 @@ mod match_set;
 mod node;
 mod relationship;
 mod relationship_batch;
+mod returns;
 
 #[derive(Default)]
 struct MutationInput<'a> {
@@ -407,14 +408,18 @@ pub(super) fn bind_mutation_pipeline(
     };
     match &clause.kind {
         ClauseKind::Create(patterns) => {
-            if !tail.is_empty() {
-                return Err(unsupported("CREATE has unsupported following clauses"));
-            }
+            let projection = mutation_return(tail, "CREATE")?;
             let [pattern] = patterns.as_slice() else {
                 return Err(unsupported("atomic CREATE requires one connected pattern"));
             };
             require_unbound_path(pattern)?;
-            relationship::bind_create(&input, pattern, parameters)
+            let plan = relationship::bind_create(&input, pattern, parameters)?;
+            match projection {
+                Some(projection) => {
+                    returns::bind(plan, created_bindings(pattern), projection, parameters)
+                }
+                None => Ok(plan),
+            }
         }
         ClauseKind::Merge {
             pattern,
@@ -496,6 +501,55 @@ pub(super) fn bind_mutation_pipeline(
             "clause cannot feed the atomic mutation command",
         )),
     }
+}
+
+/// The `RETURN` that may conclude a mutation; any other following clause is
+/// refused for `operation`.
+fn mutation_return<'a>(
+    tail: &'a [Clause],
+    operation: &str,
+) -> Result<Option<&'a hawdb_cypher::ProjectionClause>> {
+    match tail {
+        [] => Ok(None),
+        [clause] => match &clause.kind {
+            ClauseKind::Return(projection) => Ok(Some(projection)),
+            _ => Err(HawDBError::Semantic(format!(
+                "{operation} has unsupported following clauses"
+            ))),
+        },
+        _ => Err(HawDBError::Semantic(format!(
+            "{operation} has unsupported following clauses"
+        ))),
+    }
+}
+
+/// The named variables of a created pattern, keyed by the summary-row columns
+/// storage reports for each created node or relationship.
+fn created_bindings(pattern: &MatchPattern) -> Vec<MutationReturnBinding> {
+    let node = |node: &NodePattern, column: &str| {
+        (!node.anonymous).then(|| MutationReturnBinding {
+            variable: node.variable.clone(),
+            entity: MutationReturnEntity::Node,
+            column: column.to_string(),
+        })
+    };
+    let Some(step) = pattern.steps.first() else {
+        return node(&pattern.first, "node_id").into_iter().collect();
+    };
+    let relationship = step
+        .relationship
+        .variable
+        .as_ref()
+        .map(|variable| MutationReturnBinding {
+            variable: variable.clone(),
+            entity: MutationReturnEntity::Relationship,
+            column: "rel_id".to_string(),
+        });
+    node(&pattern.first, "source_node_id")
+        .into_iter()
+        .chain(relationship)
+        .chain(node(&step.target, "target_node_id"))
+        .collect()
 }
 
 fn set_tail(clauses: &[Clause]) -> Result<Vec<SetProperty>> {

@@ -36,6 +36,27 @@ pub(super) fn write_set_return_mode(output: &mut String, returns: &SetNodeProper
     }
 }
 
+pub(super) fn write_mutation_return_bindings(
+    output: &mut String,
+    bindings: &[MutationReturnBinding],
+) {
+    output.push('[');
+    for (index, binding) in bindings.iter().enumerate() {
+        if index > 0 {
+            output.push(',');
+        }
+        output.push_str(match binding.entity {
+            MutationReturnEntity::Node => "node(",
+            MutationReturnEntity::Relationship => "relationship(",
+        });
+        write_identifier(output, &binding.variable);
+        output.push(',');
+        write_identifier(output, &binding.column);
+        output.push(')');
+    }
+    output.push(']');
+}
+
 pub(super) fn write_relationship_count_leg(output: &mut String, leg: &RelationshipCountLeg) {
     output.push_str("RelationshipCountLeg(");
     match leg.direction {

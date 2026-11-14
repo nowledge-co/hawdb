@@ -319,6 +319,12 @@ pub(super) fn execute_graph_transaction_plan(
                     .expect("usize::MAX is non-zero"),
                 ..runtime.config.mutation_limits
             },
+            PhysicalPlan::MutationReturn { returns, .. } => {
+                hawdb_executor::mutation::mutation_return_staging_limits(
+                    returns,
+                    runtime.config.mutation_limits,
+                )
+            }
             _ => runtime.config.mutation_limits,
         };
         if !is_mutation_return
@@ -401,7 +407,18 @@ pub(super) fn execute_graph_transaction_plan(
                     transaction.stage_mutations_with_limits(mutations, mutation_limits)?
                 }
                 None => {
-                    let command = if is_mutation_return {
+                    let command = if let PhysicalPlan::MutationReturn { mutation, .. } =
+                        &optimized.physical_plan
+                    {
+                        Some(hawdb_executor::mutation::mutation_return_command(
+                            mutation,
+                            transaction.catalog(),
+                            transaction.store(),
+                            mutation_limits,
+                            &runtime.config.execution_memory,
+                            task_context,
+                        )?)
+                    } else if is_mutation_return {
                         hawdb_executor::mutation::materialize_node_mutation(
                             &optimized.physical_plan,
                             transaction.catalog(),
@@ -441,13 +458,26 @@ pub(super) fn execute_graph_transaction_plan(
                     }
                 }
             };
-            let returned_rows = executor::project_staged_mutation_return_rows(
-                &optimized.physical_plan,
-                transaction.catalog(),
-                transaction.store(),
-                &summary.rows,
-                runtime.config.mutation_limits,
-            )?;
+            let returned_rows = match &optimized.physical_plan {
+                PhysicalPlan::MutationReturn { returns, .. } => {
+                    Some(hawdb_executor::mutation::project_mutation_return_rows(
+                        returns,
+                        transaction.catalog(),
+                        transaction.store(),
+                        &summary.rows,
+                        runtime.config.mutation_limits,
+                        hawdb_executor::result_delivery::OutputLimits::default(),
+                        task_context,
+                    )?)
+                }
+                _ => executor::project_staged_mutation_return_rows(
+                    &optimized.physical_plan,
+                    transaction.catalog(),
+                    transaction.store(),
+                    &summary.rows,
+                    runtime.config.mutation_limits,
+                )?,
+            };
             finish(transaction, returned_rows.unwrap_or_default())
         };
         // Row-evaluated clock reads observe the instant planning observed.

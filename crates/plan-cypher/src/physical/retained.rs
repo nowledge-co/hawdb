@@ -416,6 +416,10 @@ impl RetainedHeapBytes for PhysicalPlan {
                 assignments.retained_heap_bytes(),
                 returns.retained_heap_bytes(),
             ]),
+            Self::MutationReturn { mutation, returns } => checked_retained_heap_sum([
+                mutation.retained_heap_bytes(),
+                returns.retained_heap_bytes(),
+            ]),
             Self::SetRelationshipProperty {
                 source_variable,
                 source_label,

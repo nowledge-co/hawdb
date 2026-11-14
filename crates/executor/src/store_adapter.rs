@@ -95,6 +95,10 @@ impl GraphExecutionRead for GraphStore {
         GraphStore::node_owned(self, id)
     }
 
+    fn relationship_owned(&self, id: RelId) -> Result<Option<RelRecord>> {
+        GraphStore::relationship_owned(self, id)
+    }
+
     fn node_with_allocation(
         &self,
         id: NodeId,
@@ -808,5 +812,26 @@ impl GraphExecutionWrite for GraphStore {
         limits: MutationLimits,
     ) -> Result<Vec<NodeId>> {
         GraphStore::delete_node_ids_with_limits(self, catalog, ids, detach, limits)
+    }
+
+    fn commit_mutation_with_output(
+        &mut self,
+        catalog: &mut Catalog,
+        mutation: GraphMutation,
+        limits: MutationLimits,
+        project: &mut crate::store::MutationOutputProjector<'_>,
+    ) -> Result<Vec<crate::Row>> {
+        // The transaction workspace is a private snapshot: projection reads
+        // the mutated state, and nothing is published unless it succeeds.
+        let mut transaction = self.begin_mutation_transaction(catalog);
+        let summary = transaction.stage_mutation_without_commit_rows(mutation, limits)?;
+        let rows = project(transaction.catalog(), transaction.store(), &summary)?;
+        self.commit_mutation_transaction_and_relational(
+            catalog,
+            transaction,
+            hawdb_storage::relational::RelationalTransaction::default(),
+            limits,
+        )?;
+        Ok(rows)
     }
 }

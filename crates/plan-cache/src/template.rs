@@ -1532,6 +1532,7 @@ fn bind_physical_plan(plan: &mut PhysicalPlan, parameters: BindingAction<'_>) ->
         | PhysicalPlan::SetNodePropertiesReturn { .. }
         // Mutation statements bypass the plan cache.
         | PhysicalPlan::MatchSetExec(_)
+        | PhysicalPlan::MutationReturn { .. }
         | PhysicalPlan::SetRelationshipProperty { .. }
         | PhysicalPlan::SetRelationshipProperties { .. }
         | PhysicalPlan::DeleteNode { .. }

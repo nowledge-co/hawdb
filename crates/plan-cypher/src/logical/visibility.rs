@@ -274,6 +274,18 @@ pub fn apply_node_visibility_predicates(
             limit,
             input: Box::new(apply_node_visibility_predicates(*input, predicate_for)),
         },
+        LogicalPlan::MutationReturn {
+            mutation,
+            mut returns,
+        } => {
+            if let SetNodePropertiesReturnMode::Project(items) = &mut returns.mode {
+                restrict_projections(items, predicate_for);
+            }
+            LogicalPlan::MutationReturn {
+                mutation: Box::new(apply_node_visibility_predicates(*mutation, predicate_for)),
+                returns,
+            }
+        }
         mut other => {
             // Mutation WHERE predicates may hold pattern expressions.
             for predicate in mutation_predicates(&mut other) {
@@ -572,6 +584,12 @@ pub fn validate_node_visibility_predicates(
                 }));
             }
             children.push(&set.input);
+        }
+        LogicalPlan::MutationReturn { mutation, returns } => {
+            if let SetNodePropertiesReturnMode::Project(items) = &returns.mode {
+                expressions.extend(items.iter().map(|item| &item.expression));
+            }
+            children.push(mutation);
         }
         LogicalPlan::Aggregate {
             group_keys,

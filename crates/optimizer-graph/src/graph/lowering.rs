@@ -592,6 +592,7 @@ impl GroupExpr {
             | LogicalPlan::SetNodePropertiesReturn { .. }
             // Its read input is optimized as an independent root.
             | LogicalPlan::MatchSet(_)
+            | LogicalPlan::MutationReturn { .. }
             | LogicalPlan::SetRelationshipProperty { .. }
             | LogicalPlan::SetRelationshipProperties { .. }
             | LogicalPlan::DeleteNode { .. }
@@ -914,6 +915,7 @@ fn logical_group_count(logical: &LogicalPlan) -> usize {
         | LogicalPlan::SetNodeProperties { .. }
         | LogicalPlan::SetNodePropertiesReturn { .. }
         | LogicalPlan::MatchSet(_)
+        | LogicalPlan::MutationReturn { .. }
         | LogicalPlan::SetRelationshipProperty { .. }
         | LogicalPlan::SetRelationshipProperties { .. }
         | LogicalPlan::DeleteNode { .. }
