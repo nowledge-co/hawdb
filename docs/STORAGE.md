@@ -73,7 +73,13 @@ A reader accepts its supported version exactly. An intact envelope requiring a
 different version returns `HawDBError::UnsupportedStorageFormat` with
 `StorageFormatError::UnsupportedVersion { format, found, supported }`.
 An unknown materialized-view expression tag returns `UnsupportedFeature` with
-the schema format, feature name, and numeric tag. Current relational schema tags
+the schema format, feature name, and numeric tag. `StorageFormatError::format()`
+is always one of the constants exported from `hawdb` and `hawdb_core`:
+`STORAGE_MANIFEST_FORMAT`, `RELATIONAL_DURABLE_CODEC_FORMAT`,
+`RELATIONAL_SCHEMA_FORMAT`, `RELATIONAL_ROW_PAGE_FORMAT`, `APPEND_WAL_FORMAT`,
+`LOGICAL_DUMP_FORMAT` or `SEARCH_PROJECTION_MANIFEST_FORMAT`. Hosts compare
+against these constants instead of matching message text. They are recorded in
+`docs/persistent-format.lock`. Current relational schema tags
 0 through 5 represent column, COUNT(*), COUNT(column), SUM, MIN, and MAX.
 This change does not add a feature bitmap or change any encoded bytes.
 
@@ -310,8 +316,9 @@ unavailable range is refused with the typed, non-storage
 The search projection selector carries `min_reader_version` when it holds a
 field that version-1 readers do not know. A reader refuses a selector that
 needs a newer reader before decoding its fields, with
-`HawDBError::UnsupportedStorageFormat` (`format = "search projection
-manifest"`) instead of `Storage`. Version-1 selectors omit the version fields
+`HawDBError::UnsupportedStorageFormat` (`format() ==
+SEARCH_PROJECTION_MANIFEST_FORMAT`) instead of `Storage`. Writers refuse to
+publish over such a selector. Version-1 selectors omit the version fields
 and keep their earlier bytes. The bump policy is in
 [`SEARCH_PROJECTION_MANIFEST_VERSION.md`](SEARCH_PROJECTION_MANIFEST_VERSION.md).
 

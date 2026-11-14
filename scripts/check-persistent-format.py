@@ -39,6 +39,8 @@ SCANNED = [
     Path("crates/search/src"),
     Path("crates/vector-projection/src"),
     Path("crates/relational/src"),
+    # The format names hosts compare `StorageFormatError::format()` against.
+    Path("crates/core/src/error/storage_format.rs"),
 ]
 DECLARATION = re.compile(
     r"^\s*(?:pub(?:\([^)]*\))?\s+)?const\s+([A-Z0-9_]*(?:MAGIC|VERSION|FORMAT)[A-Z0-9_]*)\s*:"
@@ -80,7 +82,9 @@ def statement(lines, start):
 def scan(root):
     entries = []
     for directory in SCANNED:
-        for path in sorted((root / directory).rglob("*.rs")):
+        scanned = root / directory
+        paths = [scanned] if scanned.suffix == ".rs" else sorted(scanned.rglob("*.rs"))
+        for path in paths:
             relative = path.relative_to(root)
             if is_test_source(relative):
                 continue

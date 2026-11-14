@@ -17,11 +17,8 @@
 
 use crate::checksum_bytes;
 use crate::error::{HawDBError, Result};
-use hawdb_core::StorageFormatError;
+use hawdb_core::{StorageFormatError, SEARCH_PROJECTION_MANIFEST_FORMAT};
 use serde::Deserialize;
-
-/// The `format` named by `StorageFormatError` for a refused selector.
-pub(super) const FORMAT_NAME: &str = "search projection manifest";
 
 /// Version 1: every selector field written before #1763. Selectors at this
 /// version omit both version fields, so they stay byte-identical to, and
@@ -76,7 +73,7 @@ pub(super) fn check_reader_version(bytes: &[u8], supported: u16) -> Result<()> {
     if required > u64::from(supported) {
         return Err(HawDBError::UnsupportedStorageFormat(
             StorageFormatError::UnsupportedVersion {
-                format: FORMAT_NAME,
+                format: SEARCH_PROJECTION_MANIFEST_FORMAT,
                 found: u16::try_from(required).unwrap_or(u16::MAX),
                 supported,
             },

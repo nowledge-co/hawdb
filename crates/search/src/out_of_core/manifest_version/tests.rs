@@ -134,10 +134,19 @@ fn version_three(body: &mut serde_json::Map<String, serde_json::Value>) {
 
 fn assert_refused(error: HawDBError, found: u16, supported: u16) {
     assert!(!matches!(error, HawDBError::Storage(_)), "{error:?}");
+    // Hosts tell this refusal apart by the exported format constant.
+    let HawDBError::UnsupportedStorageFormat(refusal) = &error else {
+        panic!("{error:?}");
+    };
+    assert_eq!(
+        refusal.format(),
+        hawdb_core::SEARCH_PROJECTION_MANIFEST_FORMAT
+    );
+    assert_eq!(refusal.format(), "search projection manifest");
     assert_eq!(
         error,
         HawDBError::UnsupportedStorageFormat(StorageFormatError::UnsupportedVersion {
-            format: FORMAT_NAME,
+            format: SEARCH_PROJECTION_MANIFEST_FORMAT,
             found,
             supported,
         })
@@ -334,4 +343,66 @@ fn content_publication_after_an_advance_returns_to_the_base_version() {
         SearchOutOfCoreReader::open(&path).unwrap().document_count(),
         3
     );
+}
+
+#[test]
+fn writers_refuse_to_publish_over_a_newer_selector() {
+    let root = Dir::new("writers");
+    let path = root.search();
+    out_of_core(&path);
+    // A reader and a resident index opened before a newer HawDB published.
+    let reader = SearchOutOfCoreReader::open(&path).unwrap();
+    let resident_path = root.0.join("resident");
+    resident(&resident_path);
+    let mut index = SearchIndex::open(&resident_path).unwrap();
+    let future = future_selector(&selector(&path), version_three);
+    std::fs::write(path.join(OUT_OF_CORE_MANIFEST_FILE), &future).unwrap();
+    let resident_future = future_selector(&selector(&resident_path), version_three);
+    std::fs::write(
+        resident_path.join(OUT_OF_CORE_MANIFEST_FILE),
+        &resident_future,
+    )
+    .unwrap();
+    let files = |root: &Path| {
+        let mut names = std::fs::read_dir(root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    let before = files(&path);
+
+    // A new-generation build over the directory.
+    let mut writer = SearchOutOfCoreGenerationWriter::create(
+        &path,
+        SearchOutOfCoreGenerationBuildOptions {
+            source_graph_commit_epoch: Some(20),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    writer
+        .push(row("n", "new generation").into_document())
+        .unwrap();
+    assert_refused(writer.finish().err().unwrap(), 3, READER_VERSION);
+    assert_eq!(selector(&path), future);
+
+    // An incremental update from the stale reader.
+    let refused = SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        delta(21, vec![row("d", "incremental")]),
+        Default::default(),
+    )
+    .and_then(|prepared| prepared.finish().map(|_| ()));
+    assert_refused(refused.unwrap_err(), 3, READER_VERSION);
+    assert_eq!(selector(&path), future);
+    assert_eq!(files(&path), before);
+
+    // A resident checkpoint.
+    index
+        .apply_projection_delta(delta(22, vec![row("r", "resident")]))
+        .unwrap();
+    assert_refused(index.checkpoint().unwrap_err(), 3, READER_VERSION);
+    assert_eq!(selector(&resident_path), resident_future);
 }

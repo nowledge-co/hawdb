@@ -32,7 +32,10 @@ class PersistentFormatLockTest(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
         for directory in CHECK.SCANNED:
-            (self.root / directory).mkdir(parents=True)
+            if directory.suffix == ".rs":
+                self.write(directory, "pub const SAMPLE_FORMAT: &str = \"sample\";\n")
+            else:
+                (self.root / directory).mkdir(parents=True)
         self.write(
             CHECK.VERSION_SOURCE,
             "pub const PERSISTENT_FORMAT_VERSION: u32 = 1;\n",

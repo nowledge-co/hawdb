@@ -14,8 +14,32 @@
 
 use std::fmt::{Display, Formatter};
 
+// The `format` reported by `StorageFormatError`. Hosts that react differently
+// to different formats compare `StorageFormatError::format()` against these
+// constants, never against the message text.
+
+/// The storage manifest and checkpoint `version` line (`hawdb-storage-v<N>`).
+pub const STORAGE_MANIFEST_FORMAT: &str = "storage manifest";
+/// Relational WAL and full-checkpoint envelopes.
+pub const RELATIONAL_DURABLE_CODEC_FORMAT: &str = "relational durable codec";
+/// Relational schema records, including materialized-view expression tags.
+pub const RELATIONAL_SCHEMA_FORMAT: &str = "relational schema";
+/// Relational row-page publications.
+pub const RELATIONAL_ROW_PAGE_FORMAT: &str =
+    "relational row-page format (recreate the development database)";
+/// Embedded append WAL records.
+pub const APPEND_WAL_FORMAT: &str = "append WAL";
+/// Logical dumps (`docs/LOGICAL_DUMP.md`).
+pub const LOGICAL_DUMP_FORMAT: &str = "logical dump";
+/// The search projection selector manifest
+/// (`docs/SEARCH_PROJECTION_MANIFEST_VERSION.md`).
+pub const SEARCH_PROJECTION_MANIFEST_FORMAT: &str = "search projection manifest";
+
 /// An intact storage envelope requires a different reader capability.
 /// Refusal does not authorize repair, truncation, or database recreation.
+///
+/// `format` is always one of the `*_FORMAT` constants exported next to this
+/// type, such as [`SEARCH_PROJECTION_MANIFEST_FORMAT`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StorageFormatError {
     UnsupportedVersion {
@@ -28,6 +52,17 @@ pub enum StorageFormatError {
         feature: &'static str,
         tag: u64,
     },
+}
+
+impl StorageFormatError {
+    /// The refused format: one of the exported `*_FORMAT` constants.
+    pub const fn format(&self) -> &'static str {
+        match self {
+            Self::UnsupportedVersion { format, .. } | Self::UnsupportedFeature { format, .. } => {
+                format
+            }
+        }
+    }
 }
 
 impl Display for StorageFormatError {
@@ -80,20 +115,49 @@ mod tests {
     use crate::HawDBError;
 
     #[test]
+    fn format_accessor_reports_the_exported_constant() {
+        let names = [
+            STORAGE_MANIFEST_FORMAT,
+            RELATIONAL_DURABLE_CODEC_FORMAT,
+            RELATIONAL_SCHEMA_FORMAT,
+            RELATIONAL_ROW_PAGE_FORMAT,
+            APPEND_WAL_FORMAT,
+            LOGICAL_DUMP_FORMAT,
+            SEARCH_PROJECTION_MANIFEST_FORMAT,
+        ];
+        let unique = names.iter().collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(unique.len(), names.len());
+        let version = StorageFormatError::UnsupportedVersion {
+            format: SEARCH_PROJECTION_MANIFEST_FORMAT,
+            found: 3,
+            supported: 2,
+        };
+        assert_eq!(version.format(), SEARCH_PROJECTION_MANIFEST_FORMAT);
+        let feature = StorageFormatError::UnsupportedFeature {
+            format: RELATIONAL_SCHEMA_FORMAT,
+            feature: "materialized view expression",
+            tag: 6,
+        };
+        assert_eq!(feature.format(), RELATIONAL_SCHEMA_FORMAT);
+    }
+
+    #[test]
     fn storage_wrappers_preserve_compatibility_refusal() {
         for error in [
             StorageFormatError::UnsupportedVersion {
-                format: "relational durable codec",
+                format: RELATIONAL_DURABLE_CODEC_FORMAT,
                 found: 1,
                 supported: 2,
             },
             StorageFormatError::UnsupportedFeature {
-                format: "relational schema",
+                format: RELATIONAL_SCHEMA_FORMAT,
                 feature: "materialized view expression",
                 tag: 6,
             },
         ] {
             let wrapped = std::io::Error::other(std::io::Error::other(error.clone()));
+            assert!([RELATIONAL_DURABLE_CODEC_FORMAT, RELATIONAL_SCHEMA_FORMAT]
+                .contains(&error.format()));
             assert_eq!(
                 HawDBError::from_storage_error_with_context(wrapped, "open failed"),
                 HawDBError::UnsupportedStorageFormat(error),

@@ -412,7 +412,7 @@ fn decode_envelope_with_work<'a>(
     if version != APPEND_CODEC_VERSION {
         return Err(AppendTableError::UnsupportedFormat(
             hawdb_core::StorageFormatError::UnsupportedVersion {
-                format: "append WAL",
+                format: hawdb_core::APPEND_WAL_FORMAT,
                 found: version,
                 supported: APPEND_CODEC_VERSION,
             },
@@ -479,7 +479,7 @@ mod tests {
             assert!(matches!(
                 decode_append_wal_batch(&encoded, AppendDecodeLimits::wal()),
                 Err(AppendTableError::UnsupportedFormat(hawdb_core::StorageFormatError::UnsupportedVersion {
-                    format: "append WAL", found, supported: APPEND_CODEC_VERSION,
+                    format: hawdb_core::APPEND_WAL_FORMAT, found, supported: APPEND_CODEC_VERSION,
                 })) if found == version
             ));
             let last = encoded.len() - 1;

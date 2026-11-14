@@ -30,8 +30,6 @@ pub(super) use checkpoint::{encode_manifest_with_work_context, root_set_digest_w
 /// byte offset and length (#1521). v1 (`SKRPGM01`) used fixed 1 MiB slots.
 const MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM02";
 const LEGACY_V1_MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM01";
-/// The on-disk row-page format reported by `UnsupportedStorageFormat`.
-const ROW_PAGE_FORMAT_NAME: &str = "relational row-page format (recreate the development database)";
 const ROW_PAGE_FORMAT_VERSION: u16 = 2;
 const MANIFEST_VERSION: u16 = 1;
 /// generation, allocated pages, allocated bytes, live pages, live bytes.
@@ -317,7 +315,7 @@ fn decode_manifest_inner(
     if encoded.len() >= 8 && &encoded[..8] == LEGACY_V1_MANIFEST_MAGIC {
         return Err(RelationalRowPagePublicationError::UnsupportedFormat(
             hawdb_core::error::StorageFormatError::UnsupportedVersion {
-                format: ROW_PAGE_FORMAT_NAME,
+                format: hawdb_core::RELATIONAL_ROW_PAGE_FORMAT,
                 found: 1,
                 supported: ROW_PAGE_FORMAT_VERSION,
             },

@@ -142,7 +142,7 @@ fn search_projection_epoch_advance_refusal_reports_its_kind_and_keeps_its_messag
 fn newer_search_projection_manifest_reports_unsupported_storage_format() {
     let error =
         HawDBError::UnsupportedStorageFormat(hawdb::StorageFormatError::UnsupportedVersion {
-            format: "search projection manifest",
+            format: hawdb::SEARCH_PROJECTION_MANIFEST_FORMAT,
             found: 3,
             supported: 2,
         });

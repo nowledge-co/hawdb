@@ -5993,7 +5993,10 @@ pub(super) fn next_generation(root: &Path, max_lexical_manifest_bytes: u64) -> R
         .map(|manifest| manifest.generation)
     {
         Ok(generation) => generation,
-        Err(error @ HawDBError::FileDescriptors(_)) => return Err(error),
+        // A selector for a newer reader is intact; never publish over it (#1763).
+        Err(error @ (HawDBError::FileDescriptors(_) | HawDBError::UnsupportedStorageFormat(_))) => {
+            return Err(error)
+        }
         Err(_) => latest_recoverable_lexical_generation(root, max_lexical_manifest_bytes)?,
     };
     active_generation

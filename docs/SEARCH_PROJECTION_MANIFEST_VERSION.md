@@ -45,7 +45,7 @@ A reader decodes the selector in two stages:
    It then reads only `min_reader_version`, without `deny_unknown_fields`. If
    that version is above the one it supports, it returns
    `HawDBError::UnsupportedStorageFormat(StorageFormatError::UnsupportedVersion {
-   format: "search projection manifest", found, supported })`. `found` is the
+   format: SEARCH_PROJECTION_MANIFEST_FORMAT, found, supported })`. `found` is the
    selector's `min_reader_version`, saturated to `u16::MAX`. The message is
    `unsupported search projection manifest version 3; this reader supports
    version 2`.
@@ -62,7 +62,14 @@ unknown field also stays `Storage`: a writer that adds a field without raising
 
 Every selector read goes through this gate: `SearchOutOfCoreReader::open` and
 refresh, `SearchIndex::open` and its alias repair, epoch advance, generation
-publication, cleanup verification and Consumer candidate validation.
+publication, cleanup verification, Consumer candidate validation, and the
+generation writer's active-selector discovery.
+
+Writers never publish over a selector they refuse. A new-generation build, an
+incremental update or a resident checkpoint whose directory holds a newer
+selector fails with the same typed error, and the selector stays byte for byte
+as the newer HawDB wrote it. A damaged selector is different: a standalone full
+replacement may still rebuild over it, as before.
 
 The selector gates its whole closure. The resident snapshot, segment
 descriptors, layouts, lexical manifests, vector artifacts and mutation runs are
@@ -70,7 +77,13 @@ all reached through the selector, so a reader refuses before it opens any of
 them.
 
 The error is the same one HawDB returns for every other persistent format it
-cannot read. Bindings already map it: the C ABI reports
+cannot read. A host tells the formats apart by comparing
+`StorageFormatError::format()` with the constants exported from `hawdb` and
+`hawdb_core`: `SEARCH_PROJECTION_MANIFEST_FORMAT` for this selector, and
+`STORAGE_MANIFEST_FORMAT`, `RELATIONAL_DURABLE_CODEC_FORMAT`,
+`RELATIONAL_SCHEMA_FORMAT`, `RELATIONAL_ROW_PAGE_FORMAT`, `APPEND_WAL_FORMAT`
+and `LOGICAL_DUMP_FORMAT` for the graph, relational and dump formats. Do not
+match the message text. Bindings already map it: the C ABI reports
 `kind = "unsupported_storage_format"`, and Python raises `StorageError` with
 `kind = "unsupported_storage_format"`, not `IntegrityError`. A host that sees
 it should not poison, repair or delete the projection. It is intact; this
@@ -151,7 +164,13 @@ covers:
   chains, and which a version-1 reader with the gate refuses as the typed
   error;
 - a resident checkpoint and an out-of-core delta after an advance, which write
-  a version-1 selector without the version or content-epoch fields.
+  a version-1 selector without the version or content-epoch fields;
+- a new-generation build, an incremental update from a reader opened earlier,
+  and a resident checkpoint over a version-3 selector, which are all refused
+  with the typed error and leave the selector and the directory unchanged.
+
+Every refusal assertion also checks
+`format() == SEARCH_PROJECTION_MANIFEST_FORMAT`.
 
 The C ABI (`bindings/ffi/src/error_tests.rs`) and Python
 (`bindings/python/src/errors.rs`) tests pin the binding kinds for this error.

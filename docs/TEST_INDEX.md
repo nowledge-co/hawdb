@@ -462,7 +462,10 @@ through the decoder, `SearchOutOfCoreReader::open` and `SearchIndex::open`.
 Damaged and version-inconsistent selectors stay `Storage`. Unversioned
 selectors read and re-encode byte-identically. An epoch-advanced selector
 round-trips at version 2, and a checkpoint or delta after it returns to
-version 1. `bindings/ffi/src/error_tests.rs` and `bindings/python/src/errors.rs`
+version 1. A new-generation build, an incremental update and a resident
+checkpoint over a newer selector are refused with the typed error and leave it
+byte-identical. Each refusal asserts `format() == SEARCH_PROJECTION_MANIFEST_FORMAT`;
+`hawdb-core` `storage_format` tests pin the exported format constants. `bindings/ffi/src/error_tests.rs` and `bindings/python/src/errors.rs`
 pin the binding kind. No lane, profile or timeout is added. Local replay:
 `cargo test --locked -p hawdb-search --lib manifest_version`. See
 [the policy](SEARCH_PROJECTION_MANIFEST_VERSION.md).
