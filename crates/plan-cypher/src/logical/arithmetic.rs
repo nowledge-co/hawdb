@@ -288,7 +288,8 @@ pub(super) fn scalar_expression_is_scoped(
             .all(|expression| scalar_expression_is_scoped(expression, scope, column_names)),
         ScalarExpressionKind::Left { expression, .. }
         | ScalarExpressionKind::Lower(expression)
-        | ScalarExpressionKind::JsonValue { expression, .. } => {
+        | ScalarExpressionKind::JsonValue { expression, .. }
+        | ScalarExpressionKind::JsonString { expression, .. } => {
             scalar_expression_is_scoped(expression, scope, column_names)
         }
         ScalarExpressionKind::Path(path) => column_names.contains(path.path_variable()),

@@ -1247,7 +1247,8 @@ fn marker_use_in_projection_expression(
         }
         ProjectionExpression::Left { expression, .. }
         | ProjectionExpression::Lower(expression)
-        | ProjectionExpression::JsonValue { expression, .. } => {
+        | ProjectionExpression::JsonValue { expression, .. }
+        | ProjectionExpression::JsonString { expression, .. } => {
             marker_use_in_projection_expression(expression, name, safe)
         }
         ProjectionExpression::DefaultIfNullOrEq { empty, default, .. }
@@ -1897,7 +1898,8 @@ fn bind_projection_expression(
         }
         ProjectionExpression::Left { expression, .. }
         | ProjectionExpression::Lower(expression)
-        | ProjectionExpression::JsonValue { expression, .. } => {
+        | ProjectionExpression::JsonValue { expression, .. }
+        | ProjectionExpression::JsonString { expression, .. } => {
             bind_projection_expression(expression, parameters)?;
         }
         ProjectionExpression::DefaultIfNullOrEq { empty, default, .. }

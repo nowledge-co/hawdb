@@ -2100,7 +2100,8 @@ fn collect_projection_properties(
             .all(|expression| collect_projection_properties(expression, variable, required)),
         ProjectionExpression::Left { expression, .. }
         | ProjectionExpression::Lower(expression)
-        | ProjectionExpression::JsonValue { expression, .. } => {
+        | ProjectionExpression::JsonValue { expression, .. }
+        | ProjectionExpression::JsonString { expression, .. } => {
             collect_projection_properties(expression, variable, required)
         }
         ProjectionExpression::CaseCoalesceDifferenceFloorZero {
