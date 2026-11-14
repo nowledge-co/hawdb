@@ -334,24 +334,30 @@ mod tests {
     fn unsupported_storage_format_is_not_a_python_integrity_error() {
         Python::initialize();
         Python::attach(|py| {
-            let error = format_hawdb_error(&HawDBError::UnsupportedStorageFormat(
-                hawdb::StorageFormatError::UnsupportedVersion {
-                    format: "append WAL",
-                    found: 4,
-                    supported: 3,
-                },
-            ));
-            assert!(error.is_instance_of::<StorageError>(py));
-            assert!(!error.is_instance_of::<IntegrityError>(py));
-            assert_eq!(
-                error
-                    .value(py)
-                    .getattr("kind")
-                    .unwrap()
-                    .extract::<String>()
-                    .unwrap(),
-                "unsupported_storage_format"
-            );
+            // A newer search projection manifest (#1763) is refused the same way.
+            for (format, found, supported) in [
+                ("append WAL", 4, 3),
+                ("search projection manifest", 3, 2),
+            ] {
+                let error = format_hawdb_error(&HawDBError::UnsupportedStorageFormat(
+                    hawdb::StorageFormatError::UnsupportedVersion {
+                        format,
+                        found,
+                        supported,
+                    },
+                ));
+                assert!(error.is_instance_of::<StorageError>(py));
+                assert!(!error.is_instance_of::<IntegrityError>(py));
+                assert_eq!(
+                    error
+                        .value(py)
+                        .getattr("kind")
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    "unsupported_storage_format"
+                );
+            }
         });
     }
 

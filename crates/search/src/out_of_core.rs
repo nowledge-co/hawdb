@@ -560,6 +560,7 @@ pub(super) struct PublishedOutOfCoreProjection {
 
 mod artifact_reference;
 mod captured_cleanup;
+mod manifest_version;
 #[cfg(test)]
 pub(crate) use captured_cleanup::set_snapshot_decode_limit_for_test;
 pub(crate) use captured_cleanup::VerificationWork;
@@ -571,6 +572,22 @@ pub(crate) use scratch_directory::{ScratchDirectory, SpillFile};
 #[serde(deny_unknown_fields)]
 struct SearchOutOfCoreManifestBody<S = String> {
     format: S,
+    /// Selector version of the writer, present only with
+    /// `min_reader_version`. Absent means version 1. See
+    /// `docs/SEARCH_PROJECTION_MANIFEST_VERSION.md` (#1763).
+    #[serde(
+        default = "manifest_version::base_version",
+        skip_serializing_if = "manifest_version::is_base_version"
+    )]
+    format_version: u16,
+    /// The lowest selector version that understands every field present.
+    /// Writers derive it from the fields in `stamp_reader_version`; a reader
+    /// with a lower version refuses the selector before decoding its fields.
+    #[serde(
+        default = "manifest_version::base_version",
+        skip_serializing_if = "manifest_version::is_base_version"
+    )]
+    min_reader_version: u16,
     generation: u64,
     resident_snapshot: Option<ResidentSnapshot>,
     resident_snapshot_absent: bool,
@@ -767,14 +784,16 @@ impl SearchOutOfCoreManifestBody {
     }
 
     fn encode(&self) -> Result<Vec<u8>> {
-        self.validate_names()?;
-        let body = serde_json::to_vec(self).map_err(|error| {
+        let mut manifest = self.clone();
+        manifest.stamp_reader_version();
+        manifest.validate_names()?;
+        let body = serde_json::to_vec(&manifest).map_err(|error| {
             HawDBError::Storage(format!(
                 "failed to encode search out-of-core manifest: {error}"
             ))
         })?;
         serde_json::to_vec(&SearchOutOfCoreManifestEnvelope {
-            body: self.clone(),
+            body: manifest,
             checksum: checksum_bytes(&body),
         })
         .map_err(|error| {
@@ -792,6 +811,17 @@ impl SearchOutOfCoreManifestBody {
         bytes: &[u8],
         task: Option<&hawdb_core::RuntimeTaskContext>,
     ) -> Result<Self> {
+        Self::decode_for_reader_version(bytes, task, manifest_version::READER_VERSION)
+    }
+
+    /// Decode as a reader of selector version `supported`. A selector that
+    /// requires a newer reader is refused before its fields are decoded.
+    fn decode_for_reader_version(
+        bytes: &[u8],
+        task: Option<&hawdb_core::RuntimeTaskContext>,
+        supported: u16,
+    ) -> Result<Self> {
+        manifest_version::check_reader_version(bytes, supported)?;
         let envelope = serde_json::from_slice::<SearchOutOfCoreManifestEnvelope>(bytes);
         task.map_or(Ok(()), crate::build_control::checkpoint)?;
         let envelope = envelope.map_err(|error| {
@@ -806,6 +836,29 @@ impl SearchOutOfCoreManifestBody {
         }
         envelope.body.validate_names_with_context(task)?;
         Ok(envelope.body)
+    }
+
+    /// The lowest selector version that understands every field present.
+    /// Each optional field added after version 1 raises it only while the
+    /// field is present, so a selector without one stays readable by the
+    /// base reader.
+    fn required_reader_version(&self) -> u16 {
+        if self.content_source_graph_commit_epoch.is_some() {
+            manifest_version::CONTENT_EPOCH_VERSION
+        } else {
+            manifest_version::BASE_VERSION
+        }
+    }
+
+    /// Set the version fields from the fields present. Every writer stamps
+    /// the selector before it is serialized.
+    fn stamp_reader_version(&mut self) {
+        self.min_reader_version = self.required_reader_version();
+        self.format_version = if self.min_reader_version == manifest_version::BASE_VERSION {
+            manifest_version::BASE_VERSION
+        } else {
+            manifest_version::READER_VERSION
+        };
     }
 }
 
@@ -984,6 +1037,9 @@ impl<S: AsRef<str>> SearchOutOfCoreManifestBody<S> {
         task.map_or(Ok(()), crate::build_control::checkpoint)?;
 
         if self.format.as_ref() != OUT_OF_CORE_FORMAT
+            || self.min_reader_version < manifest_version::BASE_VERSION
+            || self.min_reader_version > manifest_version::READER_VERSION
+            || self.format_version < self.min_reader_version
             || self.generation == 0
             || self.segments.is_empty()
         {
@@ -5127,6 +5183,8 @@ fn publish_out_of_core_projection(
     let embedding = index.embedding_manifest.as_ref();
     let manifest = SearchOutOfCoreManifestBody {
         format: OUT_OF_CORE_FORMAT.to_string(),
+        format_version: manifest_version::BASE_VERSION,
+        min_reader_version: manifest_version::BASE_VERSION,
         generation,
         resident_snapshot: Some(ResidentSnapshot {
             object: ArtifactObject::from_reference(snapshot.encoded_object)?,

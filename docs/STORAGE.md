@@ -307,6 +307,14 @@ unavailable range is refused with the typed, non-storage
 `HawDBError::SearchProjectionEpochAdvanceRefused`. See
 [`SEARCH_PROJECTION_EPOCH_ADVANCE.md`](SEARCH_PROJECTION_EPOCH_ADVANCE.md).
 
+The search projection selector carries `min_reader_version` when it holds a
+field that version-1 readers do not know. A reader refuses a selector that
+needs a newer reader before decoding its fields, with
+`HawDBError::UnsupportedStorageFormat` (`format = "search projection
+manifest"`) instead of `Storage`. Version-1 selectors omit the version fields
+and keep their earlier bytes. The bump policy is in
+[`SEARCH_PROJECTION_MANIFEST_VERSION.md`](SEARCH_PROJECTION_MANIFEST_VERSION.md).
+
 ### WAL recovery
 
 WAL entries can represent either a single mutation or a batch commit record.

@@ -191,9 +191,15 @@ resident checkpoint writes a selector without the field.
   `rebuild_out_of_core_search_projection`. The tests check the digest after
   the host's catch-up.
 
-Manifests without the field serialize byte-identically to before. An older
-HawDB refuses to open an advanced selector because it has an unknown field.
-HawDB makes no on-disk compatibility promise yet.
+Manifests without the field serialize byte-identically to before. An advanced
+selector also carries `min_reader_version: 2`
+([`SEARCH_PROJECTION_MANIFEST_VERSION.md`](SEARCH_PROJECTION_MANIFEST_VERSION.md),
+#1763). A reader with the version gate that predates the field refuses it with
+the typed `HawDBError::UnsupportedStorageFormat`, not `Storage`. HawDB 0.31.0
+and 0.32.0 have no gate and still fail it as `Storage` on the unknown field.
+To downgrade to them, publish content (checkpoint or catch up) after the last
+advance first: that selector is back at version 1. HawDB makes no on-disk
+compatibility promise yet.
 
 ## Crash safety
 
