@@ -167,8 +167,11 @@ _HAWDB_SRCS = glob(
     "//crates/compat:test_support",
 ]
 
-# Unit tests embed a pre-#1683 database fixture with include_bytes!.
-_HAWDB_COMPILE_DATA = ["tests/fixtures/pre_1683_property_descriptors.bundle"]
+# Unit tests embed database fixtures with include_bytes!.
+_HAWDB_COMPILE_DATA = [
+    "tests/fixtures/pre_1683_property_descriptors.bundle",
+    "tests/fixtures/row_root_relational_checkpoint.bundle",
+]
 
 _HAWDB_COMMON_BASE_DEPS = [
     "@crate_index//:chrono",

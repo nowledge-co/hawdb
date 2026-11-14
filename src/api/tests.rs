@@ -166,6 +166,7 @@ mod query_execution;
 mod query_observability;
 mod read_transactions;
 mod relational_access_cost;
+mod relational_checkpoint_layout_refusal;
 mod relational_cross_join;
 mod relational_explain_output;
 mod relational_from_scopes;

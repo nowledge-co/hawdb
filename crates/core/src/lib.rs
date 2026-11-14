@@ -56,8 +56,9 @@ pub use error::{
     ResourceBudgetError, ResourceBudgetKind, ResourceBudgetScope, Result,
     SearchProjectionEpochAdvanceRefusal, SearchProjectionRebuildRefusal, StorageFormatError,
     TransactionRetryError, TransactionRetryReason, APPEND_WAL_FORMAT, LOGICAL_DUMP_FORMAT,
-    RELATIONAL_DURABLE_CODEC_FORMAT, RELATIONAL_ROW_PAGE_FORMAT, RELATIONAL_SCHEMA_FORMAT,
-    SEARCH_PROJECTION_MANIFEST_FORMAT, STORAGE_MANIFEST_FORMAT,
+    RELATIONAL_CHECKPOINT_LAYOUT_FORMAT, RELATIONAL_DURABLE_CODEC_FORMAT,
+    RELATIONAL_ROW_PAGE_FORMAT, RELATIONAL_SCHEMA_FORMAT, SEARCH_PROJECTION_MANIFEST_FORMAT,
+    STORAGE_MANIFEST_FORMAT,
 };
 pub use graph::{LabelFunction, RelationshipDirection, RelationshipEndpoint};
 pub use graph_rag::{

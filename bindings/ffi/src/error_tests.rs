@@ -156,3 +156,22 @@ fn newer_search_projection_manifest_reports_unsupported_storage_format() {
         expected
     );
 }
+
+#[test]
+fn newer_relational_checkpoint_layout_reports_unsupported_storage_format() {
+    let error =
+        HawDBError::UnsupportedStorageFormat(hawdb::StorageFormatError::UnsupportedFeature {
+            format: hawdb::RELATIONAL_CHECKPOINT_LAYOUT_FORMAT,
+            feature: "row-root relational checkpoint",
+            tag: 5,
+        });
+    let expected = json!({
+        "kind": "unsupported_storage_format",
+        "message": "unsupported relational checkpoint layout feature row-root relational checkpoint tag 5",
+    });
+    assert_eq!(delivered(FfiError::open(&error)), expected);
+    assert_eq!(
+        delivered(FfiError::query(&EmbeddedQueryError::Database(error))),
+        expected
+    );
+}
