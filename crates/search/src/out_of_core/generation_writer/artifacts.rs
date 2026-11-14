@@ -85,6 +85,8 @@ pub(super) struct SegmentArtifactOutput {
     pub(super) layout: SearchOutOfCoreLayoutBody,
     pub(super) descriptor_working_bytes: u64,
     pub(super) descriptor_bytes: u64,
+    /// `Some(4)` when the descriptor omits a value set (#1746).
+    pub(super) descriptor_version: Option<u16>,
     pub(super) document_payload_bytes: u64,
     pub(super) metadata_payload_bytes: u64,
     pub(super) vector_payload_bytes: u64,
@@ -220,6 +222,10 @@ impl<'a> SegmentArtifactBuilder<'a> {
             },
             descriptor_working_bytes: self.descriptor_working_bytes,
             descriptor_bytes,
+            descriptor_version: self
+                .descriptor
+                .omits_value_summaries
+                .then_some(crate::out_of_core::VALUE_SUMMARY_DESCRIPTOR_VERSION),
             document_payload_bytes: self.document_offset,
             metadata_payload_bytes: self.metadata_offset,
             vector_payload_bytes: self.vector_offset,

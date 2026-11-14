@@ -16,7 +16,10 @@ use super::*;
 use crate::build_control::checkpoint;
 use crate::build_memory::{checked_add, checked_mul, MAP_ENTRY_BYTES, SET_ENTRY_BYTES};
 use crate::document_encoding::{Header, HeaderSource};
-use crate::{normalized_projection_kind, search_field_is_enum_like, SearchSegmentFieldSummary};
+use crate::{
+    normalized_projection_kind, search_field_is_enum_like, SearchSegmentFieldSummary,
+    SEARCH_SEGMENT_VALUE_SUMMARY_MAX_FIELD_BYTES, SEARCH_SEGMENT_VALUE_SUMMARY_MAX_VALUE_BYTES,
+};
 use hawdb_core::RuntimeTaskContext;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -98,12 +101,25 @@ pub(super) fn build_with_context<T: HeaderSource>(
             .metadata
             .insert(field.clone(), SearchSegmentFieldSummary::default());
     }
+    // Value bytes kept per field, with the retained memory and descriptor
+    // budget charged for them, so an omitted value set returns both (#1746).
+    let mut kept = vec![KeptValues::default(); descriptor.metadata.len()];
     for document in documents {
         let document = document.header();
-        for (field, summary) in &mut descriptor.metadata {
+        for ((field, summary), kept) in descriptor.metadata.iter_mut().zip(&mut kept) {
             let mut present = false;
             values::visit_with_context(document, field, memory, task, &mut |value| {
                 present = true;
+                summary.update_range_summaries(value);
+                if summary.values_omitted {
+                    return Ok(());
+                }
+                // A raw value above the bound is omitted before normalization
+                // allocates a lowercase copy of it.
+                if value.trim().len() > SEARCH_SEGMENT_VALUE_SUMMARY_MAX_VALUE_BYTES {
+                    kept.omit(summary, retained, &mut budget);
+                    return Ok(());
+                }
                 let (normalized, normalization_bytes) =
                     admitted_summary_value(field, value, retained, task)?;
                 if summary.values.contains(normalized.as_ref()) {
@@ -111,28 +127,67 @@ pub(super) fn build_with_context<T: HeaderSource>(
                     if normalization_bytes != 0 {
                         retained.shrink(normalization_bytes);
                     }
-                } else {
-                    budget.reserve(32u64.saturating_add(normalized.len() as u64))?;
-                    let capacity = match &normalized {
-                        Cow::Borrowed(value) => {
-                            retained.grow(value.len())?;
-                            0
-                        }
-                        Cow::Owned(value) => value.capacity(),
-                    };
-                    retained.grow(SET_ENTRY_BYTES)?;
-                    summary.values.insert(normalized.into_owned());
-                    if normalization_bytes != capacity {
-                        retained.shrink(normalization_bytes - capacity);
-                    }
+                    return Ok(());
                 }
-                summary.update_range_summaries(value);
+                let value_bytes = kept.value_bytes.saturating_add(normalized.len());
+                if normalized.len() > SEARCH_SEGMENT_VALUE_SUMMARY_MAX_VALUE_BYTES
+                    || value_bytes > SEARCH_SEGMENT_VALUE_SUMMARY_MAX_FIELD_BYTES
+                {
+                    drop(normalized);
+                    if normalization_bytes != 0 {
+                        retained.shrink(normalization_bytes);
+                    }
+                    kept.omit(summary, retained, &mut budget);
+                    return Ok(());
+                }
+                let budget_bytes = 32u64.saturating_add(normalized.len() as u64);
+                budget.reserve(budget_bytes)?;
+                let capacity = match &normalized {
+                    Cow::Borrowed(value) => {
+                        retained.grow(value.len())?;
+                        value.len()
+                    }
+                    Cow::Owned(value) => value.capacity(),
+                };
+                retained.grow(SET_ENTRY_BYTES)?;
+                summary.values.insert(normalized.into_owned());
+                if normalization_bytes > capacity {
+                    retained.shrink(normalization_bytes - capacity);
+                }
+                kept.value_bytes = value_bytes;
+                kept.retained_bytes = kept
+                    .retained_bytes
+                    .saturating_add(capacity)
+                    .saturating_add(SET_ENTRY_BYTES);
+                kept.budget_bytes = kept.budget_bytes.saturating_add(budget_bytes);
                 Ok(())
             })?;
             summary.present_count += usize::from(present);
         }
     }
     Ok((descriptor, budget.bytes))
+}
+
+#[derive(Clone, Copy, Default)]
+struct KeptValues {
+    value_bytes: usize,
+    retained_bytes: usize,
+    budget_bytes: u64,
+}
+
+impl KeptValues {
+    /// Drop the field's value set and return what was charged for it.
+    fn omit(
+        &mut self,
+        summary: &mut SearchSegmentFieldSummary,
+        retained: &mut QueryMemoryLease,
+        budget: &mut DescriptorBudget,
+    ) {
+        summary.omit_values();
+        retained.shrink(self.retained_bytes);
+        budget.bytes = budget.bytes.saturating_sub(self.budget_bytes);
+        *self = Self::default();
+    }
 }
 
 struct DescriptorBudget {

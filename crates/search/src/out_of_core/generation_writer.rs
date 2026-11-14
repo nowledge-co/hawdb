@@ -1001,6 +1001,7 @@ impl SearchOutOfCoreGenerationWriter {
                 vector_scoring: self.options.vector_scoring,
                 embedding_dimension: self.embedding_dimension,
                 layout: &segment_output.layout,
+                descriptor_version: segment_output.descriptor_version,
                 lexical_artifact_name: &lexical_artifact_name,
                 rabitq: rabitq.as_ref(),
                 payload_bytes: segment_output.document_payload_bytes,

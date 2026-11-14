@@ -75,6 +75,7 @@ pub(super) struct PublishGenerationInput<'a> {
     pub(super) vector_scoring: crate::SearchVectorScoring,
     pub(super) embedding_dimension: Option<usize>,
     pub(super) layout: &'a SearchOutOfCoreLayoutBody,
+    pub(super) descriptor_version: Option<u16>,
     pub(super) lexical_artifact_name: &'a str,
     pub(super) rabitq: Option<&'a VectorGenerationArtifact>,
     pub(super) payload_bytes: u64,
@@ -547,6 +548,7 @@ pub(super) fn install_generation(
         document_count: input.document_count,
         documents_digest: input.documents_digest,
         source_graph_commit_epoch: input.source_graph_commit_epoch,
+        descriptor_version: input.descriptor_version,
     };
     let objects = new_segment.objects;
     let publish_content = input.mutations.is_none() || input.document_count != 0;

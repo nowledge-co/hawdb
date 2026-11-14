@@ -330,3 +330,165 @@ fn descriptor_budget_stops_before_appending_any_segment_payload() {
     assert_eq!(builder.descriptor_working_bytes, limit);
     assert_eq!(builder.descriptor.segment_count, 1);
 }
+
+/// Build one segment entry and report the retained memory and descriptor
+/// budget it charged.
+fn bounded(
+    documents: &[SearchDocument],
+    fields: &[&str],
+) -> (SearchSegmentDescriptorEntry, usize, u64) {
+    let fields = fields.iter().map(|field| field.to_string()).collect();
+    let task = RuntimeTaskContext::default();
+    let memory = BuildMemory::new(&task).unwrap();
+    let mut retained = memory.retained.reserve(0).unwrap();
+    let (entry, budget) = build_with_context(
+        0,
+        documents,
+        &fields,
+        0,
+        u64::MAX,
+        Admission {
+            memory: &memory,
+            task: &task,
+            retained: &mut retained,
+        },
+    )
+    .unwrap();
+    let retained_bytes = retained.bytes();
+    assert_eq!(memory.ledger.snapshot().used_bytes, retained_bytes);
+    (entry, retained_bytes, budget)
+}
+
+#[test]
+fn value_summary_bounds_omit_long_values_at_the_exact_bounds() {
+    let max_value = SEARCH_SEGMENT_VALUE_SUMMARY_MAX_VALUE_BYTES;
+    let max_field = SEARCH_SEGMENT_VALUE_SUMMARY_MAX_FIELD_BYTES;
+    let note = |value: &str| {
+        let (entry, _, _) = bounded(&[document(0, &[("note", value)])], &["note"]);
+        entry.metadata["note"].clone()
+    };
+    let at_bound = "a".repeat(max_value);
+    let kept = note(&at_bound);
+    assert!(!kept.values_omitted);
+    assert_eq!(kept.values, BTreeSet::from([at_bound.clone()]));
+    let omitted = note(&"a".repeat(max_value + 1));
+    assert!(omitted.values_omitted && omitted.values.is_empty());
+    assert_eq!(omitted.present_count, 1);
+    // The bound applies to the trimmed value, as stored.
+    assert!(!note(&format!("  {at_bound}\t")).values_omitted);
+    // Lowercasing U+0130 grows two bytes to three: a raw value at the bound
+    // whose normalized value exceeds it is omitted.
+    let dotted = "\u{0130}".repeat(max_value / 2);
+    assert_eq!(dotted.len(), max_value);
+    assert!(note(&dotted).values_omitted);
+    // Distinct values summing to the field bound are kept; one more byte
+    // omits the field's set.
+    let values = (0..max_field / max_value)
+        .map(|index| format!("{index:03}{}", "v".repeat(max_value - 3)))
+        .collect::<Vec<_>>();
+    let labels = values.join(",");
+    let (entry, _, _) = bounded(&[document(0, &[("labels", &labels)])], &["labels"]);
+    assert!(!entry.metadata["labels"].values_omitted);
+    assert_eq!(entry.metadata["labels"].values.len(), values.len());
+    let (entry, _, _) = bounded(
+        &[
+            document(0, &[("labels", &labels)]),
+            document(1, &[("labels", "x")]),
+        ],
+        &["labels"],
+    );
+    assert!(entry.metadata["labels"].values_omitted);
+    assert!(entry.metadata["labels"].values.is_empty());
+    assert_eq!(entry.metadata["labels"].present_count, 2);
+}
+
+#[test]
+fn omitted_value_summaries_return_their_charges_and_keep_ranges() {
+    // A set omitted after it kept values charges what a set omitted at its
+    // first value charges.
+    let max_value = SEARCH_SEGMENT_VALUE_SUMMARY_MAX_VALUE_BYTES;
+    let many = (0..64)
+        .map(|index| format!("{index:03}{}", "v".repeat(max_value - 3)))
+        .collect::<Vec<_>>()
+        .join(",");
+    let long = "w".repeat(max_value + 1);
+    let (late, late_retained, late_budget) =
+        bounded(&[document(0, &[("labels", &many)])], &["labels"]);
+    let (early, early_retained, early_budget) =
+        bounded(&[document(0, &[("labels", &long)])], &["labels"]);
+    assert!(late.metadata["labels"].values_omitted);
+    assert!(early.metadata["labels"].values_omitted);
+    assert_eq!(late_retained, early_retained);
+    assert_eq!(late_budget, early_budget);
+    // Numeric and timestamp ranges do not depend on the value set.
+    let numbers = (0..4096)
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let (entry, _, _) = bounded(&[document(0, &[("labels", &numbers)])], &["labels"]);
+    let labels = &entry.metadata["labels"];
+    assert!(labels.values_omitted);
+    assert_eq!(
+        labels.numeric_range,
+        Some(crate::SearchNumericRange {
+            min: 0.0,
+            max: 4095.0
+        })
+    );
+    let stamp = format!("2026-09-14T12:30:00Z {}", "z".repeat(max_value));
+    let (entry, _, _) = bounded(
+        &[
+            document(0, &[("created_at", "2026-09-14T12:30:00Z")]),
+            document(1, &[("created_at", &stamp)]),
+        ],
+        &["created_at"],
+    );
+    assert!(entry.metadata["created_at"].values_omitted);
+    assert!(entry.metadata["created_at"].timestamp_range.is_some());
+}
+
+#[test]
+fn omitted_value_summaries_never_skip_a_segment_for_value_predicates() {
+    use hawdb_optimizer_predicate::{SearchPredicate, SearchPredicateSet};
+    let body = |index: usize| format!("Body {index} {}", "text ".repeat(80));
+    let documents = [
+        document(
+            0,
+            &[("content", &body(0)), ("space_id", "team"), ("rank", "3")],
+        ),
+        document(
+            1,
+            &[("content", &body(1)), ("space_id", "team"), ("rank", "7")],
+        ),
+    ];
+    let (entry, _, _) = bounded(&documents, &["content", "space_id", "rank", "missing"]);
+    assert!(entry.metadata["content"].values_omitted);
+    assert!(!entry.metadata["space_id"].values_omitted);
+    let may_match = |predicate: SearchPredicate| {
+        entry.may_match_predicates(&SearchPredicateSet::new(vec![predicate]))
+    };
+    // A matching value, and a value that no document has, must both read the
+    // segment: an omitted set proves nothing.
+    assert!(may_match(SearchPredicate::eq("content", body(1))));
+    assert!(may_match(SearchPredicate::eq("content", "absent")));
+    assert!(may_match(SearchPredicate::in_list(
+        "content",
+        ["absent".to_string(), "also absent".to_string()]
+    )));
+    assert!(may_match(SearchPredicate::not_in_list(
+        "content",
+        [body(0), body(1)]
+    )));
+    assert!(may_match(SearchPredicate::exists("content")));
+    assert!(!may_match(SearchPredicate::is_missing("content")));
+    // A kept set still skips the segment.
+    assert!(may_match(SearchPredicate::eq("space_id", "team")));
+    assert!(!may_match(SearchPredicate::eq("space_id", "ops")));
+    assert!(!may_match(SearchPredicate::not_in_list(
+        "space_id",
+        ["team".to_string()]
+    )));
+    // Ranges still skip with an omitted set.
+    assert!(!may_match(SearchPredicate::gt("rank", "7")));
+    assert!(!may_match(SearchPredicate::eq("missing", "x")));
+}

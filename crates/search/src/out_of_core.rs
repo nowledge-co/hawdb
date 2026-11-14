@@ -737,7 +737,15 @@ struct SearchOutOfCoreSegmentManifest<S = String> {
     document_count: usize,
     documents_digest: u64,
     source_graph_commit_epoch: Option<u64>,
+    /// `Some(4)` when the descriptor uses the V4 grammar, which can omit a
+    /// field's value set (#1746). Absent for V1-V3 descriptors. Its presence
+    /// raises the selector's `min_reader_version` to 3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    descriptor_version: Option<u16>,
 }
+
+/// The descriptor grammar that can omit a value set (#1746).
+pub(crate) const VALUE_SUMMARY_DESCRIPTOR_VERSION: u16 = 4;
 
 /// One immutable mutation artifact selected by the active manifest.
 ///
@@ -916,7 +924,13 @@ impl SearchOutOfCoreManifestBody {
     /// field is present, so a selector without one stays readable by the
     /// base reader.
     fn required_reader_version(&self) -> u16 {
-        if self.content_source_graph_commit_epoch.is_some() {
+        if self
+            .segments
+            .iter()
+            .any(|segment| segment.descriptor_version.is_some())
+        {
+            manifest_version::VALUE_SUMMARY_VERSION
+        } else if self.content_source_graph_commit_epoch.is_some() {
             manifest_version::CONTENT_EPOCH_VERSION
         } else {
             manifest_version::BASE_VERSION
@@ -1641,6 +1655,18 @@ impl SearchOutOfCoreSegmentReader {
         let descriptor_text = std::str::from_utf8(&descriptor_bytes).map_err(|error| {
             HawDBError::Storage(format!("search segment descriptor is not UTF-8: {error}"))
         })?;
+        let v4 = descriptor_text.starts_with(crate::SEARCH_SEGMENT_DESCRIPTOR_V4_HEADER)
+            && descriptor_text[crate::SEARCH_SEGMENT_DESCRIPTOR_V4_HEADER.len()..]
+                .starts_with('\n');
+        match manifest.descriptor_version {
+            None if !v4 => {}
+            Some(VALUE_SUMMARY_DESCRIPTOR_VERSION) if v4 => {}
+            version => {
+                return Err(HawDBError::Storage(format!(
+                    "search segment descriptor grammar does not match manifest descriptor version {version:?}"
+                )))
+            }
+        }
         let descriptor =
             crate::document_encoding::DecodedDescriptor::decode(descriptor_text, admission)?;
         drop(descriptor_bytes);
@@ -5384,6 +5410,8 @@ fn publish_out_of_core_projection(
             document_count: index.documents.len(),
             documents_digest: lexical_documents_digest(&index.documents),
             source_graph_commit_epoch: index.source_graph_commit_epoch,
+            // The resident descriptor keeps complete value sets (V3).
+            descriptor_version: None,
         }],
         mutation_runs: Vec::new(),
         document_count: index.documents.len(),
@@ -6253,6 +6281,7 @@ mod tests {
     mod target_admission;
     #[cfg(feature = "full-text-search")]
     mod text_seed;
+    mod value_summary_bounds;
     mod vector_segments;
 
     use super::*;

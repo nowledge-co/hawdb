@@ -222,6 +222,9 @@ pub(super) fn prepare(
             Ok::<_, HawDBError>((name, encoded))
         })
         .transpose()?;
+    // The joined closure can reference descriptors that need a newer reader
+    // than the new content alone (#1746).
+    manifest.stamp_reader_version();
     prepared.old_segments = old_segments;
     prepared.mutation = mutation;
     Ok(prepared)
