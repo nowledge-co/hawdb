@@ -291,6 +291,18 @@ and a page larger than `SearchOutOfCoreConfig.max_hydrated_documents` reports
 ones were `HawDBError::Storage` and now display with the `execution error:`
 prefix, and the resident ones were untyped `HawDBError::Execution`.
 
+The same typing covers out-of-core refusals that are caller mistakes rather
+than store faults (`nowledge-co/hawdb#1754`).
+`SearchOutOfCoreReader::hydrate_documents` and mutation-target loading refuse
+more ids than `SearchOutOfCoreConfig.max_hydrated_documents` with
+`ResourceBudgetExceeded` (`MetadataEntries`, naming that option). Duplicate
+hydration ids and a page whose `offset + limit` overflows are
+`HawDBError::Semantic`. All three were `HawDBError::Storage`; messages are
+unchanged. Corruption and invariant guards, such as a duplicate document
+found while reading published segments, remain `Storage`. A requested id that
+the projection does not contain is also still `Storage`, because the shared
+loader cannot yet tell it from a damaged document-range index.
+
 Embedded out-of-core candidate reads (`EmbeddedReadSnapshot` and
 `EmbeddedStoreHandle`, text, vector and hybrid, exact and default) also run
 with a query-memory account (`nowledge-co/hawdb#1722`). They call

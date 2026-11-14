@@ -30,7 +30,10 @@ Range checksum errors retain precedence over syntax errors, without a checksum
 prepass or a second file traversal.
 
 Hydrated output admission is cumulative across segments. Requested IDs must
-remain unique; public output follows request order. Empty requests, missing IDs,
+remain unique; a repeated ID is refused as `HawDBError::Semantic`, and more IDs
+than `SearchOutOfCoreConfig.max_hydrated_documents` as a typed
+`ResourceBudgetExceeded` naming that option (#1754). Public output follows
+request order. Empty requests, missing IDs,
 old-reader retention and all-or-nothing public return semantics are unchanged.
 The streamed update and compaction paths share complete-segment validation and
 keep consumer writes private until the validation and publication fences pass.

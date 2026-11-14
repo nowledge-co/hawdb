@@ -370,9 +370,14 @@ fn public_hydration_preserves_order_budgets_and_old_reader() {
         output.metrics.segment_bytes_read,
         output.metrics.hydration_segment_bytes_read
     );
-    assert!(reader
+    // A repeated id is a caller mistake, not a storage fault (#1754).
+    let duplicate = reader
         .hydrate_documents(&[ids[0].clone(), ids[0].clone()])
-        .is_err());
+        .unwrap_err();
+    assert!(
+        matches!(duplicate, HawDBError::Semantic(_)),
+        "{duplicate:?}"
+    );
     assert!(reader.hydrate_documents(&["missing".to_string()]).is_err());
     assert!(reader.hydrate_documents(&[]).unwrap().documents.is_empty());
     let short = SearchOutOfCoreReader::open_with_config(
