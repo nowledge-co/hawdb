@@ -296,6 +296,17 @@ verification refusals are the typed, non-storage
 `HawDBError::SearchProjectionRebuildRefused`. See
 [`SEARCH_PROJECTION_REBUILD.md`](SEARCH_PROJECTION_REBUILD.md).
 
+A projection whose source epoch must catch up with graph commits that changed
+nothing it indexes (import bookkeeping, additive schema statements) is moved
+with `EmbeddedStoreHandle::advance_search_projection_source_epoch`. It
+publishes only a new selector manifest over the active closure, in both the
+resident and the incremental out-of-core mode, after proving from the
+database's own search change log that every commit in the range has an empty
+projection capture. A range with projected changes, a change-log gap or an
+unavailable range is refused with the typed, non-storage
+`HawDBError::SearchProjectionEpochAdvanceRefused`. See
+[`SEARCH_PROJECTION_EPOCH_ADVANCE.md`](SEARCH_PROJECTION_EPOCH_ADVANCE.md).
+
 ### WAL recovery
 
 WAL entries can represent either a single mutation or a batch commit record.

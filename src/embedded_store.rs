@@ -64,6 +64,7 @@ mod concurrent_owner;
 mod incremental_search;
 mod read_execution;
 mod resident_read;
+mod search_epoch_advance;
 mod search_projection_rebuild;
 mod search_read;
 use resident_read::ResidentProjectionRef;
@@ -295,6 +296,9 @@ pub struct EmbeddedStoreOpenOptions {
     pub retrieval_projection_advisor: RetrievalProjectionAdvisor,
     pub search_range_read_config: Option<SearchRangeReadConfig>,
     pub system_schema_registries: Vec<crate::SystemSchemaRegistry>,
+    /// Relational tables the host declares never feed its search projection.
+    /// See [`Self::with_non_projection_relational_tables`].
+    pub non_projection_relational_tables: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -356,6 +360,7 @@ impl EmbeddedStoreOpenOptions {
             retrieval_projection_advisor: RetrievalProjectionAdvisor::default(),
             search_range_read_config: None,
             system_schema_registries: Vec::new(),
+            non_projection_relational_tables: Vec::new(),
         }
     }
 
@@ -375,6 +380,7 @@ impl EmbeddedStoreOpenOptions {
             retrieval_projection_advisor: RetrievalProjectionAdvisor::default(),
             search_range_read_config: None,
             system_schema_registries: Vec::new(),
+            non_projection_relational_tables: Vec::new(),
         }
     }
 
@@ -397,6 +403,7 @@ impl EmbeddedStoreOpenOptions {
             retrieval_projection_advisor: RetrievalProjectionAdvisor::default(),
             search_range_read_config: None,
             system_schema_registries: Vec::new(),
+            non_projection_relational_tables: Vec::new(),
         }
     }
 
@@ -412,6 +419,31 @@ impl EmbeddedStoreOpenOptions {
     /// the anchor's namespace durability.
     pub fn with_database_config(mut self, config: DatabaseConfig) -> Self {
         self.database_config = Some(config);
+        self
+    }
+
+    /// Declares, once for this open, the relational tables whose rows never
+    /// feed the search projection, for example host import bookkeeping such as
+    /// `content_migration_state`. Only
+    /// [`EmbeddedStoreHandle::advance_search_projection_source_epoch`] reads
+    /// the list: a captured primary-key change to a declared table no longer
+    /// refuses a metadata-only epoch advance, and the report counts them in
+    /// `allowed_relational_change_count`. Every other relational change, and
+    /// every change HawDB cannot attribute to tables (snapshot replacement,
+    /// multiple relational transactions, missing capture), still refuses.
+    /// The default is empty: no relational change is assumed unaffected.
+    ///
+    /// The declaration is the host's: HawDB keeps no durable record of which
+    /// relational tables the host's catch-up hydrator maps to projection rows,
+    /// so it cannot reject a table the host does map. Declaring one makes an
+    /// advance skip its rows. Open rejects empty, duplicate and `hawdb_`
+    /// reserved names.
+    pub fn with_non_projection_relational_tables<I, S>(mut self, tables: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.non_projection_relational_tables = tables.into_iter().map(Into::into).collect();
         self
     }
 
@@ -462,6 +494,7 @@ impl EmbeddedStoreOpenOptions {
     }
 
     fn validate(&self) -> Result<()> {
+        non_projection_relational_table_set(&self.non_projection_relational_tables)?;
         match (
             self.search_projection_path.as_ref(),
             &self.search_projection_open_mode,
@@ -2029,6 +2062,26 @@ pub struct EmbeddedStore {
     search_projection: Option<SearchProjection>,
     out_of_core_search_projection: Option<OutOfCoreSearchProjection>,
     retrieval_projection_advisor: RetrievalProjectionAdvisor,
+    /// Fixed at open by `with_non_projection_relational_tables`.
+    non_projection_relational_tables: Arc<BTreeSet<String>>,
+}
+
+/// Validates the host's declared non-projection relational tables.
+fn non_projection_relational_table_set(tables: &[String]) -> Result<BTreeSet<String>> {
+    let mut set = BTreeSet::new();
+    for table in tables {
+        if table.is_empty() || table.starts_with("hawdb_") {
+            return Err(HawDBError::Semantic(format!(
+                "non-projection relational table {table:?} must be a non-empty host table name outside the reserved hawdb_ prefix"
+            )));
+        }
+        if !set.insert(table.clone()) {
+            return Err(HawDBError::Semantic(format!(
+                "non-projection relational table {table} is declared twice"
+            )));
+        }
+    }
+    Ok(set)
 }
 
 impl crate::DatabasePublicationState for EmbeddedStore {
@@ -2069,6 +2122,7 @@ impl EmbeddedStore {
             search_projection,
             out_of_core_search_projection: None,
             retrieval_projection_advisor: RetrievalProjectionAdvisor::default(),
+            non_projection_relational_tables: Arc::default(),
         }
     }
 
@@ -2082,6 +2136,7 @@ impl EmbeddedStore {
             search_projection: None,
             out_of_core_search_projection: Some(out_of_core_search_projection),
             retrieval_projection_advisor,
+            non_projection_relational_tables: Arc::default(),
         }
     }
 
@@ -2095,6 +2150,18 @@ impl EmbeddedStore {
     }
 
     pub fn open_with_options_and_runtime_governor(
+        options: EmbeddedStoreOpenOptions,
+        runtime_governor: RuntimeGovernor,
+    ) -> Result<(Self, EmbeddedStoreOpenReport)> {
+        let tables = Arc::new(non_projection_relational_table_set(
+            &options.non_projection_relational_tables,
+        )?);
+        let (mut store, report) = Self::open_with_validated_options(options, runtime_governor)?;
+        store.non_projection_relational_tables = tables;
+        Ok((store, report))
+    }
+
+    fn open_with_validated_options(
         options: EmbeddedStoreOpenOptions,
         runtime_governor: RuntimeGovernor,
     ) -> Result<(Self, EmbeddedStoreOpenReport)> {
@@ -2226,6 +2293,11 @@ impl EmbeddedStore {
     /// Applies a projection delta and checkpoints it before acknowledging
     /// success to the host. A checkpoint failure is returned to the caller,
     /// leaving the host free to retry its idempotent batch.
+    ///
+    /// A resident checkpoint rewrites the whole projection even for an empty
+    /// delta. To move only the source epoch past graph commits the projection
+    /// does not index, use [`Self::advance_search_projection_source_epoch`],
+    /// which writes one selector manifest after verifying the range.
     pub fn apply_search_projection_delta_and_checkpoint(
         &mut self,
         delta: SearchProjectionDelta,
@@ -2332,7 +2404,9 @@ impl EmbeddedStore {
     ///
     /// The cost is a full rewrite of the projection (lexical index, segment,
     /// metadata, and vector payload files), proportional to the corpus size,
-    /// not to the pages applied since the previous checkpoint.
+    /// not to the pages applied since the previous checkpoint. Do not use an
+    /// empty page and checkpoint only to move the source epoch; see
+    /// [`Self::advance_search_projection_source_epoch`].
     pub fn checkpoint_initial_import_projection(&mut self) -> Result<SearchCheckpointReport> {
         let projection = require_search_projection_mut(&mut self.search_projection)?;
         let report = projection.index().checkpoint_with_report()?;

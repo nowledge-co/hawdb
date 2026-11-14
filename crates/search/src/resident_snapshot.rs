@@ -97,6 +97,12 @@ impl SearchIndex {
             durable_source_graph_commit_epoch: Mutex::new(
                 freshness.durable_source_graph_commit_epoch,
             ),
+            artifact_source_graph_commit_epoch: Mutex::new(
+                *self
+                    .artifact_source_graph_commit_epoch
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()),
+            ),
             marker_lines: Mutex::new(markers.clone()),
             read_freshness: Some(Arc::clone(&freshness)),
             analyzer_lexicon: Arc::clone(&self.analyzer_lexicon),
@@ -146,6 +152,8 @@ impl ReadGeneration {
             || captured.embedding_manifest != live.embedding_manifest
             || captured.import_source_graph_commit_epoch != live.import_source_graph_commit_epoch
             || captured.source_graph_commit_epoch != live.source_graph_commit_epoch
+            || captured.artifact_source_graph_commit_epoch()
+                != live.artifact_source_graph_commit_epoch()
             || self.freshness.durable_source_graph_commit_epoch
                 != *live
                     .durable_source_graph_commit_epoch

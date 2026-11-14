@@ -173,7 +173,8 @@ pub const fn nowledge_query_fuzz_error_class(error: &HawDBError) -> &'static str
         | HawDBError::TransactionConflict { .. }
         | HawDBError::TransactionRetryRequired(_)
         | HawDBError::BranchCommandUnsupported { .. }
-        | HawDBError::SearchProjectionRebuildRefused { .. } => "execution",
+        | HawDBError::SearchProjectionRebuildRefused { .. }
+        | HawDBError::SearchProjectionEpochAdvanceRefused { .. } => "execution",
         HawDBError::Storage(_)
         | HawDBError::Constraint {
             surface: RelationalErrorSurface::Storage,

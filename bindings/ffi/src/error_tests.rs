@@ -118,3 +118,22 @@ fn search_projection_rebuild_refusal_reports_its_kind_and_keeps_its_message() {
         expected
     );
 }
+
+#[test]
+fn search_projection_epoch_advance_refusal_reports_its_kind_and_keeps_its_message() {
+    let error = HawDBError::SearchProjectionEpochAdvanceRefused {
+        reason: hawdb::SearchProjectionEpochAdvanceRefusal::ProjectionChanged,
+        source_graph_commit_epoch: Some(4),
+        target_graph_commit_epoch: 9,
+        message: "commit 6 changed a projected node".into(),
+    };
+    let expected = json!({
+        "kind": "search_projection_epoch_advance_refused",
+        "message": "search projection epoch advance refused (projection_changed): commit 6 changed a projected node",
+    });
+    assert_eq!(delivered(FfiError::open(&error)), expected);
+    assert_eq!(
+        delivered(FfiError::query(&EmbeddedQueryError::Database(error))),
+        expected
+    );
+}

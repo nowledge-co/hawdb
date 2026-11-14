@@ -173,6 +173,14 @@ the uncheckpointed memory you can tolerate.
 Hosts can also merge several pages into one larger delta. This reduces the
 number of apply calls but does not change the checkpoint arithmetic above.
 
+Do not checkpoint an empty page only to move the projection's source epoch past
+graph commits that the projection does not index, such as import bookkeeping.
+That is still a full rewrite. After a successful checkpoint, call
+`EmbeddedStoreHandle::advance_search_projection_source_epoch` instead. It
+writes one selector manifest after verifying the range against the search
+change log, and refuses with a typed error when it cannot. See
+[`SEARCH_PROJECTION_EPOCH_ADVANCE.md`](SEARCH_PROJECTION_EPOCH_ADVANCE.md).
+
 A follow-up on `#1707` tracks a segment-append checkpoint for the resident
 index. That checkpoint would write only the segments added since the previous
 generation, which would make each checkpoint's cost proportional to the new

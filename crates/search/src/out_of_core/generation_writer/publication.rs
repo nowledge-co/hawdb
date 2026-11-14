@@ -612,6 +612,7 @@ pub(super) fn install_generation(
         document_count,
         documents_digest,
         source_graph_commit_epoch: input.source_graph_commit_epoch,
+        content_source_graph_commit_epoch: None,
         import_source_graph_commit_epoch: input.import_source_graph_commit_epoch,
         embedding_model: input
             .embedding_manifest

@@ -1278,6 +1278,23 @@ mod lifecycle_tests {
     }
 
     #[test]
+    fn search_projection_epoch_advance_refusal_reports_its_kind() {
+        let error = HawDBError::SearchProjectionEpochAdvanceRefused {
+            reason: hawdb::SearchProjectionEpochAdvanceRefusal::ChangeLogGap,
+            source_graph_commit_epoch: Some(3),
+            target_graph_commit_epoch: 8,
+            message: "change log starts at 5".to_owned(),
+        };
+        let expected = (
+            "search_projection_epoch_advance_refused".to_owned(),
+            "search projection epoch advance refused (change_log_gap): change log starts at 5"
+                .to_owned(),
+        );
+        assert_eq!(engine_error(&error), expected);
+        assert_eq!(query_error(&EmbeddedQueryError::Database(error)), expected);
+    }
+
+    #[test]
     fn streamed_results_keep_the_tagged_transport() {
         let mut engine = HawDBEmbedded::open_in_memory();
         let output = execute_statement(

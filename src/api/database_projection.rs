@@ -288,6 +288,142 @@ impl Database {
         Ok(Some(batch.into_graph_delta()))
     }
 
+    /// Proves that no graph commit in `(source_commit_epoch,
+    /// target_commit_epoch]` changed anything the search projection indexes,
+    /// using only this database's own captured search change log.
+    ///
+    /// `target_commit_epoch` must be the current graph commit epoch. The
+    /// whole check holds this branch runtime's read guard
+    /// (`BranchRuntimeCell::get`, an `RwLock` read on the admitted runtime):
+    /// every graph commit needs that lock for writing, so the epoch and the
+    /// node state read below are exactly the state at the target, and no
+    /// commit can land until the check returns. The epoch is re-read at the
+    /// end as a defensive check.
+    ///
+    /// The range qualifies only when the change log covers all of it and every
+    /// commit in it has an empty projection capture:
+    /// - no search document deletion;
+    /// - no relational change HawDB cannot attribute to tables (snapshot
+    ///   replacement, multiple transactions, missing capture);
+    /// - no relational primary-key change outside `non_projection_tables`,
+    ///   the host's open-time declaration (changes to declared tables are
+    ///   counted in the result);
+    /// - no captured node that exists at the target whose label maps to a
+    ///   search projection kind.
+    ///
+    /// Labels are fixed at node creation. A captured node that no longer exists
+    /// was deleted inside the range (the target is the current epoch): if it
+    /// was projected its deletion recorded the document deletion, and if it
+    /// was created inside the range it never reached the projection.
+    ///
+    /// Refusals are [`HawDBError::SearchProjectionEpochAdvanceRefused`]:
+    /// `RangeUnavailable` when the target is not the current commit epoch,
+    /// `ChangeLogGap` when the retained log starts after the source epoch, and
+    /// `ProjectionChanged` naming the first offending commit.
+    pub fn verify_search_projection_epoch_advance(
+        &self,
+        source_commit_epoch: u64,
+        target_commit_epoch: u64,
+        non_projection_tables: &BTreeSet<String>,
+    ) -> Result<SearchProjectionEpochAdvanceVerification> {
+        use hawdb_core::SearchProjectionEpochAdvanceRefusal as Refusal;
+        let refused = |reason, message: String| HawDBError::SearchProjectionEpochAdvanceRefused {
+            reason,
+            source_graph_commit_epoch: Some(source_commit_epoch),
+            target_graph_commit_epoch: target_commit_epoch,
+            message,
+        };
+        let not_current = |current_epoch: u64| {
+            refused(
+                Refusal::RangeUnavailable,
+                format!(
+                    "target epoch {target_commit_epoch} is not the graph commit epoch {current_epoch}; an advance only reaches the current epoch"
+                ),
+            )
+        };
+        let runtime = self.runtime.get()?;
+        let current_epoch = runtime.store.commit_epoch();
+        if target_commit_epoch != current_epoch {
+            return Err(not_current(current_epoch));
+        }
+        let mut verification = SearchProjectionEpochAdvanceVerification::default();
+        if target_commit_epoch <= source_commit_epoch {
+            return Ok(verification);
+        }
+        let resume_floor = runtime.store.search_projection_change_log_start_epoch();
+        if source_commit_epoch < resume_floor {
+            return Err(refused(
+                Refusal::ChangeLogGap,
+                format!(
+                    "the search change log starts at commit epoch {resume_floor}, after source epoch {source_commit_epoch}; commits in the range were not captured or were trimmed"
+                ),
+            ));
+        }
+        for change in runtime
+            .store
+            .search_projection_changes_after(source_commit_epoch)
+        {
+            if change.commit_epoch > target_commit_epoch {
+                break;
+            }
+            verification.checked_change_log_entries =
+                verification.checked_change_log_entries.saturating_add(1);
+            let epoch = change.commit_epoch;
+            let changed = |what: String| {
+                refused(
+                    Refusal::ProjectionChanged,
+                    format!("graph commit {epoch} {what}"),
+                )
+            };
+            match &change.relational_primary_key_changes {
+                hawdb_storage::relational::RelationalPrimaryKeyChangeCapture::RequiresRebuild {
+                    reason,
+                } => {
+                    return Err(changed(format!(
+                        "has a relational change that cannot be attributed to tables ({reason:?})"
+                    )));
+                }
+                hawdb_storage::relational::RelationalPrimaryKeyChangeCapture::Captured {
+                    tables,
+                    ..
+                } => {
+                    for table in tables.iter().filter(|table| !table.primary_keys.is_empty()) {
+                        if !non_projection_tables.contains(&table.table) {
+                            return Err(changed(format!(
+                                "changed rows of relational table {}, which is not declared a non-projection table",
+                                table.table
+                            )));
+                        }
+                        verification.allowed_relational_change_count = verification
+                            .allowed_relational_change_count
+                            .saturating_add(table.primary_keys.len());
+                    }
+                }
+            }
+            if let Some(document) = change.delete_document_ids.first() {
+                return Err(changed(format!("deleted search document {document}")));
+            }
+            for node_id in &change.upsert_node_ids {
+                let Some(node) = runtime.store.node_owned(NodeId(*node_id))? else {
+                    continue;
+                };
+                if let Some(document) = hawdb_storage::projection::projection_document_id_for_node(
+                    &runtime.catalog,
+                    &node,
+                ) {
+                    return Err(changed(format!(
+                        "changed node {node_id}, projected as search document {document}"
+                    )));
+                }
+            }
+        }
+        let final_epoch = runtime.store.commit_epoch();
+        if final_epoch != target_commit_epoch {
+            return Err(not_current(final_epoch));
+        }
+        Ok(verification)
+    }
+
     pub fn build_search_projection_change_batch_after(
         &self,
         source_commit_epoch: u64,
@@ -599,4 +735,14 @@ impl Database {
         permit.finish_with_outcome(result.is_ok());
         result
     }
+}
+
+/// What [`Database::verify_search_projection_epoch_advance`] inspected.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SearchProjectionEpochAdvanceVerification {
+    /// Retained search change-log entries in the advanced range.
+    pub checked_change_log_entries: usize,
+    /// Relational primary-key changes in the range allowed only because their
+    /// tables are declared non-projection tables at open.
+    pub allowed_relational_change_count: usize,
 }

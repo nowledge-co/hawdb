@@ -90,6 +90,7 @@ pub use config::{
 mod database_lifecycle;
 mod database_maintenance;
 mod database_projection;
+pub use database_projection::SearchProjectionEpochAdvanceVerification;
 mod database_query;
 mod database_transactions;
 mod retrieval;

@@ -397,7 +397,8 @@ pub const fn hawdb_error_class(error: &HawDBError) -> &'static str {
         | HawDBError::TransactionRetryRequired(_)
         | HawDBError::TransactionReadDependencyRefused { .. }
         | HawDBError::BranchCommandUnsupported { .. }
-        | HawDBError::SearchProjectionRebuildRefused { .. } => "execution",
+        | HawDBError::SearchProjectionRebuildRefused { .. }
+        | HawDBError::SearchProjectionEpochAdvanceRefused { .. } => "execution",
         HawDBError::CapabilityUnavailable { .. } => "capability_unavailable",
     }
 }

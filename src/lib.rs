@@ -86,6 +86,7 @@ pub use analytics::{
     PageRankOptions, PageRankProcedureOptions, PageRankScore, ProjectedGraph, ProjectionLayout,
     ProjectionMemoryAdmissionError, ProjectionMemoryBudget, ProjectionMemoryEstimate,
 };
+pub use api::SearchProjectionEpochAdvanceVerification;
 pub use api::{
     hawdb_lightning_initial_import_advance_checkpoint,
     hawdb_lightning_initial_import_advance_durable_state_streaming,
@@ -343,8 +344,8 @@ pub use embedded_tokio::{
 pub use error::{
     FileDescriptorError, HawDBError, ReadBudgetError, ReadBudgetResource, RelationalErrorKind,
     RelationalErrorSurface, ResourceBudgetError, ResourceBudgetKind, ResourceBudgetScope, Result,
-    SearchProjectionRebuildRefusal, StorageFormatError, TransactionRetryError,
-    TransactionRetryReason,
+    SearchProjectionEpochAdvanceRefusal, SearchProjectionRebuildRefusal, StorageFormatError,
+    TransactionRetryError, TransactionRetryReason,
 };
 pub use executor::{
     ProjectedRowRef, QueryRow, QueryRowRef, QueryRows, QuerySchema, ReadExecutionProfile, Row,
@@ -582,23 +583,24 @@ pub use search::{
     SearchOutOfCoreUnorderedMutationWriter, SearchOutOfCoreUnorderedReplacementWriter,
     SearchPredicateFieldPruningReport, SearchPredicatePushdownReport,
     SearchProjectionCleanupOptions, SearchProjectionCleanupOutcome, SearchProjectionCleanupReport,
-    SearchProjectionDelta, SearchProjectionDeltaReport, SearchProjectionFreshness,
-    SearchProjectionKind, SearchProjectionProbeOptions, SearchProjectionQualificationIdentity,
-    SearchProjectionRow, SearchProjectionScanBudget, SearchProjectionScanReport,
-    SearchQueryOptions, SearchRangeReadConfig, SearchRebuildOptions, SearchRebuildSummary,
-    SearchResultSet, SearchRetrieverCandidateSetReport, SearchScoredCandidate,
-    SearchStagingCleanupReport, SearchTextSeedOutput, SearchTextSeedReport, SearchTopKScoreParity,
-    SearchTruncationReasonCode, SearchUnorderedMutationLimits, SearchUnorderedMutationReport,
-    SearchVectorScoring, SearchVerifiedBody, VectorProjectionQualificationIdentity,
-    VectorProjectionResourceEvidence, VectorRecallProductionQualificationReport,
-    VectorRecallValidationBlocker, VectorRecallValidationOptions, VectorRecallValidationReport,
-    VectorSearchExecutionOptions, VectorSearchKernelPreference,
-    DEFAULT_VECTOR_SEARCH_WORKING_BYTES, MAX_VECTOR_RECALL_VALIDATION_CANDIDATE_LIMIT,
-    MAX_VECTOR_RECALL_VALIDATION_SAMPLES, MAX_VECTOR_RECALL_VALIDATION_TOP_K,
-    MINIMUM_VECTOR_QUALIFICATION_DOCUMENT_COUNT, NOWLEDGE_MEMORY_MATERIALIZED_METADATA_PATHS,
-    NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS, SEARCH_LEXICAL_QUALIFICATION_PROTOCOL,
-    SEARCH_LEXICAL_QUALIFICATION_PROTOCOL_VERSION, SEARCH_PROJECTION_CLEANUP_PROTOCOL,
-    VECTOR_RECALL_PRODUCTION_QUALIFICATION_PROTOCOL, VECTOR_RECALL_VALIDATION_PROTOCOL,
+    SearchProjectionDelta, SearchProjectionDeltaReport, SearchProjectionEpochAdvanceReport,
+    SearchProjectionFreshness, SearchProjectionKind, SearchProjectionProbeOptions,
+    SearchProjectionQualificationIdentity, SearchProjectionRow, SearchProjectionScanBudget,
+    SearchProjectionScanReport, SearchQueryOptions, SearchRangeReadConfig, SearchRebuildOptions,
+    SearchRebuildSummary, SearchResultSet, SearchRetrieverCandidateSetReport,
+    SearchScoredCandidate, SearchStagingCleanupReport, SearchTextSeedOutput, SearchTextSeedReport,
+    SearchTopKScoreParity, SearchTruncationReasonCode, SearchUnorderedMutationLimits,
+    SearchUnorderedMutationReport, SearchVectorScoring, SearchVerifiedBody,
+    VectorProjectionQualificationIdentity, VectorProjectionResourceEvidence,
+    VectorRecallProductionQualificationReport, VectorRecallValidationBlocker,
+    VectorRecallValidationOptions, VectorRecallValidationReport, VectorSearchExecutionOptions,
+    VectorSearchKernelPreference, DEFAULT_VECTOR_SEARCH_WORKING_BYTES,
+    MAX_VECTOR_RECALL_VALIDATION_CANDIDATE_LIMIT, MAX_VECTOR_RECALL_VALIDATION_SAMPLES,
+    MAX_VECTOR_RECALL_VALIDATION_TOP_K, MINIMUM_VECTOR_QUALIFICATION_DOCUMENT_COUNT,
+    NOWLEDGE_MEMORY_MATERIALIZED_METADATA_PATHS, NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS,
+    SEARCH_LEXICAL_QUALIFICATION_PROTOCOL, SEARCH_LEXICAL_QUALIFICATION_PROTOCOL_VERSION,
+    SEARCH_PROJECTION_CLEANUP_PROTOCOL, VECTOR_RECALL_PRODUCTION_QUALIFICATION_PROTOCOL,
+    VECTOR_RECALL_VALIDATION_PROTOCOL,
 };
 pub use search_candidate_shadow_evidence::parse_search_candidate_shadow_probe;
 pub use search_projection_evidence::{

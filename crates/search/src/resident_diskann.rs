@@ -149,7 +149,7 @@ impl ResidentDiskAnn {
             return None;
         };
         let metadata = graph.metadata();
-        if Some(metadata.identity.source_epoch) != index.source_graph_commit_epoch {
+        if Some(metadata.identity.source_epoch) != index.artifact_source_graph_commit_epoch() {
             return None;
         }
         let (payload_bytes, payload_checksum) = graph.artifact_fingerprint();

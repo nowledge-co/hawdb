@@ -62,6 +62,12 @@ The on-disk format carries no compatibility promise until HawDB declares one.
   `search_projection_rebuild_refused`, which is not a storage failure: the
   graph and the current projection are untouched (see
   [SEARCH_PROJECTION_REBUILD.md](../../docs/SEARCH_PROJECTION_REBUILD.md));
+  a metadata-only search projection epoch advance that published nothing
+  (a commit in the range changed projected data, a change-log gap, an
+  unavailable range or uncheckpointed resident changes) is
+  `search_projection_epoch_advance_refused`, also not a storage failure: apply
+  or catch up the range normally instead (see
+  [SEARCH_PROJECTION_EPOCH_ADVANCE.md](../../docs/SEARCH_PROJECTION_EPOCH_ADVANCE.md));
   `invalid_argument` marks caller-side contract violations,
   `transaction_open` / `no_transaction` transaction-state misuse, and `panic`
   a contained Rust panic.

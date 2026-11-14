@@ -245,9 +245,9 @@ pub use out_of_core::{
     SearchOutOfCoreSegmentCompaction, SearchOutOfCoreSegmentCompactionPolicy,
     SearchOutOfCoreSegmentCompactionReport, SearchOutOfCoreSegmentCompactionStopReason,
     SearchOutOfCoreUnorderedMutationWriter, SearchOutOfCoreUnorderedReplacementWriter,
-    SearchQueryError, SearchQueryResult, SearchRetainedOutput, SearchStagingCleanupReport,
-    SearchTextSeedOutput, SearchTextSeedReport, SearchUnorderedMutationLimits,
-    SearchUnorderedMutationReport, SearchVerifiedBody,
+    SearchProjectionEpochAdvanceReport, SearchQueryError, SearchQueryResult, SearchRetainedOutput,
+    SearchStagingCleanupReport, SearchTextSeedOutput, SearchTextSeedReport,
+    SearchUnorderedMutationLimits, SearchUnorderedMutationReport, SearchVerifiedBody,
 };
 pub use resident_text_seed::SearchResidentTextSeedOutput;
 // These are internal ownership seams. Hosts continue to use the embedded facade.
@@ -1656,6 +1656,11 @@ pub struct SearchIndex {
     import_source_graph_commit_epoch: Option<u64>,
     source_graph_commit_epoch: Option<u64>,
     durable_source_graph_commit_epoch: Mutex<Option<u64>>,
+    /// The epoch the loaded snapshot, lexical and vector artifacts are stamped
+    /// with, when a verified metadata-only advance (#1756) moved
+    /// `source_graph_commit_epoch` past it. Cleared by the next checkpoint,
+    /// which restamps every artifact.
+    artifact_source_graph_commit_epoch: Mutex<Option<u64>>,
     marker_lines: Mutex<BTreeMap<String, Vec<String>>>,
     analyzer_lexicon: Arc<SearchAnalyzerLexicon>,
     lexical_projection: Mutex<Option<Arc<LexicalProjectionReader>>>,
@@ -1735,11 +1740,11 @@ impl SearchIndex {
                 "metadata-only vector Consumers require registered native reopen".into(),
             ));
         }
-        if registered {
-            out_of_core::validate_captured_resident_snapshot_identity(&index, publication)?;
+        let advanced_source_epoch = if registered {
+            out_of_core::validate_captured_resident_snapshot_identity(&index, publication)?
         } else {
-            out_of_core::validate_resident_snapshot_identity(&index, path)?;
-        }
+            out_of_core::validate_resident_snapshot_identity(&index, path)?
+        };
         if index.consumer_binding.is_some() != registered {
             return Err(HawDBError::Storage(
                 "projection consumer lifecycle does not match snapshot binding".into(),
@@ -1761,6 +1766,11 @@ impl SearchIndex {
             index.load_registered_rabitq_projection(publication)?;
         } else {
             index.load_rabitq_projection()?;
+        }
+        // Every artifact above was validated against its content stamp. Only
+        // now report the epoch the selector advanced to (#1756).
+        if let Some(epoch) = advanced_source_epoch {
+            index.apply_published_epoch_advance(epoch);
         }
         index.capture_segment_payload_reader(publication)?;
         for marker in [FULL_REINDEX_MARKER, METADATA_REPAIR_MARKER] {
@@ -3077,6 +3087,11 @@ impl SearchIndex {
                 .durable_source_graph_commit_epoch
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.source_graph_commit_epoch;
+            // Every published artifact now carries the current epoch.
+            *self
+                .artifact_source_graph_commit_epoch
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
             #[cfg(test)]
             out_of_core::resident_checkpoint_fault(out_of_core::ResidentCheckpointStep::Cleanup)?;
             let cleanup = self.retry_projection_cleanup_under_publication(
@@ -5122,6 +5137,7 @@ impl Default for SearchIndex {
             import_source_graph_commit_epoch: None,
             source_graph_commit_epoch: None,
             durable_source_graph_commit_epoch: Mutex::new(None),
+            artifact_source_graph_commit_epoch: Mutex::new(None),
             marker_lines: Mutex::new(BTreeMap::new()),
             analyzer_lexicon: Arc::default(),
             lexical_projection: Mutex::new(None),

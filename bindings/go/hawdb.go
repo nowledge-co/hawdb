@@ -46,8 +46,10 @@ type DB struct {
 // Error is the error type returned by this package. Kind carries the
 // engine's error kind in snake_case (e.g. "capability_unavailable",
 // "admission", "stopped", "search_projection_mismatch" for a search
-// projection that must be rebuilt from the graph, or
-// "search_projection_rebuild_refused" for a rebuild that installed nothing);
+// projection that must be rebuilt from the graph,
+// "search_projection_rebuild_refused" for a rebuild that installed nothing, or
+// "search_projection_epoch_advance_refused" for a metadata-only epoch advance
+// that published nothing);
 // "invalid_argument" marks a caller-side contract violation and "panic" a
 // contained Rust panic.
 type Error struct {

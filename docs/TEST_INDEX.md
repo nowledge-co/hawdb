@@ -415,6 +415,46 @@ persistent graphs; no lane, profile or timeout is added. Local replay:
 and `cargo test --locked -p hawdb-search --lib fresh_replacement`. See
 [the contract](SEARCH_PROJECTION_REBUILD.md).
 
+`embedded_store::tests::search_epoch_advance_tests` (`nowledge-co/hawdb#1756`)
+belongs to the existing root `//:hawdb_unit_general_tests` owner. It covers
+`EmbeddedStoreHandle::advance_search_projection_source_epoch` on the resident
+initial-import path and the incremental out-of-core path. Each path builds a
+300-document corpus, advances across import-bookkeeping commits on
+non-projection labels and a `DEFAULT` declaration, and asserts that the
+generation file set is unchanged, every non-selector file keeps its inode and
+length, and only the selector's bytes were written. Then:
+
+- one `Memory` write in the range (and, incrementally, one `Memory` deletion)
+  is refused with the typed `SearchProjectionEpochAdvanceRefused`
+  (`ProjectionChanged`, never `Storage`), and so is a target before or beyond
+  the current epoch (`RangeUnavailable`), including a `Memory` edit inside the
+  range that was deleted after it;
+- a two-entry change log trimmed by bookkeeping is refused as `ChangeLogGap`;
+- Mem's `content_migration_state` upserts are allowed and counted
+  (`allowed_relational_change_count`) only when declared with
+  `with_non_projection_relational_tables`; an undeclared table and the empty
+  default refuse, and empty, duplicate or `hawdb_` declarations refuse open;
+- relabel statements (`REMOVE n:Memory`, `SET n:Other`) fail without
+  committing;
+- a concurrent graph writer (retrying `TransactionRetryRequired`) never slips
+  a commit past an advance: each advance proves its exact epoch or refuses
+  with a typed reason, and the final projection agrees with a rebuild;
+- reopen keeps the advanced epoch;
+- after incremental catch-up, the epoch and `SearchDocumentSetDigest` match
+  `rebuild_out_of_core_search_projection`.
+
+Search-crate owner `out_of_core::epoch_advance::tests`, in the existing
+`hawdb-search` unit lane, covers the selector-only publication for resident
+and out-of-core closures by file bytes and inode, and chained advances.
+Injected aborts before and after the selector rename
+(`ResidentCheckpointStep::EpochAdvance*`) reopen at exactly one epoch with
+identical documents and hits. It also covers stale-reader conflicts and
+resident `UncheckpointedChanges`. The fixtures are small temporary projections;
+no lane, profile or timeout is added. Local replay:
+`cargo test --locked -p hawdb --features test-support --lib search_epoch_advance -- --test-threads=4`
+and `cargo test --locked -p hawdb-search --lib epoch_advance`. See
+[the contract](SEARCH_PROJECTION_EPOCH_ADVANCE.md).
+
 The experimental [Windows directory-custody first packet](../scripts/windows-directory-custody-probe.ps1)
 is owned by the narrowly path-filtered, same-repository
 [Directory Custody Primitive Probe](../.github/workflows/directory-custody-probe.yml)
