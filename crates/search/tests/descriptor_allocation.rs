@@ -43,7 +43,13 @@ fn round_trip(bytes: usize, report: bool) -> usize {
     let (result, total) = measure(|| writer.finish());
     let result = result.unwrap();
     assert_eq!(result.document_count, 1);
-    assert!(result.descriptor_bytes >= bytes as u64 * 2);
+    // The value exceeds the segment value-summary bound, so the descriptor
+    // omits it instead of hex-encoding it (#1746).
+    assert!(
+        result.descriptor_bytes < 8 * 1024,
+        "{}",
+        result.descriptor_bytes
+    );
     let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
     assert_eq!(
         reader

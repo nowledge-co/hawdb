@@ -6433,10 +6433,25 @@ struct SearchPhysicalRangeRead {
 #[derive(Debug, Clone, Default, PartialEq)]
 struct SearchSegmentFieldSummary {
     present_count: usize,
+    /// The complete set of distinct normalized values, used to skip a segment
+    /// for `Eq`, `In` and `NotIn`. Empty when `values_omitted` is set.
     values: BTreeSet<String>,
+    /// The value set exceeded the segment value-summary bounds, so it is not
+    /// kept and value predicates on this field cannot skip the segment (#1746).
+    values_omitted: bool,
     numeric_range: Option<SearchNumericRange>,
     timestamp_range: Option<SearchTimestampRange>,
 }
+
+/// Largest normalized value an out-of-core segment value summary keeps (#1746).
+/// Longer values, such as document bodies copied into metadata, omit the
+/// field's value summary for the segment.
+const SEARCH_SEGMENT_VALUE_SUMMARY_MAX_VALUE_BYTES: usize = 256;
+
+/// Largest sum of distinct normalized value bytes one out-of-core segment
+/// keeps per field (#1746). With 128-document segments this is at most 64
+/// bytes per document per field, independent of document size.
+const SEARCH_SEGMENT_VALUE_SUMMARY_MAX_FIELD_BYTES: usize = 8 * 1024;
 
 fn filter_search_documents_with_segment_pruning<'a>(
     documents: &'a impl DocumentView,
@@ -7004,6 +7019,13 @@ impl SearchTimestampRange {
 }
 
 impl SearchSegmentDescriptor {
+    /// Whether any segment omits a value set, which requires the V4 grammar.
+    fn omits_value_summaries(&self) -> bool {
+        self.segments
+            .iter()
+            .any(SearchSegmentDescriptorEntry::omits_value_summaries)
+    }
+
     fn build(documents: &impl DocumentView) -> Self {
         let fields = search_segment_descriptor_fields(documents);
         let mut segments = Vec::new();
@@ -7104,6 +7126,11 @@ impl SearchSegmentDescriptor {
 }
 
 impl SearchSegmentDescriptorEntry {
+    /// Whether any field omits its value set, which requires the V4 grammar.
+    fn omits_value_summaries(&self) -> bool {
+        self.metadata.values().any(|summary| summary.values_omitted)
+    }
+
     fn from_documents(
         segment_id: u64,
         documents: &[&SearchDocument],
@@ -7198,13 +7225,16 @@ impl SearchSegmentDescriptorEntry {
                     .with_datetime_min_max(range.min_epoch_millis, range.max_epoch_millis)
                     .expect("persisted timestamp summary must be ordered");
             }
-            summary = summary.with_enum_dictionary(EnumDictionaryStats::complete(
-                persisted
-                    .values
-                    .iter()
-                    .map(|value| search_segment_summary_value(field, value))
-                    .map(Value::String),
-            ));
+            // An omitted value set proves nothing, so it adds no dictionary.
+            if !persisted.values_omitted {
+                summary = summary.with_enum_dictionary(EnumDictionaryStats::complete(
+                    persisted
+                        .values
+                        .iter()
+                        .map(|value| search_segment_summary_value(field, value))
+                        .map(Value::String),
+                ));
+            }
             segment.insert_field(field.clone(), summary);
         }
         segment
@@ -7254,6 +7284,9 @@ impl SearchSegmentDescriptorEntry {
         let Some(summary) = self.metadata.get(field) else {
             return false;
         };
+        if summary.values_omitted {
+            return summary.present_count > 0;
+        }
         expected_values.into_iter().any(|expected| {
             summary
                 .values
@@ -7270,7 +7303,7 @@ impl SearchSegmentDescriptorEntry {
         let Some(summary) = self.metadata.get(field) else {
             return true;
         };
-        if summary.present_count < self.document_count {
+        if summary.present_count < self.document_count || summary.values_omitted {
             return true;
         }
         summary.values.iter().any(|actual| {
@@ -7344,6 +7377,12 @@ fn search_range_summary_value(value: &SearchScalarValue) -> Value {
 }
 
 impl SearchSegmentFieldSummary {
+    /// Drop the value set; value predicates can no longer skip the segment.
+    fn omit_values(&mut self) {
+        self.values = BTreeSet::new();
+        self.values_omitted = true;
+    }
+
     fn update_range_summaries(&mut self, value: &str) {
         if let Some(number) = metadata_numeric_value(value) {
             self.numeric_range = Some(match self.numeric_range {
@@ -8537,7 +8576,11 @@ fn read_captured_search_segment_descriptor(
 #[cfg(test)]
 fn encode_search_segment_descriptor_body(descriptor: &SearchSegmentDescriptor) -> String {
     let mut body = String::new();
-    body.push_str("HAWDB_SEARCH_SEGMENTS_V3\n");
+    body.push_str(if descriptor.omits_value_summaries() {
+        "HAWDB_SEARCH_SEGMENTS_V4\n"
+    } else {
+        "HAWDB_SEARCH_SEGMENTS_V3\n"
+    });
     body.push_str(&format!(
         "target_documents\t{}\n",
         descriptor.target_documents
@@ -8569,7 +8612,11 @@ fn encode_search_segment_descriptor_body(descriptor: &SearchSegmentDescriptor) -
                 "field\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
                 encode_string(field),
                 summary.present_count,
-                encode_segment_values(&summary.values),
+                if summary.values_omitted {
+                    SEARCH_SEGMENT_OMITTED_VALUES.to_string()
+                } else {
+                    encode_segment_values(&summary.values)
+                },
                 numeric_min,
                 numeric_max,
                 timestamp_min,
@@ -8581,12 +8628,16 @@ fn encode_search_segment_descriptor_body(descriptor: &SearchSegmentDescriptor) -
 }
 
 fn decode_search_segment_descriptor_text(text: &str) -> Result<SearchSegmentDescriptor> {
-    decode_search_segment_descriptor_with_context(text, None)
+    decode_search_segment_descriptor_with_context(text, None, false)
 }
 
+/// Decode a segment descriptor. With `bound_value_summaries`, a value set
+/// above the segment value-summary bounds is omitted while it is decoded, so
+/// a descriptor written before #1746 does not keep document bodies resident.
 fn decode_search_segment_descriptor_with_context(
     text: &str,
     task: Option<&hawdb_core::RuntimeTaskContext>,
+    bound_value_summaries: bool,
 ) -> Result<SearchSegmentDescriptor> {
     let (body, checksum) = split_checksum(text)?;
     let mut hasher = hawdb_integrity::Crc32cHasher::new();
@@ -8605,6 +8656,8 @@ fn decode_search_segment_descriptor_with_context(
     let mut document_count = None;
     let mut segments = Vec::new();
     let mut current_segment = None::<SearchSegmentDescriptorEntry>;
+    // Only a V4 descriptor may mark a value set as omitted.
+    let mut omitted_values_allowed = false;
 
     for line in body.lines() {
         task.map_or(Ok(()), build_control::checkpoint)?;
@@ -8612,6 +8665,10 @@ fn decode_search_segment_descriptor_with_context(
             || line == "HAWDB_SEARCH_SEGMENTS_V2"
             || line == "HAWDB_SEARCH_SEGMENTS_V3"
         {
+            continue;
+        }
+        if line == SEARCH_SEGMENT_DESCRIPTOR_V4_HEADER {
+            omitted_values_allowed = true;
             continue;
         }
         // The longest descriptor production has nine fields. Keep the field
@@ -8671,32 +8728,19 @@ fn decode_search_segment_descriptor_with_context(
                     metadata: BTreeMap::new(),
                 });
             }
-            ["field", raw_field, raw_present_count, raw_values] => {
-                let Some(segment) = current_segment.as_mut() else {
-                    return Err(HawDBError::Storage(
-                        "search segment descriptor field appeared before segment".to_string(),
-                    ));
-                };
-                segment.metadata.insert(
-                    decode_string(raw_field)?,
-                    SearchSegmentFieldSummary {
-                        present_count: parse_usize(
-                            raw_present_count,
-                            "search segment field present count",
-                        )?,
-                        values: decode_segment_values(raw_values)?,
-                        numeric_range: None,
-                        timestamp_range: None,
-                    },
-                );
-            }
-            ["field", raw_field, raw_present_count, raw_values, raw_numeric_min, raw_numeric_max] =>
+            ["field", raw_field, raw_present_count, raw_values, ranges @ ..]
+                if matches!(ranges.len(), 0 | 2 | 4) =>
             {
                 let Some(segment) = current_segment.as_mut() else {
                     return Err(HawDBError::Storage(
                         "search segment descriptor field appeared before segment".to_string(),
                     ));
                 };
+                let (values, values_omitted) = decode_segment_value_summary(
+                    raw_values,
+                    omitted_values_allowed,
+                    bound_value_summaries,
+                )?;
                 segment.metadata.insert(
                     decode_string(raw_field)?,
                     SearchSegmentFieldSummary {
@@ -8704,38 +8748,20 @@ fn decode_search_segment_descriptor_with_context(
                             raw_present_count,
                             "search segment field present count",
                         )?,
-                        values: decode_segment_values(raw_values)?,
-                        numeric_range: decode_search_numeric_range(
-                            raw_numeric_min,
-                            raw_numeric_max,
-                        )?,
-                        timestamp_range: None,
-                    },
-                );
-            }
-            ["field", raw_field, raw_present_count, raw_values, raw_numeric_min, raw_numeric_max, raw_timestamp_min, raw_timestamp_max] =>
-            {
-                let Some(segment) = current_segment.as_mut() else {
-                    return Err(HawDBError::Storage(
-                        "search segment descriptor field appeared before segment".to_string(),
-                    ));
-                };
-                segment.metadata.insert(
-                    decode_string(raw_field)?,
-                    SearchSegmentFieldSummary {
-                        present_count: parse_usize(
-                            raw_present_count,
-                            "search segment field present count",
-                        )?,
-                        values: decode_segment_values(raw_values)?,
-                        numeric_range: decode_search_numeric_range(
-                            raw_numeric_min,
-                            raw_numeric_max,
-                        )?,
-                        timestamp_range: decode_search_timestamp_range(
-                            raw_timestamp_min,
-                            raw_timestamp_max,
-                        )?,
+                        values,
+                        values_omitted,
+                        numeric_range: match ranges {
+                            [raw_numeric_min, raw_numeric_max, ..] => {
+                                decode_search_numeric_range(raw_numeric_min, raw_numeric_max)?
+                            }
+                            _ => None,
+                        },
+                        timestamp_range: match ranges {
+                            [_, _, raw_timestamp_min, raw_timestamp_max] => {
+                                decode_search_timestamp_range(raw_timestamp_min, raw_timestamp_max)?
+                            }
+                            _ => None,
+                        },
                     },
                 );
             }
@@ -8879,6 +8905,62 @@ fn decode_segment_values(input: &str) -> Result<BTreeSet<String>> {
         return Ok(BTreeSet::new());
     }
     input.split(',').map(decode_string).collect()
+}
+
+/// The value column of a V4 descriptor field whose value set is omitted.
+const SEARCH_SEGMENT_OMITTED_VALUES: &str = "~";
+
+/// Header of a descriptor that may contain omitted value sets (#1746).
+/// Readers before #1746 reject it, so the selector that references it
+/// requires reader version 3 (`docs/SEARCH_PROJECTION_MANIFEST_VERSION.md`).
+const SEARCH_SEGMENT_DESCRIPTOR_V4_HEADER: &str = "HAWDB_SEARCH_SEGMENTS_V4";
+
+fn decode_segment_value_summary(
+    input: &str,
+    omitted_values_allowed: bool,
+    bound_value_summaries: bool,
+) -> Result<(BTreeSet<String>, bool)> {
+    if input == SEARCH_SEGMENT_OMITTED_VALUES {
+        if !omitted_values_allowed {
+            return Err(HawDBError::Storage(
+                "search segment descriptor omits a value summary before V4".to_string(),
+            ));
+        }
+        return Ok((BTreeSet::new(), true));
+    }
+    if bound_value_summaries && segment_values_exceed_summary_bounds(input) {
+        // Each hex pair is one value byte. Validate the column without
+        // materializing the values it would have retained.
+        for value in input.split(',') {
+            if value.len() % 2 != 0 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(HawDBError::Storage(format!(
+                    "invalid search segment descriptor hex value of {} bytes",
+                    value.len()
+                )));
+            }
+        }
+        return Ok((BTreeSet::new(), true));
+    }
+    Ok((decode_segment_values(input)?, false))
+}
+
+/// Whether a hex value column exceeds the segment value-summary bounds. Each
+/// encoded value has two hex digits per byte.
+fn segment_values_exceed_summary_bounds(input: &str) -> bool {
+    if input.is_empty() {
+        return false;
+    }
+    let mut total = 0usize;
+    for value in input.split(',') {
+        let bytes = value.len() / 2;
+        total = total.saturating_add(bytes);
+        if bytes > SEARCH_SEGMENT_VALUE_SUMMARY_MAX_VALUE_BYTES
+            || total > SEARCH_SEGMENT_VALUE_SUMMARY_MAX_FIELD_BYTES
+        {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]

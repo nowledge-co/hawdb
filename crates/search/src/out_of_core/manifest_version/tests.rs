@@ -126,9 +126,12 @@ fn future_selector(
     out
 }
 
-fn version_three(body: &mut serde_json::Map<String, serde_json::Value>) {
-    body.insert("format_version".into(), 3.into());
-    body.insert("min_reader_version".into(), 3.into());
+/// The first selector version this reader does not support.
+const FUTURE_VERSION: u16 = READER_VERSION + 1;
+
+fn future_version(body: &mut serde_json::Map<String, serde_json::Value>) {
+    body.insert("format_version".into(), FUTURE_VERSION.into());
+    body.insert("min_reader_version".into(), FUTURE_VERSION.into());
     body.insert("field_from_the_future".into(), true.into());
 }
 
@@ -158,25 +161,29 @@ fn newer_selector_is_refused_with_a_typed_error_before_field_decode() {
     let root = Dir::new("newer");
     let path = root.search();
     resident(&path);
-    let future = future_selector(&selector(&path), version_three);
+    let future = future_selector(&selector(&path), future_version);
     std::fs::write(path.join(OUT_OF_CORE_MANIFEST_FILE), &future).unwrap();
 
     // The unknown field would fail the strict decode as `Storage`; the
     // version gate refuses first, on every open path.
     assert_refused(
         read_as(&future, READER_VERSION).unwrap_err(),
-        3,
+        FUTURE_VERSION,
         READER_VERSION,
     );
     assert_refused(
         SearchOutOfCoreReader::open(&path).err().unwrap(),
-        3,
+        FUTURE_VERSION,
         READER_VERSION,
     );
-    assert_refused(SearchIndex::open(&path).err().unwrap(), 3, READER_VERSION);
+    assert_refused(
+        SearchIndex::open(&path).err().unwrap(),
+        FUTURE_VERSION,
+        READER_VERSION,
+    );
     assert_eq!(
         SearchIndex::open(&path).err().unwrap().to_string(),
-        "unsupported search projection manifest version 3; this reader supports version 2"
+        "unsupported search projection manifest version 4; this reader supports version 3"
     );
     // A version that does not fit the error's field saturates.
     let huge = future_selector(&selector(&path), |body| {
@@ -194,7 +201,7 @@ fn damaged_or_inconsistent_selectors_stay_storage_failures() {
     let root = Dir::new("damaged");
     let path = root.search();
     out_of_core(&path);
-    let future = future_selector(&selector(&path), version_three);
+    let future = future_selector(&selector(&path), future_version);
     // A checksum mismatch is corruption, not a newer format.
     let mut damaged = future.clone();
     let digit = damaged.len() - 2;
@@ -273,7 +280,7 @@ fn epoch_advanced_selector_requires_version_two_and_round_trips() {
     let bytes = selector(&path);
     let text = std::str::from_utf8(&bytes).unwrap();
     assert!(
-        text.contains("\"format_version\":2,\"min_reader_version\":2"),
+        text.contains("\"format_version\":3,\"min_reader_version\":2"),
         "{text}"
     );
     let manifest = read_as(&bytes, READER_VERSION).unwrap();
@@ -355,9 +362,9 @@ fn writers_refuse_to_publish_over_a_newer_selector() {
     let resident_path = root.0.join("resident");
     resident(&resident_path);
     let mut index = SearchIndex::open(&resident_path).unwrap();
-    let future = future_selector(&selector(&path), version_three);
+    let future = future_selector(&selector(&path), future_version);
     std::fs::write(path.join(OUT_OF_CORE_MANIFEST_FILE), &future).unwrap();
-    let resident_future = future_selector(&selector(&resident_path), version_three);
+    let resident_future = future_selector(&selector(&resident_path), future_version);
     std::fs::write(
         resident_path.join(OUT_OF_CORE_MANIFEST_FILE),
         &resident_future,
@@ -385,7 +392,11 @@ fn writers_refuse_to_publish_over_a_newer_selector() {
     writer
         .push(row("n", "new generation").into_document())
         .unwrap();
-    assert_refused(writer.finish().err().unwrap(), 3, READER_VERSION);
+    assert_refused(
+        writer.finish().err().unwrap(),
+        FUTURE_VERSION,
+        READER_VERSION,
+    );
     assert_eq!(selector(&path), future);
 
     // An incremental update from the stale reader.
@@ -395,7 +406,7 @@ fn writers_refuse_to_publish_over_a_newer_selector() {
         Default::default(),
     )
     .and_then(|prepared| prepared.finish().map(|_| ()));
-    assert_refused(refused.unwrap_err(), 3, READER_VERSION);
+    assert_refused(refused.unwrap_err(), FUTURE_VERSION, READER_VERSION);
     assert_eq!(selector(&path), future);
     assert_eq!(files(&path), before);
 
@@ -403,6 +414,10 @@ fn writers_refuse_to_publish_over_a_newer_selector() {
     index
         .apply_projection_delta(delta(22, vec![row("r", "resident")]))
         .unwrap();
-    assert_refused(index.checkpoint().unwrap_err(), 3, READER_VERSION);
+    assert_refused(
+        index.checkpoint().unwrap_err(),
+        FUTURE_VERSION,
+        READER_VERSION,
+    );
     assert_eq!(selector(&resident_path), resident_future);
 }

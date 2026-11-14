@@ -120,7 +120,11 @@ impl io::Write for DigestWriter {
 }
 
 fn write_body(sink: &mut impl DocumentSink, descriptor: &SearchSegmentDescriptor) -> fmt::Result {
-    sink.write_str("HAWDB_SEARCH_SEGMENTS_V3\n")?;
+    sink.write_str(if descriptor.omits_value_summaries() {
+        "HAWDB_SEARCH_SEGMENTS_V4\n"
+    } else {
+        "HAWDB_SEARCH_SEGMENTS_V3\n"
+    })?;
     writeln!(sink, "target_documents\t{}", descriptor.target_documents)?;
     writeln!(sink, "document_count\t{}", descriptor.document_count)?;
     for segment in &descriptor.segments {
@@ -181,6 +185,9 @@ fn write_segment(
         sink.write_str("field\t")?;
         sink.write_hex(field)?;
         write!(sink, "\t{}\t", summary.present_count)?;
+        if summary.values_omitted {
+            sink.write_str(crate::SEARCH_SEGMENT_OMITTED_VALUES)?;
+        }
         for (index, value) in summary.values.iter().enumerate() {
             if index != 0 {
                 sink.write_char(',')?;

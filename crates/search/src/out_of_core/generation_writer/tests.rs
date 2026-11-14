@@ -53,7 +53,15 @@ fn descriptor_file_budget_preserves_previous_generation_and_accepts_exact_size()
     let reference_root = test_dir("descriptor_file_budget_reference");
     let _reference_cleanup = Cleanup(reference_root.clone());
     let mut source = document(0);
-    source.metadata.insert("note".into(), "token ".repeat(4096));
+    // Distinct values inside the value-summary bounds (#1746) encode as hex
+    // and outweigh their working-set estimate.
+    source.metadata.insert(
+        "labels".into(),
+        (0..40)
+            .map(|index| format!("{index:03}{}", "x".repeat(197)))
+            .collect::<Vec<_>>()
+            .join(","),
+    );
     let mut reference =
         SearchOutOfCoreGenerationWriter::create(&reference_root, Default::default()).unwrap();
     reference.push(source.clone()).unwrap();

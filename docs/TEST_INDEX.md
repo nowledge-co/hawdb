@@ -479,6 +479,21 @@ pin the binding kind. No lane, profile or timeout is added. Local replay:
 `cargo test --locked -p hawdb-search --lib manifest_version`. See
 [the policy](SEARCH_PROJECTION_MANIFEST_VERSION.md).
 
+Search-crate owners `out_of_core::tests::value_summary_bounds`,
+`out_of_core::generation_writer::artifacts::descriptor::tests` and
+`document_encoding::descriptor::decode::tests` (`nowledge-co/hawdb#1746`), in
+the same `hawdb-search` unit lane, cover bounded segment value summaries. A
+body above the value or field bound omits the field's value set, at the exact
+bounds and with Unicode lowercase growth. An omitted set never skips a segment
+for `Eq`, `In` or `NotIn`, and filters on it return the same rows, while kept
+sets and ranges still skip segments. A V4 generation writes selector version
+3 and a version-2 reader refuses it with the typed error. A V3 descriptor with
+full bodies reopens with bounded summaries, and reader-retained value bytes and
+admitted reader memory do not grow with the body length. No lane, profile or
+timeout is added. Local replay:
+`cargo test --locked -p hawdb-search --lib value_summar descriptor -- --test-threads=4`.
+See [the bounds](SEARCH_PROJECTION_MANIFEST_VERSION.md#segment-value-summaries).
+
 The experimental [Windows directory-custody first packet](../scripts/windows-directory-custody-probe.ps1)
 is owned by the narrowly path-filtered, same-repository
 [Directory Custody Primitive Probe](../.github/workflows/directory-custody-probe.yml)
