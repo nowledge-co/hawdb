@@ -140,11 +140,12 @@ fn search_projection_epoch_advance_refusal_reports_its_kind_and_keeps_its_messag
 
 #[test]
 fn newer_search_projection_manifest_reports_unsupported_storage_format() {
-    let error = HawDBError::UnsupportedStorageFormat(hawdb::StorageFormatError::UnsupportedVersion {
-        format: "search projection manifest",
-        found: 3,
-        supported: 2,
-    });
+    let error =
+        HawDBError::UnsupportedStorageFormat(hawdb::StorageFormatError::UnsupportedVersion {
+            format: "search projection manifest",
+            found: 3,
+            supported: 2,
+        });
     let expected = json!({
         "kind": "unsupported_storage_format",
         "message": "unsupported search projection manifest version 3; this reader supports version 2",

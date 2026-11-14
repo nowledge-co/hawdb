@@ -335,10 +335,9 @@ mod tests {
         Python::initialize();
         Python::attach(|py| {
             // A newer search projection manifest (#1763) is refused the same way.
-            for (format, found, supported) in [
-                ("append WAL", 4, 3),
-                ("search projection manifest", 3, 2),
-            ] {
+            for (format, found, supported) in
+                [("append WAL", 4, 3), ("search projection manifest", 3, 2)]
+            {
                 let error = format_hawdb_error(&HawDBError::UnsupportedStorageFormat(
                     hawdb::StorageFormatError::UnsupportedVersion {
                         format,
