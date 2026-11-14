@@ -95,6 +95,22 @@ Cypher keep the binding's tagged dicts (``{"$localdatetime": ...}``,
 ``{"$datetime": ...}``). A value Python cannot represent, such as a year
 outside 1..9999, stays a tagged dict.
 
+The PEP 249 constructors ``Timestamp``, ``Date`` and ``Time`` are
+``datetime.datetime``, ``datetime.date`` and ``datetime.time``, so they take
+the standard library's arguments, ``tzinfo`` included. A naive ``Timestamp``
+binds as ``TIMESTAMP`` and an aware one as ``TIMESTAMPTZ``. HawDB has no
+session time zone, so ``TimestampFromTicks`` reads seconds since the epoch in
+UTC, not in local time as ``time.localtime`` would, and returns an aware UTC
+``datetime`` to the microsecond, which binds as ``TIMESTAMPTZ``;
+``DateFromTicks`` and ``TimeFromTicks`` return its date and its naive time of
+day. Inserted into a ``TIMESTAMP`` column, an aware value stores its UTC
+wall-clock time, as ``LOCALTIMESTAMP`` does, but a ``TIMESTAMP`` column
+compares only with naive values, and a ``WHERE`` clause cannot cast the
+parameter or the column: bind ``.replace(tzinfo=None)`` of a UTC value
+instead. SQL has no ``DATE`` or ``TIME`` type, so a
+``Date`` or ``Time`` parameter raises ``ProgrammingError``; such values bind
+only through ``Database.execute``.
+
 Catalog queries (``information_schema``, ``pg_catalog`` and ``system``)
 also preserve SELECT-list order and empty-result descriptions; wildcards
 expand in the catalog's declared column order. SQL ``EXPLAIN`` reports
@@ -149,10 +165,9 @@ process exits. There is no pool.
 Deliberate departures from PEP 249: ``paramstyle`` is ``"numeric_dollar"``,
 SQLAlchemy's name for ``$1`` placeholders, which the PEP does not list; and
 fetching after a statement without a result set returns no rows instead of
-raising, because a query that matches nothing can look the same. Not
-provided: ``callproc``, ``nextset``, scrollable cursors, and the ``Date``,
-``Time``, ``Timestamp`` and ``*FromTicks`` constructors, because the binding
-takes no temporal parameter values.
+raising, because a query that matches nothing can look the same. Unlike the
+sqlite3 and psycopg constructors, which use local time, ``*FromTicks`` read
+ticks in UTC. Not provided: ``callproc``, ``nextset`` and scrollable cursors.
 """
 
 from __future__ import annotations
@@ -179,6 +194,8 @@ __all__ = [
     "DATETIME",
     "DataError",
     "DatabaseError",
+    "Date",
+    "DateFromTicks",
     "Error",
     "IntegrityError",
     "InterfaceError",
@@ -189,6 +206,10 @@ __all__ = [
     "ProgrammingError",
     "ROWID",
     "STRING",
+    "Time",
+    "TimeFromTicks",
+    "Timestamp",
+    "TimestampFromTicks",
     "Warning",
     "apilevel",
     "connect",
@@ -470,6 +491,38 @@ DATETIME = _TypeObject("DATETIME", datetime.date, datetime.datetime, datetime.ti
 ROWID = _TypeObject("ROWID")
 
 Binary = bytes
+# The binding takes exactly these classes, not subclasses; SQL binds only
+# datetime, as TIMESTAMP or TIMESTAMPTZ.
+Date = datetime.date
+Time = datetime.time
+Timestamp = datetime.datetime
+
+_EPOCH = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
+
+
+def TimestampFromTicks(ticks: float) -> datetime.datetime:
+    """The instant ``ticks`` seconds after the epoch, as an aware UTC datetime.
+
+    HawDB has no session time zone, so ticks are read in UTC, not local time.
+    The value keeps microseconds and binds as ``TIMESTAMPTZ``.
+    """
+    # timedelta takes only int and float, so other integers, such as NumPy's,
+    # convert through __index__, as they do for time.localtime().
+    seconds = ticks if isinstance(ticks, float) else operator.index(ticks)
+    # Unlike fromtimestamp(), which the platform's gmtime() limits (Windows
+    # refuses instants before 1970), this covers every year datetime holds.
+    return _EPOCH + datetime.timedelta(seconds=seconds)
+
+
+def DateFromTicks(ticks: float) -> datetime.date:
+    """The UTC date of ``TimestampFromTicks(ticks)``; SQL takes no dates."""
+    return TimestampFromTicks(ticks).date()
+
+
+def TimeFromTicks(ticks: float) -> datetime.time:
+    """The naive UTC time of ``TimestampFromTicks(ticks)``; SQL takes no times."""
+    return TimestampFromTicks(ticks).time()
+
 
 _Column = tuple[str, "type | None", None, None, None, None, None]
 
