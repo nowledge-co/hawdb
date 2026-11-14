@@ -769,16 +769,16 @@ pub trait GraphExecutionRead {
     }
 }
 
-/// The mutation operations required by storage-independent executor preflight.
-///
-/// Transaction ownership, WAL publication, and recovery remain implementation
-/// concerns. The executor supplies only a validated mutation or a bounded set
-/// of node IDs selected through [`GraphExecutionRead`].
 /// Projects a mutation's `RETURN` rows from the working catalog, the mutated
 /// store and the storage summary, before the mutation is published.
 pub type MutationOutputProjector<'a> =
     dyn FnMut(&Catalog, &dyn GraphExecutionRead, &MutationSummary) -> Result<Vec<crate::Row>> + 'a;
 
+/// The mutation operations required by storage-independent executor preflight.
+///
+/// Transaction ownership, WAL publication, and recovery remain implementation
+/// concerns. The executor supplies only a validated mutation or a bounded set
+/// of node IDs selected through [`GraphExecutionRead`].
 pub trait GraphExecutionWrite: GraphExecutionRead {
     fn commit_mutation_with_limits(
         &mut self,
