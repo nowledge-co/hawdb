@@ -1,0 +1,9 @@
+# Files `dify plugin package` leaves out of the .difypkg.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.env
+tests/
+*.difypkg
+uv.lock

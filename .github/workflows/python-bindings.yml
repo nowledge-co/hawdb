@@ -6,6 +6,7 @@ on:
     paths:
       - "bindings/python/**"
       - "integrations/llama-index-graph-stores-hawdb/**"
+      - "integrations/dify-plugin-hawdb/**"
       - "crates/core/src/error.rs"
       - "MODULE.bazel"
       - "BUILD.bazel"
@@ -18,6 +19,7 @@ on:
     paths:
       - "bindings/python/**"
       - "integrations/llama-index-graph-stores-hawdb/**"
+      - "integrations/dify-plugin-hawdb/**"
       - "crates/core/src/error.rs"
       - "MODULE.bazel"
       - "BUILD.bazel"
@@ -149,6 +151,27 @@ jobs:
       - name: Test the LlamaIndex property graph store against the installed wheel
         if: matrix.os == 'ubuntu-24.04'
         run: pytest ../../integrations/llama-index-graph-stores-hawdb/tests
+
+      # dify_plugin needs Python 3.12; the abi3 wheel built above installs there.
+      - name: Install Python 3.12 for the optional Dify plugin
+        id: python-dify
+        if: matrix.os == 'ubuntu-24.04'
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          update-environment: false
+
+      - name: Provision the optional Dify plugin
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          "${{ steps.python-dify.outputs.python-path }}" -m venv "$RUNNER_TEMP/dify"
+          # Keep the wheel built above instead of a hawdb release from PyPI.
+          "$RUNNER_TEMP/dify/bin/python" -m pip install dist/*.whl "dify_plugin==0.11.0" "pytest>=8.0"
+          "$RUNNER_TEMP/dify/bin/python" -m pip check
+
+      - name: Test the Dify plugin against the installed wheel
+        if: matrix.os == 'ubuntu-24.04'
+        run: '"$RUNNER_TEMP/dify/bin/pytest" ../../integrations/dify-plugin-hawdb/tests'
 
       - name: Retain the tested native wheel for host verification
         uses: actions/upload-artifact@v7
