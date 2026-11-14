@@ -205,7 +205,7 @@ final class DatabaseTests: XCTestCase {
         try transaction.querySQL("INSERT INTO rollback_values (id) VALUES (2)")
       })
     XCTAssertEqual(try database.querySQL("SELECT id FROM rollback_values").rows, [])
-    try database.transaction { try $0.querySQL("INSERT INTO rollback_values (id) VALUES (3)") }
+    _ = try database.transaction { try $0.querySQL("INSERT INTO rollback_values (id) VALUES (3)") }
     XCTAssertEqual(try database.querySQL("SELECT id FROM rollback_values").rows, [[.int(3)]])
   }
 
@@ -226,9 +226,9 @@ final class DatabaseTests: XCTestCase {
         try? database.close()
       } else {
         do {
-          XCTAssertEqual(
-            try database.query("RETURN $index AS value", parameters: ["index": .int(Int64(index))])
-              .rows, [[.int(Int64(index))]])
+          let result = try database.query(
+            "RETURN $index AS value", parameters: ["index": .int(Int64(index))])
+          XCTAssertEqual(result.rows, [[.int(Int64(index))]])
         } catch {
           XCTAssertEqual((error as? HawDBError)?.kind, "closed")
         }
