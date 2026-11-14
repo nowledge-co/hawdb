@@ -70,6 +70,8 @@ on:
       - "bindings/bun/**"
       - "bindings/go/**"
       - "bindings/moonbit/**"
+      - "bindings/swift/**"
+      - "Package.swift"
       - "MODULE.bazel"
       - "BUILD.bazel"
       - ".bazelrc"
@@ -100,6 +102,8 @@ on:
       - "bindings/bun/**"
       - "bindings/go/**"
       - "bindings/moonbit/**"
+      - "bindings/swift/**"
+      - "Package.swift"
       - "MODULE.bazel"
       - "BUILD.bazel"
       - ".bazelrc"
@@ -152,6 +156,24 @@ jobs:
 
       - name: Test Go against the Bazel-built C ABI
         run: bazel test --test_output=errors --test_arg=-test.v //bindings/go:hawdb_go_tests
+
+      - name: Install Swift on Linux
+        if: runner.os == 'Linux'
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "6.0.3"
+
+      - name: Test Swift against the Bazel-built C ABI
+        run: |
+          swift --version
+          library_dir="$(dirname "$HAWDB_LIBRARY")"
+          swift test -j 2 -Xswiftc -warnings-as-errors \
+            -Xlinker -L -Xlinker "$library_dir" \
+            -Xlinker -rpath -Xlinker "$library_dir"
+          swift run --package-path bindings/swift/Tests/Consumer -j 2 \
+            -Xswiftc -warnings-as-errors \
+            -Xlinker -L -Xlinker "$library_dir" \
+            -Xlinker -rpath -Xlinker "$library_dir"
 
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
