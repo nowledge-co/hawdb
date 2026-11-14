@@ -271,6 +271,113 @@ impl<'a> EmbeddedReadSnapshot<'a> {
         }
     }
 
+    /// Looks up search projection documents by id in the projection this
+    /// snapshot pinned, without refusing ids it does not contain.
+    ///
+    /// This is the non-erroring counterpart of
+    /// [`EmbeddedStoreHandle::search_projection_documents`], for hosts that
+    /// verify a projection against its source. Each requested id appears
+    /// exactly once in the result: as a document in `documents` or in
+    /// `missing_document_ids`, both in request order. It works the same on
+    /// the resident and the out-of-core projection.
+    ///
+    /// An id is missing when the pinned projection does not contain it: it
+    /// was never published, or it was deleted. The lookup takes no access
+    /// control context, like hydration by id; it does not apply search
+    /// access-control filtering, so a document is reported present whatever
+    /// policy would hide it from a filtered search.
+    ///
+    /// Errors:
+    /// - duplicate ids are `HawDBError::Semantic`;
+    /// - more ids than this snapshot's remaining `max_rows` is
+    ///   `ReadBudgetExceeded` (rows), checked before any read, and found
+    ///   documents are charged to the snapshot's rows and payload bytes;
+    /// - on the out-of-core path, more ids than
+    ///   `SearchOutOfCoreConfig.max_hydrated_documents` is
+    ///   `ResourceBudgetExceeded` naming that option, and documents over
+    ///   `SearchOutOfCoreConfig.max_hydrated_bytes` are refused as in
+    ///   hydration by id;
+    /// - an id the projection's index lists whose document cannot be read or
+    ///   verified is `HawDBError::Storage`, never reported missing.
+    pub fn lookup_search_projection_documents(
+        &mut self,
+        document_ids: &[String],
+    ) -> Result<SearchProjectionDocumentLookup> {
+        self.task_context
+            .checkpoint()
+            .map_err(|reason| HawDBError::Execution(format!("runtime task {reason}")))?;
+        if document_ids.iter().collect::<BTreeSet<_>>().len() != document_ids.len() {
+            return Err(HawDBError::Semantic(
+                "search projection document lookup ids must be unique".to_string(),
+            ));
+        }
+        // Every id may be present, so the request must fit the rows left.
+        let usage = self.transaction.usage();
+        let remaining_rows = self.budget.max_rows.saturating_sub(usage.output_rows);
+        if document_ids.len() > remaining_rows {
+            return Err(HawDBError::read_budget_exceeded(
+                ReadBudgetResource::Rows,
+                self.budget.max_rows,
+                format!(
+                    "search projection document lookup requested {} ids, but the bounded read snapshot has {remaining_rows} rows left",
+                    document_ids.len()
+                ),
+            ));
+        }
+        let remaining_payload_bytes = self
+            .budget
+            .max_payload_bytes
+            .saturating_sub(usage.output_payload_bytes);
+        let (documents, missing_document_ids, out_of_core_metrics) = match (
+            self.external.projection,
+            self.external.out_of_core_projection,
+        ) {
+            (Some(projection), None) => {
+                let mut documents = Vec::new();
+                let mut missing_document_ids = Vec::new();
+                let mut payload_bytes = 0usize;
+                for id in document_ids {
+                    let Some(document) = projection.document(id) else {
+                        missing_document_ids.push(id.clone());
+                        continue;
+                    };
+                    // Refuse before copying past the snapshot's payload.
+                    payload_bytes =
+                        payload_bytes.saturating_add(search_document_payload_bytes(document));
+                    if payload_bytes > remaining_payload_bytes {
+                        return Err(HawDBError::read_budget_exceeded(
+                            ReadBudgetResource::PayloadBytes,
+                            self.budget.max_payload_bytes,
+                            "bounded read snapshot exhausted max_payload_bytes",
+                        ));
+                    }
+                    documents.push(document.clone());
+                }
+                (documents, missing_document_ids, None)
+            }
+            (None, Some(projection)) => {
+                let output = projection.lookup_documents(document_ids)?;
+                (
+                    output.documents,
+                    output.missing_document_ids,
+                    Some(output.metrics),
+                )
+            }
+            (None, None) => return Err(missing_search_projection_error()),
+            (Some(_), Some(_)) => return Err(ambiguous_search_projection_error()),
+        };
+        let payload_bytes = documents
+            .iter()
+            .map(search_document_payload_bytes)
+            .fold(0usize, usize::saturating_add);
+        self.consume(documents.len(), payload_bytes)?;
+        Ok(SearchProjectionDocumentLookup {
+            documents,
+            missing_document_ids,
+            out_of_core_metrics,
+        })
+    }
+
     fn admitted_working_bytes(&self) -> Result<usize> {
         self.task_context
             .memory_reservation()

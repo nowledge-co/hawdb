@@ -477,6 +477,120 @@ fn public_hydration_rejects_damaged_tail_without_writing_artifacts() {
     fs::remove_dir_all(root).unwrap();
 }
 
+/// Lookup by id reports absent ids instead of refusing them, and keeps the
+/// request, budget and damage refusals of hydration by id (#1786).
+#[test]
+fn public_lookup_reports_missing_ids_and_keeps_damage_a_storage_error() {
+    let root = test_dir();
+    let mut writer = SearchOutOfCoreGenerationWriter::create(&root, Default::default()).unwrap();
+    for number in 0..4 {
+        writer.push(document(number)).unwrap();
+    }
+    writer.finish().unwrap();
+    let reader = SearchOutOfCoreReader::open(&root).unwrap();
+    // Present and never-published ids, interleaved, come back in request
+    // order on their own side of the result.
+    let request = vec![
+        document(3).id,
+        "document:missing-a".to_string(),
+        document(0).id,
+        "document:missing-b".to_string(),
+    ];
+    let lookup = reader.lookup_documents(&request).unwrap();
+    assert_eq!(lookup.documents, vec![document(3), document(0)]);
+    assert_eq!(
+        lookup.missing_document_ids,
+        vec!["document:missing-a", "document:missing-b"]
+    );
+    assert_eq!(lookup.metrics.hydrated_documents, 2);
+    assert_eq!(
+        lookup.metrics.hydrated_bytes,
+        search_document_bytes(&document(3)) + search_document_bytes(&document(0))
+    );
+    let absent = reader
+        .lookup_documents(&["document:missing-a".to_string()])
+        .unwrap();
+    assert!(absent.documents.is_empty());
+    assert_eq!(absent.missing_document_ids, vec!["document:missing-a"]);
+    assert_eq!(absent.metrics.segment_range_reads, 0);
+    let empty = reader.lookup_documents(&[]).unwrap();
+    assert!(empty.documents.is_empty() && empty.missing_document_ids.is_empty());
+
+    // A repeated id is malformed whether or not it exists.
+    for id in [document(0).id, "document:missing-a".to_string()] {
+        let duplicate = reader.lookup_documents(&[id.clone(), id]).unwrap_err();
+        assert!(
+            matches!(duplicate, HawDBError::Semantic(_)),
+            "{duplicate:?}"
+        );
+    }
+
+    // The count cap applies to the request, present or not.
+    let limited = SearchOutOfCoreReader::open_with_config(
+        &root,
+        SearchOutOfCoreConfig {
+            max_hydrated_documents: NonZeroUsize::new(2).unwrap(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    match limited
+        .lookup_documents(&[
+            document(0).id,
+            "document:missing-a".to_string(),
+            "document:missing-b".to_string(),
+        ])
+        .unwrap_err()
+    {
+        HawDBError::ResourceBudgetExceeded(details) => {
+            assert_eq!(details.resource, ResourceBudgetKind::MetadataEntries);
+            assert_eq!(details.owner, "search lookup by id", "{details:?}");
+            assert_eq!(details.requested, 3, "{details:?}");
+            assert_eq!(details.budget, 2, "{details:?}");
+            assert_eq!(
+                details.budget_option, "SearchOutOfCoreConfig.max_hydrated_documents",
+                "{details:?}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        limited
+            .lookup_documents(&[document(1).id, "document:missing-a".to_string()])
+            .unwrap()
+            .documents,
+        vec![document(1)]
+    );
+
+    // A listed id whose document cannot be verified is damage, not absence.
+    // The damaged tail belongs to the last segment, which holds document 3.
+    let path = root.join(&reader.manifest.segments[0].payload_file);
+    let valid = fs::read(&path).unwrap();
+    let mut damaged = valid.clone();
+    *damaged.last_mut().unwrap() ^= 1;
+    fs::write(&path, &damaged).unwrap();
+    for request in [
+        vec![document(3).id],
+        vec!["document:missing-a".to_string(), document(3).id],
+    ] {
+        let error = reader.lookup_documents(&request).unwrap_err();
+        assert!(matches!(error, HawDBError::Storage(_)), "{error:?}");
+        assert!(error.to_string().contains("payload checksum mismatch"));
+    }
+    // Absence is decided by the published routes, which are intact.
+    assert_eq!(
+        reader
+            .lookup_documents(&["document:missing-a".to_string()])
+            .unwrap()
+            .missing_document_ids,
+        vec!["document:missing-a"]
+    );
+    fs::write(&path, &valid).unwrap();
+    drop(reader);
+    drop(limited);
+    fs::remove_dir_all(root).unwrap();
+}
+
 fn differential_cases(cases: usize) {
     let analyzer = SearchAnalyzerLexicon::default();
     let mut state = 0x392_409_u64;

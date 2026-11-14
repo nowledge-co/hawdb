@@ -40,6 +40,26 @@ refuses it the same way instead of skipping it, so a successful result always
 has one document per requested ID. The same absence during search-hit
 hydration is index damage and remains `HawDBError::Storage`. Empty requests,
 old-reader retention and all-or-nothing public return semantics are unchanged.
+
+Hosts that need to ask which IDs are present, for example to verify a
+projection against its source, use lookup by id instead (#1786):
+`SearchOutOfCoreReader::lookup_documents` and, under one pinned projection on
+either the resident or the out-of-core path,
+`EmbeddedReadSnapshot::lookup_search_projection_documents`. The result names
+every requested ID once, as a hydrated document or as a missing ID, both in
+request order. An ID is missing when the published projection does not contain
+it: never published, or deleted (hidden by deletion visibility). Lookup by id,
+like hydration by id, takes no access-control context, so search
+access-control policy does not hide a document from it. Duplicate IDs remain
+`HawDBError::Semantic`. On the out-of-core path more IDs than
+`SearchOutOfCoreConfig.max_hydrated_documents` is a typed
+`ResourceBudgetExceeded` naming that option, with budget owner
+`search lookup by id`, and the hydrated-byte cap applies as in hydration by id.
+The snapshot call also refuses a request with more IDs than the snapshot's
+remaining `max_rows` before any read, and charges found documents to its rows
+and payload bytes. Absence is decided by the published document routes alone:
+an ID they list whose document cannot be read or verified is still
+`HawDBError::Storage`, never reported missing. No on-disk format changes.
 The streamed update and compaction paths share complete-segment validation and
 keep consumer writes private until the validation and publication fences pass.
 Later corruption discards the candidate; it cannot publish a valid prefix.
