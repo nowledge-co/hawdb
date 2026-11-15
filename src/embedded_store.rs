@@ -66,6 +66,8 @@ mod incremental_search;
 mod read_execution;
 mod resident_read;
 mod search_epoch_advance;
+mod search_markers;
+pub use search_markers::MAX_SEARCH_PROJECTION_MARKER_REASON_BYTES;
 mod search_projection_rebuild;
 mod search_read;
 use resident_read::ResidentProjectionRef;
