@@ -729,8 +729,13 @@ mod tests {
             assert!(!exception.is_instance_of::<StorageError>(py));
             let value = exception.value(py);
             let text = |name: &str| value.getattr(name).unwrap().extract::<String>().unwrap();
-            let list =
-                |name: &str| value.getattr(name).unwrap().extract::<Vec<String>>().unwrap();
+            let list = |name: &str| {
+                value
+                    .getattr(name)
+                    .unwrap()
+                    .extract::<Vec<String>>()
+                    .unwrap()
+            };
             assert_eq!(text("kind"), "search_projection_ownership_mismatch");
             assert_eq!(text("projection"), "/data/search");
             assert_eq!(list("recorded"), ["memory", "entity"]);
