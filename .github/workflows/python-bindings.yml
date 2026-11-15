@@ -5,6 +5,8 @@ on:
   pull_request:
     paths:
       - "bindings/python/**"
+      - "integrations/llama-index-graph-stores-hawdb/**"
+      - "integrations/dify-plugin-hawdb/**"
       - "crates/core/src/error.rs"
       - "MODULE.bazel"
       - "BUILD.bazel"
@@ -16,6 +18,8 @@ on:
     branches: [main]
     paths:
       - "bindings/python/**"
+      - "integrations/llama-index-graph-stores-hawdb/**"
+      - "integrations/dify-plugin-hawdb/**"
       - "crates/core/src/error.rs"
       - "MODULE.bazel"
       - "BUILD.bazel"
@@ -76,7 +80,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@1.97.1
+        uses: dtolnay/rust-toolchain@1.99.1
         with:
           components: clippy, rustfmt
 
@@ -101,8 +105,8 @@ jobs:
       - name: Build the extension wheel
         run: maturin build --release --locked --out dist
 
-      - name: Test capsule unwind containment and error retry classification
-        run: cargo test --release --locked --lib -- retained::arrow::destructor_tests errors::tests --test-threads=1
+      - name: Test capsule unwind containment, error retry classification and SQL admission
+        run: cargo test --release --locked --lib -- retained::arrow::destructor_tests errors::tests database::tests --test-threads=1
 
       - name: Install the built wheel
         run: pip install dist/*.whl
@@ -135,6 +139,39 @@ jobs:
         run: |
           python -c 'import pandas; print(pandas.__version__)'
           pytest tests/test_dbapi.py -k pandas
+
+      - name: Provision the optional LlamaIndex consumer
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          pip install "llama-index-core==0.14.25"
+          # Keep the wheel built above instead of a hawdb release from PyPI.
+          pip install --no-deps ../../integrations/llama-index-graph-stores-hawdb
+          pip check
+
+      - name: Test the LlamaIndex property graph store against the installed wheel
+        if: matrix.os == 'ubuntu-24.04'
+        run: pytest ../../integrations/llama-index-graph-stores-hawdb/tests
+
+      # dify_plugin needs Python 3.12; the abi3 wheel built above installs there.
+      - name: Install Python 3.12 for the optional Dify plugin
+        id: python-dify
+        if: matrix.os == 'ubuntu-24.04'
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          update-environment: false
+
+      - name: Provision the optional Dify plugin
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          "${{ steps.python-dify.outputs.python-path }}" -m venv "$RUNNER_TEMP/dify"
+          # Keep the wheel built above instead of a hawdb release from PyPI.
+          "$RUNNER_TEMP/dify/bin/python" -m pip install dist/*.whl "dify_plugin==0.11.0" "pytest>=8.0"
+          "$RUNNER_TEMP/dify/bin/python" -m pip check
+
+      - name: Test the Dify plugin against the installed wheel
+        if: matrix.os == 'ubuntu-24.04'
+        run: '"$RUNNER_TEMP/dify/bin/pytest" ../../integrations/dify-plugin-hawdb/tests'
 
       - name: Retain the tested native wheel for host verification
         uses: actions/upload-artifact@v7

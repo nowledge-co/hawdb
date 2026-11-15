@@ -1,16 +1,20 @@
 # Optimizer cost qualification development plan
 
-Status: proposed, 2026-11-04; implementation is pending. This delivery adds the
-design and backlog only. The
+Status: phase 1 candidate proof implemented, 2026-11-10; a manual warm,
+materialized Cypher bounded-order measurement/paired-diagnosis pilot is also
+available through `query-lab cost-measure`. The shared workload generator,
+ordinary-plan baseline and fixed proof remain separate protocols. The complete
+four-family runner, observed-cardinality re-costing and fitting remain pending. The
 [specification](specs/OPTIMIZER_COST_QUALIFICATION_SPEC.md) defines acceptance;
 [TODO](../TODO.md) is the single actionable checklist. Related work:
-[#216](https://github.com/nowledge-co/hawdb/issues/216).
+[#1596](https://github.com/nowledge-co/hawdb/issues/1596).
 
 ## Approach and delivery boundaries
 
 Extend the existing typed embedded qualification path with narrowly bounded
-legal-candidate selection and reusable evidence. Reuse Shiro's private
-fixture/replay/result comparison for an explicit offline campaign. This keeps
+legal-candidate selection and reusable evidence. Reuse the unpublished
+`tools/query-workloads` generator from Shiro and `tools/query-lab`; keep
+execution/replay in the latter's explicit offline runner. This keeps
 one parser/planner/executor path and avoids introducing a production hint
 language or a second executor. Existing cost perturbation is a useful control,
 but its limited choice coverage cannot stand in for candidate selection.
@@ -20,7 +24,50 @@ Keep later stages unimplemented until their entry gates hold. Each stage owns
 its focused engine tests and source-bound evidence; schema, runtime admission
 and physical-plan legality remain governed by the existing contracts.
 
+## Available workload prerequisite
+
+[Query workloads](../tools/query-workloads/README.md) preserves the existing
+Cypher/SQL generator inventory and adds bounded type-directed SQLsmith
+predicates. [Query lab](../tools/query-lab/README.md) freezes setup, queries,
+parameters and budgets before execution; compares template/recursive validity,
+syntax combinations, executed access shapes and failure replay; and collects
+same-snapshot ordinary-plan cost baselines with three warmups/fifteen samples.
+
+Selected relational access/join CE diagnostics also consume frozen validation
+observations: directed distributions with independently counted query results,
+positive-only Q-error and signed bias, explicit zero/partial/missing coverage,
+and same-input paired reports. These do not provide complete predicate-level
+CE traces, frozen-plan observed-cardinality re-costing or candidate regret.
+
+The [compressed graph histogram](COMPRESSED_HISTOGRAMS.md) adapter adds 20 frozen
+graph cases. It uses the existing qualification API for a selected tree
+fingerprint, cost and operator actuals from the same execution. It bypasses
+the physical cache and reports whole-call timing. It does not select legal
+alternatives; these graph observations also do not qualify SQL candidate
+identity, hardware weights or regret.
+
+These tools are independent, unpublished workspaces, excluded from library
+archives and ordinary CI. The fixed Cypher proof completes phase 1, not phase 2:
+four-family SQL/Cypher coverage, paired timings and source-qualified regret remain
+missing. No default cost coefficient changes in phase 1.
+
 ## Phase 1: Evidence and a minimal candidate-selection proof
+
+Status: complete, 2026-11-10. The typed embedded API executes ordinary, TopN
+and Sort-plus-Limit choices from the normal lowerer on one pinned snapshot. It
+retains complete physical identity, raw costs, policy identity, properties,
+cardinality estimates, execution failures and complete typed results. Candidate
+requests are bounded to eight and reject stale fingerprints, missing ordinary
+plans and duplicate inventories. Each candidate receives a fresh equal
+deadline/work scope nested under the request's cumulative campaign admission,
+so candidate order cannot consume another candidate's allowance and the
+campaign total is not reset. `query-lab cost-proof` serializes the fixed
+correctness record under the narrower
+`hawdb-optimizer-cost-qualification-phase1-v1` protocol;
+`cost-proof-replay` requires an exact replay. Both explicitly omit source/build
+attestation, timing and regret claims. The full
+`hawdb-optimizer-cost-qualification-v1` evidence model remains a phase-2 entry
+requirement.
 
 Dependencies: the specification, current cost/trace ownership and a frozen
 synthetic read fixture.
@@ -33,7 +80,7 @@ selection rather than widening production optimizer controls.
 
 Likely owners are `crates/cascades/src/qualification.rs`,
 `src/api/optimizer_qualification.rs`, the existing optimizer lowerers and explain
-records, with tool-only serialization/replay under `tools/shiro/`. Final type
+records, with tool-only serialization/replay under `tools/query-lab/`. Final type
 names and source boundaries must follow the current code during implementation.
 Do not expose an arbitrary physical-plan execution API.
 

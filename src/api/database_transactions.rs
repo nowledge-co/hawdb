@@ -223,6 +223,7 @@ impl Database {
                 task_context,
                 _pin: Arc::new(pin),
                 retained_runtime: Arc::clone(&self.retained_runtime),
+                sql_clock: hawdb_core::temporal::statement_now(),
             }
         })
     }

@@ -31,7 +31,9 @@ mod ordered_composite;
 #[path = "graph_read/resident_pruning.rs"]
 mod resident_pruning;
 use admission::{AdmittedProjection, ProjectionAdmission, UnaccountedReadAllocation};
-pub use resident_pruning::{EndpointCandidates, RelationshipEndpoints};
+pub use resident_pruning::{
+    EndpointCandidates, RelationshipEndpoints, RelationshipSeedConstraints,
+};
 
 thread_local! {
     static ADJACENCY_VISITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
@@ -217,6 +219,10 @@ mod relationship_scan_tests;
 #[cfg(test)]
 #[path = "graph_read/labeled_expand_point_read_tests.rs"]
 mod labeled_expand_point_read_tests;
+
+#[cfg(test)]
+#[path = "graph_read/adjacency_descriptor_read_tests.rs"]
+mod adjacency_descriptor_read_tests;
 
 #[cfg(test)]
 #[path = "graph_read/relationship_stream_tests.rs"]

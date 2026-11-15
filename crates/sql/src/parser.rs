@@ -25,6 +25,10 @@ mod full;
 #[cfg(test)]
 mod numeric_tests;
 mod owned;
+#[cfg(test)]
+mod search_index_tests;
+#[cfg(test)]
+mod timestamp_tests;
 
 pub fn parse_postgres_sql(input: &str) -> Result<SqlStatement> {
     if let Some(statement) = branch::parse_branch_statement(input)? {

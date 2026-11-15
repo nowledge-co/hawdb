@@ -26,7 +26,7 @@ impl TestDirectory {
     pub(crate) fn new(prefix: &str) -> Self {
         loop {
             let id = NEXT_DIRECTORY
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
                 .expect("test directory sequence exhausted");
             let path = std::env::temp_dir().join(format!("{prefix}-{}-{id}", std::process::id()));
             match std::fs::create_dir(&path) {

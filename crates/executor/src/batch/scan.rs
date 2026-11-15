@@ -793,13 +793,14 @@ pub(super) struct RelationshipSeededScanSpec<'a> {
     pub(super) label: &'a str,
     pub(super) rel_type: &'a str,
     pub(super) rel_properties: &'a BTreeMap<String, Value>,
+    pub(super) rel_property_in: Option<(&'a str, &'a [Value])>,
     pub(super) direction: RelationshipDirection,
 }
 
-/// The `label` nodes that are endpoints of the matching relationships, from
-/// the resident relationship property index in node-id order (#1548). When
-/// the index cannot answer, or the posting exceeds the label's node count,
-/// this is the full label scan.
+/// The `label` nodes (every node for an empty label) that are endpoints of
+/// the matching relationships, from the relationship property index in
+/// node-id order (#1548). When the index cannot answer, or the posting
+/// exceeds the label's node count, this is the full label scan.
 pub(super) fn stream_relationship_seeded_node_scan_batches(
     spec: RelationshipSeededScanSpec<'_>,
     context: BatchReadContext<'_>,
@@ -811,7 +812,12 @@ pub(super) fn stream_relationship_seeded_node_scan_batches(
         .kernel_context()
         .source_account("RelationshipSeededNodeScan");
     let seeds = relationship_property_seeds(spec, context, &source_account)?;
-    let Some((ids, _permit)) = seeds else {
+    let Some(hawdb_storage::store::EndpointCandidates {
+        ids,
+        allocation: _permit,
+        ..
+    }) = seeds
+    else {
         return stream_node_scan_batches(
             spec.variable,
             spec.label,
@@ -909,7 +915,7 @@ fn relationship_property_seeds(
     let Some(rel_type_id) = context.catalog.rel_type_id(spec.rel_type) else {
         return Ok(None);
     };
-    if spec.rel_properties.is_empty()
+    if (spec.rel_properties.is_empty() && spec.rel_property_in.is_none())
         || context
             .task_context
             .is_some_and(RuntimeTaskContext::has_work_limit)
@@ -935,9 +941,12 @@ fn relationship_property_seeds(
         }
         admit_graph_read(source_account, context.task_context, bytes).map(Some)
     };
-    let Some((ids, permit)) = context.store.relationship_property_endpoint_candidates(
+    let Some(candidates) = context.store.relationship_property_endpoint_candidates(
         rel_type_id,
-        spec.rel_properties,
+        hawdb_storage::store::RelationshipSeedConstraints {
+            properties: spec.rel_properties,
+            property_in: spec.rel_property_in,
+        },
         endpoints,
         max_relationships,
         &mut admit,
@@ -945,19 +954,24 @@ fn relationship_property_seeds(
     else {
         return Ok(None);
     };
-    let property = spec
-        .rel_properties
-        .keys()
-        .next()
-        .expect("relationship properties were checked non-empty")
-        .clone();
+    let ids = &candidates.ids;
+    let property = candidates.probed_property.clone();
+    let strategy = if !spec.rel_properties.contains_key(&property)
+        && spec
+            .rel_property_in
+            .is_some_and(|(probed, _)| probed == property)
+    {
+        hawdb_storage::scan::ScanPruningStrategy::PropertyIn { property }
+    } else {
+        hawdb_storage::scan::ScanPruningStrategy::PropertyEq { property }
+    };
     context
         .observer
         .record_scan_pruning_report(hawdb_storage::scan::ScanPruningReport {
             target_kind: hawdb_storage::scan::ScanPruningTargetKind::Node,
             label_id,
             rel_type_id: Some(rel_type_id),
-            strategy: hawdb_storage::scan::ScanPruningStrategy::PropertyEq { property },
+            strategy,
             pruned: true,
             exact_empty: ids.is_empty(),
             candidate_count_before_pruning: max_relationships,
@@ -966,7 +980,7 @@ fn relationship_property_seeds(
             output_count: ids.len(),
             filtered_out_count: 0,
         });
-    Ok(Some((ids, permit)))
+    Ok(Some(candidates))
 }
 
 struct ExpandBatchConsumer<'a, 'context> {

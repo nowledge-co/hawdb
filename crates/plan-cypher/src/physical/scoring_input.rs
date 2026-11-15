@@ -328,6 +328,8 @@ fn public_expression_at(expression: &ProjectionExpression, depth: usize) -> bool
         | ProjectionExpression::Property { variable, .. }
         | ProjectionExpression::Id { variable }
         | ProjectionExpression::RelationshipType { variable }
+        | ProjectionExpression::Label { variable, .. }
+        | ProjectionExpression::RelationshipEndpoint { variable, .. }
         | ProjectionExpression::DatePart { variable, .. }
         | ProjectionExpression::DefaultIfNullOrEq { variable, .. }
         | ProjectionExpression::DefaultIfNull { variable, .. }
@@ -348,6 +350,7 @@ fn public_expression_at(expression: &ProjectionExpression, depth: usize) -> bool
         ProjectionExpression::Literal(_)
         | ProjectionExpression::Coalesce(_)
         | ProjectionExpression::JsonValue { .. }
+        | ProjectionExpression::JsonString { .. }
         | ProjectionExpression::Left { .. }
         | ProjectionExpression::Lower(_)
         | ProjectionExpression::Case { .. }
@@ -360,6 +363,7 @@ fn public_expression_at(expression: &ProjectionExpression, depth: usize) -> bool
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
         | ProjectionExpression::Conversion { .. }
+        | ProjectionExpression::NumericFunction { .. }
         | ProjectionExpression::ListSlice { .. }
         | ProjectionExpression::TemporalFunction { .. }
         | ProjectionExpression::PropertyAccess { .. }
@@ -367,7 +371,20 @@ fn public_expression_at(expression: &ProjectionExpression, depth: usize) -> bool
         ProjectionExpression::ListComprehension(comprehension) => {
             public_name(&comprehension.variable)
         }
+        ProjectionExpression::Reduce(reduce) => {
+            public_name(&reduce.accumulator) && public_name(&reduce.variable)
+        }
         ProjectionExpression::LocalVariable { name, .. } => public_name(name),
+        ProjectionExpression::RelationshipValueEndpoint { .. } => true,
+        ProjectionExpression::Pattern(pattern) => {
+            pattern.graph_variables.iter().all(|name| public_name(name))
+                && pattern.columns.iter().all(|name| public_name(name))
+                && pattern
+                    .program
+                    .introduced
+                    .iter()
+                    .all(|name| public_name(name))
+        }
     };
     own_names && expression.all_children(|child| public_expression_at(child, depth + 1))
 }
@@ -730,6 +747,9 @@ mod tests {
                 predicate_steps: Vec::new(),
                 edge_predicates: Vec::new(),
                 optional: false,
+                hash_join: None,
+                id_set_conjuncts: Vec::new(),
+                seeded_union: Vec::new(),
             },
             input: Some(Box::new(lookup(vec![known_id()]))),
         });

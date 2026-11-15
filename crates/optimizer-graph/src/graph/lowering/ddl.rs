@@ -37,12 +37,14 @@ pub(super) fn lower(logical: &LogicalPlan) -> Option<PhysicalPlan> {
             property,
             value_type,
             nullable,
+            default,
         } => Some(PhysicalPlan::CreateProperty {
             table_kind: *table_kind,
             table: table.clone(),
             property: property.clone(),
             value_type: *value_type,
             nullable: *nullable,
+            default: default.clone(),
         }),
         LogicalPlan::AlterTableState {
             table_kind,

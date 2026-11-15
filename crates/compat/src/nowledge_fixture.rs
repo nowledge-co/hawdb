@@ -2475,20 +2475,22 @@ pub fn nowledge_memory_core_fixture() -> CompatibilityFixture {
                     CypherFixtureStatement::new(
                         "MATCH (c:Memory) WHERE c.is_crystal = true RETURN c.id, c.title, c.created_at, c.last_evaluated_at, c.review_status ORDER BY c.created_at ASC LIMIT 10",
                     ),
+                    // Reviewed transition (#1407): ORDER BY ASC sorts NULL last, which
+                    // matches Kuzu 0.11.3 and openCypher; undated crystals now follow dated ones.
                     ExpectedRows::Exact(vec![
-                        compatibility_row([
-                            ("c.id", Value::Int(3)),
-                            ("c.title", Value::String("Cloud projection".to_string())),
-                            ("c.created_at", Value::Null),
-                            ("c.last_evaluated_at", Value::Null),
-                            ("c.review_status", Value::Null),
-                        ]),
                         compatibility_row([
                             ("c.id", Value::String("task-oldest-crystal-1".to_string())),
                             ("c.title", Value::String("Task Oldest Crystal".to_string())),
                             ("c.created_at", Value::Int(-1000)),
                             ("c.last_evaluated_at", Value::Int(-500)),
                             ("c.review_status", Value::String("pending".to_string())),
+                        ]),
+                        compatibility_row([
+                            ("c.id", Value::Int(3)),
+                            ("c.title", Value::String("Cloud projection".to_string())),
+                            ("c.created_at", Value::Null),
+                            ("c.last_evaluated_at", Value::Null),
+                            ("c.review_status", Value::Null),
                         ]),
                     ]),
                 )
@@ -17885,25 +17887,9 @@ pub fn nowledge_memory_core_fixture() -> CompatibilityFixture {
                     CypherFixtureStatement::new(
                         "MATCH (m:Memory) WHERE m.is_crystal = true RETURN m.id, m.crystal_title, m.title, m.content, m.importance, m.unit_type, m.created_at ORDER BY m.importance DESC, m.created_at DESC",
                     ),
+                    // Reviewed transition (#1407): ORDER BY DESC sorts NULL first, which
+                    // matches Kuzu 0.11.3 and openCypher; crystals without an importance now lead.
                     ExpectedRows::Exact(vec![
-                        compatibility_row([
-                            ("m.id", Value::String("okf-crystal".to_string())),
-                            ("m.crystal_title", Value::String("Crystal Title".to_string())),
-                            ("m.title", Value::String("Fallback Title".to_string())),
-                            ("m.content", Value::String("crystal content".to_string())),
-                            ("m.importance", Value::Float(20.0)),
-                            ("m.unit_type", Value::String("fact".to_string())),
-                            ("m.created_at", Value::Int(1000)),
-                        ]),
-                        compatibility_row([
-                            ("m.id", Value::Int(3)),
-                            ("m.crystal_title", Value::Null),
-                            ("m.title", Value::String("Cloud projection".to_string())),
-                            ("m.content", Value::Null),
-                            ("m.importance", Value::Null),
-                            ("m.unit_type", Value::String("decision".to_string())),
-                            ("m.created_at", Value::Int(200)),
-                        ]),
                         compatibility_row([
                             ("m.id", Value::String("coverage-c1".to_string())),
                             (
@@ -17915,6 +17901,24 @@ pub fn nowledge_memory_core_fixture() -> CompatibilityFixture {
                             ("m.importance", Value::Null),
                             ("m.unit_type", Value::Null),
                             ("m.created_at", Value::Null),
+                        ]),
+                        compatibility_row([
+                            ("m.id", Value::Int(3)),
+                            ("m.crystal_title", Value::Null),
+                            ("m.title", Value::String("Cloud projection".to_string())),
+                            ("m.content", Value::Null),
+                            ("m.importance", Value::Null),
+                            ("m.unit_type", Value::String("decision".to_string())),
+                            ("m.created_at", Value::Int(200)),
+                        ]),
+                        compatibility_row([
+                            ("m.id", Value::String("okf-crystal".to_string())),
+                            ("m.crystal_title", Value::String("Crystal Title".to_string())),
+                            ("m.title", Value::String("Fallback Title".to_string())),
+                            ("m.content", Value::String("crystal content".to_string())),
+                            ("m.importance", Value::Float(20.0)),
+                            ("m.unit_type", Value::String("fact".to_string())),
+                            ("m.created_at", Value::Int(1000)),
                         ]),
                     ]),
                 )
@@ -17935,10 +17939,26 @@ pub fn nowledge_memory_core_fixture() -> CompatibilityFixture {
                         "MATCH (c:Memory) WHERE c.is_crystal = true RETURN c.id, c.crystal_title, c.content, c.unit_type, c.importance, c.source_unit_count, c.created_at ORDER BY c.created_at DESC SKIP $offset LIMIT $limit",
                         BTreeMap::from([
                             ("offset".to_string(), Value::Int(0)),
-                            ("limit".to_string(), Value::Int(1)),
+                            ("limit".to_string(), Value::Int(2)),
                         ]),
                     ),
+                    // Reviewed transition (#1407): ORDER BY DESC sorts NULL first, which
+                    // matches Kuzu 0.11.3 and openCypher; the undated crystal now leads the page,
+                    // ahead of the newest dated one. The limit is 2 (was 1) so the
+                    // crystal this check creates is still on the page.
                     ExpectedRows::Exact(vec![compatibility_row([
+                        ("c.id", Value::String("coverage-c1".to_string())),
+                        (
+                            "c.crystal_title",
+                            Value::String("Coverage Crystal".to_string()),
+                        ),
+                        ("c.content", Value::Null),
+                        ("c.unit_type", Value::Null),
+                        ("c.importance", Value::Null),
+                        ("c.source_unit_count", Value::Null),
+                        ("c.created_at", Value::Null),
+                    ]),
+                    compatibility_row([
                         ("c.id", Value::String("mcp-crystal-list-1".to_string())),
                         (
                             "c.crystal_title",
@@ -18287,40 +18307,38 @@ pub fn nowledge_memory_core_fixture() -> CompatibilityFixture {
                         "MATCH (m:Memory) WHERE (m.is_crystal IS NULL OR m.is_crystal = false) OPTIONAL MATCH (m)-[:HAS_LABEL]->(l:Label) RETURN m.id, m.title, m.content, m.unit_type, m.importance, m.confidence, m.created_at, m.source, m.metadata, m.is_latest, m.lifecycle_state, COLLECT(DISTINCT l.name) AS labels ORDER BY m.created_at DESC LIMIT $limit",
                         BTreeMap::from([("limit".to_string(), Value::Int(2))]),
                     ),
+                    // Reviewed transition (#1407): ORDER BY DESC sorts NULL first, which
+                    // matches Kuzu 0.11.3 and openCypher; undated memories now fill the limited page
+                    // ahead of the dated rows this check creates. The query has
+                    // no tie-breaker, so the two undated rows keep scan order.
                     ExpectedRows::Exact(vec![
                         compatibility_row([
-                            ("m.id", Value::String("okf-memory-row-two".to_string())),
-                            ("m.title", Value::String("Memory Row Two".to_string())),
-                            ("m.content", Value::String("body two".to_string())),
-                            ("m.unit_type", Value::String("fact".to_string())),
-                            ("m.importance", Value::Float(0.6)),
-                            ("m.confidence", Value::Float(0.7)),
-                            ("m.created_at", Value::Int(1_900_000_000_000_000_000)),
-                            ("m.source", Value::String("source two".to_string())),
-                            ("m.metadata", Value::String("{\"rank\":2}".to_string())),
-                            ("m.is_latest", Value::Bool(false)),
-                            ("m.lifecycle_state", Value::String("active".to_string())),
+                            ("m.id", Value::String("breadth-m1".to_string())),
+                            ("m.title", Value::String("Breadth one".to_string())),
+                            ("m.content", Value::String("first breadth".to_string())),
+                            ("m.unit_type", Value::Null),
+                            ("m.importance", Value::Float(0.2)),
+                            ("m.confidence", Value::Null),
+                            ("m.created_at", Value::Null),
+                            ("m.source", Value::Null),
+                            ("m.metadata", Value::Null),
+                            ("m.is_latest", Value::Null),
+                            ("m.lifecycle_state", Value::Null),
                             ("labels", Value::List(Vec::new())),
                         ]),
                         compatibility_row([
-                            ("m.id", Value::String("okf-memory-row-one".to_string())),
-                            ("m.title", Value::String("Memory Row One".to_string())),
-                            ("m.content", Value::String("body one".to_string())),
-                            ("m.unit_type", Value::String("note".to_string())),
-                            ("m.importance", Value::Float(0.9)),
-                            ("m.confidence", Value::Float(0.8)),
-                            ("m.created_at", Value::Int(1_800_000_000_000_000_000)),
-                            ("m.source", Value::String("source one".to_string())),
-                            ("m.metadata", Value::String("{\"rank\":1}".to_string())),
-                            ("m.is_latest", Value::Bool(true)),
-                            ("m.lifecycle_state", Value::String("active".to_string())),
-                            (
-                                "labels",
-                                Value::List(vec![
-                                    Value::String("alpha".to_string()),
-                                    Value::String("beta".to_string()),
-                                ]),
-                            ),
+                            ("m.id", Value::String("breadth-m2".to_string())),
+                            ("m.title", Value::String("Breadth two".to_string())),
+                            ("m.content", Value::String("second breadth".to_string())),
+                            ("m.unit_type", Value::Null),
+                            ("m.importance", Value::Float(0.4)),
+                            ("m.confidence", Value::Null),
+                            ("m.created_at", Value::Null),
+                            ("m.source", Value::Null),
+                            ("m.metadata", Value::Null),
+                            ("m.is_latest", Value::Null),
+                            ("m.lifecycle_state", Value::Null),
+                            ("labels", Value::List(Vec::new())),
                         ]),
                     ]),
                 )

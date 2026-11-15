@@ -54,8 +54,17 @@ pub(super) fn rewrite_logical_plan_with_catalog(
     catalog: &super::OptimizerCatalog,
     options: crate::OptimizerQualificationOptions,
 ) -> LogicalRewriteOutput {
+    let mut start_events = Vec::new();
     let sampled = super::join_sampling::rewrite(plan, catalog);
-    let mut output = rewrite_logical_plan(sampled.as_ref().unwrap_or(plan));
+    // A complete query-local sample already chose between both endpoints.
+    // Ordinary catalog-based chain starts remain the fallback for other paths.
+    let started = if super::join_sampling::matches_plan(plan, catalog) {
+        sampled.as_ref().unwrap_or(plan).clone()
+    } else {
+        super::chain_start::rewrite(plan.clone(), catalog, options, &mut start_events)
+    };
+    let mut output = rewrite_logical_plan(&started);
+    output.events.splice(0..0, start_events);
     if sampled.is_some() {
         output.events.push(RuleEvent::applied(
             "transformation:sampled_match_orientation",
@@ -221,10 +230,12 @@ fn rewrite_bottom_up(plan: LogicalPlan, events: &mut Vec<RuleEvent>) -> LogicalP
         LogicalPlan::Aggregate {
             group_keys,
             items,
+            graph_keys,
             input,
         } => LogicalPlan::Aggregate {
             group_keys,
             items,
+            graph_keys,
             input: Box::new(rewrite_bottom_up(*input, events)),
         },
         LogicalPlan::Distinct { input } => LogicalPlan::Distinct {
@@ -241,6 +252,19 @@ fn rewrite_bottom_up(plan: LogicalPlan, events: &mut Vec<RuleEvent>) -> LogicalP
         } => LogicalPlan::Limit {
             offset,
             limit,
+            input: Box::new(rewrite_bottom_up(*input, events)),
+        },
+        // UNWIND of a row expression consumes its input unchanged; rewrites
+        // below it (filter pushdown into the source scan, for example) must
+        // still run, or `WITH collect(..) AS xs UNWIND xs AS x` hides an
+        // indexable start from the rest of the optimizer.
+        LogicalPlan::UnwindRows {
+            expression,
+            variable,
+            input,
+        } => LogicalPlan::UnwindRows {
+            expression,
+            variable,
             input: Box::new(rewrite_bottom_up(*input, events)),
         },
         leaf => leaf,
@@ -344,6 +368,7 @@ fn rewrite_project(
         LogicalPlan::Aggregate {
             group_keys,
             items: aggregate_items,
+            graph_keys,
             input,
         } => {
             let Some(required_columns) = projection_column_dependencies(&items) else {
@@ -352,6 +377,7 @@ fn rewrite_project(
                     input: Box::new(LogicalPlan::Aggregate {
                         group_keys,
                         items: aggregate_items,
+                        graph_keys,
                         input,
                     }),
                 };
@@ -367,6 +393,7 @@ fn rewrite_project(
                     input: Box::new(LogicalPlan::Aggregate {
                         group_keys,
                         items: aggregate_items,
+                        graph_keys,
                         input,
                     }),
                 };
@@ -384,6 +411,7 @@ fn rewrite_project(
                 input: Box::new(LogicalPlan::Aggregate {
                     group_keys,
                     items: aggregate_items,
+                    graph_keys,
                     input,
                 }),
             }
@@ -450,9 +478,12 @@ fn collect_projection_columns(
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
         | ProjectionExpression::Conversion { .. }
+        | ProjectionExpression::NumericFunction { .. }
+        | ProjectionExpression::Reduce(_)
         | ProjectionExpression::ListSlice { .. }
         | ProjectionExpression::TemporalFunction { .. }
         | ProjectionExpression::PropertyAccess { .. }
+        | ProjectionExpression::RelationshipValueEndpoint { .. }
         | ProjectionExpression::MapLiteral(_) => {
             expression.all_children(|child| collect_projection_columns(child, columns))
         }
@@ -468,7 +499,8 @@ fn collect_projection_columns(
             .all(|expression| collect_projection_columns(expression, columns)),
         ProjectionExpression::Left { expression, .. }
         | ProjectionExpression::Lower(expression)
-        | ProjectionExpression::JsonValue { expression, .. } => {
+        | ProjectionExpression::JsonValue { expression, .. }
+        | ProjectionExpression::JsonString { expression, .. } => {
             collect_projection_columns(expression, columns)
         }
         ProjectionExpression::ColumnDefaultIfNullOrEq { column, .. }
@@ -487,6 +519,8 @@ fn collect_projection_columns(
         | ProjectionExpression::Property { .. }
         | ProjectionExpression::Id { .. }
         | ProjectionExpression::RelationshipType { .. }
+        | ProjectionExpression::Label { .. }
+        | ProjectionExpression::RelationshipEndpoint { .. }
         | ProjectionExpression::DatePart { .. }
         | ProjectionExpression::DefaultIfNullOrEq { .. }
         | ProjectionExpression::DefaultIfNull { .. }
@@ -494,7 +528,9 @@ fn collect_projection_columns(
         | ProjectionExpression::CasePropertyEqualsRank { .. }
         | ProjectionExpression::CaseLowerPropertyDefault { .. }
         | ProjectionExpression::CaseCoalesceDifferenceFloorZero { .. }
-        | ProjectionExpression::CaseEntitySearchRank(_) => false,
+        | ProjectionExpression::CaseEntitySearchRank(_)
+        // A pattern reads the graph and variables it introduces.
+        | ProjectionExpression::Pattern(_) => false,
     }
 }
 
@@ -511,12 +547,17 @@ fn projection_expression_references_column(expression: &ProjectionExpression) ->
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
         | ProjectionExpression::Conversion { .. }
+        | ProjectionExpression::NumericFunction { .. }
+        | ProjectionExpression::Reduce(_)
         | ProjectionExpression::ListSlice { .. }
         | ProjectionExpression::TemporalFunction { .. }
         | ProjectionExpression::PropertyAccess { .. }
+        | ProjectionExpression::RelationshipValueEndpoint { .. }
         | ProjectionExpression::MapLiteral(_) => {
             !expression.all_children(|child| !projection_expression_references_column(child))
         }
+        // Its body reads enclosing columns as locals.
+        ProjectionExpression::Pattern(_) => true,
         ProjectionExpression::LocalVariable { .. } => false,
         ProjectionExpression::Column(_)
         | ProjectionExpression::ColumnDefaultIfNullOrEq { .. }
@@ -530,13 +571,16 @@ fn projection_expression_references_column(expression: &ProjectionExpression) ->
             .any(projection_expression_references_column),
         ProjectionExpression::Left { expression, .. }
         | ProjectionExpression::Lower(expression)
-        | ProjectionExpression::JsonValue { expression, .. } => {
+        | ProjectionExpression::JsonValue { expression, .. }
+        | ProjectionExpression::JsonString { expression, .. } => {
             projection_expression_references_column(expression)
         }
         ProjectionExpression::Variable { .. }
         | ProjectionExpression::Property { .. }
         | ProjectionExpression::Id { .. }
         | ProjectionExpression::RelationshipType { .. }
+        | ProjectionExpression::Label { .. }
+        | ProjectionExpression::RelationshipEndpoint { .. }
         | ProjectionExpression::Literal(_)
         | ProjectionExpression::DatePart { .. }
         | ProjectionExpression::DefaultIfNullOrEq { .. }
@@ -1299,6 +1343,43 @@ mod tests {
         );
     }
 
+    /// `WITH collect(..) AS xs UNWIND xs AS x` must not hide the plan below
+    /// the UNWIND from the rewrites: the source filter still moves below the
+    /// expansion, where lowering can turn it into an index seek (#1606).
+    #[test]
+    fn rewrites_run_below_unwind_rows() {
+        let source = property_eq(1);
+        let plan = LogicalPlan::UnwindRows {
+            expression: ProjectionExpression::Column("xs".to_string()),
+            variable: "x".to_string(),
+            input: Box::new(LogicalPlan::Filter {
+                predicate: source.clone(),
+                input: Box::new(expand(false)),
+            }),
+        };
+
+        let output = rewrite_logical_plan(&plan);
+        assert!(matches!(
+            output.plan(),
+            LogicalPlan::UnwindRows { input, variable, .. }
+                if variable == "x"
+                    && matches!(
+                        input.as_ref(),
+                        LogicalPlan::Expand { input, .. }
+                            if matches!(
+                                input.as_ref(),
+                                LogicalPlan::Filter { predicate, input }
+                                    if predicate == &source
+                                        && matches!(input.as_ref(), LogicalPlan::NodeScan { .. })
+                            )
+                    )
+        ));
+        assert!(output
+            .events()
+            .iter()
+            .any(|event| { event.rule() == "transformation:push_source_filter_below_expand" }));
+    }
+
     #[test]
     fn source_filter_moves_before_expand_and_leaves_target_filter_pushable() {
         let source = property_eq(1);
@@ -1517,11 +1598,13 @@ mod tests {
             name: "memory_count".to_string(),
         };
         let global = LogicalPlan::Aggregate {
+            graph_keys: Default::default(),
             group_keys: Vec::new(),
             items: vec![count.clone()],
             input: Box::new(empty.clone()),
         };
         let grouped = LogicalPlan::Aggregate {
+            graph_keys: Default::default(),
             group_keys: vec![Projection {
                 expression: ProjectionExpression::Property {
                     variable: "m".to_string(),
@@ -1592,6 +1675,7 @@ mod tests {
                 name: "memory_count".to_string(),
             }],
             input: Box::new(LogicalPlan::Aggregate {
+                graph_keys: Default::default(),
                 group_keys: vec![Projection {
                     expression: ProjectionExpression::Property {
                         variable: "m".to_string(),

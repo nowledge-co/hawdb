@@ -23,6 +23,7 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
             PhysicalPlan::UnwindRowsExec {
                 expression: ProjectionExpression::Literal(Value::List(vec![Value::Int(1)])),
                 variable: "item".into(),
+                consumes_source: false,
                 input: Box::new(PhysicalPlan::EmptyExec),
             },
             true,
@@ -46,6 +47,9 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
                     predicate_steps: Vec::new(),
                     edge_predicates: Vec::new(),
                     optional: false,
+                    hash_join: None,
+                    id_set_conjuncts: Vec::new(),
+                    seeded_union: Vec::new(),
                 },
                 input: None,
             },
@@ -82,6 +86,7 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
                 property: String::new(),
                 value_type: hawdb_plan_cypher::SchemaPropertyType::Any,
                 nullable: false,
+                default: None,
             },
             false,
         ),
@@ -302,6 +307,7 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
                 rel_type: String::new(),
                 rel_match_properties: BTreeMap::new(),
                 on_create_properties: BTreeMap::new(),
+                on_match_assignments: Vec::new(),
             },
             false,
         ),
@@ -388,6 +394,32 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
                 predicate: None,
                 assignments: Vec::new(),
                 returns: SetNodePropertiesReturnMode::Project(Vec::new()),
+            },
+            false,
+        ),
+        (
+            PhysicalPlan::MatchSetExec(Box::new(MatchSet {
+                input: PhysicalPlan::EmptyExec,
+                bindings: Vec::new(),
+                assignments: Vec::new(),
+                relationship: None,
+                returns: None,
+            })),
+            false,
+        ),
+        (
+            PhysicalPlan::MutationReturn {
+                mutation: Box::new(PhysicalPlan::CreateNode {
+                    label: String::new(),
+                    properties: BTreeMap::new(),
+                }),
+                returns: hawdb_plan_cypher::MutationReturn {
+                    bindings: Vec::new(),
+                    mode: SetNodePropertiesReturnMode::Project(Vec::new()),
+                    state: hawdb_plan_cypher::MutationReturnState::Written,
+                    offset: 0,
+                    limit: None,
+                },
             },
             false,
         ),
@@ -498,6 +530,7 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
                 label: String::new(),
                 rel_type: String::new(),
                 rel_properties: BTreeMap::new(),
+                rel_property_in: None,
                 direction: RelationshipDirection::Outgoing,
             },
             true,
@@ -733,6 +766,7 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
         ),
         (
             PhysicalPlan::AggregateExec {
+                graph_keys: Default::default(),
                 group_keys: Vec::new(),
                 items: Vec::new(),
                 input: Box::new(PhysicalPlan::EmptyExec),

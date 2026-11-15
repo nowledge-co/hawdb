@@ -50,7 +50,7 @@ fn reference_decode(input: &str) -> Option<String> {
         _ => None,
     };
     let mut bytes = Vec::new();
-    for pair in input.as_bytes().chunks_exact(2) {
+    for pair in input.as_bytes().as_chunks::<2>().0.iter() {
         // The existing unsigned radix parser accepts a leading plus per pair.
         let high = if pair[0] == b'+' { 0 } else { digit(pair[0])? };
         bytes.push(high * 16 + digit(pair[1])?);
@@ -237,4 +237,37 @@ fn hex_decoding_differential_campaign() {
         }
         assert_decode(&encoded);
     }
+}
+
+/// Candidate filters decode only the metadata keys their predicates read
+/// (#1613): the kept pairs equal the full decode's, other keys are absent,
+/// `None` decodes every key, and malformed pairs still fail.
+#[test]
+fn metadata_key_decode_keeps_only_the_requested_keys() {
+    let metadata = BTreeMap::from([
+        ("cat100".to_string(), "42".to_string()),
+        ("space_id".to_string(), "public".to_string()),
+        ("title".to_string(), "多字节".to_string()),
+    ]);
+    let raw = crate::encode_metadata(&metadata);
+    let predicates = SearchPredicateSet::from_metadata_filters(&BTreeMap::from([(
+        "cat100".to_string(),
+        "42".to_string(),
+    )]))
+    .unwrap();
+    let keys = crate::MetadataKeys::for_predicates(&predicates);
+    assert_eq!(
+        crate::decode_metadata_keys(&raw, Some(&keys)).unwrap(),
+        BTreeMap::from([("cat100".to_string(), "42".to_string())])
+    );
+    assert_eq!(crate::decode_metadata_keys(&raw, None).unwrap(), metadata);
+    assert!(
+        crate::decode_metadata_keys(&raw, Some(&crate::MetadataKeys::default()))
+            .unwrap()
+            .is_empty()
+    );
+    assert!(crate::decode_metadata_keys("6b", Some(&keys)).is_err());
+    assert!(crate::decode_metadata_keys("", Some(&keys))
+        .unwrap()
+        .is_empty());
 }

@@ -95,6 +95,10 @@ impl GraphExecutionRead for GraphStore {
         GraphStore::node_owned(self, id)
     }
 
+    fn relationship_owned(&self, id: RelId) -> Result<Option<RelRecord>> {
+        GraphStore::relationship_owned(self, id)
+    }
+
     fn node_with_allocation(
         &self,
         id: NodeId,
@@ -107,7 +111,7 @@ impl GraphExecutionRead for GraphStore {
     fn relationship_property_endpoint_candidates(
         &self,
         rel_type: RelTypeId,
-        properties: &std::collections::BTreeMap<String, hawdb_core::Value>,
+        constraints: hawdb_storage::store::RelationshipSeedConstraints<'_>,
         endpoints: hawdb_storage::store::RelationshipEndpoints,
         max_relationships: usize,
         admit: &mut dyn FnMut(
@@ -119,7 +123,7 @@ impl GraphExecutionRead for GraphStore {
         GraphStore::relationship_property_endpoint_candidates(
             self,
             rel_type,
-            properties,
+            constraints,
             endpoints,
             max_relationships,
             admit,
@@ -132,6 +136,15 @@ impl GraphExecutionRead for GraphStore {
         admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
     ) -> Result<hawdb_storage::read_view::AdmittedRelationshipRead> {
         GraphStore::relationship_with_allocation(self, id, admit)
+    }
+
+    fn projected_relationship_with_allocation(
+        &self,
+        id: RelId,
+        required_properties: &BTreeSet<String>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+    ) -> Result<hawdb_storage::read_view::AdmittedRelationshipRead> {
+        GraphStore::projected_relationship_with_allocation(self, id, required_properties, admit)
     }
 
     fn scan_nodes_borrowed<'a>(
@@ -799,5 +812,33 @@ impl GraphExecutionWrite for GraphStore {
         limits: MutationLimits,
     ) -> Result<Vec<NodeId>> {
         GraphStore::delete_node_ids_with_limits(self, catalog, ids, detach, limits)
+    }
+
+    fn commit_mutation_with_output(
+        &mut self,
+        catalog: &mut Catalog,
+        mutation: GraphMutation,
+        limits: MutationLimits,
+        project: &mut crate::store::MutationOutputProjector<'_>,
+    ) -> Result<Vec<crate::Row>> {
+        // The transaction workspace is a private snapshot: projection reads
+        // the mutated state, and nothing is published unless it succeeds.
+        let mut transaction = self.begin_mutation_transaction(catalog);
+        let summary = transaction.stage_mutation_without_commit_rows(mutation, limits)?;
+        let rows = project(
+            transaction.catalog(),
+            crate::store::MutationReturnStores {
+                before: self,
+                after: transaction.store(),
+            },
+            &summary,
+        )?;
+        self.commit_mutation_transaction_and_relational(
+            catalog,
+            transaction,
+            hawdb_storage::relational::RelationalTransaction::default(),
+            limits,
+        )?;
+        Ok(rows)
     }
 }

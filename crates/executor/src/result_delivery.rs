@@ -251,12 +251,19 @@ impl<'a> QueryOutputAccumulator<'a> {
     }
 
     /// Finalize only after execution, output validation, and profile capture.
-    /// The accumulator keeps its retained charge until the execution call ends.
+    /// The returned rows keep their retained charge until every owned handle
+    /// to the immutable storage is dropped.
     pub fn take_owned_rows(&mut self) -> Option<QueryRows> {
         if self.consumer.is_some() {
             return None;
         }
-        self.owned_rows.take().map(QueryRowsBuilder::finish)
+        let rows = self.owned_rows.take()?;
+        let retained_bytes = self.retained_result_lease.bytes();
+        let retained_memory = self
+            .retained_result_lease
+            .split_off(retained_bytes)
+            .expect("splitting the lease's complete admitted charge cannot fail");
+        Some(rows.finish_with_retained_memory(Some(retained_memory)))
     }
 
     pub fn emit(&mut self, binding: Binding) -> Result<()> {

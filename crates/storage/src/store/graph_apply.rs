@@ -485,6 +485,22 @@ impl GraphStore {
         else {
             return Ok(false);
         };
+        // Canonical reads skip every relationship the delta holds, so the
+        // delta's adjacency and relationship property index must cover the
+        // rewritten copy; otherwise it disappears from out-of-core expands.
+        self.add_relationship_to_property_index(&relationship);
+        self.outgoing
+            .entry_or_default((relationship.source, relationship.rel_type))
+            .insert(OrderedAdjacencyEntry {
+                neighbor_id: relationship.target,
+                relationship_id: id,
+            });
+        self.incoming
+            .entry_or_default((relationship.target, relationship.rel_type))
+            .insert(OrderedAdjacencyEntry {
+                neighbor_id: relationship.source,
+                relationship_id: id,
+            });
         self.relationships.insert(id, relationship);
         Ok(true)
     }
@@ -580,9 +596,17 @@ impl GraphStore {
                 property,
                 value_type,
                 nullable,
+                default,
             } => {
                 let table_id = ensure_table_descriptor(catalog, table_kind, &table);
-                catalog.get_or_create_property(table_id, &property, value_type, nullable);
+                catalog.get_or_create_property_with_default(
+                    table_id,
+                    &property,
+                    value_type,
+                    nullable,
+                    default.map(|default| *default),
+                    SchemaObjectState::Public,
+                );
             }
             WalOp::AlterTableState {
                 table_kind,

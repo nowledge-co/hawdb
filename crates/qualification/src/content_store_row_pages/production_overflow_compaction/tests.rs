@@ -117,7 +117,10 @@ fn qualification_proves_exact_rewrite_physical_reclaim_and_reopen() {
     );
     fixture.base_message_count = 3;
     fixture.base_chunk_count = 3;
-    fixture.segment_cache_capacity_bytes = 1024 * 1024;
+    // Row-page format v2 stores exact-length pages, so this small corpus is
+    // no longer inflated past a 1 MiB cache by fixed slots. Keep the cache
+    // below the row artifact so the run still proves out-of-core reads.
+    fixture.segment_cache_capacity_bytes = 64 * 1024;
     let corpus = nowledge_content_store_sql_corpus().unwrap();
     super::super::fixture::bootstrap_checkpoint(&fixture, &corpus).unwrap();
     let database_config =

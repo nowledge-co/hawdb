@@ -243,6 +243,7 @@ pub(super) fn stream(
         "collect_top expressions",
         "collect_top group keys",
     );
+    let graph = context.expression_graph();
     let mut groups = BTreeMap::<Vec<Value>, Group>::new();
     let mut input_rows = 0usize;
     let mut borrowed_group_key_rows = 0usize;
@@ -271,6 +272,7 @@ pub(super) fn stream(
                     context.catalog,
                     &binding,
                     context.task_context,
+                    graph.as_ref(),
                 )?;
                 if key.iter().any(|value| {
                     !matches!(
@@ -339,6 +341,7 @@ pub(super) fn stream(
             context.catalog,
             &Binding::values(BTreeMap::new()),
             context.task_context,
+            graph.as_ref(),
         )?;
         groups.insert(values, new_group(&mut allocation, items, &account)?);
     }

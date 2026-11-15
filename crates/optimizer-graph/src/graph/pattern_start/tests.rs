@@ -1,0 +1,558 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
+use super::*;
+use crate::graph::{OptimizerCatalogIndexes, OptimizerCatalogStatistics};
+use RelationshipDirection::{Incoming, Outgoing, Undirected};
+
+#[test]
+fn prefix_scratch_is_bounded_and_reuses_each_orientation() {
+    let catalog = catalog();
+    let mut context = WalkContext::new(&catalog);
+    assert!(std::mem::size_of_val(&context) <= 2048);
+    for direction in [Outgoing, Incoming, Undirected] {
+        let reference = collect_prefixes(&catalog, "Person", "KNOWS", direction);
+        for _ in 0..5 {
+            assert_eq!(context.prefixes("Person", "KNOWS", direction), reference);
+        }
+    }
+    assert_eq!(context.scans, 3);
+    assert_eq!(context.len, 3);
+}
+
+#[test]
+fn saturated_prefix_scratch_falls_back_without_evicting_or_growing() {
+    let catalog = catalog();
+    let labels = (0..PREFIX_CACHE_CAPACITY + 1)
+        .map(|id| format!("Label{id}"))
+        .collect::<Vec<_>>();
+    let mut context = WalkContext::new(&catalog);
+    for label in &labels {
+        assert_eq!(
+            context.prefixes(label, "KNOWS", Outgoing),
+            collect_prefixes(&catalog, label, "KNOWS", Outgoing)
+        );
+    }
+    assert_eq!(context.len, PREFIX_CACHE_CAPACITY);
+    let scans = context.scans;
+    context.prefixes(&labels[0], "KNOWS", Outgoing);
+    assert_eq!(context.scans, scans);
+    context.prefixes(&labels[PREFIX_CACHE_CAPACITY], "KNOWS", Outgoing);
+    assert_eq!(context.scans, scans + 1);
+    assert_eq!(context.len, PREFIX_CACHE_CAPACITY);
+}
+
+#[test]
+fn prefix_reuse_preserves_hop_limits_and_does_not_cross_catalogs() {
+    let original = catalog();
+    let mut context = WalkContext::new(&original);
+    let from = node("a", "Person", &[]);
+    let to = node("b", "Person", &[]);
+    let mut edge = edge("KNOWS", Outgoing);
+    for max_hops in [1, 3, 2, 8, 1] {
+        edge.max_hops = max_hops;
+        assert_eq!(
+            expand_work(&mut context, &from, &to, &edge, Outgoing),
+            expand_work(
+                &mut WalkContext::new(&original),
+                &from,
+                &to,
+                &edge,
+                Outgoing
+            )
+        );
+    }
+    assert_eq!(context.scans, 1);
+    let changed = OptimizerCatalog::new(
+        OptimizerCatalogIndexes::default(),
+        OptimizerCatalogStatistics {
+            label_counts: [("Person".into(), 3_000)].into(),
+            path_counts: [(("Person".into(), "KNOWS".into(), "Person".into()), 48_000)].into(),
+            ..Default::default()
+        },
+    );
+    assert_ne!(
+        context.prefixes("Person", "KNOWS", Outgoing),
+        WalkContext::new(&changed).prefixes("Person", "KNOWS", Outgoing)
+    );
+}
+
+#[test]
+#[ignore = "manual planning metadata scaling measurement"]
+fn prefix_statistics_scaling_measurement() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    for tuples in [100, 10_000, 100_000] {
+        let catalog = OptimizerCatalog::new(
+            OptimizerCatalogIndexes::default(),
+            OptimizerCatalogStatistics {
+                label_counts: [("Source".into(), 100)].into(),
+                path_counts: (0..tuples)
+                    .map(|id| (("Source".into(), "R".into(), format!("Target{id}")), 100))
+                    .collect(),
+                ..Default::default()
+            },
+        );
+        let repeats = 64;
+        let mut reference = [0.0; MAX_ESTIMATED_HOPS + 1];
+        let started = Instant::now();
+        for _ in 0..repeats {
+            reference = black_box(collect_prefixes(
+                black_box(&catalog),
+                "Source",
+                "R",
+                Outgoing,
+            ));
+        }
+        let direct_ns = started.elapsed().as_nanos();
+        let mut context = WalkContext::new(&catalog);
+        let started = Instant::now();
+        for _ in 0..repeats {
+            assert_eq!(
+                black_box(context.prefixes("Source", "R", Outgoing)),
+                reference
+            );
+        }
+        let cached_ns = started.elapsed().as_nanos();
+        assert_eq!(context.scans, 1);
+        println!(
+            "tuples={tuples} repeats={repeats} direct_ns={direct_ns} cached_ns={cached_ns} scratch_bytes={} scans={}",
+            std::mem::size_of_val(&context), context.scans
+        );
+    }
+}
+
+fn correlated_catalog(indexed_rows: u64, joint_ndv: u64) -> OptimizerCatalog {
+    OptimizerCatalog::new(
+        OptimizerCatalogIndexes::new(
+            [("Item".into(), "a".into())],
+            [("Item".into(), vec!["a".into(), "b".into()])],
+            [],
+            [],
+        ),
+        OptimizerCatalogStatistics {
+            label_counts: [("Item".into(), 1000)].into(),
+            property_distinct_counts: [
+                (("Item".into(), "a".into()), 10),
+                (("Item".into(), "b".into()), 10),
+            ]
+            .into(),
+            property_index_statistics: [(
+                ("Item".into(), "a".into()),
+                crate::graph::OptimizerIndexStatistics {
+                    index_size: 1000,
+                    distinct_count: 10,
+                },
+            )]
+            .into(),
+            ..Default::default()
+        }
+        .with_composite_index_statistics([(
+            ("Item".into(), vec!["a".into(), "b".into()]),
+            crate::graph::OptimizerIndexStatistics {
+                index_size: indexed_rows,
+                distinct_count: joint_ndv,
+            },
+        )]),
+    )
+}
+
+#[test]
+fn match_seeds_and_expansion_filters_reuse_the_joint_domain() {
+    let catalog = correlated_catalog(1000, 10);
+    let node = node("n", "Item", &["a", "b"]);
+    assert_eq!(
+        node_work(&catalog, &node),
+        Some(WalkEstimate {
+            work: 101.0,
+            rows: 100.0
+        })
+    );
+    assert_eq!(node_selectivity(&catalog, &node), 0.1);
+    assert_eq!(
+        catalog
+            .estimate_joint_equality_rows("Item", &["a", "b"], &["a"], 100)
+            .unwrap()
+            .rows,
+        100
+    );
+    let independent = correlated_catalog(1000, 100);
+    assert_eq!(node_work(&independent, &node).unwrap().rows, 10.0);
+    let sparse = correlated_catalog(500, 10);
+    assert_eq!(
+        node_work(&sparse, &node).unwrap().rows,
+        10.0,
+        "sparse samples cannot condition on a marginal domain"
+    );
+    assert_eq!(node_selectivity(&sparse, &node), 0.05);
+    let invalid = correlated_catalog(1000, 5);
+    assert_eq!(node_work(&invalid, &node).unwrap().rows, 10.0);
+}
+
+#[test]
+fn reused_prefix_scratch_preserves_joint_seed_and_target_rows() {
+    let mut catalog = correlated_catalog(1000, 10);
+    catalog.path_counts = [(("Item".into(), "R".into(), "Item".into()), 2000)].into();
+    let nodes = [
+        node("seed", "Item", &["a", "b"]),
+        node("middle", "Item", &["a", "b"]),
+        node("target", "Item", &["a", "b"]),
+    ];
+    let edges = [edge("R", Outgoing), edge("R", Outgoing)];
+    let mut context = WalkContext::new(&catalog);
+    for _ in 0..3 {
+        assert_eq!(
+            walk_with_context(&mut context, &nodes, &edges, 0),
+            Some(WalkEstimate {
+                work: 461.0,
+                rows: 4.0,
+            })
+        );
+    }
+    assert_eq!(context.scans, 1);
+    assert_eq!(context.len, 1);
+}
+
+#[test]
+fn value_frequency_and_exact_point_evidence_keep_precedence_over_joint_averages() {
+    let hot = hawdb_core::Value::Int(0);
+    let mut catalog = correlated_catalog(1000, 10);
+    catalog.property_distributions = std::sync::Arc::new(
+        [(
+            ("Item".into(), "a".into()),
+            hawdb_core::CompressedHistogram::from_sample(
+                1000,
+                1000,
+                0,
+                0,
+                std::iter::repeat_n(hot.clone(), 90)
+                    .chain(std::iter::repeat_n(hawdb_core::Value::Int(1), 10))
+                    .collect(),
+            )
+            .unwrap(),
+        )]
+        .into(),
+    );
+    let mut node = node("n", "Item", &["a", "b"]);
+    node.values.insert("a", &hot);
+    assert!(joint_node_rows(&catalog, &node, Some("a"), 900).is_none());
+    assert_eq!(node_work(&catalog, &node).unwrap().rows, 90.0);
+    let local = correlated_catalog(1000, 10).with_property_equality_row_count(
+        "Item".into(),
+        "a".into(),
+        900,
+    );
+    assert_eq!(node_work(&local, &node).unwrap().rows, 90.0);
+    let null = hawdb_core::Value::Null;
+    node.values.insert("a", &null);
+    assert!(joint_node_rows(&catalog, &node, None, 1000).is_none());
+}
+
+/// 3,000 persons, 7,500 organisations and 1,100 places; `Place.name` is
+/// unique and indexed, `Person.id` too.
+pub(in crate::graph) fn catalog() -> OptimizerCatalog {
+    let path = |source: &str, rel_type: &str, target: &str, count: u64| {
+        (
+            (source.to_string(), rel_type.to_string(), target.to_string()),
+            count,
+        )
+    };
+    OptimizerCatalog::new(
+        OptimizerCatalogIndexes::new(
+            [
+                ("Place".to_string(), "name".to_string()),
+                ("Person".to_string(), "id".to_string()),
+            ],
+            [],
+            [],
+            [],
+        ),
+        OptimizerCatalogStatistics::new(
+            [
+                ("Person".to_string(), 3_000),
+                ("Organisation".to_string(), 7_500),
+                ("Place".to_string(), 1_100),
+            ],
+            [],
+            [],
+            [
+                path("Person", "KNOWS", "Person", 24_000),
+                path("Person", "WORK_AT", "Organisation", 3_000),
+                path("Organisation", "IS_LOCATED_IN", "Place", 7_500),
+            ],
+            [],
+            [
+                (("Place".to_string(), "name".to_string()), 1_100),
+                (("Person".to_string(), "id".to_string()), 3_000),
+            ],
+            [],
+        ),
+    )
+}
+
+fn node<'a>(variable: &'a str, label: &'a str, equalities: &[&'a str]) -> PathNode<'a> {
+    PathNode {
+        variable,
+        label,
+        equalities: equalities.to_vec(),
+        values: Default::default(),
+        bound: false,
+    }
+}
+
+fn edge(rel_type: &str, direction: RelationshipDirection) -> PathEdge<'_> {
+    PathEdge {
+        rel_type: Some(rel_type),
+        equalities: Vec::new(),
+        values: Default::default(),
+        direction,
+        min_hops: 1,
+        max_hops: 1,
+        reversible: true,
+    }
+}
+
+/// `(f:Person)-[:WORK_AT]->(c:Organisation)-[:IS_LOCATED_IN]->(p:Place {name})`.
+fn employees() -> (Vec<PathNode<'static>>, Vec<PathEdge<'static>>) {
+    (
+        vec![
+            node("f", "Person", &[]),
+            node("c", "Organisation", &[]),
+            node("p", "Place", &["name"]),
+        ],
+        vec![edge("WORK_AT", Outgoing), edge("IS_LOCATED_IN", Outgoing)],
+    )
+}
+
+#[test]
+fn a_seekable_end_replaces_a_label_scan_start() {
+    let catalog = catalog();
+    let (nodes, edges) = employees();
+    let Some(StartDecision::Chosen(choice)) = choose_start(&catalog, &nodes, &edges, 0) else {
+        panic!("the Place seek should win");
+    };
+    assert_eq!(choice.start, 2);
+    assert_eq!(choice.property, "name");
+    // Scan 3,000 persons, then probe and read one job and one location each.
+    assert_eq!(choice.current_work, 15_000.0);
+    // Seek one place, probe its adjacency and the ~6.8 organisations,
+    // then read ~6.8 organisations and ~2.7 jobs.
+    assert!(choice.work < 20.0, "{choice:?}");
+}
+
+#[test]
+fn directed_bounded_paths_replace_the_power_of_one_hop_fallback() {
+    let mut catalog = OptimizerCatalog::new(
+        OptimizerCatalogIndexes::new([("B".into(), "key".into())], [], [], []),
+        OptimizerCatalogStatistics {
+            label_counts: [("A".into(), 2_000), ("B".into(), 20)].into(),
+            path_counts: [(("A".into(), "R".into(), "B".into()), 2_000)].into(),
+            property_distinct_counts: [(("B".into(), "key".into()), 20)].into(),
+            ..OptimizerCatalogStatistics::default()
+        },
+    );
+    let nodes = [node("a", "A", &[]), node("b", "B", &["key"])];
+    let edges = [PathEdge {
+        min_hops: 2,
+        max_hops: 2,
+        ..edge("R", Outgoing)
+    }];
+    // Squaring the reverse one-hop fanout invents 10,000 paths per B,
+    // even though the intermediate nodes have different degrees and labels.
+    assert!(matches!(
+        choose_start(&catalog, &nodes, &edges, 0),
+        Some(StartDecision::Kept { .. })
+    ));
+    catalog
+        .bounded_path_counts
+        .insert(("A".into(), "R".into(), "B".into(), 2), 2_000);
+    let Some(StartDecision::Chosen(choice)) = choose_start(&catalog, &nodes, &edges, 0) else {
+        panic!("the measured reverse fanout should select the B seek");
+    };
+    assert_eq!(choice.start, 1);
+    assert_eq!((choice.current_work, choice.work), (10_000.0, 303.0));
+    assert_eq!(walk(&catalog, &nodes, &edges, 1).unwrap().rows, 100.0);
+
+    let reverse_nodes = [nodes[1].clone(), nodes[0].clone()];
+    let reverse_edges = [PathEdge {
+        direction: Incoming,
+        ..edges[0].clone()
+    }];
+    assert_eq!(
+        walk(&catalog, &reverse_nodes, &reverse_edges, 0),
+        walk(&catalog, &nodes, &edges, 1)
+    );
+}
+
+#[test]
+fn undirected_mixed_walks_do_not_use_directed_hop_counts() {
+    let mut catalog = catalog();
+    let nodes = [node("a", "Person", &[]), node("b", "Person", &[])];
+    let edges = [PathEdge {
+        min_hops: 0,
+        max_hops: 2,
+        ..edge("KNOWS", Undirected)
+    }];
+    let fallback = walk(&catalog, &nodes, &edges, 0);
+    catalog
+        .bounded_path_counts
+        .insert(("Person".into(), "KNOWS".into(), "Person".into(), 2), 1);
+    assert_eq!(walk(&catalog, &nodes, &edges, 0), fallback);
+}
+
+#[test]
+fn complete_horizon_distinguishes_absent_paths_from_unknown_and_deeper_hops() {
+    let mut catalog = catalog();
+    // A non-empty bounded map does not itself establish complete coverage.
+    catalog.bounded_path_counts.insert(
+        ("Person".into(), "KNOWS".into(), "Person".into(), 1),
+        24_000,
+    );
+    let nodes = [node("a", "Person", &[]), node("b", "Person", &[])];
+    let mut edges = [PathEdge {
+        min_hops: 2,
+        max_hops: 2,
+        ..edge("KNOWS", Outgoing)
+    }];
+    let unknown = walk(&catalog, &nodes, &edges, 0).unwrap();
+    assert!(unknown.rows > 0.0);
+    catalog.bounded_path_complete_through_hop = Some(1);
+    assert_eq!(walk(&catalog, &nodes, &edges, 0).unwrap(), unknown);
+    catalog.bounded_path_complete_through_hop = Some(3);
+    let complete = walk(&catalog, &nodes, &edges, 0).unwrap();
+    assert_eq!(complete.rows, 1.0);
+    assert!(complete.work < unknown.work);
+    assert!(complete.work >= 2.0 * 3_000.0 + 24_000.0);
+    edges[0].direction = Incoming;
+    assert_eq!(walk(&catalog, &nodes, &edges, 0).unwrap(), complete);
+    edges[0].direction = Undirected;
+    assert!(walk(&catalog, &nodes, &edges, 0).unwrap().rows > 0.0);
+    edges[0].direction = Outgoing;
+    edges[0].min_hops = 4;
+    edges[0].max_hops = 4;
+    catalog
+        .bounded_path_counts
+        .insert(("Person".into(), "KNOWS".into(), "Person".into(), 4), 0);
+    assert!(walk(&catalog, &nodes, &edges, 0).unwrap().rows > 0.0);
+    catalog.bounded_path_complete_through_hop = None;
+    edges[0].min_hops = 2;
+    edges[0].max_hops = 2;
+    assert_eq!(walk(&catalog, &nodes, &edges, 0).unwrap(), unknown);
+}
+
+#[test]
+fn completed_empty_statistics_keep_positive_planning_and_probe_estimates() {
+    let mut catalog = catalog();
+    catalog.path_counts.clear();
+    catalog.bounded_path_counts.clear();
+    let nodes = [node("a", "Person", &[]), node("b", "Person", &[])];
+    let edges = [edge("KNOWS", Outgoing)];
+    assert!(walk(&catalog, &nodes, &edges, 0).is_none());
+    catalog.bounded_path_complete_through_hop = Some(3);
+    let estimate = walk(&catalog, &nodes, &edges, 0).unwrap();
+    assert!(estimate.rows > 0.0);
+    assert!(estimate.work >= 2.0 * 3_000.0);
+}
+
+#[test]
+fn a_selective_current_start_is_kept_within_the_margin() {
+    let catalog = catalog();
+    // (person:Person {id})-[:KNOWS*1..2]-(friend:Person)-[:WORK_AT]->(c)-[:IS_LOCATED_IN]->(:Place {name})
+    let nodes = vec![
+        node("person", "Person", &["id"]),
+        node("friend", "Person", &[]),
+        node("c", "Organisation", &[]),
+        node("p", "Place", &["name"]),
+    ];
+    let mut knows = edge("KNOWS", Undirected);
+    knows.max_hops = 2;
+    let edges = vec![
+        knows,
+        edge("WORK_AT", Outgoing),
+        edge("IS_LOCATED_IN", Outgoing),
+    ];
+    let Some(StartDecision::Kept { detail }) = choose_start(&catalog, &nodes, &edges, 0) else {
+        panic!("both ends seek; the walk back over KNOWS*1..2 is not cheaper");
+    };
+    assert!(detail.contains("current start person"), "{detail}");
+}
+
+#[test]
+fn missing_or_ambiguous_statistics_keep_the_current_start() {
+    let (mut nodes, edges) = employees();
+    // No published path statistics.
+    let without_paths = OptimizerCatalog::new(
+        OptimizerCatalogIndexes::new([("Place".to_string(), "name".to_string())], [], [], []),
+        OptimizerCatalogStatistics::default(),
+    );
+    assert_eq!(choose_start(&without_paths, &nodes, &edges, 0), None);
+    let catalog = catalog();
+    // An unlabelled or multi-label current start has no estimate.
+    for label in ["", "Person:Organisation"] {
+        nodes[0].label = label;
+        assert_eq!(choose_start(&catalog, &nodes, &edges, 0), None);
+    }
+    // A type disjunction has no fanout estimate.
+    let (nodes, mut edges) = employees();
+    edges[0].rel_type = None;
+    assert_eq!(choose_start(&catalog, &nodes, &edges, 0), None);
+}
+
+#[test]
+fn unindexed_bound_or_irreversible_candidates_are_not_seeks() {
+    let catalog = catalog();
+    let (mut nodes, mut edges) = employees();
+    nodes[2].equalities = vec!["type"];
+    assert_eq!(choose_start(&catalog, &nodes, &edges, 0), None);
+    nodes[2].equalities = vec!["name"];
+    nodes[2].bound = true;
+    assert_eq!(choose_start(&catalog, &nodes, &edges, 0), None);
+    nodes[2].bound = false;
+    // Starting at p walks both steps backwards; a named var-length step
+    // cannot be reversed.
+    edges[0].reversible = false;
+    assert!(matches!(
+        choose_start(&catalog, &nodes, &edges, 0),
+        Some(StartDecision::Kept { detail }) if detail.contains("p=unknown")
+    ));
+}
+
+#[test]
+fn reaching_a_bound_node_filters_and_incoming_steps_use_the_stored_orientation() {
+    let catalog = catalog();
+    let (mut nodes, edges) = employees();
+    // From the place: 7,500 / 1,100 organisations per place, then 3,000 /
+    // 7,500 jobs per organisation.
+    let work = walk_work(&catalog, &nodes, &edges, 2).unwrap();
+    let expected = 2.0 + 1.0 + 2.0 * 7_500.0 / 1_100.0 + 7_500.0 / 1_100.0 * 0.4;
+    assert!((work - expected).abs() < 1e-9, "{work} vs {expected}");
+    // A bound person start probes and reads one job, then one location.
+    nodes[0].bound = true;
+    assert_eq!(walk_work(&catalog, &nodes, &edges, 0), Some(5.0));
+    let reversed = [node("p", "Place", &[]), node("c", "Organisation", &[])];
+    let incoming = [edge("IS_LOCATED_IN", Incoming)];
+    assert_eq!(
+        walk_work(&catalog, &reversed, &incoming, 1),
+        Some(7_500.0 + 2.0 * 7_500.0)
+    );
+}
+
+#[test]
+fn dead_end_prefix_work_is_not_discounted_by_relationship_filters() {
+    let mut catalog = catalog();
+    catalog.bounded_path_complete_through_hop = Some(3);
+    catalog
+        .rel_property_distinct_counts
+        .insert(("KNOWS".into(), "flag".into()), 1_000);
+    let nodes = [node("a", "Person", &[]), node("b", "Person", &[])];
+    let mut edges = [PathEdge {
+        min_hops: 2,
+        max_hops: 2,
+        ..edge("KNOWS", Outgoing)
+    }];
+    let unfiltered = walk(&catalog, &nodes, &edges, 0).unwrap();
+    edges[0].equalities.push("flag");
+    let filtered = walk(&catalog, &nodes, &edges, 0).unwrap();
+    assert_eq!(filtered.rows, unfiltered.rows);
+    assert_eq!(filtered.work, unfiltered.work);
+}

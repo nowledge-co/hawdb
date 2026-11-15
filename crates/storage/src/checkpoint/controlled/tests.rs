@@ -53,6 +53,7 @@ impl Fixture {
             computed_at_commit_epoch: 4099,
             advanced_statistics_complete: true,
             histogram_sample_limit: 512,
+            bounded_path_complete_through_hop: Some(3),
             node_count: 1025,
             relationship_count: 1024,
             ..GraphStatistics::default()

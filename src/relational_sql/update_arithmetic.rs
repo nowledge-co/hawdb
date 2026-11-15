@@ -81,8 +81,8 @@ fn double_update_arithmetic_uses_the_shared_numeric_rules() {
     let mut database = Database::new();
     create_accounts(&mut database);
 
-    // DOUBLE PRECISION op DOUBLE PRECISION. A literal such as 12.5 is exact
-    // (DECIMAL), so a DOUBLE column takes a DOUBLE parameter or a cast literal.
+    // DOUBLE PRECISION op DOUBLE PRECISION, through a cast literal, a DOUBLE
+    // parameter, or (#1516) a bare numeric literal coerced to DOUBLE.
     database
         .query_sql(
             "UPDATE accounts SET balance = balance + CAST(12.5 AS DOUBLE PRECISION) WHERE id = 1",
@@ -94,6 +94,14 @@ fn double_update_arithmetic_uses_the_shared_numeric_rules() {
             "UPDATE accounts SET balance = CAST(0.25 AS DOUBLE PRECISION) + balance WHERE id = 1",
         )
         .expect("cast literal + DOUBLE PRECISION column");
+    // #1516: like PostgreSQL's implicit numeric-to-float8 cast, a numeric
+    // literal beside a DOUBLE PRECISION operand becomes the nearest double.
+    database
+        .query_sql("UPDATE accounts SET balance = balance + 12.5 WHERE id = 1")
+        .expect("DOUBLE PRECISION column + numeric literal");
+    database
+        .query_sql("UPDATE accounts SET balance = -12.5 + balance WHERE id = 1")
+        .expect("negative numeric literal + DOUBLE PRECISION column");
     database
         .query_sql_with_params(
             "UPDATE accounts SET balance = balance - $1 WHERE id = $2",
@@ -237,9 +245,10 @@ fn double_update_arithmetic_uses_the_shared_numeric_rules() {
             "integer arithmetic overflow",
         ),
         (
-            // A DECIMAL literal beside a DOUBLE PRECISION operand needs a cast.
-            "UPDATE accounts SET balance = balance + 12.5 WHERE id = 1",
-            Vec::new(),
+            // #1516 coerces only literals: a DECIMAL parameter beside a DOUBLE
+            // PRECISION operand still needs a cast (#1429).
+            "UPDATE accounts SET balance = balance + $1 WHERE id = 1",
+            vec![decimal("12.5")],
             "explicit CAST",
         ),
         (
@@ -349,10 +358,11 @@ fn decimal_update_arithmetic_stays_exact_and_requires_casts_beside_double() {
             "requires CAST",
         ),
         (
-            // A fractional DECIMAL result does not round into BIGINT.
+            // A fractional DECIMAL result does not round into BIGINT; #1516
+            // names the fraction instead of the 38-digit precision limit.
             "UPDATE accounts SET payments = payments + 0.5 WHERE id = 1",
             Vec::new(),
-            "decimal",
+            "fractional part; BIGINT requires an exact integer",
         ),
         (
             // DECIMAL(12,2) holds at most ten integer digits.

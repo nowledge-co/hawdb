@@ -420,6 +420,14 @@ impl DurableManifest {
     /// descendants are added by their validated family readers before a root
     /// is published.
     pub fn manifest_artifact_inputs(self, root: &Path) -> Result<Vec<CheckpointArtifactInput>> {
+        self.manifest_artifact_inputs_with_work(root, crate::immutable_object::BlockWork::default())
+    }
+
+    pub(crate) fn manifest_artifact_inputs_with_work(
+        self,
+        root: &Path,
+        work: crate::immutable_object::BlockWork<'_>,
+    ) -> Result<Vec<CheckpointArtifactInput>> {
         self.validate()?;
         let generation = self.checkpoint_generation.ok_or_else(|| {
             HawDBError::Storage("manifest artifact inputs require a checkpoint generation".into())
@@ -432,7 +440,8 @@ impl DurableManifest {
                     path.display()
                 )));
             };
-            let digest = digest_closure_artifact(&path, kind, "read manifest-bound artifact")?;
+            let digest =
+                digest_closure_artifact(&path, kind, "read manifest-bound artifact", work)?;
             if digest.byte_length != byte_length {
                 return Err(HawDBError::Storage(format!(
                     "manifest-bound artifact {} length differs from its binding",
@@ -1495,9 +1504,29 @@ fn parse_optional_sha256(input: &str, name: &str) -> Result<Option<Sha256Digest>
     }
 }
 
+/// Numeric revision of [`STORAGE_VERSION`], reported by compatibility refusals.
+pub const STORAGE_VERSION_REVISION: u16 = 1;
+const STORAGE_VERSION_PREFIX: &str = "hawdb-storage-v";
+
+/// Accepts exactly the supported storage version. An intact version string of
+/// the `hawdb-storage-v<N>` family written by another release is a typed
+/// compatibility refusal naming both revisions; anything else is malformed.
 pub fn validate_storage_version(version: &str) -> Result<()> {
     if version == STORAGE_VERSION {
         return Ok(());
+    }
+    if let Some(found) = version
+        .strip_prefix(STORAGE_VERSION_PREFIX)
+        .filter(|digits| !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()))
+        .and_then(|digits| digits.parse::<u16>().ok())
+    {
+        return Err(HawDBError::UnsupportedStorageFormat(
+            hawdb_core::StorageFormatError::UnsupportedVersion {
+                format: hawdb_core::STORAGE_MANIFEST_FORMAT,
+                found,
+                supported: STORAGE_VERSION_REVISION,
+            },
+        ));
     }
     Err(HawDBError::Storage(format!(
         "unsupported storage version: {version}; expected {STORAGE_VERSION}"

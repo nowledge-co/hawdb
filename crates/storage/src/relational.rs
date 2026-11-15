@@ -39,7 +39,18 @@ pub(crate) use index_shadow::{
     IndexReadAdmission, IndexReadCharge, IndexReadObserver, IndexReadPreflightError,
 };
 pub use materialized_view::{
-    MaterializedViewColumn, MaterializedViewDefinition, MaterializedViewExpression,
+    decode_search_sealed_block, decode_search_sealed_block_header, search_index_block_bounds_range,
+    search_index_block_fence, search_index_dictionary_key, search_index_length_block_key,
+    search_index_length_block_range, search_index_length_block_start,
+    search_index_sealed_block_after_range, search_index_sealed_block_range,
+    search_index_sealed_block_window, search_index_statistics_key, MaterializedViewColumn,
+    MaterializedViewDefinition, MaterializedViewExpression, SearchBlockBounds, SearchDocumentEntry,
+    SearchIndexAnalyzer, SearchIndexSpec, SearchIndexStatistics, SearchLengthBlock, SearchPosting,
+    SearchPostingBlockHeader, SearchTermDictionary, SEARCH_INDEX_BLOCK_POSTINGS,
+    SEARCH_INDEX_COLUMN_COUNT, SEARCH_INDEX_DATA_COLUMN, SEARCH_INDEX_KIND_COLUMN,
+    SEARCH_INDEX_LENGTH_BLOCK_DOCUMENTS, SEARCH_INDEX_MAX_BLOCK_POSTINGS,
+    SEARCH_INDEX_MAX_TOKEN_BYTES, SEARCH_INDEX_NAME_COLUMN, SEARCH_INDEX_SLOT_COLUMN,
+    SEARCH_INDEX_TAIL_POSTINGS,
 };
 pub use numeric_expression::{
     RelationalNumericExpression, MAX_NUMERIC_EXPRESSION_DEPTH, MAX_NUMERIC_EXPRESSION_NODES,
@@ -153,8 +164,9 @@ pub use row_page::{
     RelationalRowPageDemandReadReport, RelationalRowPageDemandReader, RelationalRowPageEntry,
     RelationalRowPageError, RelationalRowPageGenerationArtifacts,
     RelationalRowPageGenerationRequest, RelationalRowPageId, RelationalRowPageIdAllocator,
-    RelationalRowPageLimits, RelationalRowPageLiveError, RelationalRowPageMutationError,
-    RelationalRowPageMutationPlan, RelationalRowPageMutationPlanner,
+    RelationalRowPageIntegrity, RelationalRowPageLimits, RelationalRowPageLiveError,
+    RelationalRowPageMutationError, RelationalRowPageMutationPlan,
+    RelationalRowPageMutationPlanner, RelationalRowPagePartitionAbsenceProof,
     RelationalRowPagePhysicalGeneration, RelationalRowPageProjectedFields,
     RelationalRowPageProjectedRange, RelationalRowPageProjectedRangeFields,
     RelationalRowPagePublicationConfig, RelationalRowPagePublicationError,
@@ -162,12 +174,12 @@ pub use row_page::{
     RelationalRowPagePublisher, RelationalRowPageReadView, RelationalRowPageReadViewIdentity,
     RelationalRowPageRecoveredValue, RelationalRowPageRecoveryStatus,
     RelationalRowPageRewriteConfig, RelationalRowPageRootDescriptor, RelationalRowPageRootManifest,
-    RelationalRowPageRootReader, RelationalRowPageServingResources, RelationalRowPageSlotIntegrity,
+    RelationalRowPageRootReader, RelationalRowPageServingResources,
     RelationalRowPageSnapshotPointReport, RelationalRowPageSnapshotPointsReport,
     RelationalRowPageSnapshotRangeReport, RelationalRowPageSnapshotReadError,
     RelationalRowPageSnapshotReadLimits, RelationalRowPageSnapshotReader,
     RelationalRowPageSnapshotRowSource, RelationalRowPageState, RelationalRowPageTableDelta,
-    RelationalRowPageTableRoot, RelationalRowPageView,
+    RelationalRowPageTableRoot, RelationalRowPageView, RelationalRowSchemaRewrite,
     DEFAULT_RELATIONAL_ROW_DELTA_CHECKPOINT_RUNS, DEFAULT_RELATIONAL_ROW_DELTA_DIRTY_BYTES,
     DEFAULT_RELATIONAL_ROW_DELTA_DIRTY_ENTRIES, DEFAULT_RELATIONAL_ROW_DELTA_MANIFEST_BYTES,
     DEFAULT_RELATIONAL_ROW_DELTA_RUNS, DEFAULT_RELATIONAL_ROW_DELTA_RUN_BYTES,
@@ -179,9 +191,10 @@ pub use row_page::{
     DEFAULT_RELATIONAL_ROW_PAGE_READ_ROWS, DEFAULT_RELATIONAL_ROW_PAGE_READ_TREE_HEIGHT,
     DEFAULT_RELATIONAL_ROW_PAGE_ROOT_KEY_BYTES, DEFAULT_RELATIONAL_ROW_PAGE_ROOT_PAGES,
     DEFAULT_RELATIONAL_ROW_PAGE_ROWS, DEFAULT_RELATIONAL_ROW_PAGE_ROW_BYTES,
-    DEFAULT_RELATIONAL_ROW_PAGE_TABLES, DEFAULT_RELATIONAL_ROW_PAGE_VALUE_BYTES,
-    DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_BYTES, DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_ENTRIES,
-    RELATIONAL_ROW_DELTA_MANIFEST_FILE, RELATIONAL_ROW_PAGE_MANIFEST_FILE,
+    DEFAULT_RELATIONAL_ROW_PAGE_TABLES, DEFAULT_RELATIONAL_ROW_PAGE_TARGET_BYTES,
+    DEFAULT_RELATIONAL_ROW_PAGE_VALUE_BYTES, DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_BYTES,
+    DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_ENTRIES, RELATIONAL_ROW_DELTA_MANIFEST_FILE,
+    RELATIONAL_ROW_PAGE_MANIFEST_FILE,
 };
 
 pub const DEFAULT_MAX_RELATIONAL_MUTATION_ROWS: usize = 250_000;
@@ -286,18 +299,55 @@ pub enum RelationalScalarType {
     Bytea,
     Uuid,
     Vector(hawdb_core::VectorDimension),
+    /// `TIMESTAMP(p)`: local date and time, microseconds since 1970-01-01.
+    Timestamp(hawdb_core::TimestampPrecision),
+    /// `TIMESTAMPTZ(p)`: a UTC instant, microseconds since 1970-01-01.
+    TimestampTz(hawdb_core::TimestampPrecision),
 }
 
 impl RelationalScalarType {
-    /// Index identity is numeric for Decimal, independent of declaration scale.
+    /// Index identity is numeric for Decimal, independent of declaration scale,
+    /// and chronological for timestamps, independent of declared precision.
     pub fn same_value_domain(self, other: Option<Self>) -> bool {
-        matches!((self, other), (Self::Decimal(_), Some(Self::Decimal(_)))) || other == Some(self)
+        matches!(
+            (self, other),
+            (Self::Decimal(_), Some(Self::Decimal(_)))
+                | (Self::Timestamp(_), Some(Self::Timestamp(_)))
+                | (Self::TimestampTz(_), Some(Self::TimestampTz(_)))
+        ) || other == Some(self)
+    }
+
+    /// Whether a value of `value_type` belongs to this column type's domain
+    /// for comparison and key lookup. Timestamp precision does not
+    /// participate; other types require identical scalar types.
+    pub fn value_type_matches(self, value_type: Option<Self>) -> bool {
+        match (self, value_type) {
+            (Self::Timestamp(_), Some(Self::Timestamp(_)))
+            | (Self::TimestampTz(_), Some(Self::TimestampTz(_))) => true,
+            _ => value_type == Some(self),
+        }
+    }
+
+    /// Whether a non-NULL stored value has exactly this column type, including
+    /// a timestamp rounded to the declared precision.
+    pub fn holds(self, value: RelationalValueRef<'_>) -> bool {
+        match (self, value) {
+            (Self::Timestamp(precision), RelationalValueRef::Timestamp(value))
+            | (Self::TimestampTz(precision), RelationalValueRef::TimestampTz(value)) => {
+                precision.accepts(value)
+            }
+            (_, value) => value.scalar_type() == Some(self),
+        }
     }
 
     pub fn accepts(self, value: RelationalValueRef<'_>) -> bool {
         match (self, value) {
             (_, RelationalValueRef::Null) => true,
             (Self::Decimal(kind), RelationalValueRef::Decimal(value)) => kind.accepts(value),
+            (Self::Timestamp(precision), RelationalValueRef::Timestamp(value))
+            | (Self::TimestampTz(precision), RelationalValueRef::TimestampTz(value)) => {
+                precision.accepts(value)
+            }
             (_, value) => value.scalar_type() == Some(self),
         }
     }
@@ -312,6 +362,8 @@ impl RelationalScalarType {
             Self::Bytea => LogicalType::Binary,
             Self::Uuid => LogicalType::Uuid,
             Self::Vector(dimension) => LogicalType::Vector(dimension),
+            Self::Timestamp(_) => LogicalType::LocalDateTime,
+            Self::TimestampTz(_) => LogicalType::DateTime,
         }
     }
 }
@@ -327,6 +379,10 @@ pub enum RelationalValue {
     Bytea(Vec<u8>),
     Vector(hawdb_core::Vector),
     Uuid(Uuid),
+    /// Microseconds since 1970-01-01 00:00:00 (local, no zone).
+    Timestamp(i64),
+    /// Microseconds since 1970-01-01 00:00:00 UTC.
+    TimestampTz(i64),
     Overflow(RelationalOverflowRef),
 }
 
@@ -346,6 +402,10 @@ pub enum RelationalValueRef<'a> {
     Bytea(&'a [u8]),
     Vector(hawdb_core::VectorRef<'a>),
     Uuid(Uuid),
+    /// Microseconds since 1970-01-01 00:00:00 (local, no zone).
+    Timestamp(i64),
+    /// Microseconds since 1970-01-01 00:00:00 UTC.
+    TimestampTz(i64),
     Overflow(RelationalOverflowRef),
 }
 
@@ -365,6 +425,12 @@ impl RelationalValue {
             Self::Bytea(_) => Some(RelationalScalarType::Bytea),
             Self::Vector(value) => Some(RelationalScalarType::Vector(value.dimension())),
             Self::Uuid(_) => Some(RelationalScalarType::Uuid),
+            Self::Timestamp(_) => Some(RelationalScalarType::Timestamp(
+                hawdb_core::TimestampPrecision::DEFAULT,
+            )),
+            Self::TimestampTz(_) => Some(RelationalScalarType::TimestampTz(
+                hawdb_core::TimestampPrecision::DEFAULT,
+            )),
             Self::Overflow(reference) => Some(reference.scalar_type),
         }
     }
@@ -377,7 +443,10 @@ impl RelationalValue {
         match self {
             Self::Null => 0,
             Self::Boolean(_) => 1,
-            Self::BigInt(_) | Self::DoublePrecision(_) => 8,
+            Self::BigInt(_)
+            | Self::DoublePrecision(_)
+            | Self::Timestamp(_)
+            | Self::TimestampTz(_) => 8,
             Self::Decimal(_) => hawdb_core::Decimal::ENCODED_LEN,
             Self::Text(value) => value.len(),
             Self::Bytea(value) => value.len(),
@@ -399,6 +468,8 @@ impl RelationalValue {
             Self::Vector(_) => 8,
             Self::Uuid(_) => 6,
             Self::Overflow(_) => 7,
+            Self::Timestamp(_) => 10,
+            Self::TimestampTz(_) => 11,
         }
     }
 }
@@ -415,6 +486,12 @@ impl<'a> RelationalValueRef<'a> {
             Self::Bytea(_) => Some(RelationalScalarType::Bytea),
             Self::Vector(value) => Some(RelationalScalarType::Vector(value.dimension())),
             Self::Uuid(_) => Some(RelationalScalarType::Uuid),
+            Self::Timestamp(_) => Some(RelationalScalarType::Timestamp(
+                hawdb_core::TimestampPrecision::DEFAULT,
+            )),
+            Self::TimestampTz(_) => Some(RelationalScalarType::TimestampTz(
+                hawdb_core::TimestampPrecision::DEFAULT,
+            )),
             Self::Overflow(reference) => Some(reference.scalar_type),
         }
     }
@@ -430,7 +507,10 @@ impl<'a> RelationalValueRef<'a> {
         match self {
             Self::Null => 0,
             Self::Boolean(_) => 1,
-            Self::BigInt(_) | Self::DoublePrecision(_) => 8,
+            Self::BigInt(_)
+            | Self::DoublePrecision(_)
+            | Self::Timestamp(_)
+            | Self::TimestampTz(_) => 8,
             Self::Decimal(_) => hawdb_core::Decimal::ENCODED_LEN,
             Self::Text(value) => value.len(),
             Self::Bytea(value) => value.len(),
@@ -451,6 +531,8 @@ impl<'a> RelationalValueRef<'a> {
             Self::Bytea(value) => RelationalValue::Bytea(value.to_vec()),
             Self::Vector(value) => RelationalValue::Vector(value.to_owned()),
             Self::Uuid(value) => RelationalValue::Uuid(value),
+            Self::Timestamp(value) => RelationalValue::Timestamp(value),
+            Self::TimestampTz(value) => RelationalValue::TimestampTz(value),
             Self::Overflow(reference) => RelationalValue::Overflow(reference),
         }
     }
@@ -506,6 +588,8 @@ impl<'a> RelationalValueRef<'a> {
             Self::Vector(_) => 8,
             Self::Uuid(_) => 6,
             Self::Overflow(_) => 7,
+            Self::Timestamp(_) => 10,
+            Self::TimestampTz(_) => 11,
         }
     }
 }
@@ -522,6 +606,8 @@ impl<'a> From<&'a RelationalValue> for RelationalValueRef<'a> {
             RelationalValue::Bytea(value) => Self::Bytea(value),
             RelationalValue::Vector(value) => Self::Vector(value.as_ref()),
             RelationalValue::Uuid(value) => Self::Uuid(*value),
+            RelationalValue::Timestamp(value) => Self::Timestamp(*value),
+            RelationalValue::TimestampTz(value) => Self::TimestampTz(*value),
             RelationalValue::Overflow(reference) => Self::Overflow(*reference),
         }
     }
@@ -557,6 +643,8 @@ impl Ord for RelationalValueRef<'_> {
                 (Self::Bytea(left), Self::Bytea(right)) => left.cmp(right),
                 (Self::Vector(left), Self::Vector(right)) => left.cmp(&right),
                 (Self::Uuid(left), Self::Uuid(right)) => left.cmp(&right),
+                (Self::Timestamp(left), Self::Timestamp(right))
+                | (Self::TimestampTz(left), Self::TimestampTz(right)) => left.cmp(&right),
                 (Self::Overflow(left), Self::Overflow(right)) => left.cmp(&right),
                 _ => Ordering::Equal,
             })
@@ -593,6 +681,8 @@ impl Ord for RelationalValue {
                 (Self::Bytea(left), Self::Bytea(right)) => left.cmp(right),
                 (Self::Vector(left), Self::Vector(right)) => left.cmp(right),
                 (Self::Uuid(left), Self::Uuid(right)) => left.cmp(right),
+                (Self::Timestamp(left), Self::Timestamp(right))
+                | (Self::TimestampTz(left), Self::TimestampTz(right)) => left.cmp(right),
                 (Self::Overflow(left), Self::Overflow(right)) => left.cmp(right),
                 _ => Ordering::Equal,
             })
@@ -612,6 +702,7 @@ impl Hash for RelationalValue {
             Self::Bytea(value) => value.hash(state),
             Self::Vector(value) => value.hash(state),
             Self::Uuid(value) => value.hash(state),
+            Self::Timestamp(value) | Self::TimestampTz(value) => value.hash(state),
             Self::Overflow(reference) => reference.hash(state),
         }
     }
@@ -629,6 +720,9 @@ pub struct RelationalColumnSchema {
 pub enum RelationalColumnDefault {
     Literal(RelationalValue),
     UuidV7,
+    /// `CURRENT_TIMESTAMP[(p)]`/`now()` (zoned) or `LOCALTIMESTAMP[(p)]`
+    /// (local), materialized for each inserted row before it is logged.
+    CurrentTimestamp(hawdb_core::sql_timestamp::TimestampType),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -757,6 +851,9 @@ fn clone_column_with_allocations(
             value.as_ref().to_owned_value_with_allocations(context)?,
         )),
         Some(RelationalColumnDefault::UuidV7) => Some(RelationalColumnDefault::UuidV7),
+        Some(RelationalColumnDefault::CurrentTimestamp(kind)) => {
+            Some(RelationalColumnDefault::CurrentTimestamp(*kind))
+        }
         None => None,
     };
     Ok(RelationalColumnSchema {
@@ -982,6 +1079,83 @@ impl RelationalTableSchema {
                 columns: index.columns.clone(),
                 role: RelationalIndexRole::DeclaredUnique,
             })
+    }
+}
+
+/// A clock default (`CURRENT_TIMESTAMP`, `now()`, `LOCALTIMESTAMP`) requires a
+/// TIMESTAMP or TIMESTAMPTZ column.
+pub(crate) fn validate_clock_default(
+    column: &RelationalColumnSchema,
+) -> Result<(), RelationalError> {
+    if matches!(
+        column.scalar_type,
+        RelationalScalarType::Timestamp(_) | RelationalScalarType::TimestampTz(_)
+    ) {
+        Ok(())
+    } else {
+        Err(RelationalError::Schema(format!(
+            "column {} uses a CURRENT_TIMESTAMP or LOCALTIMESTAMP default but is not TIMESTAMP or TIMESTAMPTZ",
+            column.name
+        )))
+    }
+}
+
+/// Encodes a clock default's function type: zoned flag, then precision.
+pub(crate) const fn clock_default_bytes(kind: hawdb_core::sql_timestamp::TimestampType) -> [u8; 2] {
+    [kind.zoned as u8, kind.precision.get()]
+}
+
+/// Decodes [`clock_default_bytes`].
+pub(crate) fn decode_clock_default(
+    zoned: u8,
+    precision: u8,
+) -> Result<RelationalColumnDefault, RelationalError> {
+    let zoned = match zoned {
+        0 => false,
+        1 => true,
+        tag => {
+            return Err(RelationalError::Corruption(format!(
+                "invalid clock default zone flag {tag}"
+            )))
+        }
+    };
+    let precision = hawdb_core::TimestampPrecision::new(precision)
+        .ok_or_else(|| RelationalError::Corruption("invalid clock default precision".into()))?;
+    Ok(RelationalColumnDefault::CurrentTimestamp(
+        hawdb_core::sql_timestamp::TimestampType { zoned, precision },
+    ))
+}
+
+/// Decodes a durable TIMESTAMP (scalar tag 9) or TIMESTAMPTZ (10) type.
+pub(crate) fn decode_timestamp_type(
+    tag: u8,
+    precision: u8,
+) -> Result<RelationalScalarType, RelationalError> {
+    let precision = hawdb_core::TimestampPrecision::new(precision)
+        .ok_or_else(|| RelationalError::Corruption("invalid TIMESTAMP precision".into()))?;
+    match tag {
+        9 => Ok(RelationalScalarType::Timestamp(precision)),
+        10 => Ok(RelationalScalarType::TimestampTz(precision)),
+        _ => Err(RelationalError::Corruption(format!(
+            "invalid TIMESTAMP scalar type tag {tag}"
+        ))),
+    }
+}
+
+/// Decodes a durable TIMESTAMP (value tag 10) or TIMESTAMPTZ (11) value,
+/// rejecting microsecond counts outside the supported range as corruption.
+pub(crate) fn decode_timestamp_value(
+    tag: u8,
+    micros: i64,
+) -> Result<RelationalValue, RelationalError> {
+    let micros = hawdb_core::sql_timestamp::checked(micros)
+        .map_err(|_| RelationalError::Corruption("TIMESTAMP value is out of range".into()))?;
+    match tag {
+        10 => Ok(RelationalValue::Timestamp(micros)),
+        11 => Ok(RelationalValue::TimestampTz(micros)),
+        _ => Err(RelationalError::Corruption(format!(
+            "invalid TIMESTAMP value tag {tag}"
+        ))),
     }
 }
 
@@ -1736,12 +1910,24 @@ pub enum RelationalRowChangeCapture {
         changes: Vec<RelationalRowChange>,
         encoded_bytes: usize,
     },
+    /// A schema change in `tables` requires a canonical row checkpoint.
     RequiresCheckpoint {
         tables: Vec<String>,
+        /// The same commit's changes to every other table, when they fit
+        /// the capture limits. The schema checkpoint then rewrites only
+        /// `tables`; `None` requires a full rebuild (#1593).
+        unaffected: Option<RelationalRowUnaffectedChanges>,
     },
     Invalidated {
         reason: String,
     },
+}
+
+/// Row changes captured outside the tables a schema change rewrites.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelationalRowUnaffectedChanges {
+    pub changes: Vec<RelationalRowChange>,
+    pub encoded_bytes: usize,
 }
 
 impl RelationalIndexChangeCapture {
@@ -5002,7 +5188,7 @@ impl RelationalState {
 
         let row_changes = match row_capture {
             RelationalRowChangeCapture::Captured { changes, .. } => changes,
-            RelationalRowChangeCapture::RequiresCheckpoint { tables } => {
+            RelationalRowChangeCapture::RequiresCheckpoint { tables, .. } => {
                 return Err(RelationalError::Admission(format!(
                     "relational live preparation requires a checkpoint for tables {}",
                     tables.join(",")
@@ -5188,6 +5374,19 @@ impl RelationalState {
             .flat_map(|segment| segment.rows.iter())
     }
 
+    /// Resident rows inside one primary-key interval, in primary-key order.
+    /// An out-of-core state must read the interval through its row snapshot.
+    pub fn rows_in_range(
+        &self,
+        table: &str,
+        range: &RelationalPrimaryKeyRange,
+    ) -> impl Iterator<Item = (&RelationalKey, &RelationalRow)> {
+        self.segments
+            .get(table)
+            .into_iter()
+            .flat_map(move |segment| segment.rows.range(Some(range.clone())))
+    }
+
     /// Metadata-only ordered seek for native full-source enumeration. A sparse
     /// row state must use its pinned canonical row reader, never an empty map.
     #[doc(hidden)]
@@ -5224,7 +5423,6 @@ impl RelationalState {
         }
         let mut dirty_pages = 0usize;
         let mut dirty_bytes = 0u64;
-        let slot_bytes = config.page_limits.max_page_bytes.get() as u64;
         self.table_schemas()
             .map(|schema| {
                 let schema_digest = self
@@ -5239,13 +5437,16 @@ impl RelationalState {
                         ))
                     })?;
                 let mut pages = Vec::new();
-                let mut emit = |page| {
+                let mut emit = |page: ImmutableRelationalRowPage| {
                     let next_pages = dirty_pages.checked_add(1).ok_or_else(|| {
                         RelationalRowPageMutationError::Admission(
                             "row-page snapshot page count overflow".to_string(),
                         )
                     })?;
-                    let next_bytes = dirty_bytes.checked_add(slot_bytes).ok_or_else(|| {
+                    // Encoded bytes, not the v1 slot (#1593); see
+                    // `RelationalRowPagePublicationConfig::max_dirty_bytes`.
+                    let page_bytes = page.encoded_len(config.page_limits)?;
+                    let next_bytes = dirty_bytes.checked_add(page_bytes).ok_or_else(|| {
                         RelationalRowPageMutationError::Admission(
                             "row-page snapshot byte count overflow".to_string(),
                         )
@@ -5254,7 +5455,7 @@ impl RelationalState {
                         || next_bytes > config.max_dirty_bytes.get()
                     {
                         return Err(RelationalRowPageMutationError::Admission(format!(
-                            "row-page snapshot requires {next_pages} pages/{next_bytes} bytes, exceeding limits {}/{}",
+                            "row-page snapshot requires {next_pages} pages/{next_bytes} encoded bytes, exceeding limits {}/{}",
                             config.max_dirty_pages, config.max_dirty_bytes
                         )));
                     }
@@ -5282,6 +5483,7 @@ impl RelationalState {
                 }
                 let report = bootstrap.finish(&mut emit)?;
                 Ok(RelationalRowPageTableDelta {
+                    replaces_base: false,
                     last_row_id: self.last_row_id(&schema.name),
                     table: schema.name.clone(),
                     schema: Some(schema.clone()),
@@ -5306,6 +5508,78 @@ impl RelationalState {
                 })
             })
             .collect()
+    }
+
+    /// Packs one table's complete current rows as a replacement of its base
+    /// row-page table (#1593). Page ids continue from `next_page_id`, the
+    /// base table's allocator, so no id of a pinned base root is reused. The
+    /// bootstrap admits `config`'s dirty-page and encoded dirty-byte limits.
+    pub fn row_page_table_replacement_delta(
+        &self,
+        table: &str,
+        generation: u64,
+        source_commit_epoch: u64,
+        next_page_id: NonZeroU64,
+        config: RelationalRowPagePublicationConfig,
+    ) -> Result<RelationalRowPageTableDelta, RelationalRowPageMutationError> {
+        self.require_materialized_rows("relational row-page table replacement")
+            .map_err(|error| RelationalRowPageMutationError::Admission(error.to_string()))?;
+        let schema = self.table_schema(table).ok_or_else(|| {
+            RelationalRowPageMutationError::Corrupt(format!(
+                "replaced row-page table {table} is missing from the relational state"
+            ))
+        })?;
+        let schema_digest = self
+            .table_schema_digest(table)
+            .map_err(|error| RelationalRowPageMutationError::Corrupt(error.to_string()))?
+            .ok_or_else(|| {
+                RelationalRowPageMutationError::Corrupt(format!(
+                    "replaced row-page table {table} has no schema digest"
+                ))
+            })?;
+        let mut bootstrap = RelationalRowPageBootstrap::new(
+            generation,
+            source_commit_epoch,
+            schema_digest,
+            schema.columns.len(),
+            next_page_id,
+            config,
+        )?;
+        let mut pages = Vec::new();
+        for (primary_key, row) in self.rows(table) {
+            bootstrap.push(
+                RelationalRowPageEntry {
+                    primary_key: primary_key.clone(),
+                    row: row.clone(),
+                },
+                |page| {
+                    pages.push(page);
+                    Ok(())
+                },
+            )?;
+        }
+        let report = bootstrap.finish(|page| {
+            pages.push(page);
+            Ok(())
+        })?;
+        Ok(RelationalRowPageTableDelta {
+            last_row_id: self.last_row_id(table),
+            table: table.to_string(),
+            schema: Some(schema.clone()),
+            schema_digest,
+            column_count: NonZeroU32::new(u32::try_from(schema.columns.len()).map_err(|_| {
+                RelationalRowPageMutationError::Admission(format!(
+                    "table {table} column count does not fit u32"
+                ))
+            })?)
+            .ok_or_else(|| {
+                RelationalRowPageMutationError::Admission(format!("table {table} has no columns"))
+            })?,
+            next_page_id: report.next_page_id,
+            dirty_pages: pages,
+            deleted_page_ids: Vec::new(),
+            replaces_base: true,
+        })
     }
 
     pub fn row_count(&self, table: &str) -> usize {
@@ -6280,16 +6554,29 @@ impl fmt::Display for RelationalError {
 }
 
 impl std::error::Error for RelationalError {
+    /// Constraint and schema refusals report their typed kind as the source,
+    /// so `HawDBError::from_storage_error` keeps it through any wrapper.
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::FileDescriptors(error) => Some(error),
             Self::UnsupportedFormat(error) => Some(error),
+            Self::Constraint(_) => Some(&hawdb_core::RelationalErrorKind::Constraint),
+            Self::Schema(_) => Some(&hawdb_core::RelationalErrorKind::Schema),
             _ => None,
         }
     }
 }
 
 impl RelationalError {
+    /// The typed kind of a constraint or schema refusal.
+    pub const fn kind(&self) -> Option<hawdb_core::RelationalErrorKind> {
+        match self {
+            Self::Constraint(_) => Some(hawdb_core::RelationalErrorKind::Constraint),
+            Self::Schema(_) => Some(hawdb_core::RelationalErrorKind::Schema),
+            _ => None,
+        }
+    }
+
     pub(crate) fn into_wal_recovery_error(self) -> hawdb_core::HawDBError {
         match self {
             Self::Corruption(message) => hawdb_core::HawDBError::StorageIntegrity(format!(
@@ -6711,19 +6998,28 @@ fn add_column_with_allocations(
             limits.max_rows
         )));
     }
-    let fill = match &column.default {
-        None => RelationalValue::Null,
-        Some(RelationalColumnDefault::Literal(value)) => value
-            .as_ref()
-            .to_owned_value_with_allocations(&fill_context)?,
-        Some(RelationalColumnDefault::UuidV7) if row_count == 0 => RelationalValue::Null,
-        Some(RelationalColumnDefault::UuidV7) => {
-            return Err(RelationalError::Schema(format!(
+    let fill =
+        match &column.default {
+            None => RelationalValue::Null,
+            Some(RelationalColumnDefault::Literal(value)) => value
+                .as_ref()
+                .to_owned_value_with_allocations(&fill_context)?,
+            Some(
+                RelationalColumnDefault::UuidV7 | RelationalColumnDefault::CurrentTimestamp(_),
+            ) if row_count == 0 => RelationalValue::Null,
+            Some(RelationalColumnDefault::UuidV7) => {
+                return Err(RelationalError::Schema(format!(
             "ALTER TABLE {table} cannot add column {} with uuidv7() default to a non-empty table",
             column.name
         )))
-        }
-    };
+            }
+            Some(RelationalColumnDefault::CurrentTimestamp(_)) => {
+                return Err(RelationalError::Schema(format!(
+            "ALTER TABLE {table} cannot add column {} with a clock default to a non-empty table",
+            column.name
+        )))
+            }
+        };
     if !column.nullable && matches!(&fill, RelationalValue::Null) && row_count != 0 {
         return Err(RelationalError::Constraint(format!("ALTER TABLE {table} cannot add NOT NULL column {} without a default to a non-empty table", column.name)));
     }
@@ -7037,12 +7333,19 @@ fn apply_transaction_inner(
                 let fill = match column.default.clone() {
                     None => RelationalValue::Null,
                     Some(RelationalColumnDefault::Literal(value)) => value,
-                    Some(RelationalColumnDefault::UuidV7) if row_count == 0 => {
-                        RelationalValue::Null
-                    }
+                    Some(
+                        RelationalColumnDefault::UuidV7
+                        | RelationalColumnDefault::CurrentTimestamp(_),
+                    ) if row_count == 0 => RelationalValue::Null,
                     Some(RelationalColumnDefault::UuidV7) => {
                         return Err(RelationalError::Schema(format!(
                             "ALTER TABLE {table} cannot add column {} with uuidv7() default to a non-empty table",
+                            column.name
+                        )));
+                    }
+                    Some(RelationalColumnDefault::CurrentTimestamp(_)) => {
+                        return Err(RelationalError::Schema(format!(
+                            "ALTER TABLE {table} cannot add column {} with a clock default to a non-empty table",
                             column.name
                         )));
                     }
@@ -8591,6 +8894,9 @@ fn validate_table_schema(schema: &RelationalTableSchema) -> Result<(), Relationa
                         column.name
                     )));
                 }
+                RelationalColumnDefault::CurrentTimestamp(_) => {
+                    validate_clock_default(column)?;
+                }
             }
         }
     }
@@ -9334,6 +9640,14 @@ fn capture_relational_row_changes_with_allocations(
     limits: RelationalRowChangeCaptureLimits,
     allocations: Option<&crate::background::CheckpointDecodeContext>,
 ) -> Result<RelationalRowChangeCapture, RelationalError> {
+    let captured = capture_relational_row_change_entries(
+        previous,
+        next,
+        changed_keys,
+        rewritten_tables,
+        limits,
+        allocations,
+    )?;
     if !rewritten_tables.is_empty() {
         let tables = collect_results_with_allocations(
             rewritten_tables.iter().map(|name| match allocations {
@@ -9345,12 +9659,38 @@ fn capture_relational_row_changes_with_allocations(
             rewritten_tables.len(),
             allocations,
         )?;
-        return Ok(RelationalRowChangeCapture::RequiresCheckpoint { tables });
+        // Changes to the other tables of the same commit let the schema
+        // checkpoint keep their pages incremental (#1593).
+        let unaffected = match captured {
+            RelationalRowChangeCapture::Captured {
+                changes,
+                encoded_bytes,
+            } => Some(RelationalRowUnaffectedChanges {
+                changes,
+                encoded_bytes,
+            }),
+            _ => None,
+        };
+        return Ok(RelationalRowChangeCapture::RequiresCheckpoint { tables, unaffected });
     }
+    Ok(captured)
+}
 
+/// Captures the row changes of `changed_keys` outside `skipped_tables`.
+fn capture_relational_row_change_entries(
+    previous: &RelationalState,
+    next: &RelationalState,
+    changed_keys: &BTreeMap<String, BTreeSet<RelationalKey>>,
+    skipped_tables: &BTreeSet<String>,
+    limits: RelationalRowChangeCaptureLimits,
+    allocations: Option<&crate::background::CheckpointDecodeContext>,
+) -> Result<RelationalRowChangeCapture, RelationalError> {
     let mut changes = Vec::new();
     let mut encoded_bytes = 0usize;
     for (table, keys) in changed_keys {
+        if skipped_tables.contains(table) {
+            continue;
+        }
         for primary_key in keys {
             let previous_row = previous.row(table, primary_key);
             let next_row = next.row(table, primary_key);
@@ -9653,7 +9993,10 @@ fn estimated_relational_values_encoding_bytes<'a>(
         let value_bytes = match value {
             RelationalValue::Null => 1,
             RelationalValue::Boolean(_) => 2,
-            RelationalValue::BigInt(_) | RelationalValue::DoublePrecision(_) => 9,
+            RelationalValue::BigInt(_)
+            | RelationalValue::DoublePrecision(_)
+            | RelationalValue::Timestamp(_)
+            | RelationalValue::TimestampTz(_) => 9,
             RelationalValue::Decimal(_) => 1 + hawdb_core::Decimal::ORDERED_LEN,
             RelationalValue::Text(value) => 3usize
                 .checked_add(value.as_bytes().iter().filter(|byte| **byte == 0).count())?

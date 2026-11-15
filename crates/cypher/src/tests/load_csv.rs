@@ -238,6 +238,23 @@ fn scalar_conversions_parse_in_projections_and_predicates() {
 }
 
 #[test]
+fn kuzu_string_cast_parses_as_a_conversion() {
+    // Nowledge Mem's thread version stamp (#1682).
+    let query = pipeline(
+        "MATCH (t:Thread) WHERE to_string(t.message_count) <> '' RETURN \
+         COALESCE(string(t.updated_at), '') + '|' + COALESCE(STRING(t.message_count), '') AS stamp, \
+         TO_STRING(t.id) AS id, toString(t.id) AS neo4j",
+    );
+    let debug = format!("{query:?}");
+    assert_eq!(debug.matches("function: KuzuString").count(), 4, "{debug}");
+    assert_eq!(debug.matches("function: ToString").count(), 1, "{debug}");
+    // The function names stay usable as variables and properties.
+    let query = pipeline("UNWIND [1] AS string RETURN string AS s, string.to_string AS p");
+    let debug = format!("{query:?}");
+    assert!(!debug.contains("KuzuString"), "{debug}");
+}
+
+#[test]
 fn record_indexes_and_conversions_of_row_reads_are_row_bound() {
     let node = |kind| ValueExpression::synthetic(kind);
     let index = || {

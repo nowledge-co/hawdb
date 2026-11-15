@@ -240,6 +240,7 @@ impl BindingBatchSource<()> for DistinctBatchSource<'_> {
                 memory_ledger: self.memory_ledger,
                 task_context: self.task_context,
                 observer: self.observer,
+                graph: None,
             },
             execution_limit,
             emit,
@@ -406,6 +407,7 @@ pub(super) fn execute_blocking_projection<'a>(
                     memory_ledger,
                     task_context,
                     observer: &observer,
+                    graph: None,
                 },
                 ExecutionLimit {
                     output_rows: Some(offset.saturating_add(detection_limit)),
@@ -647,6 +649,7 @@ pub(super) fn execute_relational_order(
             memory_ledger,
             task_context,
             observer,
+            graph: None,
         },
         ExecutionLimit {
             output_rows: Some(limit),
@@ -701,6 +704,8 @@ pub(super) fn relational_sort_value(value: &RelationalValue) -> Result<Value> {
         RelationalValue::Bytea(value) => Ok(Value::Binary(value.clone())),
         RelationalValue::Uuid(value) => Ok(Value::Uuid(*value)),
         RelationalValue::Vector(value) => Ok(Value::Vector(value.clone())),
+        RelationalValue::Timestamp(value) => hawdb_core::sql_timestamp::local_value(*value),
+        RelationalValue::TimestampTz(value) => hawdb_core::sql_timestamp::zoned_value(*value),
         RelationalValue::Overflow(_) => Err(HawDBError::Execution(
             "ORDER BY requires overflow hydration before qualification".to_string(),
         )),

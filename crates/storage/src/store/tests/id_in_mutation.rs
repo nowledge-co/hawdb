@@ -473,6 +473,7 @@ fn pending_relationship_merge_index_preserves_subsets_and_mixed_batches() {
                     rel_type: "LINK".into(),
                     rel_match_properties: match_properties,
                     on_create_properties: properties([("retained", Value::Bool(true))]),
+                    on_match_assignments: Vec::new(),
                 },
             )
         };

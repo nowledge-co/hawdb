@@ -201,7 +201,7 @@ fn parent_key(schema: &RelationalTableSchema, values: &[Value]) -> Result<Option
         ) {
             return Ok(Some(VersionKey::Database));
         }
-        if value.scalar_type() != Some(column.scalar_type) {
+        if !column.scalar_type.value_type_matches(value.scalar_type()) {
             return Err(refusal("incompatible parent join key"));
         }
         tuple.push(value);

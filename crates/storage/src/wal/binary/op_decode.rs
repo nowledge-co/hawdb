@@ -76,6 +76,34 @@ pub(super) fn decode_op_body<'a, D: OpDecoder<'a>>(
                 property: fields.required_string(3, "property")?,
                 value_type: decode_property_type_code(fields.required_varint(4, "value type")?)?,
                 nullable: fields.required_varint(5, "nullable flag")? != 0,
+                default: None,
+            })
+        }
+        OP_CREATE_PROPERTY_WITH_DEFAULT => {
+            let mut fields = decoder.parse(body, &[2, 3], &[7, 8])?;
+            let default = match fields.required_varint(6, "default kind")? {
+                PROPERTY_DEFAULT_KIND_CONSTANT => {
+                    hawdb_core::PropertyDefault::Value(fields.value(7, "default value")?)
+                }
+                PROPERTY_DEFAULT_KIND_CURRENT_TIMESTAMP => {
+                    hawdb_core::PropertyDefault::CurrentTimestamp
+                }
+                kind => {
+                    return Err(HawDBError::Storage(format!(
+                        "unknown property default kind {kind}"
+                    )))
+                }
+            };
+            Ok(WalOp::CreateProperty {
+                table_kind: decode_table_kind_code(fields.required_varint(1, "table kind")?)?,
+                table: fields.required_string(2, "table")?,
+                property: fields.required_string(3, "property")?,
+                value_type: decode_property_type_code(fields.required_varint(4, "value type")?)?,
+                nullable: fields.required_varint(5, "nullable flag")? != 0,
+                default: Some(Box::new(hawdb_core::DeclaredPropertyDefault {
+                    value: default,
+                    backfill_value: fields.value(8, "default backfill value")?,
+                })),
             })
         }
         OP_ALTER_TABLE_STATE => {

@@ -88,7 +88,7 @@ impl GraphDescriptorTreeBuilder {
         &mut self,
         work: &crate::background::CheckpointWorkContext,
     ) {
-        self.work = work.clone();
+        self.work.rebind(work);
     }
 
     pub fn create(

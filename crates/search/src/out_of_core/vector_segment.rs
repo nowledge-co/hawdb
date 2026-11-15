@@ -1,7 +1,7 @@
 // Copyright 2026 Nowledge
 // SPDX-License-Identifier: Apache-2.0
 
-//! Binary raw-vector sidecar segments (`HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V2`).
+//! Binary raw-vector sidecar segments (since `HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V2`).
 //!
 //! One segment stores the embeddings of one descriptor segment as fixed-stride
 //! little-endian `f32` rows behind a small checksummed head:
@@ -331,8 +331,10 @@ fn decode_row(
     document.id.push_str(head.id(index));
     document.embedding.clear();
     document.embedding.extend(
-        row.chunks_exact(4)
-            .map(|value| f32::from_le_bytes(value.try_into().expect("four-byte chunk"))),
+        row.as_chunks::<4>()
+            .0
+            .iter()
+            .map(|value| f32::from_le_bytes(*value)),
     );
     if document.embedding.iter().any(|value| !value.is_finite()) {
         return Err(invalid(segment_id, "has an invalid embedding"));

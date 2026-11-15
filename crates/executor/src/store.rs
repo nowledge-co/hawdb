@@ -51,7 +51,7 @@ pub struct PrunedNodeScan<'a> {
 struct QueryGraphReadAllocation {
     allocation: crate::QueryMemoryLease,
     task_context: Option<hawdb_core::RuntimeTaskContext>,
-    retained_state: Option<QueryMemoryAccount>,
+    retained_state: Option<std::sync::Arc<QueryMemoryAccount>>,
 }
 
 impl hawdb_storage::read_view::GraphReadAllocation for QueryGraphReadAllocation {
@@ -93,7 +93,7 @@ pub fn admit_graph_read(
     Ok(Box::new(QueryGraphReadAllocation {
         allocation: account.reserve(bytes)?,
         task_context: task_context.cloned(),
-        retained_state: account.retained_state().cloned(),
+        retained_state: account.retained_state_shared(),
     }))
 }
 
@@ -213,6 +213,14 @@ pub trait GraphExecutionRead {
 
     fn node_owned(&self, id: NodeId) -> Result<Option<NodeRecord>>;
 
+    /// One whole relationship by id, for projecting mutation `RETURN` rows.
+    /// Readers without owned relationship point reads fail closed.
+    fn relationship_owned(&self, _id: hawdb_storage::RelId) -> Result<Option<RelRecord>> {
+        Err(hawdb_core::HawDBError::Execution(
+            "storage reader does not support owned relationship point reads".into(),
+        ))
+    }
+
     /// Full point ownership with optional label pruning and a transferable
     /// before-copy permit. Unsupported readers fail closed.
     fn node_with_allocation(
@@ -226,14 +234,16 @@ pub trait GraphExecutionRead {
         ))
     }
 
-    /// Endpoint ids of `rel_type` relationships whose properties equal all of
-    /// `properties`, from a resident relationship property index (#1548).
-    /// `None` keeps the caller's node-first path; readers without such an
-    /// index use this default.
+    /// Endpoint ids of `rel_type` relationships satisfying `constraints`
+    /// (property equalities and an optional `IN` list), from a resident
+    /// relationship property index or a persisted relationship equality
+    /// projection (#1548). `None` keeps the
+    /// caller's node-first path; readers without such an index use this
+    /// default.
     fn relationship_property_endpoint_candidates(
         &self,
         _rel_type: RelTypeId,
-        _properties: &std::collections::BTreeMap<String, hawdb_core::Value>,
+        _constraints: hawdb_storage::store::RelationshipSeedConstraints<'_>,
         _endpoints: hawdb_storage::store::RelationshipEndpoints,
         _max_relationships: usize,
         _admit: &mut dyn FnMut(
@@ -254,6 +264,25 @@ pub trait GraphExecutionRead {
         Err(hawdb_core::HawDBError::Execution(
             "storage reader does not support admitted relationship point reads".into(),
         ))
+    }
+
+    /// [`Self::relationship_with_allocation`] whose record keeps only
+    /// `required_properties` beside its endpoints and type. Readers that
+    /// cannot skip properties read the whole record, under its full
+    /// admission, and drop the rest.
+    fn projected_relationship_with_allocation(
+        &self,
+        id: hawdb_storage::RelId,
+        required_properties: &BTreeSet<String>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+    ) -> Result<hawdb_storage::read_view::AdmittedRelationshipRead> {
+        let mut read = self.relationship_with_allocation(id, admit)?;
+        if let hawdb_storage::read_view::AdmittedRelationshipRead::Relationship(relationship) =
+            &mut read
+        {
+            relationship.retain_properties(|name| required_properties.contains(name));
+        }
+        Ok(read)
     }
 
     /// Selected-column point read. Implementations must call admission before
@@ -740,6 +769,20 @@ pub trait GraphExecutionRead {
     }
 }
 
+/// The statement states a mutation `RETURN` can read: the store before the
+/// mutation and the working store after it.
+#[derive(Clone, Copy)]
+pub struct MutationReturnStores<'a> {
+    pub before: &'a dyn GraphExecutionRead,
+    pub after: &'a dyn GraphExecutionRead,
+}
+
+/// Projects a mutation's `RETURN` rows from the working catalog, the stores
+/// before and after the mutation and the storage summary, before the
+/// mutation is published.
+pub type MutationOutputProjector<'a> =
+    dyn FnMut(&Catalog, MutationReturnStores<'_>, &MutationSummary) -> Result<Vec<crate::Row>> + 'a;
+
 /// The mutation operations required by storage-independent executor preflight.
 ///
 /// Transaction ownership, WAL publication, and recovery remain implementation
@@ -775,4 +818,17 @@ pub trait GraphExecutionWrite: GraphExecutionRead {
         detach: bool,
         limits: MutationLimits,
     ) -> Result<Vec<NodeId>>;
+
+    /// Applies `mutation` to a private working copy and passes the working
+    /// catalog, the unchanged and working stores and the storage summary to
+    /// `project`. The mutation is
+    /// published only when `project` succeeds, so a statement and its
+    /// `RETURN` rows commit or fail together.
+    fn commit_mutation_with_output(
+        &mut self,
+        catalog: &mut Catalog,
+        mutation: GraphMutation,
+        limits: MutationLimits,
+        project: &mut crate::store::MutationOutputProjector<'_>,
+    ) -> Result<Vec<crate::Row>>;
 }

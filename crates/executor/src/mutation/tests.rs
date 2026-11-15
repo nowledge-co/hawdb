@@ -47,6 +47,7 @@ fn schema_commands_preserve_catalog_types_and_states() {
                         property: "property".into(),
                         value_type,
                         nullable,
+                        default: None,
                     },
                     GraphMutation::CreateProperty {
                         table_kind: expected_kind,
@@ -54,6 +55,7 @@ fn schema_commands_preserve_catalog_types_and_states() {
                         property: "property".into(),
                         value_type: expected_type,
                         nullable,
+                        default: None,
                     },
                 );
             }

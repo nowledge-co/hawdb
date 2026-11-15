@@ -66,9 +66,14 @@ impl PhysicalPlan {
                 property,
                 value_type,
                 nullable,
+                default,
             } => {
+                let default = default
+                    .as_ref()
+                    .map(|default| format!(" default={default}"))
+                    .unwrap_or_default();
                 format!(
-                    "{pad}CreateProperty table_kind={table_kind:?} table={table} property={property} value_type={value_type:?} nullable={nullable}"
+                    "{pad}CreateProperty table_kind={table_kind:?} table={table} property={property} value_type={value_type:?} nullable={nullable}{default}"
                 )
             }
             PhysicalPlan::AlterTableState {
@@ -180,8 +185,18 @@ impl PhysicalPlan {
             PhysicalPlan::UnwindExec { rows, variable } => {
                 format!("{pad}UnwindExec rows={} variable={variable}", rows.len())
             }
-            PhysicalPlan::UnwindRowsExec { expression, variable, .. } => {
-                format!("{pad}UnwindRowsExec expression={expression:?} variable={variable}")
+            PhysicalPlan::UnwindRowsExec {
+                expression,
+                variable,
+                consumes_source,
+                ..
+            } => {
+                let consumes = if *consumes_source {
+                    " consumes_source=true"
+                } else {
+                    ""
+                };
+                format!("{pad}UnwindRowsExec expression={expression:?} variable={variable}{consumes}")
             }
             PhysicalPlan::UnwindMutation {
                 rows,
@@ -300,6 +315,80 @@ impl PhysicalPlan {
                     set_return_mode_summary(returns)
                 )
             }
+            PhysicalPlan::MatchSetExec(set) => {
+                let assignments = set
+                    .assignments
+                    .iter()
+                    .map(|assignment| {
+                        let value = match &assignment.value {
+                            crate::MatchSetValue::Expression(_) => "expression",
+                            crate::MatchSetValue::Local(_) => "local",
+                        };
+                        format!("{}.{}={value}", assignment.variable, assignment.property)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let bindings = set
+                    .bindings
+                    .iter()
+                    .map(|binding| binding.variable.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let returns = set.returns.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |returns| {
+                        let columns = returns
+                            .items
+                            .iter()
+                            .map(|item| item.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!(
+                            "[{columns}] distinct={} order_keys={} offset={} limit={:?}",
+                            returns.distinct,
+                            returns.order_by.len(),
+                            returns.offset,
+                            returns.limit
+                        )
+                    },
+                );
+                let relationship = set.relationship.as_ref().map_or_else(String::new, |write| {
+                    format!(
+                        " {}=({})-[:{}]->({}) properties={} on_create={}",
+                        if write.merge { "merge" } else { "create" },
+                        write.source,
+                        write.rel_type,
+                        write.target,
+                        write.properties.len(),
+                        write.on_create.len()
+                    )
+                });
+                format!(
+                    "{pad}MatchSetExec bindings=[{bindings}] assignments=[{assignments}]{relationship} returns={returns}"
+                )
+            }
+            PhysicalPlan::MutationReturn { returns, .. } => {
+                let bindings = returns
+                    .bindings
+                    .iter()
+                    .map(|binding| format!("{}<-{}", binding.variable, binding.column))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let limit = returns
+                    .limit
+                    .map(|limit| format!(" limit={limit}"))
+                    .unwrap_or_default();
+                let offset = if returns.offset > 0 {
+                    format!(" offset={}", returns.offset)
+                } else {
+                    String::new()
+                };
+                format!(
+                    "{pad}MutationReturn state={:?} bindings=[{bindings}] returns={}{offset}{limit}",
+                    returns.state,
+                    set_return_mode_summary(&returns.mode)
+                )
+            }
             PhysicalPlan::SetRelationshipProperty {
                 source_variable,
                 source_label,
@@ -395,10 +484,17 @@ impl PhysicalPlan {
                 label,
                 rel_type,
                 rel_properties,
+                rel_property_in,
                 direction,
-            } => format!(
-                "{pad}RelationshipSeededNodeScan variable={variable} label={label} rel={rel_type} direction={direction:?} properties={rel_properties:?}"
-            ),
+            } => {
+                let property_in = rel_property_in
+                    .as_ref()
+                    .map(|(property, values)| format!(" in={property}:{values:?}"))
+                    .unwrap_or_default();
+                format!(
+                    "{pad}RelationshipSeededNodeScan variable={variable} label={label} rel={rel_type} direction={direction:?} properties={rel_properties:?}{property_in}"
+                )
+            }
             PhysicalPlan::NodeProjectionScanExec {
                 variable,
                 label,
@@ -456,7 +552,35 @@ impl PhysicalPlan {
                         program.projected_relationships
                     )
                 };
-                format!("{pad}GraphMatchExec optional={} steps={:?} imports={:?} introduced={:?}{projected}{projected_relationships} predicate={:?}{placement}{edge}", program.optional, program.steps, program.imports, program.introduced, program.predicate)
+                let mut hash_join = program.hash_join.as_ref().map_or(String::new(), |join| {
+                    format!(
+                        " hash_join=key:{} build_conjuncts={:?} residual_order={:?} residual_placed={} probe_conjuncts={}",
+                        join.key,
+                        join.build_conjuncts,
+                        join.residual_order,
+                        join.residual_placed,
+                        join.probe_conjuncts
+                    )
+                });
+                if !program.id_set_conjuncts.is_empty() {
+                    hash_join.push_str(&format!(" id_set_conjuncts={:?}", program.id_set_conjuncts));
+                }
+                if !program.seeded_union.is_empty() {
+                    let branches = program
+                        .seeded_union
+                        .iter()
+                        .enumerate()
+                        .map(|(index, branch)| {
+                            format!(
+                                "branch {index}: steps={:?} predicate={:?} predicate_after_steps={:?}",
+                                branch.steps, branch.predicate, branch.predicate_steps
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    hash_join.push_str(&format!(" seeded_union=[{branches}]"));
+                }
+                format!("{pad}GraphMatchExec optional={} steps={:?} imports={:?} introduced={:?}{projected}{projected_relationships} predicate={:?}{placement}{edge}{hash_join}", program.optional, program.steps, program.imports, program.introduced, program.predicate)
             }
             PhysicalPlan::NodeColumnLookupExec {
                 variable,
@@ -577,6 +701,12 @@ impl PhysicalPlan {
                         }
                     })
                     .unwrap_or_default();
+                // An unbounded pattern prints as `n..`.
+                let max_hops = if *max_hops == usize::MAX {
+                    String::new()
+                } else {
+                    max_hops.to_string()
+                };
                 format!(
                     "{pad}AdjacencyExpandExec source={source_variable}:{source_label}{rel} direction={arrow} properties={rel_properties:?} hops={min_hops}..{max_hops} optional={optional}{budget} target={target_variable}:{target_label}"
                 )
@@ -675,6 +805,7 @@ impl PhysicalPlan {
             PhysicalPlan::AggregateExec {
                 group_keys,
                 items,
+                graph_keys,
                 ..
             } => {
                 let mut columns = group_keys
@@ -683,7 +814,13 @@ impl PhysicalPlan {
                     .collect::<Vec<_>>();
                 columns.extend(items.iter().map(|item| item.name.as_str()));
                 let columns = columns.join(", ");
-                format!("{pad}AggregateExec columns=[{columns}]")
+                // Grouped graph variables leave as graph slots (#1615).
+                let graph_keys = match graph_keys {
+                    crate::GraphGroupKeys::Values => "",
+                    crate::GraphGroupKeys::Slots => " graph_keys=slots",
+                    crate::GraphGroupKeys::DistinctSlots => " graph_keys=distinct_slots",
+                };
+                format!("{pad}AggregateExec columns=[{columns}]{graph_keys}")
             }
             PhysicalPlan::DistinctExec { .. } => {
                 format!("{pad}DistinctExec")

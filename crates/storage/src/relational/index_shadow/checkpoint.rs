@@ -45,6 +45,11 @@ pub(in crate::relational) fn relational_schema_digest_with_work_context(
         if let RelationalScalarType::Decimal(kind) = column.scalar_type {
             output.update(&[kind.precision(), kind.scale()])?;
         }
+        if let RelationalScalarType::Timestamp(precision)
+        | RelationalScalarType::TimestampTz(precision) = column.scalar_type
+        {
+            output.update(&[precision.get()])?;
+        }
         output.update(&[u8::from(column.nullable)])?;
         match &column.default {
             None => output.update(&[0])?,
@@ -53,6 +58,10 @@ pub(in crate::relational) fn relational_schema_digest_with_work_context(
                 output.value(value)?;
             }
             Some(RelationalColumnDefault::UuidV7) => output.update(&[2])?,
+            Some(RelationalColumnDefault::CurrentTimestamp(kind)) => {
+                output.update(&[3])?;
+                output.update(&crate::relational::clock_default_bytes(*kind))?;
+            }
         }
     }
     output.strings(&schema.primary_key)?;
@@ -161,6 +170,8 @@ impl SchemaDigest<'_> {
                 | RelationalValue::BigInt(_)
                 | RelationalValue::DoublePrecision(_)
                 | RelationalValue::Uuid(_)
+                | RelationalValue::Timestamp(_)
+                | RelationalValue::TimestampTz(_)
                 | RelationalValue::Decimal(_) => {}
                 RelationalValue::Vector(_) => return Err(
                     crate::relational::ordered_key::OrderedRelationalKeyError::UnsupportedVector

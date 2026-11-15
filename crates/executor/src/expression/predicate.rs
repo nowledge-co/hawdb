@@ -117,6 +117,25 @@ struct PredicateEvaluationContext<'a> {
     task_context: Option<&'a RuntimeTaskContext>,
 }
 
+impl<'a> PredicateEvaluationContext<'a> {
+    /// The same store and budgets for pattern expressions in the predicate.
+    fn expression_graph(&self) -> ExpressionGraph<'a> {
+        let budget = std::num::NonZeroUsize::new(self.adjacency_memory.budget_bytes)
+            .unwrap_or(std::num::NonZeroUsize::MIN);
+        ExpressionGraph {
+            store: self.store,
+            context: crate::graph_match::MatchContext {
+                catalog: self.catalog,
+                observer: self.observer,
+                task_context: self.task_context,
+                query_memory_bytes: budget,
+                blocking_operator_bytes: budget,
+            },
+            account: self.adjacency_memory.account,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PredicateTruth {
     True,
@@ -214,12 +233,14 @@ fn evaluate_predicate_truth(
     context: &PredicateEvaluationContext<'_>,
 ) -> Result<PredicateTruth> {
     let catalog = context.catalog;
+    let graph = context.expression_graph();
     let evaluate = |expression| {
-        evaluate_projection_borrowed(
+        evaluate_projection_in_graph(
             expression,
             catalog,
             binding,
             context.adjacency_memory.account,
+            Some(&graph),
         )
     };
     Ok(match predicate {

@@ -49,19 +49,19 @@ pub mod library_readiness;
 pub mod library_readiness_cli;
 
 #[doc(hidden)]
-pub mod nowledge_mem_serving_path;
+pub mod serving_path;
 
 #[doc(hidden)]
-pub mod nowledge_mem_runtime_status;
+pub mod runtime_status;
 
 #[doc(hidden)]
-pub mod nowledge_mem_reports;
+pub mod embedded_store_reports;
 
 #[doc(hidden)]
-pub mod nowledge_mem_cutover;
+pub mod cutover;
 
 #[doc(hidden)]
-pub mod nowledge_mem_query_report;
+pub mod embedded_query_report;
 
 #[doc(hidden)]
 pub mod previous_wrapper_preflight;
@@ -91,22 +91,22 @@ pub mod replacement_summary;
 pub mod slow_query;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemReadinessAreaMap {
-    pub graph: NowledgeMemReadinessAreaSummary,
-    pub query: NowledgeMemReadinessAreaSummary,
-    pub query_family: NowledgeMemReadinessAreaSummary,
-    pub graph_route: NowledgeMemReadinessAreaSummary,
-    pub search_route_ownership: NowledgeMemReadinessAreaSummary,
-    pub storage: NowledgeMemReadinessAreaSummary,
-    pub search_projection: NowledgeMemReadinessAreaSummary,
-    pub search_projection_shadow: NowledgeMemReadinessAreaSummary,
-    pub search_candidate_shadow: NowledgeMemReadinessAreaSummary,
-    pub workload_fixture: NowledgeMemReadinessAreaSummary,
-    pub background: NowledgeMemReadinessAreaSummary,
+pub struct ReadinessAreaMap {
+    pub graph: ReadinessAreaSummary,
+    pub query: ReadinessAreaSummary,
+    pub query_family: ReadinessAreaSummary,
+    pub graph_route: ReadinessAreaSummary,
+    pub search_route_ownership: ReadinessAreaSummary,
+    pub storage: ReadinessAreaSummary,
+    pub search_projection: ReadinessAreaSummary,
+    pub search_projection_shadow: ReadinessAreaSummary,
+    pub search_candidate_shadow: ReadinessAreaSummary,
+    pub workload_fixture: ReadinessAreaSummary,
+    pub background: ReadinessAreaSummary,
 }
 
-impl NowledgeMemReadinessAreaMap {
-    pub fn areas(&self) -> Vec<NowledgeMemReadinessAreaSummary> {
+impl ReadinessAreaMap {
+    pub fn areas(&self) -> Vec<ReadinessAreaSummary> {
         vec![
             self.graph.clone(),
             self.query.clone(),
@@ -140,13 +140,13 @@ impl NowledgeMemReadinessAreaMap {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemReadinessAreaSummary {
+pub struct ReadinessAreaSummary {
     pub name: String,
     pub ready: bool,
     pub blocker_codes: Vec<String>,
 }
 
-impl NowledgeMemReadinessAreaSummary {
+impl ReadinessAreaSummary {
     pub fn new(
         name: impl Into<String>,
         ready: bool,
@@ -180,46 +180,34 @@ pub mod source_mutation;
 
 #[cfg(test)]
 mod tests {
-    use super::{NowledgeMemReadinessAreaMap, NowledgeMemReadinessAreaSummary};
+    use super::{ReadinessAreaMap, ReadinessAreaSummary};
 
     #[test]
     fn area_map_preserves_stable_json_contract() {
-        let map = NowledgeMemReadinessAreaMap {
-            graph: NowledgeMemReadinessAreaSummary::new("graph", true, Vec::new()),
-            query: NowledgeMemReadinessAreaSummary::new(
-                "query",
-                false,
-                vec!["query_blocked".to_string()],
-            ),
-            query_family: NowledgeMemReadinessAreaSummary::new("query_family", true, Vec::new()),
-            graph_route: NowledgeMemReadinessAreaSummary::new("graph_route", true, Vec::new()),
-            search_route_ownership: NowledgeMemReadinessAreaSummary::new(
+        let map = ReadinessAreaMap {
+            graph: ReadinessAreaSummary::new("graph", true, Vec::new()),
+            query: ReadinessAreaSummary::new("query", false, vec!["query_blocked".to_string()]),
+            query_family: ReadinessAreaSummary::new("query_family", true, Vec::new()),
+            graph_route: ReadinessAreaSummary::new("graph_route", true, Vec::new()),
+            search_route_ownership: ReadinessAreaSummary::new(
                 "search_route_ownership",
                 true,
                 Vec::new(),
             ),
-            storage: NowledgeMemReadinessAreaSummary::new("storage", true, Vec::new()),
-            search_projection: NowledgeMemReadinessAreaSummary::new(
-                "search_projection",
-                true,
-                Vec::new(),
-            ),
-            search_projection_shadow: NowledgeMemReadinessAreaSummary::new(
+            storage: ReadinessAreaSummary::new("storage", true, Vec::new()),
+            search_projection: ReadinessAreaSummary::new("search_projection", true, Vec::new()),
+            search_projection_shadow: ReadinessAreaSummary::new(
                 "search_projection_shadow",
                 true,
                 Vec::new(),
             ),
-            search_candidate_shadow: NowledgeMemReadinessAreaSummary::new(
+            search_candidate_shadow: ReadinessAreaSummary::new(
                 "search_candidate_shadow",
                 true,
                 Vec::new(),
             ),
-            workload_fixture: NowledgeMemReadinessAreaSummary::new(
-                "workload_fixture",
-                true,
-                Vec::new(),
-            ),
-            background: NowledgeMemReadinessAreaSummary::new("background", true, Vec::new()),
+            workload_fixture: ReadinessAreaSummary::new("workload_fixture", true, Vec::new()),
+            background: ReadinessAreaSummary::new("background", true, Vec::new()),
         };
 
         assert_eq!(map.areas().len(), 11);

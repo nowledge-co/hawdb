@@ -665,11 +665,13 @@ impl GraphStore {
         let old = std::mem::replace(self, next);
         candidate.retired_store = Some(old);
         if let Some(pinned_reader_generations) = pinned_reader_generations {
+            let owner = self.branch_lease.clone();
             if let Some(durable) = &mut self.durable {
                 durable.reclaim_old_generations(
                     generation,
                     previous_generation,
                     Some(pinned_reader_generations),
+                    owner.as_deref(),
                 );
             }
             self.reclaim_version_history();
@@ -735,7 +737,7 @@ impl CheckpointCandidate {
             work.checkpoint().map_err(HawDBError::from_storage_error)?;
             let store = self.store.as_mut().expect("candidate owns a runtime");
             let manifest = self.bootstrap_manifest.expect("mounted candidate manifest");
-            self.branch_root = store.prepare_checkpoint_branch_root(manifest)?;
+            self.branch_root = store.prepare_checkpoint_branch_root(manifest, Some(work))?;
             self.bootstrap_stage = BootstrapStage::BranchPrepared;
         }
         if self.bootstrap_stage == BootstrapStage::BranchPrepared {
@@ -903,8 +905,14 @@ impl CheckpointCandidate {
         selected: &mut GraphStore,
         pinned_reader_generations: &BTreeSet<u64>,
     ) -> Result<()> {
+        let owner = selected.branch_lease.clone();
         let (durable, generation, previous) = self.reclamation_runtime(selected)?;
-        durable.reclaim_old_generations(generation, previous, Some(pinned_reader_generations));
+        durable.reclaim_old_generations(
+            generation,
+            previous,
+            Some(pinned_reader_generations),
+            owner.as_deref(),
+        );
         Ok(())
     }
 

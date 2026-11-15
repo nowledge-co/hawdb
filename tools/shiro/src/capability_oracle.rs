@@ -256,7 +256,7 @@ impl Run {
                 if (matches!(
                     &error,
                     hawdb::HawDBError::Execution(_) | hawdb::HawDBError::Semantic(_)
-                ) || matches!(&error, hawdb::HawDBError::Storage(detail) if detail.starts_with("relational constraint violation: execution error: ")))
+                ) || matches!(&error, hawdb::HawDBError::Constraint { surface: hawdb::RelationalErrorSurface::Storage, message } if message.starts_with("relational constraint violation: execution error: ")))
                     && error.to_string().contains(message) =>
             {
                 self.verified.insert(phase.into());
@@ -444,6 +444,26 @@ mod tests {
                 let report = report(&case);
                 assert_eq!(report["success"], true, "{report:#}");
             }
+        }
+    }
+
+    #[test]
+    fn temporal_candidate_models_preserve_clock_inputs_and_replay() {
+        for variant in 0..8 {
+            let case = Case {
+                seed: 42,
+                family: 3,
+                variant,
+                values: vec![-2, -1, 0, 0, 2, 3, 3],
+            };
+            let output = report(&case);
+            assert_eq!(output["success"], true, "{output:#}");
+            assert!(output["verified"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|phase| phase == "clock_bounded_order"));
+            assert_eq!(report(&Case::read(&case.json()).unwrap()), output);
         }
     }
 

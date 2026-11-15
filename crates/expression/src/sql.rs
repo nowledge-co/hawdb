@@ -19,7 +19,9 @@
 
 use hawdb_core::Value;
 
+mod literal_coercion;
 mod numeric;
+pub use literal_coercion::NumericLiteralCoercion;
 pub use numeric::{bind_constant_numeric, bind_sql_value};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,6 +66,14 @@ pub enum ExprKind {
     Cast {
         expression: Box<Expr>,
         target: hawdb_core::numeric::NumericType,
+    },
+    /// `CURRENT_TIMESTAMP[(p)]`, `now()` (zoned) or `LOCALTIMESTAMP[(p)]`
+    /// (local). A constant bound on every execution from the pinned clock.
+    CurrentTimestamp(hawdb_core::sql_timestamp::TimestampType),
+    /// An explicit CAST between TEXT, TIMESTAMP and TIMESTAMPTZ.
+    TimestampCast {
+        expression: Box<Expr>,
+        target: hawdb_core::sql_timestamp::TimestampCast,
     },
     Function {
         name: String,
@@ -158,7 +168,7 @@ impl Expr {
             ExprKind::Value(SqlValue::Expression(expression)) => {
                 expression.try_visit_mut(visitor)?
             }
-            ExprKind::Column(_) | ExprKind::Value(_) => {}
+            ExprKind::Column(_) | ExprKind::Value(_) | ExprKind::CurrentTimestamp(_) => {}
             ExprKind::Function {
                 arguments, filter, ..
             } => {
@@ -181,7 +191,8 @@ impl Expr {
             ExprKind::Not(expression)
             | ExprKind::IsNull { expression, .. }
             | ExprKind::Negate(expression)
-            | ExprKind::Cast { expression, .. } => expression.try_visit_mut(visitor)?,
+            | ExprKind::Cast { expression, .. }
+            | ExprKind::TimestampCast { expression, .. } => expression.try_visit_mut(visitor)?,
             ExprKind::InList { left, values, .. } => {
                 left.try_visit_mut(visitor)?;
                 for value in values {
@@ -201,7 +212,7 @@ impl Expr {
         visitor(self);
         match &self.kind {
             ExprKind::Value(SqlValue::Expression(expression)) => expression.visit(visitor),
-            ExprKind::Column(_) | ExprKind::Value(_) => {}
+            ExprKind::Column(_) | ExprKind::Value(_) | ExprKind::CurrentTimestamp(_) => {}
             ExprKind::Function {
                 arguments, filter, ..
             } => {
@@ -224,7 +235,8 @@ impl Expr {
             ExprKind::Not(expression)
             | ExprKind::IsNull { expression, .. }
             | ExprKind::Negate(expression)
-            | ExprKind::Cast { expression, .. } => expression.visit(visitor),
+            | ExprKind::Cast { expression, .. }
+            | ExprKind::TimestampCast { expression, .. } => expression.visit(visitor),
             ExprKind::InList { left, values, .. } => {
                 left.visit(visitor);
                 for value in values {

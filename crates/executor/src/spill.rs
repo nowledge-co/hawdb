@@ -791,6 +791,14 @@ fn write_binding(output: &mut impl Write, binding: &Binding) -> Result<()> {
     Ok(())
 }
 
+/// Writes and reads `binding` with the spill record codec.
+#[cfg(test)]
+pub(crate) fn round_trip_binding_for_tests(binding: &Binding) -> Result<Binding> {
+    let mut encoded = Vec::new();
+    write_binding(&mut encoded, binding)?;
+    read_binding(&mut Cursor::new(encoded.as_slice()))
+}
+
 fn read_binding(input: &mut Cursor<&[u8]>) -> Result<Binding> {
     let values = read_value_map(input, 0)?;
     let mut nodes = BTreeMap::new();

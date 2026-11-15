@@ -14,13 +14,16 @@
 
 use super::cjk_tokenizer::ANALYZER_FORMAT_VERSION;
 use super::{
-    document_token_fields, visit_token_list, SearchAnalyzerLexicon, SearchDocument,
-    TokenOccurrence, BM25_B, BM25_K1,
+    document_token_fields, visit_token_list, SearchAnalyzerLexicon, SearchDocument, TokenOccurrence,
 };
+#[cfg(test)]
+use super::{BM25_B, BM25_K1};
 use crate::bounded_file::read_bounded_file;
 use crate::build_control::checkpoint;
 use crate::build_memory::reserved::{native_path, Grant};
-use crate::build_memory::{checked_add, BuildMemory, MAP_ENTRY_BYTES};
+use crate::build_memory::{
+    checked_add, BuildMemory, MAP_ENTRY_BYTES, SCORE_MAP_ENTRY_BYTES, SCORE_MAP_ROOT_BYTES,
+};
 use crate::build_term::Term;
 use crate::error::{HawDBError, Result};
 use hawdb_core::{
@@ -92,6 +95,10 @@ pub(super) const MANIFEST_FILE: &str = "search_lexical.manifest.hawdb";
 
 pub(super) fn artifact_file(generation: u64) -> String {
     format!("search_lexical.{generation}.hawdb")
+}
+
+pub(super) fn generation_manifest_file(generation: u64) -> String {
+    format!("search_lexical.manifest.{generation}.hawdb")
 }
 
 pub(super) fn manifest_generation(path: &Path, max_bytes: u64) -> Result<Option<u64>> {
@@ -2509,6 +2516,7 @@ impl<'a> ScoreCollector<'a> {
                 let bytes = heap_capacity
                     .unwrap_or_default()
                     .checked_mul(std::mem::size_of::<ScoredDocument>())
+                    .and_then(|bytes| bytes.checked_add(SCORE_MAP_ROOT_BYTES))
                     .ok_or_else(|| {
                         HawDBError::Execution("lexical score heap capacity overflow".into())
                     })?;
@@ -2571,7 +2579,7 @@ impl<'a> ScoreCollector<'a> {
                     .into());
                 }
                 if let Some(memory) = memory {
-                    memory.grow(checked_add(id.len(), MAP_ENTRY_BYTES)?)?;
+                    memory.grow(checked_add(id.len(), SCORE_MAP_ENTRY_BYTES)?)?;
                 }
                 scores.insert(id.to_owned(), score);
             }
@@ -2591,7 +2599,7 @@ impl<'a> ScoreCollector<'a> {
                     return Ok(());
                 }
                 if let Some(memory) = memory {
-                    memory.grow(checked_add(id.len(), MAP_ENTRY_BYTES)?)?;
+                    memory.grow(checked_add(id.len(), SCORE_MAP_ENTRY_BYTES)?)?;
                 }
                 // Admission covers both IDs until the evicted owner drops.
                 let candidate = ScoredDocument {
@@ -2600,7 +2608,7 @@ impl<'a> ScoreCollector<'a> {
                 };
                 if full {
                     let Reverse(evicted) = heap.pop().expect("retained heap is full");
-                    let released = checked_add(evicted.id.capacity(), MAP_ENTRY_BYTES)?;
+                    let released = checked_add(evicted.id.capacity(), SCORE_MAP_ENTRY_BYTES)?;
                     drop(evicted);
                     if let Some(memory) = memory {
                         memory.shrink(released);
@@ -2650,17 +2658,19 @@ fn query_term<T: Borrow<str>>(term: &T) -> &str {
     term.borrow()
 }
 
+/// The scorer shared with the SQL search index access path
+/// (`hawdb_executor::bm25`): the same operations in the same order.
 fn idf(document_count: usize, document_frequency: usize) -> f64 {
-    (1.0 + (document_count as f64 - document_frequency as f64 + 0.5)
-        / (document_frequency as f64 + 0.5))
-        .ln()
+    hawdb_executor::bm25::idf(document_count as u64, document_frequency as u64)
 }
 
 fn bm25_term_score(idf: f64, frequency: u32, document_len: u32, average_len: f64) -> f64 {
-    let frequency = f64::from(frequency);
-    let denominator = frequency
-        + BM25_K1 * (1.0 - BM25_B + BM25_B * f64::from(document_len) / average_len.max(1.0));
-    idf * (frequency * (BM25_K1 + 1.0)) / denominator
+    hawdb_executor::bm25::term_score(
+        idf,
+        f64::from(frequency),
+        f64::from(document_len),
+        average_len,
+    )
 }
 
 /// Candidate postings below this bound fall back to exhaustive scoring: block
@@ -2669,9 +2679,9 @@ const BLOCK_MAX_PRUNING_MIN_POSTINGS: u64 = 4_096;
 
 /// Largest contribution one posting block can add to a document. BM25 falls with
 /// document length, so the shortest possible document bounds the block's maximum
-/// term frequency from above.
+/// term frequency from above. The shared bound carries a rounding margin.
 fn bm25_term_upper_bound(idf: f64, max_frequency: u32, average_len: f64) -> f64 {
-    bm25_term_score(idf, max_frequency, 0, average_len)
+    hawdb_executor::bm25::term_upper_bound(idf, u64::from(max_frequency), 0, average_len)
 }
 
 /// Scores one document from the postings every stream holds for it.
@@ -2834,6 +2844,7 @@ pub(super) struct LexicalProjectionWriter<'workspace> {
     config: LexicalProjectionConfig,
     build_context: Option<(BuildMemory, RuntimeTaskContext)>,
     analyzer_workspace: Option<&'workspace crate::analyzer_workspace::Workspace>,
+    generation_manifest: bool,
 }
 
 impl<'workspace> LexicalProjectionWriter<'workspace> {
@@ -2842,7 +2853,15 @@ impl<'workspace> LexicalProjectionWriter<'workspace> {
             config,
             build_context: None,
             analyzer_workspace: None,
+            generation_manifest: false,
         }
+    }
+
+    /// Write only the generation-named manifest. The unsuffixed current
+    /// manifest is then an alias its publisher installs after the selector.
+    pub(super) const fn with_generation_manifest(mut self) -> Self {
+        self.generation_manifest = true;
+        self
     }
 
     pub(super) fn with_context(mut self, memory: BuildMemory, task: RuntimeTaskContext) -> Self {
@@ -2901,19 +2920,23 @@ impl<'workspace> LexicalProjectionWriter<'workspace> {
         if self.analyzer_workspace.is_none() && self.needs_analyzer_workspace(documents.clone())? {
             let (memory, task) = self.context()?;
             let config = self.config;
+            let generation_manifest = self.generation_manifest;
             return crate::analyzer_workspace::run(&memory, &task, |workspace| {
-                LexicalProjectionWriter::new(config)
-                    .with_context(memory.clone(), task.clone())
-                    .with_analyzer_workspace(Some(workspace))
-                    .write(
-                        root,
-                        generation,
-                        source_graph_commit_epoch,
-                        analyzer_digest,
-                        documents_digest,
-                        documents,
-                        analyzer,
-                    )
+                LexicalProjectionWriter {
+                    generation_manifest,
+                    ..LexicalProjectionWriter::new(config)
+                }
+                .with_context(memory.clone(), task.clone())
+                .with_analyzer_workspace(Some(workspace))
+                .write(
+                    root,
+                    generation,
+                    source_graph_commit_epoch,
+                    analyzer_digest,
+                    documents_digest,
+                    documents,
+                    analyzer,
+                )
             });
         }
         self.write_scanned(
@@ -2948,7 +2971,13 @@ impl<'workspace> LexicalProjectionWriter<'workspace> {
     ) -> Result<Arc<LexicalProjectionReader>> {
         let (memory, task) = self.context()?;
         checkpoint(&task)?;
-        let mut paths = build_manifest::Paths::new(root, generation, &memory, &task)?;
+        let manifest_name = if self.generation_manifest {
+            generation_manifest_file(generation)
+        } else {
+            MANIFEST_FILE.to_owned()
+        };
+        let mut paths =
+            build_manifest::Paths::new(root, generation, &manifest_name, &memory, &task)?;
         let mut artifact_guard =
             crate::build_control::temporary::RemoveOnDrop::new(&paths.artifact_tmp);
         let mut artifact = ArtifactBuilder::new_with_context(

@@ -13,10 +13,10 @@
 // limitations under the License.
 
 use crate::{
-    Aggregation, BatchMutationOperation, GraphAlgorithmKind, GraphAlgorithmOptions, Predicate,
-    Projection, RelationshipCountLeg, RelationshipOnCreateValue, RelationshipSetAssignment,
-    SchemaObjectState, SchemaPropertyType, SchemaTableKind, SetAssignment,
-    SetNodePropertiesReturnMode, SetValue, ShortestPathProjection, SortItem,
+    Aggregation, BatchMutationOperation, GraphAlgorithmKind, GraphAlgorithmOptions, GraphGroupKeys,
+    MutationReturn, Predicate, Projection, RelationshipCountLeg, RelationshipOnCreateValue,
+    RelationshipSetAssignment, SchemaObjectState, SchemaPropertyType, SchemaTableKind,
+    SetAssignment, SetNodePropertiesReturnMode, SetValue, ShortestPathProjection, SortItem,
 };
 
 mod scoring_input;
@@ -99,6 +99,7 @@ pub enum PhysicalPlan {
         property: String,
         value_type: SchemaPropertyType,
         nullable: bool,
+        default: Option<hawdb_core::PropertyDefault>,
     },
     AlterTableState {
         table_kind: SchemaTableKind,
@@ -193,6 +194,10 @@ pub enum PhysicalPlan {
     UnwindRowsExec {
         expression: crate::ProjectionExpression,
         variable: String,
+        /// The expression is a column that no operator above reads. Each
+        /// input row gives up that column to the unwind instead of copying
+        /// the whole list into every output row (#1606).
+        consumes_source: bool,
         input: Box<PhysicalPlan>,
     },
     UnwindMutation {
@@ -229,6 +234,8 @@ pub enum PhysicalPlan {
         rel_type: String,
         rel_match_properties: BTreeMap<String, Value>,
         on_create_properties: BTreeMap<String, Value>,
+        /// `ON MATCH SET` items for a relationship the MERGE finds.
+        on_match_assignments: Vec<SetAssignment>,
     },
     MergeRelationshipFromMatchedRelationship {
         source_label: String,
@@ -294,6 +301,14 @@ pub enum PhysicalPlan {
         predicate: Option<Predicate>,
         assignments: Vec<SetAssignment>,
         returns: SetNodePropertiesReturnMode,
+    },
+    /// SET over the rows of an optimized read plan; see [`crate::MatchSet`].
+    MatchSetExec(Box<crate::MatchSet<PhysicalPlan>>),
+    /// A mutation followed by `RETURN`, projected from the summary rows of
+    /// the same atomic statement.
+    MutationReturn {
+        mutation: Box<PhysicalPlan>,
+        returns: MutationReturn,
     },
     SetRelationshipProperty {
         source_variable: String,
@@ -372,17 +387,21 @@ pub enum PhysicalPlan {
         variable: String,
         label: String,
     },
-    /// The `label` nodes that are endpoints of `rel_type` relationships whose
-    /// properties equal `rel_properties`, on the side `direction` expands
-    /// from, read from the resident relationship property index in node-id
-    /// order (#1548). Without that index it is a full label scan. Only a
-    /// mandatory single-hop expand of `variable` over the same relationship
-    /// constraints uses it, since the expand drops every other node.
+    /// The `label` nodes (every node when `label` is empty) that are endpoints
+    /// of `rel_type` relationships whose properties equal `rel_properties`
+    /// and, with `rel_property_in`, whose property is one of the listed
+    /// values, on the side `direction` expands from, read from the relationship
+    /// property index in node-id order (#1548). Without that index it is a
+    /// full label scan. Only a mandatory single-hop expand of `variable` over
+    /// the same relationship constraints uses it, since the expand (and, for
+    /// `rel_property_in`, the filter it came from, which stays above the
+    /// expand) drops every other node.
     RelationshipSeededNodeScan {
         variable: String,
         label: String,
         rel_type: String,
         rel_properties: BTreeMap<String, Value>,
+        rel_property_in: Option<(String, Vec<Value>)>,
         direction: RelationshipDirection,
     },
     /// Fused required-property node scan, local predicate, and optional scalar projection.
@@ -549,6 +568,7 @@ pub enum PhysicalPlan {
     AggregateExec {
         group_keys: Vec<Projection>,
         items: Vec<Aggregation>,
+        graph_keys: GraphGroupKeys,
         input: Box<PhysicalPlan>,
     },
     DistinctExec {

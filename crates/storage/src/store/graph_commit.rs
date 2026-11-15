@@ -43,6 +43,7 @@ impl GraphStore {
             ops: Vec::new(),
             rows: Vec::new(),
             persistent_commit: self.durable.is_some(),
+            creation_clock: hawdb_core::PropertyDefault::creation_clock(),
         }
     }
 
@@ -408,6 +409,10 @@ impl GraphStore {
         let mut limit_tracker = crate::mutation::MutationCommitLimitTracker::default();
         let mut pending_nodes = PendingNodes::default();
         let mut pending_relationships = Vec::new();
+        let mut creation_clock = lazy_creation_clock(options.creation_clock);
+        // Per-record default filling stays off the hot path until a default
+        // is declared (before or within this batch).
+        let mut defaults_declared = working_catalog.has_property_defaults();
         // A uniform MERGE batch only appends pending edges, so their positions
         // stay stable. Mixed writes may update/delete them and keep the scan.
         let index_pending_merges = mutations
@@ -493,32 +498,61 @@ impl GraphStore {
                     property,
                     value_type,
                     nullable,
+                    default,
                 } => {
                     let table_id =
                         ensure_table_descriptor(&mut working_catalog, table_kind, &table);
                     if let Some(id) = working_catalog.property_descriptor_id(table_id, &property) {
+                        // Re-declaring an identical descriptor is idempotent;
+                        // a declaration that differs must not be dropped
+                        // silently (a DEFAULT would never be attached).
+                        if let Some(existing) = working_catalog.property_descriptor(id) {
+                            let existing_default =
+                                existing.default.as_ref().map(|declared| &declared.value);
+                            if existing.value_type != value_type
+                                || existing.nullable != nullable
+                                || existing_default != default.as_ref()
+                            {
+                                // A typed schema refusal, not a storage
+                                // failure: hosts must not treat it as one.
+                                return Err(HawDBError::Schema {
+                                    surface: hawdb_core::RelationalErrorSurface::Storage,
+                                    message: format!(
+                                        "property '{table}.{property}' is already declared as \
+                                         {:?}{}{}; CREATE PROPERTY cannot change an existing \
+                                         descriptor's type, nullability or default",
+                                        existing.value_type,
+                                        if existing.nullable { "" } else { " NOT NULL" },
+                                        existing_default
+                                            .map(|value| format!(" DEFAULT {value}"))
+                                            .unwrap_or_default(),
+                                    ),
+                                });
+                            }
+                        }
                         rows.push(BTreeMap::from([
                             ("property_id".to_string(), Value::Int(id.0 as i64)),
                             ("created".to_string(), Value::Bool(false)),
                         ]));
                     } else {
-                        validate_property_descriptor(
+                        let (declaration, declared, state) = property_declaration_ops(
                             &working_catalog,
                             self,
-                            table_id,
-                            &property,
-                            value_type,
-                            nullable,
+                            &PropertyDeclaration {
+                                table_kind,
+                                table: &table,
+                                table_id,
+                                property: &property,
+                                value_type,
+                                nullable,
+                                default,
+                            },
                         )?;
-                        ops.push(WalOp::CreateProperty {
-                            table_kind,
-                            table: table.clone(),
-                            property: property.clone(),
-                            value_type,
-                            nullable,
-                        });
-                        let id = working_catalog
-                            .get_or_create_property(table_id, &property, value_type, nullable);
+                        defaults_declared |= declared.is_some();
+                        ops.extend(declaration);
+                        let id = working_catalog.get_or_create_property_with_default(
+                            table_id, &property, value_type, nullable, declared, state,
+                        );
                         rows.push(BTreeMap::from([
                             ("property_id".to_string(), Value::Int(id.0 as i64)),
                             ("created".to_string(), Value::Bool(true)),
@@ -804,7 +838,18 @@ impl GraphStore {
                         ]));
                     }
                 }
-                GraphMutation::CreateNode { label, properties } => {
+                GraphMutation::CreateNode {
+                    label,
+                    mut properties,
+                } => {
+                    if defaults_declared {
+                        working_catalog.fill_creation_defaults(
+                            TableKind::Node,
+                            &label,
+                            &mut properties,
+                            &mut creation_clock,
+                        );
+                    }
                     let id = NodeId(next_node_id);
                     next_node_id += 1;
                     let label_id = working_catalog.get_or_create_label(&label);
@@ -873,6 +918,17 @@ impl GraphStore {
                         let mut properties = match_properties;
                         for (property, value) in on_create_properties {
                             properties.insert(property, value);
+                        }
+                        // Defaults fill first; ON CREATE SET (already merged)
+                        // and post-merge SET override them, so an explicit
+                        // `ON CREATE SET p = NULL` stays NULL.
+                        if defaults_declared {
+                            working_catalog.fill_creation_defaults(
+                                TableKind::Node,
+                                &label,
+                                &mut properties,
+                                &mut creation_clock,
+                            );
                         }
                         apply_node_assignments_to_properties(
                             &mut properties,
@@ -1102,6 +1158,74 @@ impl GraphStore {
                                 &assignments,
                                 limits,
                             )?;
+                        }
+                    }
+                }
+                GraphMutation::SetEntityProperties(updates) => {
+                    for update in updates {
+                        ensure_additional_mutation_limits(
+                            ops.len(),
+                            rows.len(),
+                            update.assignments.len(),
+                            1,
+                            limits,
+                        )?;
+                        match update.entity {
+                            MutationEntity::Node(id) => {
+                                let assignments = update
+                                    .assignments
+                                    .into_iter()
+                                    .map(|(property, value)| NodeSetAssignment {
+                                        property,
+                                        value: NodeSetValue::Value(value),
+                                    })
+                                    .collect::<Vec<_>>();
+                                if pending_node_index(&pending_nodes, id).is_some() {
+                                    Self::apply_pending_node_assignments(
+                                        &mut ops,
+                                        &mut pending_nodes,
+                                        id,
+                                        &assignments,
+                                    )?;
+                                } else {
+                                    ops.extend(self.node_set_property_ops(&[id], &assignments)?);
+                                }
+                                rows.push(BTreeMap::from([(
+                                    "node_id".to_string(),
+                                    Value::Int(id.0 as i64),
+                                )]));
+                            }
+                            MutationEntity::Relationship(id) => {
+                                if let Some(pending) = pending_relationships
+                                    .iter_mut()
+                                    .find(|pending| pending.0 == id)
+                                {
+                                    for (property, value) in update.assignments {
+                                        pending.4.insert(property.clone(), value.clone());
+                                        apply_pending_relationship_property(
+                                            &mut ops, id, &property, value,
+                                        );
+                                    }
+                                } else {
+                                    if self.relationship_owned(id)?.is_none() {
+                                        return Err(HawDBError::Storage(format!(
+                                            "relationship {} disappeared during property update",
+                                            id.0
+                                        )));
+                                    }
+                                    ops.extend(update.assignments.into_iter().map(
+                                        |(property, value)| WalOp::SetRelationshipProperty {
+                                            id,
+                                            property,
+                                            value,
+                                        },
+                                    ));
+                                }
+                                rows.push(BTreeMap::from([(
+                                    "rel_id".to_string(),
+                                    Value::Int(id.0 as i64),
+                                )]));
+                            }
                         }
                     }
                 }
@@ -1567,6 +1691,17 @@ impl GraphStore {
                                     .map(|(id, _, _, _, _)| *id)
                             };
                             if let Some(relationship) = current.or(pending) {
+                                if !request.on_match_assignments.is_empty() {
+                                    apply_relationship_on_match_assignments(
+                                        self,
+                                        &mut ops,
+                                        &mut pending_relationships,
+                                        relationship,
+                                        current.is_some(),
+                                        &request.on_match_assignments,
+                                        limits,
+                                    )?;
+                                }
                                 rows.push(BTreeMap::from([
                                     ("source_node_id".to_string(), Value::Int(source.0 as i64)),
                                     ("target_node_id".to_string(), Value::Int(target.0 as i64)),
@@ -2037,6 +2172,10 @@ impl GraphStore {
             limit_tracker.check_appended(&ops, &rows, limits)?;
         }
 
+        // Statement writes become final WAL ops here, so creation defaults are
+        // materialized before validation, capture and WAL encoding. Prepared
+        // transaction commits replay these already-filled ops unchanged.
+        fill_creation_defaults(&working_catalog, &mut ops, &mut creation_clock);
         self.commit_prepared_mutation_ops(catalog, working_catalog, ops, rows, limits, options)
     }
 
@@ -2057,6 +2196,7 @@ impl GraphStore {
             captured_graph_ops,
             prepared_wal,
             retain_on_live_headroom,
+            creation_clock: _,
         } = options;
         self.ensure_usable()?;
         ensure_mutation_commit_limits(&ops, &rows, limits)?;
@@ -2341,7 +2481,7 @@ impl GraphStore {
         self.commit_epoch = next_commit_epoch;
         self.version_index = staged_versions;
         if collapsed_read_summaries {
-            let _ = self.read_summary_collapses.fetch_update(
+            let _ = self.read_summary_collapses.try_update(
                 AtomicOrdering::Relaxed,
                 AtomicOrdering::Relaxed,
                 |value| Some(value.saturating_add(1)),
@@ -2871,6 +3011,54 @@ impl GraphStore {
     }
 }
 
+/// Applies relationship `ON MATCH SET` items, in order, to a relationship a
+/// MERGE found: committed relationships receive property operations,
+/// relationships created earlier in this batch are updated in place.
+fn apply_relationship_on_match_assignments(
+    store: &GraphStore,
+    ops: &mut Vec<WalOp>,
+    pending_relationships: &mut [PendingRelationship],
+    relationship: RelId,
+    committed: bool,
+    assignments: &[NodeSetAssignment],
+    limits: MutationLimits,
+) -> Result<()> {
+    ensure_additional_mutation_limits(ops.len(), 0, assignments.len(), 0, limits)?;
+    if committed {
+        let mut properties = store
+            .relationship_owned(relationship)?
+            .ok_or_else(|| {
+                HawDBError::Storage(format!("merged relationship {} is missing", relationship.0))
+            })?
+            .properties;
+        for assignment in assignments {
+            let value = evaluate_node_set_value(&properties, assignment)?;
+            properties.insert(assignment.property.clone(), value.clone());
+            ops.push(WalOp::SetRelationshipProperty {
+                id: relationship,
+                property: assignment.property.clone(),
+                value,
+            });
+        }
+        return Ok(());
+    }
+    let (_, _, _, _, properties) = pending_relationships
+        .iter_mut()
+        .find(|(id, ..)| *id == relationship)
+        .ok_or_else(|| {
+            HawDBError::Storage(format!(
+                "pending merged relationship {} is missing",
+                relationship.0
+            ))
+        })?;
+    for assignment in assignments {
+        let value = evaluate_node_set_value(properties, assignment)?;
+        properties.insert(assignment.property.clone(), value.clone());
+        apply_pending_relationship_property(ops, relationship, &assignment.property, value);
+    }
+    Ok(())
+}
+
 fn transaction_conflict_error(read_epoch: u64, conflict: VersionConflict) -> HawDBError {
     HawDBError::TransactionConflict {
         read_epoch,
@@ -3040,7 +3228,7 @@ fn relational_predicate_primary_key(
             } => {
                 if let Some(position) = schema.primary_key.iter().position(|key| key == column) {
                     let column = &schema.columns[schema.column_position(column)?];
-                    if value.scalar_type() != Some(column.scalar_type) {
+                    if !column.scalar_type.value_type_matches(value.scalar_type()) {
                         return None;
                     }
                     if values[position].is_some_and(|previous| previous != value) {
@@ -3084,11 +3272,16 @@ fn collect_relational_version_writes(
         let Some(schema) = state.table_schema(table) else {
             return record_live_version(writes, VersionKey::Database);
         };
+        // Materialized views are read like tables, so their maintained rows
+        // need the database barrier. A search index is read only by
+        // `text_search`, which records the source table's domain, and its
+        // postings are derived at commit from the latest committed state, so
+        // the source rows' own keys are the complete writer footprint.
         if state.table_schemas().any(|schema| {
             schema
                 .materialized_view
                 .as_ref()
-                .is_some_and(|view| view.source == *table)
+                .is_some_and(|view| view.source == *table && view.search.is_none())
         }) {
             return record_live_version(writes, VersionKey::Database);
         }

@@ -12,9 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{
-    compare_rows, error_class, row_json, typed_value_json, ExecutionOutcome, ResultSemantics,
-};
+use crate::{compare_rows, error_class, row_json, ExecutionOutcome, ResultSemantics};
 #[cfg(test)]
 use hawdb::api::DatabaseConfig;
 use hawdb::api::{Database, DatabaseReadTransaction};
@@ -47,190 +45,14 @@ pub const SQL_JOIN_REWRITE_PROTOCOL: &str = "hawdb-sql-join-rewrite-fuzz-v1";
 pub const SQL_REPLAY_PROTOCOL: &str = "shiro-sql-fuzz-replay-v2";
 
 const MAX_SQL_REDUCTION_ATTEMPTS: usize = 64;
-pub(crate) const SQL_QUERY_SHAPES: [&str; 8] = [
-    "nullable_score_range",
-    "nullable_tag_equality",
-    "inner_join_nullable_priority",
-    "left_join_nullable_priority",
-    "nullable_score_in_list",
-    "nullable_column_comparison",
-    "nullable_conjunction",
-    "nullable_disjunction",
-];
-const SQL_QUERY_SHAPE_COUNT: usize = SQL_QUERY_SHAPES.len();
-pub(crate) const SQL_JOIN_REWRITE_SHAPES: [&str; 12] = [
-    "three_inner_chain",
-    "three_inner_reverse_chain",
-    "four_inner_chain",
-    "four_inner_star",
-    "four_inner_cycle",
-    "five_inner_tree",
-    "five_inner_cycle",
-    "five_mixed_left_preserved",
-    "six_inner_tree",
-    "six_inner_cycle",
-    "six_mixed_left_preserved",
-    "six_mixed_left_null_rejected",
-];
-const SQL_JOIN_REWRITE_SHAPE_COUNT: usize = SQL_JOIN_REWRITE_SHAPES.len();
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SqlMutation {
-    pub sql: String,
-    pub parameters: Vec<Value>,
-    reducible: bool,
-}
-
-impl SqlMutation {
-    fn required(sql: impl Into<String>) -> Self {
-        Self {
-            sql: sql.into(),
-            parameters: Vec::new(),
-            reducible: false,
-        }
-    }
-
-    fn data(sql: impl Into<String>, parameters: Vec<Value>) -> Self {
-        Self {
-            sql: sql.into(),
-            parameters,
-            reducible: true,
-        }
-    }
-
-    fn index(sql: impl Into<String>) -> Self {
-        Self {
-            sql: sql.into(),
-            parameters: Vec::new(),
-            reducible: true,
-        }
-    }
-
-    fn json(&self) -> JsonValue {
-        json!({
-            "sql": self.sql,
-            "parameters": values_json(&self.parameters),
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SqlQueryInvocation {
-    pub sql: String,
-    pub parameters: Vec<Value>,
-    pub result_semantics: ResultSemantics,
-}
-
-impl SqlQueryInvocation {
-    fn json(&self) -> JsonValue {
-        json!({
-            "sql": self.sql,
-            "parameters": values_json(&self.parameters),
-            "result_semantics": self.result_semantics.as_str(),
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SqlTlpCase {
-    pub name: String,
-    pub original: SqlQueryInvocation,
-    pub predicate_true: SqlQueryInvocation,
-    pub predicate_false: SqlQueryInvocation,
-    pub predicate_null: SqlQueryInvocation,
-}
-
-impl SqlTlpCase {
-    fn json(&self) -> JsonValue {
-        json!({
-            "name": self.name,
-            "original": self.original.json(),
-            "predicate_true": self.predicate_true.json(),
-            "predicate_false": self.predicate_false.json(),
-            "predicate_null": self.predicate_null.json(),
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SqlPredicateRewriteCase {
-    pub name: String,
-    pub original: SqlQueryInvocation,
-    pub rewritten: SqlQueryInvocation,
-}
-
-impl SqlPredicateRewriteCase {
-    fn json(&self) -> JsonValue {
-        json!({
-            "name": self.name,
-            "original": self.original.json(),
-            "rewritten": self.rewritten.json(),
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SqlJoinRewriteCase {
-    pub name: String,
-    pub optimized: SqlQueryInvocation,
-    pub syntax_reference: SqlQueryInvocation,
-    pub expected_strategy: RelationalJoinPlanningStrategy,
-    pub generator_profile: SqlJoinGeneratorProfile,
-}
-
-impl SqlJoinRewriteCase {
-    fn json(&self) -> JsonValue {
-        json!({
-            "name": self.name,
-            "optimized": self.optimized.json(),
-            "syntax_reference": self.syntax_reference.json(),
-            "expected_strategy": self.expected_strategy.as_str(),
-            "generator_profile": self.generator_profile.json(),
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SqlJoinGeneratorProfile {
-    pub relation_count: usize,
-    pub join_graph: String,
-    pub null_rejection: String,
-    pub selectivity: String,
-    pub index_profile: String,
-    pub statistics_profile: String,
-    pub table_cardinalities: BTreeMap<String, usize>,
-    pub dimension_distinct_count: usize,
-    pub skewed_join_keys: bool,
-}
-
-impl SqlJoinGeneratorProfile {
-    fn json(&self) -> JsonValue {
-        json!({
-            "relation_count": self.relation_count,
-            "join_graph": self.join_graph,
-            "null_rejection": self.null_rejection,
-            "selectivity": self.selectivity,
-            "index_profile": self.index_profile,
-            "statistics_profile": self.statistics_profile,
-            "table_cardinalities": self.table_cardinalities,
-            "dimension_distinct_count": self.dimension_distinct_count,
-            "skewed_join_keys": self.skewed_join_keys,
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SqlFuzzCase {
-    seed: u64,
-    shape: String,
-    setup: Vec<SqlMutation>,
-    row_tlp: SqlTlpCase,
-    aggregate_tlp: SqlTlpCase,
-    predicate_rewrite: SqlPredicateRewriteCase,
-    join_rewrite: SqlJoinRewriteCase,
-    norec: SqlPredicateRewriteCase,
-    index_enabled: bool,
-}
+use query_workloads::sql::SqlFuzzCase;
+pub use query_workloads::sql::{
+    SqlJoinGeneratorProfile, SqlJoinRewriteCase, SqlMutation, SqlPredicateRewriteCase,
+    SqlQueryInvocation, SqlTlpCase,
+};
+pub(crate) use query_workloads::sql::{SQL_JOIN_REWRITE_SHAPES, SQL_QUERY_SHAPES};
+#[cfg(test)]
+use query_workloads::sql::{SQL_JOIN_REWRITE_SHAPE_COUNT, SQL_QUERY_SHAPE_COUNT};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SqlReplayBundle {
@@ -987,7 +809,7 @@ fn classify_sql_join_rewrite_failure(
     }
     let optimized = evidence.optimized.join_planning.as_deref();
     if !optimized.is_some_and(|outcome| {
-        outcome.strategy == case.expected_strategy
+        outcome.strategy.as_str() == case.expected_strategy.as_str()
             && outcome.status == RelationalJoinPlanningStatus::Selected
             && outcome.memo_groups.is_some()
             && outcome.memo_expressions.is_some()
@@ -1216,10 +1038,6 @@ fn sql_error_outcome(phase: &'static str, error: HawDBError) -> ExecutionOutcome
         class: error_class(&error),
         message: error.to_string(),
     }
-}
-
-fn values_json(values: &[Value]) -> Vec<JsonValue> {
-    values.iter().map(typed_value_json).collect()
 }
 
 fn sql_plan_signature(rows: &[hawdb::executor::Row]) -> String {

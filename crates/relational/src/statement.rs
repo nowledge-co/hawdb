@@ -94,6 +94,18 @@ pub fn compile_prepared_relational_statement_with_result(
             },
             returning: None,
         }),
+        SqlStatement::CreateSearchIndex(create) => Ok(CompiledRelationalStatement {
+            transaction: RelationalTransaction {
+                writes: crate::materialized_view::create_search_index(create, state)?,
+            },
+            returning: None,
+        }),
+        SqlStatement::DropSearchIndex(drop) => Ok(CompiledRelationalStatement {
+            transaction: RelationalTransaction {
+                writes: crate::materialized_view::drop_search_index(drop, state)?,
+            },
+            returning: None,
+        }),
         statement @ (SqlStatement::CreateTable(_)
         | SqlStatement::CreateIndex(_)
         | SqlStatement::AlterTableAddColumn(_)) => Ok(CompiledRelationalStatement {
@@ -111,6 +123,7 @@ fn compile_relational_mutation(
     parameters: &[Value],
     state: &RelationalState,
 ) -> Result<CompiledRelationalStatement> {
+    let statement = &*crate::literal_coercion::coerce_mutation(statement, state, parameters)?;
     let mut returning = None;
     let write = match statement {
         SqlStatement::Insert(insert) => {
@@ -373,6 +386,8 @@ fn compile_relational_mutation(
         SqlStatement::Select(_)
         | SqlStatement::CreateMaterializedView(_)
         | SqlStatement::DropMaterializedView(_)
+        | SqlStatement::CreateSearchIndex(_)
+        | SqlStatement::DropSearchIndex(_)
         | SqlStatement::Explain(_)
         | SqlStatement::CreateTable(_)
         | SqlStatement::CreateIndex(_)
@@ -735,6 +750,14 @@ fn materialize_column_default(column: &RelationalColumnSchema) -> Result<Relatio
         Some(RelationalColumnDefault::UuidV7) => {
             RelationalValue::Uuid(hawdb_core::generate_uuidv7()?)
         }
+        // Materialized here, before the row reaches the WAL, so recovery
+        // replays the recorded instant instead of reading the clock again.
+        Some(RelationalColumnDefault::CurrentTimestamp(kind)) => crate::coerce_relational_value(
+            crate::query_value::value_to_relational(hawdb_core::sql_timestamp::current_timestamp(
+                *kind,
+            )?)?,
+            column.scalar_type,
+        )?,
     })
 }
 

@@ -279,7 +279,8 @@ pub(super) fn decimal(case: &Case, run: &mut Run) -> Result<()> {
     run.refusal(
         &mut db,
         "mixed_float",
-        "SELECT $1 + 0.1 AS amount",
+        // #1516 coerces a bare literal beside DOUBLE; typed DECIMAL stays strict.
+        "SELECT $1 + CAST(0.1 AS DECIMAL(8,2)) AS amount",
         &[Value::Float(1.0)],
         "require an explicit CAST",
     )?;

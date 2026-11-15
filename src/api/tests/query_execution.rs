@@ -47,6 +47,23 @@ fn relational_index_read_row_budget_matches_intermediate_limit() {
 }
 
 #[test]
+fn relational_row_read_byte_budget_uses_the_hard_page_maximum() {
+    let config = DatabaseConfig {
+        max_read_result_rows: Some(4_097),
+        ..DatabaseConfig::default()
+    };
+
+    let limits = relational_query_limits_with_payload(&config, Some(1), None);
+    let expected_pages = 4_097usize.saturating_add(1).saturating_add(1);
+
+    assert_eq!(limits.row_read.demand.max_pages.get(), expected_pages);
+    assert_eq!(
+        limits.row_read.demand.max_bytes.get(),
+        expected_pages.saturating_mul(hawdb_storage::relational::DEFAULT_RELATIONAL_ROW_PAGE_BYTES)
+    );
+}
+
+#[test]
 fn numeric_scan_filter_project_is_default_morsel_eligible() {
     let mut db = Database::new();
     db.query("CREATE NODE TABLE Item").unwrap();

@@ -25,7 +25,9 @@ use hawdb_executor::QueryMemoryLease;
 use hawdb_integrity::Crc32cHasher;
 use hawdb_storage::durability::durable_replace_file;
 use hawdb_storage::file_io::{self as fs, File, OpenOptions};
-use hawdb_storage::immutable_object::{ObjectKind, ObjectReference, ObjectReferenceWriter};
+use hawdb_storage::immutable_object::{
+    record_verified_file, ObjectKind, ObjectReference, ObjectReferenceWriter, VerifiedFileStamp,
+};
 #[cfg(test)]
 use std::cell::Cell;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -225,17 +227,36 @@ impl<'a> GenerationIo<'a> {
         seal_reader(file, expected, self.task, None)
     }
 
+    /// Hash one installed file and, when it matches `accept`, remember that
+    /// this process verified exactly this unmodified inode. Projection cleanup
+    /// then need not hash the file again while it keeps that stamp (#1755).
+    fn seal_installed(
+        &self,
+        path: &Path,
+        accept: impl FnOnce(ArtifactSeal) -> Result<()>,
+    ) -> Result<()> {
+        let _buffer = self.memory.spool.reserve(SPOOL_BUFFER_BYTES)?;
+        let mut file = self.native(&[path], || File::open(path))??;
+        let stamp = VerifiedFileStamp::capture(&file);
+        let seal = self.seal_file_admitted(&mut file)?;
+        accept(seal)?;
+        remember_verified(seal.reference, stamp, &file);
+        Ok(())
+    }
+
     pub(in crate::out_of_core) fn verify_object(
         &self,
         path: &Path,
         object: super::super::ArtifactObject,
     ) -> Result<()> {
-        if self.seal(path)?.reference != object.reference() {
-            return Err(HawDBError::StorageIntegrity(
-                "installed Search artifact differs from its producer reference".into(),
-            ));
-        }
-        Ok(())
+        self.seal_installed(path, |seal| {
+            if seal.reference != object.reference() {
+                return Err(HawDBError::StorageIntegrity(
+                    "installed Search artifact differs from its producer reference".into(),
+                ));
+            }
+            Ok(())
+        })
     }
 
     pub(super) fn verify_seal(
@@ -244,12 +265,14 @@ impl<'a> GenerationIo<'a> {
         expected: ArtifactSeal,
         name: &str,
     ) -> Result<()> {
-        if self.seal(path)? != expected {
-            return Err(HawDBError::StorageIntegrity(format!(
-                "published search generation {name} does not match its staged byte seal"
-            )));
-        }
-        Ok(())
+        self.seal_installed(path, |seal| {
+            if seal != expected {
+                return Err(HawDBError::StorageIntegrity(format!(
+                    "published search generation {name} does not match its staged byte seal"
+                )));
+            }
+            Ok(())
+        })
     }
 
     /// Check both identities in one bounded read of the same installed file.
@@ -271,6 +294,7 @@ impl<'a> GenerationIo<'a> {
                 "published search generation {name} does not match its staged artifact"
             )));
         }
+        let stamp = VerifiedFileStamp::capture(&file);
         let mut checksum = expected_checksum.map(|_| Crc32cHasher::new());
         let seal = seal_reader(&mut file, length, self.task, checksum.as_mut())?;
         if checksum.map(|digest| digest.finish()) != expected_checksum {
@@ -283,10 +307,13 @@ impl<'a> GenerationIo<'a> {
                 "installed Search artifact differs from its producer reference".into(),
             ));
         }
+        remember_verified(seal.reference, stamp, &file);
         Ok(())
     }
 
-    pub(super) fn link(&self, source: &Path, target: &Path) -> Result<()> {
+    /// Install `target` from `source`, preferring a hard link. Returns bytes
+    /// physically copied when the filesystem requires the bounded copy path.
+    pub(in crate::out_of_core) fn link(&self, source: &Path, target: &Path) -> Result<u64> {
         self.link_with(source, target, |source, temporary| {
             fs::hard_link(source, temporary)
         })
@@ -297,20 +324,20 @@ impl<'a> GenerationIo<'a> {
         source: &Path,
         target: &Path,
         hard_link: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
-    ) -> Result<()> {
+    ) -> Result<u64> {
         let mut temporary = Temporary::new(target, self.memory, self.task)?;
-        if self
-            .native(&[source, &temporary.path], || {
-                hard_link(source, &temporary.path)
-            })?
-            .is_err()
-        {
-            self.copy(source, &temporary.path)?;
-        }
-        self.replace(&mut temporary, target)
+        let copied = match self.native(&[source, &temporary.path], || {
+            hard_link(source, &temporary.path)
+        })? {
+            Ok(()) => 0,
+            Err(error) if hard_link_copy_fallback(&error) => self.copy(source, &temporary.path)?,
+            Err(error) => return Err(error.into()),
+        };
+        self.replace(&mut temporary, target)?;
+        Ok(copied)
     }
 
-    fn copy(&self, source: &Path, target: &Path) -> Result<()> {
+    fn copy(&self, source: &Path, target: &Path) -> Result<u64> {
         // Admit the transfer buffer before opening or truncating its output.
         let _buffer = self.memory.spool.reserve(SPOOL_BUFFER_BYTES)?;
         let mut source = self.native(&[source], || File::open(source))??;
@@ -336,7 +363,7 @@ impl<'a> GenerationIo<'a> {
         checkpoint(self.task)?;
         output.set_permissions(metadata.permissions())?;
         output.sync_all()?;
-        Ok(())
+        Ok(copied)
     }
 
     pub(super) fn write(&self, target: &Path, bytes: &[u8]) -> Result<()> {
@@ -378,6 +405,19 @@ impl<'a> GenerationIo<'a> {
     }
 }
 
+/// A same-directory hard link should fail over only when the filesystem or
+/// its policy does not permit links. Missing sources, destination collisions
+/// and generic I/O failures retain their original error instead of being
+/// hidden behind a second, potentially corpus-sized operation.
+fn hard_link_copy_fallback(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::CrossesDevices
+            | std::io::ErrorKind::PermissionDenied
+            | std::io::ErrorKind::Unsupported
+    )
+}
+
 pub(super) struct AdmittedBytes {
     pub(super) bytes: Vec<u8>,
     _memory: QueryMemoryLease,
@@ -410,6 +450,12 @@ impl Drop for Temporary {
         if self.armed {
             let _ = fs::remove_file(&self.path);
         }
+    }
+}
+
+fn remember_verified(reference: ObjectReference, stamp: Option<VerifiedFileStamp>, file: &File) {
+    if let Some(stamp) = stamp {
+        record_verified_file(reference, stamp, file);
     }
 }
 

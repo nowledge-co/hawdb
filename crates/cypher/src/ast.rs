@@ -99,6 +99,8 @@ pub struct CreateProperty {
     pub property: String,
     pub value_type: SchemaPropertyType,
     pub nullable: bool,
+    /// `DEFAULT <literal>` or `DEFAULT current_timestamp()`.
+    pub default: Option<hawdb_core::PropertyDefault>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -290,6 +292,11 @@ pub enum SetValueExpression {
         default: ValueExpression,
         value: ValueExpression,
     },
+    /// Any other scalar expression: `CASE`, comparisons, arithmetic, string
+    /// concatenation or functions over the matched row and parameters. Each
+    /// row evaluates it against the values the earlier SET items of the same
+    /// statement left (#1791).
+    Expression(ScalarExpression),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -452,7 +459,8 @@ pub enum ValueExpressionKind {
     },
     CurrentTimestamp,
     Timestamp(Box<ValueExpression>),
-    /// `toInteger`, `toFloat`, `toBoolean` or `toString` of a value.
+    /// `toInteger`, `toFloat`, `toBoolean`, `toString` or Kùzu `string`
+    /// (`to_string`) of a value.
     Conversion {
         function: hawdb_core::ConversionFunction,
         argument: Box<ValueExpression>,
@@ -514,7 +522,14 @@ pub enum ScalarExpressionKind {
         property: String,
     },
     Id(String),
+    /// `type(r)` of a relationship variable.
     RelationshipType(String),
+    /// Kùzu `label(x)` of a node or relationship variable, or openCypher
+    /// `labels(n)` of a node variable; see [`hawdb_core::LabelFunction`].
+    Label {
+        function: hawdb_core::LabelFunction,
+        variable: String,
+    },
     Value(ValueExpression),
     Coalesce(Vec<ScalarExpression>),
     VectorDistance {
@@ -522,9 +537,14 @@ pub enum ScalarExpressionKind {
         left: Box<ScalarExpression>,
         right: Box<ScalarExpression>,
     },
+    JsonString {
+        expression: Box<ScalarExpression>,
+        path: ValueExpression,
+    },
     JsonValue {
         expression: Box<ScalarExpression>,
         path: ValueExpression,
+        null_on_non_scalar: bool,
     },
     Left {
         expression: Box<ScalarExpression>,
@@ -636,10 +656,49 @@ pub enum ScalarExpressionKind {
     },
     /// `{key: expression, ...}` in source order (keys are unique).
     MapLiteral(Vec<(String, ScalarExpression)>),
-    /// `toInteger`, `toFloat`, `toBoolean` or `toString`.
+    /// `toInteger`, `toFloat`, `toBoolean`, `toString` or Kùzu `string`
+    /// (`to_string`).
     Conversion {
         function: hawdb_core::ConversionFunction,
         argument: Box<ScalarExpression>,
+    },
+    /// `abs`, `ceil`, `floor`, `round`, `sign` or `sqrt`.
+    NumericFunction {
+        function: hawdb_core::NumericFunction,
+        argument: Box<ScalarExpression>,
+    },
+    /// `reduce(accumulator = initial, variable IN list | expression)`.
+    ///
+    /// `initial` and `list` are evaluated in the enclosing scope;
+    /// `accumulator` and `variable` are scoped to `expression` and must not
+    /// shadow a variable or column already visible to the call.
+    Reduce {
+        accumulator: String,
+        initial: Box<ScalarExpression>,
+        variable: String,
+        list: Box<ScalarExpression>,
+        expression: Box<ScalarExpression>,
+    },
+    /// `startNode(r)` or `endNode(r)` of a relationship variable.
+    RelationshipEndpoint {
+        endpoint: hawdb_core::RelationshipEndpoint,
+        variable: String,
+    },
+    /// A pattern used as a boolean expression, such as
+    /// `NOT (a)-[:KNOWS]-(b)`: true when the pattern has at least one match.
+    ///
+    /// Bound variables correlate with the enclosing scope; anonymous and
+    /// unbound pattern variables are scoped to the pattern.
+    PatternPredicate(Box<MatchPattern>),
+    /// `[pattern WHERE predicate | projection]`: the list of `projection`
+    /// over every match of `pattern` that satisfies `predicate`.
+    ///
+    /// Variables the pattern introduces are visible only to `predicate` and
+    /// `projection`; bound variables correlate with the enclosing scope.
+    PatternComprehension {
+        pattern: Box<MatchPattern>,
+        predicate: Option<Box<ScalarExpression>>,
+        projection: Box<ScalarExpression>,
     },
 }
 
@@ -840,11 +899,22 @@ impl ScalarExpressionKind {
             | Self::Lower(expression)
             | Self::Left { expression, .. }
             | Self::JsonValue { expression, .. }
+            | Self::JsonString { expression, .. }
             | Self::PropertyAccess { expression, .. }
             | Self::Conversion {
                 argument: expression,
                 ..
+            }
+            | Self::NumericFunction {
+                argument: expression,
+                ..
             } => visit(expression),
+            Self::Reduce {
+                initial,
+                list,
+                expression,
+                ..
+            } => visit(initial) && visit(list) && visit(expression),
             Self::Coalesce(expressions)
             | Self::List(expressions)
             | Self::ListFunction {
@@ -876,6 +946,11 @@ impl ScalarExpressionKind {
                 .flatten()
                 .map(Box::as_ref)
                 .all(visit),
+            Self::PatternComprehension {
+                predicate,
+                projection,
+                ..
+            } => predicate.iter().map(Box::as_ref).all(&mut visit) && visit(projection),
             _ => true,
         }
     }

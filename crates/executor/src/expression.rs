@@ -42,7 +42,11 @@ mod projection;
 mod simple_case;
 mod value;
 
-pub(crate) use key::{KeyMemory, PreparedKey};
+#[cfg(test)]
+pub(crate) use key::with_legacy_map_keys;
+pub(crate) use key::{
+    group_key_memory_bytes, group_output_binding, GroupKeyValue, KeyMemory, PreparedKey,
+};
 pub use predicate::*;
 pub(crate) use projection::{
     prepare_borrowed_projection, push_borrowed_projection, SmallBorrowedProjection,

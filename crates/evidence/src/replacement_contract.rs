@@ -17,21 +17,18 @@
 //! Producers and readiness reducers use one contract without pulling search
 //! execution or database-running workload fixtures into the evidence layer.
 
-pub const NOWLEDGE_MEM_SEARCH_CANDIDATE_REPORT_PROTOCOL: &str =
-    "hawdb-nowledge-mem-search-candidate-report-v1";
-pub const NOWLEDGE_MEM_SEARCH_CANDIDATE_READINESS_PROTOCOL: &str =
+pub const SEARCH_CANDIDATE_REPORT_PROTOCOL: &str = "hawdb-nowledge-mem-search-candidate-report-v1";
+pub const SEARCH_CANDIDATE_READINESS_PROTOCOL: &str =
     "hawdb-nowledge-mem-search-candidate-readiness-v1";
-pub const NOWLEDGE_MEM_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL: &str =
+pub const SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL: &str =
     "hawdb-nowledge-search-candidate-shadow-evidence";
-pub const NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_SOURCE: &str = "nmem-rust-bridge";
-pub const NOWLEDGE_MEM_SEARCH_CANDIDATE_TRACE_EVIDENCE_SOURCE: &str =
-    "search_candidate_shadow_trace";
-pub const NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_ROUTE: &str =
-    "/search-index/hawdb-shadow/candidate-evidence";
-pub const NOWLEDGE_MEM_SEARCH_CANDIDATE_PRIMARY_ENGINE: &str = "hawdb";
-pub const NOWLEDGE_MEM_SEARCH_CANDIDATE_SHADOW_ENGINE: &str = "hawdb-shadow";
-pub const NOWLEDGE_MEM_SEARCH_CANDIDATE_TRACE_PRIMARY_ENGINE: &str = "lancedb";
-pub const NOWLEDGE_MEM_SEARCH_CANDIDATE_TRACE_SHADOW_ENGINE: &str = "hawdb";
+pub const SEARCH_CANDIDATE_EVIDENCE_SOURCE: &str = "nmem-rust-bridge";
+pub const SEARCH_CANDIDATE_TRACE_EVIDENCE_SOURCE: &str = "search_candidate_shadow_trace";
+pub const SEARCH_CANDIDATE_EVIDENCE_ROUTE: &str = "/search-index/hawdb-shadow/candidate-evidence";
+pub const SEARCH_CANDIDATE_PRIMARY_ENGINE: &str = "hawdb";
+pub const SEARCH_CANDIDATE_SHADOW_ENGINE: &str = "hawdb-shadow";
+pub const SEARCH_CANDIDATE_TRACE_PRIMARY_ENGINE: &str = "lancedb";
+pub const SEARCH_CANDIDATE_TRACE_SHADOW_ENGINE: &str = "hawdb";
 
 pub const NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS: &[&str] = &[
     "kind",

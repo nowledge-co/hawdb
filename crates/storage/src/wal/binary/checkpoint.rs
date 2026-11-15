@@ -322,13 +322,29 @@ fn encode_op_body(op: &WalOp, out: &mut Output<'_>) -> Result<u64> {
             property,
             value_type,
             nullable,
+            default,
         } => {
             out.field_varint(1, table_kind_code(*table_kind))?;
             out.string(2, table)?;
             out.string(3, property)?;
             out.field_varint(4, property_type_code(*value_type))?;
             out.field_varint(5, u64::from(*nullable))?;
-            OP_CREATE_PROPERTY
+            match default {
+                None => OP_CREATE_PROPERTY,
+                Some(default) => {
+                    match &default.value {
+                        hawdb_core::PropertyDefault::CurrentTimestamp => {
+                            out.field_varint(6, PROPERTY_DEFAULT_KIND_CURRENT_TIMESTAMP)?;
+                        }
+                        hawdb_core::PropertyDefault::Value(value) => {
+                            out.field_varint(6, PROPERTY_DEFAULT_KIND_CONSTANT)?;
+                            out.message(7, |out| encode_value(value, out))?;
+                        }
+                    }
+                    out.message(8, |out| encode_value(&default.backfill_value, out))?;
+                    OP_CREATE_PROPERTY_WITH_DEFAULT
+                }
+            }
         }
         WalOp::AlterTableState {
             table_kind,

@@ -38,7 +38,7 @@ impl CheckpointGrowthBudget {
         // stay exhausted; the next controlled preflight must admit more.
         let _ = self
             .remaining
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
                 remaining.checked_sub(1)
             });
     }

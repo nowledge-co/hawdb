@@ -532,7 +532,7 @@ fn reserve_workspace(parent: &Path, timestamp: u128, sequence: &AtomicU64) -> io
     for _ in 0..MAX_WORKSPACE_ATTEMPTS {
         // The counter supplies unique candidates, not synchronization of data.
         let id = sequence
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
             .map_err(|_| io::Error::other("storage fuzz workspace sequence exhausted"))?;
         let path = parent.join(format!(
             "shiro-storage-{}-{timestamp}-{id}",

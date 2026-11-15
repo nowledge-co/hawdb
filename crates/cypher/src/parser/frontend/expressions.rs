@@ -91,9 +91,13 @@ impl Transformer<'_> {
                     self.text(self.tree.required(node, rule_id!("v_identifier"))),
                 )
                 .expect("matched conversion function"),
-                argument: Box::new(
-                    self.scalar(self.tree.required(node, rule_id!("x_scalar")), depth)?,
-                ),
+                // A single operand keeps its historical capture; arithmetic
+                // arguments such as `toFloat(a - b)` use the sum rule.
+                argument: Box::new(match self.tree.child(node, rule_id!("x_scalar")) {
+                    Some(argument) => self.scalar(argument, depth)?,
+                    None => self
+                        .case_scalar(self.tree.required(node, rule_id!("x_case_scalar")), depth)?,
+                }),
             },
             "x_temporal" => self.temporal_scalar(node, depth)?,
             "x_map" => ScalarExpressionKind::MapLiteral(self.scalar_map(node, depth)?),
@@ -105,15 +109,27 @@ impl Transformer<'_> {
                 let (variable, property) = self.identifier_pair(node);
                 ScalarExpressionKind::Property { variable, property }
             }
+            // `not(condition)` in function-call form, such as a RETURN item;
+            // a parenthesized condition is a primary only after `NOT`. A
+            // bare `NOT` stays a boolean connective, never an operand.
+            "x_condition_paren" => {
+                let inner =
+                    self.case_boolean(self.tree.required(node, rule_id!("x_or")), depth + 1)?;
+                ScalarExpressionKind::Not(Box::new(self.source(node, inner.kind)))
+            }
             "x_identity" => {
                 let variable = self
                     .text(self.tree.required(node, rule_id!("v_identifier")))
                     .to_owned();
-                if self
-                    .text(self.tree.required(node, rule_id!("x_identity_name")))
-                    .eq_ignore_ascii_case("ID")
-                {
+                let name = self.text(self.tree.required(node, rule_id!("x_identity_name")));
+                if name.eq_ignore_ascii_case("ID") {
                     ScalarExpressionKind::Id(variable)
+                } else if let Some(endpoint) =
+                    hawdb_core::RelationshipEndpoint::from_function_name(name)
+                {
+                    ScalarExpressionKind::RelationshipEndpoint { endpoint, variable }
+                } else if let Some(function) = hawdb_core::LabelFunction::from_function_name(name) {
+                    ScalarExpressionKind::Label { function, variable }
                 } else {
                     ScalarExpressionKind::RelationshipType(variable)
                 }
@@ -133,9 +149,29 @@ impl Transformer<'_> {
                     Box::new(self.scalar(self.tree.required(node, rule_id!("x_scalar")), depth)?);
                 let value = self.value(self.tree.required(node, rule_id!("v_value")), depth)?;
                 if self.tree.rule_id(node) == rule_id!("x_json") {
-                    ScalarExpressionKind::JsonValue {
-                        expression,
-                        path: value,
+                    let null_on_non_scalar = self.tokens
+                        [self.tree.node(node).start..self.tree.node(node).end]
+                        .iter()
+                        .rev()
+                        .nth(1)
+                        .is_some_and(|token| token.is_keyword(self.input, "NONSCALAR"));
+                    if self.tokens[self.tree.node(node).start].is_keyword(self.input, "JSON_STRING")
+                    {
+                        if null_on_non_scalar {
+                            return Err(
+                                self.error(node, "JSON_STRING does not accept NULL ON NONSCALAR")
+                            );
+                        }
+                        ScalarExpressionKind::JsonString {
+                            expression,
+                            path: value,
+                        }
+                    } else {
+                        ScalarExpressionKind::JsonValue {
+                            expression,
+                            path: value,
+                            null_on_non_scalar,
+                        }
                     }
                 } else {
                     ScalarExpressionKind::Left {
@@ -176,7 +212,11 @@ impl Transformer<'_> {
             }
             "x_list_function" => {
                 let name = self.text(self.tree.required(node, rule_id!("x_list_function_name")));
+                if name.eq_ignore_ascii_case("reduce") {
+                    return self.reduce(node, depth);
+                }
                 let string_function = hawdb_core::StringFunction::from_function_name(name);
+                let numeric_function = hawdb_core::NumericFunction::from_function_name(name);
                 let list_function = ListFunction::from_function_name(name);
                 let mut arguments = Vec::new();
                 for arg in self
@@ -193,6 +233,11 @@ impl Transformer<'_> {
                     ScalarExpressionKind::StringFunction {
                         function,
                         arguments,
+                    }
+                } else if let Some(function) = numeric_function {
+                    ScalarExpressionKind::NumericFunction {
+                        function,
+                        argument: Box::new(self.numeric_argument(node, function, arguments)?),
                     }
                 } else {
                     let function = list_function.expect("list function");
@@ -229,9 +274,42 @@ impl Transformer<'_> {
                             .iter()
                             .copied()
                         {
-                            elements.push(self.case_boolean(child, depth)?);
+                            let element = self.case_boolean(child, depth)?;
+                            // As in a projection, a pattern is not a value.
+                            if matches!(element.kind, ScalarExpressionKind::PatternPredicate(_)) {
+                                return Err(self.error(
+                                    child,
+                                    "a pattern is not a list element; use a pattern comprehension [pattern | expression]",
+                                ));
+                            }
+                            elements.push(element);
                         }
                         ScalarExpressionKind::List(elements)
+                    }
+                    Some("x_comprehension")
+                        if let Some(pattern) = self.tree.child(list, rule_id!("w_graph")) =>
+                    {
+                        let pattern = Box::new(self.expression_pattern(pattern, depth)?);
+                        let predicate = self
+                            .tree
+                            .child(list, rule_id!("x_comprehension_where"))
+                            .map(|id| {
+                                self.case_boolean(self.tree.required(id, rule_id!("x_or")), depth)
+                                    .map(Box::new)
+                            })
+                            .transpose()?;
+                        let projection = self
+                            .tree
+                            .required(list, rule_id!("x_comprehension_projection"));
+                        let projection = Box::new(self.case_scalar(
+                            self.tree.required(projection, rule_id!("x_case_scalar")),
+                            depth,
+                        )?);
+                        ScalarExpressionKind::PatternComprehension {
+                            pattern,
+                            predicate,
+                            projection,
+                        }
                     }
                     Some("x_comprehension") => {
                         let variable = self
@@ -345,6 +423,51 @@ impl Transformer<'_> {
         }
         Ok(Some(ScalarExpressionKind::List(elements)))
     }
+    /// `reduce(accumulator = initial, variable IN list | expression)`.
+    fn reduce(&mut self, node: NodeId, depth: usize) -> Result<ScalarExpressionKind> {
+        let names = self
+            .iter_named_children(node, rule_id!("v_identifier"))
+            .map(|id| self.text(id).to_owned())
+            .collect::<Vec<_>>();
+        let operands = self
+            .iter_named_children(node, rule_id!("x_case_scalar"))
+            .collect::<Vec<_>>();
+        let (Ok([accumulator, variable]), [initial, list, expression]) =
+            (<[String; 2]>::try_from(names), operands.as_slice())
+        else {
+            return Err(self.error(
+                node,
+                "reduce() requires `accumulator = initial, variable IN list | expression`",
+            ));
+        };
+        let (initial, list, expression) = (*initial, *list, *expression);
+        Ok(ScalarExpressionKind::Reduce {
+            accumulator,
+            initial: Box::new(self.case_scalar(initial, depth)?),
+            variable,
+            list: Box::new(self.case_scalar(list, depth)?),
+            expression: Box::new(self.case_scalar(expression, depth)?),
+        })
+    }
+    pub(super) fn numeric_argument<T>(
+        &self,
+        node: NodeId,
+        function: hawdb_core::NumericFunction,
+        arguments: Vec<T>,
+    ) -> Result<T> {
+        let count = arguments.len();
+        let mut arguments = arguments.into_iter();
+        match (arguments.next(), arguments.next()) {
+            (Some(argument), None) => Ok(argument),
+            _ => Err(self.error_at(
+                self.tree.span(node, self.tokens).end,
+                &format!(
+                    "{}() expects 1 argument(s), got {count}",
+                    function.function_name()
+                ),
+            )),
+        }
+    }
     pub(super) fn string_arity(
         &self,
         node: NodeId,
@@ -429,6 +552,10 @@ impl Transformer<'_> {
         let base = self.tree.required(node, rule_id!("x_condition_base"));
         let selected = self.tree.children(base)[0];
         let left = match self.tree.node(selected).name {
+            Some("w_graph") => {
+                let pattern = Box::new(self.expression_pattern(selected, depth + 1)?);
+                self.source(selected, ScalarExpressionKind::PatternPredicate(pattern))
+            }
             Some("x_condition_paren") => {
                 let inner =
                     self.case_boolean(self.tree.required(selected, rule_id!("x_or")), depth + 1)?;
@@ -513,6 +640,15 @@ impl Transformer<'_> {
             }
             _ => unreachable!("condition suffix"),
         })
+    }
+    /// The pattern of a pattern predicate or comprehension. Its anonymous
+    /// variables are scoped to the pattern, so they are numbered on their own.
+    pub(super) fn expression_pattern(
+        &mut self,
+        node: NodeId,
+        depth: usize,
+    ) -> Result<MatchPattern> {
+        self.pattern(node, depth, &mut 0)
     }
     pub(super) fn comparison_operator(&self, node: NodeId) -> ScalarBinaryOp {
         match self.text(node) {

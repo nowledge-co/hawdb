@@ -167,6 +167,13 @@ _HAWDB_SRCS = glob(
     "//crates/compat:test_support",
 ]
 
+# Unit tests embed database fixtures with include_bytes!.
+_HAWDB_COMPILE_DATA = [
+    "tests/fixtures/pre_1683_property_descriptors.bundle",
+    "tests/fixtures/row_root_relational_checkpoint.bundle",
+    "tests/fixtures/row_root_shadow_index_checkpoint.bundle.zst",
+]
+
 _HAWDB_COMMON_BASE_DEPS = [
     "@crate_index//:chrono",
     "@crate_index//:getrandom",
@@ -245,6 +252,7 @@ rust_library(
     crate_root = "src/lib.rs",
     crate_features = _HAWDB_DEFAULT_FEATURES,
     srcs = _HAWDB_SRCS,
+    compile_data = _HAWDB_COMPILE_DATA,
     edition = "2024",
     aliases = aliases(),
     deps = _HAWDB_FULL_DEPS + _HAWDB_VECTOR_DEPS + [
@@ -260,6 +268,7 @@ rust_library(
     crate_root = "src/lib.rs",
     crate_features = ["full-text-search"],
     srcs = _HAWDB_SRCS,
+    compile_data = _HAWDB_COMPILE_DATA,
     edition = "2024",
     aliases = aliases(),
     deps = _HAWDB_GRAPH_TEXT_DEPS,
@@ -273,6 +282,7 @@ rust_library(
     crate_name = "hawdb",
     crate_root = "src/lib.rs",
     srcs = _HAWDB_SRCS,
+    compile_data = _HAWDB_COMPILE_DATA,
     edition = "2024",
     aliases = aliases(),
     deps = _HAWDB_MINIMAL_DEPS,
@@ -433,12 +443,9 @@ rust_test(
         # Evidence: https://github.com/nowledge-co/hawdb/issues/972 and
         # https://github.com/nowledge-co/hawdb/issues/1027.
         timeout = "eternal" if partition in ["concurrent", "analytics_rss"] else "long",
-        # Keep the growing-table workload out of the timing controls' shared
-        # deadline while retaining the same executable and serial isolation.
-        shard_count = 2 if partition == "checkpoint_headroom" else 0,
         # Wall-clock capacity and dense RSS fixtures must not compete with other
         # test executables here. External contention remains possible.
-        tags = ["exclusive"] if partition in ["analytics_rss", "checkpoint_headroom", "checkpoint_lifecycle", "checkpoint_large_commit", "checkpoint_large_commit_interrupted"] else [],
+        tags = ["exclusive"] if partition in ["analytics_rss", "checkpoint_lifecycle", "checkpoint_large_commit", "checkpoint_large_commit_interrupted"] else [],
         srcs = ["scripts/run-root-unit-partition.sh"],
         args = [
             "$(rootpath :hawdb_unit_test_binary)",
@@ -446,14 +453,45 @@ rust_test(
             "--skip",
             _HAWDB_STORAGE_CRASH_MATRIX_TEST,
         ] + (
-            ["--test-threads=1"] if partition in ["checkpoint_headroom", "checkpoint_lifecycle", "checkpoint_large_commit", "checkpoint_large_commit_interrupted"] else []
-        ) + (
-            ["--nocapture"] if partition == "checkpoint_headroom" else []
+            ["--test-threads=1"] if partition in ["checkpoint_lifecycle", "checkpoint_large_commit", "checkpoint_large_commit_interrupted"] else []
         ),
         data = [":hawdb_unit_test_binary"],
     )
-    for partition in ["general", "concurrent", "checkpoint_headroom", "checkpoint_lifecycle", "checkpoint_large_commit", "checkpoint_large_commit_interrupted", "analytics_core_general", "analytics_rss", "recovery"]
+    for partition in ["general", "concurrent", "checkpoint_lifecycle", "checkpoint_large_commit", "checkpoint_large_commit_interrupted", "analytics_core_general", "analytics_rss", "recovery"]
 ]
+
+# Keep the growing-table workload and the remaining headroom controls as
+# explicit targets so CI can isolate them in different Pods. Both reuse the
+# same checked root carrier and preserve serial libtest execution.
+[
+    sh_test(
+        name = "hawdb_unit_%s_tests" % partition,
+        size = "large",
+        timeout = "long",
+        tags = ["exclusive"],
+        srcs = ["scripts/run-root-unit-partition.sh"],
+        args = [
+            "$(rootpath :hawdb_unit_test_binary)",
+            partition,
+            "--skip",
+            _HAWDB_STORAGE_CRASH_MATRIX_TEST,
+            "--test-threads=1",
+            "--nocapture",
+        ],
+        data = [":hawdb_unit_test_binary"],
+    )
+    for partition in ["checkpoint_headroom_growing_table", "checkpoint_headroom_controls"]
+]
+
+# Preserve the public aggregate label used by local replay and downstream
+# selectors while exposing its two independently schedulable leaves.
+test_suite(
+    name = "hawdb_unit_checkpoint_headroom_tests",
+    tests = [
+        ":hawdb_unit_checkpoint_headroom_growing_table_tests",
+        ":hawdb_unit_checkpoint_headroom_controls_tests",
+    ],
+)
 
 # Identity admission now shares the RSS fixture and its isolated measured child.
 # Keep the previous public label as an alias so aggregate expansion runs it once.
@@ -489,6 +527,37 @@ py_test(
     legacy_create_init = False,
     main = "scripts/pypi-publish.test.py",
     deps = [requirement("packaging")],
+)
+
+py_test(
+    name = "native_release_package_script_test",
+    size = "small",
+    srcs = [
+        "scripts/package-ffi-release.py",
+        "scripts/package-ffi-release.test.py",
+    ],
+    data = [
+        "Cargo.toml",
+        "LICENSE",
+        "//bindings/ffi:include/hawdb_ffi.h",
+    ],
+    legacy_create_init = False,
+    main = "scripts/package-ffi-release.test.py",
+)
+
+py_test(
+    name = "native_release_mode_script_test",
+    size = "small",
+    srcs = [
+        "scripts/native-release-mode.py",
+        "scripts/native-release-mode.test.py",
+    ],
+    data = [
+        ".github/workflows/native-release.yml",
+        "scripts/npm/publish-assembled.sh",
+    ],
+    legacy_create_init = False,
+    main = "scripts/native-release-mode.test.py",
 )
 
 sh_test(
@@ -729,6 +798,7 @@ test_suite(
         ":hawdb_pgq_create_binder_tests",
         ":hawdb_fallible_search_contract_tests",
         ":hawdb_fallible_search_contract_minimal_tests",
+        ":hawdb_logical_dump_tests",
         ":hawdb_search_generation_context_minimal_tests",
         ":hawdb_search_generation_context_tests",
         ":hawdb_search_projection_consumer_tests",
@@ -742,6 +812,8 @@ test_suite(
         ":hawdb_wasm_playground_bridge_tests",
         ":hawdb_unit_fast_tests",
         ":root_unit_partition_script_test",
+        ":native_release_package_script_test",
+        ":native_release_mode_script_test",
         ":pypi_publish_script_test",
         ":storage_tla_evidence_script_test",
         ":power_loss_partition_script_test",
@@ -1022,6 +1094,7 @@ rust_test(
     crate_name = "hawdb",
     crate_root = "src/lib.rs",
     srcs = _HAWDB_SRCS,
+    compile_data = _HAWDB_COMPILE_DATA,
     crate_features = [
         "acl",
         "background-maintenance",
@@ -1308,6 +1381,24 @@ test_suite(
         ]
     ],
     tags = ["manual"],
+)
+
+# Logical export/import and format-version contracts (docs/LOGICAL_DUMP.md).
+rust_test(
+    name = "hawdb_logical_dump_tests",
+    crate_root = "tests/logical_dump.rs",
+    crate_features = _HAWDB_DEFAULT_FEATURES,
+    srcs = [
+        "tests/logical_dump.rs",
+        "tests/logical_dump/support.rs",
+    ],
+    compile_data = glob(["tests/logical_dump/golden_v1/**"]),
+    edition = "2024",
+    deps = [
+        ":hawdb",
+        "//crates/integrity:hawdb_integrity",
+        "@crate_index//:serde_json",
+    ],
 )
 
 # Public search error contracts in both embedded dependency profiles.

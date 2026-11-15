@@ -395,3 +395,26 @@ fn cached_plans_keep_their_projection_across_parameters() {
         }
     }
 }
+
+/// `label(x)` reads only a record's labels or relationship type, which
+/// projected reads keep (#1678).
+#[test]
+fn label_filters_and_returns_read_no_full_records() {
+    let query = format!(
+        "{START}MATCH (s)-[:KNOWS]->(f)<-[r:HAS_CREATOR]-(m) WHERE label(m) IN ['Post', 'Comment'] \
+         RETURN m.id AS m, label(m) AS l, label(r) AS t"
+    );
+    let line = last_graph_match(&query);
+    assert!(line.contains(r#""m": {"id"}"#), "{line}");
+    let reads = check(
+        &query,
+        &[
+            r#"m=String("m1"), l=String("Post"), t=String("HAS_CREATOR")"#,
+            r#"m=String("m2"), l=String("Comment"), t=String("HAS_CREATOR")"#,
+            r#"m=String("m3"), l=String("Post"), t=String("HAS_CREATOR")"#,
+        ],
+        false,
+    );
+    assert_eq!(reads.full_nodes, 0, "{reads:?}");
+    assert_eq!(reads.full_relationships, 0, "{reads:?}");
+}

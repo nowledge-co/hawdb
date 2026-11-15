@@ -376,7 +376,8 @@ pub(super) fn bind_relationship_copy_on_create_set_properties(
             | SetValueExpression::DecrementFloorZero { .. }
             | SetValueExpression::PreserveNewerExisting { .. }
             | SetValueExpression::PreserveOlderExisting { .. }
-            | SetValueExpression::CoalescePropertyAdd { .. } => {
+            | SetValueExpression::CoalescePropertyAdd { .. }
+            | SetValueExpression::Expression(_) => {
                 return Err(HawDBError::Semantic(
                     "relationship-copy MERGE ON CREATE SET supports only values and matched relationship properties"
                         .to_string(),
@@ -646,7 +647,7 @@ pub(super) fn bind_value(
             bind_value(value, parameters).and_then(timestamp_value)
         }
         ValueExpressionKind::Conversion { function, argument } => {
-            function.apply(&bind_value(argument, parameters)?)
+            function.apply_unaccounted(&bind_value(argument, parameters)?)
         }
         ValueExpressionKind::Temporal {
             function,
@@ -1435,6 +1436,38 @@ pub(super) fn predicate_variable(predicate: &PropertyPredicate) -> Option<&str> 
     }
 }
 
+fn collect_value_variables(value: &ValueExpression, variables: &mut BTreeSet<String>) {
+    match &value.kind {
+        ValueExpressionKind::Binding(variable)
+        | ValueExpressionKind::BindingProperty { variable, .. }
+        | ValueExpressionKind::BindingIndex { variable, .. } => {
+            variables.insert(variable.clone());
+        }
+        ValueExpressionKind::List(values) => {
+            for value in values {
+                collect_value_variables(value, variables);
+            }
+        }
+        ValueExpressionKind::Map(entries) => {
+            for value in entries.values() {
+                collect_value_variables(value, variables);
+            }
+        }
+        ValueExpressionKind::Timestamp(value)
+        | ValueExpressionKind::Conversion {
+            argument: value, ..
+        } => collect_value_variables(value, variables),
+        ValueExpressionKind::Temporal { arguments, .. } => {
+            for value in arguments {
+                collect_value_variables(value, variables);
+            }
+        }
+        ValueExpressionKind::Literal(_)
+        | ValueExpressionKind::Parameter(_)
+        | ValueExpressionKind::CurrentTimestamp => {}
+    }
+}
+
 pub(super) fn collect_scalar_expression_variables(
     expression: &ScalarExpression,
     variables: &mut BTreeSet<String>,
@@ -1443,17 +1476,35 @@ pub(super) fn collect_scalar_expression_variables(
         ScalarExpressionKind::Variable(variable)
         | ScalarExpressionKind::Property { variable, .. }
         | ScalarExpressionKind::Id(variable)
-        | ScalarExpressionKind::RelationshipType(variable) => {
+        | ScalarExpressionKind::RelationshipType(variable)
+        | ScalarExpressionKind::Label { variable, .. }
+        | ScalarExpressionKind::RelationshipEndpoint { variable, .. } => {
             variables.insert(variable.clone());
         }
         ScalarExpressionKind::Value(_) => {}
+        ScalarExpressionKind::Reduce {
+            accumulator,
+            initial,
+            variable,
+            list,
+            expression,
+        } => {
+            collect_scalar_expression_variables(initial, variables);
+            collect_scalar_expression_variables(list, variables);
+            let mut body = BTreeSet::new();
+            collect_scalar_expression_variables(expression, &mut body);
+            body.remove(accumulator);
+            body.remove(variable);
+            variables.extend(body);
+        }
         ScalarExpressionKind::Coalesce(expressions) => {
             for expression in expressions {
                 collect_scalar_expression_variables(expression, variables);
             }
         }
         ScalarExpressionKind::Left { expression, .. }
-        | ScalarExpressionKind::JsonValue { expression, .. } => {
+        | ScalarExpressionKind::JsonValue { expression, .. }
+        | ScalarExpressionKind::JsonString { expression, .. } => {
             collect_scalar_expression_variables(expression, variables);
         }
         ScalarExpressionKind::VectorDistance { left, right, .. } => {
@@ -1499,6 +1550,38 @@ pub(super) fn collect_scalar_expression_variables(
         ScalarExpressionKind::Path(path) => {
             variables.insert(path.path_variable().to_string());
         }
+        // A pattern variable is either bound by the enclosing scope or
+        // introduced by the pattern, which is not known here. Only the
+        // variables the pattern does not name are certainly enclosing ones.
+        ScalarExpressionKind::PatternPredicate(pattern)
+        | ScalarExpressionKind::PatternComprehension { pattern, .. } => {
+            let pattern = &pattern.kind;
+            let nodes = || {
+                std::iter::once(&pattern.first).chain(pattern.steps.iter().map(|step| &step.target))
+            };
+            let mut body = BTreeSet::new();
+            expression.kind.all_children(|child| {
+                collect_scalar_expression_variables(child, &mut body);
+                true
+            });
+            for value in nodes().flat_map(|node| node.properties.values()).chain(
+                pattern
+                    .steps
+                    .iter()
+                    .flat_map(|step| step.relationship.properties.values()),
+            ) {
+                collect_value_variables(value, &mut body);
+            }
+            for node in nodes() {
+                body.remove(&node.variable);
+            }
+            for step in &pattern.steps {
+                if let Some(variable) = &step.relationship.variable {
+                    body.remove(variable);
+                }
+            }
+            variables.extend(body);
+        }
         ScalarExpressionKind::Case { .. }
         | ScalarExpressionKind::Binary { .. }
         | ScalarExpressionKind::Not(_)
@@ -1508,6 +1591,7 @@ pub(super) fn collect_scalar_expression_variables(
         | ScalarExpressionKind::List(_)
         | ScalarExpressionKind::ListIndex { .. }
         | ScalarExpressionKind::Conversion { .. }
+        | ScalarExpressionKind::NumericFunction { .. }
         | ScalarExpressionKind::ListSlice { .. }
         | ScalarExpressionKind::TemporalFunction { .. }
         | ScalarExpressionKind::PropertyAccess { .. }

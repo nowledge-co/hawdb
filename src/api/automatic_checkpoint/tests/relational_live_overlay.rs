@@ -599,3 +599,119 @@ fn steady_inserts_into_a_growing_table_keep_draining_the_live_overlay() {
     reopened.checkpoint().unwrap();
     assert_order_line_totals(&mut reopened, lines);
 }
+
+/// Places a regular file where the next checkpoint generation stages its
+/// private directory. Every automatic preparation then fails with an
+/// operation error before any selector or WAL mutation, as a transient
+/// filesystem fault (ENOSPC, EIO) would. Removing the file clears the fault.
+fn obstruct_next_checkpoint(db: &mut Database) -> std::path::PathBuf {
+    let store = &db.runtime.get().unwrap().store;
+    let root = store.durable_root_path().unwrap().to_path_buf();
+    let generation = store
+        .checkpoint_debt_snapshot()
+        .unwrap()
+        .wal_generation
+        .checked_add(1)
+        .unwrap();
+    let obstruction = root.join(format!(".checkpoint.{generation}.prepare"));
+    std::fs::write(&obstruction, b"not a directory").unwrap();
+    obstruction
+}
+
+/// The #1618 workload with its trigger injected: steady small inserts on one
+/// handle while every checkpoint operation fails. Three failures stop the
+/// circuit; on main nothing restarts it while the handle stays open, the
+/// overlay fills and commit 26 is rejected with the non-retryable live-view
+/// admission error. Here writers that need headroom wait (or get the
+/// retryable `BranchBusy`) and re-arm one attempt per backoff, so the debt
+/// never outgrows one drain; once the fault clears, the next re-armed
+/// attempt drains and the circuit resets.
+#[test]
+fn steady_inserts_outlast_a_transient_checkpoint_fault_and_keep_draining() {
+    let fixture = Fixture::new();
+    let mut db = Database::open_with_config(&fixture.0, config()).unwrap();
+    create_order_line(&mut db);
+    let obstruction = obstruct_next_checkpoint(&mut db);
+    let initial = db
+        .automatic_checkpoint_report()
+        .unwrap()
+        .unwrap()
+        .completed_checkpoints;
+    let mut commits = 0;
+    let mut busy_retries = 0;
+    let mut cleared_at = None;
+    loop {
+        let report = db.automatic_checkpoint_report().unwrap().unwrap();
+        if report.completed_checkpoints >= initial + 2 {
+            break;
+        }
+        // One re-armed attempt has failed too: the fault is what stops the
+        // circuit, not the first three failures alone.
+        if cleared_at.is_none() && report.operation_failures > u64::from(MAX_OPERATION_FAILURES) {
+            assert!(report.operation_retry_rearms >= 1, "{report:?}");
+            assert_eq!(report.completed_checkpoints, initial, "{report:?}");
+            std::fs::remove_file(&obstruction).unwrap();
+            cleared_at = Some(commits);
+        }
+        assert!(commits < 120, "the overlay must drain twice: {report:?}");
+        match insert_order_lines(&mut db, commits) {
+            Ok(()) => commits += 1,
+            // Nothing is applied; the writer retries. A live-overlay
+            // admission error, which no retry can clear, never appears.
+            Err(HawDBError::BranchBusy {
+                resource: "automatic checkpoint capacity",
+            }) if busy_retries < 200 => busy_retries += 1,
+            Err(error) => panic!(
+                "commit {commits} failed after {busy_retries} busy retries: {error}; {:?}; {:?}",
+                debt(&db).relational_live,
+                db.automatic_checkpoint_report()
+            ),
+        }
+        let overlay = debt(&db).relational_live;
+        for (retained, limit) in overlay.admission_pairs() {
+            assert!(
+                limit.is_none_or(|limit| retained < limit),
+                "{retained} {limit:?}"
+            );
+        }
+        if db
+            .automatic_checkpoint_report()
+            .unwrap()
+            .unwrap()
+            .completed_checkpoints
+            == initial
+        {
+            // While the circuit is stopped, the base-relative debt that the
+            // recovering drain must capture stays below the envelope too.
+            for (retained, limit) in overlay.pairs() {
+                assert!(
+                    limit.is_none_or(|limit| retained < limit),
+                    "{retained} {limit:?}"
+                );
+            }
+        }
+    }
+    let report = db.automatic_checkpoint_report().unwrap().unwrap();
+    eprintln!(
+        "transient fault: commits={commits}, cleared_at={cleared_at:?}, \
+         busy_retries={busy_retries}, report={report:?}"
+    );
+    assert!(cleared_at.is_some(), "{report:?}");
+    assert!(!report.operation_retry_exhausted, "{report:?}");
+    assert!(report.operation_retry_rearms >= 1, "{report:?}");
+    // Re-arms grant one attempt each: the failures are the first three plus
+    // one per re-arm, never a free-running retry loop.
+    assert!(
+        report.operation_failures
+            <= u64::from(MAX_OPERATION_FAILURES) + report.operation_retry_rearms,
+        "{report:?}"
+    );
+    assert!(report.last_operation_error.is_some(), "{report:?}");
+    let lines = commits * ORDER_LINES_PER_COMMIT;
+    assert_order_lines(&mut db, lines);
+    drop(db);
+    let mut reopened = Database::open_with_config(&fixture.0, config()).unwrap();
+    assert_order_lines(&mut reopened, lines);
+    reopened.checkpoint().unwrap();
+    assert_order_line_totals(&mut reopened, lines);
+}

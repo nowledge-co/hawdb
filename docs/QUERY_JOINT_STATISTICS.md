@@ -20,6 +20,12 @@ Statistics never establish uniqueness, non-NULL values or a legal rewrite. In
 particular, indexed rows matching the label count at the sample epoch does not
 constitute a schema proof.
 
+The derived view stores each label once and shares its immutable snapshot
+across query-local catalog clones. Lookups sort at most four borrowed keys on
+the stack and binary-search at most 32 key sets for that label; they do not
+allocate property or label strings. Refresh/reconstruction creates a new view,
+so sharing does not extend statistics beyond their catalog snapshot.
+
 ## Supported estimates
 
 - A pure AND of non-NULL equality literals on one binding can use the full key
@@ -32,6 +38,13 @@ constitute a schema proof.
   access and incompatible populations retain the ordinary model. Fully covered
   equalities retain input cardinality. Duplicated input bindings are not capped
   by a source-node frequency estimate.
+- MATCH start selection and expansion-target selectivity use the same joint
+  equality arithmetic as residual filters. An equality seek conditions out its
+  first key only for a compatible complete population. Query-local exact point
+  counts and value-aware estimates that differ from uniform marginal NDV keep
+  their existing precedence: joint NDV does not encode hot-value frequencies.
+  NULL or unsupported node values retain the ordinary fallback. No per-Space
+  collection, new resident counters or persisted statistics fields are added.
 - Multi-key grouping uses joint NDV plus a bound for source rows excluded from
   the composite index by NULL or missing components, capped by input rows. Pure
   property aliases are resolved in the aggregate's incoming scope, including

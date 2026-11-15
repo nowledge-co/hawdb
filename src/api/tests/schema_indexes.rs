@@ -2542,7 +2542,14 @@ fn property_histograms_are_bounded_deterministic_samples() {
             estimate.operator == hawdb_plan_cypher::PhysicalPlanKind::NodeProjectionScanExec
         })
         .unwrap();
-    assert_eq!(scan_estimate.estimated_rows, 13);
+    // Distinct-value width samples stay bounded; the separate row-frequency
+    // histogram now estimates this complete 200-row population directly.
+    assert_eq!(scan_estimate.estimated_rows, 10);
+    assert!(explain
+        .trace
+        .decisions
+        .iter()
+        .any(|decision| decision.contains("source=compressed_histogram")));
 
     db.query("CREATE (:Memory {exact_score: 1})").unwrap();
     db.query("CREATE (:Memory {exact_score: 2})").unwrap();

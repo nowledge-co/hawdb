@@ -304,12 +304,11 @@ fn matched_unwind_relationship_merge_storage_limits_and_constraints_are_atomic()
 
 #[test]
 fn matched_unwind_relationship_merge_embedded_count_guard_rolls_back_and_reopens() {
-    use crate::{NowledgeMemEmbeddedStoreHandle, NowledgeMemGraphMode, NowledgeMemOpenOptions};
+    use crate::{EmbeddedStoreHandle, EmbeddedStoreOpenOptions, GraphMode};
     let path = unique_test_dir("matched_unwind_merge");
-    let options = NowledgeMemOpenOptions::graph_only(&path, NowledgeMemGraphMode::WritableCutover);
+    let options = EmbeddedStoreOpenOptions::graph_only(&path, GraphMode::WritableCutover);
     {
-        let (handle, _) =
-            NowledgeMemEmbeddedStoreHandle::open_with_options(options.clone()).unwrap();
+        let (handle, _) = EmbeddedStoreHandle::open_with_options(options.clone()).unwrap();
         handle
             .with_transaction(|transaction| {
                 transaction.query("CREATE (:Memory {id: 'a'})")?;
@@ -354,7 +353,7 @@ fn matched_unwind_relationship_merge_embedded_count_guard_rolls_back_and_reopens
             .unwrap();
     }
     {
-        let (handle, _) = NowledgeMemEmbeddedStoreHandle::open_with_options(options).unwrap();
+        let (handle, _) = EmbeddedStoreHandle::open_with_options(options).unwrap();
         assert_eq!(
             handle
                 .query_with_report(EVIDENCE_COUNT)

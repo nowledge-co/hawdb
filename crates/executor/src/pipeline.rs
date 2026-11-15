@@ -65,9 +65,19 @@ pub struct BatchExecutionContext<'a> {
     pub memory_ledger: &'a QueryMemoryLedger,
     pub task_context: Option<&'a RuntimeTaskContext>,
     pub observer: &'a dyn ExecutionObserver,
+    /// The graph snapshot that expressions such as pattern predicates read.
+    /// Kernels over plain value rows leave it `None`; such expressions then
+    /// fail rather than read anything else.
+    pub graph: Option<&'a dyn crate::store::GraphExecutionRead>,
 }
 
-impl BatchExecutionContext<'_> {
+impl<'a> BatchExecutionContext<'a> {
+    /// Graph access for expressions evaluated under this context.
+    pub(crate) fn expression_graph(&self) -> Option<crate::expression::ExpressionGraph<'a>> {
+        self.graph
+            .map(|store| crate::expression::ExpressionGraph::new(store, *self))
+    }
+
     pub(crate) fn source_account(&self, operator: &'static str) -> QueryMemoryAccount {
         self.source_account_retaining(operator, self.operator_account(operator))
     }
@@ -193,6 +203,16 @@ impl TransformBatchBuilder {
 
     pub(crate) fn would_exceed_payload(&self, bytes: usize) -> bool {
         self.used_payload_bytes.saturating_add(bytes) > self.payload_bytes
+    }
+
+    /// Pushes a row whose `binding_memory_bytes` the caller already computed
+    /// for its admission, without walking the row again (#1615).
+    pub(crate) fn push_admitted(&mut self, binding: Binding, bytes: usize) {
+        debug_assert_eq!(binding_memory_bytes(&binding), bytes);
+        debug_assert!(self.reservation.bytes() >= self.payload_bytes);
+        self.used_payload_bytes = self.used_payload_bytes.saturating_add(bytes);
+        debug_assert!(self.used_payload_bytes <= self.payload_bytes);
+        self.bindings.push(binding);
     }
 
     pub fn push(&mut self, binding: Binding) {

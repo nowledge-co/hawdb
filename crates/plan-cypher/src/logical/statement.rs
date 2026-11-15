@@ -71,6 +71,7 @@ fn plan_with_params_unpinned(
             property: property.property.clone(),
             value_type: property.value_type,
             nullable: property.nullable,
+            default: property.default.clone(),
         }),
         Statement::AlterTableState(alter) => Ok(LogicalPlan::AlterTableState {
             table_kind: alter.table_kind,

@@ -33,6 +33,10 @@ mod postgres_compat;
 #[path = "relational_sql/update_arithmetic.rs"]
 mod update_arithmetic;
 
+#[cfg(test)]
+#[path = "relational_sql/numeric_literal_double.rs"]
+mod numeric_literal_double;
+
 pub use hawdb_optimizer_relational::{
     RelationalJoinPlanningAttempt, RelationalJoinPlanningBudget, RelationalJoinPlanningCost,
     RelationalJoinPlanningDirective, RelationalJoinPlanningFallbackClass,
@@ -2293,9 +2297,17 @@ mod tests {
                 &[text("ada"), Value::Int(1)],
             ),
             (
+                "SELECT name, id FROM people WHERE name > ''",
+                "SELECT name, id FROM people WHERE name > 'zzz'",
+                "ProjectionExec > SelectionExec > TableFullScanExec",
+                &["name", "id"],
+                &[text("ada"), Value::Int(1)],
+            ),
+            // A bound on the leading primary-key column seeks its interval (#1523).
+            (
                 "SELECT name, id FROM people WHERE id > 0",
                 "SELECT name, id FROM people WHERE id > 99",
-                "ProjectionExec > SelectionExec > TableFullScanExec",
+                "ProjectionExec > TableRangeScanExec",
                 &["name", "id"],
                 &[text("ada"), Value::Int(1)],
             ),

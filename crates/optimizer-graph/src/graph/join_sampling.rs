@@ -404,8 +404,10 @@ fn flip(direction: RelationshipDirection) -> RelationshipDirection {
     }
 }
 
-pub(super) fn rewrite(plan: &LogicalPlan, catalog: &OptimizerCatalog) -> Option<LogicalPlan> {
-    let statistics = catalog.sampled_match.as_ref()?;
+pub(super) fn matches_plan(plan: &LogicalPlan, catalog: &OptimizerCatalog) -> bool {
+    let Some(statistics) = catalog.sampled_match.as_ref() else {
+        return false;
+    };
     let value_ok = |value: &Value| {
         statistics
             .shape
@@ -413,9 +415,14 @@ pub(super) fn rewrite(plan: &LogicalPlan, catalog: &OptimizerCatalog) -> Option<
             .iter()
             .any(|node| &node.value == value)
     };
-    if !statistics.prefers_reverse()
-        || JoinSamplingShape::from_logical_with_value_check(plan, &value_ok)? != statistics.shape
-    {
+    statistics.is_valid()
+        && JoinSamplingShape::from_logical_with_value_check(plan, &value_ok)
+            .is_some_and(|shape| shape == statistics.shape)
+}
+
+pub(super) fn rewrite(plan: &LogicalPlan, catalog: &OptimizerCatalog) -> Option<LogicalPlan> {
+    let statistics = catalog.sampled_match.as_ref()?;
+    if !statistics.prefers_reverse() || !matches_plan(plan, catalog) {
         return None;
     }
     let mut output = plan.clone();
@@ -527,6 +534,63 @@ mod tests {
         let mut shared_binding = statistics.shape.clone();
         shared_binding.nodes[2].variable = "a".into();
         assert!(JoinSamplingShape::from_logical(&shared_binding.plan(false)).is_none());
+    }
+
+    #[test]
+    fn sampled_orientation_only_supersedes_chain_starts_for_the_matching_path() {
+        let sample = statistics();
+        let original = sample.shape.plan(false);
+        let catalog = OptimizerCatalog::default().with_sampled_match_statistics(sample.clone());
+        assert!(matches_plan(&original, &catalog));
+        assert!(!matches_plan(&sample.shape.plan(true), &catalog));
+        let mut different = sample.shape.clone();
+        different.nodes[0].value = Value::Int(2);
+        assert!(!matches_plan(&different.plan(false), &catalog));
+        assert!(!matches_plan(&original, &OptimizerCatalog::default()));
+
+        let mut forward = sample;
+        forward.reverse.work_rows = forward.forward.work_rows;
+        let catalog = OptimizerCatalog::default().with_sampled_match_statistics(forward);
+        assert!(matches_plan(&original, &catalog));
+        assert!(rewrite(&original, &catalog).is_none());
+    }
+
+    #[test]
+    fn a_forward_sample_keeps_its_start_when_catalog_costing_prefers_the_end() {
+        use crate::graph::{OptimizerCatalogIndexes, OptimizerCatalogStatistics};
+
+        let mut sample = statistics();
+        sample.reverse.work_rows = sample.forward.work_rows;
+        let plan = sample.shape.plan(false);
+        let catalog = OptimizerCatalog::new(
+            OptimizerCatalogIndexes::new([("C".into(), "kind".into())], [], [], []),
+            OptimizerCatalogStatistics {
+                label_counts: [
+                    ("A".into(), 1_000),
+                    ("B".into(), 1_000),
+                    ("C".into(), 1_000),
+                ]
+                .into(),
+                path_counts: [
+                    (("A".into(), "R".into(), "B".into()), 1_000),
+                    (("B".into(), "S".into(), "C".into()), 1_000),
+                ]
+                .into(),
+                property_distinct_counts: [(("C".into(), "kind".into()), 1_000)].into(),
+                ..Default::default()
+            },
+        );
+        let optimize = |catalog: &OptimizerCatalog| {
+            crate::CascadesOptimizer::default()
+                .optimize_with_catalog(&plan, catalog)
+                .0
+                .explain(0)
+        };
+        let ordinary = optimize(&catalog);
+        assert!(ordinary.contains("IndexNodeSeek variable=c"), "{ordinary}");
+        let sampled = optimize(&catalog.with_sampled_match_statistics(sample));
+        assert!(sampled.contains("NodeScan variable=a"), "{sampled}");
+        assert!(!sampled.contains("IndexNodeSeek variable=c"), "{sampled}");
     }
 
     #[test]

@@ -164,8 +164,8 @@ fn scan_decision(
     let label_count = catalog.label_count(label);
     let scan_cost = estimate_node_full_scan_cost(label_count);
     let (estimated_rows, startup_cost, suffix) = match predicate {
-        Predicate::PropertyEq { .. } => (
-            catalog.estimate_property_index_eq_rows(label, property),
+        Predicate::PropertyEq { value, .. } => (
+            catalog.estimate_property_index_value_rows(label, property, value),
             NODE_INDEX_EQ_STARTUP_COST,
             format!(
                 "distinct_count={}",
@@ -173,7 +173,7 @@ fn scan_decision(
             ),
         ),
         Predicate::PropertyIn { values, .. } => (
-            catalog.estimate_property_index_in_rows(label, property, values.len() as u64),
+            catalog.estimate_property_index_values_rows(label, property, values),
             values.len() as u64,
             format!(
                 "distinct_count={} value_count={}",
@@ -447,9 +447,9 @@ impl OptimizerRule<GraphRuleExpr> for NodeInSeekRule<'_> {
             return RulePromise::NEVER;
         }
         let label_count = self.catalog.label_count(label);
-        let estimated_rows =
-            self.catalog
-                .estimate_property_index_in_rows(label, property, values.len() as u64);
+        let estimated_rows = self
+            .catalog
+            .estimate_property_index_values_rows(label, property, values);
         let seek_cost = estimate_node_index_seek_cost(estimated_rows, values.len() as u64);
         if node_index_seek_is_cheaper(label_count, seek_cost) {
             RulePromise::new(95)
@@ -482,9 +482,9 @@ impl OptimizerRule<GraphRuleExpr> for NodeInSeekRule<'_> {
         }
         let label_count = self.catalog.label_count(label);
         let distinct_count = self.catalog.distinct_count(label, property).max(1);
-        let estimated_rows =
-            self.catalog
-                .estimate_property_index_in_rows(label, property, values.len() as u64);
+        let estimated_rows = self
+            .catalog
+            .estimate_property_index_values_rows(label, property, values);
         let scan_cost = estimate_node_full_scan_cost(label_count);
         let seek_cost = estimate_node_index_seek_cost(estimated_rows, values.len() as u64);
         if !node_index_seek_is_cheaper(label_count, seek_cost) {
@@ -515,7 +515,9 @@ impl OptimizerRule<GraphRuleExpr> for NodeEqualitySeekRule<'_> {
             return RulePromise::NEVER;
         };
         let Predicate::PropertyEq {
-            variable, property, ..
+            variable,
+            property,
+            value,
         } = predicate.as_ref()
         else {
             return RulePromise::NEVER;
@@ -533,7 +535,7 @@ impl OptimizerRule<GraphRuleExpr> for NodeEqualitySeekRule<'_> {
         let label_count = self.catalog.label_count(label);
         let estimated_rows = self
             .catalog
-            .estimate_property_index_eq_rows(label, property);
+            .estimate_property_index_value_rows(label, property, value);
         if node_equality_index_seek_is_cheaper(label_count, estimated_rows) {
             RulePromise::new(100)
         } else {
@@ -567,7 +569,7 @@ impl OptimizerRule<GraphRuleExpr> for NodeEqualitySeekRule<'_> {
         let distinct_count = self.catalog.distinct_count(label, property).max(1);
         let estimated_rows = self
             .catalog
-            .estimate_property_index_eq_rows(label, property);
+            .estimate_property_index_value_rows(label, property, value);
         let scan_cost = estimate_node_full_scan_cost(label_count);
         let seek_cost = estimate_node_index_seek_cost(estimated_rows, NODE_INDEX_EQ_STARTUP_COST);
         if !node_equality_index_seek_is_cheaper(label_count, estimated_rows) {

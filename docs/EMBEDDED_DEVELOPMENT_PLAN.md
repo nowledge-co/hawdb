@@ -785,7 +785,10 @@ remains rejected. Anonymous relationship endpoints such as `()` and `(:Label)`
 are supported for Nowledge relationship-count reads. Untyped one-hop
 relationship reads such as `MATCH (a)-[r]->(b)` are supported for Nowledge
 overview edge queries, and `label(r)`/`type(r)` can project the bound
-relationship type. The graph-canvas id-set induced subgraph is a fixed bounded
+relationship type. Kùzu `label(n)` reads a node's label and openCypher
+`labels(n)` its label list, in every expression position including
+`WHERE label(b) IN $labels` (#1678; see
+[label functions](CYPHER_LIST_FUNCTIONS.md#labels-and-relationship-types)). The graph-canvas id-set induced subgraph is a fixed bounded
 query decoded by the host route. Nowledge-used
 `RETURN` projection fallbacks support
 `COALESCE(...)` and `LEFT(...)`, including nested forms such as
@@ -805,8 +808,9 @@ openCypher temporal types, constructors, component access, arithmetic,
 `LOAD CSV [WITH HEADERS] FROM ... AS row [FIELDTERMINATOR ...]` imports local
 files beneath `DatabaseConfig::csv_import_root` as a row source for reads and
 for node `CREATE`/`MERGE` and matched-relationship `CREATE`; the
-`toInteger`/`toFloat`/`toBoolean`/`toString` conversion functions are available
-in every scalar context. See [Cypher LOAD CSV](CYPHER_LOAD_CSV.md).
+`toInteger`/`toFloat`/`toBoolean`/`toString` conversion functions and the
+Kùzu-compatible `string`/`to_string` cast are available in every scalar
+context. See [Cypher LOAD CSV](CYPHER_LOAD_CSV.md).
 Parenthesized predicate groups preserve explicit `AND`/`OR` precedence. String
 literals support escaped quotes, backslashes, and common control escapes. Graph algorithm procedure options such
 as `dampingFactor`, `maxIterations`, and `maxLevels` accept bound parameters and
@@ -1020,7 +1024,16 @@ table schema DDL is implemented through
 `CREATE PROPERTY ON RELATIONSHIP TABLE Name(property) TYPE Type`, supports
 optional `NOT NULL`, persists through WAL replay and checkpoint, validates
 existing records before descriptor creation, and checks later writes before a
-WAL batch is appended. `Database::run_schema_maintenance` advances
+WAL batch is appended. An optional `DEFAULT <literal>` or
+`DEFAULT current_timestamp()` (#1683) is applied only to records created
+without the property (CREATE, MERGE create branch, explicit transactions,
+direct store creation APIs and graph snapshot import); explicit NULLs stay
+NULL, nothing is filled at read time, and declaring a defaulted property on a
+table with records lacking it enters `BACKFILL` so schema maintenance fills
+those records in bounded, crash-resumable WAL batches before validation.
+`Database::property_schemas` reports declared defaults; see
+[STORAGE.md](STORAGE.md) for the semantics table and format compatibility.
+`Database::run_schema_maintenance` advances
 `BACKFILL` descriptors to `VALIDATING`, validates `VALIDATING` descriptors
 before advancing them to `PUBLIC`, and removes `GC` descriptors through a single
 grouped WAL batch. `Database::plan_schema_maintenance` exposes a read-only

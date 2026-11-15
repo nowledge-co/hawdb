@@ -78,12 +78,8 @@ fn row_page_round_trip_is_exact() {
         page
     );
 
-    let slot = page.encode_slot(limits).unwrap();
-    assert_eq!(slot.len(), limits.max_page_bytes.get());
-    assert_eq!(
-        ImmutableRelationalRowPage::decode_slot(&slot, limits).unwrap(),
-        page
-    );
+    // Format v2 stores the exact encoded page; there is no padded slot.
+    assert_eq!(encoded.len() as u64, page.encoded_len(limits).unwrap());
 }
 
 #[test]
@@ -122,6 +118,56 @@ fn decimal_row_page_preserves_raw_scale_and_uses_numeric_key_identity() {
         panic!("native Decimal");
     };
     assert_eq!(zero.to_string(), "0.0000");
+}
+
+#[test]
+fn timestamp_row_page_round_trips_and_rejects_out_of_range_payloads() {
+    let (min, max) = (
+        hawdb_core::sql_timestamp::min_micros(),
+        hawdb_core::sql_timestamp::max_micros(),
+    );
+    let page = ImmutableRelationalRowPage {
+        generation: 1,
+        source_commit_epoch: 1,
+        page_id: page_id(1),
+        schema_digest: integrity_digest(b"timestamp schema").sha256,
+        column_count: 3,
+        rows: [min, -1, max]
+            .into_iter()
+            .map(|micros| RelationalRowPageEntry {
+                primary_key: RelationalKey(vec![RelationalValue::Timestamp(micros)]),
+                row: RelationalRow::new(vec![
+                    RelationalValue::Timestamp(micros),
+                    RelationalValue::TimestampTz(micros),
+                    RelationalValue::Null,
+                ]),
+            })
+            .collect(),
+    };
+    let limits = RelationalRowPageLimits::default();
+    let encoded = page.encode(limits).unwrap();
+    let decoded = ImmutableRelationalRowPage::decode(&encoded, limits).unwrap();
+    assert_eq!(decoded.rows, page.rows);
+    let view = RelationalRowPageView::open(&encoded, limits).unwrap();
+    let key = RelationalKey(vec![RelationalValue::Timestamp(-1)]);
+    assert_eq!(view.find_row(&key).unwrap(), Some(1));
+    let projected = view.find_projected_row(&key, &[1]).unwrap().unwrap();
+    assert_eq!(projected.fields[0].value, RelationalValue::TimestampTz(-1));
+
+    // Overwrite the stored TIMESTAMPTZ of the last row with max + 1.
+    let mut corrupt = encoded.clone();
+    let mut needle = vec![11_u8];
+    needle.extend_from_slice(&max.to_le_bytes());
+    let position = corrupt
+        .windows(needle.len())
+        .position(|window| window == needle.as_slice())
+        .expect("encoded TIMESTAMPTZ payload");
+    corrupt[position + 1..position + 9].copy_from_slice(&(max + 1).to_le_bytes());
+    write_integrity(&mut corrupt);
+    assert!(matches!(
+        ImmutableRelationalRowPage::decode(&corrupt, limits),
+        Err(RelationalRowPageError::Corrupt(_))
+    ));
 }
 
 #[test]
@@ -303,7 +349,7 @@ fn decoder_rejects_truncation_checksum_and_slot_corruption() {
 }
 
 #[test]
-fn decoder_rejects_false_key_bounds_and_non_zero_slot_tail() {
+fn decoder_rejects_false_key_bounds_and_bytes_past_the_exact_page() {
     let limits = RelationalRowPageLimits::default();
     let mut encoded = page().encode(limits).unwrap();
     encoded[ROW_PAGE_HEADER_BYTES] ^= 1;
@@ -314,12 +360,14 @@ fn decoder_rejects_false_key_bounds_and_non_zero_slot_tail() {
             if message.contains("bounds")
     ));
 
-    let mut slot = page().encode_slot(limits).unwrap();
-    *slot.last_mut().unwrap() = 1;
+    // A page is read by its exact descriptor length, so even a zero byte
+    // past it is a length mismatch rather than padding.
+    let mut extended = page().encode(limits).unwrap();
+    extended.push(0);
     assert!(matches!(
-        RelationalRowPageView::open_slot(&slot, limits),
+        RelationalRowPageView::open(&extended, limits),
         Err(RelationalRowPageError::Corrupt(message))
-            if message.contains("non-zero trailing bytes")
+            if message.contains("page length mismatch")
     ));
 }
 

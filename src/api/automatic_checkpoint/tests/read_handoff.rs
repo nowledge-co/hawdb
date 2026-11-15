@@ -141,7 +141,7 @@ fn fixture_with_seal_pause() -> (
             let status = state.as_ref().ok().map(|state| {
                 (
                     state.phase,
-                    state.report,
+                    state.report.clone(),
                     state.governor.as_ref().map(RuntimeGovernor::snapshot),
                 )
             });

@@ -17,12 +17,12 @@
 //! The embedded facade retains file/CLI adapters, database probes and activation.
 use hawdb_core::{HawDBError, Result};
 use hawdb_evidence::inventory::{
-    NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL, REQUIRED_NOWLEDGE_REPLACEMENT_QUERY_FAMILIES,
+    QUERY_REPORT_PROTOCOL, REQUIRED_NOWLEDGE_REPLACEMENT_QUERY_FAMILIES,
 };
 use hawdb_route_ownership::graph::{
-    nowledge_mem_graph_read_route_catalog_digest, nowledge_mem_graph_read_route_spec,
-    nowledge_mem_graph_read_route_specs_json, nowledge_mem_required_query_families_for_route,
-    NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION, REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
+    graph_read_route_catalog_digest, graph_read_route_spec, graph_read_route_specs_json,
+    required_query_families_for_route, GRAPH_READ_ROUTE_CATALOG_VERSION,
+    REQUIRED_BOUNDED_READ_ROUTES,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -65,13 +65,13 @@ pub fn nowledge_graph_route_readiness_json(
         .filter(|route| route.query_runtime_ready())
         .map(|route| route.route.as_str())
         .collect::<BTreeSet<_>>();
-    let missing_query_runtime_routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+    let missing_query_runtime_routes = REQUIRED_BOUNDED_READ_ROUTES
         .iter()
         .filter(|route| !query_runtime_ready_route_names.contains(**route))
         .copied()
         .collect::<Vec<_>>();
     let query_runtime_route_count =
-        REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len() - missing_query_runtime_routes.len();
+        REQUIRED_BOUNDED_READ_ROUTES.len() - missing_query_runtime_routes.len();
     let query_runtime_report_count = routes
         .iter()
         .map(RouteEvidence::query_runtime_report_count)
@@ -130,15 +130,15 @@ pub fn nowledge_graph_route_readiness_json(
         "evidence_protocol": evidence_protocol,
         "evidence_ready": evidence_ready,
         "route_count": route_count,
-        "required_route_count": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
+        "required_route_count": REQUIRED_BOUNDED_READ_ROUTES.len(),
         "covered_route_count": route_coverage.covered_routes.len(),
         "covered_routes": route_coverage.covered_routes,
         "missing_required_routes": route_coverage.missing_required_routes,
         "required_routes_covered": route_coverage.required_routes_covered,
         "unknown_routes": route_coverage.unknown_routes,
         "duplicate_routes": route_coverage.duplicate_routes,
-        "route_catalog_version": NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION,
-        "route_catalog_digest": nowledge_mem_graph_read_route_catalog_digest(),
+        "route_catalog_version": GRAPH_READ_ROUTE_CATALOG_VERSION,
+        "route_catalog_digest": graph_read_route_catalog_digest(),
         "route_coverage_ready": route_coverage.ready,
         "route_coverage_blocker_codes": route_coverage.blocker_codes,
         "evidence_route_coverage_present": evidence_route_coverage_present,
@@ -164,7 +164,7 @@ pub fn nowledge_graph_route_readiness_json(
         "route_relationship_property_pruning_evidence_ready": route_relationship_property_pruning_evidence_ready,
         "route_primary_ready": route_primary_ready,
         "route_primary_blocker_codes": route_primary_blocker_codes,
-        "route_catalog": nowledge_mem_graph_read_route_specs_json(),
+        "route_catalog": graph_read_route_specs_json(),
         "routes": routes.into_iter().map(RouteEvidence::json).collect::<Vec<_>>(),
     }))
 }
@@ -221,17 +221,16 @@ impl EvidenceRouteCoverage {
     }
 
     fn matches(&self, recomputed: &RouteCoverage) -> bool {
-        self.required_route_count == Some(REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len() as u64)
+        self.required_route_count == Some(REQUIRED_BOUNDED_READ_ROUTES.len() as u64)
             && self.covered_route_count == Some(recomputed.covered_routes.len() as u64)
             && self.covered_routes == recomputed.covered_routes
             && self.missing_required_routes == recomputed.missing_required_route_strings()
             && self.required_routes_covered == Some(recomputed.required_routes_covered)
             && self.unknown_routes == recomputed.unknown_routes
             && self.duplicate_routes == recomputed.duplicate_routes
-            && self.route_catalog_version.as_deref()
-                == Some(NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION)
+            && self.route_catalog_version.as_deref() == Some(GRAPH_READ_ROUTE_CATALOG_VERSION)
             && self.route_catalog_digest.as_deref()
-                == Some(nowledge_mem_graph_read_route_catalog_digest().as_str())
+                == Some(graph_read_route_catalog_digest().as_str())
             && self.ready == Some(recomputed.ready)
             && self.blocker_codes == recomputed.blocker_code_strings()
     }
@@ -278,7 +277,7 @@ impl RouteCoverage {
 }
 
 fn route_coverage(routes: &[RouteEvidence]) -> RouteCoverage {
-    let required_routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+    let required_routes = REQUIRED_BOUNDED_READ_ROUTES
         .iter()
         .copied()
         .collect::<BTreeSet<_>>();
@@ -287,12 +286,12 @@ fn route_coverage(routes: &[RouteEvidence]) -> RouteCoverage {
         *route_counts.entry(route.route.as_str()).or_default() += 1;
     }
     let route_names = route_counts.keys().copied().collect::<BTreeSet<_>>();
-    let covered_routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+    let covered_routes = REQUIRED_BOUNDED_READ_ROUTES
         .iter()
         .filter(|route| route_names.contains(**route))
         .map(|route| (*route).to_string())
         .collect::<Vec<_>>();
-    let missing_required_routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+    let missing_required_routes = REQUIRED_BOUNDED_READ_ROUTES
         .iter()
         .filter(|route| !route_names.contains(**route))
         .copied()
@@ -460,7 +459,7 @@ impl RouteEvidence {
             .into_iter()
             .map(QueryRuntimeReport::json)
             .collect::<Vec<_>>();
-        let route_catalog_metadata = nowledge_mem_graph_read_route_spec(&self.route);
+        let route_catalog_metadata = graph_read_route_spec(&self.route);
         let mut json = serde_json::json!({
             "route": self.route,
             "shadow_compare_ready": self.shadow_compare_ready,
@@ -738,7 +737,7 @@ impl QueryRuntimeReport {
                 blockers.insert("query_report_query_family_missing".to_string());
             }
         }
-        if self.protocol.as_deref() != Some(NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL) {
+        if self.protocol.as_deref() != Some(QUERY_REPORT_PROTOCOL) {
             blockers.insert("query_report_protocol_mismatch".to_string());
         }
         if !self
@@ -992,7 +991,7 @@ fn parse_route(value: &serde_json::Value) -> Result<RouteEvidence> {
         .ok_or_else(|| HawDBError::Semantic("graph route evidence route is required".to_string()))?
         .to_string();
     let required_query_families = string_array_path(value, &["required_query_families"]);
-    let computed_required_query_families = nowledge_mem_required_query_families_for_route(&route)
+    let computed_required_query_families = required_query_families_for_route(&route)
         .iter()
         .map(|family| (*family).to_string())
         .collect::<Vec<_>>();

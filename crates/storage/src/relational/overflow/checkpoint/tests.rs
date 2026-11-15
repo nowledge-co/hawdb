@@ -504,6 +504,7 @@ fn deltas(state: &RelationalState) -> Vec<RelationalRowPageTableDelta> {
         .collect::<Vec<_>>();
     vec![
         RelationalRowPageTableDelta {
+            replaces_base: false,
             last_row_id: 0,
             table: "empty".into(),
             schema: None,
@@ -514,6 +515,7 @@ fn deltas(state: &RelationalState) -> Vec<RelationalRowPageTableDelta> {
             deleted_page_ids: Vec::new(),
         },
         RelationalRowPageTableDelta {
+            replaces_base: false,
             last_row_id: 0,
             table: "messages".into(),
             schema: Some(schema.schema.clone()),

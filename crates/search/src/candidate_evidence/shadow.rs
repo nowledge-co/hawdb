@@ -13,11 +13,10 @@
 // limitations under the License.
 
 use super::{
-    NowledgeMemSearchCandidateOutput, NowledgeMemSearchCandidateReadinessOptions,
-    NowledgeMemSearchCandidateReadinessReport, NowledgeMemSearchCandidateReport,
-    NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_ROUTE, NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_SOURCE,
-    NOWLEDGE_MEM_SEARCH_CANDIDATE_PRIMARY_ENGINE, NOWLEDGE_MEM_SEARCH_CANDIDATE_SHADOW_ENGINE,
-    NOWLEDGE_MEM_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
+    SearchCandidateOutput, SearchCandidateReadinessOptions, SearchCandidateReadinessReport,
+    SearchCandidateReport, SEARCH_CANDIDATE_EVIDENCE_ROUTE, SEARCH_CANDIDATE_EVIDENCE_SOURCE,
+    SEARCH_CANDIDATE_PRIMARY_ENGINE, SEARCH_CANDIDATE_SHADOW_ENGINE,
+    SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
 };
 use crate::{SearchMode, NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS};
 use std::collections::{BTreeMap, BTreeSet};
@@ -36,7 +35,7 @@ const NOWLEDGE_SEARCH_CANDIDATE_TIMESTAMP_RANGE_FIELDS: &[&str] =
     &["created_at", "updated_at", "event_start", "event_end"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemSearchCandidateShadowEvidence {
+pub struct SearchCandidateShadowEvidence {
     pub request_count: u64,
     pub primary_candidate_count: u64,
     pub shadow_candidate_count: u64,
@@ -58,19 +57,19 @@ pub struct NowledgeMemSearchCandidateShadowEvidence {
     pub primary_candidate_identity_checksum: Option<u64>,
     pub shadow_candidate_identity_checksum: Option<u64>,
     pub matched_candidate_identity_checksum: Option<u64>,
-    pub filter_pushdown: Option<NowledgeMemSearchCandidateFilterPushdownEvidence>,
+    pub filter_pushdown: Option<SearchCandidateFilterPushdownEvidence>,
     pub blocker_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemSearchCandidateFilterPushdownEvidence {
+pub struct SearchCandidateFilterPushdownEvidence {
     pub pushed_predicate_count: u64,
     pub shadow_scan_present: bool,
-    pub field_summaries: Vec<NowledgeMemSearchCandidateFieldSummary>,
+    pub field_summaries: Vec<SearchCandidateFieldSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemSearchCandidateFieldSummary {
+pub struct SearchCandidateFieldSummary {
     pub field: String,
     pub source: String,
     pub segment_count: usize,
@@ -82,7 +81,7 @@ pub struct NowledgeMemSearchCandidateFieldSummary {
     pub timestamp_range_segment_count: usize,
 }
 
-impl NowledgeMemSearchCandidateFieldSummary {
+impl SearchCandidateFieldSummary {
     fn merge_capabilities(&mut self, other: &Self) {
         self.segment_count = self.segment_count.max(other.segment_count);
         self.value_summary_used |= other.value_summary_used;
@@ -104,7 +103,7 @@ impl NowledgeMemSearchCandidateFieldSummary {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct NowledgeMemSearchCandidateShadowAccumulator {
+pub struct SearchCandidateShadowAccumulator {
     request_count: u64,
     primary_candidate_count: u64,
     shadow_candidate_count: u64,
@@ -126,11 +125,11 @@ pub struct NowledgeMemSearchCandidateShadowAccumulator {
     primary_candidate_identity_checksum: Option<u64>,
     shadow_candidate_identity_checksum: Option<u64>,
     matched_candidate_identity_checksum: Option<u64>,
-    filter_pushdown: Option<NowledgeMemSearchCandidateFilterPushdownEvidence>,
+    filter_pushdown: Option<SearchCandidateFilterPushdownEvidence>,
     blocker_codes: BTreeSet<String>,
 }
 
-impl NowledgeMemSearchCandidateShadowAccumulator {
+impl SearchCandidateShadowAccumulator {
     pub fn new() -> Self {
         Self::default()
     }
@@ -209,7 +208,7 @@ impl NowledgeMemSearchCandidateShadowAccumulator {
             })
             .unwrap_or_default();
         observed_fields.extend(fields.into_iter().map(|field| field.as_ref().to_string()));
-        self.filter_pushdown = Some(NowledgeMemSearchCandidateFilterPushdownEvidence {
+        self.filter_pushdown = Some(SearchCandidateFilterPushdownEvidence {
             pushed_predicate_count: self
                 .filter_pushdown
                 .as_ref()
@@ -223,18 +222,16 @@ impl NowledgeMemSearchCandidateShadowAccumulator {
                 .unwrap_or(true),
             field_summaries: observed_fields
                 .into_iter()
-                .map(|field| {
-                    nowledge_mem_search_candidate_descriptor_contract_field_summary(&field)
-                })
+                .map(|field| search_candidate_descriptor_contract_field_summary(&field))
                 .collect(),
         });
     }
 
-    pub fn record_filter_pushdown_report(&mut self, report: &NowledgeMemSearchCandidateReport) {
+    pub fn record_filter_pushdown_report(&mut self, report: &SearchCandidateReport) {
         let field_summaries = if report.persisted_segment_descriptor_used {
             NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS
                 .iter()
-                .map(|field| nowledge_mem_search_candidate_descriptor_contract_field_summary(field))
+                .map(|field| search_candidate_descriptor_contract_field_summary(field))
                 .collect::<Vec<_>>()
         } else {
             report
@@ -242,7 +239,7 @@ impl NowledgeMemSearchCandidateShadowAccumulator {
                 .metadata_predicate_pushdown
                 .field_summaries
                 .iter()
-                .map(nowledge_mem_search_candidate_field_summary_from_pruning_report)
+                .map(search_candidate_field_summary_from_pruning_report)
                 .collect::<Vec<_>>()
         };
         self.record_filter_pushdown_summaries(
@@ -262,7 +259,7 @@ impl NowledgeMemSearchCandidateShadowAccumulator {
         &mut self,
         pushed_predicate_count: u64,
         shadow_scan_present: bool,
-        summaries: Vec<NowledgeMemSearchCandidateFieldSummary>,
+        summaries: Vec<SearchCandidateFieldSummary>,
     ) {
         let mut observed = self
             .filter_pushdown
@@ -281,7 +278,7 @@ impl NowledgeMemSearchCandidateShadowAccumulator {
                 .and_modify(|existing| existing.merge_capabilities(&summary))
                 .or_insert(summary);
         }
-        self.filter_pushdown = Some(NowledgeMemSearchCandidateFilterPushdownEvidence {
+        self.filter_pushdown = Some(SearchCandidateFilterPushdownEvidence {
             pushed_predicate_count: self
                 .filter_pushdown
                 .as_ref()
@@ -336,7 +333,7 @@ impl NowledgeMemSearchCandidateShadowAccumulator {
     pub fn record_search_candidate_output<I, S>(
         &mut self,
         primary_candidate_ids: I,
-        shadow_output: &NowledgeMemSearchCandidateOutput,
+        shadow_output: &SearchCandidateOutput,
     ) where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
@@ -360,14 +357,11 @@ impl NowledgeMemSearchCandidateShadowAccumulator {
         self.record_retriever_leg_report(&shadow_output.report);
         self.record_filter_pushdown_report(&shadow_output.report);
         self.record_candidate_readiness_report(&shadow_output.readiness_report(
-            &NowledgeMemSearchCandidateReadinessOptions::lancedb_replacement_candidate_read(),
+            &SearchCandidateReadinessOptions::lancedb_replacement_candidate_read(),
         ));
     }
 
-    pub fn record_candidate_readiness_report(
-        &mut self,
-        report: &NowledgeMemSearchCandidateReadinessReport,
-    ) {
+    pub fn record_candidate_readiness_report(&mut self, report: &SearchCandidateReadinessReport) {
         self.record_candidate_readiness_signals(
             report.source_chunk_identity_ready,
             report.fail_soft_observed,
@@ -434,7 +428,7 @@ impl NowledgeMemSearchCandidateShadowAccumulator {
         }
     }
 
-    fn record_retriever_leg_report(&mut self, report: &NowledgeMemSearchCandidateReport) {
+    fn record_retriever_leg_report(&mut self, report: &SearchCandidateReport) {
         self.record_retriever_leg(
             "text",
             report
@@ -455,8 +449,8 @@ impl NowledgeMemSearchCandidateShadowAccumulator {
         );
     }
 
-    pub fn evidence(&self) -> NowledgeMemSearchCandidateShadowEvidence {
-        NowledgeMemSearchCandidateShadowEvidence {
+    pub fn evidence(&self) -> SearchCandidateShadowEvidence {
+        SearchCandidateShadowEvidence {
             request_count: self.request_count,
             primary_candidate_count: self.primary_candidate_count,
             shadow_candidate_count: self.shadow_candidate_count,
@@ -490,7 +484,7 @@ impl NowledgeMemSearchCandidateShadowAccumulator {
     }
 }
 
-impl NowledgeMemSearchCandidateShadowEvidence {
+impl SearchCandidateShadowEvidence {
     pub fn ready(
         request_count: u64,
         primary_candidate_count: u64,
@@ -525,16 +519,16 @@ impl NowledgeMemSearchCandidateShadowEvidence {
     }
 
     pub fn json(&self) -> serde_json::Value {
-        nowledge_mem_search_candidate_shadow_evidence_json(self)
+        search_candidate_shadow_evidence_json(self)
     }
 }
 
-pub fn nowledge_mem_search_candidate_shadow_evidence_json(
-    evidence: &NowledgeMemSearchCandidateShadowEvidence,
+pub fn search_candidate_shadow_evidence_json(
+    evidence: &SearchCandidateShadowEvidence,
 ) -> serde_json::Value {
-    let blocker_codes = nowledge_mem_search_candidate_shadow_blocker_codes(evidence);
-    let candidate_identity = nowledge_mem_search_candidate_shadow_identity_json(evidence);
-    let filter_pushdown = nowledge_mem_search_candidate_filter_pushdown_json(evidence);
+    let blocker_codes = search_candidate_shadow_blocker_codes(evidence);
+    let candidate_identity = search_candidate_shadow_identity_json(evidence);
+    let filter_pushdown = search_candidate_filter_pushdown_json(evidence);
     let ready = blocker_codes.is_empty();
     let row_count_parity = evidence.request_count > 0
         && evidence.primary_candidate_count == evidence.shadow_candidate_count
@@ -557,12 +551,12 @@ pub fn nowledge_mem_search_candidate_shadow_evidence_json(
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(0);
     serde_json::json!({
-        "protocol": NOWLEDGE_MEM_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
-        "route": NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_ROUTE,
-        "evidence_source": NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_SOURCE,
-        "engine": NOWLEDGE_MEM_SEARCH_CANDIDATE_SHADOW_ENGINE,
+        "protocol": SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
+        "route": SEARCH_CANDIDATE_EVIDENCE_ROUTE,
+        "evidence_source": SEARCH_CANDIDATE_EVIDENCE_SOURCE,
+        "engine": SEARCH_CANDIDATE_SHADOW_ENGINE,
         "ready": ready,
-        "candidate_primary_engine": NOWLEDGE_MEM_SEARCH_CANDIDATE_PRIMARY_ENGINE,
+        "candidate_primary_engine": SEARCH_CANDIDATE_PRIMARY_ENGINE,
         "request_count": evidence.request_count,
         "primary_candidate_count": evidence.primary_candidate_count,
         "shadow_candidate_count": evidence.shadow_candidate_count,
@@ -608,7 +602,7 @@ pub fn nowledge_mem_search_candidate_shadow_evidence_json(
     })
 }
 
-fn retriever_candidate_count(report: &NowledgeMemSearchCandidateReport, name: &str) -> u64 {
+fn retriever_candidate_count(report: &SearchCandidateReport, name: &str) -> u64 {
     report
         .retriever_candidate_counts
         .get(name)
@@ -616,8 +610,8 @@ fn retriever_candidate_count(report: &NowledgeMemSearchCandidateReport, name: &s
         .unwrap_or_default() as u64
 }
 
-fn nowledge_mem_search_candidate_shadow_identity_json(
-    evidence: &NowledgeMemSearchCandidateShadowEvidence,
+fn search_candidate_shadow_identity_json(
+    evidence: &SearchCandidateShadowEvidence,
 ) -> serde_json::Value {
     let primary_checksum = evidence.primary_candidate_identity_checksum;
     let shadow_checksum = evidence.shadow_candidate_identity_checksum;
@@ -636,9 +630,7 @@ fn nowledge_mem_search_candidate_shadow_identity_json(
     })
 }
 
-fn nowledge_mem_search_candidate_shadow_blocker_codes(
-    evidence: &NowledgeMemSearchCandidateShadowEvidence,
-) -> Vec<String> {
+fn search_candidate_shadow_blocker_codes(evidence: &SearchCandidateShadowEvidence) -> Vec<String> {
     let mut blockers = evidence
         .blocker_codes
         .iter()
@@ -668,29 +660,27 @@ fn nowledge_mem_search_candidate_shadow_blocker_codes(
     } else if !identity_ready {
         blockers.insert("search_candidate_identity_mismatch".to_string());
     }
-    blockers.extend(nowledge_mem_search_candidate_filter_pushdown_blockers(
-        evidence,
-    ));
+    blockers.extend(search_candidate_filter_pushdown_blockers(evidence));
     blockers.into_iter().collect()
 }
 
-fn nowledge_mem_search_candidate_filter_pushdown_json(
-    evidence: &NowledgeMemSearchCandidateShadowEvidence,
+fn search_candidate_filter_pushdown_json(
+    evidence: &SearchCandidateShadowEvidence,
 ) -> serde_json::Value {
-    let blocker_codes = nowledge_mem_search_candidate_filter_pushdown_blockers(evidence);
+    let blocker_codes = search_candidate_filter_pushdown_blockers(evidence);
     let missing_required_fields =
-        nowledge_mem_search_candidate_missing_filter_fields(evidence.filter_pushdown.as_ref());
-    let missing_value_summary_fields = nowledge_mem_search_candidate_missing_capability_fields(
+        search_candidate_missing_filter_fields(evidence.filter_pushdown.as_ref());
+    let missing_value_summary_fields = search_candidate_missing_capability_fields(
         evidence.filter_pushdown.as_ref(),
         NOWLEDGE_SEARCH_CANDIDATE_VALUE_SUMMARY_FIELDS,
         CandidateFieldCapability::Value,
     );
-    let missing_numeric_range_fields = nowledge_mem_search_candidate_missing_capability_fields(
+    let missing_numeric_range_fields = search_candidate_missing_capability_fields(
         evidence.filter_pushdown.as_ref(),
         NOWLEDGE_SEARCH_CANDIDATE_NUMERIC_RANGE_FIELDS,
         CandidateFieldCapability::NumericRange,
     );
-    let missing_timestamp_range_fields = nowledge_mem_search_candidate_missing_capability_fields(
+    let missing_timestamp_range_fields = search_candidate_missing_capability_fields(
         evidence.filter_pushdown.as_ref(),
         NOWLEDGE_SEARCH_CANDIDATE_TIMESTAMP_RANGE_FIELDS,
         CandidateFieldCapability::TimestampRange,
@@ -742,8 +732,8 @@ fn nowledge_mem_search_candidate_filter_pushdown_json(
     })
 }
 
-fn nowledge_mem_search_candidate_filter_pushdown_blockers(
-    evidence: &NowledgeMemSearchCandidateShadowEvidence,
+fn search_candidate_filter_pushdown_blockers(
+    evidence: &SearchCandidateShadowEvidence,
 ) -> Vec<String> {
     let mut blockers = BTreeSet::new();
     let Some(filter_pushdown) = evidence.filter_pushdown.as_ref() else {
@@ -755,22 +745,21 @@ fn nowledge_mem_search_candidate_filter_pushdown_blockers(
     if !filter_pushdown.shadow_scan_present {
         blockers.insert("search_candidate_shadow_scan_missing".to_string());
     }
-    let missing_required_fields =
-        nowledge_mem_search_candidate_missing_filter_fields(Some(filter_pushdown));
+    let missing_required_fields = search_candidate_missing_filter_fields(Some(filter_pushdown));
     if !missing_required_fields.is_empty() {
         blockers.insert("search_candidate_field_pruning_missing".to_string());
     }
-    let missing_value_summary_fields = nowledge_mem_search_candidate_missing_capability_fields(
+    let missing_value_summary_fields = search_candidate_missing_capability_fields(
         Some(filter_pushdown),
         NOWLEDGE_SEARCH_CANDIDATE_VALUE_SUMMARY_FIELDS,
         CandidateFieldCapability::Value,
     );
-    let missing_numeric_range_fields = nowledge_mem_search_candidate_missing_capability_fields(
+    let missing_numeric_range_fields = search_candidate_missing_capability_fields(
         Some(filter_pushdown),
         NOWLEDGE_SEARCH_CANDIDATE_NUMERIC_RANGE_FIELDS,
         CandidateFieldCapability::NumericRange,
     );
-    let missing_timestamp_range_fields = nowledge_mem_search_candidate_missing_capability_fields(
+    let missing_timestamp_range_fields = search_candidate_missing_capability_fields(
         Some(filter_pushdown),
         NOWLEDGE_SEARCH_CANDIDATE_TIMESTAMP_RANGE_FIELDS,
         CandidateFieldCapability::TimestampRange,
@@ -784,8 +773,8 @@ fn nowledge_mem_search_candidate_filter_pushdown_blockers(
     blockers.into_iter().collect()
 }
 
-fn nowledge_mem_search_candidate_missing_filter_fields(
-    filter_pushdown: Option<&NowledgeMemSearchCandidateFilterPushdownEvidence>,
+fn search_candidate_missing_filter_fields(
+    filter_pushdown: Option<&SearchCandidateFilterPushdownEvidence>,
 ) -> Vec<&'static str> {
     let observed_fields = filter_pushdown
         .map(|filter| {
@@ -810,8 +799,8 @@ enum CandidateFieldCapability {
     TimestampRange,
 }
 
-fn nowledge_mem_search_candidate_missing_capability_fields(
-    filter_pushdown: Option<&NowledgeMemSearchCandidateFilterPushdownEvidence>,
+fn search_candidate_missing_capability_fields(
+    filter_pushdown: Option<&SearchCandidateFilterPushdownEvidence>,
     required_fields: &'static [&'static str],
     capability: CandidateFieldCapability,
 ) -> Vec<&'static str> {
@@ -830,7 +819,7 @@ fn nowledge_mem_search_candidate_missing_capability_fields(
 }
 
 fn candidate_field_has_capability(
-    summary: &NowledgeMemSearchCandidateFieldSummary,
+    summary: &SearchCandidateFieldSummary,
     capability: CandidateFieldCapability,
 ) -> bool {
     match capability {
@@ -847,10 +836,8 @@ fn candidate_field_has_capability(
     }
 }
 
-fn nowledge_mem_search_candidate_descriptor_contract_field_summary(
-    field: &str,
-) -> NowledgeMemSearchCandidateFieldSummary {
-    NowledgeMemSearchCandidateFieldSummary {
+fn search_candidate_descriptor_contract_field_summary(field: &str) -> SearchCandidateFieldSummary {
+    SearchCandidateFieldSummary {
         field: field.to_string(),
         source: "persisted_segment_descriptor_contract".to_string(),
         segment_count: 1,
@@ -872,10 +859,10 @@ fn nowledge_mem_search_candidate_descriptor_contract_field_summary(
     }
 }
 
-fn nowledge_mem_search_candidate_field_summary_from_pruning_report(
+fn search_candidate_field_summary_from_pruning_report(
     report: &crate::SearchPredicateFieldPruningReport,
-) -> NowledgeMemSearchCandidateFieldSummary {
-    NowledgeMemSearchCandidateFieldSummary {
+) -> SearchCandidateFieldSummary {
+    SearchCandidateFieldSummary {
         field: report.field.clone(),
         source: "search_predicate_pruning_report".to_string(),
         segment_count: report.segment_count,

@@ -347,7 +347,7 @@ impl RelationalRowPageLiveOverlay {
                 changes,
                 encoded_bytes,
             } => (changes, encoded_bytes),
-            RelationalRowChangeCapture::RequiresCheckpoint { tables } => {
+            RelationalRowChangeCapture::RequiresCheckpoint { tables, .. } => {
                 return Err(RelationalRowPageLiveError::RequiresCheckpoint { tables });
             }
             RelationalRowChangeCapture::Invalidated { reason } => {

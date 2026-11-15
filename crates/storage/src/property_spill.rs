@@ -513,7 +513,7 @@ impl PropertySpillWriter {
         &mut self,
         work: &crate::background::CheckpointWorkContext,
     ) {
-        self.work = work.clone();
+        self.work.rebind(work);
         self.descriptor_tree.bind_checkpoint_attempt(work);
     }
 

@@ -366,6 +366,58 @@ fn read_inflated<T>(
     (selected, drained, inflated.count, inflated.digest.finish())
 }
 
+/// A document line's id and the [`search_document_bytes`] its decoded
+/// document would have, read without decoding its title, content, vector or
+/// metadata. Metadata keys of one document are distinct, as written.
+fn summarize_document_line(line: &str) -> Result<(String, u64)> {
+    let mut fields = line.split('\t');
+    let (Some("doc"), Some(id), Some(title), Some(content), Some(embedding), Some(metadata), None) = (
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+    ) else {
+        return Err(HawDBError::Storage(format!(
+            "invalid search document line: {line}"
+        )));
+    };
+    let hex = |raw: &str| -> Result<u64> {
+        if raw.len().is_multiple_of(2) {
+            Ok((raw.len() / 2) as u64)
+        } else {
+            Err(HawDBError::Storage(format!(
+                "invalid hex string length: {}",
+                raw.len()
+            )))
+        }
+    };
+    // Counting separators bytewise, rather than splitting, keeps a vector of
+    // a thousand text-encoded components cheap to skip.
+    let dimension = if embedding.is_empty() {
+        0
+    } else {
+        embedding.bytes().filter(|byte| *byte == b',').count() as u64 + 1
+    };
+    let mut bytes = hex(id)?
+        .saturating_add(hex(title)?)
+        .saturating_add(hex(content)?)
+        .saturating_add(dimension.saturating_mul(std::mem::size_of::<f32>() as u64));
+    if !metadata.is_empty() {
+        for pair in metadata.split(';') {
+            let Some((key, value)) = pair.split_once('=') else {
+                return Err(HawDBError::Storage(format!(
+                    "invalid metadata pair: {pair}"
+                )));
+            };
+            bytes = bytes.saturating_add(hex(key)?).saturating_add(hex(value)?);
+        }
+    }
+    Ok((crate::decode_string(id)?, bytes))
+}
+
 fn select_documents(
     text: &mut dyn BufRead,
     segment: &SearchSegmentDescriptorEntry,
@@ -394,14 +446,14 @@ fn select_documents(
         if line.is_empty() || line == "HAWDB_SEARCH_SEGMENT_V1" {
             continue;
         }
-        let document = decode_search_document_line(line)?;
-        if count == 0 && document.id != segment.first_document_id {
+        // Only the selected lines are decoded (#1611). Every line still
+        // proves the segment's order, bounds and count from its id; the
+        // checksummed range already fences the bytes of the others.
+        let (id, bytes) = summarize_document_line(line)?;
+        if count == 0 && id != segment.first_document_id {
             return Err(invalid("document bounds do not match its descriptor"));
         }
-        if previous
-            .as_ref()
-            .is_some_and(|previous| previous >= &document.id)
-        {
+        if previous.as_ref().is_some_and(|previous| previous >= &id) {
             return Err(invalid("documents are not strictly ordered"));
         }
         count = count
@@ -410,12 +462,14 @@ fn select_documents(
         if count > segment.document_count {
             return Err(invalid("document count exceeds its descriptor"));
         }
-        previous = Some(document.id.clone());
-        let bytes = search_document_bytes(&document);
         selected.peak_document_bytes = selected
             .peak_document_bytes
             .max(selected.bytes.saturating_add(bytes));
-        if ids.contains(&document.id) {
+        let selected_line = ids.contains(&id);
+        previous = Some(id);
+        if selected_line {
+            let document = decode_search_document_line(line)?;
+            debug_assert_eq!(search_document_bytes(&document), bytes);
             let previous_bytes = selected.bytes;
             selected.bytes = selected
                 .bytes

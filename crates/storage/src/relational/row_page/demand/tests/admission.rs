@@ -127,7 +127,11 @@ fn failed_page_attempt_retains_admission_before_retry() {
     assert!(!fixture.reader.is_poisoned());
     let report = fixture.reader.cumulative.report().unwrap();
     assert_eq!(report.demand.pages_read, 1);
-    assert_eq!(report.demand.bytes_read, PAGE_BYTES);
+    // Format v2 charges the page's exact encoded length.
+    assert_eq!(
+        report.demand.bytes_read,
+        descriptor.page_integrity.encoded_len as usize
+    );
     assert_eq!(report.demand.file_pages_read, 0);
     assert_eq!(report.demand.file_bytes_read, 0);
     assert_eq!(report.demand.cache_hits, 0);
@@ -350,9 +354,15 @@ fn malformed_selected_value_retains_admission_without_successful_decode_or_emiss
         assert_eq!(report.demand.owned_rows_emitted, 0);
         assert_eq!(report.demand.borrowed_rows_emitted, 0);
         assert_eq!(report.demand.pages_read, 1);
-        assert_eq!(report.demand.bytes_read, PAGE_BYTES);
+        let page_bytes = fixture
+            .row_root
+            .read_table_page_descriptor("documents", 0)
+            .unwrap()
+            .page_integrity
+            .encoded_len as usize;
+        assert_eq!(report.demand.bytes_read, page_bytes);
         assert_eq!(report.demand.file_pages_read, 1);
-        assert_eq!(report.demand.file_bytes_read, PAGE_BYTES);
+        assert_eq!(report.demand.file_bytes_read, page_bytes);
         assert_eq!(report.demand.cache_misses, 1);
         assert_eq!(report.demand.cache_hits, 0);
     }

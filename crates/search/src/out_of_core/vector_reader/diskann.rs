@@ -114,6 +114,7 @@ impl<R> GraphProjection<R> {
         query: &[f32],
         top_k: usize,
         options: ProjectionSearchOptions<'_>,
+        navigation_beam: usize,
     ) -> hawdb_vector_projection::Result<ProjectionSearchOutput> {
         // Validate explicit ISA requests, but report the shared Float64 distance
         // kernel actually used by graph traversal rather than a RaBitQ scanner.
@@ -142,7 +143,7 @@ impl<R> GraphProjection<R> {
             top_k,
             options.candidates,
             DiskAnnSearchOptions {
-                beam_width: top_k.max(crate::vector_execution::DISKANN_NAVIGATION_BEAM),
+                beam_width: top_k.max(navigation_beam),
                 max_working_bytes,
                 task: options.task_context,
                 ..Default::default()

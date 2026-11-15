@@ -155,6 +155,7 @@ pub(super) fn execute_bindings_with_limit(
         | PhysicalPlan::SetNodeProperty { .. }
         | PhysicalPlan::SetNodeProperties { .. }
         | PhysicalPlan::SetNodePropertiesReturn { .. }
+        | PhysicalPlan::MutationReturn { .. }
         | PhysicalPlan::SetRelationshipProperty { .. }
         | PhysicalPlan::SetRelationshipProperties { .. }
         | PhysicalPlan::DeleteNode { .. }
@@ -163,6 +164,19 @@ pub(super) fn execute_bindings_with_limit(
         | PhysicalPlan::CreateRelationship { .. } => {
             let rows = execute_mutation_with_store_output_limits(
                 plan,
+                catalog,
+                store,
+                MutationLimits::default(),
+                hawdb_executor::result_delivery::OutputLimits::default(),
+                context.memory,
+                context.task_context,
+            )?;
+            Ok(rows.into_iter().map(Binding::values).collect())
+        }
+        PhysicalPlan::MatchSetExec(set) => {
+            let rows = execute_match_set(
+                set,
+                context.parameters,
                 catalog,
                 store,
                 MutationLimits::default(),

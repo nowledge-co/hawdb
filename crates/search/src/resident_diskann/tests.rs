@@ -755,7 +755,7 @@ fn default_resident_graph_retains_allocation_ownership_until_cache_drop() {
             ceiling: u64,
         ) -> std::result::Result<Box<dyn RuntimeMemoryPermit>, RuntimeMemoryError> {
             self.0
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
                     used.checked_add(bytes).filter(|total| *total <= ceiling)
                 })
                 .map_err(|used| RuntimeMemoryError::AdmissionDenied {
@@ -1135,4 +1135,63 @@ fn explicit_rabitq_checkpoint_choice_survives_reopen_and_replacement() {
     assert_eq!(projection.manifest().bit_width, 1);
     assert_eq!(projection.manifest().requested_segment_rows, 7);
     assert_eq!(projection.manifest().transform_seed, 42);
+}
+
+/// The per-query navigation beam and candidate window reach the resident
+/// graph (#1470).
+#[test]
+fn resident_graph_navigation_beam_is_per_query() {
+    let mut index = SearchIndex::in_memory();
+    for id in 0..512 {
+        index
+            .upsert(document(id, Some(vec![1.0, id as f32 / 1024.0])))
+            .unwrap();
+    }
+    let options = SearchQueryOptions {
+        limit: 10,
+        rank_window: Some(64),
+        metadata_filters: BTreeMap::new(),
+        ..options()
+    };
+    let search = |execution: VectorSearchExecutionOptions<'_>| {
+        index
+            .try_search_with_options_context(
+                "",
+                Some(&[1.0, 0.0]),
+                SearchMode::Vector,
+                options.clone(),
+                execution,
+            )
+            .unwrap()
+    };
+    let bounded =
+        || VectorSearchExecutionOptions::bounded(std::num::NonZeroUsize::MIN, CACHE_BYTES, None);
+    let default = search(bounded());
+    let explicit =
+        search(bounded().with_navigation_beam(std::num::NonZeroUsize::new(1024).unwrap()));
+    assert_eq!(explicit.hits, default.hits);
+    assert_eq!(
+        explicit.retrievers[0].candidate_scan_payload_bytes_read,
+        default.retrievers[0].candidate_scan_payload_bytes_read
+    );
+    // A narrow beam does less graph work; it is raised to the 64 candidates.
+    assert_eq!(default.retrievers[0].generated_candidate_count, 128);
+    let narrow = search(
+        bounded()
+            .with_navigation_beam(std::num::NonZeroUsize::MIN)
+            .with_candidate_window(std::num::NonZeroUsize::new(16).unwrap()),
+    );
+    assert_eq!(narrow.hits.len(), 10);
+    // The window replaces the 128 floor but never goes below the rank window.
+    assert_eq!(narrow.retrievers[0].generated_candidate_count, 64);
+    assert!(
+        narrow.retrievers[0].candidate_scan_payload_bytes_read
+            < default.retrievers[0].candidate_scan_payload_bytes_read
+    );
+    let sixty_four = search(
+        bounded()
+            .with_navigation_beam(std::num::NonZeroUsize::new(64).unwrap())
+            .with_candidate_window(std::num::NonZeroUsize::new(16).unwrap()),
+    );
+    assert_eq!(narrow.hits, sixty_four.hits);
 }

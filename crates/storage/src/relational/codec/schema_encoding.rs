@@ -97,6 +97,8 @@ pub(crate) fn scalar_tag(kind: RelationalScalarType) -> u8 {
         RelationalScalarType::Uuid => 6,
         RelationalScalarType::Vector(_) => 7,
         RelationalScalarType::Decimal(_) => 8,
+        RelationalScalarType::Timestamp(_) => 9,
+        RelationalScalarType::TimestampTz(_) => 10,
     }
 }
 
@@ -110,6 +112,14 @@ pub(crate) fn value(sink: &mut impl Sink, item: &RelationalValue) -> Result<(), 
         }
         RelationalValue::Decimal(value) => {
             sink.raw(&[9])?;
+            sink.raw(&value.to_le_bytes())
+        }
+        RelationalValue::Timestamp(value) => {
+            sink.raw(&[10])?;
+            sink.raw(&value.to_le_bytes())
+        }
+        RelationalValue::TimestampTz(value) => {
+            sink.raw(&[11])?;
             sink.raw(&value.to_le_bytes())
         }
         RelationalValue::DoublePrecision(value) => {
@@ -167,6 +177,11 @@ pub(crate) fn schema(sink: &mut impl Sink, schema: Schema<'_>) -> Result<(), Rel
         if let RelationalScalarType::Vector(dimension) = column.scalar_type {
             sink.raw(&dimension.get().to_le_bytes())?;
         }
+        if let RelationalScalarType::Timestamp(precision)
+        | RelationalScalarType::TimestampTz(precision) = column.scalar_type
+        {
+            sink.raw(&[precision.get()])?;
+        }
         if let RelationalScalarType::Decimal(kind) = column.scalar_type {
             sink.raw(&[kind.precision(), kind.scale()])?;
         }
@@ -174,6 +189,10 @@ pub(crate) fn schema(sink: &mut impl Sink, schema: Schema<'_>) -> Result<(), Rel
         match &column.default {
             None => sink.raw(&[0])?,
             Some(RelationalColumnDefault::UuidV7) => sink.raw(&[2])?,
+            Some(RelationalColumnDefault::CurrentTimestamp(kind)) => {
+                sink.raw(&[3])?;
+                sink.raw(&crate::relational::clock_default_bytes(*kind))?;
+            }
             Some(RelationalColumnDefault::Literal(value)) => {
                 sink.raw(&[1])?;
                 sink.value(value)?;
@@ -226,6 +245,19 @@ fn materialized_view(
     sink: &mut impl Sink,
     definition: Option<&MaterializedViewDefinition>,
 ) -> Result<(), RelationalError> {
+    // Tag 0: none; 1: materialized view; 2: search index (source, column,
+    // analyzer tag, physical layout tag). Readers refuse unknown tags rather
+    // than guessing a layout.
+    if let Some(spec) = definition.and_then(|view| view.search.as_ref()) {
+        let view = definition.expect("search definition");
+        sink.raw(&[2])?;
+        bytes(sink, view.source.as_bytes())?;
+        bytes(sink, spec.column.as_bytes())?;
+        return sink.raw(&[
+            spec.analyzer.tag(),
+            super::super::materialized_view::SEARCH_INDEX_LAYOUT_TAG,
+        ]);
+    }
     sink.raw(&[u8::from(definition.is_some())])?;
     if let Some(view) = definition {
         bytes(sink, view.source.as_bytes())?;

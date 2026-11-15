@@ -25,6 +25,7 @@ use hawdb_optimizer::{
 use hawdb_storage::relational::{RelationalMutationLimits, RelationalOverflowConfig};
 use std::num::{NonZeroU64, NonZeroUsize};
 
+mod aggregate_memory;
 mod authoritative_nested_index;
 mod columnar_aggregate;
 mod cross_join;
@@ -34,6 +35,7 @@ mod exact_count_planning;
 mod having;
 mod ordinary_aggregate;
 mod projection_admission;
+mod text_search_admission;
 
 fn assert_intermediate_work_refusal(error: &HawDBError) {
     let HawDBError::ResourceBudgetExceeded(cause) = error else {

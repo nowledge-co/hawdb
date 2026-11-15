@@ -25,6 +25,7 @@ use hawdb_plan_cypher::{
 };
 use std::collections::BTreeMap;
 
+mod graph_match;
 mod row_goal;
 mod shape;
 mod width;
@@ -108,9 +109,9 @@ fn projected_access_cost(
         }
         NodeProjectionAccess::PropertyValues { property, values } => {
             let rows = if values.len() == 1 {
-                catalog.estimate_property_index_eq_rows(label, property)
+                catalog.estimate_property_index_value_rows(label, property, &values[0])
             } else {
-                catalog.estimate_property_index_in_rows(label, property, values.len() as u64)
+                catalog.estimate_property_index_values_rows(label, property, values)
             }
             .max(1);
             node_index_seek_work(rows, values.len().max(1) as u64)
@@ -186,11 +187,8 @@ fn exact_property_union_cost(
     let mut cpu = 0u64;
     let mut random_io = 0u64;
     for branch in branches {
-        let branch_rows = catalog.estimate_property_index_in_rows(
-            label,
-            &branch.property,
-            branch.values.len() as u64,
-        );
+        let branch_rows =
+            catalog.estimate_property_index_values_rows(label, &branch.property, &branch.values);
         rows = rows.saturating_add(branch_rows);
         let work = node_index_seek_work(branch_rows, branch.values.len().max(1) as u64);
         cpu = cpu.saturating_add(work.cpu);
@@ -358,7 +356,10 @@ fn estimate_operator_cost_internal<'a>(
     });
     let costs = row_goal::input_costs(plan, consumption_inputs);
     let mut statistics = None;
-    let aggregate_cost = if matches!(plan, PhysicalPlan::AggregateExec { .. }) {
+    // MATCH imports and aggregate keys refer to the input binding scope.
+    let input_binding_cost = if matches!(plan, PhysicalPlan::AggregateExec { .. })
+        || matches!(plan, PhysicalPlan::GraphMatchExec { .. }) && inputs[0].is_some()
+    {
         Some(estimate_local_operator_cost(
             plan,
             catalog,
@@ -386,7 +387,7 @@ fn estimate_operator_cost_internal<'a>(
     let bindings = bindings_override.unwrap_or_else(|| {
         PlanBindings::for_operator(plan, inputs.map(|input| input.map(|input| input.bindings)))
     });
-    let cost = aggregate_cost.unwrap_or_else(|| {
+    let cost = input_binding_cost.unwrap_or_else(|| {
         estimate_local_operator_cost(plan, catalog, costs, &bindings, &mut statistics)
     });
     let (cost, width_report) = work::apply(
@@ -414,20 +415,6 @@ fn estimate_operator_cost_internal<'a>(
     }
 }
 
-/// The step indexes before which `GraphMatchExec` evaluates WHERE conjuncts;
-/// `steps.len()` stands for the end of the match.
-fn graph_match_filter_points(
-    program: &hawdb_plan_cypher::GraphMatchProgram,
-) -> std::collections::BTreeSet<usize> {
-    if program.predicate.is_none() {
-        return std::collections::BTreeSet::new();
-    }
-    if program.predicate_steps.is_empty() {
-        return std::collections::BTreeSet::from([program.steps.len()]);
-    }
-    program.predicate_steps.iter().copied().collect()
-}
-
 fn estimate_local_operator_cost(
     plan: &PhysicalPlan,
     catalog: &OptimizerCatalog,
@@ -439,6 +426,8 @@ fn estimate_local_operator_cost(
     COST_EVALUATIONS.with(|count| count.set(count.get() + 1));
     match plan {
         PhysicalPlan::EmptyExec => PlanCostBreakdown::new(1, 0, 0, 0, 0),
+        // The read input dominates; applying the SET is one write per row.
+        PhysicalPlan::MatchSetExec(_) => inputs[0].expect("unary input cost"),
         PhysicalPlan::NodeCountExec { .. } | PhysicalPlan::RelationshipCountExec { .. } => {
             PlanCostBreakdown::new(1, 1, 0, 0, 0)
         }
@@ -474,14 +463,19 @@ fn estimate_local_operator_cost(
             label,
             rel_type,
             rel_properties,
+            rel_property_in,
             ..
         } => {
             // Seeds are distinct endpoints of the matching relationships, at
-            // most the label's nodes; each one is an index-located point read.
-            let matching = catalog
-                .estimate_expand_rows(label, rel_type, rel_properties, "", 1, 1)
-                .estimated_rows;
-            let rows = matching.min(catalog.label_count(label));
+            // most the scanned nodes; each one is an index-located point read.
+            let matching = catalog.estimate_seeded_relationships(
+                rel_type,
+                rel_properties,
+                rel_property_in
+                    .as_ref()
+                    .map(|(property, values)| (property.as_str(), values.as_slice())),
+            );
+            let rows = matching.min(catalog.scan_population(label));
             node_index_seek_work(rows, NODE_INDEX_EQ_STARTUP_COST)
         }
         PhysicalPlan::NodeProjectionScanExec {
@@ -492,11 +486,25 @@ fn estimate_local_operator_cost(
             ..
         } => {
             let access_cost = projected_access_cost(access, label, catalog);
+            let access_statistics = match access {
+                NodeProjectionAccess::PropertyValues { property, values } if values.len() == 1 => {
+                    catalog
+                        .property_equality_estimate(
+                            label,
+                            property,
+                            &values[0],
+                            catalog.label_count(label),
+                        )
+                        .map(StatisticsUsage::distribution)
+                }
+                _ => None,
+            };
             let input_rows = access_cost.estimated_rows;
             let rows = predicate.as_ref().map_or(input_rows, |predicate| {
                 estimate_filter_rows(predicate, plan, input_rows, catalog, bindings, statistics)
                     .max(1)
             });
+            *statistics = statistics.or(access_statistics);
             let cpu_rows = if !items.is_empty() || predicate.is_some() {
                 rows
             } else {
@@ -574,60 +582,12 @@ fn estimate_local_operator_cost(
             let right_cost = inputs[1].expect("right input cost");
             combine_node_cartesian_product_cost(left_cost, right_cost)
         }
-        PhysicalPlan::GraphMatchExec { program, .. } => {
-            let base = inputs[0].unwrap_or_else(|| PlanCostBreakdown::new(1, 0, 0, 0, 0));
-            let mut rows = base.estimated_rows;
-            let mut output_rows = rows;
-            let mut work = rows;
-            // Steps run as a per-row nested loop in plan order. A step that
-            // binds a fresh node multiplies the rows by its label; a step that
-            // reaches an imported or already-bound node only filters them. The
-            // output estimate is therefore order-independent, while the work
-            // (the sum of intermediate rows) reflects the anchored order.
-            let mut bound = std::collections::BTreeSet::new();
-            // Each group of WHERE conjuncts keeps a default fraction of the
-            // rows at the point it runs, so later steps expand fewer rows.
-            let filter_points = graph_match_filter_points(program);
-            let filter = |index: usize, rows: u64| {
-                if filter_points.contains(&index) {
-                    rows.div_ceil(crate::cardinality_defaults::FILTER_SELECTIVITY_DIVISOR)
-                        .max(1)
-                } else {
-                    rows
-                }
-            };
-            for (index, step) in program.steps.iter().enumerate() {
-                rows = filter(index, rows);
-                let node = match step {
-                    hawdb_plan_cypher::GraphMatchStep::Node(node) => node,
-                    hawdb_plan_cypher::GraphMatchStep::Expand { target, .. } => target,
-                    // A search may visit every relationship of its type for
-                    // each endpoint pair; it keeps the row count of its input.
-                    hawdb_plan_cypher::GraphMatchStep::ShortestPath(step) => {
-                        work = work.saturating_add(rows.saturating_mul(
-                            catalog.traversable_relationship_count(&step.rel_type),
-                        ));
-                        continue;
-                    }
-                };
-                let newly_bound =
-                    bound.insert(&node.variable) && program.introduced.contains(&node.variable);
-                if newly_bound {
-                    let multiplier = catalog.label_count(&node.label).max(1);
-                    rows = rows.saturating_mul(multiplier);
-                    output_rows = output_rows.saturating_mul(multiplier);
-                }
-                work = work.saturating_add(rows);
-            }
-            // Placement changes intermediate work, not the selectivity of
-            // the complete WHERE. Apply that output estimate only once.
-            if program.predicate.is_some() {
-                output_rows = output_rows
-                    .div_ceil(crate::cardinality_defaults::FILTER_SELECTIVITY_DIVISOR)
-                    .max(1);
-            }
-            base.with_random_io(output_rows, work, 0)
-        }
+        PhysicalPlan::GraphMatchExec { program, .. } => graph_match::estimate(
+            program,
+            catalog,
+            bindings,
+            inputs[0].unwrap_or_else(|| PlanCostBreakdown::new(1, 0, 0, 0, 0)),
+        ),
         PhysicalPlan::NodeColumnLookupExec { label, .. } => {
             let input_cost = inputs[0].expect("unary input cost");
             let label_rows = catalog.label_count(label).max(1);
@@ -641,13 +601,21 @@ fn estimate_local_operator_cost(
             variable,
             label,
             property,
+            value,
             ..
         } => {
-            let rows = catalog
+            let sampled_rows = catalog
                 .sampled_match
                 .as_ref()
-                .and_then(|statistics| statistics.seed_rows(variable, label, property))
-                .unwrap_or_else(|| catalog.estimate_property_index_eq_rows(label, property));
+                .and_then(|sample| sample.seed_rows(variable, label, property));
+            let rows = if let Some(rows) = sampled_rows {
+                rows
+            } else {
+                *statistics = catalog
+                    .property_equality_estimate(label, property, value, catalog.label_count(label))
+                    .map(StatisticsUsage::distribution);
+                catalog.estimate_property_index_value_rows(label, property, value)
+            };
             node_index_seek_work(rows, NODE_INDEX_EQ_STARTUP_COST)
         }
         PhysicalPlan::IndexNodeMultiSeek {
@@ -656,8 +624,7 @@ fn estimate_local_operator_cost(
             values,
             ..
         } => {
-            let rows =
-                catalog.estimate_property_index_in_rows(label, property, values.len() as u64);
+            let rows = catalog.estimate_property_index_values_rows(label, property, values);
             node_index_seek_work(rows, values.len() as u64)
         }
         PhysicalPlan::IndexNodeUnionSeek {
@@ -919,6 +886,7 @@ fn estimate_local_operator_cost(
         | PhysicalPlan::SetNodeProperty { .. }
         | PhysicalPlan::SetNodeProperties { .. }
         | PhysicalPlan::SetNodePropertiesReturn { .. }
+        | PhysicalPlan::MutationReturn { .. }
         | PhysicalPlan::SetRelationshipProperty { .. }
         | PhysicalPlan::SetRelationshipProperties { .. }
         | PhysicalPlan::DeleteNode { .. }

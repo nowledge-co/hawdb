@@ -1,7 +1,12 @@
 // Copyright 2026 Nowledge
 // SPDX-License-Identifier: Apache-2.0
 
+mod graph_match;
+mod predicate_variables;
 pub mod sql;
+
+pub use graph_match::*;
+pub use predicate_variables::predicate_variables;
 
 use hawdb_core::{RelationshipDirection, ValidatedRegex, Value};
 
@@ -159,7 +164,15 @@ pub enum ProjectionExpression {
     Id {
         variable: String,
     },
+    /// `type(r)`: the type of the relationship bound to `variable`.
     RelationshipType {
+        variable: String,
+    },
+    /// Kùzu `label(x)` or openCypher `labels(n)` of the node or relationship
+    /// bound to `variable`; see [`hawdb_core::LabelFunction`] for the
+    /// semantics. Reads only the record's labels or type.
+    Label {
+        function: hawdb_core::LabelFunction,
         variable: String,
     },
     Literal(Value),
@@ -169,9 +182,14 @@ pub enum ProjectionExpression {
         left: Box<ProjectionExpression>,
         right: Box<ProjectionExpression>,
     },
+    JsonString {
+        expression: Box<ProjectionExpression>,
+        path: String,
+    },
     JsonValue {
         expression: Box<ProjectionExpression>,
         path: String,
+        null_on_non_scalar: bool,
     },
     Left {
         expression: Box<ProjectionExpression>,
@@ -311,6 +329,151 @@ pub enum ProjectionExpression {
     },
     /// `{key: expression, ...}`; keys are unique.
     MapLiteral(Vec<(String, ProjectionExpression)>),
+    /// `abs`, `ceil`, `floor`, `round`, `sign` or `sqrt`.
+    NumericFunction {
+        function: hawdb_core::NumericFunction,
+        argument: Box<ProjectionExpression>,
+    },
+    /// `reduce(accumulator = initial, variable IN list | expression)`.
+    Reduce(Box<ReduceProjection>),
+    /// `startNode(r)` or `endNode(r)`: the stored source or target node of
+    /// the relationship bound to `variable`, as a node value. NULL when the
+    /// variable is NULL (an unmatched OPTIONAL MATCH).
+    RelationshipEndpoint {
+        endpoint: hawdb_core::RelationshipEndpoint,
+        variable: String,
+        /// The two node variables of the single-hop pattern step that binds
+        /// `variable`, in pattern order. The stored source or target is the
+        /// one whose id matches; no other row variable is consulted. Planning
+        /// resolves them after binding. `None` when no such step binds it,
+        /// as for a relationship a pattern expression introduces: the
+        /// executor then reads the node from the graph by its id.
+        endpoints: Option<[String; 2]>,
+    },
+    /// `startNode(r)` or `endNode(r)` of a relationship value, such as an
+    /// element of `relationships(p)`: the stored source or target of the
+    /// stored relationship the value names, read from the graph. A value
+    /// that names no stored relationship with the same endpoints fails, so a
+    /// map cannot pass for a relationship. NULL for a NULL value.
+    RelationshipValueEndpoint {
+        endpoint: hawdb_core::RelationshipEndpoint,
+        relationship: Box<ProjectionExpression>,
+        /// A node visibility policy over [`ENDPOINT_VISIBILITY_VARIABLE`];
+        /// an endpoint it does not admit is NULL.
+        visibility: Option<Box<Predicate>>,
+    },
+    /// A pattern predicate or pattern comprehension: a correlated MATCH
+    /// evaluated once per evaluation of the expression.
+    Pattern(Box<PatternProjection>),
+}
+
+/// The variable a [`ProjectionExpression::RelationshipValueEndpoint`]
+/// visibility predicate reads; no query can write the name.
+pub const ENDPOINT_VISIBILITY_VARIABLE: &str = "#endpoint";
+
+/// A pattern predicate (`projection` is `None`) or a pattern comprehension.
+///
+/// The executor runs `program` as a correlated MATCH over a row holding only
+/// what the pattern and its body read: `graph_variables` copied from the
+/// enclosing row and `arguments` evaluated in the enclosing scope. Each match
+/// that satisfies `predicate` makes a predicate true, or contributes one
+/// `projection` to a comprehension's list. A NULL bound variable matches
+/// nothing, so the predicate is false and the list empty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PatternProjection {
+    /// Introduces the variables the pattern binds first; its imports read
+    /// the `arguments` columns.
+    pub program: GraphMatchProgram,
+    /// Node and relationship variables of the enclosing row that the
+    /// pattern or its body reads.
+    pub graph_variables: Vec<String>,
+    /// Enclosing values matched as graph entities, such as a list
+    /// comprehension element: each import column of `program` with the
+    /// enclosing-scope expression that produces it.
+    pub arguments: Vec<(String, ProjectionExpression)>,
+    /// Enclosing row columns that `predicate` and `projection` read, as
+    /// [`ProjectionExpression::LocalVariable`].
+    pub columns: Vec<String>,
+    /// Evaluated over each match; only TRUE keeps it.
+    pub predicate: Option<ProjectionExpression>,
+    /// Evaluated over each kept match of a comprehension.
+    pub projection: Option<ProjectionExpression>,
+    /// Start values for a node the pattern introduces, when every disjunct
+    /// of `predicate` equates it with an enclosing-row expression (#1607).
+    pub seeds: Option<PatternSeeds>,
+    /// Import columns of the subquery row, among `arguments` and the seed
+    /// column, that the programs read only as graph imports: neither body
+    /// reads the row column itself. The executor passes such a column to the
+    /// match as the imported entity's identity instead of copying its value
+    /// into the subquery row, and takes a seed bound to a graph slot by its
+    /// record's id (#1615). Empty in plans made before #1615, which copy
+    /// every argument and seed value.
+    pub identity_columns: Vec<String>,
+}
+
+/// Seeds for one node variable that `PatternProjection::program`
+/// introduces. `predicate` implies the variable equals one of `expressions`,
+/// so matching from each distinct node among their values with `program`
+/// finds exactly the matches the unseeded program accepts, without scanning.
+/// `predicate` still decides every match.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PatternSeeds {
+    /// The seeded node variable.
+    pub variable: String,
+    /// The import column of `program` that carries one seed.
+    pub column: String,
+    /// Enclosing-scope expressions, evaluated like `arguments`.
+    pub expressions: Vec<ProjectionExpression>,
+    /// The pattern with `variable` imported from `column`, starting there.
+    pub program: GraphMatchProgram,
+}
+
+impl PatternProjection {
+    /// Expressions in evaluation order: arguments, seeds, predicate,
+    /// projection.
+    pub fn expressions(&self) -> impl Iterator<Item = &ProjectionExpression> {
+        self.arguments
+            .iter()
+            .map(|(_, expression)| expression)
+            .chain(self.seeds.iter().flat_map(|seeds| &seeds.expressions))
+            .chain(self.predicate.iter())
+            .chain(self.projection.iter())
+    }
+
+    fn expressions_mut(&mut self) -> impl Iterator<Item = &mut ProjectionExpression> {
+        self.arguments
+            .iter_mut()
+            .map(|(_, expression)| expression)
+            .chain(
+                self.seeds
+                    .iter_mut()
+                    .flat_map(|seeds| seeds.expressions.iter_mut()),
+            )
+            .chain(self.predicate.iter_mut())
+            .chain(self.projection.iter_mut())
+    }
+
+    /// The pattern's programs: the unseeded one, then the seeded one.
+    pub fn programs(&self) -> impl Iterator<Item = &GraphMatchProgram> {
+        std::iter::once(&self.program).chain(self.seeds.iter().map(|seeds| &seeds.program))
+    }
+
+    pub fn programs_mut(&mut self) -> impl Iterator<Item = &mut GraphMatchProgram> {
+        std::iter::once(&mut self.program)
+            .chain(self.seeds.iter_mut().map(|seeds| &mut seeds.program))
+    }
+}
+
+/// A `reduce` fold. `accumulator` and `variable` are visible only to
+/// `expression`, as [`ProjectionExpression::LocalVariable`]; `initial` and
+/// `list` read the enclosing scope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReduceProjection {
+    pub accumulator: String,
+    pub initial: ProjectionExpression,
+    pub variable: String,
+    pub list: ProjectionExpression,
+    pub expression: ProjectionExpression,
 }
 
 /// A list comprehension. `variable` is visible only to `predicate` and
@@ -426,11 +589,19 @@ impl ProjectionExpression {
             | Self::Lower(expression)
             | Self::Left { expression, .. }
             | Self::JsonValue { expression, .. }
+            | Self::JsonString { expression, .. }
             | Self::PropertyAccess { expression, .. }
             | Self::Conversion {
                 argument: expression,
                 ..
+            }
+            | Self::NumericFunction {
+                argument: expression,
+                ..
             } => visit(expression),
+            Self::Reduce(reduce) => {
+                visit(&reduce.initial) && visit(&reduce.list) && visit(&reduce.expression)
+            }
             Self::Coalesce(expressions)
             | Self::List(expressions)
             | Self::ListFunction {
@@ -460,6 +631,8 @@ impl ProjectionExpression {
                 .flatten()
                 .map(Box::as_ref)
                 .all(visit),
+            Self::RelationshipValueEndpoint { relationship, .. } => visit(relationship),
+            Self::Pattern(pattern) => pattern.expressions().all(visit),
             _ => true,
         }
     }
@@ -499,11 +672,27 @@ impl ProjectionExpression {
             | Self::Lower(expression)
             | Self::Left { expression, .. }
             | Self::JsonValue { expression, .. }
+            | Self::JsonString { expression, .. }
             | Self::PropertyAccess { expression, .. }
             | Self::Conversion {
                 argument: expression,
                 ..
+            }
+            | Self::NumericFunction {
+                argument: expression,
+                ..
             } => visit(expression)?,
+            Self::Reduce(reduce) => {
+                let ReduceProjection {
+                    initial,
+                    list,
+                    expression,
+                    ..
+                } = reduce.as_mut();
+                visit(initial)?;
+                visit(list)?;
+                visit(expression)?;
+            }
             Self::Coalesce(expressions)
             | Self::List(expressions)
             | Self::ListFunction {
@@ -555,6 +744,12 @@ impl ProjectionExpression {
                     visit(end)?;
                 }
             }
+            Self::RelationshipValueEndpoint { relationship, .. } => visit(relationship)?,
+            Self::Pattern(pattern) => {
+                for expression in pattern.expressions_mut() {
+                    visit(expression)?;
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -581,9 +776,52 @@ pub enum SortDirection {
     Desc,
 }
 
+impl SortDirection {
+    /// Orders two evaluated sort-key values in this direction with openCypher
+    /// `ORDER BY` semantics: `NULL` is greater than every other value, so it
+    /// sorts last ascending and first descending. Non-null values keep
+    /// [`Value`]'s total order.
+    ///
+    /// This is the ordering contract of every [`SortItem`]; it deliberately
+    /// differs from `Value`'s `Ord`, which ranks `NULL` lowest for sets, maps,
+    /// grouping and index keys. SQL callers that share the sort operators
+    /// encode their `NULLS FIRST`/`NULLS LAST` placement into a non-null
+    /// ranked key first, so this placement never applies to them.
+    pub fn compare(self, left: &Value, right: &Value) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        let ordering = match (left, right) {
+            (Value::Null, Value::Null) => Ordering::Equal,
+            (Value::Null, _) => Ordering::Greater,
+            (_, Value::Null) => Ordering::Less,
+            (left, right) => left.cmp(right),
+        };
+        match self {
+            Self::Asc => ordering,
+            Self::Desc => ordering.reverse(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sort_direction_places_null_like_open_cypher() {
+        let mut values = vec![Value::Int(2), Value::Null, Value::Int(1), Value::Null];
+        values.sort_by(|left, right| SortDirection::Asc.compare(left, right));
+        assert_eq!(
+            values,
+            [Value::Int(1), Value::Int(2), Value::Null, Value::Null]
+        );
+        values.sort_by(|left, right| SortDirection::Desc.compare(left, right));
+        assert_eq!(
+            values,
+            [Value::Null, Value::Null, Value::Int(2), Value::Int(1)]
+        );
+        // `Value`'s own order is unchanged: NULL stays the least value.
+        assert!(Value::Null < Value::Int(i64::MIN));
+    }
 
     #[test]
     fn expression_ir_composes_boolean_and_scalar_nodes() {
@@ -822,6 +1060,10 @@ impl hawdb_core::RetainedHeapBytes for ProjectionExpression {
             Self::RelationshipType { variable } => hawdb_core::checked_retained_heap_sum([
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(variable),
             ]),
+            Self::Label { function, variable } => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(function),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(variable),
+            ]),
             Self::Literal(value0) => hawdb_core::checked_retained_heap_sum([
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(value0),
             ]),
@@ -851,7 +1093,10 @@ impl hawdb_core::RetainedHeapBytes for ProjectionExpression {
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(left),
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(right),
             ]),
-            Self::JsonValue { expression, path } => hawdb_core::checked_retained_heap_sum([
+            Self::JsonValue {
+                expression, path, ..
+            }
+            | Self::JsonString { expression, path } => hawdb_core::checked_retained_heap_sum([
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(expression),
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(path),
             ]),
@@ -1035,9 +1280,55 @@ impl hawdb_core::RetainedHeapBytes for ProjectionExpression {
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(function),
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(column),
             ]),
+            Self::NumericFunction { function, argument } => {
+                hawdb_core::checked_retained_heap_sum([
+                    hawdb_core::RetainedHeapBytes::retained_heap_bytes(function),
+                    hawdb_core::RetainedHeapBytes::retained_heap_bytes(argument),
+                ])
+            }
+            Self::Reduce(reduce) => hawdb_core::RetainedHeapBytes::retained_heap_bytes(reduce),
+            Self::RelationshipEndpoint {
+                endpoint,
+                variable,
+                endpoints,
+            } => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(endpoint),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(variable),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(endpoints),
+            ]),
+            Self::RelationshipValueEndpoint {
+                endpoint,
+                relationship,
+                visibility,
+            } => hawdb_core::checked_retained_heap_sum([
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(endpoint),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(relationship),
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(visibility),
+            ]),
+            Self::Pattern(pattern) => hawdb_core::RetainedHeapBytes::retained_heap_bytes(pattern),
         }
     }
 }
+
+// Retained query ownership: PatternProjection.
+hawdb_core::impl_retained_heap_for_struct!(PatternProjection {
+    program,
+    graph_variables,
+    arguments,
+    columns,
+    predicate,
+    projection,
+    seeds,
+    identity_columns,
+});
+
+// Retained query ownership: PatternSeeds.
+hawdb_core::impl_retained_heap_for_struct!(PatternSeeds {
+    variable,
+    column,
+    expressions,
+    program,
+});
 
 // Retained query ownership: PathFunction.
 impl hawdb_core::RetainedHeapBytes for PathFunction {
@@ -1057,6 +1348,15 @@ hawdb_core::impl_retained_heap_for_struct!(ListComprehensionProjection {
     list,
     predicate,
     projection,
+});
+
+// Retained query ownership: ReduceProjection.
+hawdb_core::impl_retained_heap_for_struct!(ReduceProjection {
+    accumulator,
+    initial,
+    variable,
+    list,
+    expression,
 });
 
 // Retained query ownership: SortItem.

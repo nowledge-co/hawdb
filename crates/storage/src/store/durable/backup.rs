@@ -22,6 +22,7 @@ use crate::checkpoint_closure::{
 use crate::durable_manifest::DurableManifest;
 use crate::error::{HawDBError, Result};
 use crate::file_io as fs;
+use crate::immutable_object::BlockWork;
 use crate::immutable_object::ObjectKind;
 use crate::store::{
     canonical_adjacency_artifact_generation_file, canonical_artifact_generation_file,
@@ -50,6 +51,16 @@ impl DurableStore {
         &self,
         manifest: DurableManifest,
     ) -> Result<CheckpointClosurePlan> {
+        self.checkpoint_closure_plan_with_work(manifest, BlockWork::default())
+    }
+
+    /// [`Self::checkpoint_closure_plan`] with one checkpoint work unit per
+    /// digested block (#1527).
+    pub(in crate::store) fn checkpoint_closure_plan_with_work(
+        &self,
+        manifest: DurableManifest,
+        work: BlockWork<'_>,
+    ) -> Result<CheckpointClosurePlan> {
         let generation = manifest.checkpoint_generation.ok_or_else(|| {
             HawDBError::Storage("checkpoint closure requires a checkpoint generation".into())
         })?;
@@ -58,13 +69,15 @@ impl DurableStore {
                 &path,
                 ObjectKind::CheckpointArtifact,
                 "read checkpoint closure artifact",
+                work,
             )?;
             Ok(CheckpointArtifactInput {
                 path,
                 reference: digest.reference,
             })
         };
-        let mut manifest_inputs = manifest.manifest_artifact_inputs(&self.root_path)?;
+        let mut manifest_inputs =
+            manifest.manifest_artifact_inputs_with_work(&self.root_path, work)?;
         match (
             self.relational_checkpoint_encoded_len,
             self.relational_checkpoint_encoded_checksum,
@@ -79,6 +92,7 @@ impl DurableStore {
                     &relational_checkpoint,
                     ObjectKind::CheckpointArtifact,
                     "read relational checkpoint closure artifact",
+                    work,
                 )?;
                 if digest.byte_length != encoded_len
                     || u64::from(digest.content.crc32c.get()) != encoded_checksum

@@ -12,15 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use hawdb::{
     DatabaseConfig, DatabaseReadTransaction, DurabilityPolicy, EmbeddedDeploymentProfile,
-    HawDBEmbedded, HawDBEmbeddedOpenOptions, QueryOutput, Value,
+    HawDBEmbedded, HawDBEmbeddedOpenOptions, QueryOutput, QueryRowRef, QueryRows,
+    RuntimeGovernorConfig, SqlQueryRequest, SqlStatementResult, Value,
 };
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyIndexError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList, PySequenceMethods};
+use pyo3::types::{PyDict, PyList, PySequenceMethods, PyString, PyTuple};
 
 use crate::errors::{format_embedded_error, format_hawdb_error, StorageError};
 use crate::value::{
@@ -30,9 +32,11 @@ use crate::value::{
 /// An open HawDB database.
 ///
 /// Follows the embedded-database idiom (`sqlite3`, `duckdb`): each
-/// `execute` call runs one statement and commits on success. The
-/// embedded facade applies its own query admission and result budgets,
-/// so statements keep HawDB's bounded-resource behavior.
+/// `execute` call runs one statement and commits on success. `execute`,
+/// `execute_sql` and SQL in a transaction pass the embedded facade's query
+/// admission and result budgets, so statements keep HawDB's bounded-resource
+/// behavior; a saturated runtime raises `AdmissionError` before the statement
+/// runs.
 ///
 /// `Database()` opens an empty in-memory database; `Database(path)` opens
 /// a durable project directory.
@@ -69,9 +73,12 @@ impl Database {
                     "namespace_durability_anchor requires a database path",
                 ));
             }
+            let config = with_open_options(DatabaseConfig::default());
+            let governor = runtime_governor_config(&config);
             return Ok(Self {
-                inner: Some(HawDBEmbedded::open_in_memory_with_config(
-                    with_open_options(DatabaseConfig::default()),
+                inner: Some(HawDBEmbedded::open_in_memory_with_runtime_governor_config(
+                    config,
+                    Some(governor),
                 )),
                 path: None,
             });
@@ -85,18 +92,22 @@ impl Database {
             });
             HawDBEmbedded::open_with_options(HawDBEmbeddedOpenOptions {
                 path: path.clone(),
-                config,
                 durability: DurabilityPolicy::default(),
                 deployment_profile: EmbeddedDeploymentProfile::SharedHost,
                 storage_device: None,
                 storage_io: None,
                 resource_snapshot: None,
-                runtime_governor_config: None,
+                runtime_governor_config: Some(runtime_governor_config(&config)),
+                config,
             })
         } else {
             let options = HawDBEmbeddedOpenOptions::new(path.clone());
             let config = with_open_options(options.config);
-            HawDBEmbedded::open_with_options(HawDBEmbeddedOpenOptions { config, ..options })
+            HawDBEmbedded::open_with_options(HawDBEmbeddedOpenOptions {
+                runtime_governor_config: Some(runtime_governor_config(&config)),
+                config,
+                ..options
+            })
         };
         match inner {
             Ok(inner) => Ok(Self {
@@ -194,6 +205,25 @@ fn prepare_database_path(path: &Path, read_only: bool) -> PyResult<PathBuf> {
     Ok(path)
 }
 
+/// The handle's runtime governor, whose per-statement result budget is the
+/// database's read payload ceiling (`max_read_result_payload_bytes`, 64 MiB by
+/// default) instead of the profile's 16 MiB, as for an `EmbeddedStore`.
+/// Admitted statements reserve that budget at admission, so SQL keeps the
+/// ceiling it had before it was admitted.
+///
+/// Python's `max_read_result_payload_bytes=None` keeps the engine default
+/// (`Some(64 MiB)`) and never reaches this function as `None`. A
+/// `DatabaseConfig` whose ceiling is `None` would mean no payload ceiling on
+/// the raw path; here the governor would keep the profile's 16 MiB result
+/// budget, so admitted statements would be capped at 16 MiB.
+fn runtime_governor_config(config: &DatabaseConfig) -> RuntimeGovernorConfig {
+    let mut governor = RuntimeGovernorConfig::shared_host();
+    if let Some(bytes) = config.max_read_result_payload_bytes {
+        governor.result_budget_bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
+    }
+    governor
+}
+
 #[pymethods]
 impl Database {
     #[new]
@@ -256,7 +286,7 @@ impl Database {
             .map_err(|error| format_embedded_error(&error))?;
         #[cfg(feature = "boundary-profiling")]
         drop(engine);
-        QueryResult::from_output(py, output)
+        Ok(QueryResult::from_output(output))
     }
 
     /// Returns the physical Cypher plan without executing the statement.
@@ -364,7 +394,11 @@ impl Database {
     /// Runs one SQL statement and returns the materialized result.
     ///
     /// `params` is an optional list of positional parameters with the same
-    /// supported value types as `execute`.
+    /// supported value types as `execute`. For an INSERT, UPDATE or DELETE
+    /// on a RowPage table, `affected_rows` of the result is the committed
+    /// row count. Admitted like `execute`: a saturated runtime raises
+    /// `AdmissionError` (`retryable` for a transient shortage) and runs
+    /// nothing.
     #[pyo3(signature = (sql, params = None))]
     fn execute_sql(
         &mut self,
@@ -390,12 +424,16 @@ impl Database {
         #[cfg(feature = "boundary-profiling")]
         let engine =
             crate::boundary_profile::PhaseTimer::start(crate::boundary_profile::Phase::Engine);
-        let output = py
-            .detach(|| database.database_mut().query_sql_with_params(sql, &values))
-            .map_err(|error| format_hawdb_error(&error))?;
+        let result = py
+            .detach(|| {
+                database.query_sql_request_admitted_with_result(
+                    SqlQueryRequest::new(sql).with_params(&values),
+                )
+            })
+            .map_err(|error| format_embedded_error(&error))?;
         #[cfg(feature = "boundary-profiling")]
         drop(engine);
-        QueryResult::from_output(py, output)
+        Ok(QueryResult::from_sql_result(result))
     }
 
     /// Runs one Cypher statement for each parameter dict in one transaction.
@@ -489,37 +527,98 @@ impl Database {
     }
 }
 
-/// Materialized rows of one statement result.
+/// Rows of one statement result.
 ///
-/// Rows are materialized eagerly when the query returns; iterating or
-/// fetching never touches the engine again.
+/// The engine's result is materialized when the query returns, and fetching
+/// never touches the engine again. Rows become Python objects only as they
+/// are fetched: each fetch builds new dicts (or tuples) that the caller owns,
+/// so the result never keeps a Python copy of a row it has handed out.
 #[pyclass(module = "hawdb", name = "QueryResult")]
 pub struct QueryResult {
-    columns: Vec<String>,
-    rows: Vec<Py<PyDict>>,
+    /// The engine's rows, moved out of its `QueryOutput` without a copy.
+    /// They stay alive, and keep their result-memory charge, until the
+    /// result is dropped; fetches convert from them.
+    rows: QueryRows,
     cursor: usize,
+    affected_rows: Option<usize>,
 }
 
 impl QueryResult {
-    fn from_output(py: Python<'_>, output: QueryOutput) -> PyResult<Self> {
+    fn from_output(output: QueryOutput) -> Self {
+        Self {
+            rows: output.rows,
+            cursor: 0,
+            affected_rows: None,
+        }
+    }
+
+    /// Converts a SQL statement result, keeping its RowPage mutation count.
+    fn from_sql_result(result: SqlStatementResult) -> Self {
+        Self {
+            affected_rows: result.mutation.map(|mutation| mutation.affected_rows),
+            ..Self::from_output(result.output)
+        }
+    }
+
+    /// Converts rows `range` with `convert`, which receives the row's values
+    /// in column order and the interned column names.
+    fn convert_rows<'py, T>(
+        &self,
+        py: Python<'py>,
+        range: Range<usize>,
+        mut convert: impl FnMut(&[Bound<'py, PyString>], QueryRowRef<'_>) -> PyResult<T>,
+    ) -> PyResult<Vec<T>> {
         #[cfg(feature = "boundary-profiling")]
         let _conversion =
             crate::boundary_profile::PhaseTimer::start(crate::boundary_profile::Phase::Results);
-        let columns = output.schema().columns().to_vec();
-        let mut rows = Vec::new();
-        for row in output.value_rows() {
+        // One key object per column, shared by every dict of this fetch.
+        let names = self
+            .rows
+            .schema()
+            .columns()
+            .iter()
+            .map(|name| PyString::new(py, name))
+            .collect::<Vec<_>>();
+        range
+            .map(|index| {
+                let row = self.rows.row(index).expect("row ordinal is in range");
+                convert(&names, row)
+            })
+            .collect()
+    }
+
+    fn dicts<'py>(
+        &self,
+        py: Python<'py>,
+        range: Range<usize>,
+    ) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        self.convert_rows(py, range, |names, row| {
             let dict = PyDict::new(py);
-            for (index, column) in columns.iter().enumerate() {
-                let value = row.get(index).unwrap_or(&Value::Null);
-                dict.set_item(column, value_to_py(py, value)?)?;
+            for (name, value) in names.iter().zip(row.values()) {
+                dict.set_item(name, value_to_py(py, value)?)?;
             }
-            rows.push(dict.unbind());
-        }
-        Ok(Self {
-            columns,
-            rows,
-            cursor: 0,
+            Ok(dict)
         })
+    }
+
+    fn tuples<'py>(
+        &self,
+        py: Python<'py>,
+        range: Range<usize>,
+    ) -> PyResult<Vec<Bound<'py, PyTuple>>> {
+        self.convert_rows(py, range, |_, row| {
+            PyTuple::new(
+                py,
+                row.values()
+                    .map(|value| value_to_py(py, value))
+                    .collect::<PyResult<Vec<_>>>()?,
+            )
+        })
+    }
+
+    /// The next `size` rows from the cursor, clamped to the row count.
+    fn next_range(&self, size: usize) -> Range<usize> {
+        self.cursor..self.cursor.saturating_add(size).min(self.rows.len())
     }
 }
 
@@ -528,44 +627,60 @@ impl QueryResult {
     /// Column names of the result, in declaration order.
     #[getter]
     fn columns(&self) -> Vec<String> {
-        self.columns.clone()
+        self.rows.schema().columns().to_vec()
     }
 
-    /// Number of materialized rows.
+    /// Number of rows in the result, fetched or not.
     #[getter]
     fn row_count(&self) -> usize {
         self.rows.len()
     }
 
-    /// Returns the next row as a dict, or None when exhausted.
-    fn fetchone(&mut self, py: Python<'_>) -> Option<Py<PyDict>> {
-        let row = self.rows.get(self.cursor).map(|row| row.clone_ref(py));
-        if row.is_some() {
-            self.cursor += 1;
-        }
-        row
+    /// Rows inserted, updated or deleted by a SQL INSERT, UPDATE or DELETE
+    /// on a RowPage table, or None for any other statement (queries, DDL,
+    /// branch commands, Strict Append writes, Cypher). Conflict no-ops of
+    /// `ON CONFLICT DO NOTHING` are not counted. Inside a transaction the
+    /// count is of staged rows, published on commit.
+    #[getter]
+    fn affected_rows(&self) -> Option<usize> {
+        self.affected_rows
     }
 
-    /// Returns up to `size` rows starting at the cursor.
+    /// Returns the next row as a new dict, or None when exhausted.
+    fn fetchone<'py>(&mut self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        Ok(self.fetchmany(py, 1)?.pop())
+    }
+
+    /// Returns up to `size` rows starting at the cursor, as new dicts.
     #[pyo3(signature = (size = 1))]
-    fn fetchmany(&mut self, py: Python<'_>, size: usize) -> Vec<Py<PyDict>> {
-        let end = (self.cursor + size).min(self.rows.len());
-        let rows = self.rows[self.cursor..end]
-            .iter()
-            .map(|row| row.clone_ref(py))
-            .collect();
-        self.cursor = end;
-        rows
+    fn fetchmany<'py>(
+        &mut self,
+        py: Python<'py>,
+        size: usize,
+    ) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        let range = self.next_range(size);
+        let rows = self.dicts(py, range.clone())?;
+        self.cursor = range.end;
+        Ok(rows)
     }
 
-    /// Returns every remaining row from the cursor.
-    fn fetchall(&mut self, py: Python<'_>) -> Vec<Py<PyDict>> {
-        let rows = self.rows[self.cursor..]
-            .iter()
-            .map(|row| row.clone_ref(py))
-            .collect();
-        self.cursor = self.rows.len();
-        rows
+    /// Returns up to `size` rows starting at the cursor, as new tuples in
+    /// column order. Shares the cursor with the dict fetches.
+    #[pyo3(signature = (size = 1))]
+    fn fetchmany_tuples<'py>(
+        &mut self,
+        py: Python<'py>,
+        size: usize,
+    ) -> PyResult<Vec<Bound<'py, PyTuple>>> {
+        let range = self.next_range(size);
+        let rows = self.tuples(py, range.clone())?;
+        self.cursor = range.end;
+        Ok(rows)
+    }
+
+    /// Returns every remaining row from the cursor, as new dicts.
+    fn fetchall<'py>(&mut self, py: Python<'py>) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        self.fetchmany(py, usize::MAX)
     }
 
     fn __len__(&self) -> usize {
@@ -576,46 +691,61 @@ impl QueryResult {
         slf
     }
 
-    fn __next__(&mut self, py: Python<'_>) -> Option<Py<PyDict>> {
-        let row = self.rows.get(self.cursor).map(|row| row.clone_ref(py));
-        if row.is_some() {
-            self.cursor += 1;
+    fn __next__<'py>(&mut self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        self.fetchone(py)
+    }
+
+    /// The first non-null value of column `column` in the whole result,
+    /// independent of the fetch cursor, or None when every value is null.
+    ///
+    /// Scans the engine's values and converts only the one it returns; the
+    /// DB-API derives `description` type codes from it.
+    fn _first_non_null(&self, py: Python<'_>, column: usize) -> PyResult<Option<Py<PyAny>>> {
+        if column >= self.rows.schema().len() {
+            return Err(PyIndexError::new_err("column index out of range"));
         }
-        row
+        self.rows
+            .value_rows()
+            .map(|values| &values[column])
+            .find(|value| !matches!(value, Value::Null))
+            .map(|value| value_to_py(py, value))
+            .transpose()
     }
 
     /// Notebook HTML table of the first rows; the plain `repr` is unchanged.
     ///
     /// Always renders from the first row, independent of the fetch cursor.
-    /// The row cap lives in `hawdb._display`; only rows within it are handed
-    /// over, so large results do not build a full list to draw a few rows.
+    /// The row cap lives in `hawdb._display`; only rows within it are
+    /// converted, so large results do not build a full list to draw a few rows.
     fn _repr_html_(&self, py: Python<'_>) -> PyResult<String> {
         let display = py.import("hawdb._display")?;
         let limit: usize = display.getattr("DISPLAY_ROW_LIMIT")?.extract()?;
-        let rows = PyList::new(py, self.rows.iter().take(limit).map(|row| row.bind(py)))?;
+        let rows = self.dicts(py, 0..limit.min(self.rows.len()))?;
         display
             .getattr("render_html")?
-            .call1((self.columns.clone(), rows, self.rows.len()))?
+            .call1((self.columns(), rows, self.rows.len()))?
             .extract()
     }
 
-    /// Rows `start..stop` for notebook display, independent of the fetch cursor.
+    /// Rows `start..stop` for notebook display, as new dicts, independent of
+    /// the fetch cursor.
     ///
     /// `stop` defaults to the row count; both bounds are clamped to it.
     #[pyo3(signature = (start = 0, stop = None))]
-    fn _display_rows(&self, py: Python<'_>, start: usize, stop: Option<usize>) -> Vec<Py<PyDict>> {
+    fn _display_rows<'py>(
+        &self,
+        py: Python<'py>,
+        start: usize,
+        stop: Option<usize>,
+    ) -> PyResult<Vec<Bound<'py, PyDict>>> {
         let stop = stop.unwrap_or(self.rows.len()).min(self.rows.len());
-        let start = start.min(stop);
-        self.rows[start..stop]
-            .iter()
-            .map(|row| row.clone_ref(py))
-            .collect()
+        self.dicts(py, start.min(stop)..stop)
     }
 
     fn __repr__(&self) -> String {
         format!(
             "hawdb.QueryResult(columns={:?}, rows={})",
-            self.columns,
+            self.rows.schema().columns(),
             self.rows.len()
         )
     }
@@ -627,7 +757,9 @@ impl QueryResult {
 /// single user transaction and see their own writes. `commit()` publishes
 /// all staged mutations; `rollback()` discards them. Leaving a `with` block
 /// commits on success and rolls back on exception. Calling into the parent
-/// `Database` while a transaction is open raises `RuntimeError`.
+/// `Database` while a transaction is open raises `RuntimeError`. The
+/// transaction pins the snapshot it began with until it ends, even if it
+/// only reads, which holds back checkpoint reclamation.
 #[pyclass(module = "hawdb", name = "Transaction", unsendable)]
 pub struct Transaction {
     db: Py<Database>,
@@ -704,11 +836,16 @@ impl Transaction {
         let output = py
             .detach(|| embedded.transaction_query_with_params(cypher, &params))
             .map_err(|error| format_hawdb_error(&error))?;
-        QueryResult::from_output(py, output)
+        Ok(QueryResult::from_output(output))
     }
 
     /// Runs one SQL statement inside the transaction. Same signature and
-    /// parameter types as `Database.execute_sql`.
+    /// parameter types as `Database.execute_sql`. `affected_rows` of the
+    /// result counts the rows the statement staged; they are published only
+    /// when the transaction commits. Admitted like `Database.execute_sql`;
+    /// an `AdmissionError` stages nothing and leaves the transaction open.
+    /// The statement is recorded in the slow-query log and statement
+    /// summary, and refused once the handle is poisoned.
     #[pyo3(signature = (sql, params = None))]
     fn execute_sql(
         &mut self,
@@ -723,10 +860,14 @@ impl Transaction {
         self.required()?;
         let mut db = self.db.borrow_mut(py);
         let embedded = db.required()?;
-        let output = py
-            .detach(|| embedded.transaction_query_sql_with_params(sql, &values))
-            .map_err(|error| format_hawdb_error(&error))?;
-        QueryResult::from_output(py, output)
+        let result = py
+            .detach(|| {
+                embedded.transaction_query_sql_request_admitted_with_result(
+                    SqlQueryRequest::new(sql).with_params(&values),
+                )
+            })
+            .map_err(|error| format_embedded_error(&error))?;
+        Ok(QueryResult::from_sql_result(result))
     }
 
     /// Runs a batch of Cypher bindings without committing the outer transaction.
@@ -759,9 +900,13 @@ impl Transaction {
             let params = py_sequence_to_params(parameter_sequence(row)?)?;
             let mut db = transaction.db.borrow_mut(py);
             let embedded = db.required()?;
-            py.detach(|| embedded.transaction_query_sql_with_params(sql, &params))
-                .map(|_| ())
-                .map_err(|error| format_hawdb_error(&error))
+            py.detach(|| {
+                embedded.transaction_query_sql_request_admitted(
+                    SqlQueryRequest::new(sql).with_params(&params),
+                )
+            })
+            .map(|_| ())
+            .map_err(|error| format_embedded_error(&error))
         })
     }
 
@@ -777,7 +922,7 @@ impl Transaction {
         let output = py
             .detach(|| embedded.commit_transaction())
             .map_err(|error| format_hawdb_error(&error))?;
-        QueryResult::from_output(py, output)
+        Ok(QueryResult::from_output(output))
     }
 
     /// Abandons the transaction without committing. Safe to call once.
@@ -870,7 +1015,7 @@ impl ReadTransaction {
         let output = py
             .detach(|| transaction.query_with_params(cypher, &params))
             .map_err(|error| format_hawdb_error(&error))?;
-        QueryResult::from_output(py, output)
+        Ok(QueryResult::from_output(output))
     }
 
     /// Runs one SQL statement against the pinned snapshot. Same signature
@@ -890,7 +1035,7 @@ impl ReadTransaction {
         let output = py
             .detach(|| transaction.query_sql_with_params(sql, &values))
             .map_err(|error| format_hawdb_error(&error))?;
-        QueryResult::from_output(py, output)
+        Ok(QueryResult::from_output(output))
     }
 
     /// Releases the pinned snapshot. Safe to call more than once.
@@ -929,7 +1074,9 @@ impl ReadTransaction {
 /// sqlite3, `":memory:"` is not an in-memory path and raises ValueError, as does
 /// an empty path. Filesystem path errors raise StorageError.
 /// `read_only=True` requires a path and opens an existing database read-only.
-/// Optional read budgets pass through to the engine; None keeps its defaults.
+/// Optional read budgets pass through to the engine; None keeps its defaults
+/// (no row ceiling, a 64 MiB payload ceiling). The payload ceiling is also the
+/// runtime result budget of admitted statements; None does not remove it.
 /// A namespace_durability_anchor is an existing ancestor whose name and ancestry
 /// the host guarantees durable and stable for the handle's lifetime. Namespace
 /// synchronization includes that boundary. None keeps the engine's mount walk.
@@ -949,4 +1096,132 @@ pub fn open(
         max_read_result_payload_bytes,
         namespace_durability_anchor,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::errors::AdmissionError;
+    use hawdb::{RuntimePermit, RuntimeWorkKind, RuntimeWorkPriority, RuntimeWorkRequest};
+
+    const CREATE: &str = "CREATE TABLE items (id BIGINT PRIMARY KEY, qty BIGINT)";
+
+    /// Holds every CPU slot of the handle's governor until the permit drops.
+    fn saturate(py: Python<'_>, db: &Py<Database>) -> RuntimePermit {
+        let database = db.borrow(py);
+        let governor = database.inner.as_ref().unwrap().runtime_governor();
+        governor
+            .try_admit(
+                RuntimeWorkRequest::new(RuntimeWorkPriority::Foreground, RuntimeWorkKind::Control)
+                    .with_cpu_slots(governor.snapshot().limits.effective_cpu_slots.get()),
+            )
+            .unwrap()
+    }
+
+    fn assert_retryable_admission(py: Python<'_>, error: &PyErr) {
+        assert!(error.is_instance_of::<AdmissionError>(py), "{error}");
+        let value = error.value(py);
+        assert!(value
+            .getattr("retryable")
+            .unwrap()
+            .extract::<bool>()
+            .unwrap());
+        assert_eq!(
+            value.getattr("code").unwrap().extract::<String>().unwrap(),
+            "cpu_saturated"
+        );
+    }
+
+    fn execute_sql(py: Python<'_>, db: &Py<Database>, sql: &str) -> PyResult<QueryResult> {
+        db.borrow_mut(py).execute_sql(py, sql, None)
+    }
+
+    fn open(py: Python<'_>) -> Py<Database> {
+        let db = Py::new(
+            py,
+            Database::open_impl(None, false, None, None, None).unwrap(),
+        )
+        .unwrap();
+        execute_sql(py, &db, CREATE).unwrap();
+        db
+    }
+
+    #[test]
+    fn autocommit_sql_is_admitted_and_reports_affected_rows() {
+        Python::initialize();
+        Python::attach(|py| {
+            let db = open(py);
+            let busy = saturate(py, &db);
+            let refused = execute_sql(py, &db, "INSERT INTO items (id, qty) VALUES (1, 1)")
+                .err()
+                .expect("a saturated governor refuses autocommit SQL");
+            assert_retryable_admission(py, &refused);
+            drop(busy);
+            let inserted =
+                execute_sql(py, &db, "INSERT INTO items (id, qty) VALUES (2, 2), (3, 3)").unwrap();
+            assert_eq!(inserted.affected_rows, Some(2));
+            let selected = execute_sql(py, &db, "SELECT id FROM items").unwrap();
+            assert_eq!(selected.affected_rows, None);
+            assert_eq!(selected.row_count(), 2);
+        });
+    }
+
+    #[test]
+    fn transaction_sql_is_admitted_and_keeps_the_transaction_open() {
+        Python::initialize();
+        Python::attach(|py| {
+            let db = open(py);
+            let mut transaction = Database::transaction(db.clone_ref(py), py).unwrap();
+            let busy = saturate(py, &db);
+            let refused = transaction
+                .execute_sql(py, "INSERT INTO items (id, qty) VALUES (1, 1)", None)
+                .err()
+                .expect("a saturated governor refuses transaction SQL");
+            assert_retryable_admission(py, &refused);
+            drop(busy);
+            let inserted = transaction
+                .execute_sql(py, "INSERT INTO items (id, qty) VALUES (2, 2)", None)
+                .unwrap();
+            assert_eq!(inserted.affected_rows, Some(1));
+            // Only the admitted INSERT was staged.
+            let updated = transaction
+                .execute_sql(py, "UPDATE items SET qty = 0 WHERE id >= 0", None)
+                .unwrap();
+            assert_eq!(updated.affected_rows, Some(1));
+            transaction.commit(py).unwrap();
+            assert_eq!(
+                execute_sql(py, &db, "SELECT id FROM items")
+                    .unwrap()
+                    .row_count(),
+                1
+            );
+        });
+    }
+
+    #[test]
+    fn executemany_sql_is_admitted_and_rolls_the_batch_back() {
+        Python::initialize();
+        Python::attach(|py| {
+            let db = open(py);
+            let rows = PyList::new(py, [PyList::new(py, [1]).unwrap()]).unwrap();
+            let busy = saturate(py, &db);
+            let refused = Database::executemany_sql(
+                db.clone_ref(py),
+                py,
+                "INSERT INTO items (id) VALUES ($1)",
+                rows.as_any(),
+            )
+            .expect_err("a saturated governor refuses the batch");
+            assert_retryable_admission(py, &refused);
+            drop(busy);
+            // The batch's transaction is over and staged nothing.
+            assert!(!db.borrow(py).inner.as_ref().unwrap().transaction_active());
+            assert_eq!(
+                execute_sql(py, &db, "SELECT id FROM items")
+                    .unwrap()
+                    .row_count(),
+                0
+            );
+        });
+    }
 }

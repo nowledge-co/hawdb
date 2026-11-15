@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Node and relationship properties that `GraphMatchExec` must read.
+//! Node and relationship properties that `GraphMatchExec` must read, and
+//! unwound list columns that nothing reads after `UNWIND`.
 //!
 //! `GraphMatchExec` used to read every property of every node and
 //! relationship it bound, even when the rest of the query only compares an id
@@ -29,9 +30,15 @@
 //!   `n IN list`, `WITH n`, a path) or through a column of the same name is
 //!   read in full.
 //! - The walk descends only through operators whose expressions it knows
-//!   (projection, aggregation, filter, sort, limit, distinct and
-//!   `GraphMatchExec`) from a root that returns values. Any other operator
-//!   keeps its whole subtree, and every `GraphMatchExec` in it, unchanged.
+//!   (projection, aggregation, filter, sort, limit, distinct, `UNWIND` of a
+//!   row expression and `GraphMatchExec`) from a root that returns values.
+//!   Any other operator keeps its whole subtree, and every `GraphMatchExec`
+//!   in it, unchanged.
+//!
+//! The same walk marks an `UnwindRowsExec` whose source is a column that no
+//! operator above reads and no `DISTINCT` above compares: the unwind then
+//! takes that column out of each input row instead of copying the whole list
+//! into every output row (#1606).
 //! - The properties a program's own pattern and predicate test are always
 //!   included, so every occurrence of a variable sees the same record.
 
@@ -111,12 +118,19 @@ pub(super) fn project_graph_match_reads(
     if !returns_values(&plan) {
         return plan;
     }
-    let mut projected = Vec::new();
-    let plan = project(plan, Demand::default(), &mut projected);
-    if !projected.is_empty() {
+    let mut walk = Walk::default();
+    let plan = project(plan, Demand::default(), false, &mut walk);
+    if !walk.projected.is_empty() {
         decisions.push(format!(
             "GraphMatchExec reads only the node and relationship properties later operators use: {}",
-            projected.join(", ")
+            walk.projected.join(", ")
+        ));
+    }
+    if !walk.consumed.is_empty() {
+        decisions.push(format!(
+            "UnwindRowsExec takes its source column out of each row instead of copying it into \
+             every output row, because no later operator reads it: {}",
+            walk.consumed.join(", ")
         ));
     }
     plan
@@ -136,7 +150,24 @@ fn returns_values(plan: &PhysicalPlan) -> bool {
     }
 }
 
-fn project(plan: PhysicalPlan, mut demand: Demand, projected: &mut Vec<String>) -> PhysicalPlan {
+/// What the walk changed, for the optimizer trace.
+#[derive(Default)]
+struct Walk {
+    /// Graph variables whose reads a `GraphMatchExec` projects.
+    projected: Vec<String>,
+    /// Source columns an `UnwindRowsExec` consumes.
+    consumed: Vec<String>,
+}
+
+/// `compared` is true when an operator above compares whole rows (`DISTINCT`
+/// without a projection between): every value column is then read, even one
+/// no expression names.
+fn project(
+    plan: PhysicalPlan,
+    mut demand: Demand,
+    compared: bool,
+    walk: &mut Walk,
+) -> PhysicalPlan {
     match plan {
         PhysicalPlan::ProjectExec { items, input } => {
             // Projection keeps its input's graph bindings, so later demand
@@ -144,16 +175,22 @@ fn project(plan: PhysicalPlan, mut demand: Demand, projected: &mut Vec<String>) 
             for item in &items {
                 expression(&item.expression, &mut demand);
             }
+            // The projection rebuilds the value columns: nothing above it
+            // compares the input row as a whole.
             PhysicalPlan::ProjectExec {
                 items,
-                input: Box::new(project(*input, demand, projected)),
+                input: Box::new(project(*input, demand, false, walk)),
             }
         }
         PhysicalPlan::AggregateExec {
             group_keys,
             items,
+            graph_keys,
             input,
         } => {
+            // A graph key leaves as the record it grouped by, so demand from
+            // above on that name reaches the same variable's reads; a whole
+            // variable key reads every property anyway.
             for key in &group_keys {
                 expression(&key.expression, &mut demand);
             }
@@ -163,21 +200,22 @@ fn project(plan: PhysicalPlan, mut demand: Demand, projected: &mut Vec<String>) 
             PhysicalPlan::AggregateExec {
                 group_keys,
                 items,
-                input: Box::new(project(*input, demand, projected)),
+                graph_keys,
+                input: Box::new(project(*input, demand, false, walk)),
             }
         }
         PhysicalPlan::FilterExec { predicate, input } => {
             self::predicate(&predicate, &mut demand);
             PhysicalPlan::FilterExec {
                 predicate,
-                input: Box::new(project(*input, demand, projected)),
+                input: Box::new(project(*input, demand, compared, walk)),
             }
         }
         PhysicalPlan::SortExec { items, input } => {
             sort_items(&items, &mut demand);
             PhysicalPlan::SortExec {
                 items,
-                input: Box::new(project(*input, demand, projected)),
+                input: Box::new(project(*input, demand, compared, walk)),
             }
         }
         PhysicalPlan::TopNExec {
@@ -191,7 +229,7 @@ fn project(plan: PhysicalPlan, mut demand: Demand, projected: &mut Vec<String>) 
                 items,
                 offset,
                 limit,
-                input: Box::new(project(*input, demand, projected)),
+                input: Box::new(project(*input, demand, compared, walk)),
             }
         }
         PhysicalPlan::LimitExec {
@@ -201,17 +239,50 @@ fn project(plan: PhysicalPlan, mut demand: Demand, projected: &mut Vec<String>) 
         } => PhysicalPlan::LimitExec {
             offset,
             limit,
-            input: Box::new(project(*input, demand, projected)),
+            input: Box::new(project(*input, demand, compared, walk)),
         },
         // Equal rows bind equal ids, and so equal projected records.
+        // DISTINCT compares every value column of its input rows.
         PhysicalPlan::DistinctExec { input } => PhysicalPlan::DistinctExec {
-            input: Box::new(project(*input, demand, projected)),
+            input: Box::new(project(*input, demand, true, walk)),
         },
         PhysicalPlan::GraphMatchExec { program, input } => {
-            let (program, input_demand) = project_program(program, &demand, projected);
+            let (program, mut input_demand) =
+                project_program(program, &demand, &mut walk.projected);
+            // Imports read their columns from the input row.
+            for import in &program.imports {
+                input_demand.identity(&import.column);
+            }
             PhysicalPlan::GraphMatchExec {
                 program,
-                input: input.map(|input| Box::new(project(*input, input_demand, projected))),
+                input: input.map(|input| Box::new(project(*input, input_demand, compared, walk))),
+            }
+        }
+        PhysicalPlan::UnwindRowsExec {
+            expression,
+            variable,
+            consumes_source,
+            input,
+        } => {
+            // Output rows are input rows plus `variable`. A source column that
+            // nothing above reads, and that no row comparison sees, can move
+            // into the unwind instead of being copied into every output row.
+            let consumes_source = consumes_source
+                || matches!(
+                    &expression,
+                    ProjectionExpression::Column(column)
+                        if column != &variable && !compared && !demand.0.contains_key(column)
+                );
+            if consumes_source && let ProjectionExpression::Column(column) = &expression {
+                walk.consumed.push(column.clone());
+            }
+            demand.0.remove(&variable);
+            self::expression(&expression, &mut demand);
+            PhysicalPlan::UnwindRowsExec {
+                expression,
+                variable,
+                consumes_source,
+                input: Box::new(project(*input, demand, compared, walk)),
             }
         }
         plan => plan,
@@ -293,6 +364,12 @@ fn project_program(
         }
     }
     program.projected_relationships = projected_relationships;
+    // Seeded branches bind the same variables; their seeks and guards read
+    // only properties in the program's own demand, merged below.
+    for branch in &mut program.seeded_union {
+        branch.projected_nodes = program.projected_nodes.clone();
+        branch.projected_relationships = program.projected_relationships.clone();
+    }
     // A variable bound by the input keeps the demand of both the program and
     // the operators above it.
     let input = Demand(
@@ -344,6 +421,9 @@ fn program_demand(program: &GraphMatchProgram) -> Demand {
     }
     if let Some(predicate) = &program.predicate {
         self::predicate(predicate, &mut demand);
+    }
+    for branch in &program.seeded_union {
+        demand.merge(&program_demand(branch));
     }
     demand
 }
@@ -465,7 +545,22 @@ fn expression(expression: &ProjectionExpression, demand: &mut Demand) {
         | ProjectionExpression::ColumnValueCasePropertyNotNullOrEq { column, .. }
         | ProjectionExpression::Path { column, .. } => demand.whole(column),
         ProjectionExpression::CaseColumnSearchRank(rank) => demand.whole(&rank.column),
-        ProjectionExpression::Id { variable } => demand.identity(variable),
+        // Projected records keep their labels and relationship type.
+        ProjectionExpression::Id { variable } | ProjectionExpression::Label { variable, .. } => {
+            demand.identity(variable)
+        }
+        // The endpoint is returned as a whole node value from one of the
+        // binding step's node variables.
+        ProjectionExpression::RelationshipEndpoint {
+            variable,
+            endpoints,
+            ..
+        } => {
+            demand.identity(variable);
+            for node in endpoints.iter().flatten() {
+                demand.whole(node);
+            }
+        }
         ProjectionExpression::Property { variable, property }
         | ProjectionExpression::DatePart {
             variable, property, ..
@@ -496,9 +591,26 @@ fn expression(expression: &ProjectionExpression, demand: &mut Demand) {
             demand.property(&rank.variable, &rank.aliases_property);
         }
         ProjectionExpression::Literal(_) | ProjectionExpression::LocalVariable { .. } => {}
+        // The pattern matches labels and properties of the enclosing records
+        // it copies, and its body may read any of them. Its other variables
+        // are its own.
+        ProjectionExpression::Pattern(pattern) => {
+            for name in pattern.graph_variables.iter().chain(&pattern.columns) {
+                demand.whole(name);
+            }
+            for argument in pattern
+                .arguments
+                .iter()
+                .map(|(_, argument)| argument)
+                .chain(pattern.seeds.iter().flat_map(|seeds| &seeds.expressions))
+            {
+                self::expression(argument, demand);
+            }
+        }
         ProjectionExpression::Coalesce(_)
         | ProjectionExpression::VectorDistance { .. }
         | ProjectionExpression::JsonValue { .. }
+        | ProjectionExpression::JsonString { .. }
         | ProjectionExpression::Left { .. }
         | ProjectionExpression::Lower(_)
         | ProjectionExpression::Case { .. }
@@ -512,8 +624,11 @@ fn expression(expression: &ProjectionExpression, demand: &mut Demand) {
         | ProjectionExpression::ListIndex { .. }
         | ProjectionExpression::ListSlice { .. }
         | ProjectionExpression::Conversion { .. }
+        | ProjectionExpression::NumericFunction { .. }
+        | ProjectionExpression::Reduce(_)
         | ProjectionExpression::TemporalFunction { .. }
         | ProjectionExpression::PropertyAccess { .. }
+        | ProjectionExpression::RelationshipValueEndpoint { .. }
         | ProjectionExpression::MapLiteral(_) => {
             expression.all_children(|child| {
                 self::expression(child, demand);

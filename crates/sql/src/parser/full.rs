@@ -173,6 +173,8 @@ impl Fold<'_> {
             Some("HawDelete") => self.delete(node),
             Some("HawCreateTable") => self.create_table(node),
             Some("HawCreateIndex") => self.create_index(node),
+            Some("HawCreateSearchIndex") => self.create_search_index(node),
+            Some("HawDropSearchIndex") => self.drop_search_index(node),
             Some("HawAlter") => self.alter(node),
             Some("HawCreateView") => self.create_view(node),
             Some("HawDrop") => self.drop_view(node),
@@ -490,6 +492,38 @@ impl Fold<'_> {
                 Ok(SqlDataType::BigInt)
             }
             Some("HawDoubleType") => Ok(SqlDataType::DoublePrecision),
+            Some("HawTimestampType") => {
+                let tokens = &self.tokens[self.tree.nodes[kind].start..self.tree.nodes[kind].end];
+                let precision = match self.tree.child(kind, "Number") {
+                    None => hawdb_core::TimestampPrecision::DEFAULT,
+                    Some(number) => self
+                        .text(number)
+                        .parse::<u8>()
+                        .ok()
+                        .and_then(hawdb_core::TimestampPrecision::new)
+                        .ok_or_else(|| {
+                            semantic("TIMESTAMP precision must be an integer between 0 and 6")
+                        })?,
+                };
+                let with = tokens
+                    .iter()
+                    .any(|token| token.is_keyword(self.input, "WITH"));
+                let without = tokens
+                    .iter()
+                    .any(|token| token.is_keyword(self.input, "WITHOUT"));
+                let tz = raw == "TIMESTAMPTZ";
+                if tz && (with || without) {
+                    return Err(semantic(
+                        "TIMESTAMPTZ does not accept a WITH or WITHOUT TIME ZONE clause",
+                    ));
+                }
+                Ok(SqlDataType::Timestamp(
+                    hawdb_core::sql_timestamp::TimestampType {
+                        zoned: tz || with,
+                        precision,
+                    },
+                ))
+            }
             Some("HawFloatType") => {
                 let widths = self.children(kind, "Number");
                 if let Some(width) = widths.first() {
@@ -665,7 +699,29 @@ impl Fold<'_> {
                     let expr = self.expr(self.child(option, "Or"));
                     column.default = Some(
                         match self.lowerer.lower(&expr, ExpressionPosition::Scalar)?.kind {
-                            ExprKind::Value(value) => SqlColumnDefault::Literal(value),
+                            ExprKind::Value(SqlValue::Expression(expression))
+                                if matches!(expression.kind, ExprKind::CurrentTimestamp(_)) =>
+                            {
+                                let ExprKind::CurrentTimestamp(kind) = expression.kind else {
+                                    unreachable!("matched CURRENT_TIMESTAMP default")
+                                };
+                                SqlColumnDefault::CurrentTimestamp(kind)
+                            }
+                            ExprKind::Value(value) => {
+                                let mut clock = false;
+                                if let SqlValue::Expression(expression) = &value {
+                                    expression.visit(&mut |child| {
+                                        clock |=
+                                            matches!(child.kind, ExprKind::CurrentTimestamp(_));
+                                    });
+                                }
+                                if clock {
+                                    return Err(semantic(
+                                        "CURRENT_TIMESTAMP, LOCALTIMESTAMP and now() column defaults must be the whole default expression",
+                                    ));
+                                }
+                                SqlColumnDefault::Literal(value)
+                            }
                             ExprKind::Function {
                                 name,
                                 arguments,
@@ -888,6 +944,47 @@ impl Fold<'_> {
             columns: self.index_columns(self.child(node, "HawIndexColumns"))?,
             unique: self.has(node, "HawUnique"),
             if_not_exists: self.has(node, "HawIfNotExists"),
+        }))
+    }
+    fn create_search_index(&self, node: NodeId) -> Result<SqlStatement> {
+        let mut analyzer = None;
+        if let Some(options) = self.tree.child(node, "HawStorage") {
+            for option in self.tree.children(options) {
+                let name = self.ident(self.child(*option, "Identifier"));
+                let expr = self.expr(self.child(*option, "Or"));
+                let SqlValue::Literal(Value::String(value)) = self.lowerer.literal(&expr)? else {
+                    return Err(semantic(format!(
+                        "CREATE SEARCH INDEX {name} must be a string literal"
+                    )));
+                };
+                if name != "analyzer" {
+                    return Err(semantic(format!(
+                        "unsupported CREATE SEARCH INDEX option {name}"
+                    )));
+                }
+                if analyzer.replace(value).is_some() {
+                    return Err(semantic(
+                        "CREATE SEARCH INDEX analyzer is specified more than once",
+                    ));
+                }
+            }
+        }
+        let name = self.child(self.child(node, "HawSearchIndexName"), "Name");
+        Ok(SqlStatement::CreateSearchIndex(
+            CreateSearchIndexStatement {
+                name: self.table(name)?,
+                table: self.table(self.child(self.child(node, "HawSearchIndexTable"), "Name"))?,
+                column: self
+                    .ident(self.child(self.child(node, "HawSearchIndexColumn"), "Identifier")),
+                analyzer,
+                if_not_exists: self.has(node, "HawIfNotExists"),
+            },
+        ))
+    }
+    fn drop_search_index(&self, node: NodeId) -> Result<SqlStatement> {
+        Ok(SqlStatement::DropSearchIndex(DropSearchIndexStatement {
+            name: self.table(self.child(node, "Name"))?,
+            if_exists: self.has(node, "HawIfExists"),
         }))
     }
     fn alter(&self, node: NodeId) -> Result<SqlStatement> {

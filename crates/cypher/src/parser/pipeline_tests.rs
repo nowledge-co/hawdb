@@ -412,7 +412,6 @@ mod tests {
             );
         }
         for query in [
-            "MATCH (a)-[:LINK*]->(b) RETURN a",
             "MATCH p = shortestPath((a)-[:LINK* ALL SHORTEST]->(b)) RETURN a",
             "MATCH p = shortestPath((a)) RETURN a",
             "MATCH p = shortestPath((a)-[:LINK*]->(b) RETURN a",
@@ -452,11 +451,72 @@ mod tests {
             "MATCH (n:Item)",
             "MATCH (n:Item) WITH n",
             "MATCH (n:Item) RETURN n MATCH (m:Item)",
-            "MATCH (n:Item)-[:LINK*]->(m:Item) RETURN m",
             "MATCH (n:Item) RETURN n LIMIT",
         ] {
             assert!(parse_pipeline(query).is_err(), "{query}");
         }
+    }
+
+    #[test]
+    fn create_followed_by_return_parses_as_a_pipeline() {
+        for (query, clauses) in [
+            ("CREATE (o:Completion {id: $id}) RETURN o.id", 2),
+            (
+                "MATCH (a:Memory {id: $a}), (b:Label {id: $b}) CREATE (a)-[r:HAS_LABEL]->(b) RETURN r",
+                3,
+            ),
+            ("CREATE (:Item)-[r:LINK]->(:Item) RETURN count(*)", 2),
+        ] {
+            let Statement::Pipeline(pipeline) = parse(query).unwrap() else {
+                panic!("{query} is not a pipeline");
+            };
+            assert_eq!(pipeline.clauses.len(), clauses, "{query}");
+            assert!(matches!(
+                pipeline.clauses.last().map(|clause| &clause.kind),
+                Some(ClauseKind::Return(_))
+            ));
+        }
+        let Statement::Explain(explain) = parse("EXPLAIN CREATE (n:Item) RETURN n").unwrap() else {
+            panic!("expected EXPLAIN");
+        };
+        assert!(matches!(explain.statement, Statement::Pipeline(_)));
+        // Without RETURN, the CREATE statement forms are unchanged.
+        assert!(matches!(
+            parse("CREATE (n:Item {id: 1})").unwrap(),
+            Statement::CreateNode(_)
+        ));
+        assert!(matches!(
+            parse("CREATE INDEX ON :Item(id)").unwrap(),
+            Statement::CreateIndex(_)
+        ));
+        // An incomplete RETURN still reports the trailing input.
+        let error = parse("CREATE (n:Item) RETURN").unwrap_err().to_string();
+        assert!(error.contains("RETURN"), "{error}");
+    }
+
+    #[test]
+    fn merge_followed_by_return_parses_as_a_pipeline() {
+        for (query, clauses) in [
+            (
+                "MERGE (l:Label {id: $id}) ON CREATE SET l.name = 'c' ON MATCH SET l.name = 'm' RETURN l.name",
+                2,
+            ),
+            ("MERGE (m:Meta {id: 'main'}) SET m.a = 1 SET m.b = 2 RETURN m", 4),
+        ] {
+            let Statement::Pipeline(pipeline) = parse(query).unwrap() else {
+                panic!("{query} is not a pipeline");
+            };
+            assert_eq!(pipeline.clauses.len(), clauses, "{query}");
+        }
+        // Without RETURN, MERGE keeps its statement form.
+        assert!(matches!(
+            parse("MERGE (l:Label {id: 1}) ON CREATE SET l.name = 'c'").unwrap(),
+            Statement::MergeNode(_)
+        ));
+        assert!(matches!(
+            parse("MERGE (m:Meta {id: 'main'}) SET m.a = 1").unwrap(),
+            Statement::MergeNode(_)
+        ));
     }
 }
 

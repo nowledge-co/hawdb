@@ -31,15 +31,22 @@ impl GraphStore {
         &mut self,
         catalog: &mut Catalog,
         label: &str,
-        properties: BTreeMap<String, Value>,
+        mut properties: BTreeMap<String, Value>,
     ) -> Result<NodeId> {
+        catalog.fill_creation_defaults(
+            TableKind::Node,
+            label,
+            &mut properties,
+            &mut lazy_creation_clock(None),
+        );
         let label_id = catalog.get_or_create_label(label);
         let id = NodeId(self.next_node_id);
-        let ops = [WalOp::CreateNode {
+        let mut ops = [WalOp::CreateNode {
             id,
             label: label.to_string(),
             properties: properties.clone(),
         }];
+        fill_creation_defaults(catalog, &mut ops, &mut lazy_creation_clock(None));
         self.validate_constraints_for_ops(catalog, &ops)?;
         self.append_graph_wal_and_capture(catalog, &ops, true)?;
         self.apply_create_node(catalog, id, label_id, properties);
@@ -79,13 +86,20 @@ impl GraphStore {
         for (property, value) in on_create_properties {
             properties.insert(property, value);
         }
+        catalog.fill_creation_defaults(
+            TableKind::Node,
+            label,
+            &mut properties,
+            &mut lazy_creation_clock(None),
+        );
         apply_node_assignments_to_properties(&mut properties, post_merge_assignments)?;
         let id = NodeId(self.next_node_id);
-        let ops = [WalOp::CreateNode {
+        let mut ops = [WalOp::CreateNode {
             id,
             label: label.to_string(),
             properties: properties.clone(),
         }];
+        fill_creation_defaults(catalog, &mut ops, &mut lazy_creation_clock(None));
         self.validate_constraints_for_ops(catalog, &ops)?;
         self.append_graph_wal_and_capture(catalog, &ops, true)?;
         self.apply_create_node(catalog, id, label_id, properties);
@@ -99,7 +113,7 @@ impl GraphStore {
         source: NodeId,
         target: NodeId,
         rel_type: &str,
-        properties: BTreeMap<String, Value>,
+        mut properties: BTreeMap<String, Value>,
     ) -> Result<RelId> {
         if self.node_owned(source)?.is_none() {
             return Err(HawDBError::Storage(format!(
@@ -113,15 +127,22 @@ impl GraphStore {
                 target.0
             )));
         }
+        catalog.fill_creation_defaults(
+            TableKind::Relationship,
+            rel_type,
+            &mut properties,
+            &mut lazy_creation_clock(None),
+        );
         let rel_type_id = catalog.get_or_create_rel_type(rel_type);
         let id = RelId(self.next_rel_id);
-        let ops = [WalOp::CreateRelationship {
+        let mut ops = [WalOp::CreateRelationship {
             id,
             source,
             target,
             rel_type: rel_type.to_string(),
             properties: properties.clone(),
         }];
+        fill_creation_defaults(catalog, &mut ops, &mut lazy_creation_clock(None));
         self.validate_constraints_for_ops(catalog, &ops)?;
         self.append_graph_wal_and_capture(catalog, &ops, true)?;
         self.apply_create_relationship(id, source, target, rel_type_id, properties);
@@ -176,6 +197,7 @@ impl GraphStore {
                 rows.push((source, rel, *target));
             }
         }
+        fill_creation_defaults(catalog, &mut ops, &mut lazy_creation_clock(None));
         self.validate_constraints_for_ops(catalog, &ops)?;
         self.append_graph_wal_and_capture(catalog, &ops, false)?;
         for op in ops {
@@ -246,6 +268,7 @@ impl GraphStore {
             }
         }
         if !ops.is_empty() {
+            fill_creation_defaults(catalog, &mut ops, &mut lazy_creation_clock(None));
             self.validate_constraints_for_ops(catalog, &ops)?;
             self.append_graph_wal_and_capture(catalog, &ops, false)?;
             for op in ops {
@@ -360,6 +383,7 @@ impl GraphStore {
             rows.push((old_relationship.source, rel, old_relationship.target, true));
         }
         if !ops.is_empty() {
+            fill_creation_defaults(catalog, &mut ops, &mut lazy_creation_clock(None));
             self.validate_constraints_for_ops(catalog, &ops)?;
             self.append_graph_wal_and_capture(catalog, &ops, false)?;
             for op in ops {
@@ -465,6 +489,7 @@ impl GraphStore {
             }
         }
         if !ops.is_empty() {
+            fill_creation_defaults(catalog, &mut ops, &mut lazy_creation_clock(None));
             self.validate_constraints_for_ops(catalog, &ops)?;
             self.append_graph_wal_and_capture(catalog, &ops, false)?;
             for op in ops {
@@ -570,6 +595,7 @@ impl GraphStore {
             }
         }
         if !ops.is_empty() {
+            fill_creation_defaults(catalog, &mut ops, &mut lazy_creation_clock(None));
             self.validate_constraints_for_ops(catalog, &ops)?;
             self.append_graph_wal_and_capture(catalog, &ops, false)?;
             for op in ops {
@@ -1155,7 +1181,7 @@ impl GraphStore {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        let ops =
+        let mut ops =
             ids.iter()
                 .flat_map(|id| {
                     update.assignments.iter().map(move |assignment| {
@@ -1167,6 +1193,7 @@ impl GraphStore {
                     })
                 })
                 .collect::<Vec<_>>();
+        fill_creation_defaults(catalog, &mut ops, &mut lazy_creation_clock(None));
         self.validate_constraints_for_ops(catalog, &ops)?;
         self.append_graph_wal_and_capture(catalog, &ops, false)?;
         for op in ops {
@@ -1179,15 +1206,34 @@ impl GraphStore {
     pub fn create_connected_nodes(
         &mut self,
         catalog: &mut Catalog,
-        request: ConnectedNodesCreate,
+        mut request: ConnectedNodesCreate,
     ) -> Result<(NodeId, RelId, NodeId)> {
+        let mut clock = lazy_creation_clock(None);
+        catalog.fill_creation_defaults(
+            TableKind::Node,
+            &request.source_label,
+            &mut request.source_properties,
+            &mut clock,
+        );
+        catalog.fill_creation_defaults(
+            TableKind::Node,
+            &request.target_label,
+            &mut request.target_properties,
+            &mut clock,
+        );
+        catalog.fill_creation_defaults(
+            TableKind::Relationship,
+            &request.rel_type,
+            &mut request.rel_properties,
+            &mut clock,
+        );
         let source_label_id = catalog.get_or_create_label(&request.source_label);
         let target_label_id = catalog.get_or_create_label(&request.target_label);
         let rel_type_id = catalog.get_or_create_rel_type(&request.rel_type);
         let source = NodeId(self.next_node_id);
         let target = NodeId(self.next_node_id + 1);
         let relationship = RelId(self.next_rel_id);
-        let ops = vec![
+        let mut ops = vec![
             WalOp::CreateNode {
                 id: source,
                 label: request.source_label.clone(),
@@ -1206,6 +1252,7 @@ impl GraphStore {
                 properties: request.rel_properties.clone(),
             },
         ];
+        fill_creation_defaults(catalog, &mut ops, &mut lazy_creation_clock(None));
         self.validate_constraints_for_ops(catalog, &ops)?;
         self.append_graph_wal_and_capture(catalog, &ops, false)?;
         self.apply_create_node(catalog, source, source_label_id, request.source_properties);
@@ -1259,7 +1306,8 @@ impl GraphStore {
             }
         });
         let relationship = RelId(self.next_rel_id);
-        let ops = self.merge_connected_node_ops(&request, source, target, relationship)?;
+        let mut ops = self.merge_connected_node_ops(&request, source, target, relationship)?;
+        fill_creation_defaults(catalog, &mut ops, &mut lazy_creation_clock(None));
         self.validate_constraints_for_ops(catalog, &ops)?;
         self.append_graph_wal_and_capture(catalog, &ops, false)?;
         for op in ops {

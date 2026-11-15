@@ -111,7 +111,9 @@ pub(in crate::api) fn scalar_is_deterministic(expression: &cypher::ScalarExpress
     use cypher::ScalarExpressionKind as Scalar;
     let values_are_deterministic = match &expression.kind {
         Scalar::Value(value) => value_is_deterministic(value),
-        Scalar::JsonValue { path, .. } => value_is_deterministic(path),
+        Scalar::JsonValue { path, .. } | Scalar::JsonString { path, .. } => {
+            value_is_deterministic(path)
+        }
         Scalar::Left { length, .. } => value_is_deterministic(length),
         Scalar::DefaultIfNullOrEq { empty, default, .. } => {
             value_is_deterministic(empty) && value_is_deterministic(default)
@@ -136,10 +138,14 @@ pub(in crate::api) fn scalar_is_deterministic(expression: &cypher::ScalarExpress
         Scalar::CaseCoalesceDifferenceFloorZero { terms, .. } => terms
             .iter()
             .all(|term| value_is_deterministic(&term.default)),
+        Scalar::PatternPredicate(pattern) | Scalar::PatternComprehension { pattern, .. } => {
+            match_is_deterministic(std::slice::from_ref(pattern.as_ref()), None)
+        }
         Scalar::Variable(_)
         | Scalar::Property { .. }
         | Scalar::Id(_)
         | Scalar::RelationshipType(_)
+        | Scalar::Label { .. }
         | Scalar::Coalesce(_)
         | Scalar::Lower(_)
         | Scalar::DatePart { .. }
@@ -154,6 +160,9 @@ pub(in crate::api) fn scalar_is_deterministic(expression: &cypher::ScalarExpress
         | Scalar::List(_)
         | Scalar::ListIndex { .. }
         | Scalar::Conversion { .. }
+        | Scalar::NumericFunction { .. }
+        | Scalar::Reduce { .. }
+        | Scalar::RelationshipEndpoint { .. }
         | Scalar::ListSlice { .. }
         | Scalar::Path(_)
         | Scalar::PropertyAccess { .. }

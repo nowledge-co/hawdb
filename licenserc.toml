@@ -18,6 +18,9 @@ excludes = [
     # Preserve source-bound benchmark evidence, including raw JUnit XML and
     # reproduction snapshots whose bytes are recorded by historical manifests.
     "docs/benchmarks/**",
+    # The golden logical dump's bytes are pinned by the SHA-256 values in its
+    # own manifest; every later release must import them unchanged.
+    "tests/logical_dump/golden_v1/**",
     # Compiler output and downloaded MoonBit dependencies are not project source.
     "**/target/**",
     "**/_build/**",

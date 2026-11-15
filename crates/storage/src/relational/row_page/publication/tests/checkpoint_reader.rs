@@ -332,7 +332,7 @@ fn checkpoint_units_row_reader_preserves_all_corruption_budget_and_artifact_diag
             0 => encoded.truncate(315),
             1 => encoded[0] ^= 1,
             2 => encoded[8..10].copy_from_slice(&99u16.to_le_bytes()),
-            3 => encoded[10..12].copy_from_slice(&0u16.to_le_bytes()),
+            3 => encoded[10..12].copy_from_slice(&1u16.to_le_bytes()),
             4 => encoded[10..12].copy_from_slice(&2u16.to_le_bytes()),
             5 => {
                 encoded[60..64].copy_from_slice(&(config.max_tables.get() as u32 + 1).to_le_bytes())
@@ -575,7 +575,9 @@ fn checkpoint_page_input_denies_before_copy_and_retains_lease_across_clones() {
     let artifact = directory.join(relational_row_page_artifact_file(1));
     let before = fs::read(&artifact).unwrap();
     let cache = SegmentCache::new(8 * 1024 * 1024);
-    for (ceiling, succeeds) in [(4096, false), (16 * 1024 * 1024, true)] {
+    // The page buffer is the exact encoded page (format v2), so only a
+    // ceiling below it is refused.
+    for (ceiling, succeeds) in [(256, false), (16 * 1024 * 1024, true)] {
         let governor = RuntimeGovernor::detect(
             RuntimeGovernorConfig {
                 memory_budget_bytes: Some(ceiling),
@@ -612,7 +614,7 @@ fn checkpoint_page_input_denies_before_copy_and_retains_lease_across_clones() {
             assert!(
                 matches!(work.task_context().reserve_working_memory(ceiling),
                 Err(hawdb_core::RuntimeMemoryError::ReservationExceeded { available_bytes, .. })
-                    if available_bytes <= ceiling - config.page_limits.max_page_bytes.get() as u64)
+                    if available_bytes <= ceiling - u64::from(descriptor.page_integrity.encoded_len))
             );
             drop(work);
             drop(permit);

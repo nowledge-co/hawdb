@@ -28,6 +28,12 @@ the ABI. The Go test target runs with cgo disabled and loads the Bazel-built
 shared library from its declared runfiles, so no `HAWDB_LIBRARY` setup or
 prebuilt Cargo artifact is required.
 
+Stable releases and development prereleases also ship these libraries
+prebuilt for macOS, Linux (glibc) and Windows, with the header, a manifest and
+checksums; see [Prebuilt C ABI libraries](../../docs/PREBUILT_LIBRARIES.md).
+The on-disk format carries no compatibility promise until HawDB declares one.
+[`examples/embed.c`](examples/embed.c) is a minimal linked host.
+
 ## Owned-result boundary conventions
 
 - **Strings are UTF-8 pointer-plus-length pairs**, never NUL-dependent.
@@ -44,7 +50,26 @@ prebuilt Cargo artifact is required.
   `{"kind": "<snake_case kind>", "message": "<text>"}` and leaves the
   database handle usable. `kind` is the engine's own error variant
   (e.g. `capability_unavailable`, `execution`, `admission`, `stopped`);
-  `invalid_argument` marks caller-side contract violations and `panic`
+  a relational constraint violation, such as a duplicate primary key or a
+  NULL in a NOT NULL column, is `constraint`, and a value that does not fit
+  the relational schema, such as one of the wrong type, is `schema`;
+  a resident search snapshot that disagrees with its published projection is
+  `search_projection_mismatch` (not retryable: rebuild the search projection
+  from the graph, see
+  [STORAGE.md](../../docs/STORAGE.md));
+  a search projection rebuild that installed nothing (existing target,
+  missing parent, verification mismatch) is
+  `search_projection_rebuild_refused`, which is not a storage failure: the
+  graph and the current projection are untouched (see
+  [SEARCH_PROJECTION_REBUILD.md](../../docs/SEARCH_PROJECTION_REBUILD.md));
+  a metadata-only search projection epoch advance that published nothing
+  (a commit in the range changed projected data, a change-log gap, an
+  unavailable range or uncheckpointed resident changes) is
+  `search_projection_epoch_advance_refused`, also not a storage failure: apply
+  or catch up the range normally instead (see
+  [SEARCH_PROJECTION_EPOCH_ADVANCE.md](../../docs/SEARCH_PROJECTION_EPOCH_ADVANCE.md));
+  `invalid_argument` marks caller-side contract violations,
+  `transaction_open` / `no_transaction` transaction-state misuse, and `panic`
   a contained Rust panic.
 - **Resource refusals**: memory-ledger and spill-quota failures use
   `kind: "resource_budget_exceeded"` and add a `resource_budget` object with
@@ -83,6 +108,7 @@ Parameters and results are JSON so hosts never see HawDB's `Value` type.
 | String | string |
 | Binary | `{"$binary": "<base64>"}` |
 | Uuid | `{"$uuid": "<canonical text>"}` |
+| Date, LocalTime, LocalDateTime, DateTime, Duration | `{"$date": ...}`, `{"$localtime": ...}`, `{"$localdatetime": ...}`, `{"$datetime": ...}`, `{"$duration": ...}` (ISO 8601 text) |
 | List | array |
 | Map | object |
 
@@ -90,13 +116,152 @@ Parameters and results are JSON so hosts never see HawDB's `Value` type.
 their native types in parameters; any other object shape stays a `Map`.
 Decimal uses at most 38 coefficient digits and scale 0 through 38. Its JSON
 payload must be a string; invalid or out-of-range values are rejected.
+SQL `TIMESTAMP` columns read and bind as `$localdatetime` and `TIMESTAMPTZ`
+columns as `$datetime`, returned in UTC (`...Z`); a `$datetime` parameter with
+any offset is stored as its UTC instant.
 The experimental retained ABI has no Decimal buffer type and reports
 `HAWDB_RETAINED_UNSUPPORTED_TYPE` for Decimal node scalar access. Use ordinary
 JSON queries for exact Decimal results.
 
+## Transactions
+
+Statements normally autocommit. To make several statements atomic, run them
+inside the handle's transaction:
+
+```c
+hawdb_begin_transaction(db, &err);
+hawdb_transaction_query_sql(db, insert_event, len, params, params_len, &res, &err);
+hawdb_transaction_query_sql(db, update_projection, len, NULL, 0, &res, &err);
+hawdb_transaction_query(db, cypher, len, NULL, 0, &res, &err); /* Cypher too */
+hawdb_commit_transaction(db, &res, &err);   /* or hawdb_rollback_transaction(db, &err) */
+```
+
+- The transaction belongs to the database handle; there is no separate
+  transaction pointer to free or to outlive its database. A handle has at
+  most one open transaction; nesting fails with `kind: "transaction_open"`.
+- Statements in the transaction see its own writes. Nothing outside the
+  transaction sees them until `hawdb_commit_transaction` publishes all of them
+  as one durable commit (under the handle's `durability` option).
+- While a transaction is open, `hawdb_query` / `hawdb_query_sql` on that
+  handle fail with `transaction_open`. Transaction calls, commit and rollback
+  without an open transaction (including after a commit or rollback) fail
+  with `kind: "no_transaction"`. SQL `BEGIN` / `COMMIT` stay rejected.
+- A failed statement leaves the transaction open; roll it back. Commit
+  closes the transaction whether or not it succeeds.
+- A commit is all or nothing, never partial. A commit refused before it
+  publishes (for example a write conflict or a budget refusal) leaves none of
+  its statements. A successful return means all of them are durable (under
+  the handle's `durability` option).
+- `hawdb_close` on a handle with an open transaction rolls it back, and a
+  process crash before `hawdb_commit_transaction` is called recovers none of
+  the transaction's statements.
+- A lost acknowledgment does not prove rollback. If the process dies while
+  `hawdb_commit_transaction` is running, the commit may already be durable
+  even though the caller never saw it return; an error raised while
+  publishing is equally uncertain. Recovery then shows either the whole
+  transaction or none of it. Reconcile against the reopened database, or make
+  the retry idempotent, rather than blindly running the transaction again.
+## Backup, restore and scrub
+
+Each call returns a JSON report through `report_out` (unsigned 64-bit counts;
+preserve their precision) or fills `err_out`:
+
+- `hawdb_backup(db, dest_path, dest_len, &report, &err)` checkpoints the open
+  database and writes a self-verifying backup directory to `dest_path`, which
+  must not exist yet (its parent must). The backup holds every transaction
+  committed before the call; the handle stays open. Report: `generation`,
+  `checkpoint_commit_epoch`, `file_count`, `total_bytes`, `manifest_checksum`.
+  Read-only and in-memory handles are refused.
+- `hawdb_restore(src_path, src_len, dest_path, dest_len, &report, &err)`
+  needs no handle. It verifies every backup file (length, CRC32C, SHA-256)
+  before writing a new database directory at `dest_path`, then reports the
+  same fields as the backup. A damaged backup or an existing destination fails
+  without creating `dest_path`. Open the result with `hawdb_open`.
+- `hawdb_scrub(db, &report, &err)` verifies the open database's published
+  files and WAL against their checksums. Report: `generation`,
+  `checked_file_count`, `checked_bytes`, `sha256_verified_file_count`,
+  `wal_record_count`, `wal_bytes`. Damage fails with the engine's storage
+  error and a message naming the mismatch, and poisons that handle: later
+  statements fail until it is closed and the database reopened, or restored
+  from a backup. Read-only handles can be scrubbed.
+
 ## Options
 
-`hawdb_open` takes `options_json`: `{"read_only": bool}` (default false).
+`hawdb_open` takes `options_json`, NULL or a JSON object. Each key is optional
+and sets the typed Rust field of the same name; absent keys keep the embedded
+defaults. Unknown keys and ill-typed values fail with `invalid_argument`
+before the database path is touched.
+
+| Key | Values | Default | Rust field |
+|---|---|---|---|
+| `read_only` | bool | `false` | `DatabaseConfig::read_only` (also selects strict recovery) |
+| `durability` | `"sync_on_every_write"`, `"sync_on_checkpoint"` | `"sync_on_every_write"` | `HawDBEmbeddedOpenOptions::durability` |
+| `max_read_result_rows` | integer >= 0, or `null` | `null` (no ceiling) | `DatabaseConfig::max_read_result_rows` |
+| `max_read_intermediate_rows` | integer >= 0, or `null` | `null` (inherit `max_read_result_rows`) | `DatabaseConfig::max_read_intermediate_rows` |
+| `max_read_result_payload_bytes` | integer > 0 | `67108864` (64 MiB) | `DatabaseConfig::max_read_result_payload_bytes` |
+| `relational_monotonic_append_fast_path` | bool | `false` | `DatabaseConfig::relational_monotonic_append_fast_path` |
+
+```json
+{"durability": "sync_on_checkpoint", "relational_monotonic_append_fast_path": true,
+ "max_read_result_rows": 10000, "max_read_result_payload_bytes": 8388608}
+```
+
+The default is power-loss safe: every commit is synchronized before it is
+acknowledged. `"sync_on_checkpoint"` is an explicit host choice for write-heavy
+workloads such as event logs: a commit's complete WAL is flushed to the OS
+before it is acknowledged, but storage is synchronized only at checkpoint
+boundaries, so a power failure (not a process crash) can lose recently
+acknowledged transactions. Recovery never exposes part of a transaction, and
+branch creation, deletion and head publication remain power-loss safe.
+Options apply to one open; reopening without them restores the defaults.
+
+`max_read_result_rows` of `0` or `null` disables the host row ceiling.
+`max_read_intermediate_rows` separately bounds the rows one relational SQL
+statement may scan, join or aggregate: `null` inherits `max_read_result_rows`,
+and `0` disables only this ceiling. Raising it lets a one-row aggregate such
+as `SELECT COUNT(*) FROM t` read more rows than the result ceiling returns. The
+payload budget can be lowered or raised but not removed. A read over either
+budget fails (`read_budget_exceeded`, or `resource_budget_exceeded` with a
+`resource_budget` object) instead of returning a partial result.
+
+`relational_monotonic_append_fast_path` enables the metadata-only INSERT path
+for RowPage tables whose primary keys arrive in increasing order. Inserts that
+are out of order or duplicate fall back to the ordinary checked path with the
+same results and errors.
+
+One handle serializes its calls, so it has no group-commit setting; Rust hosts
+that need WAL group commit across concurrent writers use `ConcurrentDatabase`.
+
+## Upgrading across a persistent format change
+
+`hawdb_format_version()` returns the engine-wide persistent format version.
+Two library builds with the same value open each other's databases. Before
+shipping a library whose value differs, export each database with the old
+library and import it with the new one:
+
+```c
+bool hawdb_export(struct HawdbDatabase *db, const char *dest_path, uintptr_t dest_len,
+                  struct HawdbBuffer *report_out, struct HawdbBuffer *err_out);
+bool hawdb_import(const char *src_path, uintptr_t src_len, const char *dest_path,
+                  uintptr_t dest_len, struct HawdbBuffer *report_out,
+                  struct HawdbBuffer *err_out);
+bool hawdb_verify_dump(const char *path, uintptr_t path_len,
+                       struct HawdbBuffer *report_out, struct HawdbBuffer *err_out);
+bool hawdb_confirm_dump_publication(const char *dest_path, uintptr_t dest_len,
+                                    struct HawdbBuffer *err_out);
+uint32_t hawdb_format_version(void);
+uint32_t hawdb_dump_format_version(void);
+```
+
+Both write only to a destination that does not exist yet, publish it with a
+move that never replaces an existing or concurrently created destination,
+and publish nothing on any error except `publish_outcome_unknown`. That kind
+means the complete result may already be at the destination: keep it, call
+`hawdb_confirm_dump_publication` (idempotent) and check it with
+`hawdb_verify_dump` (export) or by opening it (import). Reports are JSON objects mirroring the Rust
+`LogicalDumpExportReport` / `LogicalDumpImportReport`; errors use the usual
+`{"kind", "message"}` envelope. See [docs/LOGICAL_DUMP.md](../../docs/LOGICAL_DUMP.md)
+for the dump format, the host recipe and what the format covers.
 
 ## Consumers
 

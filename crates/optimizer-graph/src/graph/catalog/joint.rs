@@ -10,22 +10,29 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(in crate::graph) const MAX_JOINT_ARITY: usize = 4;
 const MAX_JOINT_SETS_PER_LABEL: usize = 32;
 
-type Statistics = BTreeMap<(String, Vec<String>), Option<OptimizerIndexStatistics>>;
+pub(super) type Statistics = BTreeMap<String, Vec<JointEntry>>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct JointEntry {
+    properties: Vec<String>,
+    statistics: Option<OptimizerIndexStatistics>,
+}
+
+pub(in crate::graph) struct JointEqualityEstimate {
+    pub(in crate::graph) rows: u64,
+    pub(in crate::graph) population: u64,
+    pub(in crate::graph) indexed: u64,
+    pub(in crate::graph) ndv: u64,
+}
 
 pub(super) fn canonical_statistics(
     source: &BTreeMap<(String, Vec<String>), OptimizerIndexStatistics>,
     indexes: &BTreeSet<(String, Vec<String>)>,
 ) -> Statistics {
-    let mut result = BTreeMap::new();
-    let mut previous_label = None;
-    let mut count = 0;
+    let mut result = Statistics::new();
     for ((label, properties), statistics) in source {
         if !indexes.contains(&(label.clone(), properties.clone())) {
             continue;
-        }
-        if previous_label != Some(label) {
-            previous_label = Some(label);
-            count = 0;
         }
         if !(2..=MAX_JOINT_ARITY).contains(&properties.len()) {
             continue;
@@ -37,17 +44,25 @@ pub(super) fn canonical_statistics(
         if properties.len() != original_len {
             continue;
         }
-        let key = (label.clone(), properties);
-        if let Some(existing) = result.get_mut(&key) {
+        let entries = result.entry(label.clone()).or_default();
+        if let Some(existing) = entries
+            .iter_mut()
+            .find(|entry| entry.properties == properties)
+        {
             // Differently ordered indexes can have distinct sample epochs or
             // estimates. Do not choose one silently for the same key set.
-            if *existing != Some(*statistics) {
-                *existing = None;
+            if existing.statistics != Some(*statistics) {
+                existing.statistics = None;
             }
-        } else if count < MAX_JOINT_SETS_PER_LABEL {
-            result.insert(key, Some(*statistics));
-            count += 1;
+        } else if entries.len() < MAX_JOINT_SETS_PER_LABEL {
+            entries.push(JointEntry {
+                properties,
+                statistics: Some(*statistics),
+            });
         }
+    }
+    for entries in result.values_mut() {
+        entries.sort_unstable_by(|left, right| left.properties.cmp(&right.properties));
     }
     result
 }
@@ -65,25 +80,88 @@ impl OptimizerCatalog {
         if !(2..=MAX_JOINT_ARITY).contains(&properties.len()) {
             return None;
         }
-        let mut keys = properties
-            .iter()
-            .map(|key| (*key).to_owned())
-            .collect::<Vec<_>>();
-        keys.sort_unstable();
-        keys.dedup();
-        if keys.len() < 2 {
+        let mut keys = [""; MAX_JOINT_ARITY];
+        keys[..properties.len()].copy_from_slice(properties);
+        keys[..properties.len()].sort_unstable();
+        let mut unique = 0;
+        for index in 0..properties.len() {
+            if unique == 0 || keys[index] != keys[unique - 1] {
+                keys[unique] = keys[index];
+                unique += 1;
+            }
+        }
+        if unique < 2 {
             return None;
         }
-        let statistics = self
-            .joint_statistics
-            .get(&(label.to_owned(), keys))
-            .copied()
-            .flatten()?;
+        let entries = self.joint_statistics.get(label)?;
+        let position = entries
+            .binary_search_by(|entry| {
+                entry
+                    .properties
+                    .iter()
+                    .map(String::as_str)
+                    .cmp(keys[..unique].iter().copied())
+            })
+            .ok()?;
+        let statistics = entries[position].statistics?;
         let population = self.label_counts.get(label).copied()?;
         (statistics.distinct_count > 0
             && statistics.distinct_count <= statistics.index_size
             && statistics.index_size <= population)
             .then_some(statistics)
+    }
+
+    pub(in crate::graph) fn estimate_joint_equality_rows(
+        &self,
+        label: &str,
+        properties: &[&str],
+        covered: &[&str],
+        input_rows: u64,
+    ) -> Option<JointEqualityEstimate> {
+        let statistics = self.joint_statistics(label, properties)?;
+        let population = self.label_count(label);
+        let rows = if covered.len() == properties.len() {
+            input_rows
+        } else {
+            if statistics.index_size == population
+                && properties.iter().any(|property| {
+                    self.known_distinct_count(label, property)
+                        .is_some_and(|ndv| ndv > statistics.distinct_count)
+                })
+            {
+                return None;
+            }
+            let rows = if covered.is_empty() {
+                (u128::from(input_rows) * u128::from(statistics.index_size))
+                    .div_ceil(u128::from(population) * u128::from(statistics.distinct_count))
+            } else {
+                // Conditional domains need the same complete non-NULL population.
+                if statistics.index_size != population {
+                    return None;
+                }
+                let covered_ndv = if let [property] = covered {
+                    self.known_distinct_count(label, property)?
+                } else {
+                    let subset = self.joint_statistics(label, covered)?;
+                    if subset.index_size != population {
+                        return None;
+                    }
+                    subset.distinct_count
+                };
+                if covered_ndv == 0 || covered_ndv > statistics.distinct_count {
+                    return None;
+                }
+                (u128::from(input_rows) * u128::from(covered_ndv))
+                    .div_ceil(u128::from(statistics.distinct_count))
+            };
+            rows.min(u128::from(input_rows)).max(1) as u64
+        };
+        Some(JointEqualityEstimate {
+            rows,
+            population,
+            indexed: statistics.index_size,
+            ndv: statistics.distinct_count,
+        })
     }
 }
 
@@ -142,6 +220,18 @@ mod tests {
             })
             .collect();
         let catalog = from_entries(entries);
+        assert_eq!(
+            catalog.joint_statistics.len(),
+            2,
+            "retain one label key per group owner"
+        );
+        let query = catalog
+            .clone()
+            .with_property_equality_row_count("Item".into(), "id".into(), 1);
+        assert!(std::sync::Arc::ptr_eq(
+            &catalog.joint_statistics,
+            &query.joint_statistics
+        ));
         for label in ["Item", "Other"] {
             let available = (0..33)
                 .filter(|n| {
@@ -160,6 +250,49 @@ mod tests {
             66,
             "the joint view must not remove ordinary access statistics"
         );
+    }
+
+    #[test]
+    #[ignore = "manual bounded joint-key lookup measurement"]
+    fn joint_key_lookup_measurement() {
+        use std::{hint::black_box, time::Instant};
+        let sample = OptimizerIndexStatistics {
+            index_size: 1000,
+            distinct_count: 10,
+        };
+        let entries = (0..32)
+            .map(|n| {
+                (
+                    ("Item".into(), vec![format!("p{n:02}"), "z".into()]),
+                    sample,
+                )
+            })
+            .collect::<Vec<_>>();
+        let legacy = entries.iter().cloned().collect::<BTreeMap<_, _>>();
+        let catalog = from_entries(entries);
+        let repeats = 100_000;
+        let started = Instant::now();
+        for _ in 0..repeats {
+            let mut keys = black_box(["z", "p16"])
+                .iter()
+                .map(|key| (*key).to_owned())
+                .collect::<Vec<_>>();
+            keys.sort_unstable();
+            assert_eq!(
+                black_box(legacy.get(&(black_box("Item").to_owned(), keys))).copied(),
+                Some(sample)
+            );
+        }
+        let legacy_ns = started.elapsed().as_nanos();
+        let started = Instant::now();
+        for _ in 0..repeats {
+            assert_eq!(
+                black_box(&catalog).joint_statistics(black_box("Item"), black_box(&["z", "p16"])),
+                Some(sample)
+            );
+        }
+        println!("repeats={repeats} legacy_ns={legacy_ns} borrowed_ns={} retained_label_keys_before={} retained_label_keys_after={}",
+            started.elapsed().as_nanos(), legacy.len(), catalog.joint_statistics.len());
     }
 
     #[test]

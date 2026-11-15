@@ -128,15 +128,17 @@ pub(super) fn stream_aggregate_batches(
     input: &PhysicalPlan,
     group_keys: &[Projection],
     items: &[Aggregation],
+    graph_keys: hawdb_plan_cypher::GraphGroupKeys,
     context: BatchReadContext<'_>,
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
     let mut source = RecursiveBindingBatchSource { context };
-    executor_blocking::stream_aggregate_batches(
+    executor_blocking::stream_grouped_aggregate_batches(
         input,
         group_keys,
         items,
+        graph_keys,
         &mut source,
         context.kernel_context(),
         execution_limit,

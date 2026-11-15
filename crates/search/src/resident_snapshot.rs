@@ -97,6 +97,12 @@ impl SearchIndex {
             durable_source_graph_commit_epoch: Mutex::new(
                 freshness.durable_source_graph_commit_epoch,
             ),
+            artifact_source_graph_commit_epoch: Mutex::new(
+                *self
+                    .artifact_source_graph_commit_epoch
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()),
+            ),
             marker_lines: Mutex::new(markers.clone()),
             read_freshness: Some(Arc::clone(&freshness)),
             analyzer_lexicon: Arc::clone(&self.analyzer_lexicon),
@@ -146,6 +152,8 @@ impl ReadGeneration {
             || captured.embedding_manifest != live.embedding_manifest
             || captured.import_source_graph_commit_epoch != live.import_source_graph_commit_epoch
             || captured.source_graph_commit_epoch != live.source_graph_commit_epoch
+            || captured.artifact_source_graph_commit_epoch()
+                != live.artifact_source_graph_commit_epoch()
             || self.freshness.durable_source_graph_commit_epoch
                 != *live
                     .durable_source_graph_commit_epoch
@@ -269,6 +277,17 @@ impl SearchIndexReadSnapshot {
         self.generation.index.document_count()
     }
 
+    /// See [`crate::SearchIndex::exact_vector_search_capacity`].
+    pub fn exact_vector_search_capacity(
+        &self,
+        working_bytes: usize,
+        max_document_id_bytes: usize,
+    ) -> usize {
+        self.generation
+            .index
+            .exact_vector_search_capacity(working_bytes, max_document_id_bytes)
+    }
+
     pub fn projection_freshness(&self) -> &SearchProjectionFreshness {
         &self.generation.freshness
     }
@@ -334,6 +353,17 @@ impl SearchIndexReadSnapshot {
                 adaptive_options,
                 vector_execution_options,
             )
+    }
+
+    /// Retrieve candidate evidence from this retained generation under admission.
+    pub fn try_search_candidates_with_report_context(
+        &self,
+        request: &crate::candidate_evidence::SearchCandidateRequest,
+        execution: VectorSearchExecutionOptions<'_>,
+    ) -> Result<crate::candidate_evidence::SearchCandidateOutput> {
+        self.generation
+            .index
+            .try_search_candidates_with_report_context(request, execution)
     }
 }
 

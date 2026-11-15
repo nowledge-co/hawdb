@@ -38,6 +38,56 @@ pub(in crate::out_of_core::generation_writer) fn from_inner(
     }
     Ok(result)
 }
+impl SearchOutOfCoreGenerationWriter {
+    /// Starts a complete unordered build of a projection that does not exist yet.
+    ///
+    /// `root` must not hold a published generation; the first publication in
+    /// it is an initial selector, so the build never replaces another head.
+    /// `options.source_graph_commit_epoch` is required and is bound before any
+    /// input. Input order is arbitrary: documents are sorted externally within
+    /// `limits` and the task's memory reservation, then published by the
+    /// returned writer's `prepare_publication` and the candidate's `publish`.
+    /// Each document must be supplied once. Dropping the writer, a failure or
+    /// a cancellation before `publish` leaves no selector in `root`.
+    pub fn create_unordered_replacement_with_context(
+        root: impl AsRef<Path>,
+        options: SearchOutOfCoreGenerationBuildOptions,
+        reader_config: &crate::SearchOutOfCoreConfig,
+        limits: SearchUnorderedMutationLimits,
+        task: RuntimeTaskContext,
+    ) -> Result<SearchOutOfCoreUnorderedReplacementWriter> {
+        let root = root.as_ref();
+        let epoch = options.source_graph_commit_epoch.ok_or_else(|| {
+            HawDBError::Semantic(
+                "a fresh unordered replacement requires its source graph commit epoch".into(),
+            )
+        })?;
+        if root
+            .join(crate::out_of_core::OUT_OF_CORE_MANIFEST_FILE)
+            .exists()
+        {
+            return Err(HawDBError::Storage(format!(
+                "fresh unordered replacement target {} already holds a published search generation",
+                root.display()
+            )));
+        }
+        let memory = BuildMemory::new(&task)?;
+        let inner = SearchOutOfCoreMutationWriter::create_fresh_replacement(
+            root,
+            options,
+            reader_config.max_lexical_manifest_bytes,
+            task,
+            memory,
+        )?;
+        from_inner(
+            inner,
+            limits,
+            Some(epoch),
+            reader_config.max_document_header_bytes.get(),
+        )
+    }
+}
+
 impl SearchOutOfCoreUnorderedReplacementWriter {
     /// Bind the native captured epoch exactly once, before offering any input.
     #[doc(hidden)]
@@ -211,6 +261,58 @@ mod tests {
                 check.finish().unwrap().report().compared_documents,
                 usize::from(!empty)
             );
+        }
+    }
+    #[test]
+    fn fresh_replacement_builds_an_absent_projection_and_refuses_an_existing_one() {
+        let (root, reader) = fixture("fresh-replacement");
+        let config = reader.config().clone();
+        let options = SearchOutOfCoreGenerationBuildOptions {
+            source_graph_commit_epoch: Some(7),
+            ..Default::default()
+        };
+        let create = |path: &Path, options: SearchOutOfCoreGenerationBuildOptions| {
+            SearchOutOfCoreGenerationWriter::create_unordered_replacement_with_context(
+                path,
+                options,
+                &config,
+                limits(1),
+                Default::default(),
+            )
+        };
+        assert!(create(&root, options.clone()).is_err());
+        let fresh = root.with_extension("fresh");
+        assert!(create(&fresh, Default::default()).is_err());
+        let mut w = create(&fresh, options.clone()).unwrap();
+        for id in ["z", "a", "m"] {
+            w.queue_upsert(document(id, id)).unwrap();
+            while !w.ready_for_input() {
+                w.advance_ordering(unlimited_step()).unwrap();
+            }
+        }
+        let (report, candidate) = w.prepare_publication().unwrap();
+        assert_eq!(report.output_operations, 3);
+        assert_eq!(candidate.expected_active_generation(), None);
+        candidate.publish().unwrap();
+        let rebuilt = SearchOutOfCoreReader::open(&fresh).unwrap();
+        assert_eq!(rebuilt.document_count(), 3);
+        assert_eq!(rebuilt.source_graph_commit_epoch(), Some(7));
+        assert!(rebuilt.manifest.mutation_runs.is_empty());
+        // The old projection is untouched.
+        assert_eq!(
+            SearchOutOfCoreReader::open(&root).unwrap().generation(),
+            reader.generation()
+        );
+        // An abandoned build publishes no selector.
+        let dropped = root.with_extension("dropped");
+        let mut w = create(&dropped, options).unwrap();
+        w.queue_upsert(document("a", "a")).unwrap();
+        drop(w);
+        assert!(!dropped
+            .join(crate::out_of_core::OUT_OF_CORE_MANIFEST_FILE)
+            .exists());
+        for path in [fresh, dropped] {
+            let _ = std::fs::remove_dir_all(path);
         }
     }
     #[test]

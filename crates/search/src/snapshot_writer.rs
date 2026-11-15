@@ -42,6 +42,9 @@ pub struct SearchCheckpointReport {
     pub projection_bytes_written: u64,
     /// Whether the snapshot avoided corpus-sized uncompressed and compressed buffers.
     pub snapshot_streamed: bool,
+    /// Generation cleanup run after publication; `None` for in-memory indexes.
+    /// A `retry_required` outcome leaves superseded generations on disk.
+    pub projection_cleanup: Option<crate::SearchProjectionCleanupOutcome>,
 }
 
 impl SearchCheckpointReport {
@@ -54,6 +57,7 @@ impl SearchCheckpointReport {
             projection_generation: 0,
             projection_bytes_written: 0,
             snapshot_streamed: false,
+            projection_cleanup: None,
         }
     }
 }
@@ -75,6 +79,7 @@ impl SearchSnapshotWriteReport {
         self,
         projection_generation: u64,
         projection_bytes_written: u64,
+        projection_cleanup: Option<crate::SearchProjectionCleanupOutcome>,
     ) -> SearchCheckpointReport {
         SearchCheckpointReport {
             document_count: self.document_count,
@@ -84,6 +89,7 @@ impl SearchSnapshotWriteReport {
             projection_generation,
             projection_bytes_written,
             snapshot_streamed: true,
+            projection_cleanup,
         }
     }
 }

@@ -334,7 +334,14 @@ impl RelationalRowPagePublisher {
             generation: build.generation,
             source_commit_epoch: build.source_commit_epoch,
             previous_generation: build.expected_previous_generation,
-            page_bytes: self.config.page_limits.max_page_bytes.get() as u64,
+            // The page limit caps the target; a page never exceeds it.
+            target_page_bytes: self
+                .config
+                .target_page_bytes
+                .get()
+                .min(self.config.page_limits.max_page_bytes.get())
+                as u64,
+            max_page_bytes: self.config.page_limits.max_page_bytes.get() as u64,
             dirty_page_count,
             relocated_page_count: root.relocated_page_count,
             root_page_count: root.root_page_count,
@@ -472,6 +479,10 @@ fn require_schema_source(
                 .ok()
                 .map(|index| &reader.manifest().tables[index].schema)
         });
+        if delta.replaces_base {
+            // A replacement carries the complete table under its new schema.
+            continue;
+        }
         match (base_schema, delta.schema.as_ref()) {
             (None, None) => {
                 return Err(RelationalRowPagePublicationError::Admission(format!(
@@ -547,6 +558,7 @@ pub(super) struct PreparedTableDelta {
     pub next_page_id: std::num::NonZeroU64,
     pub dirty_pages: Vec<PreparedDirtyPage>,
     pub deleted_page_ids: BTreeSet<super::RelationalRowPageId>,
+    pub replaces_base: bool,
 }
 
 fn preflight_deltas(
@@ -557,6 +569,11 @@ fn preflight_deltas(
     config: RelationalRowPagePublicationConfig,
     work: Option<&crate::background::CheckpointWorkContext>,
 ) -> Result<BTreeMap<String, PreparedTableDelta>, RelationalRowPagePublicationError> {
+    // Reject unencodable page-size configuration before any artifact write.
+    super::manifest::encodable_page_sizes(
+        config.target_page_bytes.get() as u64,
+        config.page_limits.max_page_bytes.get() as u64,
+    )?;
     let dirty_page_count = deltas.iter().try_fold(0usize, |count, delta| {
         checkpoint::cpu(work, || {
             count.checked_add(delta.dirty_pages.len()).ok_or_else(|| {
@@ -572,16 +589,22 @@ fn preflight_deltas(
             config.max_dirty_pages
         )));
     }
-    let admitted_dirty_bytes = (dirty_page_count as u64)
-        .checked_mul(config.page_limits.max_page_bytes.get() as u64)
-        .ok_or_else(|| {
-            RelationalRowPagePublicationError::Admission(
-                "dirty page byte count overflow".to_string(),
-            )
+    // Encoded page bytes, not the v1 slot (#1593); see
+    // `RelationalRowPagePublicationConfig::max_dirty_bytes`.
+    let mut admitted_dirty_bytes = 0u64;
+    for page in deltas.iter().flat_map(|delta| delta.dirty_pages.iter()) {
+        admitted_dirty_bytes = checkpoint::cpu(work, || {
+            let bytes = page.encoded_len(config.page_limits)?;
+            admitted_dirty_bytes.checked_add(bytes).ok_or_else(|| {
+                RelationalRowPagePublicationError::Admission(
+                    "dirty page byte count overflow".to_string(),
+                )
+            })
         })?;
+    }
     if admitted_dirty_bytes > config.max_dirty_bytes.get() {
         return Err(RelationalRowPagePublicationError::Admission(format!(
-            "publication reserves {admitted_dirty_bytes} dirty bytes, exceeding limit {}",
+            "publication reserves {admitted_dirty_bytes} encoded dirty bytes, exceeding limit {}",
             config.max_dirty_bytes
         )));
     }
@@ -652,6 +675,12 @@ fn preflight_deltas(
                     delta.table
                 )));
             }
+        }
+        if delta.replaces_base && (delta.schema.is_none() || !delta.deleted_page_ids.is_empty()) {
+            return Err(RelationalRowPagePublicationError::Admission(format!(
+                "replacement of table {} requires its schema and no deleted page ids",
+                delta.table
+            )));
         }
         let deleted_count = delta.deleted_page_ids.len();
         let mut deleted_page_ids = BTreeSet::new();
@@ -781,6 +810,7 @@ fn preflight_deltas(
                     next_page_id: delta.next_page_id,
                     dirty_pages,
                     deleted_page_ids,
+                    replaces_base: delta.replaces_base,
                 },
             );
             Ok(())

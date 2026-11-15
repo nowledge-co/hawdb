@@ -20,6 +20,18 @@ pub(super) fn write_program(output: &mut String, program: &GraphMatchProgram) {
         ",projected_relationships=[",
         &program.projected_relationships,
     );
+    // The execution strategy changes the work and the row order.
+    if let Some(join) = &program.hash_join {
+        output.push_str(",hash_join=");
+        write_identifier(output, &join.key);
+        output.push_str(&format!(
+            ":{:?}:{:?}:{}:{}",
+            join.build_conjuncts, join.residual_order, join.residual_placed, join.probe_conjuncts
+        ));
+    }
+    if !program.id_set_conjuncts.is_empty() {
+        output.push_str(&format!(",id_sets={:?}", program.id_set_conjuncts));
+    }
     output.push_str(",imports=[");
     for import in &program.imports {
         output.push_str(match import.kind {
@@ -39,6 +51,7 @@ pub(super) fn write_program(output: &mut String, program: &GraphMatchProgram) {
                 source,
                 relationship,
                 rel_type,
+                rel_types,
                 properties,
                 direction,
                 min_hops,
@@ -57,6 +70,12 @@ pub(super) fn write_program(output: &mut String, program: &GraphMatchProgram) {
                 }
                 output.push(',');
                 write_identifier(output, rel_type);
+                // A disjunction reads more types than its first; single-type
+                // steps keep their earlier fingerprint text.
+                if !rel_types.is_empty() {
+                    output.push_str("|types=");
+                    write_identifier_list(output, rel_types);
+                }
                 output.push(',');
                 write_properties(output, properties);
                 output.push(',');
@@ -120,6 +139,15 @@ pub(super) fn write_program(output: &mut String, program: &GraphMatchProgram) {
         output.push_str(",edge_predicates=[");
         for conjunct in &program.edge_predicates {
             output.push_str(&conjunct.to_string());
+            output.push(';');
+        }
+        output.push(']');
+    }
+    // The branches are what runs, so a cached plan keeps each of them.
+    if !program.seeded_union.is_empty() {
+        output.push_str(",seeded_union=[");
+        for branch in &program.seeded_union {
+            write_program(output, branch);
             output.push(';');
         }
         output.push(']');

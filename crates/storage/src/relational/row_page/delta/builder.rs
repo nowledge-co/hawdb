@@ -821,7 +821,7 @@ impl RelationalRowDeltaBuilder {
         self.require_current_or_next_epoch(epoch)?;
         let changes = match capture {
             RelationalRowChangeCapture::Captured { changes, .. } => changes,
-            RelationalRowChangeCapture::RequiresCheckpoint { tables } => {
+            RelationalRowChangeCapture::RequiresCheckpoint { tables, .. } => {
                 return Err(RelationalRowDeltaError::RequiresCheckpoint { tables });
             }
             RelationalRowChangeCapture::Invalidated { reason } => {

@@ -17,7 +17,6 @@
 use hawdb_core::{
     HawDBError, ResourceBudgetError, ResourceBudgetKind, ResourceBudgetScope, Result,
 };
-use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -32,6 +31,20 @@ pub enum QueryMemoryClass {
 }
 
 impl QueryMemoryClass {
+    /// Every class in declaration (and therefore `Ord`) order.
+    const ALL: [Self; 6] = [
+        Self::PipelineBatch,
+        Self::BlockingState,
+        Self::ExternalRead,
+        Self::SpillStaging,
+        Self::MorselOutput,
+        Self::ResultMaterialization,
+    ];
+
+    const fn index(self) -> usize {
+        self as usize
+    }
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::PipelineBatch => "pipeline_batch",
@@ -73,13 +86,52 @@ struct QueryMemoryLedgerInner {
     state: Mutex<QueryMemoryLedgerState>,
 }
 
+/// Operators register their accounts while the plan is set up. Reserving room
+/// for a typical plan when the query starts keeps that registration from
+/// reallocating the table under the ledger lock.
+const INITIAL_ACCOUNT_CAPACITY: usize = 16;
+
+// Accounts are never deregistered, so an account id is its dense index.
+// Classes are a closed enum indexed by discriminant; a class appears in
+// snapshots once it has been charged, exactly as an ordered map would show it.
+// Every charge and release is per-row hot path work under one lock (#1615).
 #[derive(Debug, Default)]
 struct QueryMemoryLedgerState {
     used_bytes: usize,
     peak_bytes: usize,
-    next_account_id: u64,
-    accounts: BTreeMap<u64, QueryMemoryAccountState>,
-    classes: BTreeMap<QueryMemoryClass, QueryMemoryClassState>,
+    accounts: Vec<QueryMemoryAccountState>,
+    classes: [Option<QueryMemoryClassState>; QueryMemoryClass::ALL.len()],
+}
+
+impl QueryMemoryLedgerState {
+    fn account(&self, account_id: u64) -> Option<&QueryMemoryAccountState> {
+        usize::try_from(account_id)
+            .ok()
+            .and_then(|index| self.accounts.get(index))
+    }
+
+    fn account_mut(&mut self, account_id: u64) -> Option<&mut QueryMemoryAccountState> {
+        usize::try_from(account_id)
+            .ok()
+            .and_then(|index| self.accounts.get_mut(index))
+    }
+
+    fn registered_account(&self, account_id: u64) -> &QueryMemoryAccountState {
+        self.account(account_id)
+            .expect("query memory account handles always name a registered account")
+    }
+
+    fn class_mut(&mut self, class: QueryMemoryClass) -> &mut QueryMemoryClassState {
+        self.classes[class.index()].get_or_insert_with(QueryMemoryClassState::default)
+    }
+
+    #[cfg(test)]
+    fn charged_classes(&self) -> impl Iterator<Item = (QueryMemoryClass, &QueryMemoryClassState)> {
+        QueryMemoryClass::ALL
+            .into_iter()
+            .zip(&self.classes)
+            .filter_map(|(class, state)| state.as_ref().map(|state| (class, state)))
+    }
 }
 
 #[derive(Debug)]
@@ -190,7 +242,10 @@ impl QueryMemoryLedger {
             inner: Arc::new(QueryMemoryLedgerInner {
                 budget_bytes: budget_bytes.get(),
                 budget_option,
-                state: Mutex::new(QueryMemoryLedgerState::default()),
+                state: Mutex::new(QueryMemoryLedgerState {
+                    accounts: Vec::with_capacity(INITIAL_ACCOUNT_CAPACITY),
+                    ..QueryMemoryLedgerState::default()
+                }),
             }),
             file_descriptors: None,
         }
@@ -237,19 +292,15 @@ impl QueryMemoryLedger {
         // Caller code must run before locking: conversion can panic or re-enter the ledger.
         let owner = owner.into();
         let mut state = lock_recover(&self.inner.state);
-        let account_id = state.next_account_id;
-        state.next_account_id = state.next_account_id.saturating_add(1);
-        state.accounts.insert(
-            account_id,
-            QueryMemoryAccountState {
-                class,
-                owner,
-                budget_bytes: budget_bytes.get(),
-                budget_option,
-                used_bytes: 0,
-                peak_bytes: 0,
-            },
-        );
+        let account_id = state.accounts.len() as u64;
+        state.accounts.push(QueryMemoryAccountState {
+            class,
+            owner,
+            budget_bytes: budget_bytes.get(),
+            budget_option,
+            used_bytes: 0,
+            peak_bytes: 0,
+        });
         QueryMemoryAccount {
             ledger: self.clone(),
             account_id,
@@ -265,13 +316,15 @@ impl QueryMemoryLedger {
             used_bytes: state.used_bytes,
             peak_bytes: state.peak_bytes,
             account_count: state.accounts.len(),
-            classes: state
-                .classes
-                .iter()
-                .map(|(class, state)| QueryMemoryClassSnapshot {
-                    class: *class,
-                    used_bytes: state.used_bytes,
-                    peak_bytes: state.peak_bytes,
+            classes: QueryMemoryClass::ALL
+                .into_iter()
+                .zip(&state.classes)
+                .filter_map(|(class, state)| {
+                    state.as_ref().map(|state| QueryMemoryClassSnapshot {
+                        class,
+                        used_bytes: state.used_bytes,
+                        peak_bytes: state.peak_bytes,
+                    })
                 })
                 .collect(),
         }
@@ -282,18 +335,20 @@ impl QueryMemoryLedger {
     pub(crate) fn test_owner_used_bytes(&self, class: QueryMemoryClass, owner: &str) -> usize {
         lock_recover(&self.inner.state)
             .accounts
-            .values()
+            .iter()
             .filter(|account| account.class == class && account.owner.as_ref() == owner)
             .map(|account| account.used_bytes)
             .sum()
     }
+}
 
+impl QueryMemoryLedgerInner {
     fn reserve(&self, account_id: u64, bytes: usize) -> Result<()> {
         if bytes == 0 {
             return Ok(());
         }
-        let mut state = lock_recover(&self.inner.state);
-        let account = state.accounts.get(&account_id).ok_or_else(|| {
+        let mut state = lock_recover(&self.state);
+        let account = state.account(account_id).ok_or_else(|| {
             HawDBError::Execution("query memory account is no longer registered".to_string())
         })?;
         let class = account.class;
@@ -319,8 +374,8 @@ impl QueryMemoryLedger {
                 ResourceBudgetScope::Query,
                 bytes,
                 state.used_bytes,
-                self.inner.budget_bytes,
-                self.inner.budget_option,
+                self.budget_bytes,
+                self.budget_option,
                 message,
             )
         };
@@ -330,36 +385,31 @@ impl QueryMemoryLedger {
                 class.as_str()
             ))
         })?;
-        if root_next > self.inner.budget_bytes {
+        if root_next > self.budget_bytes {
             return Err(query_error(format!(
                 "query memory ledger would use {root_next} bytes while charging {owner} ({}), exceeding query_memory_bytes {}",
                 class.as_str(),
-                self.inner.budget_bytes
+                self.budget_bytes
             )));
         }
 
-        // Complete allocation before changing any of the hierarchical counters.
-        state.classes.entry(class).or_default();
+        // All checks precede the hierarchical counter updates.
         let account = state
-            .accounts
-            .get_mut(&account_id)
+            .account_mut(account_id)
             .expect("validated query memory account remains registered");
         account.used_bytes = account_next;
         account.peak_bytes = account.peak_bytes.max(account_next);
         state.used_bytes = root_next;
         state.peak_bytes = state.peak_bytes.max(root_next);
-        let class_state = state
-            .classes
-            .get_mut(&class)
-            .expect("prepared query memory class remains registered");
+        let class_state = state.class_mut(class);
         class_state.used_bytes = class_state.used_bytes.saturating_add(bytes);
         class_state.peak_bytes = class_state.peak_bytes.max(class_state.used_bytes);
         Ok(())
     }
 
     fn can_reserve(&self, account_id: u64, bytes: usize) -> bool {
-        let state = lock_recover(&self.inner.state);
-        let Some(account) = state.accounts.get(&account_id) else {
+        let state = lock_recover(&self.state);
+        let Some(account) = state.account(account_id) else {
             return false;
         };
         let Some(account_next) = account.used_bytes.checked_add(bytes) else {
@@ -368,22 +418,22 @@ impl QueryMemoryLedger {
         let Some(root_next) = state.used_bytes.checked_add(bytes) else {
             return false;
         };
-        account_next <= account.budget_bytes && root_next <= self.inner.budget_bytes
+        account_next <= account.budget_bytes && root_next <= self.budget_bytes
     }
 
     fn release(&self, account_id: u64, bytes: usize) {
         if bytes == 0 {
             return;
         }
-        let mut state = lock_recover(&self.inner.state);
-        let Some(account) = state.accounts.get_mut(&account_id) else {
+        let mut state = lock_recover(&self.state);
+        let Some(account) = state.account_mut(account_id) else {
             return;
         };
         let released = bytes.min(account.used_bytes);
         let class = account.class;
         account.used_bytes -= released;
         state.used_bytes = state.used_bytes.saturating_sub(released);
-        if let Some(class_state) = state.classes.get_mut(&class) {
+        if let Some(class_state) = &mut state.classes[class.index()] {
             class_state.used_bytes = class_state.used_bytes.saturating_sub(released);
         }
     }
@@ -400,10 +450,9 @@ impl QueryMemoryLedger {
                 "query memory transfer requires distinct accounts".to_string(),
             ));
         }
-        let mut state = lock_recover(&self.inner.state);
+        let mut state = lock_recover(&self.state);
         let (source_class, source_used) = state
-            .accounts
-            .get(&source_account_id)
+            .account(source_account_id)
             .map(|account| (account.class, account.used_bytes))
             .ok_or_else(|| {
                 HawDBError::Execution(
@@ -415,7 +464,7 @@ impl QueryMemoryLedger {
                 "query memory transfer tried to release {source_bytes} bytes from a source account using {source_used} bytes"
             )));
         }
-        let target_account = state.accounts.get(&target_account_id).ok_or_else(|| {
+        let target_account = state.account(target_account_id).ok_or_else(|| {
             HawDBError::Execution("target query memory account is no longer registered".to_string())
         })?;
         let target_class = target_account.class;
@@ -447,8 +496,8 @@ impl QueryMemoryLedger {
                 ResourceBudgetScope::Query,
                 target_bytes.saturating_sub(source_bytes),
                 state.used_bytes,
-                self.inner.budget_bytes,
-                self.inner.budget_option,
+                self.budget_bytes,
+                self.budget_option,
                 message,
             )
         };
@@ -458,35 +507,29 @@ impl QueryMemoryLedger {
                 target_class.as_str()
             ))
         })?;
-        if root_next > self.inner.budget_bytes {
+        if root_next > self.budget_bytes {
             return Err(query_error(format!(
                 "query memory ledger would use {root_next} bytes while transferring ownership to {target_owner} ({}), exceeding query_memory_bytes {}",
                 target_class.as_str(),
-                self.inner.budget_bytes
+                self.budget_bytes
             )));
         }
 
-        state.classes.entry(target_class).or_default();
         let source = state
-            .accounts
-            .get_mut(&source_account_id)
+            .account_mut(source_account_id)
             .expect("validated source query memory account remains registered");
         source.used_bytes -= source_bytes;
         let target = state
-            .accounts
-            .get_mut(&target_account_id)
+            .account_mut(target_account_id)
             .expect("validated target query memory account remains registered");
         target.used_bytes = target_next;
         target.peak_bytes = target.peak_bytes.max(target_next);
         state.used_bytes = root_next;
         state.peak_bytes = state.peak_bytes.max(root_next);
-        if let Some(class_state) = state.classes.get_mut(&source_class) {
+        if let Some(class_state) = &mut state.classes[source_class.index()] {
             class_state.used_bytes = class_state.used_bytes.saturating_sub(source_bytes);
         }
-        let class_state = state
-            .classes
-            .get_mut(&target_class)
-            .expect("prepared target query memory class remains registered");
+        let class_state = state.class_mut(target_class);
         class_state.used_bytes = class_state.used_bytes.saturating_add(target_bytes);
         class_state.peak_bytes = class_state.peak_bytes.max(class_state.used_bytes);
         Ok(())
@@ -517,13 +560,19 @@ impl QueryMemoryAccount {
         self.retained_state.as_deref()
     }
 
+    /// Shares the retained-state account without cloning its handles; graph
+    /// reads keep it once per admitted record (#1615).
+    pub(crate) fn retained_state_shared(&self) -> Option<Arc<Self>> {
+        self.retained_state.clone()
+    }
+
     /// Reserve the entire child allowance before dispatch, without charging
     /// individual child allocations to the query root a second time.
     pub(crate) fn sub_account(&self, budget: NonZeroUsize) -> Result<Self> {
         let backing = Arc::new(self.reserve(budget.get())?);
         let (class, owner) = {
             let state = lock_recover(&self.ledger.inner.state);
-            let account = &state.accounts[&self.account_id];
+            let account = state.registered_account(self.account_id);
             (account.class, Arc::clone(&account.owner))
         };
         let origin = "QueryMemoryAccount::sub_account(budget)";
@@ -535,7 +584,9 @@ impl QueryMemoryAccount {
 
     pub(crate) fn budget_bytes(&self) -> NonZeroUsize {
         NonZeroUsize::new(
-            lock_recover(&self.ledger.inner.state).accounts[&self.account_id].budget_bytes,
+            lock_recover(&self.ledger.inner.state)
+                .registered_account(self.account_id)
+                .budget_bytes,
         )
         .unwrap()
     }
@@ -546,7 +597,7 @@ impl QueryMemoryAccount {
     #[doc(hidden)]
     pub fn available_bytes(&self) -> usize {
         let state = lock_recover(&self.ledger.inner.state);
-        let account = &state.accounts[&self.account_id];
+        let account = state.registered_account(self.account_id);
         account.budget_bytes.saturating_sub(account.used_bytes).min(
             self.ledger
                 .inner
@@ -556,7 +607,9 @@ impl QueryMemoryAccount {
     }
 
     pub(crate) fn peak_bytes(&self) -> usize {
-        lock_recover(&self.ledger.inner.state).accounts[&self.account_id].peak_bytes
+        lock_recover(&self.ledger.inner.state)
+            .registered_account(self.account_id)
+            .peak_bytes
     }
 
     pub(crate) fn query_available_bytes(&self) -> usize {
@@ -596,21 +649,43 @@ impl QueryMemoryAccount {
     }
 
     pub(crate) fn can_reserve(&self, bytes: usize) -> bool {
-        self.ledger.can_reserve(self.account_id, bytes)
+        self.ledger.inner.can_reserve(self.account_id, bytes)
     }
 
     pub fn reserve(&self, bytes: usize) -> Result<QueryMemoryLease> {
-        self.ledger.reserve(self.account_id, bytes)?;
+        self.ledger.inner.reserve(self.account_id, bytes)?;
         Ok(QueryMemoryLease {
-            account: self.clone(),
+            owner: LeaseOwner {
+                ledger: Arc::clone(&self.ledger.inner),
+                account_id: self.account_id,
+                _backing: self.backing.clone(),
+            },
             bytes,
         })
     }
 }
 
+/// The parts of an account a charge needs to settle itself. Leases are created
+/// and dropped per admitted row, so they hold only the ledger they charge and
+/// any parent reservation backing it, not every handle of the account (#1615).
+#[derive(Debug, Clone)]
+struct LeaseOwner {
+    ledger: Arc<QueryMemoryLedgerInner>,
+    account_id: u64,
+    // Held only for ownership: a child ledger's up-front reservation in its
+    // parent stays charged while any account or lease of that child exists.
+    _backing: Option<Arc<QueryMemoryLease>>,
+}
+
+impl LeaseOwner {
+    fn is(&self, ledger: &Arc<QueryMemoryLedgerInner>, account_id: u64) -> bool {
+        self.account_id == account_id && Arc::ptr_eq(&self.ledger, ledger)
+    }
+}
+
 #[derive(Debug)]
 pub struct QueryMemoryLease {
-    account: QueryMemoryAccount,
+    owner: LeaseOwner,
     bytes: usize,
 }
 
@@ -623,20 +698,21 @@ impl QueryMemoryLease {
         budget_option: &'static str,
         message: String,
     ) -> HawDBError {
-        let state = lock_recover(&self.account.ledger.inner.state);
-        state.accounts[&self.account.account_id].budget_error(
-            ResourceBudgetScope::Operator,
-            requested,
-            used,
-            budget,
-            budget_option,
-            message,
-        )
+        let state = lock_recover(&self.owner.ledger.state);
+        state
+            .registered_account(self.owner.account_id)
+            .budget_error(
+                ResourceBudgetScope::Operator,
+                requested,
+                used,
+                budget,
+                budget_option,
+                message,
+            )
     }
 
     pub(crate) fn belongs_to(&self, account: &QueryMemoryAccount) -> bool {
-        self.account.account_id == account.account_id
-            && Arc::ptr_eq(&self.account.ledger.inner, &account.ledger.inner)
+        self.owner.is(&account.ledger.inner, account.account_id)
     }
 
     pub fn bytes(&self) -> usize {
@@ -653,7 +729,7 @@ impl QueryMemoryLease {
         }
         self.bytes -= bytes;
         Ok(Self {
-            account: self.account.clone(),
+            owner: self.owner.clone(),
             bytes,
         })
     }
@@ -661,9 +737,7 @@ impl QueryMemoryLease {
     /// Takes over another lease's charge on the same account. The ledger
     /// charge is unchanged; a lease from another account is returned intact.
     pub(crate) fn absorb(&mut self, mut other: Self) -> std::result::Result<(), Self> {
-        if self.account.account_id != other.account.account_id
-            || !Arc::ptr_eq(&self.account.ledger.inner, &other.account.ledger.inner)
-        {
+        if !self.owner.is(&other.owner.ledger, other.owner.account_id) {
             return Err(other);
         }
         self.bytes = self.bytes.saturating_add(other.bytes);
@@ -672,18 +746,14 @@ impl QueryMemoryLease {
     }
 
     pub fn grow(&mut self, bytes: usize) -> Result<()> {
-        self.account
-            .ledger
-            .reserve(self.account.account_id, bytes)?;
+        self.owner.ledger.reserve(self.owner.account_id, bytes)?;
         self.bytes = self.bytes.saturating_add(bytes);
         Ok(())
     }
 
     pub fn shrink(&mut self, bytes: usize) {
         let released = bytes.min(self.bytes);
-        self.account
-            .ledger
-            .release(self.account.account_id, released);
+        self.owner.ledger.release(self.owner.account_id, released);
         self.bytes -= released;
     }
 
@@ -697,7 +767,7 @@ impl QueryMemoryLease {
         target: &mut Self,
         target_bytes: usize,
     ) -> Result<()> {
-        if !Arc::ptr_eq(&self.account.ledger.inner, &target.account.ledger.inner) {
+        if !Arc::ptr_eq(&self.owner.ledger, &target.owner.ledger) {
             return Err(HawDBError::Execution(
                 "query memory transfer requires accounts from the same ledger".to_string(),
             ));
@@ -708,10 +778,10 @@ impl QueryMemoryLease {
                 self.bytes,
             )));
         }
-        self.account.ledger.transfer(
-            self.account.account_id,
+        self.owner.ledger.transfer(
+            self.owner.account_id,
             source_bytes,
-            target.account.account_id,
+            target.owner.account_id,
             target_bytes,
         )?;
         self.bytes -= source_bytes;
@@ -722,9 +792,7 @@ impl QueryMemoryLease {
 
 impl Drop for QueryMemoryLease {
     fn drop(&mut self) {
-        self.account
-            .ledger
-            .release(self.account.account_id, self.bytes);
+        self.owner.ledger.release(self.owner.account_id, self.bytes);
         self.bytes = 0;
     }
 }
@@ -745,6 +813,10 @@ mod hardening_tests;
 #[cfg(test)]
 #[path = "memory_ledger_budget_tests.rs"]
 mod budget_tests;
+
+#[cfg(test)]
+#[path = "memory_ledger_reference_tests.rs"]
+mod reference_tests;
 
 #[cfg(test)]
 mod tests {

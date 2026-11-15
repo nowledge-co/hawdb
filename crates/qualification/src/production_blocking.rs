@@ -18,10 +18,10 @@ use super::{
 };
 use hawdb::executor::ExecutionMemoryConfig;
 use hawdb::{
-    IoConcurrencyBudget, NowledgeGraphStatement, NowledgeMemEmbeddedStoreHandle,
-    NowledgeMemGraphMode, NowledgeMemOpenOptions, NowledgeMemReadOptions,
-    ProductionEvidenceBinding, ProductionQualificationIdentity, RuntimeGovernor,
-    RuntimeGovernorConfig, RuntimeTaskContext, StorageDeviceProfile,
+    EmbeddedReadOptions, EmbeddedStoreHandle, EmbeddedStoreOpenOptions, GraphMode,
+    IoConcurrencyBudget, NowledgeGraphStatement, ProductionEvidenceBinding,
+    ProductionQualificationIdentity, RuntimeGovernor, RuntimeGovernorConfig, RuntimeTaskContext,
+    StorageDeviceProfile,
 };
 use hawdb_query::QueryIdentity;
 use serde::Serialize;
@@ -58,13 +58,13 @@ pub struct ProductionBlockingQualificationCase {
     pub route_name: String,
     pub operator_kind: ProductionBlockingOperatorKind,
     pub statement: NowledgeGraphStatement,
-    pub read_options: NowledgeMemReadOptions,
+    pub read_options: EmbeddedReadOptions,
     pub minimum_input_rows: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProductionBlockingQualificationConfig {
-    pub open_options: NowledgeMemOpenOptions,
+    pub open_options: EmbeddedStoreOpenOptions,
     pub runtime_governor_config: RuntimeGovernorConfig,
     pub evidence_binding: ProductionEvidenceBinding,
     pub expected_identity: ProductionQualificationIdentity,
@@ -73,7 +73,7 @@ pub struct ProductionBlockingQualificationConfig {
 
 impl ProductionBlockingQualificationConfig {
     fn validate(&self) -> Result<(), ProductionGraphQualificationError> {
-        if self.open_options.mode != NowledgeMemGraphMode::ShadowReadOnly {
+        if self.open_options.mode != GraphMode::ShadowReadOnly {
             return Err(ProductionGraphQualificationError::new(
                 "production blocking qualification requires shadow read-only mode",
             ));
@@ -211,11 +211,8 @@ pub fn run_production_blocking_qualification(
     ));
     let governor = RuntimeGovernor::detect(config.runtime_governor_config, storage_io);
     let (store, open_report) =
-        NowledgeMemEmbeddedStoreHandle::open_with_options_and_runtime_governor(
-            config.open_options,
-            governor,
-        )
-        .map_err(ProductionGraphQualificationError::from_error)?;
+        EmbeddedStoreHandle::open_with_options_and_runtime_governor(config.open_options, governor)
+            .map_err(ProductionGraphQualificationError::from_error)?;
     let graph_epoch = store
         .runtime_status()
         .map_err(ProductionGraphQualificationError::from_error)?
@@ -293,7 +290,7 @@ fn valid_route_name(route: &str) -> bool {
 }
 
 fn run_case(
-    store: &NowledgeMemEmbeddedStoreHandle,
+    store: &EmbeddedStoreHandle,
     case: ProductionBlockingQualificationCase,
 ) -> Result<ProductionBlockingCaseReport, ProductionGraphQualificationError> {
     let query_identity = QueryIdentity::new("cypher", &case.statement.cypher);
@@ -490,14 +487,14 @@ mod tests {
             canonical_graph_commit_epoch: graph_commit_epoch,
             policy_version: PRODUCTION_QUALIFICATION_POLICY_VERSION,
         };
-        let read_options = NowledgeMemReadOptions {
+        let read_options = EmbeddedReadOptions {
             max_rows: Some(4096),
             max_estimated_payload_bytes: Some(16 * 1024 * 1024),
         };
         let report = run_production_blocking_qualification(ProductionBlockingQualificationConfig {
-            open_options: NowledgeMemOpenOptions::graph_only(
+            open_options: EmbeddedStoreOpenOptions::graph_only(
                 &graph_path,
-                NowledgeMemGraphMode::ShadowReadOnly,
+                GraphMode::ShadowReadOnly,
             )
             .with_database_config(database_config),
             runtime_governor_config: RuntimeGovernorConfig {

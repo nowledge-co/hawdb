@@ -19,9 +19,9 @@ graph labels and relational table names remain distinct identities.
 initializer. `begin_defined_search_projection_consumer_catch_up` accepts the
 same definition and refuses a consumer with another derived ID. Its staging
 session's `verify_complete_source(config)` fixes the complete mapper and scope;
-callers cannot independently substitute either. `NowledgeMemEmbeddedStoreHandle`
+callers cannot independently substitute either. `EmbeddedStoreHandle`
 exposes the corresponding defined acquisition and returns
-`NowledgeMemDefinedSearchProjectionConsumer`, which retains the definition and
+`DefinedSearchProjectionConsumer`, which retains the definition and
 delegates catch-up, reservation, resolution, renewal and cleanup to the original
 embedded consumer/owner.
 

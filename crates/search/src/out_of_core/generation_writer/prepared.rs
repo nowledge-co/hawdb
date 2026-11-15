@@ -187,6 +187,9 @@ impl CapturedBase {
                         HawDBError::Execution(_)
                             | HawDBError::ResourceBudgetExceeded(_)
                             | HawDBError::FileDescriptors(_)
+                            // An intact selector for a newer reader is not a
+                            // damaged one; replacing it would destroy it (#1763).
+                            | HawDBError::UnsupportedStorageFormat(_)
                     ) =>
             {
                 Err(error)

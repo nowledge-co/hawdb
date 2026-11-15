@@ -92,9 +92,8 @@ use hawdb_executor::binding::Binding;
 pub use hawdb_executor::execution_request::ExecutionRequest;
 pub use hawdb_executor::external::NoExternalReadOperator;
 pub use hawdb_executor::load_csv::{CsvImportLimits, CsvImportPolicy};
-#[cfg(test)]
-use hawdb_executor::memory::enforced_result_memory_budget;
 pub(crate) use hawdb_executor::memory::{
+    enforced_query_memory_budget, enforced_result_memory_budget,
     enforced_result_memory_budget_with_option, estimated_execution_memory,
     estimated_mutation_memory_bytes, max_external_read_parallelism,
 };
@@ -115,6 +114,7 @@ pub use hawdb_executor::{
     VectorSeedExecutionOutput, VectorSeedExecutionRequest, VectorSeedExecutionRow,
 };
 pub(crate) use mutation::project_staged_mutation_return_rows;
+pub(crate) use mutation::{execute_match_set, resolve_match_set};
 pub use mutation::{
     execute_mutation_with_limits, is_mutation_plan, materialize_unwind_mutations, mutation_command,
 };

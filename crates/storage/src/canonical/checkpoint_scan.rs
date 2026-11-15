@@ -372,7 +372,7 @@ impl<T: CheckpointCanonicalRecord> SegmentLoad<T> {
                 work: work.clone(),
                 memory: std::cell::RefCell::default(),
             });
-        context.work = work.clone();
+        context.work.rebind(work);
         if self.bytes.is_none() {
             let range = SegmentReadRange::new(
                 reader.manifest.artifact_id,

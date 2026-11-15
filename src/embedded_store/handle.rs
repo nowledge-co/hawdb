@@ -1,0 +1,2072 @@
+// Copyright 2026 Nowledge
+// SPDX-License-Identifier: Apache-2.0
+
+//! Original embedded owner, read publications and maintenance admission.
+
+use super::*;
+
+#[derive(Debug, Clone)]
+pub struct EmbeddedStoreHandle {
+    pub(super) inner: Arc<crate::DatabasePublicationOwner<EmbeddedStore>>,
+    pub(super) concurrent: crate::ConcurrentDatabase,
+    pub(super) published_read: Arc<Mutex<Option<PublishedCanonicalRead>>>,
+    // One-way: a failed or panicking write guard sets this and leaves the
+    // last-good publication untouched, so readers fail closed instead of
+    // silently serving pre-write state. Mirrors CommitGuard's poison flag.
+    pub(super) read_publication_failed: Arc<AtomicBool>,
+}
+
+#[derive(Debug)]
+pub(super) struct PublishedCanonicalRead {
+    pub(super) instance_identity: crate::DatabaseInstanceIdentity,
+    pub(super) view: Arc<crate::api::PublishedConcurrentRead>,
+    pub(super) governor: RuntimeGovernor,
+    pub(super) mode: GraphMode,
+    pub(super) resident_projection: Option<crate::search::SearchIndexReadSnapshot>,
+    pub(super) external_seed_io_slots: usize,
+    pub(super) retrieval_projection_advisor: RetrievalProjectionAdvisor,
+    pub(super) out_of_core_projection: Option<OutOfCoreSearchProjection>,
+}
+
+impl PublishedCanonicalRead {
+    pub(super) fn capture(store: &EmbeddedStore) -> Result<Self> {
+        Ok(Self {
+            instance_identity: store.graph.database().instance_identity()?,
+            view: Arc::new(crate::api::PublishedConcurrentRead::capture(
+                store.graph.database(),
+            )?),
+            governor: store.graph.runtime_governor().clone(),
+            mode: store.graph.mode,
+            resident_projection: store
+                .search_projection
+                .as_ref()
+                .map(|projection| projection.index().read_snapshot()),
+            external_seed_io_slots: store.external_seed_io_slots(),
+            retrieval_projection_advisor: store.retrieval_projection_advisor.clone(),
+            out_of_core_projection: store
+                .out_of_core_search_projection
+                .as_ref()
+                .map(OutOfCoreSearchProjection::read_snapshot),
+        })
+    }
+}
+
+pub(super) struct EmbeddedStoreWriteGuard<'a> {
+    pub(super) store: crate::api::publication::DatabasePublicationWriteGuard<'a, EmbeddedStore>,
+    pub(super) _exclusive: Option<crate::api::ExclusiveDatabaseLease>,
+    pub(super) retired: Option<PublishedCanonicalRead>,
+    pub(super) published: &'a Mutex<Option<PublishedCanonicalRead>>,
+    pub(super) read_publication_failed: &'a AtomicBool,
+}
+
+impl std::ops::Deref for EmbeddedStoreWriteGuard<'_> {
+    type Target = EmbeddedStore;
+
+    fn deref(&self) -> &Self::Target {
+        &self.store
+    }
+}
+
+impl std::ops::DerefMut for EmbeddedStoreWriteGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.store
+    }
+}
+
+impl Drop for EmbeddedStoreWriteGuard<'_> {
+    fn drop(&mut self) {
+        // A panicking writer or a failed capture must never overwrite the
+        // last known-good publication with an empty or stale one. Record the
+        // failure so readers fail closed instead of silently serving
+        // pre-write state; the committed write itself is not undone.
+        if std::thread::panicking() {
+            self.read_publication_failed.store(true, Ordering::Release);
+            return;
+        }
+        if self.read_publication_failed.load(Ordering::Acquire) {
+            return;
+        }
+        // Capture before publication and before releasing the writer guard.
+        // Refresh even when a checkpoint changes only the physical generation.
+        let next = match PublishedCanonicalRead::capture(&self.store) {
+            Ok(next) => next,
+            Err(_) => {
+                self.read_publication_failed.store(true, Ordering::Release);
+                return;
+            }
+        };
+        self.retired = self
+            .published
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .replace(next);
+        // Releasing the last generation pin can acquire the pin registry lock.
+        // Keep that destructor outside the publication critical section.
+    }
+}
+
+pub struct EmbeddedReadSnapshot<'a> {
+    instance_identity: crate::DatabaseInstanceIdentity,
+    transaction: crate::BudgetedReadSnapshot,
+    external: SearchProjectionExternalReadOperator<'a>,
+    search_projection_source_graph_commit_epoch: Option<u64>,
+    search_projection_durable_source_graph_commit_epoch: Option<u64>,
+    budget: EmbeddedReadSnapshotBudget,
+    task_context: RuntimeTaskContext,
+    // The admission bound to `task_context`; search serving borrows it.
+    permit: &'a RuntimePermit,
+}
+
+impl<'a> EmbeddedReadSnapshot<'a> {
+    pub(super) fn new(
+        transaction: crate::DatabaseReadTransaction,
+        instance_identity: crate::DatabaseInstanceIdentity,
+        budget: EmbeddedReadSnapshotBudget,
+        projection: Option<ResidentProjectionRef<'a>>,
+        out_of_core_projection: Option<&'a OutOfCoreSearchProjection>,
+        task_context: RuntimeTaskContext,
+        permit: &'a RuntimePermit,
+    ) -> Self {
+        let freshness = match (projection, out_of_core_projection) {
+            (Some(projection), None) => Some(projection.freshness()),
+            (None, Some(projection)) => Some(projection.freshness()),
+            (None, None) | (Some(_), Some(_)) => None,
+        };
+        Self {
+            transaction: transaction.into_bounded(crate::ReadSnapshotBudget {
+                max_rows: budget.max_rows,
+                max_payload_bytes: budget.max_payload_bytes,
+            }),
+            instance_identity,
+            external: SearchProjectionExternalReadOperator {
+                projection,
+                out_of_core_projection,
+                vector_seed_execution_count: 0,
+            },
+            search_projection_source_graph_commit_epoch: freshness
+                .as_ref()
+                .and_then(|value| value.source_graph_commit_epoch),
+            search_projection_durable_source_graph_commit_epoch: freshness
+                .as_ref()
+                .and_then(|value| value.durable_source_graph_commit_epoch),
+            budget,
+            task_context,
+            permit,
+        }
+    }
+
+    pub fn commit_epoch(&self) -> u64 {
+        self.transaction.commit_epoch()
+    }
+
+    /// Identity of the database supplying this exact immutable read view.
+    pub fn database_instance_identity(&self) -> &crate::DatabaseInstanceIdentity {
+        &self.instance_identity
+    }
+
+    pub fn query_cypher(
+        &mut self,
+        cypher: &str,
+        parameters: &BTreeMap<String, Value>,
+        max_rows: usize,
+    ) -> Result<QueryOutput> {
+        Ok(self
+            .query_cypher_profiled(cypher, parameters, max_rows)?
+            .output)
+    }
+
+    pub fn query_cypher_profiled(
+        &mut self,
+        cypher: &str,
+        parameters: &BTreeMap<String, Value>,
+        max_rows: usize,
+    ) -> Result<BoundedReadQueryOutput> {
+        self.query_request_profiled(
+            crate::QueryRequest::new(cypher).with_params(parameters),
+            max_rows,
+        )
+    }
+
+    /// Typed query attachment under the same pinned snapshot and cumulative
+    /// result budgets as ordinary Cypher. Scoring does not widen caller caps.
+    pub fn query_request(
+        &mut self,
+        request: crate::QueryRequest<'_>,
+        max_rows: usize,
+    ) -> Result<QueryOutput> {
+        Ok(self.query_request_profiled(request, max_rows)?.output)
+    }
+
+    pub fn query_request_profiled(
+        &mut self,
+        request: crate::QueryRequest<'_>,
+        max_rows: usize,
+    ) -> Result<BoundedReadQueryOutput> {
+        let max_rows = self.statement_row_budget(max_rows)?;
+        let max_payload_bytes = self.remaining_payload_bytes()?;
+        let result = self.transaction.query_request_profiled_with_external(
+            request.with_restrictive_output_limits(QueryStreamOptions {
+                max_rows: Some(max_rows),
+                max_payload_bytes: Some(max_payload_bytes),
+            }),
+            &mut self.external,
+        )?;
+        Ok(result)
+    }
+
+    pub fn query_sql(
+        &mut self,
+        sql: &str,
+        parameters: &[Value],
+        max_rows: usize,
+    ) -> Result<QueryOutput> {
+        let max_rows = self.statement_row_budget(max_rows)?;
+        let max_payload_bytes = self.remaining_payload_bytes()?;
+        self.transaction.query_sql_request(
+            crate::SqlQueryRequest::new(sql)
+                .with_params(parameters)
+                .with_output_limits(QueryStreamOptions {
+                    max_rows: Some(max_rows),
+                    max_payload_bytes: Some(max_payload_bytes),
+                }),
+        )
+    }
+
+    /// Generates typed Search candidates from the projection generation pinned
+    /// by this snapshot and charges the returned hits to its cumulative budget.
+    ///
+    /// Projection metadata filters are applied before candidate generation by
+    /// the Search runtime. The returned hits retain their qualified `kind` and
+    /// `external_id`, so callers can hydrate canonical graph data without
+    /// parsing projection document IDs. Graph and relational reads performed
+    /// after this call keep using the same immutable publication.
+    pub fn search_candidates(
+        &mut self,
+        request: &SearchCandidateRequest,
+    ) -> Result<SearchCandidateOutput> {
+        self.search_candidates_with_report(request)
+    }
+
+    /// The largest number of eligible documents an exact vector-only
+    /// candidate read (`SearchCandidateRequest::with_exact_vector_search`) in
+    /// this snapshot is guaranteed to serve, for eligible projection document
+    /// IDs (`kind:external_id`) of at most `max_document_id_bytes` bytes. It
+    /// applies this snapshot's admitted working memory and pinned projection,
+    /// so hosts need not reproduce HawDB's per-entry charges. Above it a read
+    /// may be refused with a typed budget error; it is never truncated.
+    pub fn exact_vector_search_capacity(&self, max_document_id_bytes: usize) -> Result<usize> {
+        let working_bytes = self.admitted_working_bytes()?;
+        match (
+            self.external.projection,
+            self.external.out_of_core_projection,
+        ) {
+            (Some(projection), None) => {
+                Ok(projection.exact_vector_search_capacity(working_bytes, max_document_id_bytes))
+            }
+            (None, Some(projection)) => {
+                Ok(projection.exact_vector_search_capacity(working_bytes, max_document_id_bytes))
+            }
+            (None, None) => Err(missing_search_projection_error()),
+            (Some(_), Some(_)) => Err(ambiguous_search_projection_error()),
+        }
+    }
+
+    /// Looks up search projection documents by id in the projection this
+    /// snapshot pinned, without refusing ids it does not contain.
+    ///
+    /// This is the non-erroring counterpart of
+    /// [`EmbeddedStoreHandle::search_projection_documents`], for hosts that
+    /// verify a projection against its source. Each requested id appears
+    /// exactly once in the result: as a document in `documents` or in
+    /// `missing_document_ids`, both in request order. It works the same on
+    /// the resident and the out-of-core projection.
+    ///
+    /// An id is missing when the pinned projection does not contain it: it
+    /// was never published, or it was deleted. The lookup takes no access
+    /// control context, like hydration by id; it does not apply search
+    /// access-control filtering, so a document is reported present whatever
+    /// policy would hide it from a filtered search.
+    ///
+    /// Errors:
+    /// - duplicate ids are `HawDBError::Semantic`;
+    /// - more ids than this snapshot's remaining `max_rows` is
+    ///   `ReadBudgetExceeded` (rows), checked before any read, and found
+    ///   documents are charged to the snapshot's rows and payload bytes;
+    /// - on the out-of-core path, more ids than
+    ///   `SearchOutOfCoreConfig.max_hydrated_documents` is
+    ///   `ResourceBudgetExceeded` naming that option, and documents over
+    ///   `SearchOutOfCoreConfig.max_hydrated_bytes` are refused as in
+    ///   hydration by id;
+    /// - an id the projection's index lists whose document cannot be read or
+    ///   verified is `HawDBError::Storage`, never reported missing.
+    pub fn lookup_search_projection_documents(
+        &mut self,
+        document_ids: &[String],
+    ) -> Result<SearchProjectionDocumentLookup> {
+        self.task_context
+            .checkpoint()
+            .map_err(|reason| HawDBError::Execution(format!("runtime task {reason}")))?;
+        if document_ids.iter().collect::<BTreeSet<_>>().len() != document_ids.len() {
+            return Err(HawDBError::Semantic(
+                "search projection document lookup ids must be unique".to_string(),
+            ));
+        }
+        // Every id may be present, so the request must fit the rows left.
+        let usage = self.transaction.usage();
+        let remaining_rows = self.budget.max_rows.saturating_sub(usage.output_rows);
+        if document_ids.len() > remaining_rows {
+            return Err(HawDBError::read_budget_exceeded(
+                ReadBudgetResource::Rows,
+                self.budget.max_rows,
+                format!(
+                    "search projection document lookup requested {} ids, but the bounded read snapshot has {remaining_rows} rows left",
+                    document_ids.len()
+                ),
+            ));
+        }
+        let remaining_payload_bytes = self
+            .budget
+            .max_payload_bytes
+            .saturating_sub(usage.output_payload_bytes);
+        let (documents, missing_document_ids, out_of_core_metrics) = match (
+            self.external.projection,
+            self.external.out_of_core_projection,
+        ) {
+            (Some(projection), None) => {
+                let mut documents = Vec::new();
+                let mut missing_document_ids = Vec::new();
+                let mut payload_bytes = 0usize;
+                for id in document_ids {
+                    let Some(document) = projection.document(id) else {
+                        missing_document_ids.push(id.clone());
+                        continue;
+                    };
+                    // Refuse before copying past the snapshot's payload.
+                    payload_bytes =
+                        payload_bytes.saturating_add(search_document_payload_bytes(document));
+                    if payload_bytes > remaining_payload_bytes {
+                        return Err(HawDBError::read_budget_exceeded(
+                            ReadBudgetResource::PayloadBytes,
+                            self.budget.max_payload_bytes,
+                            "bounded read snapshot exhausted max_payload_bytes",
+                        ));
+                    }
+                    documents.push(document.clone());
+                }
+                (documents, missing_document_ids, None)
+            }
+            (None, Some(projection)) => {
+                let output = projection.lookup_documents(document_ids)?;
+                (
+                    output.documents,
+                    output.missing_document_ids,
+                    Some(output.metrics),
+                )
+            }
+            (None, None) => return Err(missing_search_projection_error()),
+            (Some(_), Some(_)) => return Err(ambiguous_search_projection_error()),
+        };
+        let payload_bytes = documents
+            .iter()
+            .map(search_document_payload_bytes)
+            .fold(0usize, usize::saturating_add);
+        self.consume(documents.len(), payload_bytes)?;
+        Ok(SearchProjectionDocumentLookup {
+            documents,
+            missing_document_ids,
+            out_of_core_metrics,
+        })
+    }
+
+    fn admitted_working_bytes(&self) -> Result<usize> {
+        self.task_context
+            .memory_reservation()
+            .map(|reservation| usize::try_from(reservation.memory_bytes()).unwrap_or(usize::MAX))
+            .ok_or_else(|| {
+                HawDBError::Execution(
+                    "bounded Search candidates require admitted working memory".into(),
+                )
+            })
+    }
+
+    /// Equivalent to [`Self::search_candidates`] and preserves candidate,
+    /// truncation, backend, and projection-freshness evidence.
+    pub fn search_candidates_with_report(
+        &mut self,
+        request: &SearchCandidateRequest,
+    ) -> Result<SearchCandidateOutput> {
+        self.task_context
+            .checkpoint()
+            .map_err(|reason| HawDBError::Execution(format!("runtime task {reason}")))?;
+        let _ = self.statement_row_budget(request.limit.max(1))?;
+        let _ = self.remaining_payload_bytes()?;
+        let max_working_bytes = self.admitted_working_bytes()?;
+        let execution =
+            VectorSearchExecutionOptions::admitted(max_working_bytes, &self.task_context);
+        let output = match (
+            self.external.projection,
+            self.external.out_of_core_projection,
+        ) {
+            (Some(projection), None) => {
+                projection.try_search_candidates_with_report_context(request, execution)?
+            }
+            (None, Some(projection)) => projection.search_candidates_with_report_admitted(
+                request,
+                execution,
+                self.permit,
+            )?,
+            (None, None) => return Err(missing_search_projection_error()),
+            (Some(_), Some(_)) => return Err(ambiguous_search_projection_error()),
+        };
+        let rows = output.accept_bounded().hits.len();
+        let payload_bytes = output
+            .accept_bounded()
+            .hits
+            .iter()
+            .map(crate::api::search_hit_payload_bytes)
+            .fold(0usize, usize::saturating_add);
+        self.consume(rows, payload_bytes)?;
+        Ok(output)
+    }
+
+    /// Visits the complete current projection under this snapshot's retained pin.
+    /// Both resident and out-of-core visitors own an immutable generation and
+    /// may overlap writers without retaining the store read guard.
+    ///
+    /// Order is unspecified. A visitor prefix is not exhaustion evidence: only
+    /// the successful returned report certifies completion. Retained copies are
+    /// caller-owned and require independent accounting. Encoded-record scratch
+    /// has its own finite cap, distinct from cumulative logical output bytes.
+    /// Scans charge UTF-8 strings, metadata and four bytes per embedding value;
+    /// Cypher/SQL reads charge `Value` payload estimates, including value overhead.
+    /// These charges share the cumulative cap but differ by output representation.
+    /// Out-of-core scans read all physical payloads twice and probe visible ID
+    /// routes during preflight, without retaining the publication lock.
+    /// Emit callbacks may precede final checksum validation, so a later error
+    /// invalidates completion even after callbacks have run.
+    pub fn visit_search_projection(
+        &mut self,
+        max_encoded_record_bytes: usize,
+        mut visitor: impl FnMut(&SearchDocument) -> Result<()>,
+    ) -> Result<crate::search::SearchProjectionScanReport> {
+        let budget = crate::search::SearchProjectionScanBudget {
+            max_rows: self.statement_row_budget(self.budget.max_rows)?,
+            max_payload_bytes: self.remaining_payload_bytes()?,
+            max_encoded_record_bytes,
+        };
+        let report = match (
+            self.external.projection,
+            self.external.out_of_core_projection,
+        ) {
+            (Some(projection), None) => {
+                projection.visit_projection_documents(budget, &self.task_context, &mut visitor)?
+            }
+            (None, Some(projection)) => projection.reader().visit_projection_documents(
+                budget,
+                &self.task_context,
+                &mut visitor,
+            )?,
+            _ => {
+                return Err(HawDBError::Execution(
+                    "bounded projection scan requires exactly one pinned Search projection".into(),
+                ))
+            }
+        };
+        self.consume(report.document_count, report.payload_bytes)?;
+        Ok(report)
+    }
+
+    pub fn report(&self) -> EmbeddedReadSnapshotReport {
+        EmbeddedReadSnapshotReport {
+            commit_epoch: self.commit_epoch(),
+            search_projection_present: self.external.projection.is_some()
+                || self.external.out_of_core_projection.is_some(),
+            search_projection_source_graph_commit_epoch: self
+                .search_projection_source_graph_commit_epoch,
+            search_projection_durable_source_graph_commit_epoch: self
+                .search_projection_durable_source_graph_commit_epoch,
+            max_rows: self.budget.max_rows,
+            max_payload_bytes: self.budget.max_payload_bytes,
+            cypher_statement_count: self.transaction.usage().cypher_statement_count,
+            sql_statement_count: self.transaction.usage().sql_statement_count,
+            vector_seed_execution_count: self.external.vector_seed_execution_count,
+            output_rows: self.transaction.usage().output_rows,
+            output_payload_bytes: self.transaction.usage().output_payload_bytes,
+            remaining_rows: self
+                .budget
+                .max_rows
+                .saturating_sub(self.transaction.usage().output_rows),
+            remaining_payload_bytes: self
+                .budget
+                .max_payload_bytes
+                .saturating_sub(self.transaction.usage().output_payload_bytes),
+        }
+    }
+
+    pub(super) fn statement_row_budget(&self, requested: usize) -> Result<usize> {
+        if requested == 0 {
+            return Err(HawDBError::Execution(
+                "bounded read statement requires max_rows greater than zero".to_string(),
+            ));
+        }
+        let remaining = self
+            .budget
+            .max_rows
+            .saturating_sub(self.transaction.usage().output_rows);
+        if remaining == 0 {
+            return Err(HawDBError::read_budget_exceeded(
+                ReadBudgetResource::Rows,
+                self.budget.max_rows,
+                "bounded read snapshot exhausted max_rows",
+            ));
+        }
+        Ok(requested.min(remaining))
+    }
+
+    pub(super) fn remaining_payload_bytes(&self) -> Result<usize> {
+        let remaining = self
+            .budget
+            .max_payload_bytes
+            .saturating_sub(self.transaction.usage().output_payload_bytes);
+        if remaining == 0 {
+            return Err(HawDBError::read_budget_exceeded(
+                ReadBudgetResource::PayloadBytes,
+                self.budget.max_payload_bytes,
+                "bounded read snapshot exhausted max_payload_bytes",
+            ));
+        }
+        Ok(remaining)
+    }
+
+    pub(super) fn consume(&mut self, rows: usize, payload_bytes: usize) -> Result<()> {
+        self.transaction.consume_output(rows, payload_bytes)
+    }
+}
+
+impl EmbeddedStoreHandle {
+    pub fn new(store: EmbeddedStore) -> Result<Self> {
+        let published_read = PublishedCanonicalRead::capture(&store)?;
+        let inner = Arc::new(crate::DatabasePublicationOwner::new(store));
+        let published_read = Arc::new(Mutex::new(Some(published_read)));
+        let read_publication_failed = Arc::new(AtomicBool::new(false));
+        let concurrent = crate::ConcurrentDatabase::with_shared_owner(Arc::new(
+            concurrent_owner::MemDatabaseOwner {
+                inner: Arc::clone(&inner),
+                published_read: Arc::clone(&published_read),
+                read_publication_failed: Arc::clone(&read_publication_failed),
+            },
+        ))?;
+        Ok(Self {
+            inner,
+            concurrent,
+            published_read,
+            read_publication_failed,
+        })
+    }
+
+    pub fn open_with_options(
+        options: EmbeddedStoreOpenOptions,
+    ) -> Result<(Self, EmbeddedStoreOpenReport)> {
+        let (store, report) = EmbeddedStore::open_with_options(options)?;
+        Ok((Self::new(store)?, report))
+    }
+
+    pub fn open_with_options_and_runtime_governor(
+        options: EmbeddedStoreOpenOptions,
+        runtime_governor: RuntimeGovernor,
+    ) -> Result<(Self, EmbeddedStoreOpenReport)> {
+        let (store, report) =
+            EmbeddedStore::open_with_options_and_runtime_governor(options, runtime_governor)?;
+        Ok((Self::new(store)?, report))
+    }
+
+    /// Qualification counters for the actual graph/projection publication owner.
+    #[cfg(feature = "qualification")]
+    pub fn publication_lock_metrics(&self) -> crate::PublicationLockMetricsSnapshot {
+        self.inner.lock_metrics()
+    }
+
+    pub fn runtime_governor_snapshot(&self) -> Result<RuntimeGovernorSnapshot> {
+        Ok(self.read_store()?.runtime_governor_snapshot())
+    }
+
+    /// Returns a point-in-time storage residency snapshot through the admitted
+    /// embedded facade. Qualification uses this to prove cancellation does not
+    /// leak cache pins without reaching through to the storage engine.
+    pub fn storage_residency_report(&self) -> Result<crate::StorageResidencyReport> {
+        self.read_store()?
+            .graph
+            .database()
+            .storage_residency_report()
+    }
+
+    /// Returns storage debt through the admitted embedded facade, with the
+    /// same reader-epoch semantics as [`crate::Database::storage_pressure_snapshot`].
+    ///
+    /// Hosts read WAL/delta pressure and generation reclamation debt
+    /// (`generation_reclamation_pending_files` / `_bytes`) here instead of
+    /// listing the store directory. Every live reader pin, including this
+    /// handle's own read publication at the current epoch, contributes to
+    /// `oldest_reader_commit_epoch`; a held older reader therefore shows as
+    /// `oldest_reader_lag` and `obsolete_generation_bytes`.
+    pub fn storage_pressure_snapshot(&self) -> Result<crate::StoragePressureSnapshot> {
+        self.read_store()?
+            .graph
+            .database()
+            .storage_pressure_snapshot()
+    }
+
+    /// Reports whether a fail-closed storage error poisoned this handle.
+    pub fn storage_handle_poisoned(&self) -> Result<bool> {
+        self.read_store()?
+            .graph
+            .database()
+            .storage_handle_poisoned()
+    }
+
+    /// Reports the admitted facade contract. Production hosts must bind this
+    /// report to their long-lived runtime identity before using it as evidence.
+    pub fn serving_path_readiness(&self) -> EmbeddedServingPathReadiness {
+        EmbeddedServingPathReadiness::embedded_store_handle()
+    }
+
+    pub fn refresh_runtime_resources(&self) -> Result<bool> {
+        Ok(self.read_store()?.refresh_runtime_resources())
+    }
+
+    /// Persist the current graph generation through the admitted embedded
+    /// maintenance path.
+    ///
+    /// Import and qualification hosts use this typed boundary instead of
+    /// issuing a textual `CHECKPOINT` statement or reaching through the
+    /// facade to the storage engine. The single maintenance admission's
+    /// memory request is extended by the columnar shadow's builder-lifetime
+    /// reservation, and that pre-admitted context travels into the
+    /// checkpoint so the shadow build never issues a nested admission
+    /// against the permit this method already holds.
+    pub fn checkpoint(&self) -> Result<()> {
+        let shadow_admission_bytes = self
+            .read_store()?
+            .graph
+            .database()
+            .columnar_shadow_admission_bytes()?;
+        let _permit = self.admit_typed_maintenance(
+            RuntimeWorkPriority::Foreground,
+            usize::try_from(shadow_admission_bytes).unwrap_or(usize::MAX),
+            1,
+        )?;
+        self.write_store()?
+            .graph_mut()
+            .database_mut()
+            .checkpoint_with_shadow_admission(crate::store::ColumnarShadowAdmission::pre_admitted(
+                shadow_admission_bytes,
+            ))
+    }
+
+    /// Declared property descriptors with their tables, types, states and
+    /// defaults, as reported by [`crate::Database::property_schemas`].
+    ///
+    /// Read-only: takes the store read guard and no runtime admission. Hosts
+    /// use it to observe a defaulted descriptor moving from `BACKFILL` through
+    /// `VALIDATING` to `PUBLIC`.
+    pub fn property_schemas(&self) -> Result<Vec<crate::schema::PropertySchema>> {
+        self.read_store()?.graph.database().property_schemas()
+    }
+
+    /// Read-only dry run of pending descriptor maintenance, with the same
+    /// rows as [`crate::Database::plan_schema_maintenance`]: `object_type`,
+    /// `object`, `from_state`, `to_state`, `action` and
+    /// `estimated_operations`. An empty result means no table or property
+    /// descriptor (including a `BACKFILL` default) awaits maintenance.
+    pub fn plan_schema_maintenance(&self) -> Result<QueryOutput> {
+        self.read_store()?
+            .graph
+            .database()
+            .plan_schema_maintenance()
+    }
+
+    /// Runs one bounded schema maintenance pass through the admitted embedded
+    /// maintenance path, with the semantics and result rows of
+    /// [`crate::Database::run_bounded_schema_maintenance`]: only actions that
+    /// fit `max_estimated_operations` are applied, as one WAL batch, and the
+    /// rest stay in their current state for a later call. A property default
+    /// backfill fills records lacking the key and keeps explicit NULLs; the
+    /// batch that fills the last lacking record advances the descriptor to
+    /// `VALIDATING`, and a later pass promotes it to `PUBLIC`. Fills resume
+    /// across any budget, but validation is one action per descriptor, so the
+    /// pass that promotes it needs at least the `estimated_operations` that
+    /// [`Self::plan_schema_maintenance`] reports for it. That validation scans
+    /// the whole table while holding the exclusive write guard and blocks
+    /// writers meanwhile, so on large tables schedule it like a checkpoint.
+    ///
+    /// Like [`Self::checkpoint`], the call is admitted as foreground
+    /// maintenance and is explicit: it runs whether or not the database's
+    /// `RuntimeCapabilities::background_maintenance` is enabled, and HawDB
+    /// never runs schema maintenance on its own, so hosts that declare a
+    /// default on existing data drive this until
+    /// [`Self::plan_schema_maintenance`] is empty.
+    pub fn run_bounded_schema_maintenance(
+        &self,
+        max_estimated_operations: usize,
+    ) -> Result<QueryOutput> {
+        let _permit = self.admit_typed_maintenance(RuntimeWorkPriority::Foreground, 0, 1)?;
+        self.write_store()?
+            .graph_mut()
+            .database_mut()
+            .run_bounded_schema_maintenance(max_estimated_operations)
+    }
+
+    /// Reclaims unreachable immutable objects and deleted branch directories
+    /// of this project through the admitted embedded maintenance path, like
+    /// [`Self::checkpoint`].
+    ///
+    /// Checkpoints already run a bounded pass automatically after each
+    /// publication (#1736); this call lets a host drain remaining debt (for
+    /// example `object_reclamation_pending_bytes` in
+    /// [`Self::storage_pressure_snapshot`]) or run a pass with its own
+    /// per-pass budget. Liveness covers every branch head, recorded creation
+    /// base root and registered reader, candidate or job root. A report with
+    /// `deferred_for_active_leases` means an unregistered owner is active;
+    /// non-zero `pending_objects` means the budget was reached or a removal
+    /// failed. Call again in either case.
+    pub fn reclaim_branch_storage(
+        &self,
+        limits: crate::BranchReclamationLimits,
+    ) -> Result<crate::BranchReclamationReport> {
+        let _permit = self.admit_typed_maintenance(RuntimeWorkPriority::Foreground, 0, 1)?;
+        self.write_store()?
+            .graph_mut()
+            .database_mut()
+            .reclaim_branch_storage(limits)
+    }
+
+    /// Runs one generation cleanup pass over the open search projection
+    /// (resident or out-of-core) with explicit limits, through the admitted
+    /// embedded maintenance path, and returns its report (#1755).
+    ///
+    /// Every resident checkpoint and incremental publication already runs a
+    /// pass and reports it in `projection_cleanup` of its
+    /// [`SearchCheckpointReport`] or [`crate::SearchProjectionDeltaReport`].
+    /// A pass re-hashes the active closure before it deletes anything, except
+    /// files this process already verified unchanged; after a restart the
+    /// first pass may therefore need more than the default
+    /// `max_verification_bytes`. When an earlier report has
+    /// `retry_required`, call this with limits that cover the active
+    /// generation. Nothing is deleted unless the closure is proven intact.
+    ///
+    /// Raising `max_verification_bytes` only allows more streaming re-hash
+    /// work. A resident snapshot is decoded in memory (to check its vector
+    /// count) only under a fixed 128 MiB bound; a larger one is stream-verified
+    /// and its standalone vector artifacts are retained.
+    ///
+    /// The pass holds this handle's store write lock for its whole run, so
+    /// writes and publications wait until it finishes; with a large ceiling it
+    /// re-reads the active closure. Call it when the store is idle.
+    pub fn retry_search_projection_cleanup(
+        &self,
+        options: crate::SearchProjectionCleanupOptions,
+    ) -> Result<crate::SearchProjectionCleanupReport> {
+        let _permit = self.admit_typed_maintenance(RuntimeWorkPriority::Foreground, 0, 1)?;
+        self.write_store()?.retry_search_projection_cleanup(options)
+    }
+
+    pub fn query_with_report(&self, cypher: &str) -> Result<EmbeddedQueryOutput> {
+        self.query_with_params_with_report(cypher, &BTreeMap::new())
+    }
+
+    pub fn set_telemetry_sink(&self, telemetry: Option<Arc<dyn TelemetrySink>>) -> Result<()> {
+        self.write_store()?.set_telemetry_sink(telemetry);
+        Ok(())
+    }
+
+    pub fn query_with_report_options(
+        &self,
+        cypher: &str,
+        options: EmbeddedQueryReportOptions,
+    ) -> Result<EmbeddedQueryOutput> {
+        self.query_with_params_with_report_options(cypher, &BTreeMap::new(), options)
+    }
+
+    pub fn query_with_params_with_report(
+        &self,
+        cypher: &str,
+        parameters: &BTreeMap<String, Value>,
+    ) -> Result<EmbeddedQueryOutput> {
+        self.query_with_params_with_report_options(
+            cypher,
+            parameters,
+            EmbeddedQueryReportOptions::default(),
+        )
+    }
+
+    /// Hydrates an explicitly bounded set of search-projection documents.
+    ///
+    /// Candidate search intentionally returns compact identities. Embedded
+    /// hosts use this method for projection-owned payloads, such as source
+    /// chunks, that have no authoritative graph node to hydrate from.
+    ///
+    /// Documents return in request order, one per id. An id the projection
+    /// does not contain refuses the whole request with `HawDBError::Semantic`
+    /// on both the resident and the out-of-core projection.
+    pub fn search_projection_documents(
+        &self,
+        document_ids: &[String],
+        max_documents: usize,
+    ) -> Result<Vec<SearchDocument>> {
+        Ok(self
+            .search_projection_documents_with_report(document_ids, max_documents)?
+            .documents)
+    }
+
+    pub fn search_projection_documents_with_report(
+        &self,
+        document_ids: &[String],
+        max_documents: usize,
+    ) -> Result<SearchHydrationOutput> {
+        if document_ids.len() > max_documents {
+            return Err(HawDBError::Execution(format!(
+                "search projection document hydration requested {} rows, limit is {max_documents}",
+                document_ids.len()
+            )));
+        }
+        self.with_admitted_search(|read| read.hydrate(document_ids))
+    }
+}
+
+impl EmbeddedStoreHandle {
+    pub fn transaction(
+        &self,
+        statements: &[NowledgeGraphStatement],
+    ) -> Result<crate::NowledgeGraphTransactionOutput> {
+        let permit = self.admit_transaction(statements)?;
+        let _unwind = concurrent_owner::PublicationUnwindGuard(&self.read_publication_failed);
+        let mut transaction = self.concurrent.begin_admitted_transaction(
+            crate::ConcurrentTransactionOptions::default(),
+            permit,
+            RuntimeTaskContext::default(),
+        )?;
+        let mut statement_outputs = Vec::with_capacity(statements.len());
+        for statement in statements {
+            statement_outputs
+                .push(transaction.query_with_params(&statement.cypher, &statement.parameters)?);
+        }
+        let commit_output = transaction.commit()?;
+        Ok(crate::NowledgeGraphTransactionOutput {
+            statement_outputs,
+            commit_output,
+        })
+    }
+
+    /// Executes caller-owned Cypher and SQL statements in one canonical
+    /// graph/relational transaction.
+    ///
+    /// The callback receives the ordinary query-first transaction surface;
+    /// no route-specific mutation API or second durability boundary is
+    /// introduced. Returning an error rolls back every staged statement.
+    pub fn with_transaction<T>(
+        &self,
+        operation: impl FnOnce(&mut crate::ConcurrentDatabaseTransaction) -> Result<T>,
+    ) -> Result<T> {
+        let permit = self.admit_typed_transaction()?;
+        let _unwind = concurrent_owner::PublicationUnwindGuard(&self.read_publication_failed);
+        let mut transaction = self.concurrent.begin_admitted_transaction(
+            crate::ConcurrentTransactionOptions::default(),
+            permit,
+            RuntimeTaskContext::default(),
+        )?;
+        match operation(&mut transaction) {
+            Ok(output) => transaction.commit().map(|_| output),
+            Err(error) => {
+                transaction.rollback();
+                Err(error)
+            }
+        }
+    }
+
+    /// Executes a caller-owned group of bounded Cypher reads against one
+    /// immutable graph snapshot.
+    pub fn with_read_transaction<T>(
+        &self,
+        max_estimated_payload_bytes: usize,
+        operation: impl FnOnce(&mut crate::DatabaseReadTransaction) -> Result<T>,
+    ) -> Result<T> {
+        let (_permit, mut transaction) =
+            self.canonical_read_transaction(max_estimated_payload_bytes, None)?;
+        let result = operation(&mut transaction);
+        self.finish_canonical_read(result)
+    }
+
+    /// Executes App-owned Cypher and PostgreSQL reads against one immutable
+    /// graph/relational snapshot while the search projection is pinned.
+    /// Budgets are cumulative across every statement in the callback.
+    pub fn with_bounded_read_snapshot<T>(
+        &self,
+        budget: EmbeddedReadSnapshotBudget,
+        operation: impl FnOnce(&mut EmbeddedReadSnapshot<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.with_bounded_read_snapshot_context(budget, &RuntimeTaskContext::default(), operation)
+    }
+
+    /// Executes one bounded App read snapshot under the caller's cancellation,
+    /// deadline, and resource reservation context.
+    pub fn with_bounded_read_snapshot_context<T>(
+        &self,
+        budget: EmbeddedReadSnapshotBudget,
+        task_context: &RuntimeTaskContext,
+        operation: impl FnOnce(&mut EmbeddedReadSnapshot<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.with_bounded_read_snapshot_kind(budget, true, task_context, operation)
+    }
+
+    /// Executes bounded graph and relational reads from the published committed
+    /// view. Acquisition and callback execution can overlap a staging writer.
+    ///
+    /// External search projections are deliberately unavailable: vector queries
+    /// fail and the report contains no projection epochs. Use
+    /// `with_bounded_read_snapshot` when a pinned projection is required.
+    pub fn with_bounded_graph_read_snapshot<T>(
+        &self,
+        budget: EmbeddedReadSnapshotBudget,
+        operation: impl FnOnce(&mut EmbeddedReadSnapshot<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.with_bounded_graph_read_snapshot_context(
+            budget,
+            &RuntimeTaskContext::default(),
+            operation,
+        )
+    }
+
+    /// Executes one published graph snapshot under the caller's cancellation,
+    /// deadline, and resource reservation context.
+    pub fn with_bounded_graph_read_snapshot_context<T>(
+        &self,
+        budget: EmbeddedReadSnapshotBudget,
+        task_context: &RuntimeTaskContext,
+        operation: impl FnOnce(&mut EmbeddedReadSnapshot<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.with_bounded_read_snapshot_kind(budget, false, task_context, operation)
+    }
+
+    pub(super) fn with_bounded_read_snapshot_kind<T>(
+        &self,
+        budget: EmbeddedReadSnapshotBudget,
+        pin_projection: bool,
+        task_context: &RuntimeTaskContext,
+        operation: impl FnOnce(&mut EmbeddedReadSnapshot<'_>) -> Result<T>,
+    ) -> Result<T> {
+        if budget.max_rows == 0 {
+            return Err(HawDBError::Execution(
+                "bounded read snapshot requires max_rows greater than zero".to_string(),
+            ));
+        }
+        if budget.max_payload_bytes == 0 {
+            return Err(HawDBError::Execution(
+                "bounded read snapshot requires max_payload_bytes greater than zero".to_string(),
+            ));
+        }
+        if !pin_projection {
+            let (_permit, transaction, instance_identity) = self
+                .canonical_read_transaction_with_instance(
+                    budget.max_payload_bytes,
+                    Some(budget.max_rows),
+                    task_context,
+                )?;
+            let mut snapshot = EmbeddedReadSnapshot::new(
+                transaction,
+                instance_identity,
+                budget,
+                None,
+                None,
+                _permit.bind_task_context(task_context.clone()),
+                &_permit,
+            );
+            return self.finish_canonical_read(operation(&mut snapshot));
+        }
+        let permit = self.admit_typed_read(budget.max_payload_bytes)?;
+        let task_context = permit.bind_task_context(task_context.clone());
+        let _permit = permit;
+        let (view, identity, resident, projection) = {
+            let current = self.lock_published_read()?;
+            let current = current.as_ref().ok_or_else(|| {
+                HawDBError::StorageIntegrity("canonical read publication is unavailable".into())
+            })?;
+            (
+                Arc::clone(&current.view),
+                current.instance_identity.clone(),
+                current.resident_projection.clone(),
+                current
+                    .out_of_core_projection
+                    .as_ref()
+                    .map(OutOfCoreSearchProjection::read_snapshot),
+            )
+        };
+        let resident = resident
+            .map(|snapshot| snapshot.retain_with_permit(&_permit))
+            .transpose()?;
+        let configured_rows = view
+            .snapshot
+            .config()
+            .read_result_row_limit()
+            .unwrap_or(usize::MAX);
+        if budget.max_rows > configured_rows {
+            return Err(HawDBError::Execution(format!(
+                "bounded read snapshot row budget {} exceeds configured limit {configured_rows}",
+                budget.max_rows
+            )));
+        }
+        let transaction = view.begin_read_transaction_with_context(&task_context)?;
+        drop(view);
+        let mut snapshot = EmbeddedReadSnapshot::new(
+            transaction,
+            identity,
+            budget,
+            resident
+                .as_ref()
+                .map(|lease| ResidentProjectionRef::Snapshot(lease.snapshot())),
+            projection.as_ref(),
+            task_context,
+            &_permit,
+        );
+        self.finish_canonical_read(operation(&mut snapshot))
+    }
+
+    pub fn hawdb_lightning_initial_import_apply_with_document_identities(
+        &self,
+        encoded_graph_stream: &str,
+        encoded_relational_stream: &[u8],
+        manifest: &HawDBLightningBootstrapManifest,
+        projection_freshness: Option<&SearchProjectionFreshness>,
+        checkpoint: Option<&HawDBLightningInitialImportCheckpoint>,
+        document_identities: &[HawDBLightningInitialImportDocumentIdentity],
+    ) -> Result<HawDBLightningInitialImportApplyReport> {
+        let estimated_input_bytes = encoded_graph_stream
+            .len()
+            .saturating_add(encoded_relational_stream.len())
+            .saturating_add(
+                document_identities
+                    .iter()
+                    .map(|identity| identity.document_id.len())
+                    .sum::<usize>(),
+            );
+        let _permit = self.admit_typed_maintenance(
+            RuntimeWorkPriority::Background,
+            estimated_input_bytes,
+            1,
+        )?;
+        self.write_store()?
+            .graph_mut()
+            .database_mut()
+            .hawdb_lightning_initial_import_apply_with_document_identities(
+                encoded_graph_stream,
+                encoded_relational_stream,
+                manifest,
+                projection_freshness,
+                checkpoint,
+                document_identities,
+            )
+    }
+
+    /// Applies an externally materialized projection batch and makes it
+    /// durable before returning. This is the library boundary used when Mem
+    /// imports a legacy LanceDB projection without rebuilding embeddings.
+    /// An empty batch still rewrites a resident projection; use
+    /// [`Self::advance_search_projection_source_epoch`] to move only the epoch.
+    pub fn apply_search_projection_delta_and_checkpoint(
+        &self,
+        delta: SearchProjectionDelta,
+    ) -> Result<SearchProjectionDeltaReport> {
+        let permit =
+            self.admit_search_projection_maintenance(search_projection_delta_bytes(&delta))?;
+        let mut store = self.write_store()?;
+        if store.incremental_search_enabled() {
+            store.apply_incremental_search_delta(delta, std::sync::Arc::new(permit))
+        } else {
+            store.apply_search_projection_delta_and_checkpoint(delta)
+        }
+    }
+
+    /// Applies one externally materialized initial-import page and records its
+    /// immutable source provenance without making either durable. See
+    /// [`EmbeddedStore::apply_initial_import_projection_delta`] for the
+    /// crash/resume contract: nothing applied here survives a crash until
+    /// [`Self::checkpoint_initial_import_projection`] returns `Ok`.
+    pub fn apply_initial_import_projection_delta(
+        &self,
+        delta: SearchProjectionDelta,
+        import_source_graph_commit_epoch: u64,
+    ) -> Result<SearchProjectionDeltaReport> {
+        let _permit = self.admit_typed_maintenance(
+            RuntimeWorkPriority::Background,
+            search_projection_delta_bytes(&delta),
+            1,
+        )?;
+        self.write_store()?
+            .apply_initial_import_projection_delta(delta, import_source_graph_commit_epoch)
+    }
+
+    /// Makes every initial-import page applied so far durable by publishing
+    /// one new resident projection generation. Each call rewrites the whole
+    /// projection; schedule calls geometrically rather than per page. To move
+    /// only the source epoch, use [`Self::advance_search_projection_source_epoch`].
+    pub fn checkpoint_initial_import_projection(&self) -> Result<SearchCheckpointReport> {
+        let _permit = self.admit_typed_maintenance(RuntimeWorkPriority::Background, 0, 1)?;
+        self.write_store()?.checkpoint_initial_import_projection()
+    }
+
+    /// Reports initial-import pages that are resident but not yet durable.
+    pub fn initial_import_projection_pending(
+        &self,
+    ) -> Result<Option<InitialImportProjectionPending>> {
+        Ok(self.read_store()?.initial_import_projection_pending())
+    }
+
+    /// Applies one externally materialized import batch, records its immutable
+    /// source provenance, and checkpoints both before acknowledging success.
+    /// Equivalent to [`Self::apply_initial_import_projection_delta`] followed
+    /// by [`Self::checkpoint_initial_import_projection`] under one admission.
+    pub fn apply_initial_import_projection_delta_and_checkpoint(
+        &self,
+        delta: SearchProjectionDelta,
+        import_source_graph_commit_epoch: u64,
+    ) -> Result<SearchProjectionDeltaReport> {
+        let _permit = self.admit_typed_maintenance(
+            RuntimeWorkPriority::Background,
+            search_projection_delta_bytes(&delta),
+            1,
+        )?;
+        self.write_store()?
+            .apply_initial_import_projection_delta_and_checkpoint(
+                delta,
+                import_source_graph_commit_epoch,
+            )
+    }
+
+    pub fn query_with_params_with_report_options(
+        &self,
+        cypher: &str,
+        parameters: &BTreeMap<String, Value>,
+        options: EmbeddedQueryReportOptions,
+    ) -> Result<EmbeddedQueryOutput> {
+        self.query_with_params_with_report_options_context(
+            cypher,
+            parameters,
+            options,
+            &RuntimeTaskContext::default(),
+        )
+    }
+
+    pub fn query_with_params_with_report_options_context(
+        &self,
+        cypher: &str,
+        parameters: &BTreeMap<String, Value>,
+        options: EmbeddedQueryReportOptions,
+        task_context: &RuntimeTaskContext,
+    ) -> Result<EmbeddedQueryOutput> {
+        self.query_with_admitted_report(cypher, parameters, options, task_context)
+    }
+
+    pub fn read_query(
+        &self,
+        cypher: &str,
+        options: &EmbeddedReadOptions,
+    ) -> Result<EmbeddedReadOutput> {
+        self.read_query_with_params(cypher, &BTreeMap::new(), options)
+    }
+
+    pub fn read_query_with_params(
+        &self,
+        cypher: &str,
+        parameters: &BTreeMap<String, Value>,
+        options: &EmbeddedReadOptions,
+    ) -> Result<EmbeddedReadOutput> {
+        let mut output = self
+            .read_query_with_params_streaming_collect(cypher, parameters, options)
+            .map_err(|error| legacy_embedded_read_error(error, options))?;
+        output.report.streaming = false;
+        Ok(output)
+    }
+
+    pub fn read_query_with_params_streaming(
+        &self,
+        cypher: &str,
+        parameters: &BTreeMap<String, Value>,
+        options: &EmbeddedReadOptions,
+        consumer: impl FnMut(BTreeMap<String, Value>) -> Result<()>,
+    ) -> Result<QueryStreamReport> {
+        self.read_query_with_params_streaming_context(
+            cypher,
+            parameters,
+            options,
+            &RuntimeTaskContext::default(),
+            consumer,
+        )
+    }
+
+    pub fn read_query_with_params_streaming_context(
+        &self,
+        cypher: &str,
+        parameters: &BTreeMap<String, Value>,
+        options: &EmbeddedReadOptions,
+        task_context: &RuntimeTaskContext,
+        consumer: impl FnMut(BTreeMap<String, Value>) -> Result<()>,
+    ) -> Result<QueryStreamReport> {
+        self.with_admitted_graph_read(
+            cypher,
+            parameters,
+            options,
+            task_context,
+            |read, prepared, limits, context, _| {
+                read.query_prepared_with_params_streaming_context(
+                    prepared,
+                    parameters,
+                    limits,
+                    crate::executor::StreamDelivery::Validated,
+                    context,
+                    consumer,
+                )
+            },
+        )
+    }
+
+    pub fn read_query_with_params_streaming_collect(
+        &self,
+        cypher: &str,
+        parameters: &BTreeMap<String, Value>,
+        options: &EmbeddedReadOptions,
+    ) -> Result<EmbeddedReadOutput> {
+        self.with_admitted_graph_read(
+            cypher,
+            parameters,
+            options,
+            &RuntimeTaskContext::default(),
+            |read, prepared, limits, context, mode| {
+                let bounded = read.query_prepared_with_params_profiled_context(
+                    prepared, parameters, limits, context,
+                )?;
+                let mut output = bounded_embedded_read_output(mode, bounded, options)?;
+                output.report.streaming = true;
+                Ok(output)
+            },
+        )
+    }
+
+    pub fn graph_rag_schema_context(
+        &self,
+        options: GraphRagSchemaContextOptions,
+    ) -> Result<GraphRagSchemaContext> {
+        let view = {
+            let publication = self.lock_published_read()?;
+            let publication = publication.as_ref().ok_or_else(|| {
+                HawDBError::Execution("embedded schema source is unavailable".into())
+            })?;
+            Arc::clone(&publication.view)
+        };
+        // Schema guidance is metadata, not an executable query. Preserve its
+        // existing options while constructing statistics outside publication.
+        let read = view
+            .snapshot
+            .begin_read_transaction(&RuntimeTaskContext::default())?;
+        drop(view);
+        self.finish_canonical_read(Ok(read.graph_rag_schema_context(options)))
+    }
+
+    pub fn read_generated_graph_rag(
+        &self,
+        query: &GraphRagGeneratedQuery,
+        parameters: &BTreeMap<String, Value>,
+        options: &EmbeddedReadOptions,
+    ) -> Result<EmbeddedReadOutput> {
+        query
+            .validate_parameters(parameters)
+            .map_err(|error| HawDBError::Semantic(error.to_string()))?;
+        self.with_admitted_graph_read(
+            query.cypher(),
+            parameters,
+            options,
+            &RuntimeTaskContext::default(),
+            |read, prepared, limits, context, mode| {
+                read.validate_generated_graph_rag(query, parameters)?;
+                let bounded = read.query_prepared_with_params_profiled_context(
+                    prepared, parameters, limits, context,
+                )?;
+                bounded_embedded_read_output(mode, bounded, options)
+            },
+        )
+    }
+}
+impl EmbeddedStoreHandle {
+    pub fn search_candidates(
+        &self,
+        request: &SearchCandidateRequest,
+    ) -> Result<SearchCandidateOutput> {
+        self.search_candidates_with_report(request)
+    }
+
+    pub fn search_candidates_with_report(
+        &self,
+        request: &SearchCandidateRequest,
+    ) -> Result<SearchCandidateOutput> {
+        self.with_admitted_search(|read| read.search_candidates(request))
+    }
+
+    pub fn validate_sampled_vector_recall(
+        &self,
+        options: VectorRecallValidationOptions,
+    ) -> Result<VectorRecallValidationReport> {
+        self.read_store()?.validate_sampled_vector_recall(options)
+    }
+
+    pub fn qualify_sampled_vector_recall_for_production(
+        &self,
+        options: VectorRecallValidationOptions,
+        evidence_binding: crate::ProductionEvidenceBinding,
+        expected_identity: crate::ProductionQualificationIdentity,
+    ) -> Result<VectorRecallProductionQualificationReport> {
+        self.read_store()?
+            .qualify_sampled_vector_recall_for_production(
+                options,
+                evidence_binding,
+                expected_identity,
+            )
+    }
+
+    pub fn retrieve_knowledge(
+        &self,
+        request: &KnowledgeRetrievalRequest,
+    ) -> Result<KnowledgeRetrievalOutput> {
+        Ok(self.retrieve_knowledge_with_report(request)?.output)
+    }
+
+    pub fn retrieve_knowledge_with_report(
+        &self,
+        request: &KnowledgeRetrievalRequest,
+    ) -> Result<RetrievalOutput> {
+        self.with_admitted_search(|read| read.retrieve(request))
+    }
+
+    pub fn search_candidate_readiness(
+        &self,
+        request: &SearchCandidateRequest,
+        options: &SearchCandidateReadinessOptions,
+    ) -> Result<SearchCandidateReadinessReport> {
+        Ok(self
+            .search_candidates_with_report(request)?
+            .readiness_report(options))
+    }
+
+    pub fn search_candidate_shadow_evidence_json<I, S>(
+        &self,
+        request: &SearchCandidateRequest,
+        primary_candidate_ids: I,
+    ) -> Result<serde_json::Value>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.with_admitted_search(|read| read.shadow_evidence_json(request, primary_candidate_ids))
+    }
+
+    pub fn slow_query_report(&self) -> Result<SlowQueryReport> {
+        Ok(self.read_store()?.slow_query_report())
+    }
+
+    pub fn slow_query_report_json(&self) -> Result<serde_json::Value> {
+        Ok(self.read_store()?.slow_query_report_json())
+    }
+
+    pub fn runtime_status(&self) -> Result<EmbeddedRuntimeStatus> {
+        self.read_store()?.runtime_status()
+    }
+
+    /// Current admitted database instance; does not retain a target fence.
+    pub fn database_instance_identity(&self) -> Result<crate::DatabaseInstanceIdentity> {
+        self.read_store()?.graph.database().instance_identity()
+    }
+
+    pub fn production_resource_profile(
+        &self,
+        statement: &NowledgeGraphStatement,
+        mut limits: StorageResourceProfileLimits,
+        evidence_binding: crate::ProductionEvidenceBinding,
+        expected_identity: crate::ProductionQualificationIdentity,
+    ) -> Result<StorageResourceProfileReport> {
+        limits.validate()?;
+        evidence_binding.validate_for(&expected_identity)?;
+        self.with_admitted_graph_read(
+            &statement.cypher,
+            &statement.parameters,
+            &EmbeddedReadOptions {
+                max_rows: Some(limits.max_output_rows),
+                max_estimated_payload_bytes: Some(limits.max_output_payload_bytes),
+            },
+            &RuntimeTaskContext::default(),
+            |read, prepared, admitted, context, _| {
+                limits.max_output_rows = limits
+                    .max_output_rows
+                    .min(admitted.max_rows.unwrap_or(usize::MAX));
+                limits.max_output_payload_bytes = limits
+                    .max_output_payload_bytes
+                    .min(admitted.max_payload_bytes.unwrap_or(usize::MAX));
+                read.storage_resource_profile_for_production_with_context(
+                    prepared,
+                    &statement.parameters,
+                    limits,
+                    evidence_binding,
+                    expected_identity,
+                    context,
+                )
+            },
+        )
+    }
+
+    pub fn production_status(
+        &self,
+        route_ownership: Option<&RouteOwnershipReadinessReport>,
+    ) -> Result<EmbeddedProductionStatus> {
+        self.read_store()?.production_status(route_ownership)
+    }
+
+    pub fn production_status_json(
+        &self,
+        route_ownership: Option<&RouteOwnershipReadinessReport>,
+    ) -> Result<serde_json::Value> {
+        self.read_store()?.production_status_json(route_ownership)
+    }
+
+    pub fn cutover_controls_report(
+        &self,
+        controls: CutoverControls,
+        route_ownership: Option<&RouteOwnershipReadinessReport>,
+    ) -> Result<CutoverControlsReport> {
+        self.read_store()?
+            .cutover_controls_report(controls, route_ownership)
+    }
+
+    pub fn cutover_controls_report_with_initial_import_cutover_catch_up(
+        &self,
+        controls: CutoverControls,
+        route_ownership: Option<&RouteOwnershipReadinessReport>,
+        initial_import_cutover_catch_up: Option<&HawDBLightningInitialImportCutoverCatchUpReport>,
+    ) -> Result<CutoverControlsReport> {
+        self.read_store()?
+            .cutover_controls_report_with_initial_import_cutover_catch_up(
+                controls,
+                route_ownership,
+                initial_import_cutover_catch_up,
+            )
+    }
+
+    pub fn cutover_controls_report_with_initial_import_recovery(
+        &self,
+        controls: CutoverControls,
+        route_ownership: Option<&RouteOwnershipReadinessReport>,
+        initial_import_recovery: Option<&HawDBLightningInitialImportRecoveryReadinessReport>,
+    ) -> Result<CutoverControlsReport> {
+        self.read_store()?
+            .cutover_controls_report_with_initial_import_recovery(
+                controls,
+                route_ownership,
+                initial_import_recovery,
+            )
+    }
+
+    pub fn cutover_controls_report_json(
+        &self,
+        controls: CutoverControls,
+        route_ownership: Option<&RouteOwnershipReadinessReport>,
+    ) -> Result<serde_json::Value> {
+        self.read_store()?
+            .cutover_controls_report_json(controls, route_ownership)
+    }
+
+    pub fn cutover_controls_report_json_with_initial_import_cutover_catch_up(
+        &self,
+        controls: CutoverControls,
+        route_ownership: Option<&RouteOwnershipReadinessReport>,
+        initial_import_cutover_catch_up: Option<&HawDBLightningInitialImportCutoverCatchUpReport>,
+    ) -> Result<serde_json::Value> {
+        self.read_store()?
+            .cutover_controls_report_json_with_initial_import_cutover_catch_up(
+                controls,
+                route_ownership,
+                initial_import_cutover_catch_up,
+            )
+    }
+
+    pub fn library_readiness(&self, options: &ReadinessOptions) -> Result<LibraryReadinessReport> {
+        self.read_store()?.library_readiness(options)
+    }
+
+    pub fn library_readiness_json(&self, options: &ReadinessOptions) -> Result<serde_json::Value> {
+        self.read_store()?.library_readiness_json(options)
+    }
+
+    pub fn readiness_dashboard(&self, options: &ReadinessOptions) -> Result<ReadinessDashboard> {
+        self.read_store()?.readiness_dashboard(options)
+    }
+
+    pub fn readiness_dashboard_json(
+        &self,
+        options: &ReadinessOptions,
+    ) -> Result<serde_json::Value> {
+        self.read_store()?.readiness_dashboard_json(options)
+    }
+
+    pub fn operations_readiness(
+        &self,
+        options: &ReadinessOptions,
+    ) -> Result<OperationsReadinessReport> {
+        self.read_store()?.operations_readiness(options)
+    }
+
+    pub fn operations_readiness_json(
+        &self,
+        options: &ReadinessOptions,
+    ) -> Result<serde_json::Value> {
+        self.read_store()?.operations_readiness_json(options)
+    }
+
+    pub fn query_runtime_preflight(
+        &self,
+        probes: &[NowledgeQueryRuntimePreflightProbe],
+    ) -> Result<NowledgeQueryRuntimePreflightReport> {
+        Ok(self.write_store()?.query_runtime_preflight(probes))
+    }
+
+    pub fn query_runtime_preflight_json(
+        &self,
+        probes: &[NowledgeQueryRuntimePreflightProbe],
+    ) -> Result<serde_json::Value> {
+        Ok(self.write_store()?.query_runtime_preflight_json(probes))
+    }
+
+    pub fn catch_up_search_projection(
+        &self,
+        max_operations_per_batch: usize,
+        max_batches: usize,
+    ) -> Result<SearchProjectionCatchUpReport> {
+        let estimated_operations = max_operations_per_batch.saturating_mul(max_batches);
+        let estimated_input_bytes =
+            estimated_operations.saturating_mul(SEARCH_PROJECTION_CHANGEFEED_OPERATION_BYTES);
+        let _permit = self.admit_typed_maintenance(
+            RuntimeWorkPriority::Background,
+            estimated_input_bytes,
+            1,
+        )?;
+        self.write_store()?
+            .catch_up_search_projection(max_operations_per_batch, max_batches)
+    }
+
+    /// Runs bounded unified graph-and-relational projection catch-up through
+    /// the embedded library handle.
+    pub fn catch_up_search_projection_with_relational<F>(
+        &self,
+        max_operations_per_batch: usize,
+        max_batches: usize,
+        relational_hydrator: F,
+    ) -> Result<SearchProjectionCatchUpReport>
+    where
+        F: FnMut(
+            &mut DatabaseReadTransaction,
+            &SearchProjectionChangeBatch,
+        ) -> Result<SearchProjectionRelationalDelta>,
+    {
+        let estimated_operations = max_operations_per_batch.saturating_mul(max_batches);
+        let estimated_input_bytes =
+            estimated_operations.saturating_mul(SEARCH_PROJECTION_CHANGEFEED_OPERATION_BYTES);
+        let _permit = self.admit_typed_maintenance(
+            RuntimeWorkPriority::Background,
+            estimated_input_bytes,
+            1,
+        )?;
+        self.write_store()?
+            .catch_up_search_projection_with_relational(
+                max_operations_per_batch,
+                max_batches,
+                relational_hydrator,
+            )
+    }
+
+    /// Runs legacy unified catch-up and invokes the host hydrator per batch.
+    /// The selected interval must reach the pinned source epoch; a shorter
+    /// prefix is refused before publication. For bounded resumable private work,
+    /// use `open_or_create_search_projection_consumer` and `begin_catch_up`.
+    /// This compatibility rule applies to both full-residency and incremental
+    /// maintenance modes; increasing limits is not a bounded-progress protocol.
+    pub fn catch_up_search_projection_with_batch_hydrator<F>(
+        &self,
+        max_change_operations_per_batch: usize,
+        max_projection_operations_per_batch: usize,
+        max_batches: usize,
+        batch_hydrator: F,
+    ) -> Result<SearchProjectionCatchUpReport>
+    where
+        F: FnMut(
+            &mut DatabaseReadTransaction,
+            &SearchProjectionChangeBatch,
+        ) -> Result<SearchProjectionRelationalDelta>,
+    {
+        self.catch_up_search_projection_with_batch_hydrator_inner(
+            RuntimeWorkPriority::Background,
+            max_change_operations_per_batch,
+            max_projection_operations_per_batch,
+            max_batches,
+            None::<fn(&mut DatabaseReadTransaction) -> Result<()>>,
+            batch_hydrator,
+        )
+    }
+
+    /// Runs bounded Search catch-up in the caller-selected runtime lane.
+    ///
+    /// Explicit host work may select `Foreground` without competing for the
+    /// background maintenance lane. Admission still enforces the selected
+    /// lane's task, memory and I/O limits. Existing catch-up methods retain
+    /// their background priority; this does not change scheduled maintenance.
+    pub fn catch_up_search_projection_with_priority_and_batch_hydrator<F>(
+        &self,
+        priority: RuntimeWorkPriority,
+        max_change_operations_per_batch: usize,
+        max_projection_operations_per_batch: usize,
+        max_batches: usize,
+        batch_hydrator: F,
+    ) -> Result<SearchProjectionCatchUpReport>
+    where
+        F: FnMut(
+            &mut DatabaseReadTransaction,
+            &SearchProjectionChangeBatch,
+        ) -> Result<SearchProjectionRelationalDelta>,
+    {
+        self.catch_up_search_projection_with_batch_hydrator_inner(
+            priority,
+            max_change_operations_per_batch,
+            max_projection_operations_per_batch,
+            max_batches,
+            None::<fn(&mut DatabaseReadTransaction) -> Result<()>>,
+            batch_hydrator,
+        )
+    }
+
+    /// Validates caller-owned target state and runs bounded Search catch-up
+    /// under one embedded write owner. A rejected guard cannot publish a
+    /// projection batch, and another mutation through this handle cannot
+    /// change the guarded Graph state before catch-up completes.
+    ///
+    /// The guard must use bounded reads and must not reenter this handle.
+    pub fn catch_up_search_projection_with_guard_and_batch_hydrator<G, F>(
+        &self,
+        max_change_operations_per_batch: usize,
+        max_projection_operations_per_batch: usize,
+        max_batches: usize,
+        guard: G,
+        batch_hydrator: F,
+    ) -> Result<SearchProjectionCatchUpReport>
+    where
+        G: FnOnce(&mut DatabaseReadTransaction) -> Result<()>,
+        F: FnMut(
+            &mut DatabaseReadTransaction,
+            &SearchProjectionChangeBatch,
+        ) -> Result<SearchProjectionRelationalDelta>,
+    {
+        self.catch_up_search_projection_with_batch_hydrator_inner(
+            RuntimeWorkPriority::Background,
+            max_change_operations_per_batch,
+            max_projection_operations_per_batch,
+            max_batches,
+            Some(guard),
+            batch_hydrator,
+        )
+    }
+
+    pub(super) fn catch_up_search_projection_with_batch_hydrator_inner<G, F>(
+        &self,
+        priority: RuntimeWorkPriority,
+        max_change_operations_per_batch: usize,
+        max_projection_operations_per_batch: usize,
+        max_batches: usize,
+        guard: Option<G>,
+        batch_hydrator: F,
+    ) -> Result<SearchProjectionCatchUpReport>
+    where
+        G: FnOnce(&mut DatabaseReadTransaction) -> Result<()>,
+        F: FnMut(
+            &mut DatabaseReadTransaction,
+            &SearchProjectionChangeBatch,
+        ) -> Result<SearchProjectionRelationalDelta>,
+    {
+        let estimated_operations = max_change_operations_per_batch
+            .max(max_projection_operations_per_batch)
+            .saturating_mul(max_batches);
+        let estimated_input_bytes =
+            estimated_operations.saturating_mul(SEARCH_PROJECTION_CHANGEFEED_OPERATION_BYTES);
+        let permit = self
+            .admit_search_projection_maintenance_with_priority(priority, estimated_input_bytes)?;
+        let mut store = self.write_store()?;
+        if let Some(guard) = guard {
+            store.store.validate(guard)?;
+        }
+        if store.incremental_search_enabled() {
+            store.catch_up_incremental_search_with_batch_hydrator(
+                max_change_operations_per_batch,
+                max_projection_operations_per_batch,
+                max_batches,
+                batch_hydrator,
+                std::sync::Arc::new(permit),
+            )
+        } else {
+            store.catch_up_search_projection_with_batch_hydrator(
+                max_change_operations_per_batch,
+                max_projection_operations_per_batch,
+                max_batches,
+                batch_hydrator,
+            )
+        }
+    }
+
+    pub fn search_projection_changefeed_readiness(
+        &self,
+        require_restart_recoverable: bool,
+        max_operations: Option<usize>,
+    ) -> Result<SearchProjectionChangefeedReadiness> {
+        self.read_store()?
+            .search_projection_changefeed_readiness(require_restart_recoverable, max_operations)
+    }
+
+    pub fn catch_up_search_projection_scheduled(
+        &self,
+        max_operations_per_batch: usize,
+        max_batches: usize,
+    ) -> Result<ScheduledSearchProjectionCatchUpReport> {
+        let estimated_operations = max_operations_per_batch.saturating_mul(max_batches);
+        let estimated_input_bytes =
+            estimated_operations.saturating_mul(SEARCH_PROJECTION_CHANGEFEED_OPERATION_BYTES);
+        let _permit = self.admit_typed_maintenance(
+            RuntimeWorkPriority::Background,
+            estimated_input_bytes,
+            1,
+        )?;
+        self.write_store()?
+            .catch_up_search_projection_scheduled(max_operations_per_batch, max_batches)
+    }
+
+    pub(super) fn admit_typed_transaction(&self) -> Result<RuntimePermit> {
+        let (governor, request) = {
+            let published = self.lock_published_read()?;
+            let published = published.as_ref().ok_or_else(|| {
+                HawDBError::StorageIntegrity("canonical read publication is unavailable".into())
+            })?;
+            let config = published.view.snapshot.config();
+            let memory_bytes = crate::executor::estimated_mutation_memory_bytes(
+                config.mutation_limits,
+                config.max_wal_record_bytes,
+            )
+            .max(
+                u64::try_from(config.execution_memory.query_memory_bytes.get()).unwrap_or(u64::MAX),
+            );
+            let result_bytes = u64::try_from(
+                config
+                    .max_read_result_payload_bytes
+                    .unwrap_or(config.mutation_limits.max_result_payload_bytes.get()),
+            )
+            .unwrap_or(u64::MAX);
+            (
+                published.governor.clone(),
+                RuntimeWorkRequest::new(RuntimeWorkPriority::Foreground, RuntimeWorkKind::Mutation)
+                    .with_cpu_slots(1)
+                    .with_memory_bytes(memory_bytes)
+                    .with_result_bytes(result_bytes)
+                    .with_blocking(true),
+            )
+        };
+        try_admit_runtime(&governor, request)
+    }
+
+    pub(super) fn admit_typed_read(
+        &self,
+        max_estimated_payload_bytes: usize,
+    ) -> Result<RuntimePermit> {
+        let (governor, request) = {
+            let publication = self.lock_published_read()?;
+            let publication = publication.as_ref().ok_or_else(|| {
+                HawDBError::StorageIntegrity("canonical read publication is unavailable".into())
+            })?;
+            publication.view.snapshot.ensure_usable()?;
+            (
+                publication.governor.clone(),
+                typed_read_request(
+                    publication.view.snapshot.config(),
+                    max_estimated_payload_bytes,
+                )?,
+            )
+        };
+        try_admit_runtime(&governor, request)
+    }
+
+    pub(super) fn lock_published_read(
+        &self,
+    ) -> Result<MutexGuard<'_, Option<PublishedCanonicalRead>>> {
+        // A failed or panicking write guard leaves the last-good value in
+        // place but poisons future reads, since that value no longer proves
+        // it reflects the most recent committed write.
+        if self.read_publication_failed.load(Ordering::Acquire) {
+            return Err(HawDBError::Execution(
+                "nowledge mem embedded store read lock poisoned".to_string(),
+            ));
+        }
+        self.published_read.lock().map_err(|_| {
+            HawDBError::Execution("embedded snapshot publication lock poisoned".to_string())
+        })
+    }
+
+    pub(super) fn canonical_read_transaction(
+        &self,
+        max_estimated_payload_bytes: usize,
+        max_rows: Option<usize>,
+    ) -> Result<(RuntimePermit, crate::DatabaseReadTransaction)> {
+        self.canonical_read_transaction_with_context(
+            max_estimated_payload_bytes,
+            max_rows,
+            &RuntimeTaskContext::default(),
+        )
+    }
+
+    pub(super) fn canonical_read_transaction_with_context(
+        &self,
+        max_estimated_payload_bytes: usize,
+        max_rows: Option<usize>,
+        task_context: &RuntimeTaskContext,
+    ) -> Result<(RuntimePermit, crate::DatabaseReadTransaction)> {
+        self.canonical_read_transaction_with_instance(
+            max_estimated_payload_bytes,
+            max_rows,
+            task_context,
+        )
+        .map(|(permit, transaction, _)| (permit, transaction))
+    }
+
+    pub(super) fn canonical_read_transaction_with_instance(
+        &self,
+        max_estimated_payload_bytes: usize,
+        max_rows: Option<usize>,
+        task_context: &RuntimeTaskContext,
+    ) -> Result<(
+        RuntimePermit,
+        crate::DatabaseReadTransaction,
+        crate::DatabaseInstanceIdentity,
+    )> {
+        // Admission emits host telemetry. Never invoke it while holding the
+        // publication lock: a sink may reenter the embedded handle.
+        let (governor, request) = {
+            let published = self.lock_published_read()?;
+            let published = published.as_ref().ok_or_else(|| {
+                HawDBError::Execution("nowledge mem embedded store read lock poisoned".to_string())
+            })?;
+            published.view.snapshot.ensure_usable()?;
+            (
+                published.governor.clone(),
+                typed_read_request(
+                    published.view.snapshot.config(),
+                    max_estimated_payload_bytes,
+                )?,
+            )
+        };
+        let permit = governor.try_admit(request).map_err(|error| {
+            if error.is_retryable() {
+                governor.record_admission_wait(request, error.code, 0);
+            }
+            HawDBError::Execution(error.to_string())
+        })?;
+        // Capture after admission so a write completed during admission is visible.
+        // Snapshot construction and observation refresh run after unlocking.
+        let (view, identity) = {
+            let published = self.lock_published_read()?;
+            let published = published.as_ref().ok_or_else(|| {
+                HawDBError::Execution("nowledge mem embedded store read lock poisoned".to_string())
+            })?;
+            (
+                Arc::clone(&published.view),
+                published.instance_identity.clone(),
+            )
+        };
+        view.snapshot.ensure_usable()?;
+        let config = view.snapshot.config();
+        if let Some(max_rows) = max_rows {
+            let configured_rows = config.read_result_row_limit().unwrap_or(usize::MAX);
+            if max_rows > configured_rows {
+                return Err(HawDBError::Execution(format!(
+                    "bounded read snapshot row budget {max_rows} exceeds configured limit {configured_rows}"
+                )));
+            }
+        }
+        let task_context = permit.bind_task_context(task_context.clone());
+        let transaction = view.begin_read_transaction_with_context(&task_context)?;
+        Ok((permit, transaction, identity))
+    }
+
+    pub(super) fn finish_canonical_read<T>(&self, result: Result<T>) -> Result<T> {
+        if result.is_ok() {
+            let published = self.lock_published_read()?;
+            let published = published.as_ref().ok_or_else(|| {
+                HawDBError::Execution("nowledge mem embedded store read lock poisoned".to_string())
+            })?;
+            published.view.snapshot.ensure_usable()?;
+        }
+        result
+    }
+
+    pub(super) fn admit_typed_maintenance(
+        &self,
+        priority: RuntimeWorkPriority,
+        estimated_input_bytes: usize,
+        io_slots: usize,
+    ) -> Result<RuntimePermit> {
+        let store = self.read_store()?;
+        let config = store.graph.database().config();
+        let working_memory_bytes =
+            u64::try_from(config.execution_memory.blocking_operator_bytes.get())
+                .unwrap_or(u64::MAX);
+        let estimated_input_bytes = u64::try_from(estimated_input_bytes).unwrap_or(u64::MAX);
+        store.graph.try_admit_runtime(
+            RuntimeWorkRequest::new(priority, RuntimeWorkKind::Maintenance)
+                .with_cpu_slots(1)
+                .with_memory_bytes(working_memory_bytes.saturating_add(estimated_input_bytes))
+                .with_io_slots(io_slots)
+                .with_blocking(true),
+        )
+    }
+
+    pub(super) fn admit_transaction(
+        &self,
+        statements: &[NowledgeGraphStatement],
+    ) -> Result<RuntimePermit> {
+        let store = self.read_store()?;
+        let db = store.graph.database();
+        let config = db.config();
+        let mut priority = RuntimeWorkPriority::Background;
+        let mut estimated_memory_bytes = TYPED_CONTROL_STATEMENT_MEMORY_BYTES;
+        let mut result_bytes = 0u64;
+        let mut io_slots = 0usize;
+        for statement in statements {
+            let admission = db.runtime_admission_plan(&statement.cypher, &statement.parameters)?;
+            if admission.work_request.priority == WorkPriority::Foreground {
+                priority = RuntimeWorkPriority::Foreground;
+            }
+            estimated_memory_bytes = estimated_memory_bytes.max(admission.estimated_memory_bytes);
+            io_slots = io_slots.max(admission.required_io_slots);
+            let statement_result_bytes = if admission.is_mutation {
+                config.mutation_limits.max_result_payload_bytes.get()
+            } else {
+                config.max_read_result_payload_bytes.ok_or_else(|| {
+                    HawDBError::Execution(
+                        "admitted transaction requires max_read_result_payload_bytes".to_string(),
+                    )
+                })?
+            };
+            result_bytes = result_bytes
+                .saturating_add(u64::try_from(statement_result_bytes).unwrap_or(u64::MAX));
+        }
+        let request = RuntimeWorkRequest::new(priority, RuntimeWorkKind::Mutation)
+            .with_cpu_slots(1)
+            .with_memory_bytes(estimated_memory_bytes)
+            .with_io_slots(io_slots)
+            .with_result_bytes(result_bytes)
+            .with_blocking(true);
+        store.graph.try_admit_runtime(request)
+    }
+
+    pub(super) fn read_store(
+        &self,
+    ) -> Result<crate::api::publication::DatabasePublicationReadGuard<'_, EmbeddedStore>> {
+        self.inner.read().map_err(|_| {
+            HawDBError::Execution("nowledge mem embedded store read lock poisoned".to_string())
+        })
+    }
+
+    pub(super) fn write_store(&self) -> Result<EmbeddedStoreWriteGuard<'_>> {
+        if self.read_publication_failed.load(Ordering::Acquire) {
+            return Err(HawDBError::StorageIntegrity(
+                "canonical read publication is poisoned".into(),
+            ));
+        }
+        let exclusive = self.concurrent.exclusive_database_lease()?;
+        let store = self.inner.write().map_err(|_| {
+            HawDBError::Execution("nowledge mem embedded store write lock poisoned".to_string())
+        })?;
+        if self.read_publication_failed.load(Ordering::Acquire) {
+            return Err(HawDBError::StorageIntegrity(
+                "canonical read publication is poisoned".into(),
+            ));
+        }
+        Ok(EmbeddedStoreWriteGuard {
+            store,
+            _exclusive: Some(exclusive),
+            retired: None,
+            published: &self.published_read,
+            read_publication_failed: &self.read_publication_failed,
+        })
+    }
+}
+
+pub(super) fn try_admit_runtime(
+    governor: &RuntimeGovernor,
+    request: RuntimeWorkRequest,
+) -> Result<RuntimePermit> {
+    governor.try_admit(request).map_err(|error| {
+        if error.is_retryable() {
+            governor.record_admission_wait(request, error.code, 0);
+        }
+        HawDBError::Execution(error.to_string())
+    })
+}
+
+pub(super) fn typed_read_request(
+    config: &DatabaseConfig,
+    max_estimated_payload_bytes: usize,
+) -> Result<RuntimeWorkRequest> {
+    let configured_result_bytes = config.max_read_result_payload_bytes.ok_or_else(|| {
+        HawDBError::Execution(
+            "admitted typed read requires max_read_result_payload_bytes".to_string(),
+        )
+    })?;
+    if max_estimated_payload_bytes > configured_result_bytes {
+        return Err(HawDBError::Execution(format!(
+                "typed read payload budget {max_estimated_payload_bytes} exceeds configured limit {configured_result_bytes}"
+            )));
+    }
+    let result_bytes = u64::try_from(configured_result_bytes).unwrap_or(u64::MAX);
+    let working_memory_bytes =
+        u64::try_from(config.execution_memory.query_memory_bytes.get()).unwrap_or(u64::MAX);
+    Ok(
+        RuntimeWorkRequest::foreground_query(working_memory_bytes, result_bytes)
+            .with_io_slots(1)
+            .with_blocking(true),
+    )
+}
+
+pub(super) fn search_projection_delta_bytes(delta: &SearchProjectionDelta) -> usize {
+    let upsert_bytes = delta.upserts.iter().fold(0usize, |total, row| {
+        let embedding_bytes = row.embedding.as_ref().map_or(0, |embedding| {
+            embedding.len().saturating_mul(size_of::<f32>())
+        });
+        let metadata_bytes = row
+            .metadata
+            .iter()
+            .fold(0usize, |metadata_total, (key, value)| {
+                metadata_total
+                    .saturating_add(key.len())
+                    .saturating_add(value.len())
+            });
+        total
+            .saturating_add(size_of::<crate::SearchProjectionRow>())
+            .saturating_add(row.external_id.len())
+            .saturating_add(row.title.len())
+            .saturating_add(row.body.len())
+            .saturating_add(row.source_id.as_ref().map_or(0, String::len))
+            .saturating_add(embedding_bytes)
+            .saturating_add(metadata_bytes)
+    });
+    delta.deletes.iter().fold(upsert_bytes, |total, id| {
+        total
+            .saturating_add(size_of::<String>())
+            .saturating_add(id.len())
+    })
+}

@@ -98,7 +98,12 @@ fn checkpoint_units_row_root_visits_all_1025_descriptors_without_leases_across_n
     let mut actual = Vec::new();
     reader
         .visit_table_pages_with_work_context("documents", &work, |descriptor| {
-            assert_eq!(probe.active_units.load(Ordering::SeqCst), 0);
+            // No unit runs and an idle batch charges nothing (#1616).
+            assert_eq!(
+                probe.started.load(Ordering::SeqCst),
+                probe.completed.load(Ordering::SeqCst)
+            );
+            assert_eq!(local.state().running_background_operations, 0);
             assert_eq!(probe.active_io.load(Ordering::SeqCst), 0);
             let unit = work.start_unit().unwrap();
             unit.finish();
@@ -313,7 +318,8 @@ fn checkpoint_units_row_root_descriptor_preserves_corruption_range_and_truncatio
                     .clear();
             }
             10 => {
-                Arc::make_mut(&mut damaged.manifest).physical_generations[0].allocated_pages = 0;
+                // The descriptor range no longer fits its generation allocation.
+                Arc::make_mut(&mut damaged.manifest).physical_generations[0].allocated_bytes = 0;
             }
             _ => {
                 Arc::make_mut(&mut damaged.manifest).source_commit_epoch = 0;
@@ -572,6 +578,7 @@ fn checkpoint_descriptor_key_buffers_admit_before_copy_and_retain_result_invento
             10,
             None,
             vec![RelationalRowPageTableDelta {
+                replaces_base: false,
                 last_row_id: 0,
                 table: "documents".into(),
                 schema: Some(schema),
@@ -699,6 +706,7 @@ fn controlled_descriptor_search_releases_replaced_probe_keys_under_fixed_budget(
             10,
             None,
             vec![RelationalRowPageTableDelta {
+                replaces_base: false,
                 last_row_id: 0,
                 table: "documents".into(),
                 schema: Some(schema),

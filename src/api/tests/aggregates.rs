@@ -875,7 +875,11 @@ fn grouped_evidence_matches_full_id_reference_for_mixed_keys_and_permutations() 
                 (group, scores[0].1, scores)
             })
             .collect::<Vec<_>>();
-        expected.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        // `g ASC` uses openCypher ORDER BY placement: a NULL group sorts last.
+        expected.sort_unstable_by(|a, b| {
+            b.1.total_cmp(&a.1)
+                .then(hawdb_plan_cypher::SortDirection::Asc.compare(&a.0, &b.0))
+        });
         for reverse in [false, true] {
             let mut database = Database::new();
             let mut present = Vec::new();

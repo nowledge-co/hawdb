@@ -18,6 +18,8 @@ use hawdb_cypher::{
     ProjectionClause, QueryPipeline, RelationshipPattern,
 };
 
+mod endpoints;
+mod graph_slots;
 mod imports;
 mod mutation;
 mod normalize;
@@ -26,6 +28,8 @@ mod pattern_properties;
 mod procedure;
 #[cfg(test)]
 mod tests;
+
+pub use graph_slots::with_legacy_graph_group_keys;
 
 /// Migration entrypoint for the ordered-clause binder.
 #[doc(hidden)]
@@ -106,6 +110,11 @@ enum BindingType {
         column: Option<String>,
     },
     Scalar,
+    /// A value column bound by UNWIND. It reads as a scalar column, but a
+    /// later MATCH may use it as a bound node: list element types are not
+    /// tracked statically, so the MATCH import checks at runtime that each
+    /// value is a node (NULL matches nothing).
+    Unwound,
     UnmaterializedPath,
     /// A path value column bound by a shortest-path pattern.
     Path,
@@ -131,6 +140,7 @@ impl Scope {
                 matches!(
                     kind,
                     BindingType::Scalar
+                        | BindingType::Unwound
                         | BindingType::Path
                         | BindingType::Graph {
                             column: Some(_),
@@ -179,6 +189,22 @@ impl Scope {
         }
     }
 
+    /// Turns UNWIND variables that `patterns` use as nodes into imported
+    /// node bindings read from their value column. Call before `imports`.
+    fn adopt_unwound_nodes(&mut self, patterns: &[hawdb_cypher::MatchPattern]) {
+        let nodes = patterns.iter().flat_map(|pattern| {
+            std::iter::once(&pattern.first).chain(pattern.steps.iter().map(|step| &step.target))
+        });
+        for node in nodes {
+            if let Some(binding @ BindingType::Unwound) = self.0.get_mut(&node.variable) {
+                *binding = BindingType::Graph {
+                    kind: GraphEntityKind::Node,
+                    column: Some(node.variable.clone()),
+                };
+            }
+        }
+    }
+
     fn materialized(&mut self) {
         for binding in self.0.values_mut() {
             if let BindingType::Graph { column, .. } = binding {
@@ -189,6 +215,15 @@ impl Scope {
 }
 
 fn bind_pipeline(
+    query: &QueryPipeline,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<LogicalPlan> {
+    let mut plan = bind_pipeline_clauses(query, parameters)?;
+    endpoints::resolve(&mut plan)?;
+    Ok(plan)
+}
+
+fn bind_pipeline_clauses(
     query: &QueryPipeline,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<LogicalPlan> {
@@ -206,6 +241,9 @@ fn bind_pipeline(
                 | ClauseKind::Delete { .. }
         )
     });
+    if has_mutation {
+        reject_mutation_rel_type_disjunction(query)?;
+    }
     if has_mutation
         && matches!(
             query.clauses.first().map(|clause| &clause.kind),
@@ -364,10 +402,12 @@ fn bind_optional_count_leg(
     let Some(variable) = &relationship.variable else {
         return None;
     };
+    // A count leg reads one type; a disjunction keeps the general MATCH.
     if relationship.search != PathSearch::All
         || relationship.min_hops != 1
         || relationship.max_hops != 1
         || !relationship.properties.is_empty()
+        || !relationship.rel_type_disjunction.is_empty()
     {
         return None;
     }
@@ -668,6 +708,7 @@ fn thread_repair_optional_expand<'a>(
         || !pattern.first.properties.is_empty()
         || relationship.variable.is_some()
         || relationship.rel_type.is_empty()
+        || !relationship.rel_type_disjunction.is_empty()
         || !relationship.properties.is_empty()
         || relationship.direction != RelationshipDirection::Outgoing
         || relationship.search != PathSearch::All
@@ -962,7 +1003,7 @@ fn bind_optional_degree_pipeline(
             input: Box::new(degree),
         };
     }
-    Some(bind_projection(degree, &scope, final_projection, parameters).map(|(plan, _)| plan))
+    Some(bind_projection(degree, &scope, final_projection, parameters, false).map(|(plan, _)| plan))
 }
 
 fn bind_direct_optional_degree_pipeline(
@@ -1046,7 +1087,7 @@ fn bind_direct_optional_degree_pipeline(
         },
     );
     scope.0.insert(alias.to_string(), BindingType::Scalar);
-    Some(bind_projection(degree, &scope, &projection, parameters).map(|(plan, _)| plan))
+    Some(bind_projection(degree, &scope, &projection, parameters, false).map(|(plan, _)| plan))
 }
 
 struct OptionalDegreeMatch<'a> {
@@ -1074,10 +1115,12 @@ fn optional_degree_match<'a>(
         return None;
     };
     let relationship = &step.relationship;
+    // OptionalDegree counts one type; a disjunction keeps the general MATCH.
     if pattern.variable.is_some()
         || relationship.search != PathSearch::All
         || relationship.min_hops != 1
         || relationship.max_hops != 1
+        || !relationship.rel_type_disjunction.is_empty()
     {
         return None;
     }
@@ -1134,10 +1177,44 @@ fn is_unaliased_variable(item: &ReturnItem, variable: &str) -> bool {
         )
 }
 
+/// Fails when `relationship` names a type disjunction `[:A|B]` in a `context`
+/// that reads or writes one type only, rather than silently using its first.
+pub(crate) fn reject_rel_type_disjunction(
+    relationship: &RelationshipPattern,
+    context: &str,
+) -> Result<()> {
+    if relationship.rel_type_disjunction.is_empty() {
+        return Ok(());
+    }
+    Err(HawDBError::Semantic(format!(
+        "relationship type disjunction :{} is not supported in {context}",
+        relationship.rel_type_disjunction.join("|")
+    )))
+}
+
+/// Mutation pipelines bind their patterns with single-type operators, and
+/// openCypher creates or merges a relationship with exactly one type, so a
+/// type disjunction anywhere in a writing query is rejected.
+fn reject_mutation_rel_type_disjunction(query: &QueryPipeline) -> Result<()> {
+    for clause in &query.clauses {
+        let patterns = match &clause.kind {
+            ClauseKind::Match { patterns, .. } | ClauseKind::Create(patterns) => {
+                patterns.as_slice()
+            }
+            ClauseKind::Merge { pattern, .. } => std::slice::from_ref(pattern),
+            _ => continue,
+        };
+        for step in patterns.iter().flat_map(|pattern| &pattern.steps) {
+            reject_rel_type_disjunction(&step.relationship, "queries that write data")?;
+        }
+    }
+    Ok(())
+}
+
 // GraphMatch's bounded traversal represents endpoints, not a relationship
 // value or per-edge filters. Validate before either GraphMatch execution or
 // normalization to Expand, so empty inputs and lowering cannot bypass it.
-fn validate_bounded_relationship(relationship: &RelationshipPattern) -> Result<()> {
+pub(super) fn validate_bounded_relationship(relationship: &RelationshipPattern) -> Result<()> {
     if relationship.min_hops == 1 && relationship.max_hops == 1 {
         return Ok(());
     }
@@ -1160,10 +1237,20 @@ fn validate_bounded_relationship(relationship: &RelationshipPattern) -> Result<(
 
 fn bind_read_clauses(
     clauses: &[hawdb_cypher::Clause],
+    input: Option<LogicalPlan>,
+    scope: Scope,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<LogicalPlan> {
+    bind_read_clauses_scoped(clauses, input, scope, parameters).map(|(plan, _)| plan)
+}
+
+/// Binds read clauses and returns the variables in scope after the last one.
+fn bind_read_clauses_scoped(
+    clauses: &[hawdb_cypher::Clause],
     mut input: Option<LogicalPlan>,
     mut scope: Scope,
     parameters: &BTreeMap<String, Value>,
-) -> Result<LogicalPlan> {
+) -> Result<(LogicalPlan, Scope)> {
     for clause in clauses {
         match &clause.kind {
             ClauseKind::UnwindExpression { source, variable } => {
@@ -1184,7 +1271,7 @@ fn bind_read_clauses(
                     variable: String::new(),
                 });
                 let input_plan = imports::restore(input_plan, &scope, &needed);
-                scope.0.insert(variable.clone(), BindingType::Scalar);
+                scope.0.insert(variable.clone(), BindingType::Unwound);
                 input = Some(LogicalPlan::UnwindRows {
                     expression,
                     variable: variable.clone(),
@@ -1203,7 +1290,7 @@ fn bind_read_clauses(
                         ))
                     }
                 };
-                scope.0.insert(variable.clone(), BindingType::Scalar);
+                scope.0.insert(variable.clone(), BindingType::Unwound);
                 input = Some(LogicalPlan::Unwind {
                     rows,
                     variable: variable.clone(),
@@ -1226,7 +1313,7 @@ fn bind_read_clauses(
                 })?;
                 let needed = imports::for_expression(&mut expression, &scope)?;
                 let input_plan = imports::restore(input_plan, &scope, &needed);
-                scope.0.insert(variable.clone(), BindingType::Scalar);
+                scope.0.insert(variable.clone(), BindingType::Unwound);
                 input = Some(LogicalPlan::UnwindRows {
                     expression,
                     variable: variable.clone(),
@@ -1277,6 +1364,7 @@ fn bind_read_clauses(
                 patterns,
                 predicate,
             } => {
+                scope.adopt_unwound_nodes(patterns);
                 let imports = scope.imports();
                 let mut introduced = Vec::new();
                 let mut steps = Vec::new();
@@ -1328,6 +1416,7 @@ fn bind_read_clauses(
                             source,
                             relationship: relationship.variable.clone(),
                             rel_type: relationship.rel_type.clone(),
+                            rel_types: relationship.rel_type_disjunction.clone(),
                             properties: bind_properties(&relationship.properties, parameters)?,
                             direction: relationship.direction,
                             min_hops: relationship.min_hops,
@@ -1358,6 +1447,9 @@ fn bind_read_clauses(
                         predicate_steps: Vec::new(),
                         edge_predicates: Vec::new(),
                         optional: *optional,
+                        hash_join: None,
+                        id_set_conjuncts: Vec::new(),
+                        seeded_union: Vec::new(),
                     },
                     input: input.map(Box::new),
                 });
@@ -1366,7 +1458,9 @@ fn bind_read_clauses(
                 let current = input
                     .take()
                     .unwrap_or_else(|| restore_bindings(None, &mut Scope::default()));
-                let (next, next_scope) = bind_projection(current, &scope, projection, parameters)?;
+                let with_clause = matches!(clause.kind, ClauseKind::With(_));
+                let (next, next_scope) =
+                    bind_projection(current, &scope, projection, parameters, with_clause)?;
                 input = Some(next);
                 scope = next_scope;
             }
@@ -1377,7 +1471,9 @@ fn bind_read_clauses(
             }
         }
     }
-    input.ok_or_else(|| HawDBError::Semantic("empty query pipeline".to_string()))
+    input
+        .map(|plan| (plan, scope))
+        .ok_or_else(|| HawDBError::Semantic("empty query pipeline".to_string()))
 }
 
 fn bind_node(
@@ -1410,6 +1506,9 @@ fn restore_bindings(input: Option<LogicalPlan>, scope: &mut Scope) -> LogicalPla
             predicate_steps: Vec::new(),
             edge_predicates: Vec::new(),
             optional: false,
+            hash_join: None,
+            id_set_conjuncts: Vec::new(),
+            seeded_union: Vec::new(),
         },
         input: input.map(Box::new),
     }
@@ -1420,6 +1519,7 @@ fn bind_projection(
     scope: &Scope,
     projection: &ProjectionClause,
     parameters: &BTreeMap<String, Value>,
+    with_clause: bool,
 ) -> Result<(LogicalPlan, Scope)> {
     let graph = scope.graph_names();
     let columns = scope.columns();
@@ -1433,8 +1533,19 @@ fn bind_projection(
         plan_return_items_with_columns(&graph, &columns, &projection.items, parameters)?
     };
     let names = unique_projection_names(planned.names());
+    let slots = graph_slots::slot_names(&planned, scope, projection, &names, with_clause);
     let mut output_scope = Scope::default();
     for (item, name) in projection.items.iter().zip(&names) {
+        if let Some(kind) = slots.get(name) {
+            output_scope.0.insert(
+                name.clone(),
+                BindingType::Graph {
+                    kind: *kind,
+                    column: None,
+                },
+            );
+            continue;
+        }
         let kind = match &item.expression.kind {
             ReturnExpressionKind::Value(AstNode {
                 kind: ScalarExpressionKind::Variable(variable),
@@ -1445,16 +1556,23 @@ fn bind_projection(
                     column: Some(name.clone()),
                 },
                 Some(BindingType::Path) => BindingType::Path,
+                Some(BindingType::Unwound) => BindingType::Unwound,
                 _ => BindingType::Scalar,
             },
             _ => BindingType::Scalar,
         };
         output_scope.0.insert(name.clone(), kind);
     }
-    let projected_names: BTreeSet<String> = names.iter().cloned().collect();
+    // A slotted name reads as a bound graph variable, not as a column.
+    let projected_names: BTreeSet<String> = names
+        .iter()
+        .filter(|name| !slots.contains_key(*name))
+        .cloned()
+        .collect();
     let projected_graph = output_scope.graph_names();
     let mut sort_items = Vec::new();
     let mut hidden_order_keys = false;
+    let mut hidden_names = Vec::new();
     for (index, item) in projection.order_by.iter().enumerate() {
         if let OrderExpression::Projection(expression) = &item.expression
             && super::arithmetic::contains_aggregate(expression)
@@ -1469,6 +1587,9 @@ fn bind_projection(
             )?);
             continue;
         }
+        // The projected scope wins when it can plan the key, so an alias
+        // shadows the input variable of the same name. A graph-reading key
+        // is then computed after the projection, over the projected names.
         match plan_sort_items(
             &projected_graph,
             &projected_names,
@@ -1480,24 +1601,7 @@ fn bind_projection(
             Err(error) => {
                 let mut items =
                     plan_sort_items(&graph, &columns, std::slice::from_ref(item), parameters)?;
-                let planned_item = items.pop().expect("one ORDER BY expression");
-                // After an aggregating projection only grouped values are in
-                // scope. An expression key that reads anything else would
-                // become a hidden grouping key and silently split the
-                // groups, so it fails instead. Plain property, column and id
-                // keys keep their earlier hidden-key behaviour (#1408).
-                if let SortKey::Expression(expression) = &planned_item.key
-                    && matches!(
-                        item.expression,
-                        OrderExpression::Projection(_) | OrderExpression::Value(_)
-                    )
-                    && planned
-                        .group_keys()
-                        .is_some_and(|keys| !reads_only_group_keys(expression, keys))
-                {
-                    return Err(error);
-                }
-                let item = planned_item;
+                let item = items.pop().expect("one ORDER BY expression");
                 let expression = match item.key {
                     SortKey::Column(column) => ProjectionExpression::Column(column),
                     SortKey::Property { variable, property } => {
@@ -1506,7 +1610,23 @@ fn bind_projection(
                     SortKey::Id { variable } => ProjectionExpression::Id { variable },
                     SortKey::Expression(expression) => expression,
                 };
+                // After an aggregating projection only projected names are in
+                // scope. A key that reads anything other than a grouped value
+                // would become a hidden grouping key and silently split the
+                // groups, so any key form fails instead (#1408). Keys equal
+                // to a projected grouping expression, such as `n.lastName`
+                // for `n.lastName AS last`, remain valid.
+                if planned
+                    .group_keys()
+                    .is_some_and(|keys| !reads_only_group_keys(&expression, keys))
+                {
+                    return Err(unprojected_aggregate_order_key(
+                        &projection.order_by[index].expression,
+                        &error,
+                    ));
+                }
                 let name = format!("\0order.{index}");
+                hidden_names.push(name.clone());
                 append_order_projection(
                     &mut planned,
                     Projection {
@@ -1524,8 +1644,13 @@ fn bind_projection(
     }
     let needed = imports::for_returns(&mut planned, scope)?;
     input = imports::restore(input, scope, &needed);
-    let mut output = planned.into_logical(input);
-    if projection.distinct {
+    let mut output = if slots.is_empty() {
+        planned.into_logical(input)
+    } else {
+        graph_slots::into_logical(planned, &slots, input)
+    };
+    // A slotted `WITH DISTINCT` is already the grouping that selects it.
+    if projection.distinct && slots.is_empty() {
         output = LogicalPlan::Distinct {
             input: Box::new(output),
         };
@@ -1539,6 +1664,42 @@ fn bind_projection(
             predicate,
             input: Box::new(output),
         };
+    }
+    // Sorting evaluates its keys again when it merges spilled runs, where it
+    // has no graph access. A key that reads the graph is projected to a
+    // column after the projection instead.
+    let mut graph_keys = Vec::new();
+    for (index, item) in sort_items.iter_mut().enumerate() {
+        if matches!(&item.key, SortKey::Expression(expression) if reads_graph(expression)) {
+            let name = format!("\0order.graph.{index}");
+            let SortKey::Expression(expression) =
+                std::mem::replace(&mut item.key, SortKey::Column(name.clone()))
+            else {
+                unreachable!("matched an expression key");
+            };
+            graph_keys.push(Projection { expression, name });
+        }
+    }
+    if !graph_keys.is_empty() {
+        let mut needed = BTreeSet::new();
+        for key in &mut graph_keys {
+            needed.extend(imports::for_expression(&mut key.expression, &output_scope)?);
+        }
+        output = imports::restore(output, &output_scope, &needed);
+        output = LogicalPlan::Project {
+            items: names
+                .iter()
+                .filter(|name| !slots.contains_key(*name))
+                .chain(&hidden_names)
+                .map(|name| Projection {
+                    expression: ProjectionExpression::Column(name.clone()),
+                    name: name.clone(),
+                })
+                .chain(graph_keys)
+                .collect(),
+            input: Box::new(output),
+        };
+        hidden_order_keys = true;
     }
     if !sort_items.is_empty() {
         let needed = imports::for_sort(&mut sort_items, &output_scope)?;
@@ -1570,6 +1731,7 @@ fn bind_projection(
         output = LogicalPlan::Project {
             items: names
                 .into_iter()
+                .filter(|name| !slots.contains_key(name))
                 .map(|name| Projection {
                     expression: ProjectionExpression::Column(name.clone()),
                     name,
@@ -1596,6 +1758,25 @@ pub fn unique_projection_names(names: Vec<String>) -> Vec<String> {
             candidate
         })
         .collect()
+}
+
+/// The semantic error for an `ORDER BY` key that reads values an aggregating
+/// `RETURN` or `WITH` does not project.
+fn unprojected_aggregate_order_key(key: &OrderExpression, cause: &HawDBError) -> HawDBError {
+    let key = match key {
+        OrderExpression::Property { variable, property } => format!("'{variable}.{property}'"),
+        OrderExpression::Id { variable } => format!("'id({variable})'"),
+        OrderExpression::Column(name) => format!("'{name}'"),
+        OrderExpression::Value(_) | OrderExpression::Projection(_) => "expression".to_string(),
+    };
+    let cause = match cause {
+        HawDBError::Semantic(message) => message.clone(),
+        other => other.to_string(),
+    };
+    HawDBError::Semantic(format!(
+        "ORDER BY key {key} is not in scope after an aggregating RETURN or WITH ({cause}); \
+         order by a projected name, an aggregate or a projected grouping expression instead"
+    ))
 }
 
 /// Whether `expression` reads only values an aggregating projection groups
@@ -1632,6 +1813,7 @@ fn reads_only_group_keys(expression: &ProjectionExpression, keys: &[Projection])
         ProjectionExpression::Property { variable, .. }
         | ProjectionExpression::Id { variable }
         | ProjectionExpression::RelationshipType { variable }
+        | ProjectionExpression::Label { variable, .. }
         | ProjectionExpression::CaseCoalesceDifferenceFloorZero { variable, .. } => {
             grouped_variable(variable)
         }
@@ -1670,17 +1852,28 @@ fn reads_only_group_keys(expression: &ProjectionExpression, keys: &[Projection])
         | ProjectionExpression::Lower(_)
         | ProjectionExpression::Left { .. }
         | ProjectionExpression::JsonValue { .. }
+        | ProjectionExpression::JsonString { .. }
         | ProjectionExpression::Coalesce(_)
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListFunction { .. }
         | ProjectionExpression::StringFunction { .. }
         | ProjectionExpression::ListComprehension(_)
+        | ProjectionExpression::NumericFunction { .. }
+        | ProjectionExpression::Reduce(_)
         | ProjectionExpression::ListIndex { .. }
         | ProjectionExpression::ListSlice { .. } => {
             expression.all_children(|child| reads_only_group_keys(child, keys))
         }
         _ => false,
     }
+}
+
+/// Whether evaluating `expression` reads the graph snapshot.
+fn reads_graph(expression: &ProjectionExpression) -> bool {
+    matches!(
+        expression,
+        ProjectionExpression::Pattern(_) | ProjectionExpression::RelationshipValueEndpoint { .. }
+    ) || !expression.all_children(|child| !reads_graph(child))
 }
 
 fn append_order_projection(planned: &mut PlannedReturns, projection: Projection) {
@@ -1701,6 +1894,41 @@ fn append_order_projection(planned: &mut PlannedReturns, projection: Projection)
     }
 }
 
+/// `(variable)-[:rel_type]->(:target_label)` with an anonymous target.
+fn one_hop_pattern(
+    variable: &str,
+    rel_type: &str,
+    direction: RelationshipDirection,
+    target_label: &str,
+) -> hawdb_cypher::MatchPattern {
+    let node = |variable: &str, anonymous: bool, label: &str| {
+        AstNode::synthetic(hawdb_cypher::NodePatternKind {
+            variable: variable.to_string(),
+            anonymous,
+            label: label.to_string(),
+            properties: BTreeMap::new(),
+        })
+    };
+    AstNode::synthetic(hawdb_cypher::MatchPatternKind {
+        variable: None,
+        first: node(variable, false, ""),
+        steps: vec![AstNode::synthetic(hawdb_cypher::PatternStepKind {
+            relationship: AstNode::synthetic(hawdb_cypher::RelationshipPatternKind {
+                variable: None,
+                rel_type: rel_type.to_string(),
+                rel_type_disjunction: Vec::new(),
+                properties: BTreeMap::new(),
+                direction,
+                min_hops: 1,
+                max_hops: 1,
+                search: hawdb_cypher::PathSearch::All,
+            }),
+            // The planner names anonymous nodes itself.
+            target: node("", true, target_label),
+        })],
+    })
+}
+
 fn bind_predicate(
     predicate: &PropertyPredicate,
     scope: &Scope,
@@ -1713,6 +1941,30 @@ fn bind_predicate(
     let bind =
         |expression| plan_scalar_expression_with_columns(&graph, &columns, expression, parameters);
     Ok(match predicate {
+        // The one-hop existence predicate reads a native node binding. Over
+        // any other binding, such as an UNWIND element carried by WITH, it
+        // is the pattern expression it abbreviates, which imports the value.
+        PropertyPredicate::RelationshipExists {
+            variable,
+            rel_type,
+            direction,
+            target_label,
+        } if !matches!(
+            scope.0.get(variable),
+            Some(BindingType::Graph {
+                kind: GraphEntityKind::Node,
+                column: None,
+            })
+        ) =>
+        {
+            let pattern = one_hop_pattern(variable, rel_type, *direction, target_label);
+            super::temporal::eq_predicate(
+                bind(&AstNode::synthetic(ScalarExpressionKind::PatternPredicate(
+                    Box::new(pattern),
+                )))?,
+                ProjectionExpression::Literal(Value::Bool(true)),
+            )
+        }
         PropertyPredicate::And(children) => Predicate::And(
             children
                 .iter()

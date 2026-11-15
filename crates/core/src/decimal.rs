@@ -29,6 +29,10 @@ pub enum DecimalError {
     InvalidEncoding,
     Overflow,
     DivisionByZero,
+    /// Exact integer conversion of a value with a nonzero fraction (#1516).
+    Fractional,
+    /// Exact integer conversion of a value outside the BIGINT range.
+    IntegerOutOfRange,
 }
 
 impl Display for DecimalError {
@@ -39,6 +43,10 @@ impl Display for DecimalError {
             Self::InvalidEncoding => "invalid decimal encoding",
             Self::Overflow => "decimal result exceeds 38 coefficient digits or scale 38",
             Self::DivisionByZero => "decimal division by zero",
+            Self::Fractional => {
+                "decimal value has a fractional part; BIGINT requires an exact integer (HawDB does not round)"
+            }
+            Self::IntegerOutOfRange => "decimal value is outside the BIGINT range",
         })
     }
 }
@@ -280,11 +288,11 @@ impl Decimal {
         let divisor = 10_i128.pow(self.scale.into());
         let coefficient = self.coefficient();
         if coefficient % divisor != 0 {
-            return Err(DecimalError::Overflow);
+            return Err(DecimalError::Fractional);
         }
         (coefficient / divisor)
             .try_into()
-            .map_err(|_| DecimalError::Overflow)
+            .map_err(|_| DecimalError::IntegerOutOfRange)
     }
 
     pub fn to_le_bytes(self) -> [u8; Self::ENCODED_LEN] {

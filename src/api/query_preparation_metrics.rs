@@ -46,7 +46,7 @@ pub fn query_preparation_metrics() -> QueryPreparationMetricsSnapshot {
 }
 
 fn add(counter: &AtomicU64, value: u64) {
-    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
+    let _ = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
         Some(old.saturating_add(value))
     });
 }

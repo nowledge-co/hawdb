@@ -66,6 +66,7 @@ pub(super) fn normalize(plan: LogicalPlan) -> LogicalPlan {
         LogicalPlan::Aggregate {
             group_keys,
             items,
+            graph_keys,
             input,
         } => {
             let input = normalize(*input);
@@ -78,6 +79,7 @@ pub(super) fn normalize(plan: LogicalPlan) -> LogicalPlan {
             LogicalPlan::Aggregate {
                 group_keys,
                 items,
+                graph_keys,
                 input: Box::new(input),
             }
         }
@@ -128,6 +130,7 @@ fn chained_optional_match(program: &GraphMatchProgram, input: LogicalPlan) -> Op
         source: expand_source,
         relationship,
         rel_type,
+        rel_types,
         properties,
         direction,
         min_hops,
@@ -137,6 +140,10 @@ fn chained_optional_match(program: &GraphMatchProgram, input: LogicalPlan) -> Op
     else {
         return None;
     };
+    // Expand reads one relationship type; a disjunction stays a GraphMatch.
+    if !rel_types.is_empty() {
+        return None;
+    }
     // Expand cannot encode target-node properties. A filter above an optional
     // Expand would remove the required NULL row when all endpoints are rejected.
     if expand_source != &source.variable
@@ -494,6 +501,7 @@ fn chained_match(program: &GraphMatchProgram, input: &LogicalPlan) -> Option<Log
         source: expand_source,
         relationship,
         rel_type,
+        rel_types,
         properties,
         direction,
         min_hops,
@@ -503,7 +511,8 @@ fn chained_match(program: &GraphMatchProgram, input: &LogicalPlan) -> Option<Log
     else {
         return None;
     };
-    if expand_source != &source.variable {
+    // Expand reads one relationship type; a disjunction stays a GraphMatch.
+    if expand_source != &source.variable || !rel_types.is_empty() {
         return None;
     }
 
@@ -652,6 +661,7 @@ fn lower_optional_count_match(items: &[Aggregation], input: &LogicalPlan) -> Opt
         source,
         relationship,
         rel_type,
+        rel_types,
         properties,
         direction,
         min_hops: 1,
@@ -661,6 +671,10 @@ fn lower_optional_count_match(items: &[Aggregation], input: &LogicalPlan) -> Opt
     else {
         return None;
     };
+    // Expand reads one relationship type; a disjunction stays a GraphMatch.
+    if !rel_types.is_empty() {
+        return None;
+    }
     let counts_relationship = relationship.as_deref() == Some(counted);
     let counts_target = target.variable == *counted;
     let first_is_introduced = program
@@ -781,6 +795,7 @@ fn initial_match(program: &GraphMatchProgram) -> Option<LogicalPlan> {
             source,
             relationship,
             rel_type,
+            rel_types,
             properties,
             direction,
             min_hops,
@@ -790,6 +805,10 @@ fn initial_match(program: &GraphMatchProgram) -> Option<LogicalPlan> {
         else {
             return None;
         };
+        // Expand reads one relationship type; a disjunction stays a GraphMatch.
+        if !rel_types.is_empty() {
+            return None;
+        }
         if source != &source_variable || !introduced.insert(target.variable.as_str()) {
             return None;
         }
@@ -836,9 +855,11 @@ fn initial_match(program: &GraphMatchProgram) -> Option<LogicalPlan> {
 fn has_distinct_fixed_relationship_types(steps: &[GraphMatchStep]) -> bool {
     let mut relationship_types = BTreeSet::new();
     steps.iter().all(|step| match step {
-        GraphMatchStep::Expand { rel_type, .. } => {
-            !rel_type.is_empty() && relationship_types.insert(rel_type)
-        }
+        GraphMatchStep::Expand {
+            rel_type,
+            rel_types,
+            ..
+        } => rel_types.is_empty() && !rel_type.is_empty() && relationship_types.insert(rel_type),
         GraphMatchStep::Node(_) => true,
         GraphMatchStep::ShortestPath(_) => false,
     })
@@ -883,6 +904,7 @@ fn project(projections: Vec<Projection>, input: LogicalPlan) -> LogicalPlan {
             let LogicalPlan::Aggregate {
                 mut group_keys,
                 mut items,
+                graph_keys,
                 input,
             } = input
             else {
@@ -899,6 +921,7 @@ fn project(projections: Vec<Projection>, input: LogicalPlan) -> LogicalPlan {
             return LogicalPlan::Aggregate {
                 group_keys,
                 items,
+                graph_keys,
                 input,
             };
         }

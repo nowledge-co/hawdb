@@ -29,9 +29,9 @@ use crate::binding::{
     node_memory_bytes, projected_node_binding_memory_bytes, Binding,
 };
 use crate::expression::{
-    evaluate_predicate_with_context, evaluate_projection_borrowed, prepare_borrowed_projection,
-    property_filter_from_predicate, push_borrowed_projection, PreparedProjectionExpressions,
-    ProjectedValue, SmallBorrowedProjection,
+    evaluate_predicate_with_context, evaluate_projection_in_graph, prepare_borrowed_projection,
+    property_filter_from_predicate, push_borrowed_projection, ExpressionGraph,
+    PreparedProjectionExpressions, ProjectedValue, SmallBorrowedProjection,
 };
 use crate::kernel::{push_bounded_operator_binding, OperatorMemoryTracker};
 use crate::observer::ExecutionObserver;
@@ -95,6 +95,21 @@ pub struct NodeScanContext<'a> {
 }
 
 impl<'a> NodeScanContext<'a> {
+    /// The scan's store and budgets for expressions that read the graph.
+    fn expression_graph(self, observer: &'a dyn ExecutionObserver) -> ExpressionGraph<'a> {
+        ExpressionGraph {
+            store: self.store,
+            context: crate::graph_match::MatchContext {
+                catalog: self.catalog,
+                observer,
+                task_context: self.task_context,
+                query_memory_bytes: self.memory_budget,
+                blocking_operator_bytes: self.memory_budget,
+            },
+            account: Some(self.memory_account),
+        }
+    }
+
     fn source_account(self) -> QueryMemoryAccount {
         self.memory_account
             .clone()
@@ -767,6 +782,7 @@ pub fn stream_node_projection_scan_batches(
         context.task_context,
         observer,
     )?;
+    let graph = context.expression_graph(observer);
     let mut visit = |node: ProjectedNodeRecord| {
         runtime_checkpoint(context.task_context)?;
         visited = visited.saturating_add(1);
@@ -802,11 +818,12 @@ pub fn stream_node_projection_scan_batches(
                 &mut batch,
                 context.memory_account,
                 |expression| {
-                    evaluate_projection_borrowed(
+                    evaluate_projection_in_graph(
                         expression,
                         context.catalog,
                         &binding,
                         Some(context.memory_account),
+                        Some(&graph),
                     )
                 },
                 context.task_context,
@@ -821,12 +838,13 @@ pub fn stream_node_projection_scan_batches(
                         context.memory_account,
                         None,
                         |expression| {
-                            prepared.evaluate(
+                            prepared.evaluate_in_graph(
                                 expression,
                                 context.catalog,
                                 &binding,
                                 Some(context.memory_account),
                                 observer,
+                                Some(&graph),
                             )
                         },
                     )

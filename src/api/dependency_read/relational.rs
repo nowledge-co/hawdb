@@ -56,6 +56,32 @@ pub(in crate::api) fn collect_transaction(
             .map_err(|error| HawDBError::Execution(error.to_string()))
     };
     match statement {
+        SqlStatement::Select(select) if let Some(search) = select.text_search() => {
+            // BM25 statistics depend on every indexed document, and results
+            // on the hydrated source rows. Index rows change only with source
+            // rows, so the source table's domain covers both; an index name
+            // that does not resolve keeps the database barrier.
+            let index = match &search.index {
+                crate::sql::SqlValue::Literal(Value::String(index)) => Some(index.as_str()),
+                crate::sql::SqlValue::Parameter(position) => position
+                    .checked_sub(1)
+                    .and_then(|position| parameters.get(position))
+                    .and_then(|value| match value {
+                        Value::String(index) => Some(index.as_str()),
+                        _ => None,
+                    }),
+                _ => None,
+            };
+            let source = index
+                .and_then(|index| state.table_schema(index))
+                .filter(|schema| schema.search_index().is_some())
+                .and_then(|schema| schema.materialized_view.as_deref())
+                .map(|definition| definition.source.clone());
+            match source {
+                Some(source) => record(dependencies, VersionKey::ReadRelationalTableDomain(source)),
+                None => record(dependencies, VersionKey::Database),
+            }
+        }
         SqlStatement::Select(select) => {
             qualify_expressions(select)?;
             let table = select
@@ -101,14 +127,19 @@ pub(in crate::api) fn collect_transaction(
             if schema.columns.iter().enumerate().any(|(index, column)| {
                 matches!(
                     column.default,
-                    Some(hawdb_storage::relational::RelationalColumnDefault::UuidV7)
+                    Some(
+                        hawdb_storage::relational::RelationalColumnDefault::UuidV7
+                            | hawdb_storage::relational::RelationalColumnDefault::CurrentTimestamp(
+                                _
+                            )
+                    )
                 ) && if statement.columns.is_empty() {
                     statement.rows.iter().any(|row| row.len() <= index)
                 } else {
                     !statement.columns.contains(&column.name)
                 }
             }) {
-                return Err(refusal("unversioned generated UUID default"));
+                return Err(refusal("unversioned generated UUID or clock default"));
             }
             record(dependencies, key)
         }
@@ -137,6 +168,8 @@ pub(in crate::api) fn collect_transaction(
         SqlStatement::CreateTable(_)
         | SqlStatement::CreateMaterializedView(_)
         | SqlStatement::DropMaterializedView(_)
+        | SqlStatement::CreateSearchIndex(_)
+        | SqlStatement::DropSearchIndex(_)
         | SqlStatement::CreateIndex(_)
         | SqlStatement::AlterTableAddColumn(_) => record(dependencies, VersionKey::Database),
         SqlStatement::Explain(_) | SqlStatement::Branch(_) => {
@@ -325,7 +358,7 @@ fn qualify_expression(expression: &Expr, nodes: &mut usize, depth: usize) -> Res
         ExprKind::Value(SqlValue::Expression(expression)) => {
             qualify_expression(expression, nodes, depth + 1)
         }
-        ExprKind::Column(_) | ExprKind::Value(_) => Ok(()),
+        ExprKind::Column(_) | ExprKind::Value(_) | ExprKind::CurrentTimestamp(_) => Ok(()),
         ExprKind::And(left, right)
         | ExprKind::Or(left, right)
         | ExprKind::Compare { left, right, .. }
@@ -341,7 +374,10 @@ fn qualify_expression(expression: &Expr, nodes: &mut usize, depth: usize) -> Res
         ExprKind::Not(expression)
         | ExprKind::IsNull { expression, .. }
         | ExprKind::Negate(expression)
-        | ExprKind::Cast { expression, .. } => qualify_expression(expression, nodes, depth + 1),
+        | ExprKind::Cast { expression, .. }
+        | ExprKind::TimestampCast { expression, .. } => {
+            qualify_expression(expression, nodes, depth + 1)
+        }
         ExprKind::InList { left, values, .. } => {
             qualify_expression(left, nodes, depth + 1)?;
             for value in values {

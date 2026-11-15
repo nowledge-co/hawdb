@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub const NOWLEDGE_MEM_SEARCH_ROUTE: &str = "/graph/search";
-pub const REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES: &[&str] = &[
+pub const SEARCH_ROUTE: &str = "/graph/search";
+pub const REQUIRED_BOUNDED_READ_ROUTES: &[&str] = &[
     "/communities",
     "/communities/{community_id}",
     "/graph/overview",
     "/graph/sample",
-    NOWLEDGE_MEM_SEARCH_ROUTE,
+    SEARCH_ROUTE,
     "/graph/explore",
     "/graph/expand/{node_id}",
     "/graph/live-preview",
@@ -41,17 +41,16 @@ pub const REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES: &[&str] = &[
     "/entities/{entity_id}/relationships",
     "/agent/evolves",
 ];
-pub const NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION: &str =
-    "nowledge-mem-graph-read-route-catalog-v1";
+pub const GRAPH_READ_ROUTE_CATALOG_VERSION: &str = "nowledge-mem-graph-read-route-catalog-v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NowledgeMemGraphReadRouteOwner {
+pub enum GraphReadRouteOwner {
     GraphRuntime,
     SearchRuntime,
     ReadBatchRuntime,
 }
 
-impl NowledgeMemGraphReadRouteOwner {
+impl GraphReadRouteOwner {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::GraphRuntime => "graph_runtime",
@@ -62,13 +61,13 @@ impl NowledgeMemGraphReadRouteOwner {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NowledgeMemGraphReadRouteEvidenceKind {
+pub enum GraphReadRouteEvidenceKind {
     GraphRouteExecution,
     SearchCandidateShadow,
     ReadBatchRuntime,
 }
 
-impl NowledgeMemGraphReadRouteEvidenceKind {
+impl GraphReadRouteEvidenceKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::GraphRouteExecution => "graph_route_execution",
@@ -79,46 +78,46 @@ impl NowledgeMemGraphReadRouteEvidenceKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NowledgeMemGraphReadRouteSpec {
+pub struct GraphReadRouteSpec {
     pub route: &'static str,
-    pub owner: NowledgeMemGraphReadRouteOwner,
-    pub required_evidence_kind: NowledgeMemGraphReadRouteEvidenceKind,
+    pub owner: GraphReadRouteOwner,
+    pub required_evidence_kind: GraphReadRouteEvidenceKind,
     pub stale_on_catalog_change: bool,
 }
 
-const fn graph_route(route: &'static str) -> NowledgeMemGraphReadRouteSpec {
-    NowledgeMemGraphReadRouteSpec {
+const fn graph_route(route: &'static str) -> GraphReadRouteSpec {
+    GraphReadRouteSpec {
         route,
-        owner: NowledgeMemGraphReadRouteOwner::GraphRuntime,
-        required_evidence_kind: NowledgeMemGraphReadRouteEvidenceKind::GraphRouteExecution,
+        owner: GraphReadRouteOwner::GraphRuntime,
+        required_evidence_kind: GraphReadRouteEvidenceKind::GraphRouteExecution,
         stale_on_catalog_change: true,
     }
 }
 
-const fn search_route(route: &'static str) -> NowledgeMemGraphReadRouteSpec {
-    NowledgeMemGraphReadRouteSpec {
+const fn search_route(route: &'static str) -> GraphReadRouteSpec {
+    GraphReadRouteSpec {
         route,
-        owner: NowledgeMemGraphReadRouteOwner::SearchRuntime,
-        required_evidence_kind: NowledgeMemGraphReadRouteEvidenceKind::SearchCandidateShadow,
+        owner: GraphReadRouteOwner::SearchRuntime,
+        required_evidence_kind: GraphReadRouteEvidenceKind::SearchCandidateShadow,
         stale_on_catalog_change: true,
     }
 }
 
-const fn read_batch_route(route: &'static str) -> NowledgeMemGraphReadRouteSpec {
-    NowledgeMemGraphReadRouteSpec {
+const fn read_batch_route(route: &'static str) -> GraphReadRouteSpec {
+    GraphReadRouteSpec {
         route,
-        owner: NowledgeMemGraphReadRouteOwner::ReadBatchRuntime,
-        required_evidence_kind: NowledgeMemGraphReadRouteEvidenceKind::ReadBatchRuntime,
+        owner: GraphReadRouteOwner::ReadBatchRuntime,
+        required_evidence_kind: GraphReadRouteEvidenceKind::ReadBatchRuntime,
         stale_on_catalog_change: true,
     }
 }
 
-pub const NOWLEDGE_MEM_GRAPH_READ_ROUTE_SPECS: &[NowledgeMemGraphReadRouteSpec] = &[
+pub const GRAPH_READ_ROUTE_SPECS: &[GraphReadRouteSpec] = &[
     read_batch_route("/communities"),
     read_batch_route("/communities/{community_id}"),
     graph_route("/graph/overview"),
     graph_route("/graph/sample"),
-    search_route(NOWLEDGE_MEM_SEARCH_ROUTE),
+    search_route(SEARCH_ROUTE),
     graph_route("/graph/explore"),
     graph_route("/graph/expand/{node_id}"),
     graph_route("/graph/live-preview"),
@@ -142,17 +141,13 @@ pub const NOWLEDGE_MEM_GRAPH_READ_ROUTE_SPECS: &[NowledgeMemGraphReadRouteSpec] 
     read_batch_route("/agent/evolves"),
 ];
 
-pub fn nowledge_mem_graph_read_route_spec(
-    route: &str,
-) -> Option<&'static NowledgeMemGraphReadRouteSpec> {
-    NOWLEDGE_MEM_GRAPH_READ_ROUTE_SPECS
+pub fn graph_read_route_spec(route: &str) -> Option<&'static GraphReadRouteSpec> {
+    GRAPH_READ_ROUTE_SPECS
         .iter()
         .find(|spec| spec.route == route)
 }
 
-pub fn nowledge_mem_graph_read_route_spec_json(
-    spec: &NowledgeMemGraphReadRouteSpec,
-) -> serde_json::Value {
+pub fn graph_read_route_spec_json(spec: &GraphReadRouteSpec) -> serde_json::Value {
     serde_json::json!({
         "route": spec.route,
         "owner": spec.owner.as_str(),
@@ -161,16 +156,16 @@ pub fn nowledge_mem_graph_read_route_spec_json(
     })
 }
 
-pub fn nowledge_mem_graph_read_route_specs_json() -> serde_json::Value {
-    serde_json::json!(NOWLEDGE_MEM_GRAPH_READ_ROUTE_SPECS
+pub fn graph_read_route_specs_json() -> serde_json::Value {
+    serde_json::json!(GRAPH_READ_ROUTE_SPECS
         .iter()
-        .map(nowledge_mem_graph_read_route_spec_json)
+        .map(graph_read_route_spec_json)
         .collect::<Vec<_>>())
 }
 
-pub fn nowledge_mem_graph_read_route_catalog_digest() -> String {
+pub fn graph_read_route_catalog_digest() -> String {
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
-    for spec in NOWLEDGE_MEM_GRAPH_READ_ROUTE_SPECS {
+    for spec in GRAPH_READ_ROUTE_SPECS {
         fnv1a_update(&mut hash, spec.route.as_bytes());
         fnv1a_update(&mut hash, spec.owner.as_str().as_bytes());
         fnv1a_update(&mut hash, spec.required_evidence_kind.as_str().as_bytes());
@@ -195,7 +190,7 @@ fn fnv1a_update(hash: &mut u64, bytes: &[u8]) {
     *hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
 }
 
-pub fn nowledge_mem_required_query_families_for_route(route: &str) -> &'static [&'static str] {
+pub fn required_query_families_for_route(route: &str) -> &'static [&'static str] {
     match route {
         "/communities"
         | "/communities/{community_id}"
@@ -206,7 +201,7 @@ pub fn nowledge_mem_required_query_families_for_route(route: &str) -> &'static [
         | "/entities"
         | "/entities/{entity_id}/relationships"
         | "/agent/evolves" => &["label_stats_read"],
-        NOWLEDGE_MEM_SEARCH_ROUTE => &["search_projection"],
+        SEARCH_ROUTE => &["search_projection"],
         "/graph/overview"
         | "/graph/sample"
         | "/graph/live-preview"

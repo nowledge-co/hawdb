@@ -121,12 +121,13 @@ fn application_system_schema_upgrade_crash_recovers_a_consistent_registry_and_sc
                     ..
                 }
             ));
-            let error = read_only
+            // Resident rows recovered from the WAL serve reads while the
+            // schema checkpoint is pending (#1593).
+            let rows = read_only
                 .query_sql("SELECT kind FROM content_documents WHERE id = 'doc-1'")
-                .unwrap_err();
-            assert!(error
-                .to_string()
-                .contains("canonical relational row reader is unavailable"));
+                .unwrap();
+            assert_eq!(rows.rows.len(), 1);
+            assert_eq!(rows.rows[0]["kind"], Value::String("text".to_string()));
         }
 
         let mut reopened = Database::open(&path).unwrap();
@@ -358,9 +359,13 @@ fn writable_metadata_only_transaction_checkpoints_rows_and_indexes() {
     };
 
     let incompatible = Database::open(&path).unwrap().commit_epoch().unwrap_err();
+    let HawDBError::UnsupportedStorageFormat(format) = &incompatible else {
+        panic!("expected a typed layout refusal, got {incompatible:?}");
+    };
+    assert_eq!(format.format(), crate::RELATIONAL_CHECKPOINT_LAYOUT_FORMAT);
     assert!(incompatible
         .to_string()
-        .contains("reopen requires OutOfCore residency with Authoritative relational indexes"));
+        .contains("reopen with OutOfCore residency and Authoritative relational indexes"));
 
     let mut reopened = Database::open_with_config(&path, config).unwrap();
     assert_eq!(reopened.commit_epoch().unwrap(), committed_epoch);
@@ -666,13 +671,13 @@ fn application_cannot_claim_the_engine_system_schema_owner() {
 #[test]
 fn embedded_open_applies_application_schema_before_returning_the_store() {
     let path = unique_test_dir("embedded_application_schema_open");
-    let options = crate::NowledgeMemOpenOptions::graph_only(
+    let options = crate::EmbeddedStoreOpenOptions::graph_only(
         path.clone(),
-        crate::NowledgeMemGraphMode::WritableCutover,
+        crate::GraphMode::WritableCutover,
     )
     .with_system_schema_registry(registry_v1());
 
-    let (mut store, report) = crate::NowledgeMemEmbeddedStore::open_with_options(options).unwrap();
+    let (mut store, report) = crate::EmbeddedStore::open_with_options(options).unwrap();
     assert!(report.graph_opened);
     assert_eq!(report.system_schema_upgrades.len(), 1);
     assert_eq!(
@@ -692,14 +697,14 @@ fn embedded_open_applies_application_schema_before_returning_the_store() {
 #[test]
 fn embedded_open_rejects_duplicate_application_schema_owners_before_open() {
     let path = unique_test_dir("duplicate_application_schema_owner");
-    let options = crate::NowledgeMemOpenOptions::graph_only(
+    let options = crate::EmbeddedStoreOpenOptions::graph_only(
         path.clone(),
-        crate::NowledgeMemGraphMode::WritableCutover,
+        crate::GraphMode::WritableCutover,
     )
     .with_system_schema_registry(registry_v1())
     .with_system_schema_registry(registry_v1());
 
-    let error = crate::NowledgeMemEmbeddedStoreHandle::open_with_options(options).unwrap_err();
+    let error = crate::EmbeddedStoreHandle::open_with_options(options).unwrap_err();
     assert!(error.to_string().contains("registered more than once"));
     assert!(!path.exists());
 }

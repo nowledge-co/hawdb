@@ -175,11 +175,15 @@ fn assert_grouped_count(
 mod backtracking;
 mod comparison_chains;
 mod default_pipeline;
+mod entity_labels;
 mod list_functions;
 mod list_literals;
 mod load_csv;
+mod math_reduce_endpoints;
 mod migration_corpus;
 mod order_by_expressions;
+mod pattern_expressions;
+mod set_expressions;
 mod source_spans;
 mod temporal;
 
@@ -714,6 +718,7 @@ fn parses_schema_ddl() {
             property: "id".to_string(),
             value_type: SchemaPropertyType::Int,
             nullable: false,
+            default: None,
         })
     );
     assert_eq!(
@@ -724,6 +729,7 @@ fn parses_schema_ddl() {
             property: "weight".to_string(),
             value_type: SchemaPropertyType::Int,
             nullable: true,
+            default: None,
         })
     );
     assert_eq!(
@@ -734,6 +740,7 @@ fn parses_schema_ddl() {
             property: "title".to_string(),
             value_type: SchemaPropertyType::String,
             nullable: true,
+            default: None,
         })
     );
     assert_eq!(
@@ -744,8 +751,73 @@ fn parses_schema_ddl() {
             property: "body".to_string(),
             value_type: SchemaPropertyType::Text,
             nullable: true,
+            default: None,
         })
     );
+    for (input, value_type, nullable, default) in [
+        (
+            "CREATE PROPERTY ON NODE TABLE Memory(score) TYPE DOUBLE DEFAULT 0.0",
+            SchemaPropertyType::Float,
+            true,
+            hawdb_core::PropertyDefault::Value(Value::Float(0.0)),
+        ),
+        (
+            "CREATE PROPERTY ON NODE TABLE Memory(score) TYPE INT NOT NULL DEFAULT -1",
+            SchemaPropertyType::Int,
+            false,
+            hawdb_core::PropertyDefault::Value(Value::Int(-1)),
+        ),
+        (
+            "CREATE PROPERTY ON NODE TABLE Memory(score) TYPE ANY default '{}'",
+            SchemaPropertyType::Any,
+            true,
+            hawdb_core::PropertyDefault::Value(Value::String("{}".to_string())),
+        ),
+        (
+            "CREATE PROPERTY ON NODE TABLE Memory(score) TYPE LIST DEFAULT []",
+            SchemaPropertyType::List,
+            true,
+            hawdb_core::PropertyDefault::Value(Value::List(Vec::new())),
+        ),
+        (
+            "CREATE PROPERTY ON NODE TABLE Memory(score) TYPE ANY DEFAULT [true, 'a', [1]]",
+            SchemaPropertyType::Any,
+            true,
+            hawdb_core::PropertyDefault::Value(Value::List(vec![
+                Value::Bool(true),
+                Value::String("a".to_string()),
+                Value::List(vec![Value::Int(1)]),
+            ])),
+        ),
+        (
+            "CREATE PROPERTY ON NODE TABLE Memory(score) TYPE ANY DEFAULT current_timestamp()",
+            SchemaPropertyType::Any,
+            true,
+            hawdb_core::PropertyDefault::CurrentTimestamp,
+        ),
+    ] {
+        assert_eq!(
+            parse(input).unwrap(),
+            Statement::CreateProperty(CreateProperty {
+                table_kind: SchemaTableKind::Node,
+                table: "Memory".to_string(),
+                property: "score".to_string(),
+                value_type,
+                nullable,
+                default: Some(default),
+            }),
+            "{input}"
+        );
+    }
+    for input in [
+        "CREATE PROPERTY ON NODE TABLE Memory(score) TYPE ANY DEFAULT NULL",
+        "CREATE PROPERTY ON NODE TABLE Memory(score) TYPE ANY DEFAULT $value",
+        "CREATE PROPERTY ON NODE TABLE Memory(score) TYPE ANY DEFAULT m.score",
+        "CREATE PROPERTY ON NODE TABLE Memory(score) TYPE ANY DEFAULT date('2026-01-01')",
+        "CREATE PROPERTY ON NODE TABLE Memory(score) TYPE ANY DEFAULT",
+    ] {
+        assert!(parse(input).is_err(), "{input}");
+    }
     assert_eq!(
         parse("CREATE INDEX ON :Memory(id)").unwrap(),
         Statement::CreateIndex(CreateIndex {
@@ -1626,7 +1698,10 @@ fn parses_untyped_relationship_match_and_label_return() {
     assert_eq!(
         pipeline_return(&query).items[2].expression,
         AstNode::synthetic(ReturnExpressionKind::Value(AstNode::synthetic(
-            ScalarExpressionKind::RelationshipType("r".to_string())
+            ScalarExpressionKind::Label {
+                function: hawdb_core::LabelFunction::Label,
+                variable: "r".to_string(),
+            }
         )))
     );
 }
@@ -1695,10 +1770,30 @@ fn parses_anonymous_relationship_endpoints() {
 }
 
 #[test]
-fn rejects_unbounded_relationship_match() {
-    let error =
-        parse("MATCH (m:Memory)-[:MENTIONS*]->(e:Entity) RETURN e.name AS name").unwrap_err();
-    assert!(error.to_string().contains("finite max hop"));
+fn parses_unbounded_relationship_match() {
+    for (query, min_hops) in [
+        (
+            "MATCH (m:Memory)-[:MENTIONS*]->(e:Entity) RETURN e.name AS name",
+            1,
+        ),
+        (
+            "MATCH (m:Memory)-[:MENTIONS*0..]->(e:Entity) RETURN e.name AS name",
+            0,
+        ),
+        (
+            "MATCH (m:Memory)-[:MENTIONS*2..]->(e:Entity) RETURN e.name AS name",
+            2,
+        ),
+    ] {
+        let Statement::Pipeline(pipeline) = parse(query).unwrap() else {
+            panic!("{query}");
+        };
+        let debug = format!("{pipeline:?}");
+        assert!(
+            debug.contains(&format!("min_hops: {min_hops}, max_hops: {}", usize::MAX)),
+            "{query}: {debug}"
+        );
+    }
 }
 
 #[test]
@@ -3251,6 +3346,73 @@ fn parses_coalesce_and_left_return_items() {
 }
 
 #[test]
+fn parses_json_string_as_an_explicit_selector() {
+    for function in ["json_string", "JSON_STRING", "JsOn_StRiNg"] {
+        let statement = parse(&format!(
+            "MATCH (m:Memory) WHERE {function}(m.metadata, $path) = 'active' RETURN {function}(m.metadata, '$.state') AS state"
+        ))
+        .unwrap();
+        let Statement::Pipeline(query) = statement else {
+            panic!("expected pipeline");
+        };
+        let ReturnExpressionKind::Value(value) = &pipeline_return(&query).items[0].expression.kind
+        else {
+            panic!("expected scalar return");
+        };
+        assert!(matches!(
+            &value.kind,
+            ScalarExpressionKind::JsonString { .. }
+        ));
+    }
+    for expression in [
+        "json_string(m.metadata)",
+        "json_string(m.metadata, '$.state', 1)",
+        "json_string(m.metadata, '$.state' NULL ON NONSCALAR)",
+        "json_string(m.metadata, '$.state' NULL ON ERROR)",
+    ] {
+        assert!(
+            parse(&format!("MATCH (m:Memory) RETURN {expression}")).is_err(),
+            "{expression}"
+        );
+    }
+}
+
+#[test]
+fn parses_json_value_null_on_nonscalar_as_an_explicit_mode() {
+    for (expression, expected) in [
+        ("json_value(m.metadata, '$.state')", false),
+        ("json_value(m.metadata, $path NULL ON NONSCALAR)", true),
+    ] {
+        let statement = parse(&format!("MATCH (m:Memory) RETURN {expression} AS state")).unwrap();
+        let Statement::Pipeline(query) = statement else {
+            panic!("expected match return");
+        };
+        let ReturnExpressionKind::Value(value) = &pipeline_return(&query).items[0].expression.kind
+        else {
+            panic!("expected scalar return");
+        };
+        let ScalarExpressionKind::JsonValue {
+            null_on_non_scalar, ..
+        } = &value.kind
+        else {
+            panic!("expected JSON_VALUE");
+        };
+        assert_eq!(*null_on_non_scalar, expected, "{expression}");
+    }
+
+    for expression in [
+        "json_value(m.metadata, '$.state' NULL ON ERROR)",
+        "json_value(m.metadata, '$.state' ERROR ON NONSCALAR)",
+        "json_value(m.metadata, '$.state' NULL NONSCALAR)",
+    ] {
+        assert!(
+            parse(&format!("MATCH (m:Memory) RETURN {expression}")).is_err(),
+            "{expression}"
+        );
+    }
+}
+
+#[test]
 fn parses_coalesce_and_left_predicates() {
     let statement = parse(
         "MATCH (m:Memory) WHERE COALESCE(m.created_at, m.last_accessed_at) >= $cutoff AND LEFT(COALESCE(m.title, ''), 4) = 'Graph' RETURN m.id",
@@ -4124,4 +4286,54 @@ fn parses_match_expand_comma_match_merge_relationship_with_predicate() {
     assert_eq!(pattern.steps[0].relationship.rel_type, "HAS_LABEL");
     assert!(pipeline_predicate(&query, 0).is_some());
     assert_eq!(on_create.len(), 3);
+}
+
+#[test]
+fn parses_relationship_type_disjunctions() {
+    for (query, types) in [
+        ("MATCH (a)-[:A|B]->(b) RETURN b", vec!["A", "B"]),
+        ("MATCH (a)-[:A|:B|C]->(b) RETURN b", vec!["A", "B", "C"]),
+        ("MATCH (a)-[r:A|B*1..3]->(b) RETURN b", vec!["A", "B"]),
+        ("MATCH (a)-[:A|A]->(b) RETURN b", vec![]),
+        ("MATCH (a)-[:A]->(b) RETURN b", vec![]),
+    ] {
+        let debug = format!("{:?}", parse(query).unwrap());
+        if types.is_empty() {
+            // Single-type patterns keep their pre-disjunction Debug text.
+            assert!(!debug.contains("rel_type_disjunction"), "{query}: {debug}");
+        } else {
+            let expected = format!(
+                "rel_type_disjunction: [{}]",
+                types
+                    .iter()
+                    .map(|name| format!("{name:?}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            assert!(debug.contains(&expected), "{query}: {debug}");
+        }
+        assert!(debug.contains("rel_type: \"A\""), "{query}: {debug}");
+    }
+    for query in [
+        "MATCH (a)-[:A|]->(b) RETURN b",
+        "MATCH (a)-[:|B]->(b) RETURN b",
+        "MATCH (a)-[A|B]->(b) RETURN b",
+    ] {
+        assert!(parse(query).is_err(), "{query}");
+    }
+    // The one-hop existence predicates test one type; a disjunction must not
+    // shrink to it. A pattern predicate keeps the whole disjunction (#1488).
+    let error = parse("MATCH (a), (b) WHERE NOT EXISTS { MATCH (a)-[:A|B]->(b) } RETURN a")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("disjunction"), "{error}");
+    let debug = format!(
+        "{:?}",
+        parse("MATCH (a) WHERE (a)-[:A|B]->() RETURN a").unwrap()
+    );
+    assert!(
+        debug.contains("PatternPredicate")
+            && debug.contains("rel_type_disjunction: [\"A\", \"B\"]"),
+        "{debug}"
+    );
 }

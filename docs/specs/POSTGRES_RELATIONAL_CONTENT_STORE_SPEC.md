@@ -410,6 +410,19 @@ MUST distinguish the range column, bound inclusiveness and an empty interval.
 Uncovered predicates remain residuals and cannot authorize predicate-free
 ordered projection.
 
+The clustered primary key MUST use the same interval binding: an equality
+prefix shorter than the key, with or without bounds on the next key column,
+plans a `TableRangeScanExec` (`primary_key_range`) instead of a full scan. A
+complete key remains a point read, and a predicate that binds neither a key
+prefix nor a first-column bound remains a full scan. The interval is converted
+to complete-key bounds with the mutation-lock successor rules, so exclusive
+lower and inclusive upper bounds on a non-final column cover every longer key
+exactly. Resident rows, row-page snapshots and their live/transaction overlays
+read only that interval, in key order, and stop at `LIMIT`; the original
+predicate is still evaluated for every row. An ascending `ORDER BY` on the key
+suffix after the prefix streams without a sort; descending order keeps the
+interval and sorts it, because row-page snapshots stream intervals forward.
+
 An ordered index projection whose equality/range bounds and `ORDER BY` suffix are
 fully covered MUST stream compact row locators through an executor-owned typed
 `ColumnarBatch`. `OFFSET` and `LIMIT` apply while visiting the ordered cursor,

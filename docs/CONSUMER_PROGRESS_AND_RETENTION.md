@@ -10,9 +10,10 @@ for its recorded runtime. It is not evidence that the new path passes a gate.
 `begin_search_projection_consumer_catch_up_in` accepts a `ProjectionSourceScope`.
 `Database` preserves conservative whole-source validation. `Domains` enumerates
 only the named graph labels and relational tables, including absence and empty
-tables. Label membership is checked against the same pinned source as hydration;
-allocation holes and excluded candidates still consume bounded enumeration work.
-A node with multiple selected labels is visited once. The full mapper cannot
+tables. Label membership is checked against the same pinned source as hydration.
+Actual records inspected for membership consume bounded enumeration work;
+allocation holes and deleted records are not manufactured as candidates. A node
+with multiple selected labels is visited once. The full mapper cannot
 replace the complete comparison with a sampled or partially applied delta.
 
 The stable Consumer ID identifies the scope and deterministic mapper version.
@@ -84,8 +85,8 @@ relaxation is introduced.
 
 ## Embedded handle integration (#1171)
 
-`NowledgeMemEmbeddedStoreHandle::open_or_create_search_projection_consumer`
-returns a `NowledgeMemSearchProjectionConsumer` bound to that handle's original
+`EmbeddedStoreHandle::open_or_create_search_projection_consumer`
+returns a `RegisteredSearchProjectionConsumer` bound to that handle's original
 publication owner. Its lifecycle keeps the source open even after other handle
 clones close. The returned staging session borrows that lifecycle; private
 progress can be paused and resumed with one-operation steps. Dropping the session

@@ -32,6 +32,12 @@ additional predicates, access-controlled/scored populations and larger paths
 retain ordinary planning. Pure projection, aggregate, DISTINCT and ordering
 wrappers preserve their existing output semantics.
 
+A valid sample controls orientation only for its exact bound path. Ordinary
+catalog-based chain-start selection still runs for all other paths or when
+sampling declines; property-distribution estimates remain the fallback for
+unsampled index seeks. Retained descriptor-prefix scans keep their ordinary
+cache behavior, while sampling uses the admitted path and charges its visits.
+
 Both endpoint orientations are measured on the same immutable read view.
 Seed node positions are drawn uniformly without replacement. For each hop,
 the sampler counts adjacency fanout, builds cumulative sums, samples output

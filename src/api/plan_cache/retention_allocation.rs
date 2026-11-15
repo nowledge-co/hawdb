@@ -11,20 +11,23 @@ use hawdb_core::graph_rag::{
 };
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
 
 thread_local! {
     static TRACK: Cell<bool> = const { Cell::new(false) };
 }
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 static LARGEST: AtomicUsize = AtomicUsize::new(0);
+// Highest net live bytes since the window opened; frees of older blocks go negative.
+static PEAK: AtomicIsize = AtomicIsize::new(0);
 
 struct Allocator;
 
 fn allocated(bytes: usize) {
     if TRACK.try_with(Cell::get).unwrap_or(false) {
-        LIVE.fetch_add(bytes, Ordering::Relaxed);
+        let live = LIVE.fetch_add(bytes, Ordering::Relaxed).wrapping_add(bytes);
         LARGEST.fetch_max(bytes, Ordering::Relaxed);
+        PEAK.fetch_max(live as isize, Ordering::Relaxed);
     }
 }
 
@@ -69,17 +72,23 @@ unsafe impl GlobalAlloc for Allocator {
 #[global_allocator]
 static ALLOCATOR: Allocator = Allocator;
 
-struct Window;
+/// Tracks allocations on the opening thread only, until dropped.
+pub(crate) struct Window;
 
 impl Window {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         LIVE.store(0, Ordering::Relaxed);
         LARGEST.store(0, Ordering::Relaxed);
+        PEAK.store(0, Ordering::Relaxed);
         TRACK.set(true);
         Self
     }
     fn retained(&self) -> usize {
         LIVE.load(Ordering::Relaxed)
+    }
+    /// Highest net live bytes this thread allocated while the window was open.
+    pub(crate) fn peak(&self) -> usize {
+        PEAK.load(Ordering::Relaxed).max(0) as usize
     }
 }
 
@@ -129,6 +138,10 @@ fn cached(
     trace.decisions.reserve(128);
     let key = PlanCacheKey {
         normalized_query: query.to_owned(),
+        statistics_values: BTreeMap::from([(
+            Value::String("stat-marker".repeat(16)),
+            StatisticsParameterValue::Exact(Value::String("hot-value".repeat(64))),
+        )]),
         parameters: parameterized.cache_key().clone(),
         environment: OptimizerEnvironmentKey {
             sampling_read: Some(join_sampling::retention_fixture()),
@@ -417,6 +430,9 @@ fn actual_physical_cache_requested_heap_stays_within_charges_and_limits() {
             predicate_steps: Vec::new(),
             edge_predicates: Vec::new(),
             optional: true,
+            hash_join: None,
+            id_set_conjuncts: Vec::new(),
+            seeded_union: Vec::new(),
         };
         let items = [
             PathFunction::Length,
@@ -522,8 +538,11 @@ fn row_unwind_refuses_large_output_before_copying() {
     let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
     let window = Window::new();
     let error = hawdb_executor::transform::stream_unwind_rows_batches(
-        &expression,
-        "item",
+        hawdb_executor::transform::UnwindRows {
+            expression: &expression,
+            variable: "item",
+            consumes_source: false,
+        },
         &PhysicalPlan::EmptyExec,
         &mut OneRow,
         BatchExecutionContext {
@@ -532,6 +551,7 @@ fn row_unwind_refuses_large_output_before_copying() {
             memory_ledger: &ledger,
             task_context: None,
             observer: &NoopExecutionObserver,
+            graph: None,
         },
         ExecutionLimit::unlimited(),
         &mut |_| panic!("over-budget output"),

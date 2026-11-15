@@ -18,7 +18,7 @@
 //! facade retains concrete database ownership, DDL, writes, and result delivery.
 
 use crate::analytics::{GraphAlgorithmContext, GraphAlgorithmSpec};
-use crate::binding::{binding_memory_bytes, Binding};
+use crate::binding::{binding_memory_bytes, binding_sizes, Binding};
 use crate::expression::{
     evaluate_predicate_with_context as evaluate_predicate_observed,
     exact_relationship_scan_filter_from_predicate, predicate_references_only_variable,
@@ -316,6 +316,7 @@ impl<'a> BatchReadContext<'a> {
             memory_ledger: self.memory_ledger,
             task_context: self.task_context,
             observer: self.observer,
+            graph: Some(self.store),
         }
     }
 }
@@ -421,6 +422,9 @@ pub fn execute_prepared_binding_batches(
     // Consecutive canonical point reads of this execution reuse their selected
     // segments; the retained cache pins are released when it returns (#1482).
     let _point_reads = hawdb_storage::canonical::CanonicalPointReadScope::enter();
+    // Consecutive adjacency endpoint seeks reuse their verified descriptor
+    // leaves; the retained cache pins are released when it returns (#1615).
+    let _descriptor_leaves = hawdb_storage::graph_descriptor_tree::DescriptorLeafScope::enter();
     let memory_ledger = context
         .memory_ledger
         .clone()
@@ -465,22 +469,29 @@ fn emit_byte_bounded_batches(
     observer: &QueryExecutionObserver,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
+    // One walk per row yields both the ledger charge and the observer's
+    // payload statistic; the sizes are retained for any split (#1615).
+    let mut sizes = Vec::with_capacity(batch.len());
     let mut batch_bytes = 0usize;
+    let mut batch_payload_bytes = 0usize;
     let mut requires_split = false;
     for binding in &batch {
-        let binding_bytes = binding_memory_bytes(binding);
-        if binding_bytes > max_payload_bytes {
+        let row = binding_sizes(binding);
+        if row.memory > max_payload_bytes {
             return Err(HawDBError::Execution(format!(
-                "intermediate row uses {binding_bytes} bytes, exceeding batch_payload_bytes {max_payload_bytes}"
+                "intermediate row uses {} bytes, exceeding batch_payload_bytes {max_payload_bytes}",
+                row.memory
             )));
         }
-        batch_bytes = batch_bytes.saturating_add(binding_bytes);
+        batch_bytes = batch_bytes.saturating_add(row.memory);
+        batch_payload_bytes = batch_payload_bytes.saturating_add(row.payload);
         requires_split |= batch_bytes > max_payload_bytes;
+        sizes.push(row);
     }
     if !requires_split {
         if !batch.is_empty() {
             let _batch_lease = memory_account.reserve(batch_bytes)?;
-            observer.record_pipeline_batch(&batch);
+            observer.record_pipeline_batch_shape(batch.len(), batch_payload_bytes);
             return emit(batch);
         }
         return Ok(BatchControl::Continue);
@@ -488,27 +499,24 @@ fn emit_byte_bounded_batches(
 
     let mut bounded = Vec::with_capacity(batch.len());
     let mut bounded_bytes = 0usize;
-    for binding in batch {
-        let binding_bytes = binding_memory_bytes(&binding);
-        if binding_bytes > max_payload_bytes {
-            return Err(HawDBError::Execution(format!(
-                "intermediate row uses {binding_bytes} bytes, exceeding batch_payload_bytes {max_payload_bytes}"
-            )));
-        }
-        if !bounded.is_empty() && bounded_bytes.saturating_add(binding_bytes) > max_payload_bytes {
+    let mut bounded_payload_bytes = 0usize;
+    for (binding, row) in batch.into_iter().zip(sizes) {
+        if !bounded.is_empty() && bounded_bytes.saturating_add(row.memory) > max_payload_bytes {
             let _batch_lease = memory_account.reserve(bounded_bytes)?;
-            observer.record_pipeline_batch(&bounded);
+            observer.record_pipeline_batch_shape(bounded.len(), bounded_payload_bytes);
             if emit(std::mem::take(&mut bounded))? == BatchControl::Stop {
                 return Ok(BatchControl::Stop);
             }
             bounded_bytes = 0;
+            bounded_payload_bytes = 0;
         }
-        bounded_bytes = bounded_bytes.saturating_add(binding_bytes);
+        bounded_bytes = bounded_bytes.saturating_add(row.memory);
+        bounded_payload_bytes = bounded_payload_bytes.saturating_add(row.payload);
         bounded.push(binding);
     }
     if !bounded.is_empty() {
         let _batch_lease = memory_account.reserve(bounded_bytes)?;
-        observer.record_pipeline_batch(&bounded);
+        observer.record_pipeline_batch_shape(bounded.len(), bounded_payload_bytes);
         if emit(bounded)? == BatchControl::Stop {
             return Ok(BatchControl::Stop);
         }
@@ -551,6 +559,7 @@ fn dispatch_batch_operator<D: BatchDispatch>(plan: &PhysicalPlan, dispatch: D) -
             label,
             rel_type,
             rel_properties,
+            rel_property_in,
             direction,
         } => dispatch.supported(|context, execution_limit, emit| {
             stream_relationship_seeded_node_scan_batches(
@@ -559,6 +568,9 @@ fn dispatch_batch_operator<D: BatchDispatch>(plan: &PhysicalPlan, dispatch: D) -
                     label,
                     rel_type,
                     rel_properties,
+                    rel_property_in: rel_property_in
+                        .as_ref()
+                        .map(|(property, values)| (property.as_str(), values.as_slice())),
                     direction: *direction,
                 },
                 context,
@@ -988,9 +1000,20 @@ fn dispatch_batch_operator<D: BatchDispatch>(plan: &PhysicalPlan, dispatch: D) -
         PhysicalPlan::UnwindRowsExec {
             expression,
             variable,
+            consumes_source,
             input,
         } => dispatch.supported(|context, execution_limit, emit| {
-            stream_unwind_rows_batches(expression, variable, input, context, execution_limit, emit)
+            stream_unwind_rows_batches(
+                crate::transform::UnwindRows {
+                    expression,
+                    variable,
+                    consumes_source: *consumes_source,
+                },
+                input,
+                context,
+                execution_limit,
+                emit,
+            )
         }),
         PhysicalPlan::GraphMatchExec { program, input } => {
             dispatch.supported(|context, execution_limit, emit| {
@@ -1120,9 +1143,18 @@ fn dispatch_batch_operator<D: BatchDispatch>(plan: &PhysicalPlan, dispatch: D) -
         PhysicalPlan::AggregateExec {
             group_keys,
             items,
+            graph_keys,
             input,
         } => dispatch.supported(|context, execution_limit, emit| {
-            stream_aggregate_batches(input, group_keys, items, context, execution_limit, emit)
+            stream_aggregate_batches(
+                input,
+                group_keys,
+                items,
+                *graph_keys,
+                context,
+                execution_limit,
+                emit,
+            )
         }),
         PhysicalPlan::DistinctExec { input } => {
             dispatch.supported(|context, execution_limit, emit| {
@@ -1158,6 +1190,8 @@ fn dispatch_batch_operator<D: BatchDispatch>(plan: &PhysicalPlan, dispatch: D) -
         | PhysicalPlan::SetNodeProperty { .. }
         | PhysicalPlan::SetNodeProperties { .. }
         | PhysicalPlan::SetNodePropertiesReturn { .. }
+        | PhysicalPlan::MatchSetExec(_)
+        | PhysicalPlan::MutationReturn { .. }
         | PhysicalPlan::SetRelationshipProperty { .. }
         | PhysicalPlan::SetRelationshipProperties { .. }
         | PhysicalPlan::DeleteNode { .. }

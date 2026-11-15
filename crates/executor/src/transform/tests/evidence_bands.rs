@@ -153,6 +153,7 @@ fn evidence_bands_keep_exact_order_and_private_metadata_through_top_n_spill() {
             memory_ledger: &ledger,
             task_context: None,
             observer: &reports,
+            graph: None,
         },
         ExecutionLimit::unlimited(),
         &mut |batch| {
@@ -322,6 +323,7 @@ fn evidence_bands_release_cohort_scores_and_band_ownership_on_stop_error_and_can
                 memory_ledger: &ledger,
                 task_context: Some(&task),
                 observer: &NoopExecutionObserver,
+                graph: None,
             },
             ExecutionLimit::unlimited(),
             &mut |batch| {

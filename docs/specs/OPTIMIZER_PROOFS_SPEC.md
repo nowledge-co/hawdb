@@ -48,6 +48,10 @@ memory admission and resource checks cannot be disabled.
 | `transformation:proof_redundant_ordering` | Remove constant or repeated equivalent sort keys; remove sorting when supported input order or a one-row bound proves it unnecessary. Every evaluated key and the producer must remain safe. |
 | `transformation:proof_redundant_distinct` | Remove deduplication when the projected tuple contains a proved key or there can be at most one row. Nullable UNIQUE alone is insufficient. |
 | `transformation:proof_singleton_group` | Replace nonempty unique grouping plus pure non-distinct COUNT(*) with projection and count 1, only after an already values-only producer. Generic projection preserves graph bindings while grouping clears them; ordinary graph-scoped grouping is retained. Other aggregates remain unchanged. **Measured value: neutral; no query-latency gain established.** |
+| `transformation:cost_based_pattern_start` | Start a linear pattern path (a first-MATCH `Expand` chain or one `GraphMatchExec` path) at a node with a constant or parameter equality backed by an equality index, when published path statistics estimate at most half the work of the current text-order or bound start (#1485). The chain is walked to its end, then back with directions flipped; named variable-length relationships are never walked backwards. Not a proof rule: it changes only work and row order, never the row multiset. Kept starts record an `Estimated` event with both estimates. |
+| `transformation:graph_match_hash_join` | Run a correlated `GraphMatchExec` whose only import is a node `key` as a hash join: its steps run once with `key` unbound, from the text start or a clearly cheaper seek, and each input row probes by `key`'s id (#1485). A first-MATCH `Expand` chain may be split at such a node first when the rest has distinct relationship types. Chosen when one build run, a hash insert per build match and a probe per input row is estimated at most half the per-row loop; unknown estimates keep the loop. Only a text-order prefix of WHERE conjuncts that cannot fail and read only the pattern runs in the build; the rest run on each joined row. Not a proof rule. |
+| `transformation:graph_match_id_set_semi_join` | Check a WHERE conjunct `node IN column` over a node the MATCH binds against the id set of the row's list before reading the node: a candidate whose id no element has is rejected exactly as the conjunct would reject it (#1485). Not a proof rule. |
+| `transformation:disjunctive_seed_union` | Run a first-MATCH `GraphMatchExec` (no input, not OPTIONAL, one path) whose WHERE has a top-level `OR` conjunct where every disjunct requires an equality `v.p = value` on a different labelled node `v`, backed by an equality index, as a union of branches (#1625). Branch `i` starts at seed `i`'s node with the equality as its node pattern seek (walking the path back with directions flipped; named variable-length relationships are never reversed), keeps the whole WHERE, and drops rows where an earlier seed's two-valued pattern match holds (`v.p IS NULL OR value IS NULL OR v.p <> value` fails), so each original row comes from exactly one branch with its multiplicity. Applies only when every WHERE conjunct cannot fail and the summed estimated seed rows are at most half the rows the current start reads. Not a proof rule: it changes only work and row order. |
 
 Values-only column/literal projection transfers size their complete incoming batch from
 borrowed values before allocating output. This prevents an otherwise redundant
@@ -93,10 +97,31 @@ compute the extra ranking fingerprints.
 
 The outer result covers preparation/planning failures. Successful preparation
 returns `OptimizerQualificationOutput` with the actual selected trace, snapshot
-epoch and an inner execution result, retaining plan evidence on runtime error.
+epoch, scoped work usage and an inner execution result, retaining plan evidence
+on runtime error.
 Owned successful rows remain charged while held by the caller. `verify_rules`
 accepts up to six required/forbidden assertions over structured Applied events;
 mere diagnostic mentions, estimates and skipped rules do not satisfy them.
+
+`qualify_optimizer_bounded_order_candidates` and its explicit-inventory variant
+require `OptimizerQualificationAttemptLimits`. The request task context is the
+cumulative campaign deadline/work admission; every candidate gets a fresh,
+equal attempt deadline/work scope constrained by that campaign. Tests execute
+the same three candidates in different orders at their exact individual work
+limit, assert equal attempt usage and assert the enclosing campaign is charged
+for all three. The effective result-memory limit is cumulative across the
+candidate set: completed owned rows retain their exact executor charge, and
+each later attempt receives only the unspent result-memory allowance. Candidate
+requests above eight fail instead of returning a truncated inventory.
+
+Candidate batches also share one logical statement clock through planning and
+execution. An existing caller pin is preserved; otherwise the batch samples
+one instant and releases its pin on return. This semantic clock does not
+replace the independent monotonic deadlines or cumulative work admission.
+Cross-campaign replay of clock-dependent queries must supply the same explicit
+caller pin. A later unpinned campaign observes a new instant and may correctly
+refuse the previous instance fingerprint as stale. The fixed phase-1 CLI query
+does not read the clock and its report does not attest a replay clock.
 
 ## Local Shiro workflow
 
@@ -104,6 +129,11 @@ Existing DQP now sends identical statement text and parameters through typed
 search selection and records the same plan it executes. Both its normal
 campaign coverage and the opt-in qualification report separate different-plan
 agreement from same-plan agreement. Arbitrary matching errors remain failures.
+Shiro uses a fixed semantic clock by default and preserves an explicit caller
+pin. Replay evidence records that clock and explicit bounded-order controls.
+The existing generated temporal capability family additionally compares all
+three bounded-order candidates against a host model with seeded clocks,
+runtime timezone reads, NULL/duplicate keys, pagination and empty results.
 
 `qualify_optimizer_read` loads a fixture through ordinary embedded APIs, pins one
 reader, and compares the baseline with one to eight typed variants. Each variant

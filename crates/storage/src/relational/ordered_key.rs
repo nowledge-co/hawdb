@@ -262,8 +262,9 @@ impl<'a> OrderedKeyDecoder<'a> {
             6 => Ok(RelationalValue::Uuid(hawdb_core::Uuid::from_bytes(
                 self.fixed("UUID value")?,
             ))),
+            tag @ (10 | 11) => self.timestamp(tag),
             tag => Err(OrderedRelationalKeyError::Corrupt(format!(
-                "invalid value tag {tag}"
+                "invalid value tag {tag} (corrupt, or written by a newer HawDB)"
             ))),
         }
     }
@@ -319,13 +320,14 @@ impl<'a> OrderedKeyDecoder<'a> {
                 *target = RelationalValue::Bytea(bytes);
             }
             9 => *target = RelationalValue::Decimal(self.decimal()?),
+            tag @ (10 | 11) => *target = self.timestamp(tag)?,
             6 => {
                 *target =
                     RelationalValue::Uuid(hawdb_core::Uuid::from_bytes(self.fixed("UUID value")?));
             }
             tag => {
                 return Err(OrderedRelationalKeyError::Corrupt(format!(
-                    "invalid value tag {tag}"
+                    "invalid value tag {tag} (corrupt, or written by a newer HawDB)"
                 )))
             }
         }
@@ -334,6 +336,12 @@ impl<'a> OrderedKeyDecoder<'a> {
 
     fn decimal(&mut self) -> Result<hawdb_core::Decimal, OrderedRelationalKeyError> {
         hawdb_core::Decimal::from_ordered_bytes(self.fixed("Decimal value")?)
+            .map_err(|error| OrderedRelationalKeyError::Corrupt(error.to_string()))
+    }
+
+    fn timestamp(&mut self, tag: u8) -> Result<RelationalValue, OrderedRelationalKeyError> {
+        let ordered = u64::from_be_bytes(self.fixed("TIMESTAMP value")?);
+        crate::relational::decode_timestamp_value(tag, (ordered ^ (1_u64 << 63)) as i64)
             .map_err(|error| OrderedRelationalKeyError::Corrupt(error.to_string()))
     }
 
@@ -351,8 +359,9 @@ impl<'a> OrderedKeyDecoder<'a> {
             4 | 5 => self.escaped_bytes(false).map(|_| false),
             6 => self.skip_fixed(16, "UUID value").map(|()| false),
             9 => self.decimal().map(|_| false),
+            tag @ (10 | 11) => self.timestamp(tag).map(|_| false),
             tag => Err(OrderedRelationalKeyError::Corrupt(format!(
-                "invalid value tag {tag}"
+                "invalid value tag {tag} (corrupt, or written by a newer HawDB)"
             ))),
         }
     }
@@ -505,6 +514,15 @@ mod tests {
             RelationalValue::Decimal("0.00".parse().unwrap()),
             RelationalValue::Decimal("0.00000000000000000000000000000000000001".parse().unwrap()),
             RelationalValue::Decimal("9007199254740993.01".parse().unwrap()),
+            RelationalValue::Timestamp(hawdb_core::sql_timestamp::min_micros()),
+            RelationalValue::Timestamp(-1),
+            RelationalValue::Timestamp(0),
+            RelationalValue::Timestamp(1),
+            RelationalValue::Timestamp(hawdb_core::sql_timestamp::max_micros()),
+            RelationalValue::TimestampTz(hawdb_core::sql_timestamp::min_micros()),
+            RelationalValue::TimestampTz(-1),
+            RelationalValue::TimestampTz(0),
+            RelationalValue::TimestampTz(hawdb_core::sql_timestamp::max_micros()),
         ];
         assert!(values.windows(2).all(|pair| pair[0] < pair[1]));
         let keys = values
@@ -621,6 +639,27 @@ mod tests {
             },
             bytea_pointer
         );
+    }
+
+    #[test]
+    fn out_of_range_timestamp_keys_fail_closed() {
+        for tag in [10_u8, 11] {
+            for micros in [
+                hawdb_core::sql_timestamp::max_micros() + 1,
+                hawdb_core::sql_timestamp::min_micros() - 1,
+            ] {
+                let mut encoded = vec![tag];
+                encoded.extend_from_slice(&((micros as u64) ^ (1_u64 << 63)).to_be_bytes());
+                let mut key =
+                    encode_ordered_relational_key(&RelationalKey(vec![RelationalValue::BigInt(0)]))
+                        .unwrap();
+                let prefix = key.len() - 9;
+                key.truncate(prefix);
+                key.extend_from_slice(&encoded);
+                assert!(decode_ordered_relational_key(&key).is_err());
+                assert!(validate_ordered_relational_key(&key).is_err());
+            }
+        }
     }
 
     #[test]

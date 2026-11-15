@@ -88,6 +88,9 @@ pub(crate) fn validate_table_schema_with_work_context<'a>(
                         column.name
                     )));
                 }
+                RelationalColumnDefault::CurrentTimestamp(_) => {
+                    crate::relational::validate_clock_default(column)?;
+                }
             }
         }
         unit.finish();

@@ -176,7 +176,7 @@ mod tests {
     use super::*;
     use crate::production_graph::PersistentGraphIndexProductionRequirement;
     use hawdb::{
-        DatabaseConfig, NowledgeGraphStatement, NowledgeMemGraphMode, NowledgeMemOpenOptions,
+        DatabaseConfig, EmbeddedStoreOpenOptions, GraphMode, NowledgeGraphStatement,
         ProductionEvidenceBinding, ProductionQualificationIdentity, RuntimeGovernorConfig,
         StorageResidencyMode, StorageResourceProfileLimits,
         PRODUCTION_QUALIFICATION_POLICY_VERSION,
@@ -202,9 +202,9 @@ mod tests {
             policy_version: PRODUCTION_QUALIFICATION_POLICY_VERSION,
         };
         ProductionGraphStorageQualificationConfig {
-            open_options: NowledgeMemOpenOptions::graph_only(
+            open_options: EmbeddedStoreOpenOptions::graph_only(
                 graph_path,
-                NowledgeMemGraphMode::ShadowReadOnly,
+                GraphMode::ShadowReadOnly,
             )
             .with_database_config(DatabaseConfig {
                 storage_residency_mode: StorageResidencyMode::OutOfCore,

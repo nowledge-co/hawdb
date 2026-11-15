@@ -36,7 +36,26 @@ pub struct DatabaseConfig {
     pub branch_create_recovery_limits: BranchCreateRecoveryLimits,
     /// Optional host-wide read row ceiling. `Some(0)` and `None` (the default) mean unlimited.
     /// Session settings may lower a positive ceiling, but cannot raise it.
+    /// It also bounds relational intermediate rows unless
+    /// `max_read_intermediate_rows` is set.
     pub max_read_result_rows: Option<usize>,
+    /// Optional host-wide ceiling on the intermediate rows one relational SQL
+    /// statement may scan, join or aggregate, independent of the rows it
+    /// returns. The scan-page, row-read and index-read budgets derive from it.
+    /// `None` (the default) inherits the effective `max_read_result_rows`
+    /// ceiling, so a host that sets only the result ceiling keeps the coupled
+    /// bound. `Some(0)` removes the intermediate row ceiling; byte, page-size
+    /// and query-memory budgets remain enforced. `max_read_result_rows` and
+    /// session settings continue to bound returned rows.
+    pub max_read_intermediate_rows: Option<usize>,
+    /// Ceiling on the payload bytes one read returns; 64 MiB by default.
+    /// `None` removes the ceiling for `Database` calls. Through an admitted
+    /// [`crate::HawDBEmbedded`] entry point the result is also bounded by the
+    /// runtime governor's per-statement result budget (16 MiB on the
+    /// shared-host profile, 2 MiB on mobile, unless the host configures it),
+    /// so `None` there
+    /// means that budget, not unlimited. The Python binding aligns its
+    /// governor's budget with a `Some` ceiling.
     pub max_read_result_payload_bytes: Option<usize>,
     pub execution_memory: executor::ExecutionMemoryConfig,
     pub mutation_limits: hawdb_storage::mutation::MutationLimits,
@@ -72,7 +91,12 @@ pub struct DatabaseConfig {
     /// recovery and maintenance admission always use a non-strict policy.
     pub strict_capacity_limit: bool,
     pub max_wal_quarantine_bytes: u64,
+    /// Largest encoded WAL record one commit may write (persistent
+    /// databases). A larger commit is refused before anything is written with
+    /// the typed, non-poisoning `HawDBError::WalRecordLimitExceeded`. `None`
+    /// disables the check.
     pub max_wal_record_bytes: Option<usize>,
+    /// Most operations one commit's WAL record may hold; refused the same way.
     pub max_wal_batch_operations: Option<usize>,
     pub max_checkpoint_encoded_bytes: Option<u64>,
     pub max_checkpoint_decoded_bytes: Option<u64>,
@@ -140,6 +164,8 @@ pub struct DatabaseConfig {
 
 /// Default host row-count ceiling: no ceiling. Byte budgets remain active.
 pub const DEFAULT_MAX_READ_RESULT_ROWS: Option<usize> = None;
+/// Default relational intermediate-row ceiling: inherit the result-row ceiling.
+pub const DEFAULT_MAX_READ_INTERMEDIATE_ROWS: Option<usize> = None;
 pub const DEFAULT_MAX_READ_RESULT_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
 
 /// Per-session result policy. Independent sessions start with no row-count limit.
@@ -167,6 +193,16 @@ impl DatabaseConfig {
     /// Effective host row-count ceiling. Both zero and `None` disable it.
     pub fn read_result_row_limit(&self) -> Option<usize> {
         self.max_read_result_rows.filter(|rows| *rows != 0)
+    }
+
+    /// Effective relational intermediate-row ceiling. `None` inherits
+    /// [`Self::read_result_row_limit`]; `Some(0)` disables the ceiling.
+    pub fn read_intermediate_row_limit(&self) -> Option<usize> {
+        match self.max_read_intermediate_rows {
+            None => self.read_result_row_limit(),
+            Some(0) => None,
+            Some(rows) => Some(rows),
+        }
     }
 
     /// The `LOAD CSV` file policy, or `None` when CSV import is disabled.
@@ -208,6 +244,7 @@ impl Default for DatabaseConfig {
             automatic_checkpoint_max_age: std::time::Duration::from_secs(60),
             branch_create_recovery_limits: BranchCreateRecoveryLimits::default(),
             max_read_result_rows: DEFAULT_MAX_READ_RESULT_ROWS,
+            max_read_intermediate_rows: DEFAULT_MAX_READ_INTERMEDIATE_ROWS,
             max_read_result_payload_bytes: Some(DEFAULT_MAX_READ_RESULT_PAYLOAD_BYTES),
             execution_memory: executor::ExecutionMemoryConfig::default(),
             mutation_limits: hawdb_storage::mutation::MutationLimits::default(),
@@ -298,15 +335,23 @@ pub(super) fn relational_query_limits_with_payload(
     let max_output_payload_bytes =
         restrictive_query_limit(config.max_read_result_payload_bytes, max_payload_bytes)
             .unwrap_or(DEFAULT_MAX_READ_RESULT_PAYLOAD_BYTES);
-    let max_intermediate_rows = config.read_result_row_limit().unwrap_or(usize::MAX);
+    // Intermediate work has its own host ceiling (#1679). Unset, it inherits
+    // the result-row ceiling; a request's output limit never lowers it.
+    let max_intermediate_rows = config.read_intermediate_row_limit().unwrap_or(usize::MAX);
     // A blocking relational query first reads the bounded scan projection and
     // then re-reads at most `max_output_rows` selected locators with the final
     // output projection. Budget both phases explicitly so a scan that exactly
     // reaches its intermediate-row limit can still produce an admitted result.
     let max_row_read_rows = max_intermediate_rows.saturating_add(max_output_rows).max(1);
-    let max_scan_pages = max_intermediate_rows
-        .div_ceil(hawdb_storage::relational::DEFAULT_RELATIONAL_ROW_PAGE_ROWS)
-        .max(1);
+    // Row-page format v2 closes pages at a byte target, so rows per page
+    // depend on row width and the row cap is not a density (#1521). A scan
+    // decodes at least one row from every page it reads after its first, so
+    // its pages are bounded by its intermediate rows plus one; each point
+    // read touches one page. The target size is only writer packing policy:
+    // every single-row page may be wider, up to the hard maximum. Budget the
+    // maximum for every admitted page so consecutive wide pages are not
+    // falsely refused by a limit derived from the row contract.
+    let max_scan_pages = max_intermediate_rows.saturating_add(1);
     let max_row_read_pages = max_scan_pages.saturating_add(max_output_rows).max(1);
     let max_row_read_bytes = max_row_read_pages
         .saturating_mul(hawdb_storage::relational::DEFAULT_RELATIONAL_ROW_PAGE_BYTES)

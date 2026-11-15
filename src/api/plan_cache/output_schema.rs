@@ -55,7 +55,20 @@ pub(super) fn logical_output_columns(
             LogicalPlan::OptionalRelationshipCountSum { output, .. } => {
                 break vec![output.clone()];
             }
-            LogicalPlan::SetNodePropertiesReturn { returns, .. } => {
+            LogicalPlan::MatchSet(set) => {
+                break set
+                    .returns
+                    .as_ref()?
+                    .items
+                    .iter()
+                    .map(|item| item.name.clone())
+                    .collect();
+            }
+            LogicalPlan::SetNodePropertiesReturn { returns, .. }
+            | LogicalPlan::MutationReturn {
+                returns: hawdb_plan_cypher::MutationReturn { mode: returns, .. },
+                ..
+            } => {
                 break match returns {
                     SetNodePropertiesReturnMode::Project(items) => {
                         items.iter().map(|item| item.name.clone()).collect()

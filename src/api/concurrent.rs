@@ -384,13 +384,12 @@ impl ConcurrentDatabase {
         let source = self.inner.commits.lock()?.checkpoint_source()?;
         let prepared = source.prepare()?;
         let Some(prepared) = prepared else {
-            self.inner
-                .commits
-                .lock()?
-                .runtime
-                .get_mut()?
-                .store
-                .reclaim_version_history();
+            let mut database = self.inner.commits.lock()?;
+            let mut runtime = database.runtime.get_mut()?;
+            runtime.store.reclaim_version_history();
+            // Nothing new to publish: still retry object debt left by an
+            // earlier post-publication sweep (#1736).
+            runtime.store.retry_pending_object_reclamation();
             return Ok(());
         };
         self.inner
@@ -1271,6 +1270,8 @@ pub(super) fn sql_statement_uses_snapshot(statement: &SqlStatement) -> bool {
         SqlStatement::Insert(_)
         | SqlStatement::CreateMaterializedView(_)
         | SqlStatement::DropMaterializedView(_)
+        | SqlStatement::CreateSearchIndex(_)
+        | SqlStatement::DropSearchIndex(_)
         | SqlStatement::Update(_)
         | SqlStatement::Delete(_)
         | SqlStatement::CreateTable(_)
@@ -1491,6 +1492,8 @@ fn sql_lock_requests(
         SqlStatement::CreateTable(_)
         | SqlStatement::CreateMaterializedView(_)
         | SqlStatement::DropMaterializedView(_)
+        | SqlStatement::CreateSearchIndex(_)
+        | SqlStatement::DropSearchIndex(_)
         | SqlStatement::CreateIndex(_)
         | SqlStatement::AlterTableAddColumn(_) => {
             Ok(vec![LockRequest::database(LockMode::Exclusive)])

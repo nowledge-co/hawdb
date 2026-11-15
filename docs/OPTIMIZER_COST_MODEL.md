@@ -4,6 +4,11 @@
 and one saturated scalar total. Cardinality remains independent of weights.
 The initial policy uses CPU = 1, random access = 2, sequential access = 1, and
 output = 1. The constants live in `crates/cascades/src/cost.rs`.
+The immutable policy is identified as `hawdb-logical-cost-v1`; qualification
+records expose that identity, the four weights and every raw component.
+`PlanCostBreakdown::score_with_weights` can re-score frozen evidence offline
+without mutating the stored engine-default total or adding a runtime control
+plane.
 
 These are planning units, not nanoseconds, bytes, physical pages or a portable
 hardware calibration. Random access has a modest locality penalty; this does
@@ -19,6 +24,67 @@ its named revision and the cache/locality/skew boundary. Its timings do not
 qualify later context or metadata-count changes.
 
 ## Composition
+
+Graph MATCH path selection and final `GraphMatchExec` costing share seed
+equality estimates (including MCV frequencies), direction-aware label-pair
+fanout and endpoint selectivity. A directed bounded walk prefers the existing
+checkpoint count for its hop length over a power of the one-hop fanout; the
+intermediate nodes need not share either endpoint's label or degree. Incoming
+walks reverse the count key. These counts estimate walks, not a proof of trail
+uniqueness or result emptiness. Undirected walks retain the fanout fallback
+because they may mix incoming and outgoing edges; adding two directed counts
+does not describe them.
+
+`bounded_path_complete_through_hop` records a publisher's completed directed
+enumeration horizon. A missing tuple within that horizon is a zero in the
+statistics snapshot. Raw zero evidence is kept separate from positive planning
+cardinality and traversal work. MATCH uses a minimum-one whole-label planning
+estimate for known-zero completions. Traversal work independently charges the
+source probe, candidate visits at every depth through the maximum hop, and
+adjacency probes for prefixes that can still expand. This includes depths below
+the minimum matching hop and prefixes ending at any intermediate label, whether
+the requested-hop completion count is zero or positive. First-hop work uses at
+least the relationship-type population per source-label row; deeper directed
+prefixes aggregate published bounded counts across endpoint labels. A complete
+horizon can establish no candidates at a depth without removing the preceding
+prefix probes. Unknown depths retain a fanout fallback. Relationship predicates
+do not discount inspected prefixes. Generic adjacency costing retains its
+positive fanout fallback rather than multiplying its shared row/work estimate
+by zero.
+
+Missing coverage (including truncated or legacy statistics) and hops outside
+the declared horizon keep the heuristic fallback. Explicit legacy counts remain
+usable without establishing completeness for absent tuples. Prefix work and
+conditioning remain estimates, not exact physical read counts or empty-execution
+properties. No statistics snapshot substitutes an empty plan for runtime MATCH.
+
+Materialized collection, cooperative checkpoint collection and external
+refresh publish the horizon only after completing their bounded pass. Copies
+retain it, and ordinary/cooperative checkpoint metadata encoders round-trip it
+as the optional `stat_bounded_path_complete_through_hop` record. Older
+checkpoints without the record retain unknown coverage. Older binaries may
+reject the new derived-metadata record; canonical graph/relational records and
+WAL transactions are unchanged. The provenance adds one scalar field to each
+statistics DTO/catalog, with no data-sized map or collector budget increase.
+
+Final MATCH cost follows the executed steps, counts candidate visits before
+bound-endpoint/property filtering, and scales the local walk by input rows.
+Seeded unions sum their actual branch walks and charge the shared input once.
+Imported labels are read from the input binding scope. OPTIONAL estimates
+retain the input cardinality floor; predicate placement changes intermediate
+work without changing the full predicate's output selectivity. Unsupported
+steps, missing advanced statistics, unlabelled/union labels, type disjunctions
+and unbounded walks retain bounded structural fallbacks. Hash builds and
+shortest-path programs retain their previous structural model.
+
+This consumes immutable published statistics; it does not add a collector,
+sample, persistent map, runtime scan, cost coefficient or plan-cache key.
+Temporary estimation state scales with statement steps/properties, not graph
+size. Maintained statistics remain estimates and never authorize a semantic
+rewrite or replace runtime memory admission. The manual
+[`optimizer_path_statistics`](../examples/optimizer_path_statistics.rs) example
+checks a concrete directed multi-hop plan change; full LDBC timing and physical
+cost calibration remain separate qualification work.
 
 The constructor weights the raw components exactly once. Unary/binary and
 probe composition add or scale raw components before constructing a new total;
@@ -95,17 +161,26 @@ contracts for consumers without descriptors; runtime planning uses descriptors.
 Graph access ranking and final costing share raw access helpers. A node index
 seek charges candidate CPU visits plus random candidate/startup work. Scans
 retain sequential work. This changes some scan/index thresholds and reported
-costs; cardinality estimators, residual predicates, order requirements and
-limit placement are unchanged. The indexed-memory golden keeps the same plan
+costs; order requirements and limit placement retain their own contracts.
+The indexed-memory golden keeps the same plan
 and changes only its cost line (total 4 to 6, CPU 1 to 2, random work 3 to 2).
+
+[Compressed property histograms](COMPRESSED_HISTOGRAMS.md) provide a shared
+value-aware cardinality input for graph start selection, access ranking,
+residual predicates and final costing. They preserve duplicate frequencies,
+separate MCV and residual mass, and retain exact point-count precedence. Bound
+parameter values also participate in physical-cache identity within explicit
+byte/entry limits. This changes skew-sensitive graph plan choices without
+changing the logical cost weights or claiming hardware calibration.
 
 ## Verification surfaces
 
-The proposed [cost qualification specification](specs/OPTIMIZER_COST_QUALIFICATION_SPEC.md)
-and [development plan](OPTIMIZER_COST_QUALIFICATION_PLAN.md) define future
-same-query candidate measurements, cardinality-error isolation and offline
-coefficient experiments. Their runner and calibration gates are not implemented
-by those documents. Existing tests below establish their stated arithmetic and
+The [cost qualification specification](specs/OPTIMIZER_COST_QUALIFICATION_SPEC.md)
+and [development plan](OPTIMIZER_COST_QUALIFICATION_PLAN.md) define same-query
+candidate evidence, cardinality-error isolation and offline coefficient
+experiments. Phase 1 now proves legal Sort/TopN alternatives and exact replay;
+the multi-family timing runner, diagnosis and calibration gates remain
+unimplemented. Existing tests below establish their stated arithmetic and
 execution contracts, not general agreement between cost ranking and latency.
 
 Ordinary tests compare component arithmetic, candidate permutations, covering

@@ -12,11 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{BoundedScoreCollector, CandidateSet, SearchOutOfCoreMetrics, SearchOutOfCoreReader};
-use crate::build_memory::{checked_add as add, SET_ENTRY_BYTES};
+use super::{
+    BoundedScoreCollector, CandidateSet, SearchOutOfCoreMetrics, SearchOutOfCoreReader,
+    MAX_SCORE_ENTRIES_OPTION,
+};
+use crate::build_memory::{checked_add as add, ID_SET_ENTRY_BYTES, ID_SET_ROOT_BYTES};
 use crate::error::{HawDBError, Result};
 use crate::lexical_projection::QueryContext;
 use crate::{CompressedVectorSearchMode, SearchFallbackReasonCode, VectorRelevanceQuery};
+use hawdb_core::{ResourceBudgetError, ResourceBudgetKind, ResourceBudgetScope};
 use hawdb_executor::QueryMemoryLease;
 #[cfg(feature = "vector-search")]
 use std::cmp::{Ordering, Reverse};
@@ -28,6 +32,48 @@ use std::num::NonZeroUsize;
 
 const VECTOR_SCORE_ENTRY_WORKING_BYTES: usize = 128;
 
+/// The reader option that caps the out-of-core vector working set.
+#[cfg(feature = "vector-search")]
+const MAX_VECTOR_SEARCH_WORKING_BYTES_OPTION: &str =
+    "SearchOutOfCoreConfig.max_vector_search_working_bytes";
+
+/// The option that binds the RaBitQ scan working set, which is the smaller of
+/// the reader's configured cap and the per-query execution admission.
+#[cfg(feature = "vector-search")]
+pub(super) fn vector_working_bytes_option(
+    configured_max_bytes: usize,
+    execution_max_bytes: usize,
+) -> &'static str {
+    if execution_max_bytes < configured_max_bytes {
+        "VectorSearchExecutionOptions.max_working_bytes"
+    } else {
+        MAX_VECTOR_SEARCH_WORKING_BYTES_OPTION
+    }
+}
+
+/// A RaBitQ candidate scan whose working set exceeds its byte budget. This is
+/// a resource refusal: `Preferred` mode falls back to exact scoring on it.
+#[cfg(feature = "vector-search")]
+pub(super) fn rabitq_working_budget_refusal(
+    required: u64,
+    available: u64,
+    budget_option: &'static str,
+    message: String,
+) -> HawDBError {
+    ResourceBudgetError {
+        resource: ResourceBudgetKind::MemoryBytes,
+        scope: ResourceBudgetScope::Operator,
+        owner: "RaBitQ candidate scan".into(),
+        memory_class: None,
+        requested: required,
+        used: 0,
+        budget: available,
+        budget_option,
+        message,
+    }
+    .into()
+}
+
 #[cfg(feature = "vector-search")]
 #[derive(Debug)]
 enum RabitqScanError {
@@ -38,20 +84,27 @@ enum RabitqScanError {
 #[cfg(feature = "vector-search")]
 impl RabitqScanError {
     fn budget(required: u64, available: u64, message: String) -> Self {
-        Self::Budget(
-            hawdb_core::ResourceBudgetError {
-                resource: hawdb_core::ResourceBudgetKind::MemoryBytes,
-                scope: hawdb_core::ResourceBudgetScope::Operator,
-                owner: "RaBitQ candidate scan".into(),
-                memory_class: None,
-                requested: required,
-                used: 0,
-                budget: available,
-                budget_option: "SearchOutOfCoreConfig.max_vector_search_working_bytes",
-                message,
-            }
-            .into(),
+        Self::working_budget(
+            required,
+            available,
+            MAX_VECTOR_SEARCH_WORKING_BYTES_OPTION,
+            message,
         )
+    }
+
+    /// A working-set refusal naming the option that bound `available`.
+    fn working_budget(
+        required: u64,
+        available: u64,
+        budget_option: &'static str,
+        message: String,
+    ) -> Self {
+        Self::Budget(rabitq_working_budget_refusal(
+            required,
+            available,
+            budget_option,
+            message,
+        ))
     }
 
     fn into_error(self) -> HawDBError {
@@ -93,8 +146,20 @@ pub(super) fn candidate_working_bytes(limit: usize) -> Result<usize> {
         .ok_or_else(|| HawDBError::Storage("search RaBitQ candidate size overflow".into()))
 }
 
-fn admitted_score_entries(configured_max_entries: usize, working_bytes: usize) -> usize {
+pub(super) fn admitted_score_entries(configured_max_entries: usize, working_bytes: usize) -> usize {
     configured_max_entries.min(working_bytes / VECTOR_SCORE_ENTRY_WORKING_BYTES)
+}
+
+/// The option that bounds [`admitted_score_entries`].
+pub(super) fn admitted_score_entries_option(
+    configured_max_entries: usize,
+    working_bytes: usize,
+) -> &'static str {
+    if working_bytes / VECTOR_SCORE_ENTRY_WORKING_BYTES < configured_max_entries {
+        "VectorSearchExecutionOptions.max_working_bytes"
+    } else {
+        MAX_SCORE_ENTRIES_OPTION
+    }
 }
 
 #[cfg(feature = "vector-search")]
@@ -332,6 +397,7 @@ impl SearchOutOfCoreReader {
         let mut collector = BoundedScoreCollector::with_context(
             Some(request.top_k.get()),
             self.config.max_score_entries.get(),
+            MAX_SCORE_ENTRIES_OPTION,
             Some(query),
         )?;
         for entry in domain.distances() {
@@ -446,10 +512,16 @@ impl SearchOutOfCoreReader {
                     options.query,
                 );
             }
+            // A per-query window replaces the default navigation window; the
+            // reader's candidate limit still applies below.
             let navigation_window =
-                hawdb_vector_projection::diskann::DiskAnnSearchOptions::default()
-                    .beam_width
-                    .min(self.config.max_vector_candidates.get());
+                vector_execution_options
+                    .candidate_window()
+                    .unwrap_or_else(|| {
+                        hawdb_vector_projection::diskann::DiskAnnSearchOptions::default()
+                            .beam_width
+                            .min(self.config.max_vector_candidates.get())
+                    });
             let candidate_limit = retained_limit
                 .unwrap_or(1)
                 .max(options.candidate_window.unwrap_or(0))
@@ -591,19 +663,26 @@ impl SearchOutOfCoreReader {
             self.config.max_score_entries.get(),
             vector_execution_options.max_working_bytes,
         ) / 2;
+        let entries_option = admitted_score_entries_option(
+            self.config.max_score_entries.get(),
+            vector_execution_options.max_working_bytes,
+        );
         if max_scored_documents == 0 {
-            return Err(HawDBError::Storage(
+            return Err(super::score_entries_refusal(
+                "search vector uniqueness check",
+                1,
+                0,
+                0,
+                entries_option,
                 "search vector uniqueness check exceeds the admitted working memory".to_string(),
             ));
         }
-        let mut collector = match context {
-            Some(context) => BoundedScoreCollector::with_context(
-                retained_limit,
-                max_scored_documents,
-                Some(context),
-            )?,
-            None => BoundedScoreCollector::new(retained_limit, max_scored_documents)?,
-        };
+        let mut collector = BoundedScoreCollector::with_context(
+            retained_limit,
+            max_scored_documents,
+            entries_option,
+            context,
+        )?;
         let query_scorer = VectorRelevanceQuery::with_work(query_embedding, metric, || {
             context.map_or_else(
                 || checkpoint_vector_task(task_context),
@@ -613,8 +692,9 @@ impl SearchOutOfCoreReader {
         .with_scoring(self.vector_scoring());
         let mut vector_document_count = 0usize;
         let mut segment_scan_count = 0usize;
+        // The uniqueness set's root node is funded with the set.
         let mut id_memory = context
-            .map(|context| context.memory.reserve(0))
+            .map(|context| context.memory.reserve(ID_SET_ROOT_BYTES))
             .transpose()?;
         let mut scored_document_ids = BTreeSet::new();
         for (layer, artifact) in self.segments.iter().enumerate() {
@@ -645,12 +725,23 @@ impl SearchOutOfCoreReader {
                         )));
                     }
                     if scored_document_ids.len() == max_scored_documents {
-                        return Err(HawDBError::Storage(format!(
-                            "search vector uniqueness check requires more than {max_scored_documents} document ids"
-                        )));
+                        return Err(ResourceBudgetError {
+                            resource: ResourceBudgetKind::MetadataEntries,
+                            scope: ResourceBudgetScope::Operator,
+                            owner: "search vector uniqueness check".into(),
+                            memory_class: None,
+                            requested: 1,
+                            used: max_scored_documents as u64,
+                            budget: max_scored_documents as u64,
+                            budget_option: entries_option,
+                            message: format!(
+                                "search vector uniqueness check requires more than {max_scored_documents} document ids"
+                            ),
+                        }
+                        .into());
                     }
                     if let Some(memory) = &mut id_memory {
-                        memory.grow(add(SET_ENTRY_BYTES, document.id.len())?)?;
+                        memory.grow(add(ID_SET_ENTRY_BYTES, document.id.len())?)?;
                     }
                     scored_document_ids.insert(document.id.clone());
                     vector_document_count = vector_document_count.saturating_add(1);
@@ -739,6 +830,29 @@ impl SearchOutOfCoreReader {
                 .into(),
             ));
         }
+        if let Some(window) = vector_execution_options
+            .candidate_window()
+            .filter(|window| *window > self.config.max_vector_candidates.get())
+        {
+            return Err(RabitqScanError::Budget(
+                hawdb_core::ResourceBudgetError {
+                    resource: hawdb_core::ResourceBudgetKind::MetadataEntries,
+                    scope: hawdb_core::ResourceBudgetScope::Operator,
+                    owner: "vector candidate window".into(),
+                    memory_class: None,
+                    requested: window as u64,
+                    used: 0,
+                    budget: self.config.max_vector_candidates.get() as u64,
+                    budget_option: "SearchOutOfCoreConfig.max_vector_candidates",
+                    message: format!(
+                        "per-query vector candidate window {window} exceeds \
+                         SearchOutOfCoreConfig.max_vector_candidates {}",
+                        self.config.max_vector_candidates
+                    ),
+                }
+                .into(),
+            ));
+        }
         let candidate_limit = policy.candidate_limit;
         if candidate_limit < minimum_candidates
             || candidate_limit > self.config.max_vector_candidates.get()
@@ -754,6 +868,10 @@ impl SearchOutOfCoreReader {
             .max_vector_search_working_bytes
             .get()
             .min(vector_execution_options.max_working_bytes);
+        let working_budget_option = vector_working_bytes_option(
+            self.config.max_vector_search_working_bytes.get(),
+            vector_execution_options.max_working_bytes,
+        );
         // The projection can return one local top-k while the global heap is
         // retained. Sorting the heap also transiently materializes a second
         // layered vector, so reserve both representations before dispatch.
@@ -765,7 +883,7 @@ impl SearchOutOfCoreReader {
         let scan_working_bytes = total_working_bytes
             .checked_sub(selected_candidate_bytes)
             .ok_or_else(|| {
-                RabitqScanError::budget(selected_candidate_bytes as u64, total_working_bytes as u64, format!(
+                RabitqScanError::working_budget(selected_candidate_bytes as u64, total_working_bytes as u64, working_budget_option, format!(
                     "search RaBitQ retained candidates require {selected_candidate_bytes} bytes, exceeding {total_working_bytes}"
                 ))
             })?;
@@ -807,7 +925,12 @@ impl SearchOutOfCoreReader {
                 })?;
             let allowlist_required = candidate_set.vector_allowlist_working_bytes(layer)?;
             if allowlist_required > layer_working_bytes as u64 {
-                return Err(RabitqScanError::budget(allowlist_required, layer_working_bytes as u64, format!("search vector candidate allowlist and block require {allowlist_required} bytes, exceeding {layer_working_bytes}")));
+                return Err(RabitqScanError::working_budget(
+                    allowlist_required,
+                    layer_working_bytes as u64,
+                    working_budget_option,
+                    format!("search vector candidate allowlist and block require {allowlist_required} bytes, exceeding {layer_working_bytes}"),
+                ));
             }
             let _allowlist_memory = policy
                 .query
@@ -822,6 +945,7 @@ impl SearchOutOfCoreReader {
             let allowlist = candidate_set.vector_ordinals_for_layer(
                 layer,
                 layer_working_bytes as u64,
+                working_budget_option,
                 task_context,
                 metrics,
             )?;
@@ -831,7 +955,7 @@ impl SearchOutOfCoreReader {
             let projection_working_bytes = layer_working_bytes
                 .checked_sub(allowlist_bytes)
                 .ok_or_else(|| {
-                    RabitqScanError::budget(allowlist_bytes as u64, layer_working_bytes as u64, format!(
+                    RabitqScanError::working_budget(allowlist_bytes as u64, layer_working_bytes as u64, working_budget_option, format!(
                         "search vector layer {layer} allowlist requires {allowlist_bytes} bytes, exceeding {scan_working_bytes}"
                     ))
                 })?;
@@ -872,6 +996,9 @@ impl SearchOutOfCoreReader {
                     query_embedding,
                     candidate_limit.min(projection.manifest().document_count.max(1)),
                     search_options,
+                    vector_execution_options.navigation_beam(
+                        candidate_limit.min(projection.manifest().document_count.max(1)),
+                    ),
                 )
                 .map_err(RabitqScanError::projection)?;
             // Returned hits are covered by the separately retained candidate
@@ -963,6 +1090,7 @@ impl SearchOutOfCoreReader {
         let mut collector = BoundedScoreCollector::with_context(
             retained_limit,
             admitted_score_entries(self.config.max_score_entries.get(), scan_working_bytes),
+            admitted_score_entries_option(self.config.max_score_entries.get(), scan_working_bytes),
             policy.query,
         )?;
         let query_scorer = if selected.is_empty() {

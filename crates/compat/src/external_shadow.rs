@@ -506,9 +506,18 @@ fn json_error_from_hawdb(error: HawDBError) -> serde_json::Value {
         HawDBError::Semantic(message) => json_error("semantic", message),
         HawDBError::Storage(message) => json_error("storage", message),
         HawDBError::ProjectionBusy => json_error("storage", "search projection operation is busy"),
+        HawDBError::SearchProjectionMismatch { message, .. } => json_error("storage", message),
         HawDBError::StorageIntegrity(message) => json_error("storage", message),
         error @ HawDBError::WalRecoveryIo { .. } => json_error("storage", error),
+        error @ HawDBError::PublishOutcomeUnknown { .. } => json_error("storage", error),
         HawDBError::Execution(message) => json_error("execution", message),
+        HawDBError::Constraint { surface, message } | HawDBError::Schema { surface, message } => {
+            let class = match surface {
+                hawdb_core::RelationalErrorSurface::Storage => "storage",
+                hawdb_core::RelationalErrorSurface::Execution => "execution",
+            };
+            json_error(class, message)
+        }
         error @ HawDBError::BranchEvidenceBudgetExceeded {
             resource,
             requested,
@@ -544,6 +553,17 @@ fn json_error_from_hawdb(error: HawDBError) -> serde_json::Value {
                 "used": cause.used,
                 "budget": cause.budget,
                 "budget_option": cause.budget_option,
+            });
+            response
+        }
+        HawDBError::WalRecordLimitExceeded(cause) => {
+            let mut response = json_error("execution", cause.as_ref());
+            response["error"]["details"] = serde_json::json!({
+                "kind": "wal_record_limit_exceeded",
+                "limit": cause.limit.as_str(),
+                "requested": cause.requested,
+                "maximum": cause.maximum,
+                "config_option": cause.limit.config_option(),
             });
             response
         }
@@ -597,6 +617,10 @@ fn json_error_from_hawdb(error: HawDBError) -> serde_json::Value {
             response
         }
         error @ HawDBError::BranchCommandUnsupported { .. } => json_error("execution", error),
+        error @ HawDBError::SearchProjectionRebuildRefused { .. } => json_error("execution", error),
+        error @ HawDBError::SearchProjectionEpochAdvanceRefused { .. } => {
+            json_error("execution", error)
+        }
         HawDBError::CapabilityUnavailable { capability } => {
             json_error("capability_unavailable", capability.as_str())
         }
@@ -1410,7 +1434,9 @@ fn decode_binary_hex(encoded: &str) -> Result<Vec<u8>> {
     }
     encoded
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|digits| {
             let high = decode_binary_hex_digit(digits[0])?;
             let low = decode_binary_hex_digit(digits[1])?;

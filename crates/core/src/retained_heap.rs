@@ -81,6 +81,7 @@ impl_retained_heap_for_copy!(
 
 impl_retained_heap_for_copy!(
     crate::LabelId,
+    crate::RelTypeId,
     crate::TableId,
     crate::PropertyId,
     crate::PropertyType,
@@ -97,6 +98,9 @@ impl_retained_heap_for_copy!(
     crate::temporal::Duration,
     crate::temporal::TemporalFunction,
     crate::ConversionFunction,
+    crate::NumericFunction,
+    crate::RelationshipEndpoint,
+    crate::LabelFunction,
 );
 
 impl RetainedHeapBytes for String {

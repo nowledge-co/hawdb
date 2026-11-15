@@ -19,11 +19,11 @@ use hawdb_storage::{
     projection::{StorageOpenTimings, StorageRecoveryReport},
 };
 
-pub const NOWLEDGE_MEM_STORAGE_LIFECYCLE_DECISION_PROTOCOL: &str =
+pub const STORAGE_LIFECYCLE_DECISION_PROTOCOL: &str =
     "hawdb-nowledge-mem-storage-lifecycle-decision-v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemStorageRecoveryReport {
+pub struct EmbeddedStorageRecoveryReport {
     pub protocol: String,
     pub present: bool,
     pub ready: bool,
@@ -56,7 +56,7 @@ pub struct NowledgeMemStorageRecoveryReport {
     pub blocker_codes: Vec<String>,
 }
 
-impl NowledgeMemStorageRecoveryReport {
+impl EmbeddedStorageRecoveryReport {
     pub fn from_storage_report(report: &StorageRecoveryReport) -> Self {
         let durable_recovery_observed = report.durable;
         let checkpoint_boundary_present =
@@ -173,7 +173,7 @@ impl NowledgeMemStorageRecoveryReport {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NowledgeMemStorageLifecycleActionKind {
+pub enum StorageLifecycleActionKind {
     Ready,
     RunCheckpoint,
     RepairWalTail,
@@ -181,7 +181,7 @@ pub enum NowledgeMemStorageLifecycleActionKind {
     OpenReadOnlyInspect,
 }
 
-impl NowledgeMemStorageLifecycleActionKind {
+impl StorageLifecycleActionKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Ready => "ready",
@@ -194,9 +194,9 @@ impl NowledgeMemStorageLifecycleActionKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemStorageLifecycleDecision {
+pub struct StorageLifecycleDecision {
     pub protocol: String,
-    pub action: NowledgeMemStorageLifecycleActionKind,
+    pub action: StorageLifecycleActionKind,
     pub ready_for_mem_lifecycle: bool,
     pub storage_recovery_ready: bool,
     pub checkpoint_required: bool,
@@ -204,40 +204,40 @@ pub struct NowledgeMemStorageLifecycleDecision {
     pub quarantine_required: bool,
     pub read_only_inspection_required: bool,
     pub blocker_codes: Vec<String>,
-    pub recovery: NowledgeMemStorageRecoveryReport,
+    pub recovery: EmbeddedStorageRecoveryReport,
 }
 
-impl NowledgeMemStorageLifecycleDecision {
-    pub fn from_storage_recovery(recovery: NowledgeMemStorageRecoveryReport) -> Self {
+impl StorageLifecycleDecision {
+    pub fn from_storage_recovery(recovery: EmbeddedStorageRecoveryReport) -> Self {
         let mut blocker_codes = recovery.blocker_codes.clone();
         let action = if recovery.ready {
-            NowledgeMemStorageLifecycleActionKind::Ready
+            StorageLifecycleActionKind::Ready
         } else if !recovery.durable_recovery_observed {
             push_unique_blocker(&mut blocker_codes, "storage_not_durable");
-            NowledgeMemStorageLifecycleActionKind::OpenReadOnlyInspect
+            StorageLifecycleActionKind::OpenReadOnlyInspect
         } else if !recovery.torn_tail_clean {
             push_unique_blocker(&mut blocker_codes, "wal_tail_repair_required");
-            NowledgeMemStorageLifecycleActionKind::RepairWalTail
+            StorageLifecycleActionKind::RepairWalTail
         } else if !recovery.checkpoint_boundary_present {
             push_unique_blocker(&mut blocker_codes, "checkpoint_required");
-            NowledgeMemStorageLifecycleActionKind::RunCheckpoint
+            StorageLifecycleActionKind::RunCheckpoint
         } else if !recovery.replay_boundary_consistent || !recovery.wal_replay_bounded {
             push_unique_blocker(&mut blocker_codes, "storage_recovery_quarantine_required");
-            NowledgeMemStorageLifecycleActionKind::Quarantine
+            StorageLifecycleActionKind::Quarantine
         } else {
             push_unique_blocker(&mut blocker_codes, "storage_recovery_unknown_blocker");
-            NowledgeMemStorageLifecycleActionKind::Quarantine
+            StorageLifecycleActionKind::Quarantine
         };
 
         Self {
-            protocol: NOWLEDGE_MEM_STORAGE_LIFECYCLE_DECISION_PROTOCOL.to_string(),
-            ready_for_mem_lifecycle: action == NowledgeMemStorageLifecycleActionKind::Ready,
+            protocol: STORAGE_LIFECYCLE_DECISION_PROTOCOL.to_string(),
+            ready_for_mem_lifecycle: action == StorageLifecycleActionKind::Ready,
             storage_recovery_ready: recovery.ready,
-            checkpoint_required: action == NowledgeMemStorageLifecycleActionKind::RunCheckpoint,
-            repair_required: action == NowledgeMemStorageLifecycleActionKind::RepairWalTail,
-            quarantine_required: action == NowledgeMemStorageLifecycleActionKind::Quarantine,
+            checkpoint_required: action == StorageLifecycleActionKind::RunCheckpoint,
+            repair_required: action == StorageLifecycleActionKind::RepairWalTail,
+            quarantine_required: action == StorageLifecycleActionKind::Quarantine,
             read_only_inspection_required: action
-                == NowledgeMemStorageLifecycleActionKind::OpenReadOnlyInspect,
+                == StorageLifecycleActionKind::OpenReadOnlyInspect,
             action,
             blocker_codes,
             recovery,
@@ -317,8 +317,7 @@ mod tests {
 
     #[test]
     fn clean_recovery_is_ready_and_preserves_protocol_fields() {
-        let report =
-            NowledgeMemStorageRecoveryReport::from_storage_report(&clean_storage_recovery());
+        let report = EmbeddedStorageRecoveryReport::from_storage_report(&clean_storage_recovery());
 
         assert!(report.ready);
         assert!(report.replay_boundary_consistent);
@@ -331,14 +330,11 @@ mod tests {
         raw.torn_tail_ignored = true;
         raw.torn_tail_reason = Some("partial wal entry".to_string());
 
-        let decision = NowledgeMemStorageLifecycleDecision::from_storage_recovery(
-            NowledgeMemStorageRecoveryReport::from_storage_report(&raw),
+        let decision = StorageLifecycleDecision::from_storage_recovery(
+            EmbeddedStorageRecoveryReport::from_storage_report(&raw),
         );
 
-        assert_eq!(
-            decision.action,
-            NowledgeMemStorageLifecycleActionKind::RepairWalTail
-        );
+        assert_eq!(decision.action, StorageLifecycleActionKind::RepairWalTail);
         assert!(decision.repair_required);
         assert!(!decision.ready_for_mem_lifecycle);
     }

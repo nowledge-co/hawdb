@@ -144,6 +144,16 @@ pub(crate) fn encode_checkpoint_body_with_work_context<'a>(
             encode_schema_object_state(property.state)
         ))?;
     }
+    for property in image.catalog.property_descriptors() {
+        if let Some(default) = &property.default {
+            body.write(format_args!(
+                "property_default\t{}\t{}\t{}\n",
+                property.id.0,
+                encode_string(&crate::text::encode_property_default(&default.value))?,
+                encode_string(&crate::text::encode_value(&default.backfill_value))?
+            ))?;
+        }
+    }
     for constraint in image.catalog.unique_constraints() {
         let ConstraintSubject::Node(label_id) = constraint.subject else {
             continue;
@@ -202,6 +212,11 @@ pub(crate) fn encode_checkpoint_body_with_work_context<'a>(
         statistics.histogram_sample_limit
     ))?;
     body.write(format_args!("stat_node_count\t{}\n", statistics.node_count))?;
+    if let Some(hops) = statistics.bounded_path_complete_through_hop {
+        body.write(format_args!(
+            "stat_bounded_path_complete_through_hop\t{hops}\n"
+        ))?;
+    }
     body.write(format_args!(
         "stat_relationship_count\t{}\n",
         statistics.relationship_count
@@ -332,6 +347,22 @@ pub(crate) fn encode_checkpoint_body_with_work_context<'a>(
             label_id.0,
             encode_string(property)?,
             encode_bool(*sampled)
+        ))?;
+    }
+    for ((label, property), distribution) in &statistics.property_distributions {
+        body.write(format_args!(
+            "stat_property_distribution\t{}\t{}\t{}\n",
+            label.0,
+            encode_string(property)?,
+            crate::statistics::distribution::encode(distribution)?
+        ))?;
+    }
+    for ((rel_type, property), distribution) in &statistics.rel_property_distributions {
+        body.write(format_args!(
+            "stat_rel_property_distribution\t{}\t{}\t{}\n",
+            rel_type.0,
+            encode_string(property)?,
+            crate::statistics::distribution::encode(distribution)?
         ))?;
     }
     for (name, definition) in image.projected_graphs {

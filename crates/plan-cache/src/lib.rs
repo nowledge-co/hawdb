@@ -28,9 +28,10 @@ pub use schema::OptimizerSchemaKey;
 
 pub use template::{
     bind_physical_plan_parameters, parameter_binding_shape_fingerprint, parameter_scalar_types,
-    parameterize_logical_plan, parameterize_value_list, prepare_physical_plan_for_cache,
-    prepare_physical_regexes_for_execution, resolve_plan_template_value, ParameterBindingTemplate,
-    ParameterizedLogicalPlan, PlanParameterCacheKey,
+    parameter_statistics_values, parameterize_logical_plan, parameterize_value_list,
+    prepare_physical_plan_for_cache, prepare_physical_regexes_for_execution,
+    resolve_plan_template_value, ParameterBindingTemplate, ParameterizedLogicalPlan,
+    PlanParameterCacheKey,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

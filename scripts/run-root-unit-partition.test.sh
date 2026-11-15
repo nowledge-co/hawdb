@@ -87,7 +87,7 @@ exit "${PARTITION_PROBE_EXIT:-0}"
 EOF
 chmod +x "${fixture}/binary"
 
-for partition in general concurrent checkpoint_headroom checkpoint_lifecycle checkpoint_large_commit checkpoint_large_commit_interrupted analytics analytics_core analytics_core_general analytics_identity analytics_rss recovery; do
+for partition in general concurrent checkpoint_headroom checkpoint_headroom_growing_table checkpoint_headroom_controls checkpoint_lifecycle checkpoint_large_commit checkpoint_large_commit_interrupted analytics analytics_core analytics_core_general analytics_identity analytics_rss recovery; do
   "${runner}" "${fixture}/binary" "${partition}" custom_filter --exact --skip user_skip
   cp "${PARTITION_PROBE_ARGS}" "${fixture}/args.${partition}"
   python3 - "${PARTITION_PROBE_ARGS}" "${partition}" <<'PY'
@@ -95,6 +95,17 @@ import pathlib
 import sys
 
 args = pathlib.Path(sys.argv[1]).read_text().splitlines()
+headroom = {
+    "api::automatic_checkpoint::tests::headroom::pending_idle",
+    "api::automatic_checkpoint::tests::headroom::capacity_wait::deadline",
+    "api::automatic_checkpoint::tests::delta_pressure_sustains_generations_and_preserves_all_values_after_reopen",
+    "api::automatic_checkpoint::tests::soft_wal_pressure_sustains_multiple_generations_without_host_checkpoints",
+    "api::automatic_checkpoint::tests::relational_live_overlay::steady_relational_updates_on_one_handle_never_exhaust_the_live_overlay",
+    "api::automatic_checkpoint::tests::relational_live_overlay::steady_inserts_into_a_growing_table_keep_draining_the_live_overlay",
+}
+growing_table = {
+    "api::automatic_checkpoint::tests::relational_live_overlay::steady_inserts_into_a_growing_table_keep_draining_the_live_overlay",
+}
 owners = {
     "concurrent": {"api::tests::concurrent_transactions::owned"},
     "analytics_core_general": {"api::tests::graph_analytics::owned"},
@@ -112,14 +123,9 @@ owners = {
         "api::automatic_checkpoint::tests::new_family::future_lifecycle",
         "api::automatic_checkpoint::tests::future_lifecycle",
     },
-    "checkpoint_headroom": {
-        "api::automatic_checkpoint::tests::headroom::pending_idle",
-        "api::automatic_checkpoint::tests::headroom::capacity_wait::deadline",
-        "api::automatic_checkpoint::tests::delta_pressure_sustains_generations_and_preserves_all_values_after_reopen",
-        "api::automatic_checkpoint::tests::soft_wal_pressure_sustains_multiple_generations_without_host_checkpoints",
-        "api::automatic_checkpoint::tests::relational_live_overlay::steady_relational_updates_on_one_handle_never_exhaust_the_live_overlay",
-        "api::automatic_checkpoint::tests::relational_live_overlay::steady_inserts_into_a_growing_table_keep_draining_the_live_overlay",
-    },
+    "checkpoint_headroom": headroom,
+    "checkpoint_headroom_growing_table": growing_table,
+    "checkpoint_headroom_controls": headroom - growing_table,
     "checkpoint_large_commit": {
         "api::automatic_checkpoint::tests::relational_live_overlay::large_commit::owned",
     },
@@ -143,13 +149,10 @@ assert args[-4:] == ["custom_filter", "--exact", "--skip", "user_skip"]
 PY
 done
 
-for shard_index in 0 1; do
-  env TEST_TOTAL_SHARDS=2 TEST_SHARD_INDEX="${shard_index}" \
-    TEST_SHARD_STATUS_FILE="${fixture}/status.${shard_index}" \
-    "${runner}" "${fixture}/binary" checkpoint_headroom custom_filter --exact --skip user_skip
-  [[ -f "${fixture}/status.${shard_index}" ]]
-  cp "${PARTITION_PROBE_ARGS}" "${fixture}/args.headroom.${shard_index}"
-done
+env TEST_TOTAL_SHARDS=1 TEST_SHARD_INDEX=0 \
+  TEST_SHARD_STATUS_FILE="${fixture}/status.headroom.controls" \
+  "${runner}" "${fixture}/binary" checkpoint_headroom_controls custom_filter --exact --skip user_skip
+[[ -f "${fixture}/status.headroom.controls" ]]
 
 python3 - "${fixture}" <<'PY'
 import pathlib
@@ -165,8 +168,8 @@ names = {
     "api::automatic_checkpoint::tests::relational_live_overlay::steady_inserts_into_a_growing_table_keep_draining_the_live_overlay",
 }
 selections = []
-for shard in range(2):
-    args = (root / f"args.headroom.{shard}").read_text().splitlines()
+for partition in ("checkpoint_headroom_growing_table", "checkpoint_headroom_controls"):
+    args = (root / f"args.{partition}").read_text().splitlines()
     skips = {args[i + 1] for i, value in enumerate(args[:-1]) if value == "--skip"}
     selections.append(names - skips)
     assert args[-4:] == ["custom_filter", "--exact", "--skip", "user_skip"]
@@ -212,7 +215,7 @@ def selected(partition):
     return names - skips
 
 leaves = [selected(name) for name in [
-    "general", "concurrent", "checkpoint_headroom", "checkpoint_lifecycle", "checkpoint_large_commit", "checkpoint_large_commit_interrupted", "analytics_core_general", "analytics_rss", "recovery"
+    "general", "concurrent", "checkpoint_headroom_growing_table", "checkpoint_headroom_controls", "checkpoint_lifecycle", "checkpoint_large_commit", "checkpoint_large_commit_interrupted", "analytics_core_general", "analytics_rss", "recovery"
 ]]
 assert set().union(*leaves) == names
 assert sum(map(len, leaves)) == len(names)
@@ -234,16 +237,16 @@ expect_exit() {
 for partition in general checkpoint_headroom checkpoint_lifecycle; do
   expect_exit 42 env PARTITION_PROBE_EXIT=42 "${runner}" "${fixture}/binary" "${partition}"
 done
-expect_exit 42 env TEST_TOTAL_SHARDS=2 TEST_SHARD_INDEX=0 PARTITION_PROBE_EXIT=42 "${runner}" "${fixture}/binary" checkpoint_headroom
-expect_exit 1 env TEST_TOTAL_SHARDS=2 TEST_SHARD_INDEX=0 PARTITION_PROBE_EMPTY_GROWING_TABLE=1 "${runner}" "${fixture}/binary" checkpoint_headroom
-expect_exit 1 env TEST_TOTAL_SHARDS=2 TEST_SHARD_INDEX=1 PARTITION_PROBE_ONLY_GROWING_TABLE=1 "${runner}" "${fixture}/binary" checkpoint_headroom
-expect_exit 1 env TEST_TOTAL_SHARDS=2 TEST_SHARD_INDEX=1 PARTITION_PROBE_GROWING_TABLE_OVERLAP=1 "${runner}" "${fixture}/binary" checkpoint_headroom
-for coordinates in '0 0' '3 0' '2 2' '2 -1' 'invalid 0' '2 invalid' '1 1'; do
+expect_exit 1 env PARTITION_PROBE_EMPTY_GROWING_TABLE=1 "${runner}" "${fixture}/binary" checkpoint_headroom_growing_table
+expect_exit 1 env PARTITION_PROBE_ONLY_GROWING_TABLE=1 "${runner}" "${fixture}/binary" checkpoint_headroom_controls
+expect_exit 1 env PARTITION_PROBE_GROWING_TABLE_OVERLAP=1 "${runner}" "${fixture}/binary" checkpoint_headroom_controls
+for coordinates in '0 0' '3 0' '2 0' '2 2' '2 -1' 'invalid 0' '2 invalid' '1 1'; do
   read -r total_shards shard_index <<<"${coordinates}"
   expect_exit 64 env TEST_TOTAL_SHARDS="${total_shards}" TEST_SHARD_INDEX="${shard_index}" "${runner}" "${fixture}/binary" checkpoint_headroom
 done
-expect_exit 64 env TEST_TOTAL_SHARDS=2 TEST_SHARD_INDEX=0 "${runner}" "${fixture}/binary" general
+expect_exit 64 env TEST_TOTAL_SHARDS=2 TEST_SHARD_INDEX=0 "${runner}" "${fixture}/binary" checkpoint_headroom_controls
 expect_exit 1 env PARTITION_PROBE_EMPTY_HEADROOM=1 "${runner}" "${fixture}/binary" checkpoint_headroom
+expect_exit 1 env PARTITION_PROBE_EMPTY_HEADROOM=1 "${runner}" "${fixture}/binary" checkpoint_headroom_controls
 expect_exit 1 env PARTITION_PROBE_EMPTY_LIFECYCLE=1 "${runner}" "${fixture}/binary" checkpoint_lifecycle
 expect_exit 17 env PARTITION_PROBE_DISCOVERY_EXIT=17 "${runner}" "${fixture}/binary" general
 expect_exit 1 env PARTITION_PROBE_EMPTY=1 "${runner}" "${fixture}/binary" concurrent

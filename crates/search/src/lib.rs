@@ -82,11 +82,15 @@ mod diskann_identity;
 #[cfg(test)]
 mod document_decoding_tests;
 mod document_encoding;
+mod document_set_digest;
+pub use document_set_digest::SearchDocumentSetDigest;
 mod generation_cleanup;
 mod identifier;
 #[doc(hidden)]
 pub mod knowledge_retrieval_pipeline;
 mod lexical_projection;
+#[cfg(test)]
+mod resident_checkpoint_atomicity_tests;
 pub use lexical_projection::LexicalQueryTermPolicy;
 mod lexical_readiness;
 #[cfg(all(test, feature = "full-text-search"))]
@@ -209,7 +213,7 @@ use analyzer_stream::{document_token_fields, visit_token_list, TokenOccurrence};
 use cjk_tokenizer::is_cjk_search_char;
 use generation_cleanup::SearchProjectionCleanupState;
 pub use generation_cleanup::{
-    SearchProjectionCleanupOptions, SearchProjectionCleanupReport,
+    SearchProjectionCleanupOptions, SearchProjectionCleanupOutcome, SearchProjectionCleanupReport,
     SEARCH_PROJECTION_CLEANUP_PROTOCOL,
 };
 pub use knowledge_retrieval_pipeline::{KnowledgeRetrievalPipelineReport, KnowledgeRetrievalStage};
@@ -233,14 +237,15 @@ pub use out_of_core::{
     SearchMutationInspectionInput, SearchMutationInspectionStep, SearchMutationSortStep,
     SearchMutationSortStepLimits, SearchMutationSortStepUsage, SearchOutOfCoreBaselineComparison,
     SearchOutOfCoreCandidate, SearchOutOfCoreConfig, SearchOutOfCoreDeltaComparison,
-    SearchOutOfCoreExecutionContext, SearchOutOfCoreGenerationBuildOptions,
-    SearchOutOfCoreGenerationBuildReport, SearchOutOfCoreGenerationUpdate,
-    SearchOutOfCoreGenerationWriter, SearchOutOfCoreHydrationOutput, SearchOutOfCoreMetrics,
-    SearchOutOfCoreMutationWriter, SearchOutOfCoreOutput, SearchOutOfCorePreparedGeneration,
-    SearchOutOfCorePreparedUpdate, SearchOutOfCoreReader, SearchOutOfCoreRefreshReport,
-    SearchOutOfCoreSegmentCompaction, SearchOutOfCoreSegmentCompactionPolicy,
-    SearchOutOfCoreSegmentCompactionReport, SearchOutOfCoreSegmentCompactionStopReason,
-    SearchOutOfCoreUnorderedMutationWriter, SearchOutOfCoreUnorderedReplacementWriter,
+    SearchOutOfCoreDocumentLookup, SearchOutOfCoreExecutionContext,
+    SearchOutOfCoreGenerationBuildOptions, SearchOutOfCoreGenerationBuildReport,
+    SearchOutOfCoreGenerationUpdate, SearchOutOfCoreGenerationWriter,
+    SearchOutOfCoreHydrationOutput, SearchOutOfCoreMetrics, SearchOutOfCoreMutationWriter,
+    SearchOutOfCoreOutput, SearchOutOfCorePreparedGeneration, SearchOutOfCorePreparedUpdate,
+    SearchOutOfCoreReader, SearchOutOfCoreRefreshReport, SearchOutOfCoreSegmentCompaction,
+    SearchOutOfCoreSegmentCompactionPolicy, SearchOutOfCoreSegmentCompactionReport,
+    SearchOutOfCoreSegmentCompactionStopReason, SearchOutOfCoreUnorderedMutationWriter,
+    SearchOutOfCoreUnorderedReplacementWriter, SearchProjectionEpochAdvanceReport,
     SearchQueryError, SearchQueryResult, SearchRetainedOutput, SearchStagingCleanupReport,
     SearchTextSeedOutput, SearchTextSeedReport, SearchUnorderedMutationLimits,
     SearchUnorderedMutationReport, SearchVerifiedBody,
@@ -282,6 +287,14 @@ const SEARCH_SNAPSHOT_FILE: &str = "search_projection.hawdb";
 const SEARCH_SEGMENT_DESCRIPTOR_FILE: &str = "search_projection_segments.hawdb";
 const SEARCH_SEGMENT_PAYLOAD_FILE: &str = "search_projection_segment_payloads.hawdb";
 const SEARCH_SEGMENT_PAYLOAD_ARTIFACT_ID: u64 = 1;
+
+/// Generation-named resident snapshot. An unregistered resident checkpoint
+/// writes this before its selector; `search_projection.hawdb` is then a hard
+/// link to the generation the out-of-core manifest selects.
+fn resident_snapshot_file(generation: u64) -> String {
+    format!("search_projection.{generation}.hawdb")
+}
+
 const RABITQ_CANDIDATE_BACKEND: &str = "hawdb_rabitq_candidate_projection";
 const DISKANN_CANDIDATE_BACKEND: &str = "hawdb_diskann_candidate_projection";
 
@@ -306,8 +319,8 @@ const SEARCH_RABITQ_PROJECTION_PREFIX: &str = "search_rabitq.";
 const SEARCH_RABITQ_PROJECTION_SUFFIX: &str = ".hawdb";
 pub const FULL_REINDEX_MARKER: &str = ".reindex_needed";
 pub const METADATA_REPAIR_MARKER: &str = ".projection_metadata_repair_needed";
-const BM25_K1: f64 = 1.2;
-const BM25_B: f64 = 0.75;
+/// The BM25 constants shared with the SQL search index access path.
+use hawdb_executor::bm25::{BM25_B, BM25_K1};
 const TITLE_TERM_FREQUENCY_WEIGHT: usize = 2;
 const RRF_K: f64 = 60.0;
 const SEARCH_COMPRESSION_HEADER: &str = "HAWDB_COMPRESSED_V1";
@@ -671,6 +684,16 @@ pub struct SearchPredicatePushdownReport {
     pub persisted_segment_descriptor_used: bool,
     pub physical_range_read_count: usize,
     pub physical_bytes_read: u64,
+    /// Scanned segments whose candidates came from metadata value postings
+    /// instead of decoding their metadata records.
+    pub postings_segment_count: usize,
+    /// Equality/IN predicates compiled into the segment postings plan.
+    pub postings_predicate_count: usize,
+    /// Predicates left for metadata evaluation after a postings prefilter.
+    pub postings_residual_predicate_count: usize,
+    /// Scanned segments where postings narrowed the metadata records evaluated
+    /// by residual predicates.
+    pub postings_prefiltered_segment_count: usize,
     pub field_summaries: Vec<SearchPredicateFieldPruningReport>,
 }
 
@@ -817,19 +840,22 @@ impl SearchAccessControlContext {
         }
     }
 
+    /// Refuses a context the caller built incorrectly. These are caller
+    /// mistakes, not storage faults, so they are `Semantic` like the core
+    /// `QueryAccessControlContext::validate` (#1767).
     fn validate(&self) -> Result<()> {
         if self.policy_epoch == 0 {
-            return Err(HawDBError::Storage(
+            return Err(HawDBError::Semantic(
                 "access control context requires a non-zero policy epoch".to_string(),
             ));
         }
         if self.visibility_metadata_field.trim().is_empty() {
-            return Err(HawDBError::Storage(
+            return Err(HawDBError::Semantic(
                 "access control context requires a visibility metadata field".to_string(),
             ));
         }
         if self.allowed_visibility_values.is_empty() {
-            return Err(HawDBError::Storage(
+            return Err(HawDBError::Semantic(
                 "access control context requires at least one visibility value".to_string(),
             ));
         }
@@ -838,11 +864,51 @@ impl SearchAccessControlContext {
             .iter()
             .any(|value| value.trim().is_empty())
         {
-            return Err(HawDBError::Storage(
+            return Err(HawDBError::Semantic(
                 "access control context visibility values must be non-empty".to_string(),
             ));
         }
         Ok(())
+    }
+
+    /// Refuses search options whose own policy epoch disagrees with this
+    /// context. Both the resident and the out-of-core reader call this.
+    fn check_options_policy_epoch(&self, policy_epoch: Option<u64>) -> Result<()> {
+        match policy_epoch {
+            Some(policy_epoch) if policy_epoch != self.policy_epoch => {
+                Err(HawDBError::Semantic(format!(
+                    "search options policy epoch {policy_epoch} does not match access control policy epoch {}",
+                    self.policy_epoch
+                )))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Requests each caller check refuses: `(options policy epoch, context)`.
+    /// Shared by the resident and out-of-core reader tests (#1767).
+    #[cfg(all(test, feature = "acl", feature = "full-text-search"))]
+    pub(crate) fn invalid_requests_for_test() -> Vec<(Option<u64>, Self)> {
+        vec![
+            (Some(8), Self::visibility_scopes(7, "space_id", ["team"])),
+            (None, Self::visibility_scopes(0, "space_id", ["team"])),
+            (None, Self::visibility_scopes(7, " ", ["team"])),
+            (
+                None,
+                Self::visibility_scopes(7, "space_id", Vec::<String>::new()),
+            ),
+            (None, Self::visibility_scopes(7, "space_id", ["team", " "])),
+        ]
+    }
+
+    /// The metadata filters a query runs with under this context: `options`'
+    /// filters plus the visibility predicate, after both caller checks.
+    pub(crate) fn effective_query_filters(
+        &self,
+        options: &SearchQueryOptions,
+    ) -> Result<BTreeMap<String, String>> {
+        self.check_options_policy_epoch(options.policy_epoch)?;
+        self.effective_metadata_filters(&options.metadata_filters)
     }
 
     pub fn effective_metadata_filters(
@@ -930,6 +996,10 @@ impl VectorSearchKernelPreference {
     }
 }
 
+/// Default DiskANN navigation beam: the beam of a query that sets none, and
+/// the default of `SearchOutOfCoreConfig::default_navigation_beam`.
+pub const DEFAULT_NAVIGATION_BEAM: usize = 1024;
+
 #[derive(Debug, Clone, Copy)]
 pub struct VectorSearchExecutionOptions<'a> {
     pub max_parallelism: NonZeroUsize,
@@ -938,6 +1008,8 @@ pub struct VectorSearchExecutionOptions<'a> {
     pub task_context: Option<&'a hawdb_core::RuntimeTaskContext>,
     capture_candidate_ids: bool,
     exact: bool,
+    navigation_beam: Option<NonZeroUsize>,
+    candidate_window: Option<NonZeroUsize>,
 }
 
 impl<'a> VectorSearchExecutionOptions<'a> {
@@ -953,6 +1025,8 @@ impl<'a> VectorSearchExecutionOptions<'a> {
             task_context,
             capture_candidate_ids: false,
             exact: false,
+            navigation_beam: None,
+            candidate_window: None,
         }
     }
 
@@ -982,6 +1056,49 @@ impl<'a> VectorSearchExecutionOptions<'a> {
         self.capture_candidate_ids = true;
         self
     }
+
+    /// DiskANN navigation beam for this query (default 1024), never below the
+    /// requested result count. A smaller beam trades recall for speed. The
+    /// traversal stays bounded by `max_working_bytes`, and a beam whose
+    /// workspace does not fit is refused, not truncated.
+    pub fn with_navigation_beam(mut self, beam: NonZeroUsize) -> Self {
+        self.navigation_beam = Some(beam);
+        self
+    }
+
+    /// Approximate candidates generated and reranked for this query: the
+    /// RaBitQ rerank depth and DiskANN candidate count. Without it, the window
+    /// is `max(limit, rank_window, 128)` (out of core, at most
+    /// `max_vector_candidates`). The window never goes below the limit or rank
+    /// window. A window below the default 128 does less work but can lower
+    /// recall, because fewer approximate candidates reach the exact rerank.
+    /// Out of core, a window above the reader's `max_vector_candidates` is
+    /// refused; resident search stays bounded by its working memory.
+    pub fn with_candidate_window(mut self, window: NonZeroUsize) -> Self {
+        self.candidate_window = Some(window);
+        self
+    }
+
+    #[cfg(feature = "vector-search")]
+    pub(crate) fn navigation_beam(&self, top_k: usize) -> usize {
+        top_k.max(self.navigation_beam.map_or(
+            crate::vector_execution::DISKANN_NAVIGATION_BEAM,
+            NonZeroUsize::get,
+        ))
+    }
+
+    #[cfg(feature = "vector-search")]
+    pub(crate) fn candidate_window(&self) -> Option<usize> {
+        self.candidate_window.map(NonZeroUsize::get)
+    }
+
+    /// The resident DiskANN candidate floor: the per-query window, or the
+    /// default navigation window.
+    #[cfg(feature = "vector-search")]
+    pub(crate) fn resident_candidate_window(&self) -> usize {
+        self.candidate_window()
+            .unwrap_or(hawdb_vector_projection::diskann::DiskAnnSearchOptions::default().beam_width)
+    }
 }
 
 impl Default for VectorSearchExecutionOptions<'_> {
@@ -993,6 +1110,8 @@ impl Default for VectorSearchExecutionOptions<'_> {
             task_context: None,
             capture_candidate_ids: false,
             exact: false,
+            navigation_beam: None,
+            candidate_window: None,
         }
     }
 }
@@ -1135,6 +1254,8 @@ impl<'a> AdaptiveVectorExecutionControls<'a> {
             task_context: None,
             capture_candidate_ids: false,
             exact: false,
+            navigation_beam: None,
+            candidate_window: None,
         },
     };
     const PERSISTED: Self = Self {
@@ -1147,6 +1268,8 @@ impl<'a> AdaptiveVectorExecutionControls<'a> {
             task_context: None,
             capture_candidate_ids: false,
             exact: false,
+            navigation_beam: None,
+            candidate_window: None,
         },
     };
     const RECALL_CANDIDATES: Self = Self {
@@ -1159,6 +1282,8 @@ impl<'a> AdaptiveVectorExecutionControls<'a> {
             task_context: None,
             capture_candidate_ids: true,
             exact: false,
+            navigation_beam: None,
+            candidate_window: None,
         },
     };
 
@@ -1547,6 +1672,9 @@ pub struct SearchProjectionDeltaReport {
     pub source_graph_commit_epoch_before: Option<u64>,
     pub source_graph_commit_epoch_after: Option<u64>,
     pub source_graph_commit_epoch_updated: bool,
+    /// Generation cleanup after the publication that made this delta
+    /// durable; `None` when the call published nothing.
+    pub projection_cleanup: Option<SearchProjectionCleanupOutcome>,
 }
 
 #[derive(Debug)]
@@ -1572,6 +1700,11 @@ pub struct SearchIndex {
     import_source_graph_commit_epoch: Option<u64>,
     source_graph_commit_epoch: Option<u64>,
     durable_source_graph_commit_epoch: Mutex<Option<u64>>,
+    /// The epoch the loaded snapshot, lexical and vector artifacts are stamped
+    /// with, when a verified metadata-only advance (#1756) moved
+    /// `source_graph_commit_epoch` past it. Cleared by the next checkpoint,
+    /// which restamps every artifact.
+    artifact_source_graph_commit_epoch: Mutex<Option<u64>>,
     marker_lines: Mutex<BTreeMap<String, Vec<String>>>,
     analyzer_lexicon: Arc<SearchAnalyzerLexicon>,
     lexical_projection: Mutex<Option<Arc<LexicalProjectionReader>>>,
@@ -1587,6 +1720,7 @@ pub struct SearchIndex {
     segment_payload_reader: Option<Arc<hawdb_storage::scan::FileSegmentRangeReader>>,
     range_read_config: SearchRangeReadConfig,
     cleanup_state: Mutex<SearchProjectionCleanupState>,
+    cleanup_options: SearchProjectionCleanupOptions,
     runtime_capabilities: RuntimeCapabilities,
     telemetry: Option<Arc<dyn TelemetrySink>>,
 }
@@ -1636,7 +1770,7 @@ impl SearchIndex {
         let loaded = if registered {
             index.load_snapshot_from_publication(publication)
         } else {
-            index.load_snapshot()
+            out_of_core::recover_resident_aliases(path).and_then(|()| index.load_snapshot())
         };
         loaded.map_err(|error| {
             if registered && !matches!(error, HawDBError::FileDescriptors(_)) {
@@ -1650,11 +1784,11 @@ impl SearchIndex {
                 "metadata-only vector Consumers require registered native reopen".into(),
             ));
         }
-        if registered {
-            out_of_core::validate_captured_resident_snapshot_identity(&index, publication)?;
+        let advanced_source_epoch = if registered {
+            out_of_core::validate_captured_resident_snapshot_identity(&index, publication)?
         } else {
-            out_of_core::validate_resident_snapshot_identity(&index, path)?;
-        }
+            out_of_core::validate_resident_snapshot_identity(&index, path)?
+        };
         if index.consumer_binding.is_some() != registered {
             return Err(HawDBError::Storage(
                 "projection consumer lifecycle does not match snapshot binding".into(),
@@ -1676,6 +1810,11 @@ impl SearchIndex {
             index.load_registered_rabitq_projection(publication)?;
         } else {
             index.load_rabitq_projection()?;
+        }
+        // Every artifact above was validated against its content stamp. Only
+        // now report the epoch the selector advanced to (#1756).
+        if let Some(epoch) = advanced_source_epoch {
+            index.apply_published_epoch_advance(epoch);
         }
         index.capture_segment_payload_reader(publication)?;
         for marker in [FULL_REINDEX_MARKER, METADATA_REPAIR_MARKER] {
@@ -2194,6 +2333,7 @@ impl SearchIndex {
             source_graph_commit_epoch_before,
             source_graph_commit_epoch_after,
             source_graph_commit_epoch_updated,
+            projection_cleanup: None,
         })
     }
 
@@ -2250,6 +2390,25 @@ impl SearchIndex {
     pub fn document_count(&self) -> usize {
         self.vector_document_summary
             .map_or(self.documents.len(), |summary| summary.document_count)
+    }
+
+    /// The largest eligible-set size an exact vector-only read of this
+    /// resident index under `working_bytes` is guaranteed to serve, for
+    /// eligible document IDs of at most `max_document_id_bytes` bytes. Raw
+    /// candidates retain a geometrically grown vector (at most two slots per
+    /// candidate) plus their IDs; a raw rerank also keeps a lookup over every
+    /// indexed document and two ID copies per candidate. A larger read may be
+    /// refused; it is never truncated.
+    pub fn exact_vector_search_capacity(
+        &self,
+        working_bytes: usize,
+        max_document_id_bytes: usize,
+    ) -> usize {
+        resident_exact_vector_search_capacity(
+            self.document_count(),
+            working_bytes,
+            max_document_id_bytes,
+        )
     }
 
     /// Returns vector-bearing document IDs accepted by HawDB's metadata
@@ -2801,6 +2960,16 @@ impl SearchIndex {
             .max(self.documents.len())
     }
 
+    /// Limits for the generation cleanup that runs after every checkpoint.
+    /// Not persisted: a reopened index starts at the defaults.
+    pub fn set_projection_cleanup_options(&mut self, options: SearchProjectionCleanupOptions) {
+        self.cleanup_options = options;
+    }
+
+    pub fn projection_cleanup_options(&self) -> SearchProjectionCleanupOptions {
+        self.cleanup_options
+    }
+
     pub fn projection_cleanup_report(&self) -> SearchProjectionCleanupReport {
         self.cleanup_state
             .lock()
@@ -2893,25 +3062,41 @@ impl SearchIndex {
             let publication_lease = publication
                 .or(owned_publication.as_ref())
                 .expect("checkpoint retains publication authority");
-            let snapshot_path = path.join(SEARCH_SNAPSHOT_FILE);
-            let snapshot = snapshot_writer::write_search_snapshot_with_context(
-                &snapshot_path,
-                snapshot_writer::SearchSnapshotMetadata {
-                    source_graph_commit_epoch: self.source_graph_commit_epoch,
-                    import_source_graph_commit_epoch: self.import_source_graph_commit_epoch,
-                    embedding_manifest: self.embedding_manifest.as_ref(),
-                    embedding_dimension: self.embedding_dimension,
-                    consumer_binding: self.consumer_binding.as_ref(),
-                    vector_index_descriptor: self.vector_index_descriptor.as_ref(),
-                    vector_scoring: self.vector_scoring,
-                    vector_document_summary: None,
-                    canonical_vector_source_epoch: None,
-                    rabitq_checkpoint: self.rabitq_checkpoint,
-                },
-                self.documents.values(),
-                &memory,
-                task,
-            )?;
+            // Unregistered resident checkpoints write every artifact under a
+            // generation name and commit with the manifest rename. Registered
+            // Consumers keep their legacy order; their own publication record
+            // selects the producer closure.
+            let deferred_aliases = self.consumer_binding.is_none();
+            if deferred_aliases {
+                // `open` may have created this directory without persisting
+                // its entry; a durable selector inside it must not vanish.
+                hawdb_storage::durability::sync_directory_ancestors(path)?;
+            }
+            let write_snapshot = |target: &Path| {
+                snapshot_writer::write_search_snapshot_with_context(
+                    target,
+                    snapshot_writer::SearchSnapshotMetadata {
+                        source_graph_commit_epoch: self.source_graph_commit_epoch,
+                        import_source_graph_commit_epoch: self.import_source_graph_commit_epoch,
+                        embedding_manifest: self.embedding_manifest.as_ref(),
+                        embedding_dimension: self.embedding_dimension,
+                        consumer_binding: self.consumer_binding.as_ref(),
+                        vector_index_descriptor: self.vector_index_descriptor.as_ref(),
+                        vector_scoring: self.vector_scoring,
+                        vector_document_summary: None,
+                        canonical_vector_source_epoch: None,
+                        rabitq_checkpoint: self.rabitq_checkpoint,
+                    },
+                    self.documents.values(),
+                    &memory,
+                    task,
+                )
+            };
+            let legacy_snapshot = if deferred_aliases {
+                None
+            } else {
+                Some(write_snapshot(&path.join(SEARCH_SNAPSHOT_FILE))?)
+            };
             let generation =
                 out_of_core::next_generation(path, self.lexical_config.max_manifest_bytes.get())?;
             #[cfg(feature = "vector-search")]
@@ -2919,12 +3104,21 @@ impl SearchIndex {
                 self.write_rabitq_projection(path, generation, task, publication_lease)?;
             #[cfg(not(feature = "vector-search"))]
             let rabitq_bytes_written = 0;
+            #[cfg(test)]
+            out_of_core::resident_checkpoint_fault(out_of_core::ResidentCheckpointStep::RaBitQ)?;
+            let snapshot = match legacy_snapshot {
+                Some(snapshot) => snapshot,
+                None => write_snapshot(&path.join(resident_snapshot_file(generation)))?,
+            };
+            #[cfg(test)]
+            out_of_core::resident_checkpoint_fault(out_of_core::ResidentCheckpointStep::Snapshot)?;
             let publication = out_of_core::write_resident_artifacts(
                 self,
                 path,
                 &snapshot,
                 out_of_core::ResidentPublicationPlan {
                     generation,
+                    deferred_aliases,
                     #[cfg(feature = "vector-search")]
                     rabitq,
                 },
@@ -2937,8 +3131,15 @@ impl SearchIndex {
                 .durable_source_graph_commit_epoch
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.source_graph_commit_epoch;
-            self.retry_projection_cleanup_under_publication(
-                SearchProjectionCleanupOptions::default(),
+            // Every published artifact now carries the current epoch.
+            *self
+                .artifact_source_graph_commit_epoch
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+            #[cfg(test)]
+            out_of_core::resident_checkpoint_fault(out_of_core::ResidentCheckpointStep::Cleanup)?;
+            let cleanup = self.retry_projection_cleanup_under_publication(
+                self.cleanup_options,
                 publication_lease,
             );
             if let Some(binding) = &self.consumer_binding {
@@ -2955,7 +3156,11 @@ impl SearchIndex {
                         sha256: snapshot.encoded_sha256.to_string(),
                     });
             }
-            Ok(snapshot.finish(publication.generation, projection_bytes_written))
+            Ok(snapshot.finish(
+                publication.generation,
+                projection_bytes_written,
+                Some(SearchProjectionCleanupOutcome::from(&cleanup)),
+            ))
         })();
         if let Some(telemetry) = &self.telemetry {
             let (byte_count, generation) = result
@@ -3818,17 +4023,7 @@ impl SearchIndex {
         let limit = options.limit;
         let document_count = self.documents.len();
         let metadata_filters = match access_control {
-            Some(access_control) => {
-                if let Some(policy_epoch) = options.policy_epoch
-                    && policy_epoch != access_control.policy_epoch
-                {
-                    return Err(HawDBError::Storage(format!(
-                        "search options policy epoch {policy_epoch} does not match access control policy epoch {}",
-                        access_control.policy_epoch
-                    )));
-                }
-                access_control.effective_metadata_filters(&options.metadata_filters)?
-            }
+            Some(access_control) => access_control.effective_query_filters(&options)?,
             None => options.metadata_filters.clone(),
         };
         let policy_epoch = access_control
@@ -3930,13 +4125,10 @@ impl SearchIndex {
                             && query_can_generate_candidates
                         {
                             let candidate_limit = options
-                            .offset
-                            .saturating_add(limit)
-                            .max(options.rank_window.unwrap_or(0))
-                            .max(
-                                hawdb_vector_projection::diskann::DiskAnnSearchOptions::default()
-                                    .beam_width,
-                            );
+                                .offset
+                                .saturating_add(limit)
+                                .max(options.rank_window.unwrap_or(0))
+                                .max(vector_execution_options.resident_candidate_window());
                             if self.resident_diskann.admits_default_search(
                                 self,
                                 &filtered_documents,
@@ -4979,6 +5171,7 @@ impl Default for SearchIndex {
             import_source_graph_commit_epoch: None,
             source_graph_commit_epoch: None,
             durable_source_graph_commit_epoch: Mutex::new(None),
+            artifact_source_graph_commit_epoch: Mutex::new(None),
             marker_lines: Mutex::new(BTreeMap::new()),
             analyzer_lexicon: Arc::default(),
             lexical_projection: Mutex::new(None),
@@ -4994,6 +5187,7 @@ impl Default for SearchIndex {
             segment_payload_reader: None,
             range_read_config: SearchRangeReadConfig::default(),
             cleanup_state: Mutex::new(SearchProjectionCleanupState::default()),
+            cleanup_options: SearchProjectionCleanupOptions::default(),
             runtime_capabilities: crate::compiled_runtime_capabilities(),
             telemetry: None,
         }
@@ -6161,6 +6355,10 @@ fn metadata_predicate_pushdown(
         persisted_segment_descriptor_used: false,
         physical_range_read_count: 0,
         physical_bytes_read: 0,
+        postings_segment_count: 0,
+        postings_predicate_count: 0,
+        postings_residual_predicate_count: 0,
+        postings_prefiltered_segment_count: 0,
         field_summaries: Vec::new(),
     };
     SearchMetadataPredicatePushdown { predicates, report }
@@ -6173,6 +6371,20 @@ fn search_document_matches_predicates(
     search_metadata_matches_predicates(&document.id, &document.metadata, predicates)
 }
 
+fn search_metadata_matches_predicate(
+    id: &str,
+    metadata: &BTreeMap<String, String>,
+    predicate: &SearchPredicate,
+) -> bool {
+    let header = crate::document_encoding::Header {
+        id,
+        title: "",
+        embedding: None,
+        metadata,
+    };
+    search_header_matches_predicate(header, predicate)
+}
+
 fn search_metadata_matches_predicates(
     id: &str,
     metadata: &BTreeMap<String, String>,
@@ -6181,16 +6393,10 @@ fn search_metadata_matches_predicates(
     if predicates.is_unsatisfiable() {
         return false;
     }
-    let header = crate::document_encoding::Header {
-        id,
-        title: "",
-        embedding: None,
-        metadata,
-    };
     predicates
         .predicates()
         .iter()
-        .all(|predicate| search_header_matches_predicate(header, predicate))
+        .all(|predicate| search_metadata_matches_predicate(id, metadata, predicate))
 }
 
 struct FilteredSearchDocuments<'a> {
@@ -6656,7 +6862,9 @@ impl SearchFilterSegmentSummary {
         if predicates.is_unsatisfiable() {
             return false;
         }
-        let summary = self.storage_summary();
+        // Each predicate is pruned on its own field, so only those fields
+        // are summarized (#1613).
+        let summary = self.storage_summary_for(predicates);
         predicates.predicates().iter().all(|predicate| {
             if !self.may_match_predicate(predicate) {
                 return false;
@@ -6672,7 +6880,16 @@ impl SearchFilterSegmentSummary {
         })
     }
 
-    fn storage_summary(&self) -> SegmentSummary {
+    fn storage_summary_for(&self, predicates: &SearchPredicateSet) -> SegmentSummary {
+        let fields = predicates
+            .predicates()
+            .iter()
+            .map(|predicate| predicate.field().name())
+            .collect::<BTreeSet<_>>();
+        self.storage_summary_fields(|field| fields.contains(field))
+    }
+
+    fn storage_summary_fields(&self, include: impl Fn(&str) -> bool) -> SegmentSummary {
         let mut segment = SegmentSummary::new(0, self.document_count as u64);
         for field in self
             .present_counts
@@ -6680,6 +6897,7 @@ impl SearchFilterSegmentSummary {
             .chain(self.values.keys())
             .chain(self.numeric_ranges.keys())
             .chain(self.timestamp_ranges.keys())
+            .filter(|field| include(field))
         {
             if segment.field(field).is_some() {
                 continue;
@@ -6967,7 +7185,9 @@ impl SearchSegmentDescriptorEntry {
         if predicates.is_unsatisfiable() {
             return false;
         }
-        let summary = self.storage_summary();
+        // Each predicate is pruned on its own field, so only those fields
+        // are summarized (#1613).
+        let summary = self.storage_summary_for(predicates);
         predicates.predicates().iter().all(|predicate| {
             if !self.may_match_predicate(predicate) {
                 return false;
@@ -6983,9 +7203,18 @@ impl SearchSegmentDescriptorEntry {
         })
     }
 
-    fn storage_summary(&self) -> SegmentSummary {
+    fn storage_summary_for(&self, predicates: &SearchPredicateSet) -> SegmentSummary {
+        let fields = predicates
+            .predicates()
+            .iter()
+            .map(|predicate| predicate.field().name())
+            .collect::<BTreeSet<_>>();
         let mut segment = SegmentSummary::new(0, self.document_count as u64);
-        for (field, persisted) in &self.metadata {
+        for (field, persisted) in self
+            .metadata
+            .iter()
+            .filter(|(field, _)| fields.contains(field.as_str()))
+        {
             let mut summary = FieldSummary::new(self.document_count as u64)
                 .with_presence_counts(
                     persisted.present_count as u64,
@@ -7255,9 +7484,16 @@ fn parse_label_metadata_values(value: &str) -> Vec<Cow<'_, str>> {
 }
 
 fn metadata_value_matches(key: &str, actual: &str, expected: &str) -> bool {
+    normalize_metadata_posting_value(key, actual) == normalize_metadata_posting_value(key, expected)
+}
+
+/// Canonical value shared by metadata matching and persistent postings.
+fn normalize_metadata_posting_value(key: &str, value: &str) -> String {
     match key {
-        "kind" => metadata_kind_matches(actual, expected),
-        _ => normalize_metadata_filter_value(actual) == normalize_metadata_filter_value(expected),
+        "kind" => normalized_projection_kind(value)
+            .map(str::to_string)
+            .unwrap_or_else(|| value.to_string()),
+        _ => normalize_metadata_filter_value(value),
     }
 }
 
@@ -7394,16 +7630,6 @@ fn metadata_timestamp_range_may_match(
         | SearchPredicateOp::NotIn(_)
         | SearchPredicateOp::Exists
         | SearchPredicateOp::IsMissing => true,
-    }
-}
-
-fn metadata_kind_matches(actual: &str, expected: &str) -> bool {
-    match (
-        normalized_projection_kind(actual),
-        normalized_projection_kind(expected),
-    ) {
-        (Some(actual), Some(expected)) => actual == expected,
-        _ => actual == expected,
     }
 }
 
@@ -8129,6 +8355,60 @@ fn encode_metadata(metadata: &BTreeMap<String, String>) -> String {
         .join(";")
 }
 
+/// The metadata keys a candidate filter reads, hex-encoded as stored, so a
+/// record's other pairs are skipped without being decoded (#1613).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct MetadataKeys(BTreeSet<String>);
+
+impl MetadataKeys {
+    pub(crate) fn contains(&self, encoded_key: &str) -> bool {
+        self.0.contains(encoded_key)
+    }
+
+    /// Every key `predicates` read: a predicate reads the metadata entry of
+    /// its field's name (see [`search_header_field_values`]).
+    pub(crate) fn for_predicates(predicates: &SearchPredicateSet) -> Self {
+        Self::for_predicate_iter(predicates.predicates())
+    }
+
+    pub(crate) fn for_predicate_iter<'a>(
+        predicates: impl IntoIterator<Item = &'a SearchPredicate>,
+    ) -> Self {
+        Self(
+            predicates
+                .into_iter()
+                .map(|predicate| encode_string(predicate.field().name()))
+                .collect(),
+        )
+    }
+}
+
+/// [`decode_metadata`] restricted to `keys`. Every pair must still be a
+/// `key=value` pair; pairs with other keys are not hex-decoded.
+pub(crate) fn decode_metadata_keys(
+    input: &str,
+    keys: Option<&MetadataKeys>,
+) -> Result<BTreeMap<String, String>> {
+    let Some(keys) = keys else {
+        return decode_metadata(input);
+    };
+    let mut metadata = BTreeMap::new();
+    if input.is_empty() {
+        return Ok(metadata);
+    }
+    for pair in input.split(';') {
+        let Some((key, value)) = pair.split_once('=') else {
+            return Err(HawDBError::Storage(format!(
+                "invalid metadata pair: {pair}"
+            )));
+        };
+        if keys.0.contains(key) {
+            metadata.insert(decode_string(key)?, decode_string(value)?);
+        }
+    }
+    Ok(metadata)
+}
+
 fn decode_metadata(input: &str) -> Result<BTreeMap<String, String>> {
     let mut metadata = BTreeMap::new();
     if input.is_empty() {
@@ -8166,11 +8446,12 @@ fn decode_search_document_line(line: &str) -> Result<SearchDocument> {
 
 fn write_search_segment_payloads<T>(
     path: &Path,
+    file_name: &str,
     documents: &impl DocumentView,
     descriptor: &mut SearchSegmentDescriptor,
     finish: impl FnOnce(&mut File) -> Result<T>,
 ) -> Result<T> {
-    let artifact_path = path.join(SEARCH_SEGMENT_PAYLOAD_FILE);
+    let artifact_path = path.join(file_name);
     let tmp_path = artifact_path.with_extension("hawdb.tmp");
     let mut offset = 0u64;
     let reference;
@@ -8226,18 +8507,25 @@ fn write_search_segment_descriptor_bounded(
     descriptor: &SearchSegmentDescriptor,
     max_bytes: u64,
 ) -> Result<u64> {
-    write_search_segment_descriptor_output(path, descriptor, max_bytes, |_| Ok(()))
-        .map(|(length, ())| length)
+    write_search_segment_descriptor_output(
+        path,
+        SEARCH_SEGMENT_DESCRIPTOR_FILE,
+        descriptor,
+        max_bytes,
+        |_| Ok(()),
+    )
+    .map(|(length, ())| length)
 }
 
 fn write_search_segment_descriptor_output<T>(
     path: &Path,
+    file_name: &str,
     descriptor: &SearchSegmentDescriptor,
     max_bytes: u64,
     finish: impl FnOnce(&mut File) -> Result<T>,
 ) -> Result<(u64, T)> {
     let encoding = document_encoding::DescriptorEncoding::new(descriptor, max_bytes)?;
-    let descriptor_path = path.join(SEARCH_SEGMENT_DESCRIPTOR_FILE);
+    let descriptor_path = path.join(file_name);
     let tmp_path = descriptor_path.with_extension("hawdb.tmp");
     let reference;
     {
@@ -16304,6 +16592,61 @@ mod tests {
 
     #[cfg(all(feature = "acl", feature = "full-text-search"))]
     #[test]
+    fn resident_access_control_caller_mistakes_are_semantic_errors() {
+        let mut index = SearchIndex::in_memory();
+        index.set_runtime_capabilities(
+            RuntimeCapabilities::default().with(RuntimeCapability::AccessControl, true),
+        );
+        index
+            .upsert(SearchDocument {
+                id: "allowed".to_string(),
+                title: "Graph".to_string(),
+                content: "storage".to_string(),
+                embedding: None,
+                metadata: BTreeMap::from([("space_id".to_string(), "team".to_string())]),
+            })
+            .unwrap();
+        let options = |policy_epoch| SearchQueryOptions {
+            limit: 10,
+            offset: 0,
+            rank_window: None,
+            fusion_weights: SearchFusionWeights::default(),
+            metadata_filters: BTreeMap::new(),
+            policy_epoch,
+        };
+        // A matching epoch and a valid context still search.
+        index
+            .try_search_with_options_access_control(
+                "graph",
+                None,
+                SearchMode::Text,
+                options(Some(7)),
+                SearchAccessControlContext::visibility_scopes(7, "space_id", ["team"]),
+            )
+            .unwrap();
+        // A mismatched epoch or a malformed context is the caller's mistake,
+        // not a storage fault (#1767).
+        for (policy_epoch, access_control) in
+            SearchAccessControlContext::invalid_requests_for_test()
+        {
+            let error = index
+                .try_search_with_options_access_control(
+                    "graph",
+                    None,
+                    SearchMode::Text,
+                    options(policy_epoch),
+                    access_control.clone(),
+                )
+                .unwrap_err();
+            assert!(
+                matches!(error, HawDBError::Semantic(_)),
+                "{access_control:?}: {error:?}"
+            );
+        }
+    }
+
+    #[cfg(all(feature = "acl", feature = "full-text-search"))]
+    #[test]
     fn segmented_lexical_acl_excludes_unauthorized_documents() {
         let path = unique_test_dir("segmented_lexical_acl");
         let mut expected_index = SearchIndex::in_memory();
@@ -16411,3 +16754,20 @@ mod tests {
 }
 
 mod graph_store_adapter;
+
+fn resident_exact_vector_search_capacity(
+    document_count: usize,
+    working_bytes: usize,
+    max_document_id_bytes: usize,
+) -> usize {
+    use hawdb_executor::{VectorCandidate, VectorRawScore};
+    let id = max_document_id_bytes;
+    let candidates = working_bytes / (2 * size_of::<VectorCandidate>()).saturating_add(id).max(1);
+    let lookup = document_count.saturating_mul(3 * size_of::<(&str, &SearchDocument)>());
+    let rerank = working_bytes.saturating_sub(lookup)
+        / size_of::<VectorCandidate>()
+            .saturating_add(size_of::<VectorRawScore>())
+            .saturating_add(id.saturating_mul(2))
+            .max(1);
+    candidates.min(rerank)
+}

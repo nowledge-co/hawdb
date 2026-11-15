@@ -47,6 +47,18 @@ fn scalar_type(value: RelationalScalarType) -> SqlDataType {
         RelationalScalarType::Bytea => SqlDataType::Bytea,
         RelationalScalarType::Uuid => SqlDataType::Uuid,
         RelationalScalarType::Vector(dimension) => SqlDataType::Vector(dimension),
+        RelationalScalarType::Timestamp(precision) => {
+            SqlDataType::Timestamp(hawdb_core::sql_timestamp::TimestampType {
+                zoned: false,
+                precision,
+            })
+        }
+        RelationalScalarType::TimestampTz(precision) => {
+            SqlDataType::Timestamp(hawdb_core::sql_timestamp::TimestampType {
+                zoned: true,
+                precision,
+            })
+        }
     }
 }
 
@@ -154,4 +166,49 @@ fn real_ddl_snapshot_binds_creation_and_existing_graph_table_queries() {
     let vertices = snapshot.source_table(&["vertices".into()]).unwrap();
     assert!(!vertices.columns[0].nullable);
     assert!(vertices.columns[1..].iter().all(|column| column.nullable));
+}
+
+#[test]
+fn timestamp_source_columns_fail_closed_as_graph_properties() {
+    let mut state = RelationalState::default();
+    state = state
+        .stage_transaction(
+            compile_relational_statement_sql(
+                "CREATE TABLE stamped (id BIGINT PRIMARY KEY, at TIMESTAMP, seen TIMESTAMPTZ(3))",
+                &[],
+                &state,
+            )
+            .unwrap(),
+            RelationalMutationLimits::default(),
+            RelationalOverflowConfig::default(),
+        )
+        .unwrap();
+    let snapshot = source_snapshot(&state, &["stamped"]);
+    for (sql, expected) in [
+        (
+            "CREATE PROPERTY GRAPH g VERTEX TABLES (stamped)",
+            "TIMESTAMP graph properties are not supported",
+        ),
+        (
+            "CREATE PROPERTY GRAPH g VERTEX TABLES (stamped PROPERTIES (seen))",
+            "TIMESTAMPTZ graph properties are not supported",
+        ),
+        (
+            "CREATE PROPERTY GRAPH g VERTEX TABLES (stamped PROPERTIES (TIMESTAMP WITH TIME ZONE '2026-01-01' AS p))",
+            "TIMESTAMP literals are not supported in PGQ",
+        ),
+        (
+            "CREATE PROPERTY GRAPH g VERTEX TABLES (stamped PROPERTIES (CAST('2026-01-01' AS TIMESTAMP WITH TIME ZONE) AS p))",
+            "parameterized scalar casts are not supported in PGQ",
+        ),
+    ] {
+        let syntax::PostgresStatementSyntax::CreatePropertyGraph(create) =
+            syntax::parse_postgres_statement(sql).unwrap()
+        else {
+            panic!("{sql}")
+        };
+        let error = bind_postgres_create_property_graph(sql, &create, &snapshot).unwrap_err();
+        assert_eq!(error.code, PgqCreateBindErrorCode::UnsupportedExpression, "{sql}");
+        assert!(error.message.contains(expected), "{sql}: {error:?}");
+    }
 }

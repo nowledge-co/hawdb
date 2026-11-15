@@ -311,7 +311,9 @@ impl<R> FileDiskAnn<R> {
             }
             let mut previous_neighbor = None;
             for (position, chunk) in record[RECORD_PREFIX_BYTES + self.dimension() * 4..]
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .enumerate()
             {
                 if position.is_multiple_of(4096) {
@@ -365,8 +367,10 @@ impl<R> DiskAnnRead for FileDiskAnn<R> {
             .get(start..start + count * 4)
             .ok_or_else(|| corrupt("DiskANN neighbor range exceeds record"))?;
         Ok(bytes
-            .chunks_exact(4)
-            .map(|chunk| u32::from_le_bytes(chunk.try_into().expect("fixed-width neighbor"))))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|chunk| u32::from_le_bytes(*chunk)))
     }
     fn distance(
         &self,
@@ -487,6 +491,7 @@ impl DiskAnnArtifactMetadata {
                 alpha: metadata.alpha,
                 lsg,
                 max_working_bytes: 0,
+                max_build_threads: std::num::NonZeroUsize::MAX,
             },
         )
         .map_err(|_| corrupt("invalid DiskANN construction settings"))?;

@@ -21,8 +21,8 @@ use super::qualification_input::{
 };
 use super::qualification_value::value_from_json;
 use hawdb::{
-    NowledgeGraphStatement, NowledgeMemGraphMode, NowledgeMemOpenOptions,
-    PersistentGraphIndexClass, RuntimeGovernorConfig,
+    EmbeddedStoreOpenOptions, GraphMode, NowledgeGraphStatement, PersistentGraphIndexClass,
+    RuntimeGovernorConfig,
 };
 use hawdb_qualification::{
     PersistentGraphIndexProductionRequirement, ProductionGraphIndexQualificationMatrixConfig,
@@ -83,7 +83,7 @@ impl GraphIndexQualificationPlan {
         let database_config = self.database.resolve(runtime.max_resident_bytes)?;
         let process_limits = self.process_limits.resolve(runtime.max_resident_bytes)?;
         let open_options =
-            NowledgeMemOpenOptions::graph_only(database_path, NowledgeMemGraphMode::ShadowReadOnly)
+            EmbeddedStoreOpenOptions::graph_only(database_path, GraphMode::ShadowReadOnly)
                 .with_database_config(database_config);
         let evidence_binding: hawdb::ProductionEvidenceBinding = self.evidence_binding.into();
         let expected_identity: hawdb::ProductionQualificationIdentity =
@@ -123,7 +123,7 @@ struct GraphIndexCaseInput {
 impl GraphIndexCaseInput {
     fn resolve(
         self,
-        open_options: NowledgeMemOpenOptions,
+        open_options: EmbeddedStoreOpenOptions,
         runtime_governor_config: RuntimeGovernorConfig,
         process_limits: ResolvedProcessLimits,
         evidence_binding: hawdb::ProductionEvidenceBinding,
@@ -209,9 +209,7 @@ fn is_sha256_digest(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hawdb::{
-        NowledgeMemGraphMode, StorageResidencyMode, PRODUCTION_QUALIFICATION_POLICY_VERSION,
-    };
+    use hawdb::{GraphMode, StorageResidencyMode, PRODUCTION_QUALIFICATION_POLICY_VERSION};
     use hawdb_qualification::{
         CONTENT_STORE_512_MIB_CAPABILITY_BYTES, CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES,
     };
@@ -226,7 +224,7 @@ mod tests {
 
         assert_eq!(config.cases.len(), PersistentGraphIndexClass::ALL.len());
         assert!(config.cases.iter().all(|case| {
-            case.open_options.mode == NowledgeMemGraphMode::ShadowReadOnly
+            case.open_options.mode == GraphMode::ShadowReadOnly
                 && case
                     .open_options
                     .database_config

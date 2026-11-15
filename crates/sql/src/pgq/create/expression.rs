@@ -147,13 +147,26 @@ impl Binder<'_> {
                         self.error(
                             Code::UnsupportedExpression,
                             span,
-                            "VECTOR graph properties are not supported",
+                            super::unsupported_property_type(source.columns[index].data_type),
                         )
                     })?,
                 ));
             }
             Syntax::Literal(literal) => return self.literal(literal, span),
-            Syntax::TypedString { data_type, value } => {
+            Syntax::TypedString {
+                time_zone: Some(_), ..
+            } => {
+                return Err(self.error(
+                    Code::UnsupportedExpression,
+                    span,
+                    "TIMESTAMP literals are not supported in PGQ",
+                ))
+            }
+            Syntax::TypedString {
+                data_type,
+                value,
+                time_zone: None,
+            } => {
                 let target = self.type_name(&[self.identifier(data_type)?], data_type.span)?;
                 return self.typed_literal(&self.string(*value)?, target, span);
             }
@@ -324,8 +337,9 @@ impl Binder<'_> {
                 expression,
                 data_type,
                 type_parameters,
+                time_zone,
             } => {
-                if !type_parameters.is_empty() {
+                if !type_parameters.is_empty() || time_zone.is_some() {
                     return Err(self.error(
                         Code::UnsupportedExpression,
                         span,

@@ -67,8 +67,8 @@ unsafe fn score<const FOUR_BIT: bool>(codes: &[u8], query: &[f32]) -> f32 {
     let weight = _mm256_set1_ps(if FOUR_BIT { 8.0 } else { 1.0 });
     // Iterator::sum uses negative zero as the floating-point additive identity.
     let mut sum = -0.0f32;
-    let mut chunks = query.chunks_exact(8);
-    for (block, chunk) in chunks.by_ref().enumerate() {
+    let (chunks, tail) = query.as_chunks::<8>();
+    for (block, chunk) in chunks.iter().enumerate() {
         let sign_mask = _mm256_cmpgt_epi32(
             _mm256_and_si256(_mm256_set1_epi32(i32::from(signs[block])), positions),
             _mm256_setzero_si256(),
@@ -92,7 +92,7 @@ unsafe fn score<const FOUR_BIT: bool>(codes: &[u8], query: &[f32]) -> f32 {
             );
             values = _mm256_add_ps(values, _mm256_cvtepi32_ps(extra));
         }
-        // SAFETY: chunks_exact guarantees eight readable f32 values; loadu
+        // SAFETY: as_chunks guarantees eight readable f32 values; loadu
         // does not require alignment. The output array has eight writable lanes.
         let mut products = [0.0f32; 8];
         unsafe {
@@ -107,7 +107,6 @@ unsafe fn score<const FOUR_BIT: bool>(codes: &[u8], query: &[f32]) -> f32 {
             sum += product;
         }
     }
-    let tail = chunks.remainder();
     let bit_width = if FOUR_BIT {
         RaBitQBitWidth::Four
     } else {

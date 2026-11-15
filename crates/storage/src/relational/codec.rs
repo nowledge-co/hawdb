@@ -44,6 +44,10 @@ pub(crate) mod schema_encoding;
 #[cfg(test)]
 mod decimal_tests;
 #[cfg(test)]
+mod read_ahead_tests;
+#[cfg(test)]
+mod timestamp_tests;
+#[cfg(test)]
 mod vector_schema_tests;
 
 #[cfg(test)]
@@ -733,7 +737,7 @@ pub(crate) fn validate_relational_checkpoint_file_format(
         input.verify_remaining()?;
         return Err(error);
     }
-    let mut decoder = Decoder::new(input, limits, false);
+    let mut decoder = Decoder::new(ReadAheadFileInput::new(input), limits, false);
     let table_count = decoder.count(limits.max_tables, "checkpoint tables")?;
     for _ in 0..table_count {
         let name = decoder.string()?;
@@ -804,7 +808,7 @@ pub fn decode_relational_checkpoint_file_with_index_load(
     reader.register(RELATIONAL_CHECKPOINT_ARTIFACT_ID, path);
     decode_relational_checkpoint_from_decoder(
         epoch,
-        Decoder::new(input, limits, false),
+        Decoder::new(ReadAheadFileInput::new(input), limits, false),
         limits,
         OverflowDecodeStorage::File(Arc::new(reader)),
         index_load,
@@ -1236,7 +1240,7 @@ fn validate_codec_version(version: u16) -> Result<(), RelationalError> {
     if version != CODEC_VERSION {
         return Err(RelationalError::UnsupportedFormat(
             hawdb_core::StorageFormatError::UnsupportedVersion {
-                format: "relational durable codec",
+                format: hawdb_core::RELATIONAL_DURABLE_CODEC_FORMAT,
                 found: version,
                 supported: CODEC_VERSION,
             },
@@ -1320,6 +1324,8 @@ impl Encoder {
             RelationalScalarType::Uuid => 6,
             RelationalScalarType::Vector(_) => 7,
             RelationalScalarType::Decimal(_) => 8,
+            RelationalScalarType::Timestamp(_) => 9,
+            RelationalScalarType::TimestampTz(_) => 10,
         });
         if let RelationalScalarType::Vector(dimension) = scalar_type {
             self.u32(dimension.get());
@@ -1327,6 +1333,11 @@ impl Encoder {
         if let RelationalScalarType::Decimal(kind) = scalar_type {
             self.u8(kind.precision());
             self.u8(kind.scale());
+        }
+        if let RelationalScalarType::Timestamp(precision)
+        | RelationalScalarType::TimestampTz(precision) = scalar_type
+        {
+            self.u8(precision.get());
         }
     }
 
@@ -1364,6 +1375,12 @@ impl Encoder {
                 self.logical_value(value)?;
             }
             Some(RelationalColumnDefault::UuidV7) => self.u8(2),
+            Some(RelationalColumnDefault::CurrentTimestamp(kind)) => {
+                self.u8(3);
+                for byte in super::clock_default_bytes(*kind) {
+                    self.u8(byte);
+                }
+            }
         }
         Ok(())
     }
@@ -1581,6 +1598,91 @@ trait DecodeInput {
             self.read_exact(&mut buffer[..count])?;
         }
         self.finish()
+    }
+}
+
+/// Read-ahead for the ordinary (uncontrolled) checkpoint decode and format
+/// validation passes. The decoder pulls fields of a few bytes each; reading
+/// them straight from `FileDecodeInput` costs one positioned read and one
+/// checksum update per field (#1440). This reads and hashes the payload in
+/// blocks of at most `READ_AHEAD_BYTES`, the block size of the controlled
+/// `CheckpointFileInput`, and serves fields from the block. The block is
+/// a fixed allocation, not charged to a memory owner: the ordinary path has
+/// none, like the WAL reader's `BufReader`.
+struct ReadAheadFileInput {
+    inner: FileDecodeInput,
+    buffer: Vec<u8>,
+    buffer_position: usize,
+    consumed: usize,
+}
+
+impl ReadAheadFileInput {
+    const READ_AHEAD_BYTES: usize = 64 * 1024;
+
+    fn new(inner: FileDecodeInput) -> Self {
+        Self {
+            buffer: Vec::with_capacity(inner.payload_len.min(Self::READ_AHEAD_BYTES)),
+            inner,
+            buffer_position: 0,
+            consumed: 0,
+        }
+    }
+
+    fn refill(&mut self) -> Result<(), RelationalError> {
+        let length = self
+            .inner
+            .payload_len
+            .saturating_sub(self.inner.offset)
+            .min(Self::READ_AHEAD_BYTES);
+        self.buffer.resize(length, 0);
+        self.inner.read_exact(&mut self.buffer)?;
+        self.buffer_position = 0;
+        Ok(())
+    }
+}
+
+impl DecodeInput for ReadAheadFileInput {
+    fn codec_version(&self) -> Option<u16> {
+        self.inner.codec_version()
+    }
+
+    fn len(&self) -> usize {
+        self.inner.payload_len
+    }
+
+    fn position(&self) -> usize {
+        self.consumed
+    }
+
+    fn read_exact(&mut self, output: &mut [u8]) -> Result<(), RelationalError> {
+        // Check the whole request first, so truncation and overflow keep the
+        // diagnostics and logical offsets of the unbuffered input.
+        let end = self
+            .consumed
+            .checked_add(output.len())
+            .ok_or_else(|| RelationalError::Corruption("durable decoder offset overflow".into()))?;
+        if end > self.len() {
+            return Err(RelationalError::Corruption(
+                "truncated relational durable payload".into(),
+            ));
+        }
+        let mut written = 0;
+        while written < output.len() {
+            if self.buffer_position == self.buffer.len() {
+                self.refill()?;
+            }
+            let length = (output.len() - written).min(self.buffer.len() - self.buffer_position);
+            output[written..written + length]
+                .copy_from_slice(&self.buffer[self.buffer_position..self.buffer_position + length]);
+            self.buffer_position += length;
+            written += length;
+        }
+        self.consumed = end;
+        Ok(())
+    }
+
+    fn finish(self) -> Result<(), RelationalError> {
+        self.inner.finish()
     }
 }
 
@@ -1976,8 +2078,9 @@ impl<I: DecodeInput> Decoder<I> {
             7 => hawdb_core::VectorDimension::new(self.u32()?)
                 .map(RelationalScalarType::Vector)
                 .ok_or_else(|| RelationalError::Corruption("zero VECTOR dimension".into())),
+            tag @ (9 | 10) => super::decode_timestamp_type(tag, self.u8()?),
             tag => Err(RelationalError::Corruption(format!(
-                "invalid relational scalar type tag {tag}"
+                "invalid relational scalar type tag {tag} (corrupt, or written by a newer HawDB)"
             ))),
         }
     }
@@ -2052,6 +2155,9 @@ impl<I: DecodeInput> Decoder<I> {
             9 => hawdb_core::Decimal::from_le_bytes(self.fixed()?)
                 .map(RelationalValue::Decimal)
                 .map_err(|error| RelationalError::Corruption(error.to_string())),
+            tag @ (10 | 11) => {
+                super::decode_timestamp_value(tag, i64::from_le_bytes(self.fixed()?))
+            }
             8 => {
                 let bytes = self.bounded_bytes(self.limits.max_value_bytes, "VECTOR value")?;
                 self.value_bytes = self.value_bytes.checked_add(bytes.len()).ok_or_else(|| {
@@ -2061,7 +2167,7 @@ impl<I: DecodeInput> Decoder<I> {
                     .map(RelationalValue::Vector)
             }
             tag => Err(RelationalError::Corruption(format!(
-                "invalid relational value tag {tag}"
+                "invalid relational value tag {tag} (corrupt, or written by a newer HawDB)"
             ))),
         }
     }
@@ -2145,7 +2251,52 @@ impl<I: DecodeInput> Decoder<I> {
         let foreign_keys = self.repeated(foreign_key_count, Self::foreign_key)?;
         let index_count = self.count(self.limits.max_values, "indexes")?;
         let indexes = self.repeated(index_count, Self::index)?;
-        let materialized_view = if self.boolean("materialized view")? {
+        let derived_relation = self.u8()?;
+        let materialized_view = if derived_relation == 2 {
+            let source = self.string()?;
+            let column = self.string()?;
+            let tag = self.u8()?;
+            let analyzer = super::materialized_view::SearchIndexAnalyzer::from_tag(tag)
+                .ok_or_else(|| {
+                    RelationalError::UnsupportedFormat(
+                        hawdb_core::StorageFormatError::UnsupportedFeature {
+                            format: hawdb_core::RELATIONAL_SCHEMA_FORMAT,
+                            feature: "search index analyzer",
+                            tag: u64::from(tag),
+                        },
+                    )
+                })?;
+            let layout = self.u8()?;
+            if layout != super::materialized_view::SEARCH_INDEX_LAYOUT_TAG {
+                return Err(RelationalError::UnsupportedFormat(
+                    hawdb_core::StorageFormatError::UnsupportedFeature {
+                        format: hawdb_core::RELATIONAL_SCHEMA_FORMAT,
+                        feature: "search index layout",
+                        tag: u64::from(layout),
+                    },
+                ));
+            }
+            if let Some(context) = self.input.checkpoint_allocation_context() {
+                context
+                    .reserve(std::mem::size_of::<MaterializedViewDefinition>())
+                    .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            }
+            Some(Box::new(MaterializedViewDefinition {
+                source,
+                group_by: Vec::new(),
+                columns: Vec::new(),
+                filter: None,
+                search: Some(super::materialized_view::SearchIndexSpec { column, analyzer }),
+            }))
+        } else if derived_relation > 1 {
+            return Err(RelationalError::UnsupportedFormat(
+                hawdb_core::StorageFormatError::UnsupportedFeature {
+                    format: hawdb_core::RELATIONAL_SCHEMA_FORMAT,
+                    feature: "derived relation",
+                    tag: u64::from(derived_relation),
+                },
+            ));
+        } else if derived_relation == 1 {
             let source = self.string()?;
             let group_by = self.string_list()?;
             let count = self.count(self.limits.max_values, "materialized view columns")?;
@@ -2161,7 +2312,7 @@ impl<I: DecodeInput> Decoder<I> {
                     tag => {
                         return Err(RelationalError::UnsupportedFormat(
                             hawdb_core::StorageFormatError::UnsupportedFeature {
-                                format: "relational schema",
+                                format: hawdb_core::RELATIONAL_SCHEMA_FORMAT,
                                 feature: "materialized view expression",
                                 tag: u64::from(tag),
                             },
@@ -2185,6 +2336,7 @@ impl<I: DecodeInput> Decoder<I> {
                 group_by,
                 columns,
                 filter,
+                search: None,
             }))
         } else {
             None
@@ -2215,8 +2367,9 @@ impl<I: DecodeInput> Decoder<I> {
             0 => Ok(None),
             1 => Ok(Some(RelationalColumnDefault::Literal(self.value()?))),
             2 => Ok(Some(RelationalColumnDefault::UuidV7)),
+            3 => super::decode_clock_default(self.u8()?, self.u8()?).map(Some),
             tag => Err(RelationalError::Corruption(format!(
-                "invalid column default tag {tag}"
+                "invalid column default tag {tag} (corrupt, or written by a newer HawDB)"
             ))),
         }
     }
@@ -2230,8 +2383,9 @@ impl<I: DecodeInput> Decoder<I> {
                 self.logical_value()?,
             ))),
             2 => Ok(Some(RelationalColumnDefault::UuidV7)),
+            3 => super::decode_clock_default(self.u8()?, self.u8()?).map(Some),
             tag => Err(RelationalError::Corruption(format!(
-                "invalid column default tag {tag}"
+                "invalid column default tag {tag} (corrupt, or written by a newer HawDB)"
             ))),
         }
     }

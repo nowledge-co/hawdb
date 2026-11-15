@@ -50,11 +50,21 @@ before the wait and again after it, once the drained generation is adopted and
 immediately before the retried commit: a task cancelled or past its deadline
 while waiting fails with nothing applied (no WAL append, no new epoch), and its
 runtime, barrier, sequencer and host admission are released. A further retry
-needs a newly completed checkpoint. A parked,
-suspended, stopped or exhausted owner, or a build or handle without background
-maintenance, fails closed with the same pre-WAL rejection, which states the
-commit size and that a checkpoint must drain the overlay first; the synchronous
-manual checkpoint then drains it. A transaction-private row view charges only the
+needs a newly completed checkpoint: when the wait completes none while the
+owner can still drain (its attempt was deferred, for example by memory
+pressure, or failed below the retry limit), the commit returns the retryable
+`HawDBError::BranchBusy { resource: "automatic checkpoint capacity" }` with
+nothing applied ([#1637](https://github.com/nowledge-co/hawdb/issues/1637)).
+An owner whose operation circuit is exhausted still counts as able to drain,
+because a writer that needs headroom re-arms it after a bounded backoff (below,
+[#1618](https://github.com/nowledge-co/hawdb/issues/1618)); its commit gets the
+same retryable `BranchBusy` until that attempt completes a checkpoint.
+A suspended or stopped owner, an owner that failed on integrity, or a build or
+handle without background maintenance, fails closed with the same pre-WAL
+rejection, which states the commit size and that a checkpoint must drain the
+overlay first; the synchronous manual checkpoint then drains it. Waiting cannot
+help there.
+A transaction-private row view charges only the
 transaction's own changes, so the commit, not a statement, decides headroom.
 Explicit transaction commits (on a database or a concurrent handle) and
 autocommit SQL statements take this path; other write paths keep the plain
@@ -194,11 +204,28 @@ Non-admission preparation, replay or publication failures consume a budget of
 three attempts per durable WAL generation. Exhaustion releases the unselected
 candidate and its admission, parks automatic scheduling, and sets
 `AutomaticCheckpointReport::operation_retry_exhausted`; the cumulative
-`operation_failures` counter remains observable. Additional foreground commits
-do not reset this circuit. A successful caller-triggered `checkpoint()` advances
-the durable generation and permits automatic work again. The synchronous manual
-APIs remain available while automatic scheduling is parked. Publication
-uncertainty still retains recovery evidence and fails closed.
+`operation_failures` counter and the latest failure's diagnostic,
+`last_operation_error`, remain observable. Additional foreground commits do not
+reset this circuit, and an idle database never retries it. A writer that would
+wait for checkpoint headroom does
+([#1618](https://github.com/nowledge-co/hawdb/issues/1618)): when WAL, delta or
+base-relative live-overlay debt reaches the writer fence, or a commit does not
+fit the live headroom, the writer waits within the same 5 s capacity deadline
+until the circuit's backoff expires, then re-arms exactly one attempt
+(`operation_retry_rearms`). The backoff is 1 s after the first stop and doubles
+with each later stop in the same WAL generation, up to 30 s, so a persistent
+fault costs at most one attempt per backoff and only while writers press on
+capacity. Until a checkpoint completes, writers near the base-relative limit
+also wait while that attempt prepares, so the debt never grows past what one
+drain can capture; a writer whose deadline expires gets the retryable
+`BranchBusy` with nothing applied. Without this, one transient I/O fault on a
+long-lived handle (for example ENOSPC from another process filling a shared
+temporary filesystem) stopped draining for good, and steady inserts then failed
+with the non-retryable live-view admission error. Any completed checkpoint,
+automatic or caller-triggered, advances the durable generation and resets the
+circuit and its backoff. The synchronous manual APIs remain available while
+automatic scheduling is parked. Publication uncertainty still retains recovery
+evidence and fails closed.
 
 Preparation owns its original source/catalog and completed projected-graph and
 source-row plans across safe resource/cancellation deferrals. Submitting a later
@@ -451,8 +478,9 @@ cleanup, subsequent writes and complete ordinary reopen.
 Checkpoint-base canonical records, property-spill blocks, descriptor leaves and
 interior pages now share the already-admitted task context. Source hydration is
 inside the record lease; bounded encoding, page construction, metadata hashing
-and metadata writes acquire actual per-unit local permits when a local scheduler
-is supplied. Each I/O wave is released before a nested builder acquires another
+and metadata writes run as actual bounded units under batched local admission
+when a local scheduler is supplied (see "Batched local admission of builder
+units"). Each I/O wave is released before a nested builder acquires another
 wave. Focused tests construct and completely read back 2,000 records/descriptors
 with a per-work operation limit of one and a total limit of four, cancel during
 record and interior-page construction, and cancel at every I/O admission point
@@ -2316,6 +2344,82 @@ configuration fixture writes 1,057 nodes with 512-byte bodies, continues writing
 every 20 ms and verifies two completed generations, every value and reopen.
 The same fixture previously deferred without completing a generation; its age,
 15-second observation windows, workload and assertions remain unchanged.
+
+### Batched local admission of builder units
+
+Builder units stay bounded by their own record, element or 64 KiB block
+limits, and they remain the granularity of cancellation and progress. Before
+[#1616](https://github.com/nowledge-co/hawdb/issues/1616) every unit took and
+released its own one-operation `LocalQosPermit`: a scheduler mutex round trip,
+two telemetry events and two monotonic clock reads. Units can be as small as
+one record or property-key intern; #1616 measured this bookkeeping at 58% of
+the background checkpoint thread's samples during TPC-C execution.
+
+With a local scheduler, a `CheckpointWorkContext` and its clones now charge
+consecutive units to one one-operation `LocalQosBatchPermit` covering at most
+`CHECKPOINT_UNITS_PER_ADMISSION` (64) units:
+
+- Every unit observes cancellation before it starts and after it is admitted,
+  without reading the clock. After a cancellation is published, no further
+  unit starts.
+- Batch boundaries apply the scheduler policy, record admission/completion
+  telemetry and check the task deadline. One monotonic clock read serves the
+  previous batch's completion time, the deadline and the next admission time.
+- The batch charges its operation only while a unit runs. Between units it is
+  idle: `LocalQosScheduler::state` and snapshots exclude it, and any background
+  admission that its charge would refuse reclaims it first. The builder's next
+  unit must then admit again and is deferred while the competitor holds the
+  budget. A running unit is never reclaimed, as with a per-unit permit, and
+  nested units join the running batch.
+- A batch also ends when a unit is dropped unfinished (released at once with a
+  failed outcome), at the end of `classify`, on `release_unit_batch`, and when
+  the last context clone drops. Every automatic-owner context with a scheduler
+  runs inside `classify`.
+- Progress still counts each finished unit. Telemetry admission/completion
+  events are per batch. A sink that opts in with
+  `QosTelemetrySink::observes_units` also receives a started and an ended event
+  for each unit; the host telemetry sink does not opt in. Replacing the sink
+  reclaims idle batches, so later admissions and units report to the new sink.
+
+Bounds: cancellation and competing background admissions take effect at the
+next unit. A deadline that expires inside a batch is observed after at most 63
+more units, that is, within one batch of bounded units. Foreground work is never
+gated by the local background budget. Runtime-governor I/O waves and execution
+admission, where foreground work takes priority, are still requested per call
+and are not batched. When two contexts share a one-operation budget, each
+reclaims the other's idle batch, so both make progress at per-unit admission
+cost. Tests: `background::checkpoint::batch_tests` in the storage crate and
+`batch_tests` in the QoS crate.
+
+### Per-unit context bookkeeping
+
+[#1651](https://github.com/nowledge-co/hawdb/issues/1651) keeps the semantics
+above and lowers what each unit and record pays outside the encoding work:
+
+- A `CheckpointWorkContext` is one shared handle. Its task, scheduler, batch and
+  progress counter are immutable once built and shared by all clones, so a
+  clone or drop is one reference count instead of one per task controller. The
+  builder methods (`with_scheduler`, `with_progress_counter`) copy on write and
+  never change a handle that is already shared. `classify` still gives its
+  operation a distinct scope with its own failure slot.
+- Retained builders are still re-bound to the caller's context before every
+  record, so a resumed attempt always runs under its own task. When the stored
+  context is the same handle as the caller's, re-binding is a pointer
+  comparison instead of a clone. Each re-bind still checks cancellation (and
+  the deadline, if the task has one).
+- A unit holds only its context's unit accounting (batch and progress), not the
+  task. Without a scheduler, starting and ending a unit are inlined:
+  cancellation is still checked at every unit, and a unit with no progress
+  counter holds nothing.
+- `RuntimeCancellationToken` checks its own state with one inlined acquire
+  load. Only a cancelled token or one with parents walks its ancestors, in the
+  same depth-first order, so it reports the same reason.
+
+Unit, progress, admission and cancellation counts are unchanged:
+`canonical::checkpoint_writer::state::rebind_tests` encodes the same records
+under the shared handle and under a distinct handle per record (what each
+per-record clone used to produce) and compares the exact counts and every
+cancellation cut point.
 
 Resumable maintenance uses `RuntimeGovernor::try_admit_resumable_maintenance`
 and the facade-exported `RuntimeMaintenanceWork`. Its original conservative

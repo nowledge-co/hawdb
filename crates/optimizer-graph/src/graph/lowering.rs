@@ -46,9 +46,12 @@ mod ddl;
 mod join;
 mod match_order;
 mod match_predicates;
+pub(super) use match_predicates::predicate_variables;
+mod meeting_join;
 mod mutation;
 mod ordered;
 mod procedure;
+mod seeded_union;
 mod simple;
 mod traversal;
 
@@ -265,7 +268,7 @@ fn record_qualification(report: &mut OptimizationSearchReport, context: &Optimiz
             .filter(|rule| !options.rule_enabled(*rule))
             .map(crate::OptionalOptimizerRule::as_str)
             .collect::<Vec<_>>();
-        report.push_rule_event(RuleEvent::selected("optimizer qualification", format!("disabled={disabled:?} perturbation={:?}; legality/resource checks remain mandatory; reported costs are unperturbed", options.cost_perturbation())));
+        report.push_rule_event(RuleEvent::selected("optimizer qualification", format!("disabled={disabled:?} perturbation={:?} bounded_order_alternative={:?}; legality/resource checks remain mandatory; reported costs are unperturbed", options.cost_perturbation(), options.bounded_order_alternative())));
     }
 }
 
@@ -462,6 +465,36 @@ fn select_bounded_sort_plan(
     };
     let top_n_cost = estimate_physical_plan_cost_with_context(&top_n, catalog, context);
     let sort_limit_cost = estimate_physical_plan_cost_with_context(&sort_limit, catalog, context);
+    if let Some(alternative) = context.qualification_options().bounded_order_alternative() {
+        decisions.push(
+            RuleEvent::applied(
+                crate::BOUNDED_ORDER_QUALIFICATION_RULE,
+                format!(
+                    "alternative={} top_n_cost={} sort_then_limit_cost={}",
+                    alternative.as_str(),
+                    top_n_cost.cost,
+                    sort_limit_cost.cost
+                ),
+            )
+            .into_decision(),
+        );
+        return match alternative {
+            crate::OptimizerBoundedOrderAlternative::TopN => PhysicalPlan::TopNExec {
+                items,
+                offset,
+                limit,
+                input: Box::new(input),
+            },
+            crate::OptimizerBoundedOrderAlternative::SortThenLimit => PhysicalPlan::LimitExec {
+                offset,
+                limit: Some(limit),
+                input: Box::new(PhysicalPlan::SortExec {
+                    items,
+                    input: Box::new(input),
+                }),
+            },
+        };
+    }
     if ranking_cost(&top_n, top_n_cost.cost, context)
         <= ranking_cost(&sort_limit, sort_limit_cost.cost, context)
     {
@@ -557,6 +590,9 @@ impl GroupExpr {
             | LogicalPlan::SetNodeProperty { .. }
             | LogicalPlan::SetNodeProperties { .. }
             | LogicalPlan::SetNodePropertiesReturn { .. }
+            // Its read input is optimized as an independent root.
+            | LogicalPlan::MatchSet(_)
+            | LogicalPlan::MutationReturn { .. }
             | LogicalPlan::SetRelationshipProperty { .. }
             | LogicalPlan::SetRelationshipProperties { .. }
             | LogicalPlan::DeleteNode { .. }
@@ -878,6 +914,8 @@ fn logical_group_count(logical: &LogicalPlan) -> usize {
         | LogicalPlan::SetNodeProperty { .. }
         | LogicalPlan::SetNodeProperties { .. }
         | LogicalPlan::SetNodePropertiesReturn { .. }
+        | LogicalPlan::MatchSet(_)
+        | LogicalPlan::MutationReturn { .. }
         | LogicalPlan::SetRelationshipProperty { .. }
         | LogicalPlan::SetRelationshipProperties { .. }
         | LogicalPlan::DeleteNode { .. }
@@ -968,12 +1006,21 @@ fn lower_logical(
                 )
             })))
         }
-        LogicalPlan::GraphMatch { program, input } => PhysicalPlan::GraphMatchExec {
-            program: placed_graph_match_program(
-                anchored_graph_match_program(program, decisions),
-                decisions,
-            ),
-            input: input.as_ref().map(|input| {
+        LogicalPlan::MatchSet(set) => {
+            // The input is a complete read plan. Optimize it as its own root,
+            // with the rewrites, search and finalization of a read query.
+            let (input, trace) = CascadesOptimizer::with_context(optimizer_context.clone())
+                .optimize_with_catalog(&set.input, catalog);
+            decisions.extend(
+                trace
+                    .decisions
+                    .into_iter()
+                    .map(|decision| format!("MatchSetExec input: {decision}")),
+            );
+            PhysicalPlan::MatchSetExec(Box::new((**set).clone().map_input(|_| input)))
+        }
+        LogicalPlan::GraphMatch { program, input } => {
+            let input = input.as_ref().map(|input| {
                 Box::new(children.lower(
                     input,
                     0,
@@ -982,8 +1029,18 @@ fn lower_logical(
                     decisions,
                     stage_events,
                 ))
-            }),
-        },
+            });
+            PhysicalPlan::GraphMatchExec {
+                program: meeting_join::lower_graph_match_program(
+                    program,
+                    input.as_deref(),
+                    catalog,
+                    optimizer_context,
+                    decisions,
+                ),
+                input,
+            }
+        }
         LogicalPlan::NodeCartesianProduct { left, right } => {
             let left = children.lower(left, 0, catalog, optimizer_context, decisions, stage_events);
             let right = children.lower(
@@ -1203,6 +1260,7 @@ fn lower_logical(
                     decisions,
                     stage_events,
                 );
+                input = relationship_seeded_in(input, predicate, catalog, decisions);
                 push_seed_metadata_filter(&mut input, predicate, decisions);
                 input = join::lower_property_join(input, predicate, decisions);
                 PhysicalPlan::FilterExec {
@@ -1218,6 +1276,8 @@ fn lower_logical(
         } => PhysicalPlan::UnwindRowsExec {
             expression: expression.clone(),
             variable: variable.clone(),
+            // Set by the column-read pass on the finished plan.
+            consumes_source: false,
             input: Box::new(children.lower(
                 input,
                 0,
@@ -1241,6 +1301,7 @@ fn lower_logical(
         LogicalPlan::Aggregate {
             group_keys,
             items,
+            graph_keys,
             input,
         } => {
             let input = children.lower(
@@ -1262,6 +1323,7 @@ fn lower_logical(
             PhysicalPlan::AggregateExec {
                 group_keys: group_keys.clone(),
                 items: items.clone(),
+                graph_keys: *graph_keys,
                 input: Box::new(input),
             }
         }
@@ -1344,18 +1406,25 @@ fn lower_logical(
 }
 
 /// Starts each pattern path at a bound node when one exists, so the per-row
-/// nested loop expands from it instead of scanning for the path's first node.
+/// nested loop expands from it instead of scanning for the path's first node,
+/// or at an index-seekable node when statistics show it is clearly cheaper.
 fn anchored_graph_match_program(
     program: &hawdb_plan_cypher::GraphMatchProgram,
+    costing: match_order::StartCosting<'_>,
     decisions: &mut Vec<String>,
 ) -> hawdb_plan_cypher::GraphMatchProgram {
     let mut program = program.clone();
-    if let Some(anchored) = match_order::anchor_graph_match_steps(&program) {
-        decisions.push(format!(
-            "anchor GraphMatchExec at bound variable(s) [{}]: expand from the bound node instead of scanning per input row",
-            anchored.anchors.join(", ")
-        ));
-        program.steps = anchored.steps;
+    if let Some(anchored) = match_order::anchor_graph_match_steps(&program, costing) {
+        decisions.extend(anchored.events.into_iter().map(RuleEvent::into_decision));
+        if let Some(steps) = anchored.steps {
+            if !anchored.anchors.is_empty() {
+                decisions.push(format!(
+                    "anchor GraphMatchExec at bound variable(s) [{}]: expand from the bound node instead of scanning per input row",
+                    anchored.anchors.join(", ")
+                ));
+            }
+            program.steps = steps;
+        }
     }
     program
 }
@@ -1392,6 +1461,7 @@ fn select_node_count_fast_path(
         group_keys,
         items,
         input,
+        ..
     } = logical
     else {
         return None;
@@ -1442,6 +1512,7 @@ fn select_relationship_count_fast_path(
         group_keys,
         items,
         input,
+        ..
     } = logical
     else {
         return None;
@@ -1538,6 +1609,7 @@ fn finalize_required_node_properties(
         PhysicalPlan::AggregateExec {
             group_keys,
             items,
+            graph_keys,
             input,
         } => {
             let input = select_node_aggregate_required_scan(
@@ -1552,6 +1624,7 @@ fn finalize_required_node_properties(
             PhysicalPlan::AggregateExec {
                 group_keys,
                 items,
+                graph_keys,
                 input,
             }
         }
@@ -1971,23 +2044,34 @@ fn collect_projection_properties(
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
         | ProjectionExpression::Conversion { .. }
+        | ProjectionExpression::NumericFunction { .. }
+        | ProjectionExpression::Reduce(_)
         | ProjectionExpression::ListSlice { .. }
         | ProjectionExpression::TemporalFunction { .. }
         | ProjectionExpression::PropertyAccess { .. }
+        | ProjectionExpression::RelationshipValueEndpoint { .. }
         | ProjectionExpression::MapLiteral(_) => expression
             .all_children(|child| collect_projection_properties(child, variable, required)),
         // Comprehension elements are values, never graph bindings.
         ProjectionExpression::LocalVariable { .. } => true,
         ProjectionExpression::Variable { .. }
         | ProjectionExpression::RelationshipType { .. }
+        // The endpoint is a whole node value the expression does not name.
+        | ProjectionExpression::RelationshipEndpoint { .. }
         | ProjectionExpression::Column(_)
         | ProjectionExpression::ColumnProperty { .. }
         | ProjectionExpression::Path { .. }
         | ProjectionExpression::ColumnDefaultIfNullOrEq { .. }
         | ProjectionExpression::ColumnValueDefaultIfNull { .. }
         | ProjectionExpression::ColumnValueCasePropertyNotNullOrEq { .. }
-        | ProjectionExpression::CaseColumnSearchRank(_) => false,
-        ProjectionExpression::Id { variable: current } => current == variable,
+        | ProjectionExpression::CaseColumnSearchRank(_)
+        // A pattern matches whole records of the variables it copies.
+        | ProjectionExpression::Pattern(_) => false,
+        // A projected node keeps its identity and labels.
+        ProjectionExpression::Id { variable: current }
+        | ProjectionExpression::Label {
+            variable: current, ..
+        } => current == variable,
         ProjectionExpression::Literal(_) => true,
         ProjectionExpression::Property {
             variable: current,
@@ -2034,7 +2118,8 @@ fn collect_projection_properties(
             .all(|expression| collect_projection_properties(expression, variable, required)),
         ProjectionExpression::Left { expression, .. }
         | ProjectionExpression::Lower(expression)
-        | ProjectionExpression::JsonValue { expression, .. } => {
+        | ProjectionExpression::JsonValue { expression, .. }
+        | ProjectionExpression::JsonString { expression, .. } => {
             collect_projection_properties(expression, variable, required)
         }
         ProjectionExpression::CaseCoalesceDifferenceFloorZero {
@@ -2246,11 +2331,11 @@ struct RelationshipSeedCandidate<'a> {
     optional: bool,
 }
 
-/// Replace a plain source label scan under a mandatory single-hop expand with
-/// relationship constraints by the relationship-seeded scan when fewer
-/// relationships are estimated to match than the label has nodes (#1548).
-/// The expand drops every source without a matching relationship, so only
-/// the seeded sources can produce rows.
+/// Replace a plain source label scan (an unlabeled scan included) under a
+/// mandatory single-hop expand with relationship constraints by the
+/// relationship-seeded scan when fewer relationships are estimated to match
+/// than the scan visits nodes (#1548). The expand drops every source without a
+/// matching relationship, so only the seeded sources can produce rows.
 fn relationship_seeded_source(
     input: PhysicalPlan,
     candidate: RelationshipSeedCandidate<'_>,
@@ -2268,22 +2353,17 @@ fn relationship_seeded_source(
     {
         return input;
     }
-    let matching = catalog
-        .estimate_expand_rows(
-            label,
-            candidate.rel_type,
-            candidate.rel_properties,
-            "",
-            1,
-            1,
-        )
-        .estimated_rows;
-    let nodes = catalog.label_count(label);
-    if matching >= nodes {
+    let Some(matching) = seeding_estimate(
+        catalog,
+        label,
+        candidate.rel_type,
+        candidate.rel_properties,
+        None,
+    ) else {
         return input;
-    }
+    };
     decisions.push(format!(
-        "seed {variable}:{label} from {} relationship properties ({matching} estimated of {nodes} nodes)",
+        "seed {variable}:{label} from {} relationship properties ({matching})",
         candidate.rel_type
     ));
     PhysicalPlan::RelationshipSeededNodeScan {
@@ -2291,6 +2371,97 @@ fn relationship_seeded_source(
         label: label.clone(),
         rel_type: candidate.rel_type.to_owned(),
         rel_properties: candidate.rel_properties.clone(),
+        rel_property_in: None,
         direction: candidate.direction,
     }
+}
+
+/// The estimate text when seeding beats scanning the source, else `None`.
+fn seeding_estimate(
+    catalog: &OptimizerCatalog,
+    label: &str,
+    rel_type: &str,
+    rel_properties: &BTreeMap<String, Value>,
+    rel_property_in: Option<(&str, &[Value])>,
+) -> Option<String> {
+    let matching = catalog.estimate_seeded_relationships(rel_type, rel_properties, rel_property_in);
+    let nodes = catalog.scan_population(label);
+    (matching < nodes).then(|| format!("{matching} estimated of {nodes} nodes"))
+}
+
+/// A relationship-property `IN` in the filter directly above a mandatory
+/// single-hop expand also seeds the expand's source (#1548). The filter stays
+/// above the expand and keeps its semantics; seeding only drops sources that
+/// have no relationship with a listed value.
+fn relationship_seeded_in(
+    mut input: PhysicalPlan,
+    predicate: &Predicate,
+    catalog: &OptimizerCatalog,
+    decisions: &mut Vec<String>,
+) -> PhysicalPlan {
+    let PhysicalPlan::AdjacencyExpandExec {
+        source_variable,
+        rel_variable: Some(rel_variable),
+        rel_type,
+        rel_properties,
+        direction,
+        min_hops: 1,
+        max_hops: 1,
+        optional: false,
+        input: source,
+        ..
+    } = &mut input
+    else {
+        return input;
+    };
+    if rel_type.is_empty() {
+        return input;
+    }
+    let conjuncts = match predicate {
+        Predicate::And(predicates) => predicates.iter().collect::<Vec<_>>(),
+        predicate => vec![predicate],
+    };
+    let Some((property, values)) = conjuncts.into_iter().find_map(|predicate| match predicate {
+        Predicate::PropertyIn {
+            variable,
+            property,
+            values,
+        } if variable == rel_variable => Some((property, values)),
+        _ => None,
+    }) else {
+        return input;
+    };
+    let (variable, label) = match source.as_ref() {
+        PhysicalPlan::SeqNodeScan { variable, label } if variable == source_variable => {
+            (variable.clone(), label.clone())
+        }
+        PhysicalPlan::RelationshipSeededNodeScan {
+            variable,
+            label,
+            rel_property_in: None,
+            ..
+        } if variable == source_variable => (variable.clone(), label.clone()),
+        _ => return input,
+    };
+    let Some(matching) = seeding_estimate(
+        catalog,
+        &label,
+        rel_type,
+        rel_properties,
+        Some((property, values)),
+    ) else {
+        return input;
+    };
+    decisions.push(format!(
+        "seed {variable}:{label} from {rel_type} relationship property {property} IN ({matching})"
+    ));
+    **source = PhysicalPlan::RelationshipSeededNodeScan {
+        variable,
+        label,
+        rel_type: rel_type.clone(),
+        rel_properties: rel_properties.clone(),
+        rel_property_in: Some((property.clone(), values.clone())),
+        direction: *direction,
+    };
+    input
 }

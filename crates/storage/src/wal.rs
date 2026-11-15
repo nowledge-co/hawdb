@@ -21,8 +21,8 @@ pub mod frame;
 pub mod group_commit;
 use crate::file_io::{self as fs, File, OpenOptions};
 use crate::text::{
-    encode_nullable, encode_properties, encode_property_type, encode_schema_object_state,
-    encode_string, encode_string_vec, encode_table_kind, encode_value,
+    encode_nullable, encode_properties, encode_property_default, encode_property_type,
+    encode_schema_object_state, encode_string, encode_string_vec, encode_table_kind, encode_value,
 };
 pub use crate::wire;
 use crate::{NodeId, NodeRecord, RelId, RelRecord};
@@ -35,8 +35,8 @@ pub use group_commit::{
     DEFAULT_WAL_GROUP_COMMIT_MAX_ENTRIES,
 };
 use hawdb_core::{Catalog, Value};
+use hawdb_core::{DeclaredPropertyDefault, PropertyType, SchemaObjectState, TableKind};
 use hawdb_core::{HawDBError, Result};
-use hawdb_core::{PropertyType, SchemaObjectState, TableKind};
 use hawdb_integrity::{IntegrityHasher, Sha256Digest};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -453,6 +453,12 @@ pub enum WalOp {
         property: String,
         value_type: PropertyType,
         nullable: bool,
+        /// Creation-time default. `Some` encodes as a distinct binary op code
+        /// so binaries that predate defaults fail closed instead of dropping it.
+        /// A defaulted property declared on a table with records lacking it
+        /// is followed by `AlterPropertyState(Backfill)` in the same batch.
+        /// Boxed so the rare defaulted declaration does not widen every op.
+        default: Option<Box<DeclaredPropertyDefault>>,
     },
     AlterTableState {
         table_kind: TableKind,
@@ -605,13 +611,15 @@ impl WalEntry {
                 property,
                 value_type,
                 nullable,
+                default,
             } => format!(
-                "create_property\t{}\t{}\t{}\t{}\t{}",
+                "create_property\t{}\t{}\t{}\t{}\t{}{}",
                 encode_table_kind(*table_kind),
                 encode_string(table),
                 encode_string(property),
                 encode_property_type(*value_type),
-                encode_nullable(*nullable)
+                encode_nullable(*nullable),
+                encode_create_property_extension(default.as_deref(), '\t')
             ),
             WalOp::AlterTableState {
                 table_kind,
@@ -782,6 +790,21 @@ impl WalEntry {
     }
 }
 
+/// Pre-default descriptors keep their exact legacy text; defaulted ones append
+/// the encoded default.
+fn encode_create_property_extension(
+    default: Option<&DeclaredPropertyDefault>,
+    separator: char,
+) -> String {
+    default.map_or_else(String::new, |default| {
+        format!(
+            "{separator}{}{separator}{}",
+            encode_property_default(&default.value),
+            encode_value(&default.backfill_value)
+        )
+    })
+}
+
 fn encode_wal_op_for_batch(op: &WalOp) -> Result<String> {
     let encoded = match op {
         WalOp::CreateNodeLabel { label } => {
@@ -802,13 +825,15 @@ fn encode_wal_op_for_batch(op: &WalOp) -> Result<String> {
             property,
             value_type,
             nullable,
+            default,
         } => format!(
-            "create_property,{},{},{},{},{}",
+            "create_property,{},{},{},{},{}{}",
             encode_table_kind(*table_kind),
             encode_string(table),
             encode_string(property),
             encode_property_type(*value_type),
-            encode_nullable(*nullable)
+            encode_nullable(*nullable),
+            encode_create_property_extension(default.as_deref(), ',')
         ),
         WalOp::AlterTableState {
             table_kind,

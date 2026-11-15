@@ -21,8 +21,18 @@ use crate::{QueryMemoryAccount, QueryMemoryLease};
 use hawdb_core::{MAX_LIST_EXPRESSION_WORK, MAX_UNACCOUNTED_LIST_BYTES};
 use std::borrow::Cow;
 
+#[cfg(test)]
+mod conversion_tests;
+mod json;
+#[cfg(test)]
+mod label_tests;
 mod list;
+#[cfg(test)]
+mod math_reduce_tests;
+mod pattern;
 mod temporal;
+
+pub(crate) use pattern::ExpressionGraph;
 
 pub(crate) struct ProjectedValue<'a> {
     value: Cow<'a, Value>,
@@ -57,6 +67,14 @@ impl<'a> ProjectedValue<'a> {
             Cow::Owned(Value::Decimal(value)) => ValueRef::Decimal(value),
             Cow::Owned(Value::Uuid(value)) => ValueRef::Uuid(value),
             Cow::Owned(_) => unreachable!("native numeric projections never allocate payloads"),
+        }
+    }
+
+    /// The value this projection lends without owning, if any.
+    pub(crate) fn lent(&self) -> Option<&'a Value> {
+        match self.value {
+            Cow::Borrowed(value) => Some(value),
+            Cow::Owned(_) => None,
         }
     }
 
@@ -154,6 +172,19 @@ pub(crate) fn evaluate_projection_borrowed<'a>(
     binding: &'a Binding,
     account: Option<&QueryMemoryAccount>,
 ) -> Result<ProjectedValue<'a>> {
+    evaluate_projection_in_graph(expression, catalog, binding, account, None)
+}
+
+/// Evaluates `expression` with read access to the graph snapshot, which
+/// pattern expressions and `startNode`/`endNode` of relationship values
+/// need. Without it they fail.
+pub(crate) fn evaluate_projection_in_graph<'a>(
+    expression: &'a ProjectionExpression,
+    catalog: &'a Catalog,
+    binding: &'a Binding,
+    account: Option<&QueryMemoryAccount>,
+    graph: Option<&ExpressionGraph<'_>>,
+) -> Result<ProjectedValue<'a>> {
     evaluate_scoped(
         expression,
         catalog,
@@ -161,6 +192,7 @@ pub(crate) fn evaluate_projection_borrowed<'a>(
         None,
         account,
         &ListWork::default(),
+        graph,
     )
 }
 
@@ -234,9 +266,10 @@ fn evaluate_scoped<'a>(
     locals: Option<&'a ListLocals<'a>>,
     account: Option<&QueryMemoryAccount>,
     work: &ListWork,
+    graph: Option<&ExpressionGraph<'_>>,
 ) -> Result<ProjectedValue<'a>> {
     let evaluate =
-        |expression| evaluate_scoped(expression, catalog, binding, locals, account, work);
+        |expression| evaluate_scoped(expression, catalog, binding, locals, account, work, graph);
     match expression {
         ProjectionExpression::Case {
             operand,
@@ -311,9 +344,9 @@ fn evaluate_scoped<'a>(
                 _allocation: allocation,
             })
         }
-        ProjectionExpression::Conversion { function, argument } => function
-            .apply(evaluate(argument)?.as_ref())
-            .map(ProjectedValue::scalar),
+        ProjectionExpression::Conversion { function, argument } => {
+            conversion(*function, evaluate(argument)?.as_ref(), account, work)
+        }
         ProjectionExpression::ListComprehension(comprehension) => {
             let list = evaluate(&comprehension.list)?;
             let values = match list.as_ref() {
@@ -335,8 +368,15 @@ fn evaluate_scoped<'a>(
                     parent: locals,
                 };
                 if let Some(predicate) = &comprehension.predicate {
-                    let truth =
-                        evaluate_scoped(predicate, catalog, binding, Some(&frame), account, work)?;
+                    let truth = evaluate_scoped(
+                        predicate,
+                        catalog,
+                        binding,
+                        Some(&frame),
+                        account,
+                        work,
+                        graph,
+                    )?;
                     let keep = match truth.as_ref() {
                         Value::Bool(value) => *value,
                         Value::Null => false,
@@ -359,12 +399,55 @@ fn evaluate_scoped<'a>(
                         Some(&frame),
                         account,
                         work,
+                        graph,
                     )?)?,
                     None => output.push_cloned(value)?,
                 }
             }
             Ok(output.finish())
         }
+        ProjectionExpression::NumericFunction { function, argument } => function
+            .apply(evaluate(argument)?.as_ref())
+            .map(ProjectedValue::scalar),
+        ProjectionExpression::Reduce(reduce) => {
+            evaluate_reduce(reduce, catalog, binding, locals, account, work, graph)
+        }
+        ProjectionExpression::RelationshipEndpoint {
+            endpoint,
+            variable,
+            endpoints,
+        } => relationship_endpoint(
+            *endpoint,
+            variable,
+            endpoints.as_ref(),
+            catalog,
+            binding,
+            account,
+            graph,
+        ),
+        ProjectionExpression::RelationshipValueEndpoint {
+            endpoint,
+            relationship,
+            visibility,
+        } => pattern::relationship_value_endpoint(
+            *endpoint,
+            evaluate(relationship)?.as_ref(),
+            visibility.as_deref(),
+            catalog,
+            account,
+            graph,
+        ),
+        ProjectionExpression::Pattern(pattern) => pattern::evaluate(
+            pattern,
+            pattern::Scope {
+                catalog,
+                binding,
+                locals,
+                account,
+                work,
+            },
+            graph,
+        ),
         ProjectionExpression::LocalVariable { name, property } => {
             let value = locals.and_then(|locals| locals.get(name)).ok_or_else(|| {
                 HawDBError::Execution(format!(
@@ -426,18 +509,9 @@ fn evaluate_scoped<'a>(
         ProjectionExpression::Variable { variable } => {
             let entry_bytes = std::mem::size_of::<(String, Value)>() * 3;
             if let Some(node) = binding.nodes.get(variable) {
-                let bytes = map_memory_bytes(&node.properties)
-                    .saturating_add(entry_bytes * 2)
-                    .saturating_add("_id".len() + "labels".len() + std::mem::size_of::<i64>())
-                    .saturating_add(node.labels.iter().fold(0usize, |total, label| {
-                        total.saturating_add(
-                            catalog
-                                .label_name(*label)
-                                .map(|name| std::mem::size_of::<Value>() + name.len())
-                                .unwrap_or(0),
-                        )
-                    }));
-                return allocated(bytes, account, || node_value(node, catalog));
+                return allocated(node_value_bytes(node, catalog), account, || {
+                    node_value(node, catalog)
+                });
             }
             if let Some(relationship) = binding.relationships.get(variable) {
                 let bytes = map_memory_bytes(&relationship.properties)
@@ -495,6 +569,15 @@ fn evaluate_scoped<'a>(
                 None => Ok(ProjectedValue::scalar(Value::Null)),
             }
         }
+        ProjectionExpression::Label { variable, .. }
+            if binding.values.get(variable) == Some(&Value::Null)
+                && !binding_has_variable(binding, variable) =>
+        {
+            Ok(ProjectedValue::scalar(Value::Null))
+        }
+        ProjectionExpression::Label { function, variable } => {
+            entity_label(*function, variable, binding, catalog, account)
+        }
         ProjectionExpression::Literal(value) => Ok(ProjectedValue::borrowed(value)),
         ProjectionExpression::Coalesce(expressions) => {
             for expression in expressions {
@@ -505,64 +588,23 @@ fn evaluate_scoped<'a>(
             }
             Ok(ProjectedValue::scalar(Value::Null))
         }
-        ProjectionExpression::JsonValue { expression, path } => {
-            let input = evaluate(expression)?;
-            let json = match input.as_ref() {
-                Value::Null => return Ok(ProjectedValue::scalar(Value::Null)),
-                Value::String(json) => json,
-                value => {
-                    return Err(HawDBError::Execution(format!(
-                        "JSON_VALUE requires a string document, got {:?}",
-                        description(value, account)
-                    )));
-                }
+        ProjectionExpression::JsonString { expression, path } => json::select(
+            evaluate(expression)?.as_ref(),
+            path,
+            json::Selection::String,
+            account,
+        ),
+        ProjectionExpression::JsonValue {
+            expression,
+            path,
+            null_on_non_scalar,
+        } => {
+            let selection = if *null_on_non_scalar {
+                json::Selection::NullableScalar
+            } else {
+                json::Selection::Scalar
             };
-            const MAX_JSON_VALUE_INPUT_BYTES: usize = 1024 * 1024;
-            if json.len() > MAX_JSON_VALUE_INPUT_BYTES {
-                return Err(HawDBError::Execution(
-                    "JSON_VALUE document exceeds its 1 MiB input limit".into(),
-                ));
-            }
-            // Small JSON fields can expand far beyond their source bytes in the DOM.
-            let _parse_memory = account
-                .map(|account| account.reserve(json.len().saturating_mul(64)))
-                .transpose()?;
-            let document: serde_json::Value = serde_json::from_str(json).map_err(|error| {
-                HawDBError::Execution(format!("JSON_VALUE document is invalid JSON: {error}"))
-            })?;
-            let selected = path
-                .trim_start_matches("$.")
-                .split('.')
-                .try_fold(&document, |value, field| value.as_object()?.get(field));
-            match selected {
-                None | Some(serde_json::Value::Null) => Ok(ProjectedValue::scalar(Value::Null)),
-                Some(serde_json::Value::Bool(value)) => {
-                    Ok(ProjectedValue::scalar(Value::Bool(*value)))
-                }
-                Some(serde_json::Value::Number(value)) => {
-                    if let Some(integer) = value.as_i64() {
-                        Ok(ProjectedValue::scalar(Value::Int(integer)))
-                    } else if value.as_u64().is_some() {
-                        Err(HawDBError::Execution(
-                            "JSON_VALUE integer exceeds signed 64-bit range".into(),
-                        ))
-                    } else if let Some(float) = value.as_f64() {
-                        Ok(ProjectedValue::scalar(Value::Float(float)))
-                    } else {
-                        Err(HawDBError::Execution(
-                            "JSON_VALUE number cannot be represented".into(),
-                        ))
-                    }
-                }
-                Some(serde_json::Value::String(value)) => allocated(
-                    std::mem::size_of::<Value>().saturating_add(value.len()),
-                    account,
-                    || Value::String(value.clone()),
-                ),
-                Some(_) => Err(HawDBError::Execution(
-                    "JSON_VALUE selected value is not scalar".into(),
-                )),
-            }
+            json::select(evaluate(expression)?.as_ref(), path, selection, account)
         }
         ProjectionExpression::Left { expression, length } => {
             let value = evaluate(expression)?;
@@ -842,6 +884,238 @@ fn evaluate_scoped<'a>(
     }
 }
 
+/// Folds `reduce(accumulator = initial, variable IN list | expression)` left
+/// to right. Each step owns its accumulator under the working-memory account
+/// (or the unaccounted-bytes limit), so a growing string or list stays
+/// charged; every element is one list work unit, as for comprehensions.
+fn evaluate_reduce<'a>(
+    reduce: &'a hawdb_plan_cypher::ReduceProjection,
+    catalog: &'a Catalog,
+    binding: &'a Binding,
+    locals: Option<&'a ListLocals<'a>>,
+    account: Option<&QueryMemoryAccount>,
+    work: &ListWork,
+    graph: Option<&ExpressionGraph<'_>>,
+) -> Result<ProjectedValue<'a>> {
+    // A computed value keeps the reservation it was built under; a borrowed
+    // or inline one is charged before it is copied.
+    let own = |value: ProjectedValue<'_>| -> Result<(Value, Option<QueryMemoryLease>)> {
+        let ProjectedValue { value, _allocation } = value;
+        if _allocation.is_some() {
+            return Ok((value.into_owned(), _allocation));
+        }
+        let bytes = crate::binding::value_memory_bytes(&value);
+        match account {
+            Some(account) => {
+                let lease = account.reserve(bytes)?;
+                Ok((value.into_owned(), Some(lease)))
+            }
+            // The unaccounted total is cumulative; an inline scalar copies no
+            // payload, so long numeric folds stay within it.
+            None => {
+                work.charge_unaccounted(bytes.saturating_sub(std::mem::size_of::<Value>()))?;
+                Ok((value.into_owned(), None))
+            }
+        }
+    };
+    let initial = evaluate_scoped(
+        &reduce.initial,
+        catalog,
+        binding,
+        locals,
+        account,
+        work,
+        graph,
+    )?;
+    let list = evaluate_scoped(&reduce.list, catalog, binding, locals, account, work, graph)?;
+    let values = match list.as_ref() {
+        Value::Null => return Ok(ProjectedValue::scalar(Value::Null)),
+        Value::List(values) => values,
+        value => {
+            return Err(HawDBError::Execution(format!(
+                "reduce() requires a list, got {:?}",
+                description(value, account)
+            )))
+        }
+    };
+    let (mut accumulated, mut allocation) = own(initial)?;
+    for value in values {
+        work.charge(1)?;
+        let accumulator = ListLocals {
+            name: &reduce.accumulator,
+            value: &accumulated,
+            parent: locals,
+        };
+        let element = ListLocals {
+            name: &reduce.variable,
+            value,
+            parent: Some(&accumulator),
+        };
+        let next = evaluate_scoped(
+            &reduce.expression,
+            catalog,
+            binding,
+            Some(&element),
+            account,
+            work,
+            graph,
+        )?;
+        let (value, lease) = own(next)?;
+        accumulated = value;
+        allocation = lease;
+    }
+    Ok(ProjectedValue {
+        value: Cow::Owned(accumulated),
+        _allocation: allocation,
+    })
+}
+
+/// `startNode(r)`/`endNode(r)`: the stored source or target of `r`, which is
+/// one of the two node variables of the pattern step that bound `r`. The
+/// match direction does not matter; an undirected match still returns the
+/// stored direction. Other row variables are never consulted: one may bind
+/// the same node with only the properties it reads.
+fn relationship_endpoint<'a>(
+    endpoint: hawdb_core::RelationshipEndpoint,
+    variable: &str,
+    endpoints: Option<&[String; 2]>,
+    catalog: &'a Catalog,
+    binding: &'a Binding,
+    account: Option<&QueryMemoryAccount>,
+    graph: Option<&ExpressionGraph<'_>>,
+) -> Result<ProjectedValue<'a>> {
+    let name = endpoint.function_name();
+    let Some(relationship) = binding.relationships.get(variable) else {
+        if binding.nodes.contains_key(variable) {
+            return Err(HawDBError::Execution(format!(
+                "{name}() requires a relationship, got node '{variable}'"
+            )));
+        }
+        if binding.values.get(variable) == Some(&Value::Null) {
+            return Ok(ProjectedValue::scalar(Value::Null));
+        }
+        return Err(HawDBError::Execution(format!(
+            "{name}() requires a relationship, '{variable}' is not a bound relationship"
+        )));
+    };
+    let id = match endpoint {
+        hawdb_core::RelationshipEndpoint::Start => relationship.source,
+        hawdb_core::RelationshipEndpoint::End => relationship.target,
+    };
+    // No pattern step binds `r` beside its endpoints, as for a relationship
+    // copied into a pattern expression: read the node by its id.
+    if endpoints.is_none() {
+        return pattern::stored_node(name, id, catalog, account, graph);
+    }
+    let node = endpoints
+        .into_iter()
+        .flatten()
+        .filter_map(|name| binding.nodes.get(name))
+        .find(|node| node.id == id)
+        .ok_or_else(|| {
+            HawDBError::Execution(format!(
+                "{name}({variable}) requires the relationship's endpoint nodes to be bound by the same MATCH"
+            ))
+        })?;
+    allocated(node_value_bytes(node, catalog), account, || {
+        node_value(node, catalog)
+    })
+}
+
+/// `label(x)` or `labels(n)` of the node or relationship bound to `variable`.
+/// See [`hawdb_core::LabelFunction`] for the semantics.
+fn entity_label<'a>(
+    function: hawdb_core::LabelFunction,
+    variable: &str,
+    binding: &Binding,
+    catalog: &Catalog,
+    account: Option<&QueryMemoryAccount>,
+) -> Result<ProjectedValue<'a>> {
+    use hawdb_core::LabelFunction;
+    let string_bytes = |name: &str| std::mem::size_of::<Value>() + name.len();
+    if let Some(node) = binding.nodes.get(variable) {
+        // A label id missing from the catalog is a storage inconsistency, as on
+        // every other read path; it is never skipped. Names are validated by
+        // iterating, never collected, so no scratch proportional to the label
+        // count is allocated outside the query memory account.
+        let name_of = |label: &hawdb_core::LabelId| {
+            catalog.label_name(*label).ok_or_else(|| {
+                HawDBError::StorageIntegrity(format!(
+                    "{}({variable}) found a node label id that is missing from the catalog",
+                    function.function_name()
+                ))
+            })
+        };
+        return match function {
+            LabelFunction::Label => {
+                let mut names = node.labels.iter().map(name_of);
+                match (names.next().transpose()?, names.next().transpose()?) {
+                    (None, _) => Ok(ProjectedValue::scalar(Value::Null)),
+                    (Some(name), None) => {
+                        allocated(string_bytes(name), account, || Value::String(name.into()))
+                    }
+                    (Some(_), Some(_)) => {
+                        names.try_for_each(|name| name.map(drop))?;
+                        Err(HawDBError::Execution(format!(
+                            "label({variable}) requires a node with one label, but the node has {}; use labels({variable})",
+                            node.labels.len()
+                        )))
+                    }
+                }
+            }
+            LabelFunction::Labels => {
+                let bytes =
+                    node.labels
+                        .iter()
+                        .try_fold(std::mem::size_of::<Value>(), |total, label| {
+                            Ok::<_, HawDBError>(total.saturating_add(string_bytes(name_of(label)?)))
+                        })?;
+                // Every name was validated above; the list is built only after
+                // its bytes were charged.
+                allocated(bytes, account, || {
+                    Value::List(
+                        node.labels
+                            .iter()
+                            .filter_map(|label| catalog.label_name(*label))
+                            .map(|name| Value::String(name.into()))
+                            .collect(),
+                    )
+                })
+            }
+        };
+    }
+    if let Some(relationship) = binding.relationships.get(variable) {
+        if function == LabelFunction::Labels {
+            return Err(HawDBError::Execution(format!(
+                "labels({variable}) requires a node, but '{variable}' is a relationship; use label({variable}) or type({variable})"
+            )));
+        }
+        return match catalog.rel_type_name(relationship.rel_type) {
+            Some(name) => allocated(string_bytes(name), account, || Value::String(name.into())),
+            None => Ok(ProjectedValue::scalar(Value::Null)),
+        };
+    }
+    Err(HawDBError::Execution(format!(
+        "missing variable '{variable}' during projection"
+    )))
+}
+
+/// The bytes [`node_value`] materializes for `node`.
+fn node_value_bytes(node: &NodeRecord, catalog: &Catalog) -> usize {
+    let entry_bytes = std::mem::size_of::<(String, Value)>() * 3;
+    map_memory_bytes(&node.properties)
+        .saturating_add(entry_bytes * 2)
+        .saturating_add("_id".len() + "labels".len() + std::mem::size_of::<i64>())
+        .saturating_add(node.labels.iter().fold(0usize, |total, label| {
+            total.saturating_add(
+                catalog
+                    .label_name(*label)
+                    .map(|name| std::mem::size_of::<Value>() + name.len())
+                    .unwrap_or(0),
+            )
+        }))
+}
+
 fn path_function<'a>(
     function: &PathFunction,
     path: &'a Value,
@@ -918,6 +1192,33 @@ fn column<'a>(binding: &'a Binding, name: &str) -> Result<&'a Value> {
         .ok_or_else(|| HawDBError::Execution(format!("missing column '{name}' during projection")))
 }
 
+/// Converts a value, charging a string result to the evaluation's work and
+/// memory budgets before the string is allocated: `string(x)` output can be
+/// far larger than its input (`1e308` renders as ~310 bytes).
+fn conversion<'a>(
+    function: hawdb_core::ConversionFunction,
+    value: &Value,
+    account: Option<&QueryMemoryAccount>,
+    work: &ListWork,
+) -> Result<ProjectedValue<'a>> {
+    let mut allocation = None;
+    let value = function.apply_ref_charged(value.as_ref(), &mut |bytes| {
+        work.charge(bytes.saturating_add(1))?;
+        match account {
+            Some(account) => {
+                allocation =
+                    Some(account.reserve(std::mem::size_of::<Value>().saturating_add(bytes))?);
+            }
+            None => work.charge_unaccounted(bytes)?,
+        }
+        Ok(())
+    })?;
+    Ok(ProjectedValue {
+        value: Cow::Owned(value),
+        _allocation: allocation,
+    })
+}
+
 fn binary<'a>(
     left: &'a ProjectionExpression,
     op: ScalarBinaryOp,
@@ -948,6 +1249,16 @@ fn binary<'a>(
     if op == ScalarBinaryOp::In {
         return list::contains(left.as_ref(), right.as_ref(), account, work)
             .map(ProjectedValue::scalar);
+    }
+    if op == ScalarBinaryOp::Add
+        && let Some(bytes) = concatenation_bytes(left.as_ref(), right.as_ref())
+    {
+        work.charge(bytes)?;
+        return allocated(
+            std::mem::size_of::<Value>().saturating_add(bytes),
+            account,
+            || concatenate(left.as_ref(), right.as_ref(), bytes),
+        );
     }
     if matches!(
         op,

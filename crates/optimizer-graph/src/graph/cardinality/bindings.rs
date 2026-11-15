@@ -136,9 +136,13 @@ impl<'a> PlanBindings<'a> {
                             target,
                             relationship,
                             rel_type,
+                            rel_types,
                             ..
                         } => {
-                            if let Some(variable) = relationship {
+                            // A disjunction leaves the relationship's type unknown.
+                            if let Some(variable) = relationship
+                                && rel_types.is_empty()
+                            {
                                 bindings.relationship_types.insert(variable, rel_type);
                             }
                             target

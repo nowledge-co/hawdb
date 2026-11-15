@@ -88,6 +88,11 @@ impl SegmentBytes {
     pub(crate) fn is_cache_resident(&self) -> bool {
         self.payload.pin.is_some()
     }
+
+    /// Bytes this handle pins in the cache when it is a cache lease.
+    pub(crate) fn resident_charge(&self) -> u64 {
+        self.payload.bytes.len() as u64
+    }
 }
 
 impl Clone for SegmentBytes {

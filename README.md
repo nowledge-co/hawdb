@@ -3,7 +3,7 @@
 [![Website](https://img.shields.io/badge/website-hawdb.ai-111111?style=flat)](https://hawdb.ai)
 [![License](https://img.shields.io/github/license/nowledge-co/hawdb?style=flat)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/nowledge-co/hawdb?style=flat)](https://github.com/nowledge-co/hawdb/releases/latest)
-[![Rust](https://img.shields.io/badge/rust-1.97.1-dea584?style=flat&logo=rust&logoColor=white)](rust-toolchain.toml)
+[![Rust](https://img.shields.io/badge/rust-1.99.1-dea584?style=flat&logo=rust&logoColor=white)](rust-toolchain.toml)
 
 HawDB is an AI-native embedded database for agents. It keeps the facts an agent reasons over — entities, relationships, documents, and events — in one crash-safe process, returns them as bounded context, and gives each agent its own durable branch to work in.
 
@@ -16,14 +16,15 @@ HawDB is written in Rust and licensed under Apache-2.0. It is built for Nowledge
 The site and in-browser playground are at [hawdb.ai](https://hawdb.ai). Their source is [nowledge-co/hawdb-website](https://github.com/nowledge-co/hawdb-website).
 
 For synchronous SQL materialized views, see [the materialized view guide](docs/MATERIALIZED_VIEWS.md).
+For BM25 full-text search over SQL rows, see [the SQL search index guide](docs/SQL_SEARCH_INDEXES.md).
 
 ## Install
 
-HawDB is a Rust library. Published releases are on crates.io. The repository pins Rust 1.97.1.
+HawDB is a Rust library. Published releases are on crates.io. The repository pins Rust 1.99.1.
 
 ```toml
 [dependencies]
-hawdb = "0.27"
+hawdb = "0.33"
 ```
 
 To follow the repository tip instead of a release:
@@ -274,7 +275,7 @@ bazel build //:hawdb
 bazel test --test_output=errors //...
 ```
 
-`//:hawdb_graph_text` matches `cargo build -p hawdb --no-default-features --features full-text-search`: graph and SQL plus full-text search, without vector search. Bazel uses a hermetic JDK 21, so `JAVA_HOME` is unnecessary for the TLA+ rules. On macOS the repository keeps Rust proc-macros unstripped to avoid a Mach-O alignment bug in the pinned 1.97.1 toolchain.
+`//:hawdb_graph_text` matches `cargo build -p hawdb --no-default-features --features full-text-search`: graph and SQL plus full-text search, without vector search. Bazel uses a hermetic JDK 21, so `JAVA_HOME` is unnecessary for the TLA+ rules. On macOS the repository keeps Rust proc-macros unstripped to avoid a Mach-O alignment bug observed with Rust 1.97.1.
 
 The experimental in-memory browser build is documented in [`docs/WASM.md`](docs/WASM.md). The public playground is built from [nowledge-co/hawdb-website](https://github.com/nowledge-co/hawdb-website).
 
@@ -312,6 +313,17 @@ db.close()
 
 Build and test instructions are in [`bindings/python/README.md`](bindings/python/README.md).
 
+## Swift
+
+The repository-root Swift package exports `HawDB` for Swift 6 hosts on macOS,
+iOS/iPadOS and Linux, using the same embedded C ABI. It supports in-memory and persistent
+databases, parameterized SQL/Cypher, transactions, typed values and read budgets.
+The host supplies a matching native library; iOS hosts can build a static
+XCFramework and self-contained Swift package. See
+[`bindings/swift/README.md`](bindings/swift/README.md) for SwiftPM linking,
+examples, platform scope and verification. The on-disk format carries no
+compatibility promise until HawDB declares one.
+
 ## Production hosts
 
 Link HawDB as a library. Production read routing, migration gates, and readiness checks use the typed Rust API. They do not shell out to the `hawdb` binary.
@@ -337,6 +349,7 @@ Alongside the models, the repository keeps differential fuzzing, crash-recovery 
 | [`docs/FILE_DESCRIPTOR_CAPACITY.md`](docs/FILE_DESCRIPTOR_CAPACITY.md) | Descriptor capacity, pins, internal progress and Windows probe isolation |
 | [`docs/specs/README.md`](docs/specs/README.md) | Index of normative contracts |
 | [`docs/WASM.md`](docs/WASM.md) | In-tree experimental browser runtime |
+| [`docs/PREBUILT_LIBRARIES.md`](docs/PREBUILT_LIBRARIES.md) | Prebuilt C ABI release archives and the Bun npm packages |
 | [hawdb.ai](https://hawdb.ai) | Public site and playground. Source: [hawdb-website](https://github.com/nowledge-co/hawdb-website) |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Issues, pull requests, and validation expectations |
 

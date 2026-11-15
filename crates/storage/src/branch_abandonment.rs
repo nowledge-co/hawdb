@@ -696,7 +696,12 @@ fn verify_archive(archive: &Path, manifest: &Manifest) -> Result<()> {
 /// Only this module constructs the evidence map after validating every archive.
 /// Live-root verification still runs before these proofs can permit a sweep.
 #[derive(Default)]
-pub(crate) struct QuarantinedObjects(BTreeMap<PathBuf, (u64, [u8; 32])>);
+pub(crate) struct QuarantinedObjects(
+    BTreeMap<PathBuf, (u64, [u8; 32])>,
+    /// Quarantined source objects whose archive an automatic pass could not
+    /// verify (over budget or damaged). They are retained, never swept.
+    BTreeSet<PathBuf>,
+);
 
 impl QuarantinedObjects {
     pub(crate) fn preserves(&self, path: &Path) -> Result<bool> {
@@ -705,7 +710,18 @@ impl QuarantinedObjects {
         };
         Ok(digest_file(path, *length)? == *digest)
     }
+
+    pub(crate) fn protects(&self, path: &Path) -> bool {
+        self.1.contains(path)
+    }
 }
+
+/// Committed quarantine archives (by directory and committed manifest
+/// digest) this process fully verified. Committed archives are immutable,
+/// so automatic passes verify each one once instead of on every checkpoint;
+/// explicit reclamation still re-verifies every archive on every call.
+static VERIFIED_ARCHIVES: std::sync::Mutex<BTreeSet<(PathBuf, [u8; 32])>> =
+    std::sync::Mutex::new(BTreeSet::new());
 
 pub(crate) struct ReclamationSnapshot {
     pub catalog: Catalog,
@@ -717,27 +733,47 @@ pub(crate) fn prepare_reclamation(
     catalog_path: &Path,
     limits: BranchAbandonmentLimits,
 ) -> Result<ReclamationSnapshot> {
-    prepare_reclamation_with_verifier(catalog_path, |directory, catalog| {
+    prepare_reclamation_with_verifier(catalog_path, true, |directory, catalog| {
         reclamation_evidence(directory, catalog, limits)
+    })
+}
+
+/// [`prepare_reclamation`] for automatic post-checkpoint maintenance: a held
+/// metadata lock (a publication, branch transition or another sweep) returns
+/// `WouldBlock` instead of waiting, and the caller records retryable debt.
+pub(crate) fn try_prepare_reclamation(
+    catalog_path: &Path,
+    limits: BranchAbandonmentLimits,
+) -> Result<ReclamationSnapshot> {
+    prepare_reclamation_with_verifier(catalog_path, false, |directory, catalog| {
+        automatic_reclamation_evidence(directory, catalog, limits)
     })
 }
 
 fn prepare_reclamation_with_verifier(
     catalog_path: &Path,
+    blocking: bool,
     verify: impl FnOnce(&Path, &Catalog) -> Result<QuarantinedObjects>,
 ) -> Result<ReclamationSnapshot> {
     let directory = catalog_path
         .parent()
         .ok_or_else(|| invalid("branch catalog has no project directory"))?;
+    let acquire = |directory: &Path| {
+        if blocking {
+            CatalogMetadataLease::acquire_blocking(directory)
+        } else {
+            CatalogMetadataLease::acquire(directory)
+        }
+    };
     let catalog = {
-        let _metadata = CatalogMetadataLease::acquire_blocking(directory)?;
+        let _metadata = acquire(directory)?;
         branch_catalog::read_catalog(catalog_path)?
     };
     // Committed quarantine archives are immutable and never swept. Retain
     // full byte verification on every call, without holding up publishers.
     // A concurrent abandonment or catalog transition invalidates this view.
     let proofs = verify(directory, &catalog);
-    let metadata = CatalogMetadataLease::acquire_blocking(directory)?;
+    let metadata = acquire(directory)?;
     if branch_catalog::read_catalog(catalog_path)? != catalog {
         return Err(HawDBError::BranchBusy {
             resource: "catalog changed during quarantine verification; retry reclamation",
@@ -788,6 +824,75 @@ pub(crate) fn reclamation_evidence(
             }
         }
     }
+    Ok(proofs)
+}
+
+/// Evidence for an automatic post-checkpoint pass (#1736). The structural
+/// checks of [`reclamation_evidence`] (intent present where required,
+/// manifest bound to this catalog, publication committed) still fail the
+/// pass. Byte verification of a committed archive runs once per process and
+/// is cached by archive identity. An archive that is over the remaining
+/// budget or fails verification never fails the pass: its quarantined source
+/// objects are protected (retained and reported) instead of proven, so the
+/// rest of the namespace is still swept. Automatic passes never retire
+/// deleted branch directories, so private remnants are not inspected here.
+pub(crate) fn automatic_reclamation_evidence(
+    directory: &Path,
+    catalog: &Catalog,
+    limits: BranchAbandonmentLimits,
+) -> Result<QuarantinedObjects> {
+    let mut proofs = QuarantinedObjects::default();
+    let mut remaining = limits;
+    for record in &catalog.branches {
+        let archive = archive_directory(directory, record.id);
+        let Some(manifest) = load_intent(&archive)? else {
+            if record.create_outcome == CreateOutcome::Abandoned || fs::try_exists(&archive)? {
+                return Err(invalid("quarantine intent is missing"));
+            }
+            continue;
+        };
+        manifest.matches(catalog, true)?;
+        let digest = manifest.digest()?;
+        if read_bounded(&archive.join("committed"), 32)? != digest {
+            return Err(invalid("branch quarantine publication is incomplete"));
+        }
+        let key = (archive.clone(), digest);
+        let cached = VERIFIED_ARCHIVES
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains(&key);
+        let verified = cached
+            || (manifest.validate_limits(remaining).is_ok() && {
+                remaining.max_files -= manifest.inventory_entries + 1;
+                remaining.max_bytes -= manifest.files.iter().map(|file| file.bytes).sum::<u64>()
+                    + manifest.catalog.len() as u64;
+                verify_archive(&archive, &manifest).is_ok()
+            });
+        if verified && !cached {
+            VERIFIED_ARCHIVES
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(key);
+        }
+        for evidence in &manifest.files {
+            if !evidence.path.starts_with("objects/") {
+                continue;
+            }
+            let path = directory.join(&evidence.path);
+            if !verified {
+                proofs.1.insert(path);
+            } else if proofs
+                .0
+                .insert(path, (evidence.bytes, evidence.digest))
+                .is_some_and(|old| old != (evidence.bytes, evidence.digest))
+            {
+                return Err(invalid("conflicting branch quarantine evidence"));
+            }
+        }
+    }
+    // A path proven by one archive but unverifiable in another stays protected.
+    let protected = proofs.1.clone();
+    proofs.0.retain(|path, _| !protected.contains(path));
     Ok(proofs)
 }
 

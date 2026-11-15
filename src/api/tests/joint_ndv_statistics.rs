@@ -34,6 +34,69 @@ fn group_rows(output: crate::QueryOutput) -> BTreeMap<(Value, Value), Value> {
 }
 
 #[test]
+fn correlated_match_properties_preserve_parameters_and_old_reader_results() {
+    let mut db = Database::new();
+    load(
+        &mut db,
+        "Item",
+        (0_i64..100)
+            .map(|id| item(id, Value::Int(id % 10), Value::Int(id % 10)))
+            .collect(),
+    );
+    db.query("CREATE (:Seed {id: 0})").unwrap();
+    db.query("MATCH (s:Seed), (n:Item) CREATE (s)-[:LINK]->(n)")
+        .unwrap();
+    db.query("CREATE INDEX ON :Seed(id)").unwrap();
+    db.query("CREATE INDEX ON :Item(a)").unwrap();
+    db.query("CREATE INDEX ON :Item(a, b)").unwrap();
+    let statement = "MATCH (s:Seed {id:0}) WITH s MATCH (s)-[:LINK]->(n:Item {a:$a,b:$b}) RETURN n.id AS id ORDER BY id";
+    let parameters = BTreeMap::from([("a".into(), Value::Int(3)), ("b".into(), Value::Int(3))]);
+    let mut old = db.begin_read_transaction().unwrap();
+    let expected = (0_i64..100)
+        .filter(|id| id % 10 == 3)
+        .map(Value::Int)
+        .collect::<Vec<_>>();
+    for _ in 0..3 {
+        let output = old.query_with_params(statement, &parameters).unwrap();
+        assert_eq!(
+            output
+                .rows
+                .iter()
+                .map(|row| row["id"].clone())
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
+    let contradictory = BTreeMap::from([("a".into(), Value::Int(3)), ("b".into(), Value::Int(4))]);
+    assert!(old
+        .query_with_params(statement, &contradictory)
+        .unwrap()
+        .rows
+        .is_empty());
+    db.query("MATCH (n:Item {id:3}) DETACH DELETE n").unwrap();
+    assert_eq!(
+        old.query_with_params(statement, &parameters)
+            .unwrap()
+            .rows
+            .len(),
+        10
+    );
+    let mut current = db.begin_read_transaction().unwrap();
+    let output = current.query_with_params(statement, &parameters).unwrap();
+    assert_eq!(
+        output
+            .rows
+            .iter()
+            .map(|row| row["id"].clone())
+            .collect::<Vec<_>>(),
+        expected
+            .into_iter()
+            .filter(|id| id != &Value::Int(3))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn joint_group_estimates_preserve_aliases_nulls_and_pinned_snapshot_statistics() {
     let group = "MATCH (n:Item) RETURN n.a AS a, n.b AS b, count(n) AS total ORDER BY a, b";
     let aliases="MATCH (n:Item) WITH n.a AS x, n.b AS y RETURN x AS a, y AS b, count(*) AS total ORDER BY a, b";

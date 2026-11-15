@@ -158,7 +158,9 @@ Scalar UNWIND elements and map-element properties are bound only after their
 row variable is introduced. A final RETURN projects the existing endpoints;
 relationship projections, aggregates, result modifiers, additional mutation
 clauses, optional matches and correlated graph traversals remain refused.
-The same endpoint RETURN is available without UNWIND. This does not enable
+Without UNWIND, relationship `MERGE ... RETURN` uses the atomic MERGE
+command and the mutation RETURN below, which also returns the relationship and
+supports `ON MATCH SET`, `SKIP` and `LIMIT`. This does not enable
 general-purpose read-only UNWIND composition.
 
 Lowering produces the existing `UnwindMutationExec` with a typed matched-edge
@@ -187,6 +189,88 @@ earlier statements. Ordinary rollback and WAL/reopen boundaries remain unchanged
 This supplies exact member rows to a host count guard; it does not silently
 accept a partial match or implement Mem's complete Skills adapter/activation.
 Tracked in [#1397](https://github.com/nowledge-co/hawdb/issues/1397).
+
+## Mutation RETURN
+
+A `CREATE` may end in `RETURN`, with Kùzu semantics: one row per created
+node or relationship, describing it as the statement left it, including
+declared property `DEFAULT`s. For example:
+
+```cypher
+CREATE (o:Completion {id: $id, body: $body}) RETURN o.id
+
+MATCH (a:Memory {id: $source_id}), (b:Label {id: $target_id})
+CREATE (a)-[r:HAS_LABEL {weight: $weight}]->(b)
+RETURN r
+```
+
+A node create binds its node; a relationship create binds its source,
+relationship and target variables. `RETURN` may reference only these
+variables of the CREATE pattern: an anonymous node or relationship binds
+nothing, and any other name is refused at planning (`unknown variable`). Items may be properties, whole entities,
+scalar expressions and aliases. A single `count(*)` or `count(variable)` returns
+one row with the number of created entities, `0` when MATCH found nothing.
+`SKIP` and `LIMIT` select returned rows only; the mutation applies to every
+matched row. Other aggregates, `DISTINCT`, `WHERE`, `ORDER BY` and further
+clauses are refused before any write.
+
+`DELETE` and `DETACH DELETE` may end in `RETURN` the same way. As in Kùzu, the
+rows describe the deleted entities as they were before the statement, one row
+per deleted node or relationship; `count(*)` counts the deleted rows and is `0`
+when MATCH found nothing:
+
+```cypher
+MATCH (e:Entity {id: $entity_id})
+WHERE NOT (e)<-[:MENTIONS]-(:Memory) AND NOT (e)-[:RELATES_TO]-()
+DETACH DELETE e RETURN e.id
+
+MATCH (a:Memory)-[r:HAS_LABEL]->(l:Label {id: $label}) DELETE r
+RETURN count(*)
+```
+
+`MERGE` may end in `RETURN` too, optionally after `SET` clauses. The row is
+the matched or created entity after `ON CREATE SET`, `ON MATCH SET` and `SET`,
+including declared `DEFAULT`s when MERGE creates it. A relationship MERGE
+between two independently matched endpoints also accepts `ON MATCH SET`, which
+applies only to a relationship the MERGE finds:
+
+```cypher
+MERGE (l:Label {id: $id})
+ON CREATE SET l.name = 'created' ON MATCH SET l.name = 'matched'
+RETURN l.name
+
+MATCH (a:Entity {id: $a}), (b:Entity {id: $b})
+MERGE (a)-[r:RELATES_TO {relation_type: $kind}]->(b)
+ON CREATE SET r.count = 1 ON MATCH SET r.count = r.count + 1
+RETURN r.count
+```
+
+Relationship `ON MATCH SET` items accept the same right-hand sides as node
+`SET`: values, parameters, integer self-increments, `COALESCE` and the CASE
+forms; a float increment is refused. They are applied in order inside the same
+storage command, so a refused statement applies none of them. `ON MATCH SET` is
+refused after UNWIND and for MERGE shapes other than two independent endpoint
+matches.
+
+A node delete binds the deleted node; a relationship delete binds the
+relationship and its two endpoints. A target-node `DETACH DELETE` after a
+relationship MATCH is refused with `RETURN`, because storage reports each
+deleted node once while MATCH can produce it on several rows.
+
+The mutation keeps its existing storage command. The planner wraps it in a
+`MutationReturn` operator naming the summary-row column that identifies each
+returned variable, and whether the entities are read after the write or, for
+a delete, from the state the statement started from. Execution stages the
+mutation in a private transaction workspace, projects the rows from those
+states, and publishes only if projection succeeds; in an explicit transaction the statement savepoint is
+restored instead. Returned rows count against `max_mutation_result_rows`,
+`max_mutation_result_payload_bytes` and the request output limits; a refusal
+leaves no partial write. Exceeding a mutation result limit is a typed
+`HawDBError::ResourceBudgetExceeded` naming `MutationLimits.max_result_rows` or
+`MutationLimits.max_result_payload_bytes` (owner `mutation RETURN rows`); the
+request output limits keep `ReadBudgetExceeded`. The internal mutation summary
+is bounded by `max_mutation_affected_rows`, so a count returns one row however
+many entities change. No WAL or on-disk format changes.
 
 ## Frozen corpus qualification
 

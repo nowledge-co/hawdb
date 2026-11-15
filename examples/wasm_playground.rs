@@ -83,17 +83,28 @@ impl QueryBridge {
                     HawDBError::Parse(_) => "parse",
                     HawDBError::Semantic(_) => "semantic",
                     HawDBError::Storage(_) => "storage",
+                    HawDBError::Constraint { .. } => "constraint",
+                    HawDBError::Schema { .. } => "schema",
                     HawDBError::ProjectionBusy => "projection_busy",
+                    HawDBError::SearchProjectionMismatch { .. } => "search_projection_mismatch",
                     HawDBError::StorageIntegrity(_) => "storage_integrity",
                     HawDBError::WalRecoveryIo { .. } => "wal_recovery_io",
+                    HawDBError::PublishOutcomeUnknown { .. } => "publish_outcome_unknown",
                     HawDBError::FileDescriptors(_) => "file_descriptors",
                     HawDBError::Execution(_)
                     | HawDBError::TransactionReadDependencyRefused { .. }
                     | HawDBError::ReadBudgetExceeded(_)
+                    | HawDBError::WalRecordLimitExceeded(_)
                     | HawDBError::ResourceBudgetExceeded(_)
                     | HawDBError::GraphExpansionCandidateLimitExceeded { .. }
                     | HawDBError::GraphExpansionPayloadLimitExceeded { .. } => "execution",
                     HawDBError::BranchCommandUnsupported { .. } => "branch_command_unsupported",
+                    HawDBError::SearchProjectionRebuildRefused { .. } => {
+                        "search_projection_rebuild_refused"
+                    }
+                    HawDBError::SearchProjectionEpochAdvanceRefused { .. } => {
+                        "search_projection_epoch_advance_refused"
+                    }
                     HawDBError::BranchBusy { .. } => "branch_busy",
                     HawDBError::BranchReclamationBlocked { .. } => "branch_reclamation_blocked",
                     HawDBError::BranchEvidenceBudgetExceeded { .. } => {

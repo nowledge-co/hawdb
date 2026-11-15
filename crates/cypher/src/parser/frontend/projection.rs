@@ -234,6 +234,14 @@ impl Transformer<'_> {
                 let call = self.tree.required(selected, rule_id!("r_list_call"));
                 let name = self.text(self.tree.required(call, rule_id!("x_list_function_name")));
                 let string_function = hawdb_core::StringFunction::from_function_name(name);
+                if name.eq_ignore_ascii_case("reduce") {
+                    // The well-formed call is a scalar `x_list_function`.
+                    return Err(self.error(
+                        selected,
+                        "reduce() requires `accumulator = initial, variable IN list | expression`",
+                    ));
+                }
+                let numeric_function = hawdb_core::NumericFunction::from_function_name(name);
                 let list_function = ListFunction::from_function_name(name);
                 let mut arguments = Vec::new();
                 for argument in self
@@ -256,6 +264,19 @@ impl Transformer<'_> {
                         ScalarExpressionKind::StringFunction {
                             function,
                             arguments: scalars,
+                        },
+                    );
+                    let scalar = self.scalar_postfixes(selected, scalar, depth + 1)?;
+                    return Ok(self.source(node, ReturnExpressionKind::Value(scalar)));
+                }
+                if let Some(function) = numeric_function {
+                    let argument = self.numeric_argument(selected, function, arguments)?;
+                    let argument = self.scalar_return_argument(argument, selected, depth + 1)?;
+                    let scalar = self.source(
+                        call,
+                        ScalarExpressionKind::NumericFunction {
+                            function,
+                            argument: Box::new(argument),
                         },
                     );
                     let scalar = self.scalar_postfixes(selected, scalar, depth + 1)?;

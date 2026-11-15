@@ -465,7 +465,9 @@ impl RelationalIndexShadowManifest {
                     .map_err(|error| RelationalIndexShadowError::Admission(error.to_string()))?;
             }
             let leading_prefixes = statistics_bytes
-                .chunks_exact(3 * 8)
+                .as_chunks::<{ 3 * 8 }>()
+                .0
+                .iter()
                 .map(|encoded| RelationalIndexPrefixStatistics {
                     distinct_non_null_values: read_u64(&encoded[..8]),
                     non_null_rows: read_u64(&encoded[8..16]),
@@ -2495,6 +2497,11 @@ pub(super) fn relational_schema_digest(
         if let RelationalScalarType::Decimal(kind) = column.scalar_type {
             encoded.extend_from_slice(&[kind.precision(), kind.scale()]);
         }
+        if let RelationalScalarType::Timestamp(precision)
+        | RelationalScalarType::TimestampTz(precision) = column.scalar_type
+        {
+            encoded.push(precision.get());
+        }
         encoded.push(u8::from(column.nullable));
         match &column.default {
             None => encoded.push(0),
@@ -2508,6 +2515,10 @@ pub(super) fn relational_schema_digest(
                 }
             }
             Some(RelationalColumnDefault::UuidV7) => encoded.push(2),
+            Some(RelationalColumnDefault::CurrentTimestamp(kind)) => {
+                encoded.push(3);
+                encoded.extend_from_slice(&crate::relational::clock_default_bytes(*kind));
+            }
         }
     }
     encode_string_list(&mut encoded, &schema.primary_key)?;
@@ -2746,6 +2757,8 @@ fn scalar_type_tag(scalar_type: RelationalScalarType) -> u8 {
         RelationalScalarType::Uuid => 6,
         RelationalScalarType::Vector(_) => 7,
         RelationalScalarType::Decimal(_) => 8,
+        RelationalScalarType::Timestamp(_) => 9,
+        RelationalScalarType::TimestampTz(_) => 10,
     }
 }
 

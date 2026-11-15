@@ -362,6 +362,7 @@ fn different_exact_properties_lower_to_one_bounded_union_seek() {
 #[test]
 fn unfiltered_node_count_uses_exact_count_store() {
     let logical = LogicalPlan::Aggregate {
+        graph_keys: Default::default(),
         group_keys: Vec::new(),
         items: vec![Aggregation {
             function: AggregateFunction::Count,
@@ -411,6 +412,7 @@ fn unfiltered_node_count_uses_exact_count_store() {
 #[test]
 fn unfiltered_relationship_count_uses_exact_count_store() {
     let logical = LogicalPlan::Aggregate {
+        graph_keys: Default::default(),
         group_keys: Vec::new(),
         items: vec![Aggregation {
             function: AggregateFunction::Count,
@@ -471,6 +473,7 @@ fn filtered_node_aggregate_decodes_only_predicate_and_argument_properties() {
         value: Value::String("note".to_string()),
     };
     let logical = LogicalPlan::Aggregate {
+        graph_keys: Default::default(),
         group_keys: Vec::new(),
         items: vec![Aggregation {
             function: AggregateFunction::Count,

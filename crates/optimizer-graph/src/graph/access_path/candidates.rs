@@ -137,11 +137,8 @@ pub(super) fn exact_union_index_seek_candidate(
     let mut seek_cost = 0u64;
     let mut estimated_rows = 0u64;
     for branch in &branches {
-        let branch_rows = catalog.estimate_property_index_in_rows(
-            label,
-            &branch.property,
-            branch.values.len() as u64,
-        );
+        let branch_rows =
+            catalog.estimate_property_index_values_rows(label, &branch.property, &branch.values);
         estimated_rows = estimated_rows.saturating_add(branch_rows);
         seek_cost = seek_cost.saturating_add(estimate_node_index_seek_cost(
             branch_rows,
@@ -423,7 +420,7 @@ fn equality_index_seek_candidate(
             continue;
         }
         let distinct_count = catalog.distinct_count(label, property).max(1);
-        let estimated_rows = catalog.estimate_property_index_eq_rows(label, property);
+        let estimated_rows = catalog.estimate_property_index_value_rows(label, property, value);
         let seek_cost = estimate_node_index_seek_cost(estimated_rows, NODE_INDEX_EQ_STARTUP_COST);
         if node_index_seek_is_cheaper(label_count, seek_cost) {
             let decision = format!(
@@ -454,8 +451,7 @@ fn equality_index_seek_candidate(
             continue;
         }
         let distinct_count = catalog.distinct_count(label, property).max(1);
-        let estimated_rows =
-            catalog.estimate_property_index_in_rows(label, property, values.len() as u64);
+        let estimated_rows = catalog.estimate_property_index_values_rows(label, property, values);
         let seek_cost = estimate_node_index_seek_cost(estimated_rows, values.len() as u64);
         if node_index_seek_is_cheaper(label_count, seek_cost) {
             let decision = format!(

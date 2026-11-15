@@ -171,6 +171,8 @@ pub(super) fn choose_base_access(
                 },
                 access: RelationalBaseAccess::PrimaryKey(key),
             });
+        } else if let Some(candidate) = range::primary_key_range_candidate(&planning, &bound)? {
+            candidates.push(candidate);
         }
         for (ordinal, columns) in schema.unique_constraints.iter().enumerate() {
             if let Some(candidate) = index_access_candidate(
@@ -831,6 +833,9 @@ pub(super) fn visit_base_entries<'a>(
             Some(row) => visit(row),
             None => Ok(true),
         },
+        RelationalBaseAccess::PrimaryKeyRange(range) => {
+            row_runtime.visit_primary_key_range(table, range, visit)
+        }
         RelationalBaseAccess::Index { name, scan } => {
             let covered_columns = descriptor
                 .filter(|descriptor| descriptor.covering)

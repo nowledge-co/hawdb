@@ -228,8 +228,6 @@ pub(super) fn filter_estimate(
     let variable = variable?;
     let label = bindings.node_label(variable)?;
     let properties = keys.keys().copied().collect::<Vec<_>>();
-    let statistics = catalog.joint_statistics(label, &properties)?;
-    let population = catalog.label_count(label);
     let covered = properties
         .iter()
         .copied()
@@ -240,57 +238,23 @@ pub(super) fn filter_estimate(
         // equality. Even fixed access must constrain the same literal value.
         let value = bindings.fixed_access_value(variable, property)?;
         if keys[property] != value {
+            catalog.joint_statistics(label, &properties)?;
             return Some(JointEstimate::plain(1));
         }
     }
+    let estimate =
+        catalog.estimate_joint_equality_rows(label, &properties, &covered, input_rows)?;
     if covered.len() == properties.len() {
-        return Some(JointEstimate::plain(input_rows));
+        return Some(JointEstimate::plain(estimate.rows));
     }
-    if statistics.index_size == population
-        && properties.iter().any(|property| {
-            catalog
-                .known_distinct_count(label, property)
-                .is_some_and(|ndv| ndv > statistics.distinct_count)
-        })
-    {
-        return None;
-    }
-    let rows = if covered.is_empty() {
-        (u128::from(input_rows) * u128::from(statistics.index_size))
-            .div_ceil(u128::from(population) * u128::from(statistics.distinct_count))
-    } else {
-        // Conditional NDV requires the same complete non-NULL population.
-        // A sparse full-key sample cannot establish this conditional domain.
-        if statistics.index_size != population {
-            return None;
-        }
-        let covered_ndv = if let [property] = covered.as_slice() {
-            catalog.known_distinct_count(label, property)?
-        } else {
-            let subset = catalog.joint_statistics(label, &covered)?;
-            if subset.index_size != population {
-                return None;
-            }
-            subset.distinct_count
-        };
-        if covered_ndv == 0 || covered_ndv > statistics.distinct_count {
-            return None;
-        }
-        (u128::from(input_rows) * u128::from(covered_ndv))
-            .div_ceil(u128::from(statistics.distinct_count))
-    };
-    // Input rows can repeat a node after a join; source-population frequency
-    // estimates are not row-count upper bounds. Sparse-key populations also
-    // differ from a whole-column marginal domain. Bound by the actual input
-    // cardinality, not a second independent marginal estimate.
     Some(JointEstimate {
-        rows: rows.min(u128::from(input_rows)).max(1) as u64,
+        rows: estimate.rows,
         statistics: Some(StatisticsUsage::Filter {
             keys: properties.len(),
             conditioned: covered.len(),
-            population,
-            indexed: statistics.index_size,
-            ndv: statistics.distinct_count,
+            population: estimate.population,
+            indexed: estimate.indexed,
+            ndv: estimate.ndv,
         }),
     })
 }

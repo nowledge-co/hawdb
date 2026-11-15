@@ -497,6 +497,7 @@ fn joint_group_cardinality_and_input_alias_width_share_the_cost_fold() {
         );
         catalog.source_schema = Some(schema.clone());
         let aggregate = PhysicalPlan::AggregateExec {
+            graph_keys: Default::default(),
             group_keys: [("a", "body"), ("b", "group")]
                 .map(|(property, name)| Projection {
                     name: name.into(),

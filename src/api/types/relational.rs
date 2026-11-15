@@ -22,7 +22,7 @@ pub use crate::relational_sql::{
 pub use hawdb_executor::BlockingOperatorMemoryReport;
 pub use hawdb_relational::{
     ProfiledRelationalSqlQueryOutput, RelationalSqlIndexReadProfile, RelationalSqlReadProfile,
-    RelationalSqlRowReadProfile,
+    RelationalSqlRowReadProfile, SearchIndexScanEvidence,
 };
 
 #[cfg(test)]

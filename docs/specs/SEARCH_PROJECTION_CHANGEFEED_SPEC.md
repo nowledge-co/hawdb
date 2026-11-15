@@ -107,7 +107,7 @@ barrier MUST fail without publishing a new watermark. Restart resumes from the
 last durable projection checkpoint. The existing graph-only catch-up helper
 continues to reject a selected range containing relational changes.
 
-`NowledgeMemEmbeddedStore` and `NowledgeMemEmbeddedStoreHandle` expose the same
+`EmbeddedStore` and `EmbeddedStoreHandle` expose the same
 typed contract. The host hydrator receives one pinned
 `DatabaseReadTransaction` and the exact `SearchProjectionChangeBatch`; it does
 not own batch selection, watermark publication, or checkpoint order. This is

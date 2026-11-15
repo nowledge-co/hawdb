@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::candidate_evidence::nowledge_mem_search_candidate_shadow_evidence_json;
+use crate::candidate_evidence::search_candidate_shadow_evidence_json;
 use hawdb_core::{HawDBError, Result};
 use std::path::Path;
 
@@ -54,7 +54,7 @@ pub fn run_nowledge_search_candidate_shadow_evidence(
     let probe = read_json_file(Path::new(&probe_path))?;
     let accumulator = parse_search_candidate_shadow_probe(&probe)?;
     Ok((
-        nowledge_mem_search_candidate_shadow_evidence_json(&accumulator.evidence()),
+        search_candidate_shadow_evidence_json(&accumulator.evidence()),
         require_ready,
     ))
 }

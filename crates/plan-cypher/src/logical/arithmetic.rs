@@ -247,12 +247,27 @@ pub(super) fn scalar_expression_is_scoped(
         | ScalarExpressionKind::List(_)
         | ScalarExpressionKind::ListIndex { .. }
         | ScalarExpressionKind::Conversion { .. }
+        | ScalarExpressionKind::NumericFunction { .. }
         | ScalarExpressionKind::ListSlice { .. }
         | ScalarExpressionKind::TemporalFunction { .. }
         | ScalarExpressionKind::PropertyAccess { .. }
         | ScalarExpressionKind::MapLiteral(_) => expression
             .kind
             .all_children(|child| scalar_expression_is_scoped(child, scope, column_names)),
+        ScalarExpressionKind::Reduce {
+            accumulator,
+            initial,
+            variable,
+            list,
+            expression,
+        } => {
+            let mut body_columns = column_names.clone();
+            body_columns.insert(accumulator.clone());
+            body_columns.insert(variable.clone());
+            scalar_expression_is_scoped(initial, scope, column_names)
+                && scalar_expression_is_scoped(list, scope, column_names)
+                && scalar_expression_is_scoped(expression, scope, &body_columns)
+        }
         ScalarExpressionKind::ListComprehension {
             variable,
             list,
@@ -273,13 +288,18 @@ pub(super) fn scalar_expression_is_scoped(
             .all(|expression| scalar_expression_is_scoped(expression, scope, column_names)),
         ScalarExpressionKind::Left { expression, .. }
         | ScalarExpressionKind::Lower(expression)
-        | ScalarExpressionKind::JsonValue { expression, .. } => {
+        | ScalarExpressionKind::JsonValue { expression, .. }
+        | ScalarExpressionKind::JsonString { expression, .. } => {
             scalar_expression_is_scoped(expression, scope, column_names)
         }
         ScalarExpressionKind::Path(path) => column_names.contains(path.path_variable()),
         ScalarExpressionKind::Id(_)
         | ScalarExpressionKind::RelationshipType(_)
-        | ScalarExpressionKind::DatePart { .. } => false,
+        | ScalarExpressionKind::Label { .. }
+        | ScalarExpressionKind::RelationshipEndpoint { .. }
+        | ScalarExpressionKind::DatePart { .. }
+        | ScalarExpressionKind::PatternPredicate(_)
+        | ScalarExpressionKind::PatternComprehension { .. } => false,
     }
 }
 

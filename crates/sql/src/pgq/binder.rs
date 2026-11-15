@@ -527,7 +527,20 @@ impl<'a> GraphTableBinder<'a> {
                 let (literal, data_type) = bind_literal(self.input, literal)?;
                 (BoundPgqExpressionKind::Literal(literal), data_type)
             }
-            ExpressionKindSyntax::TypedString { data_type, value } => {
+            ExpressionKindSyntax::TypedString {
+                time_zone: Some(_), ..
+            } => {
+                return Err(PgqBindError::new(
+                    PgqBindErrorCode::UnsupportedExpression,
+                    expression.span,
+                    "TIMESTAMP literals are not supported in PGQ",
+                ));
+            }
+            ExpressionKindSyntax::TypedString {
+                data_type,
+                value,
+                time_zone: None,
+            } => {
                 let data_type_name = normalize_identifier(self.input, data_type);
                 let value = decode_string(self.input, *value).ok_or_else(|| {
                     PgqBindError::new(
@@ -676,8 +689,9 @@ impl<'a> GraphTableBinder<'a> {
                 expression: inner,
                 data_type,
                 type_parameters,
+                time_zone,
             } => {
-                if !type_parameters.is_empty() {
+                if !type_parameters.is_empty() || time_zone.is_some() {
                     return Err(PgqBindError::new(
                         PgqBindErrorCode::UnsupportedExpression,
                         expression.span,

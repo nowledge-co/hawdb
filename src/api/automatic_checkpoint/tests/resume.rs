@@ -37,7 +37,7 @@ fn wait(control: &Control, predicate: impl Fn(AutomaticCheckpointReport) -> bool
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let report = control.report().unwrap().unwrap();
-        if predicate(report) {
+        if predicate(report.clone()) {
             return;
         }
         assert!(

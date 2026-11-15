@@ -327,6 +327,7 @@ fn run_refused(items: Vec<Projection>, external_id: String, watched_bytes: usize
         memory_ledger: &ledger,
         task_context: None,
         observer: &observer,
+        graph: None,
     };
     let callbacks = Cell::new(0);
     let result = stream_projection_batches(
@@ -1126,6 +1127,7 @@ fn text_projection_shrinks_borrowed_payload_and_skips_unused_branches() {
         memory_ledger: &ledger,
         task_context: None,
         observer: &observer,
+        graph: None,
     };
     let rows = Cell::new(0);
     let result = stream_projection_batches(
@@ -1202,6 +1204,7 @@ fn text_projection_batches_actual_payload_with_exact_rows_and_stop() {
             memory_ledger: &ledger,
             task_context: None,
             observer: &observer,
+            graph: None,
         };
         let rows = Cell::new(0);
         let result = stream_projection_batches(
@@ -1386,6 +1389,7 @@ fn projection_cancel_guard(optimized: bool) {
                 memory_ledger: &ledger,
                 task_context: Some(&task),
                 observer: &observer,
+                graph: None,
             },
             ExecutionLimit::unlimited(),
             &mut emit,
@@ -2415,6 +2419,9 @@ fn run_point_read_admission(persisted: bool, case: PointReadCase) {
             predicate_steps: Vec::new(),
             edge_predicates: Vec::new(),
             optional: false,
+            hash_join: None,
+            id_set_conjuncts: Vec::new(),
+            seeded_union: Vec::new(),
         },
         input: Some(Box::new(PhysicalPlan::ProjectExec {
             items: vec![Projection {
@@ -2851,12 +2858,17 @@ fn relationship_owned_read_typed_window_streams_without_degree_sized_key_buffer(
             residency_mode: hawdb_storage::store::StorageResidencyMode::OutOfCore,
             ..Default::default()
         };
+        // The 1,000 single-relationship commits below would otherwise each
+        // sync the WAL, which dominates this test on a contended disk. The
+        // test checks read allocation, not durability, and the checkpoint
+        // still syncs before the reopen.
+        let durability = hawdb_storage::config::DurabilityPolicy::SyncOnCheckpoint;
         let mut catalog = Catalog::default();
         let mut store = match &directory {
             Some(directory) => GraphStore::open_with_durability_and_replay_config(
                 &directory.0,
                 &mut catalog,
-                Default::default(),
+                durability,
                 replay,
             )
             .unwrap(),
@@ -2888,7 +2900,7 @@ fn relationship_owned_read_typed_window_streams_without_degree_sized_key_buffer(
             store = GraphStore::open_with_durability_and_replay_config(
                 &directory.0,
                 &mut catalog,
-                Default::default(),
+                durability,
                 replay,
             )
             .unwrap();
@@ -4520,6 +4532,7 @@ fn grouped_evidence_admits_id_copies_before_allocation_and_keeps_output_owned() 
                 memory_ledger: &ledger,
                 task_context: None,
                 observer: &observer,
+                graph: None,
             },
             ExecutionLimit::unlimited(),
             &mut |rows| {
@@ -4586,6 +4599,7 @@ fn grouped_evidence_checks_final_callback_cancellation_and_preserves_consumer_er
                 memory_ledger: &ledger,
                 task_context: Some(&task),
                 observer: &observer,
+                graph: None,
             },
             ExecutionLimit::unlimited(),
             &mut |rows| {
@@ -4657,6 +4671,7 @@ fn grouped_evidence_reuses_a_wide_scalar_group_key_without_recopying_it() {
             memory_ledger: &ledger,
             task_context: None,
             observer: &observer,
+            graph: None,
         },
         ExecutionLimit::unlimited(),
         &mut |rows| {

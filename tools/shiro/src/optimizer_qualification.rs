@@ -18,6 +18,7 @@ pub struct OptimizerQualificationVariant {
 
 #[derive(Debug)]
 pub struct OptimizerQualificationReport {
+    pub statement_clock: String,
     pub baseline: ExecutionObservation,
     pub comparisons: Vec<OptimizerQualificationComparison>,
     pub different_plan_agreements: usize,
@@ -31,6 +32,7 @@ impl OptimizerQualificationReport {
     pub fn json(&self) -> JsonValue {
         json!({
             "protocol": "shiro-optimizer-qualification-v1",
+            "statement_clock": self.statement_clock,
             "success": self.success(),
             "baseline": self.baseline.json(),
             "different_plan_agreements": self.different_plan_agreements,
@@ -94,6 +96,16 @@ pub fn qualify_optimizer_read(
     query: &QueryInvocation,
     variants: &[OptimizerQualificationVariant],
 ) -> Result<OptimizerQualificationReport, FuzzError> {
+    with_qualification_clock(|| {
+        qualify_optimizer_read_at_statement_clock(mutations, query, variants)
+    })
+}
+
+fn qualify_optimizer_read_at_statement_clock(
+    mutations: &[Mutation],
+    query: &QueryInvocation,
+    variants: &[OptimizerQualificationVariant],
+) -> Result<OptimizerQualificationReport, FuzzError> {
     if variants.is_empty() || variants.len() > 8 {
         return Err(FuzzError::new(
             "qualification requires one to eight variants",
@@ -123,6 +135,7 @@ pub fn qualify_optimizer_read(
     )
     .0;
     let mut report = OptimizerQualificationReport {
+        statement_clock: qualification_clock().to_rfc3339(),
         baseline,
         comparisons: Vec::with_capacity(variants.len()),
         different_plan_agreements: 0,
@@ -210,6 +223,7 @@ fn variant_json(variant: &OptimizerQualificationVariant) -> JsonValue {
             .filter(|rule| !variant.options.rule_enabled(*rule)).map(|rule| rule.as_str()).collect::<Vec<_>>(),
         "cost_perturbation": variant.options.cost_perturbation().map(|cost|
             json!({"seed":cost.seed(),"percent":cost.percent()})),
+        "bounded_order_alternative": variant.options.bounded_order_alternative().map(|choice| choice.as_str()),
         "assertions": variant.assertions.iter().map(|assertion| match assertion {
             OptimizerRuleAssertion::Required(rule) => json!({"required":rule.as_str()}),
             OptimizerRuleAssertion::Forbidden(rule) => json!({"forbidden":rule.as_str()}),
@@ -218,6 +232,30 @@ fn variant_json(variant: &OptimizerQualificationVariant) -> JsonValue {
 }
 
 pub(super) fn execute_qualified(
+    snapshot: &mut DatabaseReadTransaction,
+    epoch: u64,
+    query: &QueryInvocation,
+    options: OptimizerQualificationOptions,
+    search: OptimizerSearchDirective,
+    assertions: &[OptimizerRuleAssertion],
+) -> (ExecutionObservation, Option<String>, Vec<String>) {
+    with_qualification_clock(|| {
+        execute_qualified_at_statement_clock(snapshot, epoch, query, options, search, assertions)
+    })
+}
+
+pub(super) fn qualification_clock() -> hawdb::temporal::DateTime<hawdb::temporal::Utc> {
+    hawdb::temporal::pinned_statement_clock().unwrap_or_else(|| {
+        hawdb::temporal::DateTime::from_timestamp(1_793_361_600, 0)
+            .expect("fixed fuzz statement clock")
+    })
+}
+
+fn with_qualification_clock<R>(run: impl FnOnce() -> R) -> R {
+    hawdb::temporal::with_statement_clock(qualification_clock(), run)
+}
+
+fn execute_qualified_at_statement_clock(
     snapshot: &mut DatabaseReadTransaction,
     epoch: u64,
     query: &QueryInvocation,
@@ -381,6 +419,79 @@ mod tests {
         let replay = qualify_optimizer_read(&fixture(), &query, &variants).unwrap();
         assert_eq!(report.json(), replay.json());
     }
+    #[test]
+    fn candidate_batches_share_an_automatic_clock() {
+        let mut db = Database::new();
+        for mutation in fixture() {
+            db.query_with_params(&mutation.cypher, &mutation.parameters)
+                .unwrap();
+        }
+        let previous = hawdb::temporal::pinned_statement_clock();
+        assert!(previous.is_none());
+        let output = db
+            .begin_read_transaction()
+            .unwrap()
+            .qualify_optimizer_bounded_order_candidates(
+                QueryRequest::new(
+                    "MATCH (n:Item) RETURN n.external AS id, datetime() AS observed ORDER BY id LIMIT 30",
+                ),
+                hawdb::OptimizerQualificationAttemptLimits::new(
+                    std::time::Duration::from_secs(5),
+                    100_000,
+                )
+                .unwrap(),
+                OptimizerSearchDirective::Memo,
+            )
+            .unwrap();
+        output.verify_complete_results().unwrap();
+        assert_eq!(output.distinct_candidate_count, 2);
+        assert_eq!(hawdb::temporal::pinned_statement_clock(), previous);
+    }
+
+    #[test]
+    fn clock_reading_variants_replay_without_false_plan_diversity() {
+        use hawdb::optimizer::OptimizerBoundedOrderAlternative;
+
+        let variants = [
+            variant(OptimizerQualificationOptions::default()),
+            variant(
+                OptimizerQualificationOptions::default()
+                    .with_bounded_order_alternative(OptimizerBoundedOrderAlternative::TopN),
+            ),
+            variant(
+                OptimizerQualificationOptions::default().with_bounded_order_alternative(
+                    OptimizerBoundedOrderAlternative::SortThenLimit,
+                ),
+            ),
+        ];
+        let invocation = query(
+            "MATCH (n:Item) RETURN n.external AS id, datetime() AS observed ORDER BY id LIMIT 30",
+        );
+        let report = qualify_optimizer_read(&fixture(), &invocation, &variants).unwrap();
+        assert!(report.success(), "{}", report.json());
+        assert_eq!(report.same_plan_agreements, 2);
+        assert_eq!(report.different_plan_agreements, 1);
+        let replay = qualify_optimizer_read(&fixture(), &invocation, &variants).unwrap();
+        assert_eq!(report.json(), replay.json());
+        assert_eq!(
+            report.json()["comparisons"][2]["configuration"]["bounded_order_alternative"],
+            "sort_then_limit"
+        );
+
+        let failure = qualify_optimizer_read(
+            &fixture(),
+            &query("MATCH (n:Item) RETURN datetime() AS observed, 1 / (n.external - 77) AS invalid ORDER BY invalid LIMIT 30"),
+            &variants,
+        )
+        .unwrap();
+        assert!(!failure.success());
+        assert_eq!(failure.failures, variants.len());
+        assert_eq!(
+            failure.same_plan_agreements + failure.different_plan_agreements,
+            0
+        );
+    }
+
     #[test]
     fn duplicates_nulls_and_optional_fanout_do_not_acquire_keys() {
         let fixtures = [

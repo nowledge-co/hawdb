@@ -64,6 +64,38 @@ impl GraphStore {
                 "HawDB Lightning initial import requires an empty target graph".to_string(),
             ));
         }
+        self.import_graph_rows(catalog, nodes, relationships, true)
+    }
+
+    /// Imports one bounded batch of graph rows with their original ids as a
+    /// single durable commit.
+    ///
+    /// Node and relationship ids must be new to this store. Relationship
+    /// endpoints must exist either in this batch or in the store already, so
+    /// a caller can stream nodes first and relationships afterwards in
+    /// bounded batches. The batch is validated completely before its WAL
+    /// record is appended; a refused batch changes nothing.
+    ///
+    /// Rows are restored exactly as given: declared property defaults are
+    /// not applied, so a restored record that lacked a defaulted property
+    /// keeps lacking it (a logical dump restores state, it does not create
+    /// new records).
+    pub fn import_graph_rows_batch(
+        &mut self,
+        catalog: &mut Catalog,
+        nodes: Vec<GraphSnapshotNodeImport>,
+        relationships: Vec<GraphSnapshotRelationshipImport>,
+    ) -> Result<()> {
+        self.import_graph_rows(catalog, nodes, relationships, false)
+    }
+
+    fn import_graph_rows(
+        &mut self,
+        catalog: &mut Catalog,
+        nodes: Vec<GraphSnapshotNodeImport>,
+        relationships: Vec<GraphSnapshotRelationshipImport>,
+        apply_creation_defaults: bool,
+    ) -> Result<()> {
         let mut node_ids = BTreeSet::new();
         for (id, label, _) in &nodes {
             if label.is_empty() {
@@ -71,7 +103,7 @@ impl GraphStore {
                     "HawDB Lightning initial import node label is empty".to_string(),
                 ));
             }
-            if !node_ids.insert(*id) {
+            if !node_ids.insert(*id) || self.contains_node(*id)? {
                 return Err(HawDBError::Storage(format!(
                     "HawDB Lightning initial import duplicate node id {}",
                     id.0
@@ -85,19 +117,19 @@ impl GraphStore {
                     "HawDB Lightning initial import relationship type is empty".to_string(),
                 ));
             }
-            if !relationship_ids.insert(*id) {
+            if !relationship_ids.insert(*id) || self.relationship_owned(*id)?.is_some() {
                 return Err(HawDBError::Storage(format!(
                     "HawDB Lightning initial import duplicate relationship id {}",
                     id.0
                 )));
             }
-            if !node_ids.contains(source) {
+            if !node_ids.contains(source) && !self.contains_node(*source)? {
                 return Err(HawDBError::Storage(format!(
                     "HawDB Lightning initial import relationship {} references missing source node {}",
                     id.0, source.0
                 )));
             }
-            if !node_ids.contains(target) {
+            if !node_ids.contains(target) && !self.contains_node(*target)? {
                 return Err(HawDBError::Storage(format!(
                     "HawDB Lightning initial import relationship {} references missing target node {}",
                     id.0, target.0
@@ -138,6 +170,11 @@ impl GraphStore {
                     },
                 ),
         );
+        // Initial-import rows lacking a defaulted property get the default;
+        // rows that carry the key (even as an explicit NULL) keep their value.
+        if apply_creation_defaults {
+            fill_creation_defaults(&working_catalog, &mut ops, &mut lazy_creation_clock(None));
+        }
         self.validate_constraints_for_ops(&working_catalog, &ops)?;
         self.append_graph_wal_and_capture(&working_catalog, &ops, false)?;
         for op in ops {
@@ -361,9 +398,16 @@ impl GraphStore {
             let overflow = durable.open_bound_relational_overflow()?;
             let rows = durable.open_bound_relational_row_pages(&overflow)?;
             if !rows.manifest().tables.is_empty() {
-                return Err(HawDBError::Storage(
-                    "checkpoint stores canonical metadata-only relational rows; reopen requires OutOfCore residency with Authoritative relational indexes"
-                        .to_string(),
+                // A layout/configuration mismatch, not corruption: the row
+                // root is intact but this reader serves resident rows only
+                // from a full-row relational file. Newer releases write none
+                // (#1737). Refuse with a typed error and change nothing.
+                return Err(HawDBError::UnsupportedStorageFormat(
+                    hawdb_core::StorageFormatError::UnsupportedFeature {
+                        format: hawdb_core::RELATIONAL_CHECKPOINT_LAYOUT_FORMAT,
+                        feature: "relational rows stored only in the canonical row-page root, without a full-row relational checkpoint file (written by a newer HawDB or by OutOfCore residency with Authoritative relational indexes); reopen with OutOfCore residency and Authoritative relational indexes, or with a newer HawDB",
+                        tag: rows.manifest().generation,
+                    },
                 ));
             }
         }

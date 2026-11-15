@@ -222,6 +222,19 @@ impl<K: Eq, V> HashGroups<K, V> {
 
 impl<K: Ord, V> HashGroups<K, V> {
     pub(super) fn into_sorted(self) -> (impl Iterator<Item = (K, V)>, usize) {
+        self.into_ordered(true)
+    }
+
+    /// Groups in key order, or in first-occurrence order for a grouping that
+    /// implements `WITH DISTINCT` (#1615), as `DISTINCT` emits in memory.
+    pub(super) fn into_output_order(
+        self,
+        graph_keys: hawdb_plan_cypher::GraphGroupKeys,
+    ) -> (impl Iterator<Item = (K, V)>, usize) {
+        self.into_ordered(graph_keys != hawdb_plan_cypher::GraphGroupKeys::DistinctSlots)
+    }
+
+    fn into_ordered(self, sort: bool) -> (impl Iterator<Item = (K, V)>, usize) {
         let Self {
             mut entries,
             buckets,
@@ -233,7 +246,10 @@ impl<K: Ord, V> HashGroups<K, V> {
             .saturating_mul(std::mem::size_of::<Option<NonZeroUsize>>());
         drop(buckets);
         drop(bucket_tails);
-        entries.sort_unstable_by(|left, right| left.key.key.cmp(&right.key.key));
+        // Entries are already in insertion order.
+        if sort {
+            entries.sort_unstable_by(|left, right| left.key.key.cmp(&right.key.key));
+        }
         (
             entries
                 .into_iter()

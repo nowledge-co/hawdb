@@ -85,6 +85,8 @@ impl GraphStore {
                                                 | RelationalScalarType::Text
                                                 | RelationalScalarType::Bytea
                                                 | RelationalScalarType::Uuid
+                                                | RelationalScalarType::Timestamp(_)
+                                                | RelationalScalarType::TimestampTz(_)
                                         )
                                 })
                             })

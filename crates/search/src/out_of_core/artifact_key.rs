@@ -23,6 +23,9 @@ impl ArtifactKey {
     /// to cleanup discovery and are never valid manifest source references.
     pub(crate) fn from_file_name(name: &str) -> Option<Self> {
         const CONTENT: &[&str] = &[
+            // Generation-named resident snapshot; never the unsuffixed alias
+            // or the out-of-core manifest, whose suffixes are not digits.
+            "search_projection.",
             "search_projection_segments.",
             "search_projection_segment_payloads.",
             "search_projection_metadata_payloads.",
@@ -58,6 +61,7 @@ mod tests {
     #[test]
     fn cleanup_names_preserve_artifact_family_identity() {
         for name in [
+            "search_projection.17.hawdb",
             "search_projection_segments.17.hawdb",
             "search_projection_segment_payloads.17.hawdb",
             "search_projection_metadata_payloads.17.hawdb",
@@ -94,6 +98,9 @@ mod tests {
             );
         }
         for name in [
+            "search_projection.hawdb",
+            "search_projection.out_of_core.manifest.hawdb",
+            "search_projection.out_of_core.manifest.tmp.7",
             "../search_lexical.1.hawdb",
             "search_lexical.1.hawdb.quarantine",
             "search_lexical.1.hawdb.extra",

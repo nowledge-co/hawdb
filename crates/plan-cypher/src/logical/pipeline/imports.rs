@@ -25,6 +25,9 @@ pub(super) fn restore(input: LogicalPlan, scope: &Scope, needed: &BTreeSet<Strin
             predicate_steps: Vec::new(),
             edge_predicates: Vec::new(),
             optional: false,
+            hash_join: None,
+            id_set_conjuncts: Vec::new(),
+            seeded_union: Vec::new(),
         },
         input: Some(Box::new(input)),
     }
@@ -159,6 +162,8 @@ fn native_projection_self(expression: &ProjectionExpression, needed: &mut BTreeS
         | ProjectionExpression::Property { variable, .. }
         | ProjectionExpression::Id { variable }
         | ProjectionExpression::RelationshipType { variable }
+        | ProjectionExpression::Label { variable, .. }
+        | ProjectionExpression::RelationshipEndpoint { variable, .. }
         | ProjectionExpression::DatePart { variable, .. }
         | ProjectionExpression::DefaultIfNullOrEq { variable, .. }
         | ProjectionExpression::DefaultIfNull { variable, .. }
@@ -171,9 +176,14 @@ fn native_projection_self(expression: &ProjectionExpression, needed: &mut BTreeS
         ProjectionExpression::CaseEntitySearchRank(rank) => {
             needed.insert(rank.variable.clone());
         }
+        // The subquery row copies these from the enclosing row's records.
+        ProjectionExpression::Pattern(pattern) => {
+            needed.extend(pattern.graph_variables.iter().cloned());
+        }
         ProjectionExpression::Literal(_)
         | ProjectionExpression::Coalesce(_)
         | ProjectionExpression::JsonValue { .. }
+        | ProjectionExpression::JsonString { .. }
         | ProjectionExpression::Left { .. }
         | ProjectionExpression::Lower(_)
         | ProjectionExpression::Case { .. }
@@ -194,10 +204,13 @@ fn native_projection_self(expression: &ProjectionExpression, needed: &mut BTreeS
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
         | ProjectionExpression::Conversion { .. }
+        | ProjectionExpression::NumericFunction { .. }
+        | ProjectionExpression::Reduce(_)
         | ProjectionExpression::ListSlice { .. }
         | ProjectionExpression::Path { .. }
         | ProjectionExpression::TemporalFunction { .. }
         | ProjectionExpression::PropertyAccess { .. }
+        | ProjectionExpression::RelationshipValueEndpoint { .. }
         | ProjectionExpression::MapLiteral(_) => {}
     }
 }

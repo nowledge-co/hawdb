@@ -25,6 +25,7 @@ pub mod field_plan;
 pub mod index_access;
 #[doc(hidden)]
 pub mod index_runtime;
+mod literal_coercion;
 mod materialized_view;
 mod read_profile;
 #[doc(hidden)]
@@ -55,6 +56,8 @@ pub use append::{
 pub use system_schema::{SystemSchemaMigration, SystemSchemaRegistry, SystemSchemaUpgradeReport};
 
 // These are internal ownership seams. Hosts continue to use the embedded facade.
+#[doc(hidden)]
+pub use query::text_search::SearchIndexScanEvidence;
 #[doc(hidden)]
 pub use read_profile::{
     ProfiledRelationalSqlQueryOutput, RelationalSqlIndexReadProfile, RelationalSqlReadProfile,
@@ -200,6 +203,9 @@ pub fn compile_column(column: SqlColumnDefinition) -> Result<RelationalColumnSch
                     compile_schema_value(value, scalar_type).map(RelationalColumnDefault::Literal)
                 }
                 SqlColumnDefault::UuidV7 => Ok(RelationalColumnDefault::UuidV7),
+                SqlColumnDefault::CurrentTimestamp(kind) => {
+                    Ok(RelationalColumnDefault::CurrentTimestamp(kind))
+                }
             })
             .transpose()?,
     })
@@ -215,6 +221,10 @@ fn compile_data_type(data_type: SqlDataType) -> RelationalScalarType {
         SqlDataType::Bytea => RelationalScalarType::Bytea,
         SqlDataType::Uuid => RelationalScalarType::Uuid,
         SqlDataType::Vector(dimension) => RelationalScalarType::Vector(dimension),
+        SqlDataType::Timestamp(kind) if kind.zoned => {
+            RelationalScalarType::TimestampTz(kind.precision)
+        }
+        SqlDataType::Timestamp(kind) => RelationalScalarType::Timestamp(kind.precision),
     }
 }
 
@@ -343,6 +353,33 @@ pub fn coerce_relational_value(
         }
         (RelationalScalarType::Uuid, RelationalValue::Uuid(value)) => {
             Ok(RelationalValue::Uuid(value))
+        }
+        (
+            RelationalScalarType::Timestamp(precision)
+            | RelationalScalarType::TimestampTz(precision),
+            value @ (RelationalValue::Text(_)
+            | RelationalValue::Timestamp(_)
+            | RelationalValue::TimestampTz(_)),
+        ) => {
+            // Assignment parses text, converts between TIMESTAMP and
+            // TIMESTAMPTZ through UTC and rounds to the declared precision.
+            let kind = hawdb_core::sql_timestamp::TimestampType {
+                zoned: matches!(scalar_type, RelationalScalarType::TimestampTz(_)),
+                precision,
+            };
+            let micros = match value {
+                RelationalValue::Text(text) => kind.convert(&Value::String(text))?,
+                RelationalValue::Timestamp(micros) | RelationalValue::TimestampTz(micros) => {
+                    Some(precision.round(micros)?)
+                }
+                _ => unreachable!("matched timestamp assignment operand"),
+            }
+            .expect("non-NULL timestamp assignment");
+            Ok(if kind.zoned {
+                RelationalValue::TimestampTz(micros)
+            } else {
+                RelationalValue::Timestamp(micros)
+            })
         }
         (_, value) => Ok(value),
     }

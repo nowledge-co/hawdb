@@ -2,21 +2,28 @@
 
 The required `//:hawdb_unit_checkpoint_headroom_tests` label keeps the ordinary
 checked root test executable, default feature selection, `exclusive` scheduling,
-one libtest thread per process, and the existing 900-second deadline. It uses
-two native Bazel shards with explicit workload ownership:
+one libtest thread per process, and the existing 900-second deadline. It is a
+compatibility aggregate over two explicit targets with workload ownership:
 
-- Shard 0 owns the complete growing-table steady-insert regression.
-- Shard 1 owns every other discovered headroom case, including new controls.
+- `//:hawdb_unit_checkpoint_headroom_growing_table_tests` owns the complete
+  growing-table steady-insert regression.
+- `//:hawdb_unit_checkpoint_headroom_controls_tests` owns every other
+  discovered headroom case, including new controls.
 
-The runner rejects invalid coordinates, empty shards, discovery failures and
+The runner rejects unexpected Bazel sharding, empty selections, discovery failures and
 substring overlaps that could suppress another selected test. It acknowledges
-the native Bazel sharding protocol. Its structural owner checks that the two
+an unsharded Bazel invocation. Its structural owner checks that the two
 selections are complete and disjoint, preserve caller arguments, and propagate
 case failures. The public root aggregate continues to include the same label.
 No case, fixture, assertion, five-checkpoint target, row/admission envelope,
 100-Busy-retry bound, persistence/reopen check or compilation profile is reduced.
 The work is separated into execution budgets; no reduction in total test work
-or remote CI speedup is claimed. `exclusive` remains required for both shards.
+or remote CI speedup is claimed. `exclusive` remains required for both targets.
+For pull requests, required context
+`ci/skein-bazel-test-checkpoint-growing-table` owns the growing-table target and
+`ci/skein-bazel-test-checkpoint-controls` owns the remaining controls target.
+The main root presubmit excludes both leaves, while the compatibility aggregate
+remains available for local and mainline replay.
 
 ## Source-bound failure evidence
 
@@ -98,8 +105,8 @@ replace any assertion or introduce a new retry.
 bazel test //:root_unit_partition_script_test //:hawdb_unit_checkpoint_headroom_tests
 ```
 
-This runs both native shards. To inspect the discovered inventory or replay one
-complete workload without sharding:
+This runs both explicit targets. To inspect the discovered inventory or replay
+one complete workload directly:
 
 ```console
 bazel build //:hawdb_unit_test_binary
@@ -107,6 +114,6 @@ scripts/run-root-unit-partition.sh bazel-bin/hawdb_unit_test_binary checkpoint_h
 bazel-bin/hawdb_unit_test_binary api::automatic_checkpoint::tests::relational_live_overlay::steady_inserts_into_a_growing_table_keep_draining_the_live_overlay --exact --test-threads=1 --nocapture
 ```
 
-Keep complete final-head BEP results for both shards. Passing local timings or
+Keep complete final-head BEP results for both targets. Passing local timings or
 one green retry do not diagnose every cause in issue 1512; retain its progress
 and stability qualification separately.

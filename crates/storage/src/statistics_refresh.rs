@@ -1003,27 +1003,22 @@ impl<'a> StatsRunWriter<'a> {
                 heap.push(Reverse((next, run)));
             }
         }
-        let (statistics, output_statistics_bytes) = accumulator.finish()?;
+        let (statistics, output_statistics_bytes, accumulator_peak_bytes) = accumulator.finish()?;
         Ok((
             statistics,
             StatsMergeReport {
                 generated_facts: self.generated_facts,
                 spill_run_count: self.runs.len(),
                 spilled_bytes: self.spilled_bytes,
-                peak_buffer_bytes: self.peak_buffer_bytes.max(
-                    accumulator_peak_bytes(output_statistics_bytes)
-                        .saturating_add(self.excluded_property_group_bytes),
-                ),
+                peak_buffer_bytes: self
+                    .peak_buffer_bytes
+                    .max(accumulator_peak_bytes.saturating_add(self.excluded_property_group_bytes)),
                 output_statistics_bytes,
                 excluded_property_group_count,
                 excluded_relationship_property_group_count,
             },
         ))
     }
-}
-
-fn accumulator_peak_bytes(output_statistics_bytes: usize) -> usize {
-    output_statistics_bytes
 }
 
 fn read_next_record(lines: &mut Lines<BufReader<File>>) -> Result<Option<StatsRecord>> {
@@ -1069,6 +1064,7 @@ struct PropertyGroup {
     distinct_count: u64,
     samples: BinaryHeap<(u64, Value)>,
     sample_bytes: usize,
+    row_sample: crate::statistics::distribution::PropertyRowSample,
 }
 
 struct IndexGroup {
@@ -1082,6 +1078,7 @@ struct StatsAccumulator {
     statistics: GraphStatistics,
     memory_budget_bytes: usize,
     output_statistics_bytes: usize,
+    peak_charged_bytes: usize,
     excluded_property_groups: BTreeSet<PropertyGroupKey>,
     current_property: Option<PropertyGroup>,
     current_index: Option<IndexGroup>,
@@ -1099,6 +1096,7 @@ impl StatsAccumulator {
             statistics,
             memory_budget_bytes,
             output_statistics_bytes,
+            peak_charged_bytes: output_statistics_bytes,
             excluded_property_groups,
             current_property: None,
             current_index: None,
@@ -1150,7 +1148,21 @@ impl StatsAccumulator {
             distinct_count: 0,
             samples: BinaryHeap::new(),
             sample_bytes: 0,
+            row_sample: crate::statistics::distribution::PropertyRowSample::default(),
         });
+        group.row_sample.observe(
+            &value,
+            true,
+            memory_budget_bytes
+                .saturating_sub(output_statistics_bytes)
+                .saturating_sub(group.sample_bytes)
+                / 2,
+        );
+        self.peak_charged_bytes = self.peak_charged_bytes.max(
+            output_statistics_bytes
+                .saturating_add(group.sample_bytes)
+                .saturating_add(group.row_sample.charged_bytes()),
+        );
         if group.last_value.as_ref() == Some(&value) {
             return Ok(());
         }
@@ -1161,7 +1173,10 @@ impl StatsAccumulator {
         if group.samples.len() < MAX_PROPERTY_HISTOGRAM_VALUES {
             ensure_statistics_memory(
                 output_statistics_bytes,
-                group.sample_bytes.saturating_add(encoded_bytes),
+                group
+                    .sample_bytes
+                    .saturating_add(encoded_bytes)
+                    .saturating_add(group.row_sample.charged_bytes()),
                 memory_budget_bytes,
             )?;
             group.samples.push((hash, value));
@@ -1179,7 +1194,7 @@ impl StatsAccumulator {
                 .saturating_add(encoded_bytes);
             ensure_statistics_memory(
                 output_statistics_bytes,
-                next_sample_bytes,
+                next_sample_bytes.saturating_add(group.row_sample.charged_bytes()),
                 memory_budget_bytes,
             )?;
             group.samples.push((hash, value));
@@ -1347,6 +1362,15 @@ impl StatsAccumulator {
                 .collect();
         }
         let sampled = distinct_count > sample_limit;
+        let population = match &group.key {
+            PropertyGroupKey::Node(label, _) => self.statistics.label_counts.get(label),
+            PropertyGroupKey::Relationship(rel_type, _) => {
+                self.statistics.rel_type_counts.get(rel_type)
+            }
+        }
+        .copied()
+        .unwrap_or(0);
+        let distribution = group.row_sample.finish(population);
         let histogram_bytes = samples.iter().fold(0usize, |total, value| {
             total.saturating_add(encode_value(value).len().saturating_add(32))
         });
@@ -1356,6 +1380,9 @@ impl StatsAccumulator {
             }
         };
         self.reserve_output(key_bytes.saturating_add(histogram_bytes))?;
+        if let Some(distribution) = distribution {
+            self.publish_distribution(group.key.clone(), distribution)?;
+        }
         match group.key {
             PropertyGroupKey::Node(label, property) => {
                 let key = (label, property);
@@ -1385,10 +1412,46 @@ impl StatsAccumulator {
         Ok(())
     }
 
-    fn finish(mut self) -> Result<(GraphStatistics, usize)> {
+    fn finish(mut self) -> Result<(GraphStatistics, usize, usize)> {
         self.finish_property_group()?;
         self.finish_index_group();
-        Ok((self.statistics, self.output_statistics_bytes))
+        Ok((
+            self.statistics,
+            self.output_statistics_bytes,
+            self.peak_charged_bytes.max(self.output_statistics_bytes),
+        ))
+    }
+
+    fn publish_distribution(
+        &mut self,
+        key: PropertyGroupKey,
+        distribution: hawdb_core::CompressedHistogram,
+    ) -> Result<()> {
+        use hawdb_core::RetainedHeapBytes;
+        let Some(bytes) = distribution
+            .retained_heap_bytes()
+            .and_then(|bytes| bytes.checked_add(key.estimated_bytes()))
+        else {
+            return Ok(());
+        };
+        // A refused optional distribution leaves the previous NDV fallback intact.
+        if self.output_statistics_bytes.saturating_add(bytes) > self.memory_budget_bytes {
+            return Ok(());
+        }
+        self.reserve_output(bytes)?;
+        match key {
+            PropertyGroupKey::Node(label, property) => {
+                self.statistics
+                    .property_distributions
+                    .insert((label, property), distribution);
+            }
+            PropertyGroupKey::Relationship(rel_type, property) => {
+                self.statistics
+                    .rel_property_distributions
+                    .insert((rel_type, property), distribution);
+            }
+        }
+        Ok(())
     }
 
     fn ensure_memory(&self, temporary_bytes: usize) -> Result<()> {
@@ -1496,6 +1559,24 @@ pub fn retain_supported_property_statistics(
     statistics: &mut GraphStatistics,
     catalog: Option<&Catalog>,
 ) {
+    statistics
+        .property_distributions
+        .retain(|(label, property), histogram| {
+            histogram.is_valid()
+                && distribution_values(histogram).all(|value| {
+                    node_property_supports_optimizer_statistics(catalog, *label, property, value)
+                })
+        });
+    statistics
+        .rel_property_distributions
+        .retain(|(rel_type, property), histogram| {
+            histogram.is_valid()
+                && distribution_values(histogram).all(|value| {
+                    relationship_property_supports_optimizer_statistics(
+                        catalog, *rel_type, property, value,
+                    )
+                })
+        });
     retain_supported_property_statistics_group(
         &mut statistics.property_distinct_counts,
         &mut statistics.property_histograms,
@@ -1517,6 +1598,19 @@ pub fn retain_supported_property_statistics(
             )
         },
     );
+}
+
+fn distribution_values(
+    histogram: &hawdb_core::CompressedHistogram,
+) -> impl Iterator<Item = &Value> {
+    std::iter::once(&Value::Null)
+        .chain(histogram.most_common.iter().map(|entry| &entry.value))
+        .chain(
+            histogram
+                .buckets
+                .iter()
+                .flat_map(|bucket| [&bucket.lower, &bucket.upper]),
+        )
 }
 
 fn retain_supported_property_statistics_group<K: Ord + Clone>(

@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use super::super::{
-    append_sidecar_payload_with_context, SearchOutOfCoreLayoutBody, SearchOutOfCoreSegmentLayout,
-    OUT_OF_CORE_LAYOUT_FORMAT,
+    append_sidecar_payload_with_context, postings, SearchOutOfCoreLayoutBody,
+    SearchOutOfCoreSegmentLayout, OUT_OF_CORE_LAYOUT_FORMAT,
 };
 #[cfg(test)]
 use super::spool::SpoolSource;
@@ -213,7 +213,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
         let descriptor_bytes = self.write_descriptor(document_count)?;
         Ok(SegmentArtifactOutput {
             layout: SearchOutOfCoreLayoutBody {
-                format: OUT_OF_CORE_LAYOUT_FORMAT.to_string(),
+                format: postings::layout_format().to_string(),
                 generation: self.generation,
                 document_count,
                 segments: self.layouts,
@@ -363,6 +363,16 @@ impl<'a> SegmentArtifactBuilder<'a> {
             Some(&self.task),
         )?;
         drop(metadata_payload);
+        let postings = match self.encode_postings()? {
+            Some(encoded) => Some(append_sidecar_payload_with_context(
+                &mut self.metadata_file,
+                &mut self.metadata_offset,
+                &encoded.payload,
+                self.documents.len(),
+                Some(&self.task),
+            )?),
+            None => None,
+        };
 
         let vector_count = self
             .documents
@@ -395,6 +405,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
             vector_ordinal_base,
             metadata,
             vectors,
+            postings,
         });
         self.peak_segment_document_count =
             self.peak_segment_document_count.max(self.documents.len());
@@ -433,6 +444,27 @@ impl<'a> SegmentArtifactBuilder<'a> {
         temporary_guard.disarm();
         checkpoint(&self.task)?;
         Ok(descriptor_bytes)
+    }
+
+    /// Metadata value postings follow the metadata sidecar (#1613).
+    fn encode_postings(&self) -> Result<Option<postings::Encoded>> {
+        if !postings::write_enabled() {
+            return Ok(None);
+        }
+        let limit = self
+            .options
+            .max_segment_uncompressed_bytes
+            .get()
+            .min(self.options.max_segment_compressed_bytes.get());
+        postings::encode(
+            &self.documents,
+            Some(postings::EncodeAdmission {
+                scratch: &self.memory.spool,
+                payload: &self.memory.retained,
+            }),
+            limit,
+            || checkpoint(&self.task),
+        )
     }
 
     /// Binary raw-vector rows are stored uncompressed so serving can read and

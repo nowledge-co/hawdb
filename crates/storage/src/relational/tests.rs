@@ -2766,6 +2766,7 @@ fn wal_recovery_ignores_foreground_work_limits_and_preserves_view_maintenance() 
         }],
         group_by: Vec::new(),
         filter: None,
+        search: None,
     }
     .table_schema(
         "counts".into(),
@@ -5937,7 +5938,12 @@ fn relational_schema_change_requires_a_canonical_row_checkpoint() {
     assert_eq!(
         capture,
         RelationalRowChangeCapture::RequiresCheckpoint {
-            tables: vec!["documents".to_string()]
+            tables: vec!["documents".to_string()],
+            // No other table changed in the commit.
+            unaffected: Some(RelationalRowUnaffectedChanges {
+                changes: Vec::new(),
+                encoded_bytes: 0,
+            }),
         }
     );
 }

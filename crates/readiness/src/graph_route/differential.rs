@@ -15,7 +15,7 @@
 use super::nowledge_graph_route_readiness_json;
 use super::tests::{ready_evidence, ready_route, ready_routes};
 use hawdb_core::HawDBError;
-use hawdb_route_ownership::graph::REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES;
+use hawdb_route_ownership::graph::REQUIRED_BOUNDED_READ_ROUTES;
 use serde_json::{json, Value};
 
 #[test]
@@ -38,7 +38,7 @@ fn campaign(seeds: u64) {
         let mut rng = Generator(seed + 1);
         for _ in 0..16 {
             let mut names = Vec::new();
-            for &route in REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES {
+            for &route in REQUIRED_BOUNDED_READ_ROUTES {
                 for _ in 0..rng.below(3) {
                     names.push(route.to_string());
                 }
@@ -52,14 +52,14 @@ fn campaign(seeds: u64) {
         }
         // Include admitted, empty, duplicate-only and unknown-only inventories,
         // instead of relying on random subsets to reach each boundary.
-        let complete = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+        let complete = REQUIRED_BOUNDED_READ_ROUTES
             .iter()
             .map(|route| (*route).to_string())
             .collect::<Vec<_>>();
         for names in [
             complete,
             Vec::new(),
-            vec![REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES[0].to_string(); 2],
+            vec![REQUIRED_BOUNDED_READ_ROUTES[0].to_string(); 2],
             vec!["/unknown/only".to_string()],
         ] {
             check_coverage(&names, seed);
@@ -111,7 +111,7 @@ fn campaign(seeds: u64) {
         let baseline = ready_evidence(ready_routes());
         for (case, (pointer, bad_value, blocker)) in mutations.iter().enumerate() {
             let mut evidence = baseline.clone();
-            let route = seed as usize % REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len();
+            let route = seed as usize % REQUIRED_BOUNDED_READ_ROUTES.len();
             let pointer = pointer.replace("/routes/0/", &format!("/routes/{route}/"));
             *evidence
                 .pointer_mut(&pointer)
@@ -148,7 +148,7 @@ fn check_coverage(names: &[String], seed: u64) {
     // map/set implementation and the fixture's claimed coverage fields.
     let mut covered = Vec::new();
     let mut missing = Vec::new();
-    for &route in REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES {
+    for &route in REQUIRED_BOUNDED_READ_ROUTES {
         if names.iter().any(|name| name == route) {
             covered.push(route);
         } else {
@@ -157,7 +157,7 @@ fn check_coverage(names: &[String], seed: u64) {
     }
     let mut unknown = names
         .iter()
-        .filter(|name| !REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.contains(&name.as_str()))
+        .filter(|name| !REQUIRED_BOUNDED_READ_ROUTES.contains(&name.as_str()))
         .cloned()
         .collect::<Vec<_>>();
     unknown.sort();

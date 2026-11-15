@@ -322,16 +322,23 @@ impl<'a> RelationalSparseLiveHydrator<'a> {
                 "monotonic append hydration contains no primary keys".to_string(),
             ));
         };
-        let proven_absent = self
+        // A page straddling the partition's end costs one real page read.
+        // It runs under this hydration's remaining limits and shared budget,
+        // and is charged on the hit and the fallback path alike.
+        let limits = self.remaining_limits()?;
+        let proof = self
             .reader
             .prove_partition_absent_at_or_after(
                 &append.table,
                 &append.partition_prefix,
                 first_key,
+                limits.demand,
+                &mut self.hydration,
                 &self.task,
             )
             .map_err(map_sparse_live_snapshot_error)?;
-        if !proven_absent {
+        self.record_snapshot_read(proof.identity, &proof.demand, 0, 0, 0)?;
+        if !proof.absent {
             self.monotonic_append_fallbacks = self
                 .monotonic_append_fallbacks
                 .checked_add(1)

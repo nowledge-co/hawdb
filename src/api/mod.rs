@@ -84,23 +84,27 @@ mod access_control;
 mod config;
 use config::*;
 pub use config::{
-    DatabaseConfig, SessionConfig, DEFAULT_MAX_READ_RESULT_PAYLOAD_BYTES,
-    DEFAULT_MAX_READ_RESULT_ROWS,
+    DatabaseConfig, SessionConfig, DEFAULT_MAX_READ_INTERMEDIATE_ROWS,
+    DEFAULT_MAX_READ_RESULT_PAYLOAD_BYTES, DEFAULT_MAX_READ_RESULT_ROWS,
 };
 mod database_lifecycle;
 mod database_maintenance;
 mod database_projection;
+pub use database_projection::SearchProjectionEpochAdvanceVerification;
 mod database_query;
 mod database_transactions;
 mod retrieval;
+pub(crate) use retrieval::search_hit_payload_bytes;
 mod transactions;
+pub(crate) use observability::sql_statement_kind;
 use retrieval::*;
 use transactions::*;
 pub(crate) use transactions::{
     commit_database_transaction_state, execute_concurrent_graph_transaction_request,
-    execute_database_transaction_sql_request,
+    execute_recorded_database_transaction_sql_request,
 };
 mod graph_adapter;
+mod logical_dump_access;
 mod read;
 
 mod artifact_jobs;
@@ -154,6 +158,9 @@ pub use graph_analytics::{
 mod explain_format_tests;
 mod observability;
 mod plan_cache;
+/// The unit-test binary's thread-local live-allocation oracle.
+#[cfg(test)]
+pub(crate) use plan_cache::retention_allocation as test_allocation;
 pub(crate) mod publication;
 pub use publication::{DatabasePublicationOwner, DatabasePublicationState};
 #[cfg(feature = "qualification")]
@@ -164,7 +171,12 @@ mod query_preparation_metrics;
 mod query_request;
 mod query_runtime;
 mod read_execution;
-pub use optimizer_qualification::OptimizerQualificationOutput;
+pub use optimizer_qualification::{
+    OptimizerQualificationAttemptLimits, OptimizerQualificationCandidateKind,
+    OptimizerQualificationCandidateOutput, OptimizerQualificationCandidateRequest,
+    OptimizerQualificationCandidateSetOutput, OptimizerQualificationOutput,
+    OptimizerQualificationResultError, OPTIMIZER_QUALIFICATION_CANDIDATE_LIMIT,
+};
 #[cfg(feature = "qualification")]
 pub use query_preparation_metrics::{query_preparation_metrics, QueryPreparationMetricsSnapshot};
 mod sql_runtime;
@@ -596,6 +608,10 @@ pub(super) struct DatabaseTransactionState {
     // Moves with the private workspace into a queued commit. Checkpoint
     // reclamation must retain its physical generation until the state retires.
     snapshot_pin: Option<ReaderPin>,
+    /// The transaction-start instant. Every SQL statement of the transaction
+    /// pins the statement clock to it, so `CURRENT_TIMESTAMP`, `now()`,
+    /// `LOCALTIMESTAMP` and clock defaults agree across the transaction.
+    sql_clock: hawdb_core::temporal::DateTime<hawdb_core::temporal::Utc>,
 }
 
 struct SparseRelationalStatementStage {
@@ -657,6 +673,8 @@ pub struct DatabaseReadTransaction<S: crate::executor::ExecutionStore = GraphSto
     task_context: Option<hawdb_core::RuntimeTaskContext>,
     _pin: Arc<ReaderPin>,
     retained_runtime: Arc<retained_query::RetainedRuntime>,
+    /// The read transaction's start instant, pinned for its SQL statements.
+    sql_clock: hawdb_core::temporal::DateTime<hawdb_core::temporal::Utc>,
 }
 
 /// An immutable canonical view that can create independent query contexts.
@@ -684,8 +702,19 @@ impl DatabaseReadSnapshot {
         &self,
         task_context: Option<hawdb_core::RuntimeTaskContext>,
     ) -> Result<DatabaseReadTransaction> {
-        self.ensure_usable()?;
-        let source = &self.0;
+        self.0.fork_at_same_snapshot(task_context)
+    }
+}
+
+impl DatabaseReadTransaction {
+    /// Opens an independent query context over this transaction's pinned
+    /// snapshot. The shared pin keeps the epoch until both contexts drop.
+    pub(crate) fn fork_at_same_snapshot(
+        &self,
+        task_context: Option<hawdb_core::RuntimeTaskContext>,
+    ) -> Result<DatabaseReadTransaction> {
+        self.store.ensure_usable()?;
+        let source = self;
         Ok(DatabaseReadTransaction {
             session_config: source.session_config,
             system_variables: source.system_variables.clone(),
@@ -709,6 +738,7 @@ impl DatabaseReadSnapshot {
             task_context,
             _pin: Arc::clone(&source._pin),
             retained_runtime: Arc::clone(&source.retained_runtime),
+            sql_clock: source.sql_clock,
         })
     }
 }

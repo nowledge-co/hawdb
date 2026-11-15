@@ -36,7 +36,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@1.97.1
+        uses: dtolnay/rust-toolchain@1.99.1
 
       - name: Check Tokio facade
         run: cargo check -p hawdb --features tokio-runtime
@@ -114,9 +114,9 @@ jobs:
           cargo test --locked -p hawdb --features tokio-runtime --lib api::concurrent::autocommit::tests::
           bash scripts/cargo-test-required.sh --locked -p hawdb --features tokio-runtime --lib api::concurrent::autocommit::sql::tests::
           cargo test --locked -p hawdb --features tokio-runtime --lib api::concurrent::graph_preparation_tests::
-          cargo test --locked -p hawdb --features tokio-runtime --lib nowledge_mem::concurrent_owner::
-          cargo test --locked -p hawdb --features tokio-runtime --lib nowledge_mem::read_execution::
-          cargo test --locked -p hawdb --features tokio-runtime --lib nowledge_mem::app_read_snapshot_tests
+          cargo test --locked -p hawdb --features tokio-runtime --lib embedded_store::concurrent_owner::
+          cargo test --locked -p hawdb --features tokio-runtime --lib embedded_store::read_execution::
+          cargo test --locked -p hawdb --features tokio-runtime --lib embedded_store::app_read_snapshot_tests
 
   vector-projection-platform:
     if: ${{ !inputs.scope || inputs.scope == 'all' }}
@@ -139,7 +139,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@1.97.1
+        uses: dtolnay/rust-toolchain@1.99.1
 
       - name: Check default and minimal feature sets
         run: |
@@ -194,7 +194,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@1.97.1
+        uses: dtolnay/rust-toolchain@1.99.1
 
       - name: Test storage artifacts and ownership
         run: cargo test -p hawdb-storage
@@ -239,7 +239,7 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: bash
         env:
-          HAWDB_TEST_RUST_TOOLCHAIN: "1.97.1"
+          HAWDB_TEST_RUST_TOOLCHAIN: "1.99.1"
           HAWDB_TEST_STORAGE_RESOURCE_EVIDENCE_PATH: storage-resource-results/report.json
         run: |
           set -euo pipefail
@@ -336,7 +336,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@1.97.1
+        uses: dtolnay/rust-toolchain@1.99.1
 
       - name: Run branch power-loss qualification
         shell: bash
@@ -471,12 +471,12 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@1.97.1
+        uses: dtolnay/rust-toolchain@1.99.1
 
       - name: Run subprocess crash matrix
         shell: bash
         env:
-          HAWDB_TEST_RUST_TOOLCHAIN: "1.97.1"
+          HAWDB_TEST_RUST_TOOLCHAIN: "1.99.1"
           HAWDB_TEST_STORAGE_CRASH_EVIDENCE_PATH: storage-crash-results/report.json
         run: |
           set -o pipefail

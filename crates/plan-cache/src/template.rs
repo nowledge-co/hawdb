@@ -723,6 +723,71 @@ pub fn parameter_scalar_types(
     output
 }
 
+/// Bounded marker bindings used only for value-sensitive cost estimates.
+/// The ordinary proven template still owns executable parameter rebinding.
+#[doc(hidden)]
+pub fn parameter_statistics_values(
+    plan: &ParameterizedLogicalPlan,
+    parameters: &BTreeMap<String, Value>,
+) -> Option<BTreeMap<Value, Value>> {
+    use hawdb_core::RetainedHeapBytes;
+    const MAX_BYTES: usize = 64 * 1024;
+    const MAX_VALUES: usize = 256;
+    fn visit(
+        name: &str,
+        value: &Value,
+        path: &mut Vec<usize>,
+        output: &mut BTreeMap<Value, Value>,
+        bytes: &mut usize,
+    ) -> Option<()> {
+        if let Value::List(values) = value {
+            for (index, value) in values.iter().enumerate() {
+                path.push(index);
+                visit(name, value, path, output, bytes)?;
+                path.pop();
+            }
+        } else if matches!(
+            value,
+            Value::Null
+                | Value::Bool(_)
+                | Value::Int(_)
+                | Value::Float(_)
+                | Value::String(_)
+                | Value::Uuid(_)
+                | Value::Date(_)
+                | Value::LocalTime(_)
+                | Value::LocalDateTime(_)
+                | Value::DateTime(_)
+        ) {
+            if output.len() >= MAX_VALUES {
+                return None;
+            }
+            let marker = parameter_marker(name, value, path);
+            let charge = value
+                .retained_heap_bytes()?
+                .checked_add(marker.retained_heap_bytes()?)?
+                .checked_add(192)?;
+            *bytes = bytes.checked_add(charge)?;
+            if *bytes > MAX_BYTES {
+                return None;
+            }
+            output.insert(marker, value.clone());
+        }
+        Some(())
+    }
+    if plan.slot_count() == 0 {
+        return Some(BTreeMap::new());
+    }
+    let mut output = BTreeMap::new();
+    let mut bytes = 0;
+    for name in plan.cache_key.values.keys() {
+        if let Some(value) = parameters.get(name) {
+            visit(name, value, &mut Vec::new(), &mut output, &mut bytes)?;
+        }
+    }
+    Some(output)
+}
+
 fn parameter_value_shape(value: &Value) -> ParameterValueShape {
     match value {
         Value::Null => ParameterValueShape::Null,
@@ -837,6 +902,31 @@ fn values_marker_use<'a>(values: impl IntoIterator<Item = &'a Value>, name: &str
     }
 }
 
+fn marker_use_in_program(program: &hawdb_plan_cypher::GraphMatchProgram, name: &str) -> MarkerUse {
+    let mut marker_use = MarkerUse::None;
+    for step in &program.steps {
+        let node = match step {
+            GraphMatchStep::Node(node) => node,
+            GraphMatchStep::Expand {
+                target, properties, ..
+            } => {
+                marker_use = marker_use.combine(values_marker_use(properties.values(), name));
+                target
+            }
+            // Hop bounds and types are literals; endpoints are Node steps.
+            GraphMatchStep::ShortestPath(_) => continue,
+        };
+        marker_use = marker_use.combine(values_marker_use(node.properties.values(), name));
+    }
+    if let Some(predicate) = &program.predicate {
+        marker_use = marker_use.combine(marker_use_in_predicate(predicate, name));
+    }
+    for branch in &program.seeded_union {
+        marker_use = marker_use.combine(marker_use_in_program(branch, name));
+    }
+    marker_use
+}
+
 fn marker_use_in_logical_plan(plan: &LogicalPlan, name: &str) -> MarkerUse {
     match plan {
         LogicalPlan::Unwind { rows, .. } => values_marker_use(rows, name),
@@ -848,30 +938,12 @@ fn marker_use_in_logical_plan(plan: &LogicalPlan, name: &str) -> MarkerUse {
         LogicalPlan::NodeCartesianProduct { left, right } => {
             marker_use_in_logical_plan(left, name).combine(marker_use_in_logical_plan(right, name))
         }
-        LogicalPlan::GraphMatch { program, input } => {
-            let mut marker_use = input.as_ref().map_or(MarkerUse::None, |input| {
+        LogicalPlan::GraphMatch { program, input } => input
+            .as_ref()
+            .map_or(MarkerUse::None, |input| {
                 marker_use_in_logical_plan(input, name)
-            });
-            for step in &program.steps {
-                let node = match step {
-                    GraphMatchStep::Node(node) => node,
-                    GraphMatchStep::Expand {
-                        target, properties, ..
-                    } => {
-                        marker_use =
-                            marker_use.combine(values_marker_use(properties.values(), name));
-                        target
-                    }
-                    // Hop bounds and types are literals; endpoints are Node steps.
-                    GraphMatchStep::ShortestPath(_) => continue,
-                };
-                marker_use = marker_use.combine(values_marker_use(node.properties.values(), name));
-            }
-            if let Some(predicate) = &program.predicate {
-                marker_use = marker_use.combine(marker_use_in_predicate(predicate, name));
-            }
-            marker_use
-        }
+            })
+            .combine(marker_use_in_program(program, name)),
         LogicalPlan::NodeColumnLookup {
             input,
             node_visibility_predicate,
@@ -926,6 +998,7 @@ fn marker_use_in_logical_plan(plan: &LogicalPlan, name: &str) -> MarkerUse {
             group_keys,
             items,
             input,
+            ..
         } => marker_use_in_projections(group_keys, name, false)
             .combine(marker_use_in_aggregations(items, name))
             .combine(marker_use_in_logical_plan(input, name)),
@@ -1124,11 +1197,39 @@ fn marker_use_in_projection_expression(
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
         | ProjectionExpression::Conversion { .. }
+        | ProjectionExpression::NumericFunction { .. }
+        | ProjectionExpression::Reduce(_)
         | ProjectionExpression::ListSlice { .. }
         | ProjectionExpression::TemporalFunction { .. }
         | ProjectionExpression::PropertyAccess { .. }
         | ProjectionExpression::MapLiteral(_) => {
             let mut result = MarkerUse::None;
+            expression.all_children(|child| {
+                result = result.combine(marker_use_in_projection_expression(child, name, safe));
+                true
+            });
+            result
+        }
+        ProjectionExpression::RelationshipValueEndpoint {
+            relationship,
+            visibility,
+            ..
+        } => visibility
+            .as_deref()
+            .map_or(MarkerUse::None, |visibility| {
+                marker_use_in_predicate(visibility, name)
+            })
+            .combine(marker_use_in_projection_expression(
+                relationship,
+                name,
+                safe,
+            )),
+        ProjectionExpression::Pattern(pattern) => {
+            let mut result = pattern
+                .programs()
+                .map(|program| marker_use_in_program(program, name))
+                .reduce(|left, right| left.combine(right))
+                .expect("a pattern has a program");
             expression.all_children(|child| {
                 result = result.combine(marker_use_in_projection_expression(child, name, safe));
                 true
@@ -1146,7 +1247,8 @@ fn marker_use_in_projection_expression(
         }
         ProjectionExpression::Left { expression, .. }
         | ProjectionExpression::Lower(expression)
-        | ProjectionExpression::JsonValue { expression, .. } => {
+        | ProjectionExpression::JsonValue { expression, .. }
+        | ProjectionExpression::JsonString { expression, .. } => {
             marker_use_in_projection_expression(expression, name, safe)
         }
         ProjectionExpression::DefaultIfNullOrEq { empty, default, .. }
@@ -1283,20 +1385,7 @@ fn bind_physical_plan(plan: &mut PhysicalPlan, parameters: BindingAction<'_>) ->
             bind_physical_plan(right, parameters)?;
         }
         PhysicalPlan::GraphMatchExec { program, input } => {
-            for step in &mut program.steps {
-                let node = match step {
-                    GraphMatchStep::Node(node) => node,
-                    GraphMatchStep::Expand {
-                        target, properties, ..
-                    } => {
-                        bind_value_map(properties, parameters)?;
-                        target
-                    }
-                    GraphMatchStep::ShortestPath(_) => continue,
-                };
-                bind_value_map(&mut node.properties, parameters)?;
-            }
-            bind_optional_predicate(&mut program.predicate, parameters)?;
+            bind_program(program, parameters)?;
             if let Some(input) = input {
                 bind_physical_plan(input, parameters)?;
             }
@@ -1346,8 +1435,15 @@ fn bind_physical_plan(plan: &mut PhysicalPlan, parameters: BindingAction<'_>) ->
             bind_value_map(rel_properties, parameters)?;
             bind_physical_plan(input, parameters)?;
         }
-        PhysicalPlan::RelationshipSeededNodeScan { rel_properties, .. } => {
+        PhysicalPlan::RelationshipSeededNodeScan {
+            rel_properties,
+            rel_property_in,
+            ..
+        } => {
             bind_value_map(rel_properties, parameters)?;
+            if let Some((_, values)) = rel_property_in {
+                bind_values(values, parameters)?;
+            }
         }
         PhysicalPlan::OptionalDegreeExec {
             rel_properties,
@@ -1391,6 +1487,7 @@ fn bind_physical_plan(plan: &mut PhysicalPlan, parameters: BindingAction<'_>) ->
             group_keys,
             items,
             input,
+            ..
         } => {
             bind_projections(group_keys, parameters)?;
             bind_aggregations(items, parameters)?;
@@ -1433,6 +1530,9 @@ fn bind_physical_plan(plan: &mut PhysicalPlan, parameters: BindingAction<'_>) ->
         | PhysicalPlan::SetNodeProperty { .. }
         | PhysicalPlan::SetNodeProperties { .. }
         | PhysicalPlan::SetNodePropertiesReturn { .. }
+        // Mutation statements bypass the plan cache.
+        | PhysicalPlan::MatchSetExec(_)
+        | PhysicalPlan::MutationReturn { .. }
         | PhysicalPlan::SetRelationshipProperty { .. }
         | PhysicalPlan::SetRelationshipProperties { .. }
         | PhysicalPlan::DeleteNode { .. }
@@ -1602,6 +1702,7 @@ fn bind_logical_plan(plan: &mut LogicalPlan, parameters: BindingAction<'_>) -> R
             group_keys,
             items,
             input,
+            ..
         } => {
             bind_projections(group_keys, parameters)?;
             bind_aggregations(items, parameters)?;
@@ -1767,11 +1868,30 @@ fn bind_projection_expression(
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
         | ProjectionExpression::Conversion { .. }
+        | ProjectionExpression::NumericFunction { .. }
+        | ProjectionExpression::Reduce(_)
         | ProjectionExpression::ListSlice { .. }
         | ProjectionExpression::TemporalFunction { .. }
         | ProjectionExpression::PropertyAccess { .. }
         | ProjectionExpression::MapLiteral(_) => expression
             .try_for_each_child_mut(|child| bind_projection_expression(child, parameters))?,
+        ProjectionExpression::RelationshipValueEndpoint {
+            relationship,
+            visibility,
+            ..
+        } => {
+            if let Some(visibility) = visibility {
+                bind_predicate(visibility, parameters)?;
+            }
+            bind_projection_expression(relationship, parameters)?;
+        }
+        ProjectionExpression::Pattern(pattern) => {
+            for program in pattern.programs_mut() {
+                bind_program(program, parameters)?;
+            }
+            expression
+                .try_for_each_child_mut(|child| bind_projection_expression(child, parameters))?
+        }
 
         ProjectionExpression::Literal(value) => bind_value(value, parameters)?,
         ProjectionExpression::Coalesce(expressions) => {
@@ -1781,7 +1901,8 @@ fn bind_projection_expression(
         }
         ProjectionExpression::Left { expression, .. }
         | ProjectionExpression::Lower(expression)
-        | ProjectionExpression::JsonValue { expression, .. } => {
+        | ProjectionExpression::JsonValue { expression, .. }
+        | ProjectionExpression::JsonString { expression, .. } => {
             bind_projection_expression(expression, parameters)?;
         }
         ProjectionExpression::DefaultIfNullOrEq { empty, default, .. }
@@ -1852,6 +1973,30 @@ fn bind_projection_expression(
     Ok(())
 }
 
+fn bind_program(
+    program: &mut hawdb_plan_cypher::GraphMatchProgram,
+    parameters: BindingAction<'_>,
+) -> Result<()> {
+    for step in &mut program.steps {
+        let node = match step {
+            GraphMatchStep::Node(node) => node,
+            GraphMatchStep::Expand {
+                target, properties, ..
+            } => {
+                bind_value_map(properties, parameters)?;
+                target
+            }
+            GraphMatchStep::ShortestPath(_) => continue,
+        };
+        bind_value_map(&mut node.properties, parameters)?;
+    }
+    // Each seeded branch carries the parameter in its seek and its guards.
+    for branch in &mut program.seeded_union {
+        bind_program(branch, parameters)?;
+    }
+    bind_optional_predicate(&mut program.predicate, parameters)
+}
+
 fn bind_value_map(
     values: &mut BTreeMap<String, Value>,
     parameters: BindingAction<'_>,
@@ -1911,9 +2056,9 @@ fn bind_value(value: &mut Value, parameters: BindingAction<'_>) -> Result<()> {
 mod tests {
     use super::{
         bind_physical_plan_parameters, marker_use_in_logical_plan, parameter_marker,
-        parameter_scalar_types, parameter_value_shape, parameterize_logical_plan,
-        resolve_plan_template_value, MarkerUse, ParameterCacheValue, PARAMETER_SLOT_NAME_KEY,
-        PARAMETER_SLOT_PATH_KEY,
+        parameter_scalar_types, parameter_statistics_values, parameter_value_shape,
+        parameterize_logical_plan, resolve_plan_template_value, MarkerUse, ParameterCacheValue,
+        PARAMETER_SLOT_NAME_KEY, PARAMETER_SLOT_PATH_KEY,
     };
     use hawdb_core::Value;
     use hawdb_cypher as cypher;
@@ -2300,6 +2445,30 @@ mod tests {
             parameter_value_shape(&parameters["rank"]),
             parameter_value_shape(&changed["rank"])
         );
+    }
+
+    #[test]
+    fn statistics_bindings_use_proven_markers_and_decline_large_payloads() {
+        let statement =
+            cypher::parse("MATCH (m:Memory) WHERE m.space = $space RETURN m.id").unwrap();
+        let parameters = BTreeMap::from([("space".into(), Value::String("hot".into()))]);
+        let plan = parameterize_logical_plan(&statement, &parameters).unwrap();
+        let bindings = parameter_statistics_values(&plan, &parameters).unwrap();
+        assert_eq!(bindings.len(), 1);
+        for (marker, value) in bindings {
+            assert_eq!(
+                resolve_plan_template_value(&marker, &parameters, true).unwrap(),
+                &value
+            );
+        }
+        let large = BTreeMap::from([("space".into(), Value::String("x".repeat(65_536)))]);
+        let plan = parameterize_logical_plan(&statement, &large).unwrap();
+        assert!(parameter_statistics_values(&plan, &large).is_none());
+        let list_statement =
+            cypher::parse("MATCH (m:Memory) WHERE m.space IN $spaces RETURN m.id").unwrap();
+        let parameters = BTreeMap::from([("spaces".into(), Value::List(vec![Value::Int(1); 257]))]);
+        let plan = parameterize_logical_plan(&list_statement, &parameters).unwrap();
+        assert!(parameter_statistics_values(&plan, &parameters).is_none());
     }
 
     #[test]

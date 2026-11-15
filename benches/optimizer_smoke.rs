@@ -871,6 +871,7 @@ fn memory_seed_entity_mentions_plan() -> LogicalPlan {
                 direction: SortDirection::Desc,
             }],
             input: Box::new(LogicalPlan::Aggregate {
+                graph_keys: Default::default(),
                 group_keys: vec![
                     Projection {
                         expression: ProjectionExpression::Property {
@@ -1251,6 +1252,7 @@ fn source_memory_label_cross_pattern_plan() -> LogicalPlan {
                 direction: SortDirection::Desc,
             }],
             input: Box::new(LogicalPlan::Aggregate {
+                graph_keys: Default::default(),
                 group_keys: vec![Projection {
                     expression: ProjectionExpression::Property {
                         variable: "l".to_string(),
@@ -1380,6 +1382,7 @@ fn source_memory_entity_label_workload_plan() -> LogicalPlan {
                 direction: SortDirection::Desc,
             }],
             input: Box::new(LogicalPlan::Aggregate {
+                graph_keys: Default::default(),
                 group_keys: vec![
                     Projection {
                         expression: ProjectionExpression::Property {
@@ -1558,6 +1561,7 @@ fn source_entity_community_export_workload_plan() -> LogicalPlan {
                 },
             ],
             input: Box::new(LogicalPlan::Aggregate {
+                graph_keys: Default::default(),
                 group_keys: vec![
                     Projection {
                         expression: ProjectionExpression::Property {
@@ -1717,6 +1721,7 @@ fn community_synthesized_source_coverage_plan() -> LogicalPlan {
         offset: 0,
         limit: Some(1),
         input: Box::new(LogicalPlan::Aggregate {
+            graph_keys: Default::default(),
             group_keys: vec![Projection {
                 expression: ProjectionExpression::Property {
                     variable: "c".to_string(),
@@ -1768,6 +1773,7 @@ fn source_coverage_aggregate_filter_plan() -> LogicalPlan {
                 value: ProjectionExpression::Literal(Value::Int(3)),
             },
             input: Box::new(LogicalPlan::Aggregate {
+                graph_keys: Default::default(),
                 group_keys: vec![Projection {
                     expression: ProjectionExpression::Property {
                         variable: "c".to_string(),
@@ -1853,6 +1859,7 @@ fn community_synthesized_source_coverage_catalog() -> OptimizerCatalog {
 
 fn feed_synthesized_source_collect_plan() -> LogicalPlan {
     LogicalPlan::Aggregate {
+        graph_keys: Default::default(),
         group_keys: vec![Projection {
             expression: ProjectionExpression::Property {
                 variable: "c".to_string(),
@@ -2079,6 +2086,7 @@ fn community_member_memory_evidence_workload_plan() -> LogicalPlan {
                 direction: SortDirection::Desc,
             }],
             input: Box::new(LogicalPlan::Aggregate {
+                graph_keys: Default::default(),
                 group_keys: vec![Projection {
                     expression: ProjectionExpression::Property {
                         variable: "e".to_string(),
@@ -2208,6 +2216,7 @@ fn entity_bridge_span_aggregate_plan() -> LogicalPlan {
                 direction: SortDirection::Desc,
             }],
             input: Box::new(LogicalPlan::Aggregate {
+                graph_keys: Default::default(),
                 group_keys: vec![Projection {
                     expression: ProjectionExpression::Property {
                         variable: "e1".to_string(),
@@ -2293,6 +2302,7 @@ fn entity_bridge_span_aggregate_catalog() -> OptimizerCatalog {
 
 fn bounded_path_distinct_target_aggregate_plan() -> LogicalPlan {
     LogicalPlan::Aggregate {
+        graph_keys: Default::default(),
         group_keys: vec![Projection {
             expression: ProjectionExpression::Property {
                 variable: "m".to_string(),

@@ -41,11 +41,16 @@ engine refuses inside a transaction, such as ``CREATE BRANCH`` and
 autocommits, because a read-only database cannot commit even an empty
 transaction, and turning its autocommit off raises ``NotSupportedError``.
 
-A transaction that has only run queries plans them as autocommit does, under
-the same result budgets, but reads through its own workspace. Until it ends,
-it pins the snapshot it began with, which holds back checkpoint reclamation,
-and its statements stay out of the slow-query log and statement summary.
-Neither mode applies query admission to SQL. End read-only transactions
+Both modes pass every statement through the embedded runtime admission
+before it runs: when the runtime is saturated the statement raises
+``OperationalError``, which is also ``hawdb.exceptions.AdmissionError`` with
+``retryable`` true for a transient shortage, and nothing of it runs; inside a
+transaction the earlier statements stay staged. Both modes also record each
+statement in the slow-query log and statement summary, and refuse it once a
+storage integrity failure has poisoned the handle. A transaction that has only
+run queries plans them as autocommit does, under the same result budgets, but
+reads through its own workspace. Until it ends, it pins the snapshot it began
+with, which holds back checkpoint reclamation. End read-only transactions
 promptly, or run long-lived read-only work with autocommit on.
 
 A failed ``execute`` leaves the transaction open with the earlier statements
@@ -58,12 +63,53 @@ lost work. ``close()`` still succeeds.
 Rows are tuples in ``description`` order, which is the order of the SELECT
 list. ``description`` holds one seven-item tuple per column, also when no
 row matches: the name, a type code and five ``None``. The type code is the
-Python type of the column's first non-null value, or ``None`` when there is
-none. ``STRING`` equals ``str``, ``BINARY`` equals ``bytes`` and ``NUMBER``
-equals ``int`` and ``float``; booleans and vectors match none of them. DDL
-and every INSERT, UPDATE and DELETE leave ``description`` as ``None`` and
-``rowcount`` as -1, since the binding does not report affected rows, and
-fetching from them returns no rows.
+Python type of the column's first non-null value in the whole result, or
+``None`` when every value is null; it is known at ``execute``, before any
+row is fetched. The engine's result schema carries column names but no
+types, so a column whose values are all null has no type code. ``STRING``
+equals ``str``, ``BINARY`` equals ``bytes`` and ``NUMBER`` equals ``int``
+and ``float`` and ``DATETIME`` equals ``datetime.datetime``
+(and ``date``/``time``); booleans and vectors match none of them. DDL
+and every INSERT, UPDATE and DELETE without ``RETURNING`` leave
+``description`` as ``None``, and fetching from them returns no rows.
+
+``execute`` holds the engine's whole result, as ``Database.execute_sql``
+does, but no Python copy of it: rows become tuples as they are fetched,
+1,024 at a time, and the cursor keeps none of the tuples it returns.
+``fetchall()`` of a large result therefore needs Python memory for the
+returned list and one such chunk. The engine's rows are released once
+every row has been fetched or the cursor runs another statement or closes.
+
+``rowcount`` is the number of rows a SELECT returned, or the number an
+INSERT, UPDATE or DELETE inserted, updated or deleted, in autocommit and in a
+transaction alike. Inside a transaction the count is of the rows the
+statement staged, which ``commit()`` publishes. Rows that ``ON CONFLICT DO
+NOTHING`` skipped are not counted. ``rowcount`` is -1 for DDL and other
+statements without a result or a count, for writes to strict append tables,
+which report no row count, and after ``executemany``.
+
+``TIMESTAMP`` values arrive as naive ``datetime.datetime`` objects and
+``TIMESTAMPTZ`` values as aware ones in UTC. Both are microsecond-exact, so the
+conversion is lossless. Only cursors convert: ``Database.execute_sql`` and
+Cypher keep the binding's tagged dicts (``{"$localdatetime": ...}``,
+``{"$datetime": ...}``). A value Python cannot represent, such as a year
+outside 1..9999, stays a tagged dict.
+
+The PEP 249 constructors ``Timestamp``, ``Date`` and ``Time`` are
+``datetime.datetime``, ``datetime.date`` and ``datetime.time``, so they take
+the standard library's arguments, ``tzinfo`` included. A naive ``Timestamp``
+binds as ``TIMESTAMP`` and an aware one as ``TIMESTAMPTZ``. HawDB has no
+session time zone, so ``TimestampFromTicks`` reads seconds since the epoch in
+UTC, not in local time as ``time.localtime`` would, and returns an aware UTC
+``datetime`` to the microsecond, which binds as ``TIMESTAMPTZ``;
+``DateFromTicks`` and ``TimeFromTicks`` return its date and its naive time of
+day. Inserted into a ``TIMESTAMP`` column, an aware value stores its UTC
+wall-clock time, as ``LOCALTIMESTAMP`` does, but a ``TIMESTAMP`` column
+compares only with naive values, and a ``WHERE`` clause cannot cast the
+parameter or the column: bind ``.replace(tzinfo=None)`` of a UTC value
+instead. SQL has no ``DATE`` or ``TIME`` type, so a
+``Date`` or ``Time`` parameter raises ``ProgrammingError``; such values bind
+only through ``Database.execute``.
 
 Catalog queries (``information_schema``, ``pg_catalog`` and ``system``)
 also preserve SELECT-list order and empty-result descriptions; wildcards
@@ -84,18 +130,25 @@ attributes, so ``except hawdb.exceptions.ParseError`` and
   ``TaskStoppedError``, ``DescriptorError``, ``ResourceBudgetError``,
   ``BackpressureError``, and an ``ExecutionError`` that is ``retryable``.
 - ``NotSupportedError``: ``CapabilityError``.
+- ``IntegrityError``: a ``StorageError`` or ``ExecutionError`` whose ``kind``
+  is ``"constraint"``, such as a duplicate primary key or a NULL in a NOT NULL
+  column.
+- ``DataError``: a ``StorageError`` or ``ExecutionError`` whose ``kind`` is
+  ``"schema"``, such as a value of the wrong type for its column.
 - ``InternalError``: ``hawdb.exceptions.IntegrityError``, which reports
   damaged storage rather than a violated constraint.
-- ``DatabaseError``: every other engine error, including ``StorageError``
-  and the remaining ``ExecutionError``.
+- ``DatabaseError``: every other engine error, including the remaining
+  ``StorageError`` and ``ExecutionError``.
 
-The engine does not set constraint violations apart yet (#1234). A duplicate
-primary key or a NULL in a NOT NULL column is a ``StorageError`` in autocommit
-and an ``ExecutionError`` in a transaction, so both are ``DatabaseError``, and
-this module's ``IntegrityError`` is declared but not raised. A parameter value
-the binding cannot convert is a ``DataError``, such as an integer outside 64
-bits or text that is not valid UTF-8, or a ``ProgrammingError`` for a type it
-does not support. That error is also the binding's ``OverflowError``,
+A constraint or schema refusal keeps the engine's type for the path it took:
+a ``StorageError`` in autocommit and an ``ExecutionError`` in a transaction.
+Either way it has ``retryable`` set to ``False``, so neither class is an
+``OperationalError`` that a retry loop would repeat. ``IntegrityError`` is not
+``hawdb.exceptions.IntegrityError``, so ``except IntegrityError`` around an
+insert cannot swallow damaged storage. A parameter value the binding cannot
+convert is a ``DataError`` too, such as an integer outside 64 bits or text
+that is not valid UTF-8, or a ``ProgrammingError`` for a type it does not
+support. That error is also the binding's ``OverflowError``,
 ``UnicodeEncodeError``, ``ValueError`` or ``TypeError``, and a parameter
 container this module refuses is likewise a ``ProgrammingError`` and a
 ``TypeError``. A ``RuntimeError`` from the binding, which would mean that the
@@ -112,10 +165,9 @@ process exits. There is no pool.
 Deliberate departures from PEP 249: ``paramstyle`` is ``"numeric_dollar"``,
 SQLAlchemy's name for ``$1`` placeholders, which the PEP does not list; and
 fetching after a statement without a result set returns no rows instead of
-raising, because a query that matches nothing can look the same. Not
-provided: ``callproc``, ``nextset``, scrollable cursors, and the ``Date``,
-``Time``, ``Timestamp`` and ``*FromTicks`` constructors, because the binding
-takes no temporal parameter values.
+raising, because a query that matches nothing can look the same. Unlike the
+sqlite3 and psycopg constructors, which use local time, ``*FromTicks`` read
+ticks in UTC. Not provided: ``callproc``, ``nextset`` and scrollable cursors.
 """
 
 from __future__ import annotations
@@ -142,6 +194,8 @@ __all__ = [
     "DATETIME",
     "DataError",
     "DatabaseError",
+    "Date",
+    "DateFromTicks",
     "Error",
     "IntegrityError",
     "InterfaceError",
@@ -152,6 +206,10 @@ __all__ = [
     "ProgrammingError",
     "ROWID",
     "STRING",
+    "Time",
+    "TimeFromTicks",
+    "Timestamp",
+    "TimestampFromTicks",
     "Warning",
     "apilevel",
     "connect",
@@ -185,7 +243,7 @@ class DatabaseError(Error):
 
 
 class DataError(DatabaseError):
-    """A parameter value the binding cannot convert."""
+    """A value that does not fit its column, or a parameter the binding cannot convert."""
 
 
 class OperationalError(DatabaseError):
@@ -193,7 +251,7 @@ class OperationalError(DatabaseError):
 
 
 class IntegrityError(DatabaseError):
-    """Declared by PEP 249; not raised yet, see #1234."""
+    """A violated constraint, such as a duplicate key or a NULL in a NOT NULL column."""
 
 
 class InternalError(DatabaseError):
@@ -223,6 +281,14 @@ class _StorageError(exceptions.StorageError, DatabaseError):
     pass
 
 
+class _StorageConstraintError(exceptions.StorageError, IntegrityError):
+    pass
+
+
+class _StorageSchemaError(exceptions.StorageError, DataError):
+    pass
+
+
 class _StorageIntegrityError(exceptions.IntegrityError, InternalError):
     pass
 
@@ -232,6 +298,14 @@ class _DescriptorError(exceptions.DescriptorError, OperationalError):
 
 
 class _ExecutionError(exceptions.ExecutionError, DatabaseError):
+    pass
+
+
+class _ExecutionConstraintError(exceptions.ExecutionError, IntegrityError):
+    pass
+
+
+class _ExecutionSchemaError(exceptions.ExecutionError, DataError):
     pass
 
 
@@ -311,6 +385,13 @@ _ENGINE_ERRORS: dict[type[Exception], type[Exception]] = {
     exceptions.BackpressureError: _BackpressureError,
     RuntimeError: _InternalRuntimeError,
 }
+# A relational refusal keeps its engine type, and its ``kind`` picks the class.
+_RELATIONAL_ERRORS: dict[tuple[type[Exception], str], type[Exception]] = {
+    (exceptions.StorageError, "constraint"): _StorageConstraintError,
+    (exceptions.StorageError, "schema"): _StorageSchemaError,
+    (exceptions.ExecutionError, "constraint"): _ExecutionConstraintError,
+    (exceptions.ExecutionError, "schema"): _ExecutionSchemaError,
+}
 # Only statements convert parameters, so only there do these mean a bad value.
 _PARAMETER_ERRORS: dict[type[Exception], type[Exception]] = {
     TypeError: _ProgrammingTypeError,
@@ -327,6 +408,9 @@ def _pep249(error: Exception, statement: bool) -> Exception:
         target = _PARAMETER_ERRORS.get(type(error))
     if target is None:
         return error
+    kind = getattr(error, "kind", None)
+    if isinstance(kind, str):
+        target = _RELATIONAL_ERRORS.get((type(error), kind), target)
     if target is _ExecutionError and getattr(error, "retryable", False) is True:
         target = _RetryableExecutionError
     try:
@@ -401,12 +485,44 @@ class _TypeObject:
 STRING = _TypeObject("STRING", str)
 BINARY = _TypeObject("BINARY", bytes)
 NUMBER = _TypeObject("NUMBER", int, float)
-# The binding returns no temporal values and HawDB exposes no row ids, so
-# these two never match; they exist for code that maps description types.
+# Cursors return TIMESTAMP/TIMESTAMPTZ columns as datetime.datetime.
 DATETIME = _TypeObject("DATETIME", datetime.date, datetime.datetime, datetime.time)
+# HawDB exposes no row ids; ROWID never matches.
 ROWID = _TypeObject("ROWID")
 
 Binary = bytes
+# The binding takes exactly these classes, not subclasses; SQL binds only
+# datetime, as TIMESTAMP or TIMESTAMPTZ.
+Date = datetime.date
+Time = datetime.time
+Timestamp = datetime.datetime
+
+_EPOCH = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
+
+
+def TimestampFromTicks(ticks: float) -> datetime.datetime:
+    """The instant ``ticks`` seconds after the epoch, as an aware UTC datetime.
+
+    HawDB has no session time zone, so ticks are read in UTC, not local time.
+    The value keeps microseconds and binds as ``TIMESTAMPTZ``.
+    """
+    # timedelta takes only int and float, so other integers, such as NumPy's,
+    # convert through __index__, as they do for time.localtime().
+    seconds = ticks if isinstance(ticks, float) else operator.index(ticks)
+    # Unlike fromtimestamp(), which the platform's gmtime() limits (Windows
+    # refuses instants before 1970), this covers every year datetime holds.
+    return _EPOCH + datetime.timedelta(seconds=seconds)
+
+
+def DateFromTicks(ticks: float) -> datetime.date:
+    """The UTC date of ``TimestampFromTicks(ticks)``; SQL takes no dates."""
+    return TimestampFromTicks(ticks).date()
+
+
+def TimeFromTicks(ticks: float) -> datetime.time:
+    """The naive UTC time of ``TimestampFromTicks(ticks)``; SQL takes no times."""
+    return TimestampFromTicks(ticks).time()
+
 
 _Column = tuple[str, "type | None", None, None, None, None, None]
 
@@ -584,8 +700,10 @@ connect = Connection
 class Cursor:
     """A DB-API cursor; rows are tuples in ``description`` order.
 
-    ``execute`` materializes the whole result, as ``Database.execute_sql``
-    does, and the fetch methods consume it.
+    ``execute`` materializes the engine's whole result, as
+    ``Database.execute_sql`` does. The fetch methods convert rows to Python
+    tuples as they return them, and the result is released once every row
+    has been fetched or the cursor runs another statement or closes.
     """
 
     _rows: Iterator[tuple[Any, ...]] | None  # None: nothing to fetch
@@ -613,15 +731,16 @@ class Cursor:
         bound = None if parameters is None else list(_sequence(parameters, "parameters"))
         result = self.connection._execute(operation, bound)
         columns = result.columns
-        # The binding fills each row dict in column order.
-        rows = [tuple(row.values()) for row in result.fetchall()]
         if columns:
             self._description = tuple(
-                (name, _type_code(rows, position), None, None, None, None, None)
+                (name, _type_code(result, position), None, None, None, None, None)
                 for position, name in enumerate(columns)
             )
-            self._rowcount = len(rows)
-        self._rows = iter(rows)
+            self._rowcount = result.row_count
+        affected = result.affected_rows
+        if affected is not None:
+            self._rowcount = affected
+        self._rows = _tuples(result)
         return self
 
     def executemany(
@@ -715,8 +834,54 @@ def _sequence(value: Any, name: str) -> Sequence[Any]:
     return value
 
 
-def _type_code(rows: list[tuple[Any, ...]], position: int) -> type | None:
-    for row in rows:
-        if row[position] is not None:
-            return type(row[position])
-    return None
+def _sql_value(value: Any) -> Any:
+    """Converts a SQL timestamp's tagged dict into ``datetime.datetime``.
+
+    ``$localdatetime`` (TIMESTAMP) becomes a naive datetime and ``$datetime``
+    (TIMESTAMPTZ, always UTC) an aware UTC datetime. Text that Python cannot
+    represent exactly (more than six fractional digits or an out-of-range
+    year) keeps the tagged dict.
+    """
+    if type(value) is not dict or len(value) != 1:
+        return value
+    ((key, text),) = value.items()
+    if key not in ("$localdatetime", "$datetime") or type(text) is not str:
+        return value
+    _, dot, fraction = text.partition(".")
+    if dot and len(fraction) - len(fraction.lstrip("0123456789")) > 6:
+        return value
+    try:
+        parsed = datetime.datetime.fromisoformat(text)
+    except ValueError:
+        return value
+    if (key == "$datetime") != (parsed.tzinfo is not None):
+        return value
+    return parsed if parsed.tzinfo is None else parsed.astimezone(datetime.timezone.utc)
+
+
+# Rows the binding converts per call: bounds the tuples of a fetch that are
+# alive twice, once as the binding returns them and once converted.
+_FETCH_CHUNK = 1024
+
+
+def _tuples(result: QueryResult) -> Iterator[tuple[Any, ...]]:
+    """Yields the rows of ``result`` as tuples, converting them as they are fetched.
+
+    The binding builds Python objects only for the rows it returns, and keeps
+    none of them, so the cursor holds the engine's rows plus at most one chunk
+    beyond what its caller kept. ``result`` is released when the rows run out
+    or the cursor resets.
+    """
+    while chunk := result.fetchmany_tuples(_FETCH_CHUNK):
+        for row in chunk:
+            yield tuple(map(_sql_value, row))
+
+
+def _type_code(result: QueryResult, position: int) -> type | None:
+    """The type of the column's first non-null value in the whole result.
+
+    The binding finds it among the engine's values without converting the
+    rows, so the code does not depend on how many rows have been fetched.
+    """
+    value = result._first_non_null(position)
+    return None if value is None else type(_sql_value(value))

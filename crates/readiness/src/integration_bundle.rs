@@ -22,19 +22,16 @@ use crate::graph_route::NMEM_GRAPH_ROUTE_EVIDENCE_PROTOCOL;
 use crate::graph_summary::nowledge_graph_route_readiness_summary;
 use hawdb_core::{HawDBError, Result};
 use hawdb_route_ownership::graph::{
-    nowledge_mem_graph_read_route_catalog_digest, NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION,
-    REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
+    graph_read_route_catalog_digest, GRAPH_READ_ROUTE_CATALOG_VERSION, REQUIRED_BOUNDED_READ_ROUTES,
 };
 use hawdb_route_ownership::{
-    NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_READINESS_PROTOCOL,
-    NOWLEDGE_MEM_SEARCH_ROUTE_OWNERSHIP_PROTOCOL, REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES,
-    REQUIRED_NOWLEDGE_MEM_SEARCH_ROUTES,
+    ACTIVE_SEARCH_ROUTE_READINESS_PROTOCOL, REQUIRED_ACTIVE_SEARCH_ROUTES, REQUIRED_SEARCH_ROUTES,
+    SEARCH_ROUTE_OWNERSHIP_PROTOCOL,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-const NOWLEDGE_MEM_HAWDB_INTEGRATION_BUNDLE_PROTOCOL: &str =
-    "nowledge-mem-hawdb-integration-bundle";
+const HAWDB_INTEGRATION_BUNDLE_PROTOCOL: &str = "nowledge-mem-hawdb-integration-bundle";
 const HAWDB_NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL: &str =
     "hawdb-nowledge-query-runtime-preflight-v1";
 const ROUTE_PARITY_EVIDENCE_SOURCE: &str = "route_parity_evidence";
@@ -68,9 +65,7 @@ pub struct IntegrationBundleInputs {
     pub blackbox_manifest: Option<serde_json::Value>,
 }
 
-pub fn nowledge_mem_integration_bundle_json(
-    inputs: IntegrationBundleInputs,
-) -> Result<serde_json::Value> {
+pub fn integration_bundle_json(inputs: IntegrationBundleInputs) -> Result<serde_json::Value> {
     let submodule_path = require_non_empty(inputs.submodule_path, "--submodule-path")?;
     let submodule_commit = require_non_empty(inputs.submodule_commit, "--submodule-commit")?;
     let coexistence_mode = require_non_empty(inputs.coexistence_mode, "--coexistence-mode")?;
@@ -125,13 +120,13 @@ pub fn nowledge_mem_integration_bundle_json(
         &search_route_ownership,
         &replacement_summary,
         "search_route_ownership",
-        REQUIRED_NOWLEDGE_MEM_SEARCH_ROUTES,
+        REQUIRED_SEARCH_ROUTES,
     );
     let active_search_route_ownership_alignment = search_route_ownership_alignment_json(
         &active_search_route_ownership,
         &replacement_summary,
         "active_search_route_ownership",
-        REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES,
+        REQUIRED_ACTIVE_SEARCH_ROUTES,
     );
     let active_search_route_readiness_alignment = active_search_route_readiness_alignment_json(
         &active_search_route_readiness,
@@ -142,7 +137,7 @@ pub fn nowledge_mem_integration_bundle_json(
     let graph_route_parity_alignment = graph_route_parity_alignment_json(&graph_route_readiness);
 
     Ok(serde_json::json!({
-        "protocol": NOWLEDGE_MEM_HAWDB_INTEGRATION_BUNDLE_PROTOCOL,
+        "protocol": HAWDB_INTEGRATION_BUNDLE_PROTOCOL,
         "submodule": {
             "present": true,
             "path": sanitize_path_label(&submodule_path),
@@ -239,20 +234,18 @@ fn graph_route_alignment_json(
         evidence_route_catalog_metadata_ready == summary_route_catalog_metadata_ready;
     let evidence_route_catalog_version_ready =
         str_path(graph_route_readiness, &["route_catalog_version"])
-            == Some(NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION);
-    let summary_route_catalog_version_ready =
-        str_path(
-            replacement_summary,
-            &["graph_route_readiness", "route_catalog_version"],
-        ) == Some(NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION);
+            == Some(GRAPH_READ_ROUTE_CATALOG_VERSION);
+    let summary_route_catalog_version_ready = str_path(
+        replacement_summary,
+        &["graph_route_readiness", "route_catalog_version"],
+    ) == Some(GRAPH_READ_ROUTE_CATALOG_VERSION);
     let evidence_route_catalog_digest_ready =
         str_path(graph_route_readiness, &["route_catalog_digest"])
-            == Some(nowledge_mem_graph_read_route_catalog_digest().as_str());
-    let summary_route_catalog_digest_ready =
-        str_path(
-            replacement_summary,
-            &["graph_route_readiness", "route_catalog_digest"],
-        ) == Some(nowledge_mem_graph_read_route_catalog_digest().as_str());
+            == Some(graph_read_route_catalog_digest().as_str());
+    let summary_route_catalog_digest_ready = str_path(
+        replacement_summary,
+        &["graph_route_readiness", "route_catalog_digest"],
+    ) == Some(graph_read_route_catalog_digest().as_str());
     let route_catalog_version_matches = str_path(graph_route_readiness, &["route_catalog_version"])
         == str_path(
             replacement_summary,
@@ -265,7 +258,7 @@ fn graph_route_alignment_json(
         );
     let evidence_primary_ready_routes = graph_route_primary_ready_routes(graph_route_readiness);
     let summary_primary_ready_routes = summary.covered_routes.into_iter().collect::<BTreeSet<_>>();
-    let required_routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+    let required_routes = REQUIRED_BOUNDED_READ_ROUTES
         .iter()
         .map(|route| (*route).to_string())
         .collect::<BTreeSet<_>>();
@@ -389,7 +382,7 @@ fn graph_route_primary_ready_routes(value: &serde_json::Value) -> BTreeSet<Strin
 fn graph_route_parity_alignment_json(
     graph_route_readiness: &serde_json::Value,
 ) -> serde_json::Value {
-    let required_routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+    let required_routes = REQUIRED_BOUNDED_READ_ROUTES
         .iter()
         .map(|route| (*route).to_string())
         .collect::<BTreeSet<_>>();
@@ -699,14 +692,14 @@ fn bounded_read_alignment_json(
         == string_set_path(summary, &["covered_routes"]);
     let evidence_route_catalog_version_ready =
         str_path(bounded_read_evidence, &["route_catalog_version"])
-            == Some(NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION);
-    let summary_route_catalog_version_ready = str_path(summary, &["route_catalog_version"])
-        == Some(NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION);
+            == Some(GRAPH_READ_ROUTE_CATALOG_VERSION);
+    let summary_route_catalog_version_ready =
+        str_path(summary, &["route_catalog_version"]) == Some(GRAPH_READ_ROUTE_CATALOG_VERSION);
     let evidence_route_catalog_digest_ready =
         str_path(bounded_read_evidence, &["route_catalog_digest"])
-            == Some(nowledge_mem_graph_read_route_catalog_digest().as_str());
+            == Some(graph_read_route_catalog_digest().as_str());
     let summary_route_catalog_digest_ready = str_path(summary, &["route_catalog_digest"])
-        == Some(nowledge_mem_graph_read_route_catalog_digest().as_str());
+        == Some(graph_read_route_catalog_digest().as_str());
     let route_catalog_version_matches = str_path(bounded_read_evidence, &["route_catalog_version"])
         == str_path(summary, &["route_catalog_version"]);
     let route_catalog_digest_matches = str_path(bounded_read_evidence, &["route_catalog_digest"])
@@ -879,7 +872,7 @@ fn search_route_ownership_alignment_json(
     let evidence_present = !evidence.is_null();
     let summary_present = !summary.is_null();
     let protocol_matches = str_path(evidence, &["protocol"]) == str_path(summary, &["protocol"])
-        && str_path(evidence, &["protocol"]) == Some(NOWLEDGE_MEM_SEARCH_ROUTE_OWNERSHIP_PROTOCOL);
+        && str_path(evidence, &["protocol"]) == Some(SEARCH_ROUTE_OWNERSHIP_PROTOCOL);
     let ready_matches = bool_path(evidence, &["ready"]) == bool_path(summary, &["ready"]);
     let production_cutover_ready_matches = bool_path(evidence, &["production_cutover_ready"])
         == bool_path(summary, &["production_cutover_ready"]);
@@ -1032,14 +1025,13 @@ fn active_search_route_readiness_alignment_json(
     let evidence_present = !evidence.is_null();
     let summary_present = !summary.is_null();
     let protocol_matches = str_path(evidence, &["protocol"]) == str_path(summary, &["protocol"])
-        && str_path(evidence, &["protocol"])
-            == Some(NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_READINESS_PROTOCOL);
+        && str_path(evidence, &["protocol"]) == Some(ACTIVE_SEARCH_ROUTE_READINESS_PROTOCOL);
     let ready_matches = bool_path(evidence, &["ready"]) == bool_path(summary, &["ready"]);
     let production_cutover_ready_matches = bool_path(evidence, &["production_cutover_ready"])
         == bool_path(summary, &["production_cutover_ready"]);
     let require_all_hawdb_matches =
         bool_path(evidence, &["require_all_hawdb"]) == bool_path(summary, &["require_all_hawdb"]);
-    let expected_count = REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES.len() as u64;
+    let expected_count = REQUIRED_ACTIVE_SEARCH_ROUTES.len() as u64;
     let required_route_count_matches = u64_path(evidence, &["required_route_count"])
         == u64_path(summary, &["required_route_count"])
         && u64_path(evidence, &["required_route_count"]) == Some(expected_count);
@@ -1283,14 +1275,14 @@ fn query_runtime_alignment_json(
         == bool_path(summary, &["route_coverage_ready"]);
     let evidence_route_catalog_version_ready =
         str_path(query_runtime_preflight, &["route_catalog_version"])
-            == Some(NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION);
-    let summary_route_catalog_version_ready = str_path(summary, &["route_catalog_version"])
-        == Some(NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION);
+            == Some(GRAPH_READ_ROUTE_CATALOG_VERSION);
+    let summary_route_catalog_version_ready =
+        str_path(summary, &["route_catalog_version"]) == Some(GRAPH_READ_ROUTE_CATALOG_VERSION);
     let evidence_route_catalog_digest_ready =
         str_path(query_runtime_preflight, &["route_catalog_digest"])
-            == Some(nowledge_mem_graph_read_route_catalog_digest().as_str());
+            == Some(graph_read_route_catalog_digest().as_str());
     let summary_route_catalog_digest_ready = str_path(summary, &["route_catalog_digest"])
-        == Some(nowledge_mem_graph_read_route_catalog_digest().as_str());
+        == Some(graph_read_route_catalog_digest().as_str());
     let route_catalog_version_matches =
         str_path(query_runtime_preflight, &["route_catalog_version"])
             == str_path(summary, &["route_catalog_version"]);
@@ -1369,28 +1361,28 @@ fn query_runtime_route_coverage_ready(value: &serde_json::Value) -> Option<bool>
     let observed_route_set = observed_routes.iter().cloned().collect::<BTreeSet<_>>();
     let unknown_route_count = observed_route_set
         .iter()
-        .filter(|route| !REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.contains(&route.as_str()))
+        .filter(|route| !REQUIRED_BOUNDED_READ_ROUTES.contains(&route.as_str()))
         .count();
     let duplicate_routes = duplicate_routes(&observed_routes);
     Some(
         str_path(value, &["protocol"]) == Some(HAWDB_NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL)
             && u64_path(value, &["required_route_count"])
-                == Some(REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len() as u64)
+                == Some(REQUIRED_BOUNDED_READ_ROUTES.len() as u64)
             && u64_path(value, &["covered_route_count"])
-                == Some(REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len() as u64)
+                == Some(REQUIRED_BOUNDED_READ_ROUTES.len() as u64)
             && bool_path(value, &["required_routes_covered"]) == Some(true)
             && string_set_path(value, &["missing_required_routes"]).is_empty()
             && string_set_path(value, &["unknown_routes"]).is_empty()
             && string_set_path(value, &["duplicate_routes"]).is_empty()
             && str_path(value, &["route_catalog_version"])
-                == Some(NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION)
+                == Some(GRAPH_READ_ROUTE_CATALOG_VERSION)
             && str_path(value, &["route_catalog_digest"])
-                == Some(nowledge_mem_graph_read_route_catalog_digest().as_str())
+                == Some(graph_read_route_catalog_digest().as_str())
             && bool_path(value, &["route_coverage_ready"]) == Some(true)
             && string_set_path(value, &["route_coverage_blocker_codes"]).is_empty()
             && unknown_route_count == 0
             && duplicate_routes.is_empty()
-            && REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
+            && REQUIRED_BOUNDED_READ_ROUTES
                 .iter()
                 .all(|route| observed_route_set.contains(*route)),
     )

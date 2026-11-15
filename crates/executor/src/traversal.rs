@@ -717,6 +717,17 @@ pub(crate) fn visit_one_hop_relationship_records(
 
 const MAX_STREAMING_EXPAND_RECURSION_DEPTH: usize = 256;
 
+/// `max_hops` of an unbounded variable-length pattern (`*`, `*n..`). Its
+/// trails stay finite because no trail repeats a relationship, but they are
+/// enumerated depth-first, so a trail that would grow past
+/// [`MAX_STREAMING_EXPAND_RECURSION_DEPTH`] hops is refused instead of being
+/// truncated (#1489). The refusal is conservative: it fires on the first
+/// eligible relationship beyond the limit, before that relationship's target
+/// is checked against the pattern's labels. On dense cyclic graphs the number
+/// of trails within the limit can grow exponentially, exactly as for an
+/// explicit `*1..256`; cancellation and the query memory budget bound it.
+pub const UNBOUNDED_EXPAND_MAX_HOPS: usize = usize::MAX;
+
 /// Receives a trail endpoint, its hop count and the trail's relationships.
 pub(crate) type TrailConsumer<'a> =
     dyn FnMut(NodeRecord, usize, &[RelId]) -> Result<ScanControl> + 'a;
@@ -751,30 +762,72 @@ pub fn visit_bounded_expand_targets(
     )
 }
 
-/// Like [`visit_bounded_expand_targets`], but also excludes relationships
-/// already bound by the enclosing pattern and reports each trail's
-/// relationships so the caller can keep the whole match isomorphic. Given
-/// `target_properties`, it reads only each endpoint's identity, labels and
-/// those properties.
+/// A bounded trail search over relationships of any of `rel_type_ids`; one
+/// trail may mix them. Empty `rel_type_ids` follows no relationship, so only
+/// a zero-hop trail can match.
+#[derive(Clone, Copy)]
+pub(crate) struct BoundedTrailSpec<'a> {
+    pub source: NodeId,
+    pub rel_type_ids: &'a [RelTypeId],
+    pub direction: RelationshipDirection,
+    pub target_label_ids: Option<&'a [LabelId]>,
+    pub min_hops: usize,
+    pub max_hops: usize,
+}
+
+/// Like [`visit_bounded_expand_targets`], but over a set of relationship
+/// types, also excluding relationships already bound by the enclosing pattern
+/// and reporting each trail's relationships so the caller can keep the whole
+/// match isomorphic. Given `target_properties`, it reads only each endpoint's
+/// identity, labels and those properties.
 pub(crate) fn visit_bounded_expand_trails(
     store: &dyn GraphExecutionRead,
-    spec: BoundedExpandSpec<'_>,
+    spec: BoundedTrailSpec<'_>,
     excluded: &BTreeSet<RelId>,
     target_properties: Option<&BTreeSet<String>>,
     memory: AdjacencyReadMemory<'_>,
     task_context: Option<&RuntimeTaskContext>,
     consumer: &mut TrailConsumer<'_>,
 ) -> Result<ScanControl> {
-    let mut spec = ResolvedBoundedExpandSpec::typed(spec, Some(excluded));
-    spec.target_properties = target_properties;
-    visit_bounded_expand_inner(store, spec, memory, task_context, consumer)
+    visit_bounded_expand_inner(
+        store,
+        ResolvedBoundedExpandSpec {
+            source: spec.source,
+            rel_type_ids: TrailTypes::Set(spec.rel_type_ids),
+            direction: spec.direction,
+            target_label_ids: spec.target_label_ids,
+            min_hops: spec.min_hops,
+            max_hops: spec.max_hops,
+            excluded: Some(excluded),
+            target_properties,
+        },
+        memory,
+        task_context,
+        consumer,
+    )
+}
+
+/// The relationship types a bounded trail follows. Neither variant is a
+/// wildcard: an empty set follows nothing.
+#[derive(Clone, Copy)]
+enum TrailTypes<'a> {
+    One(RelTypeId),
+    Set(&'a [RelTypeId]),
+}
+
+impl TrailTypes<'_> {
+    fn as_slice(&self) -> &[RelTypeId] {
+        match self {
+            Self::One(id) => std::slice::from_ref(id),
+            Self::Set(ids) => ids,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
 struct ResolvedBoundedExpandSpec<'a> {
     source: NodeId,
-    // None means this typed relationship does not exist, never a wildcard.
-    rel_type_id: Option<RelTypeId>,
+    rel_type_ids: TrailTypes<'a>,
     direction: RelationshipDirection,
     target_label_ids: Option<&'a [LabelId]>,
     min_hops: usize,
@@ -788,7 +841,7 @@ impl<'a> ResolvedBoundedExpandSpec<'a> {
     fn typed(spec: BoundedExpandSpec<'a>, excluded: Option<&'a BTreeSet<RelId>>) -> Self {
         Self {
             source: spec.source,
-            rel_type_id: Some(spec.rel_type_id),
+            rel_type_ids: TrailTypes::One(spec.rel_type_id),
             direction: spec.direction,
             target_label_ids: spec.target_label_ids,
             min_hops: spec.min_hops,
@@ -812,7 +865,7 @@ pub(crate) fn visit_zero_hop_expand_target(
         store,
         ResolvedBoundedExpandSpec {
             source,
-            rel_type_id: None,
+            rel_type_ids: TrailTypes::Set(&[]),
             direction: RelationshipDirection::Outgoing,
             target_label_ids,
             min_hops: 0,
@@ -833,16 +886,21 @@ fn visit_bounded_expand_inner(
     task_context: Option<&RuntimeTaskContext>,
     consumer: &mut TrailConsumer<'_>,
 ) -> Result<ScanControl> {
-    if spec.max_hops > MAX_STREAMING_EXPAND_RECURSION_DEPTH {
+    let unbounded = spec.max_hops == UNBOUNDED_EXPAND_MAX_HOPS;
+    if !unbounded && spec.max_hops > MAX_STREAMING_EXPAND_RECURSION_DEPTH {
         return Err(HawDBError::Execution(format!(
             "AdjacencyExpandExec max_hops {} exceeds streaming recursion limit {MAX_STREAMING_EXPAND_RECURSION_DEPTH}",
             spec.max_hops
         )));
     }
+    let depth_limit = if unbounded {
+        MAX_STREAMING_EXPAND_RECURSION_DEPTH
+    } else {
+        spec.max_hops
+    };
     // Each depth holds a recursion frame plus one trail relationship id.
     let traversal_frame_bytes = std::mem::size_of::<(NodeId, usize, RelId)>();
-    let traversal_state_bytes = spec
-        .max_hops
+    let traversal_state_bytes = depth_limit
         .saturating_add(1)
         .saturating_mul(traversal_frame_bytes);
     if traversal_state_bytes > memory.budget_bytes {
@@ -859,6 +917,9 @@ fn visit_bounded_expand_inner(
         task_context: Option<&'a RuntimeTaskContext>,
         consumer: &'b mut TrailConsumer<'b>,
         relationships: Vec<RelId>,
+        /// Set for an unbounded pattern: extending a trail of this many hops
+        /// is refused, never skipped.
+        unbounded_depth_limit: Option<usize>,
     }
 
     impl Trail<'_, '_> {
@@ -912,9 +973,17 @@ fn visit_bounded_expand_inner(
             if depth == self.spec.max_hops {
                 return Ok(ScanControl::Continue);
             }
-            let Some(rel_type_id) = self.spec.rel_type_id else {
-                return Ok(ScanControl::Continue);
-            };
+            // A trail may mix the types; each hop reads every type in turn.
+            let rel_type_ids = self.spec.rel_type_ids;
+            for &rel_type_id in rel_type_ids.as_slice() {
+                if self.visit_type(current, rel_type_id)? == ScanControl::Stop {
+                    return Ok(ScanControl::Stop);
+                }
+            }
+            Ok(ScanControl::Continue)
+        }
+
+        fn visit_type(&mut self, current: NodeId, rel_type_id: RelTypeId) -> Result<ScanControl> {
             match self.spec.direction {
                 RelationshipDirection::Outgoing => {
                     self.visit_direction(current, rel_type_id, AdjacencyDirection::Outgoing, false)
@@ -964,6 +1033,16 @@ fn visit_bounded_expand_inner(
                     AdjacencyDirection::Outgoing => relationship.target,
                     AdjacencyDirection::Incoming => relationship.source,
                 };
+                if self
+                    .unbounded_depth_limit
+                    .is_some_and(|limit| self.relationships.len() == limit)
+                {
+                    return Err(HawDBError::Execution(format!(
+                        "unbounded variable-length pattern has a trail longer than \
+                         {MAX_STREAMING_EXPAND_RECURSION_DEPTH} relationships; give the \
+                         pattern an upper bound"
+                    )));
+                }
                 self.relationships.push(relationship.id);
                 let control = self.visit_depth(next);
                 self.relationships.pop();
@@ -989,7 +1068,8 @@ fn visit_bounded_expand_inner(
         memory,
         task_context,
         consumer,
-        relationships: Vec::with_capacity(spec.max_hops),
+        relationships: Vec::with_capacity(depth_limit),
+        unbounded_depth_limit: unbounded.then_some(depth_limit),
     }
     .visit_depth(spec.source)
 }

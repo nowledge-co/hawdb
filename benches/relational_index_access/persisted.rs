@@ -19,7 +19,6 @@ use hawdb::{
     QueryStreamOptions, RelationalOperatorKind, RelationalSqlReadProfile, Value,
 };
 use hawdb_storage::config::{RelationalIndexMode, StorageResidencyMode};
-use hawdb_storage::relational::DEFAULT_RELATIONAL_ROW_PAGE_ROWS;
 use serde_json::json;
 use std::fmt::Write as _;
 use std::hint::black_box;
@@ -111,8 +110,9 @@ pub(super) fn measure() -> serde_json::Value {
             let expected = (0..ROWS)
                 .filter(|ordinal| shape.matches(*ordinal, layout))
                 .collect::<Vec<_>>();
-            let scan = measure_path(&fixture.path, width, shape, false, &expected);
-            let selected = measure_path(&fixture.path, width, shape, true, &expected);
+            let scan = measure_path(&fixture.path, fixture.pages, width, shape, false, &expected);
+            let selected =
+                measure_path(&fixture.path, fixture.pages, width, shape, true, &expected);
             assert_eq!(
                 scan["first_profile"]["row_read"]["visible_commit_epoch"],
                 selected["first_profile"]["row_read"]["visible_commit_epoch"],
@@ -149,6 +149,7 @@ pub(super) fn measure() -> serde_json::Value {
 
 fn measure_path(
     path: &Path,
+    pages: usize,
     width: usize,
     shape: Shape,
     indexed: bool,
@@ -171,10 +172,12 @@ fn measure_path(
     let read = database.begin_read_transaction().unwrap();
     let (column, parameter) = shape.predicate(indexed);
     let sql = format!("SELECT id, body FROM access_rows WHERE {column} = $1");
-    // Both body widths fit the declared default row-count bound before the
-    // page-byte bound. Independently compose the documented raw logical policy
-    // over this fixture's page geometry and exact value-specific cardinality.
-    let pages = ROWS.div_ceil(DEFAULT_RELATIONAL_ROW_PAGE_ROWS);
+    // Row-page format v2 closes pages at a byte target, so the page count
+    // depends on the body width rather than a row cap (#1521). The fixture
+    // records its published page count; independently compose the
+    // documented raw logical policy over it and the exact value-specific
+    // cardinality.
+    assert!(pages > 0, "persisted access fixture has no row pages");
     let search_steps = (usize::BITS - pages.leading_zeros()) as usize;
     let point_setup = 2 + search_steps;
     let candidates = expected.len().max(1);
@@ -202,8 +205,11 @@ fn measure_path(
         parameter,
         width,
         expected,
-        operator,
-        plans_index_metadata,
+        ExpectedPlan {
+            operator,
+            plans_index_metadata,
+            pages,
+        },
     );
     assert!(
         first.row_read.physical_pages > 0,
@@ -220,8 +226,11 @@ fn measure_path(
             parameter,
             width,
             expected,
-            operator,
-            plans_index_metadata,
+            ExpectedPlan {
+                operator,
+                plans_index_metadata,
+                pages,
+            },
         );
         assert_eq!(profile.stage_timings.parse_nanos, 0, "warm SQL cache miss");
         assert_eq!(profile.row_read.physical_pages, 0, "warm row-file read");
@@ -249,15 +258,28 @@ fn measure_path(
     })
 }
 
+/// The operator, metadata planning and row-page geometry a query must show.
+#[derive(Clone, Copy)]
+struct ExpectedPlan {
+    operator: RelationalOperatorKind,
+    plans_index_metadata: bool,
+    /// Published row pages of `access_rows`.
+    pages: usize,
+}
+
 fn execute(
     read: &DatabaseReadTransaction,
     sql: &str,
     parameter: i64,
     width: usize,
     expected: &[usize],
-    operator: RelationalOperatorKind,
-    plans_index_metadata: bool,
+    plan: ExpectedPlan,
 ) -> (u128, RelationalSqlReadProfile) {
+    let ExpectedPlan {
+        operator,
+        plans_index_metadata,
+        pages,
+    } = plan;
     let started = Instant::now();
     let ProfiledRelationalSqlQueryOutput { output, profile } = read
         .query_sql_with_params_options_profiled(
@@ -307,9 +329,8 @@ fn execute(
     assert_eq!(profile.row_read.overlay_entries, 0);
     if operator == RelationalOperatorKind::TableFullScan {
         assert_eq!(
-            profile.row_read.logical_pages,
-            ROWS.div_ceil(DEFAULT_RELATIONAL_ROW_PAGE_ROWS),
-            "fixture page geometry changed; review the independent policy oracle"
+            profile.row_read.logical_pages, pages,
+            "a full scan must read every published row page exactly once"
         );
     }
     // A rejected secondary candidate still paid for its planning metadata. Its
@@ -427,6 +448,39 @@ fn body(ordinal: usize, width: usize) -> String {
 
 struct Fixture {
     path: PathBuf,
+    /// Row pages of `access_rows` in the published checkpoint.
+    pages: usize,
+}
+
+/// Reads the fixture's published row-page count with one full scan on a
+/// separate, immediately closed handle, so the measured handles stay cold.
+/// Format v2 packs rows by bytes, so the count depends on the body width.
+fn published_row_pages(path: &Path, width: usize) -> usize {
+    let database = Database::open_with_config(
+        path,
+        DatabaseConfig {
+            read_only: true,
+            recovery_mode: hawdb::RecoveryMode::Strict,
+            storage_residency_mode: StorageResidencyMode::OutOfCore,
+            relational_index_mode: RelationalIndexMode::Authoritative,
+            segment_cache_capacity_bytes: CACHE_BYTES,
+            ..DatabaseConfig::default()
+        },
+    )
+    .expect("open persisted access fixture for its page geometry");
+    let read = database.begin_read_transaction().unwrap();
+    let ProfiledRelationalSqlQueryOutput { output, profile } = read
+        .query_sql_with_params_options_profiled(
+            "SELECT id FROM access_rows WHERE scan_id >= $1",
+            &[Value::Int(0)],
+            QueryStreamOptions {
+                max_rows: Some(ROWS),
+                max_payload_bytes: Some(ROWS * (width + 128)),
+            },
+        )
+        .expect("scan persisted access fixture");
+    assert_eq!(output.rows.len(), ROWS);
+    profile.row_read.logical_pages
 }
 
 impl Fixture {
@@ -492,7 +546,8 @@ impl Fixture {
         }
         database.checkpoint().expect("checkpoint access fixture");
         drop(database);
-        Self { path }
+        let pages = published_row_pages(&path, width);
+        Self { path, pages }
     }
 
     fn remove(self) {

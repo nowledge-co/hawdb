@@ -110,6 +110,7 @@ impl DatabaseTransactionState {
                 .store
                 .begin_authoritative_relational_transaction_rows()
                 .map_err(|error| error.to_string()),
+            sql_clock: hawdb_core::temporal::statement_now(),
         })
     }
 
@@ -147,6 +148,7 @@ impl DatabaseTransactionState {
             relational_returning: std::mem::take(&mut self.relational_returning),
             relational_index: std::mem::replace(&mut self.relational_index, Ok(None)),
             relational_rows: std::mem::replace(&mut self.relational_rows, Ok(None)),
+            sql_clock: self.sql_clock,
         }
     }
 
@@ -318,6 +320,12 @@ pub(super) fn execute_graph_transaction_plan(
                     .expect("usize::MAX is non-zero"),
                 ..runtime.config.mutation_limits
             },
+            PhysicalPlan::MutationReturn { returns, .. } => {
+                hawdb_executor::mutation::mutation_return_staging_limits(
+                    returns,
+                    runtime.config.mutation_limits,
+                )
+            }
             _ => runtime.config.mutation_limits,
         };
         if !is_mutation_return
@@ -326,78 +334,7 @@ pub(super) fn execute_graph_transaction_plan(
             mutation_limits.max_result_rows = mutation_limits.max_result_rows.min(limit);
         }
         let statement_savepoint = transaction.savepoint();
-        let execute = || {
-            let staged = executor::stage_row_mutations(
-                &optimized.physical_plan,
-                parameters,
-                runtime.config.csv_import_policy().as_ref(),
-                mutation_limits,
-                &runtime.config.execution_memory,
-                task_context,
-            )?;
-            let summary = match staged {
-                Some(mut staged) => {
-                    // Endpoints resolve against this transaction's working
-                    // store, which already holds its earlier statements.
-                    // Relationship CREATE and MERGE endpoints both resolve
-                    // here.
-                    staged.resolve_endpoints(
-                        transaction.catalog(),
-                        transaction.store(),
-                        mutation_limits,
-                        &runtime.config.execution_memory,
-                        task_context,
-                    )?;
-                    let (mutations, _charge) = staged.into_parts();
-                    transaction.stage_mutations_with_limits(mutations, mutation_limits)?
-                }
-                None => {
-                    let command = if is_mutation_return {
-                        hawdb_executor::mutation::materialize_node_mutation(
-                            &optimized.physical_plan,
-                            transaction.catalog(),
-                            transaction.store(),
-                            mutation_limits,
-                            task_context,
-                        )?
-                    } else {
-                        match executor::mutation_command(&optimized.physical_plan) {
-                            Ok(command) => command,
-                            Err(error) => {
-                                match hawdb_executor::mutation::materialize_node_mutation(
-                                    &optimized.physical_plan,
-                                    transaction.catalog(),
-                                    transaction.store(),
-                                    mutation_limits,
-                                    task_context,
-                                )? {
-                                    Some(command) => Some(command),
-                                    None => return Err(error),
-                                }
-                            }
-                        }
-                    };
-                    let mutation = command.ok_or_else(|| {
-                        HawDBError::Execution(
-                            "transaction mutation plan cannot be represented as a staged mutation"
-                                .to_string(),
-                        )
-                    })?;
-                    if is_mutation_return {
-                        transaction.stage_mutation_without_commit_rows(mutation, mutation_limits)?
-                    } else {
-                        transaction.stage_mutation_with_limits(mutation, mutation_limits)?
-                    }
-                }
-            };
-            let returned_rows = executor::project_staged_mutation_return_rows(
-                &optimized.physical_plan,
-                transaction.catalog(),
-                transaction.store(),
-                &summary.rows,
-                runtime.config.mutation_limits,
-            )?;
-            let rows = returned_rows.unwrap_or_default();
+        let finish = |transaction: &mut GraphMutationTransaction, rows: Vec<executor::Row>| {
             let output = QueryOutput {
                 rows: optimized.collect_named_rows(rows)?,
             };
@@ -423,6 +360,132 @@ pub(super) fn execute_graph_transaction_plan(
                 output,
                 transaction.lock_footprint_since(&statement_savepoint)?,
             ))
+        };
+        let execute = || {
+            if let PhysicalPlan::MatchSetExec(set) = &optimized.physical_plan {
+                let outcome = executor::resolve_match_set(
+                    set,
+                    parameters,
+                    transaction.catalog(),
+                    transaction.store(),
+                    mutation_limits,
+                    hawdb_executor::result_delivery::OutputLimits::default(),
+                    &runtime.config.execution_memory,
+                    task_context,
+                )?;
+                if !outcome.mutations.is_empty() {
+                    if is_mutation_return {
+                        transaction.stage_mutations_without_commit_rows(
+                            outcome.mutations,
+                            mutation_limits,
+                        )?;
+                    } else {
+                        transaction
+                            .stage_mutations_with_limits(outcome.mutations, mutation_limits)?;
+                    }
+                }
+                return finish(transaction, outcome.rows);
+            }
+            let staged = executor::stage_row_mutations(
+                &optimized.physical_plan,
+                parameters,
+                runtime.config.csv_import_policy().as_ref(),
+                mutation_limits,
+                &runtime.config.execution_memory,
+                task_context,
+            )?;
+            let summary = match staged {
+                Some(mut staged) => {
+                    // Endpoints resolve against this transaction's working
+                    // store, which already holds its earlier statements.
+                    // Relationship CREATE and MERGE endpoints both resolve
+                    // here.
+                    staged.resolve_endpoints(
+                        transaction.catalog(),
+                        transaction.store(),
+                        mutation_limits,
+                        &runtime.config.execution_memory,
+                        task_context,
+                    )?;
+                    let (mutations, _charge) = staged.into_parts();
+                    transaction.stage_mutations_with_limits(mutations, mutation_limits)?
+                }
+                None => {
+                    let command = if let PhysicalPlan::MutationReturn { mutation, .. } =
+                        &optimized.physical_plan
+                    {
+                        Some(hawdb_executor::mutation::mutation_return_command(
+                            mutation,
+                            transaction.catalog(),
+                            transaction.store(),
+                            mutation_limits,
+                            &runtime.config.execution_memory,
+                            task_context,
+                        )?)
+                    } else if is_mutation_return {
+                        hawdb_executor::mutation::materialize_node_mutation(
+                            &optimized.physical_plan,
+                            transaction.catalog(),
+                            transaction.store(),
+                            mutation_limits,
+                            &runtime.config.execution_memory,
+                            task_context,
+                        )?
+                    } else {
+                        match executor::mutation_command(&optimized.physical_plan) {
+                            Ok(command) => command,
+                            Err(error) => {
+                                match hawdb_executor::mutation::materialize_node_mutation(
+                                    &optimized.physical_plan,
+                                    transaction.catalog(),
+                                    transaction.store(),
+                                    mutation_limits,
+                                    &runtime.config.execution_memory,
+                                    task_context,
+                                )? {
+                                    Some(command) => Some(command),
+                                    None => return Err(error),
+                                }
+                            }
+                        }
+                    };
+                    let mutation = command.ok_or_else(|| {
+                        HawDBError::Execution(
+                            "transaction mutation plan cannot be represented as a staged mutation"
+                                .to_string(),
+                        )
+                    })?;
+                    if is_mutation_return {
+                        transaction.stage_mutation_without_commit_rows(mutation, mutation_limits)?
+                    } else {
+                        transaction.stage_mutation_with_limits(mutation, mutation_limits)?
+                    }
+                }
+            };
+            let returned_rows = match &optimized.physical_plan {
+                PhysicalPlan::MutationReturn { returns, .. } => {
+                    Some(hawdb_executor::mutation::project_mutation_return_rows(
+                        returns,
+                        transaction.catalog(),
+                        hawdb_executor::store::MutationReturnStores {
+                            before: statement_savepoint.store(),
+                            after: transaction.store(),
+                        },
+                        &summary.rows,
+                        runtime.config.mutation_limits,
+                        hawdb_executor::result_delivery::OutputLimits::default(),
+                        task_context,
+                    )?)
+                }
+                _ => executor::project_staged_mutation_return_rows(
+                    &optimized.physical_plan,
+                    transaction.catalog(),
+                    transaction.store(),
+                    &summary.rows,
+                    runtime.config.mutation_limits,
+                )?,
+            };
+            finish(transaction, returned_rows.unwrap_or_default())
         };
         // Row-evaluated clock reads observe the instant planning observed.
         let execution =
@@ -662,6 +725,80 @@ pub(crate) fn execute_database_transaction_sql_request(
     result
 }
 
+/// Runs one SQL statement of an explicit transaction that `db` owns, with
+/// the fail-closed checks and statement recording of an autocommit statement.
+///
+/// Before the statement runs, `db`'s storage handle must be usable, so a
+/// handle poisoned by an earlier integrity failure refuses transaction
+/// statements as it refuses autocommit ones. A storage integrity failure of
+/// a `SELECT` or `EXPLAIN` poisons the handle, as the autocommit read path
+/// does. Every prepared statement is recorded in `db`'s statement summary
+/// and, when it succeeds over the threshold, in its slow-query log, under
+/// its own text and statement kind. The elapsed time and row count are the
+/// statement's own; its effects are staged and become visible only if the
+/// transaction commits. As in autocommit, a statement that fails to parse or
+/// meets an unusable handle is not recorded.
+///
+/// `prepared` is the already parsed `request.sql`, or `None` to parse it here.
+pub(crate) fn execute_recorded_database_transaction_sql_request(
+    db: &Database,
+    runtime: &DatabaseTransactionRuntime,
+    state: &mut DatabaseTransactionState,
+    request: SqlQueryRequest<'_>,
+    prepared: Option<crate::relational_sql::PreparedRelationalSql>,
+) -> Result<SqlStatementResult> {
+    let started = hawdb_core::time::Instant::now();
+    let result = (|| {
+        let task = query_request::bind_request_context(None, request.task_context)?;
+        query_runtime::query_runtime_checkpoint(task.as_ref())?;
+        db.runtime.get()?.store.ensure_usable()?;
+        if let Some(dependencies) = &mut state.read_dependencies {
+            dependencies.admit_sql(request.sql, request.parameters)?;
+        }
+        let prepared = match prepared {
+            Some(prepared) => prepared,
+            None => runtime
+                .relational_plan_template_cache
+                .prepare(request.sql)?,
+        };
+        let statement_kind = observability::sql_statement_kind(prepared.statement());
+        let reads = matches!(
+            prepared.statement(),
+            crate::sql::SqlStatement::Select(_) | crate::sql::SqlStatement::Explain(_)
+        );
+        let result = execute_database_transaction_prepared_sql(
+            runtime,
+            state,
+            request.sql,
+            prepared,
+            request.parameters,
+            DatabaseTransactionSqlOptions {
+                allow_system_schema_registry_write: false,
+                allow_locking_select: false,
+                task_context: task.as_ref(),
+                output_limits: request.output_limits,
+                join_planning: request.join_planning,
+            },
+        );
+        if reads && let Ok(branch_runtime) = db.runtime.get() {
+            branch_runtime.store.poison_on_storage_error(&result);
+        }
+        db.record_statement_execution(
+            "sql",
+            request.sql,
+            statement_kind,
+            started,
+            result.as_ref().map(|result| &result.output),
+            StatementExecutionContext::default(),
+        );
+        result
+    })();
+    if result.is_err() {
+        state.fail_read_dependencies();
+    }
+    result
+}
+
 pub(super) fn execute_database_transaction_sql(
     runtime: &DatabaseTransactionRuntime,
     state: &mut DatabaseTransactionState,
@@ -743,7 +880,24 @@ pub(super) struct DatabaseTransactionSqlOptions<'a> {
     pub(super) join_planning: RelationalJoinPlanningDirective,
 }
 
+/// Executes one SQL statement of a transaction with the statement clock
+/// pinned to the transaction start (PostgreSQL `transaction_timestamp()`).
 pub(super) fn execute_database_transaction_prepared_sql(
+    runtime: &DatabaseTransactionRuntime,
+    state: &mut DatabaseTransactionState,
+    sql_text: &str,
+    prepared: crate::relational_sql::PreparedRelationalSql,
+    parameters: &[Value],
+    options: DatabaseTransactionSqlOptions<'_>,
+) -> Result<SqlStatementResult> {
+    hawdb_core::temporal::with_statement_clock(state.sql_clock, || {
+        execute_database_transaction_prepared_sql_at_clock(
+            runtime, state, sql_text, prepared, parameters, options,
+        )
+    })
+}
+
+fn execute_database_transaction_prepared_sql_at_clock(
     runtime: &DatabaseTransactionRuntime,
     state: &mut DatabaseTransactionState,
     sql_text: &str,
@@ -1241,6 +1395,12 @@ pub(super) fn relational_value_to_query_value(
         hawdb_storage::relational::RelationalValue::Vector(value) => {
             Ok(Value::Vector(value.clone()))
         }
+        hawdb_storage::relational::RelationalValue::Timestamp(value) => {
+            hawdb_core::sql_timestamp::local_value(*value)
+        }
+        hawdb_storage::relational::RelationalValue::TimestampTz(value) => {
+            hawdb_core::sql_timestamp::zoned_value(*value)
+        }
         hawdb_storage::relational::RelationalValue::Overflow(_) => {
             Err(HawDBError::StorageIntegrity(
                 "logical relational mutation outcome contains an overflow reference".to_string(),
@@ -1294,9 +1454,17 @@ pub(super) fn map_transaction_relational_error(
         | hawdb_storage::relational::RelationalError::Durability(message) => {
             HawDBError::StorageIntegrity(message)
         }
-        error @ (hawdb_storage::relational::RelationalError::Admission(_)
-        | hawdb_storage::relational::RelationalError::Schema(_)
-        | hawdb_storage::relational::RelationalError::Constraint(_)) => {
+        error @ (hawdb_storage::relational::RelationalError::Schema(_)
+        | hawdb_storage::relational::RelationalError::Constraint(_)) => match error.kind() {
+            // A statement in an explicit transaction keeps the execution surface.
+            Some(kind) => HawDBError::relational(
+                kind,
+                hawdb_core::RelationalErrorSurface::Execution,
+                error.to_string(),
+            ),
+            None => HawDBError::Execution(error.to_string()),
+        },
+        error @ hawdb_storage::relational::RelationalError::Admission(_) => {
             HawDBError::Execution(error.to_string())
         }
     }

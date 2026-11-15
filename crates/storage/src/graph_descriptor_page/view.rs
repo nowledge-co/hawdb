@@ -86,6 +86,7 @@ pub(crate) fn encode_verified_view(
     Ok(encoded)
 }
 
+#[derive(Clone)]
 pub(crate) struct GraphDescriptorPageView {
     bytes: SegmentBytes,
     physical_len: usize,
@@ -166,6 +167,16 @@ impl GraphDescriptorPageView {
             ));
         }
         Ok(page)
+    }
+
+    /// Whether the image is a cache lease, already charged to the cache.
+    pub(crate) fn is_cache_resident(&self) -> bool {
+        self.bytes.is_cache_resident()
+    }
+
+    /// The cache charge this view pins: image and offset index.
+    pub(crate) fn resident_charge(&self) -> u64 {
+        self.bytes.resident_charge()
     }
 
     pub(crate) fn is_leaf(&self) -> bool {

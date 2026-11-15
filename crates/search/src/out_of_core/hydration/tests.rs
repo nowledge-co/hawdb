@@ -370,10 +370,32 @@ fn public_hydration_preserves_order_budgets_and_old_reader() {
         output.metrics.segment_bytes_read,
         output.metrics.hydration_segment_bytes_read
     );
-    assert!(reader
+    // A repeated id is a caller mistake, not a storage fault (#1754).
+    let duplicate = reader
         .hydrate_documents(&[ids[0].clone(), ids[0].clone()])
-        .is_err());
-    assert!(reader.hydrate_documents(&["missing".to_string()]).is_err());
+        .unwrap_err();
+    assert!(
+        matches!(duplicate, HawDBError::Semantic(_)),
+        "{duplicate:?}"
+    );
+    // An id the projection does not contain is the caller's mistake when the
+    // caller named it, alone or beside ids that exist (#1767).
+    for request in [
+        vec!["missing".to_string()],
+        vec![ids[0].clone(), "missing".to_string()],
+    ] {
+        let missing = reader.hydrate_documents(&request).unwrap_err();
+        assert!(matches!(missing, HawDBError::Semantic(_)), "{missing:?}");
+    }
+    // The same id reaching hit hydration came from the reader's own index,
+    // so its absence is index damage and stays a storage error.
+    let damaged = reader
+        .load_documents(
+            &BTreeSet::from(["missing".to_string()]),
+            &mut SearchOutOfCoreMetrics::default(),
+        )
+        .unwrap_err();
+    assert!(matches!(damaged, HawDBError::Storage(_)), "{damaged:?}");
     assert!(reader.hydrate_documents(&[]).unwrap().documents.is_empty());
     let short = SearchOutOfCoreReader::open_with_config(
         &root,
@@ -452,6 +474,120 @@ fn public_hydration_rejects_damaged_tail_without_writing_artifacts() {
         vec![document(0)]
     );
     drop(reader);
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// Lookup by id reports absent ids instead of refusing them, and keeps the
+/// request, budget and damage refusals of hydration by id (#1786).
+#[test]
+fn public_lookup_reports_missing_ids_and_keeps_damage_a_storage_error() {
+    let root = test_dir();
+    let mut writer = SearchOutOfCoreGenerationWriter::create(&root, Default::default()).unwrap();
+    for number in 0..4 {
+        writer.push(document(number)).unwrap();
+    }
+    writer.finish().unwrap();
+    let reader = SearchOutOfCoreReader::open(&root).unwrap();
+    // Present and never-published ids, interleaved, come back in request
+    // order on their own side of the result.
+    let request = vec![
+        document(3).id,
+        "document:missing-a".to_string(),
+        document(0).id,
+        "document:missing-b".to_string(),
+    ];
+    let lookup = reader.lookup_documents(&request).unwrap();
+    assert_eq!(lookup.documents, vec![document(3), document(0)]);
+    assert_eq!(
+        lookup.missing_document_ids,
+        vec!["document:missing-a", "document:missing-b"]
+    );
+    assert_eq!(lookup.metrics.hydrated_documents, 2);
+    assert_eq!(
+        lookup.metrics.hydrated_bytes,
+        search_document_bytes(&document(3)) + search_document_bytes(&document(0))
+    );
+    let absent = reader
+        .lookup_documents(&["document:missing-a".to_string()])
+        .unwrap();
+    assert!(absent.documents.is_empty());
+    assert_eq!(absent.missing_document_ids, vec!["document:missing-a"]);
+    assert_eq!(absent.metrics.segment_range_reads, 0);
+    let empty = reader.lookup_documents(&[]).unwrap();
+    assert!(empty.documents.is_empty() && empty.missing_document_ids.is_empty());
+
+    // A repeated id is malformed whether or not it exists.
+    for id in [document(0).id, "document:missing-a".to_string()] {
+        let duplicate = reader.lookup_documents(&[id.clone(), id]).unwrap_err();
+        assert!(
+            matches!(duplicate, HawDBError::Semantic(_)),
+            "{duplicate:?}"
+        );
+    }
+
+    // The count cap applies to the request, present or not.
+    let limited = SearchOutOfCoreReader::open_with_config(
+        &root,
+        SearchOutOfCoreConfig {
+            max_hydrated_documents: NonZeroUsize::new(2).unwrap(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    match limited
+        .lookup_documents(&[
+            document(0).id,
+            "document:missing-a".to_string(),
+            "document:missing-b".to_string(),
+        ])
+        .unwrap_err()
+    {
+        HawDBError::ResourceBudgetExceeded(details) => {
+            assert_eq!(details.resource, ResourceBudgetKind::MetadataEntries);
+            assert_eq!(details.owner, "search lookup by id", "{details:?}");
+            assert_eq!(details.requested, 3, "{details:?}");
+            assert_eq!(details.budget, 2, "{details:?}");
+            assert_eq!(
+                details.budget_option, "SearchOutOfCoreConfig.max_hydrated_documents",
+                "{details:?}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        limited
+            .lookup_documents(&[document(1).id, "document:missing-a".to_string()])
+            .unwrap()
+            .documents,
+        vec![document(1)]
+    );
+
+    // A listed id whose document cannot be verified is damage, not absence.
+    // The damaged tail belongs to the last segment, which holds document 3.
+    let path = root.join(&reader.manifest.segments[0].payload_file);
+    let valid = fs::read(&path).unwrap();
+    let mut damaged = valid.clone();
+    *damaged.last_mut().unwrap() ^= 1;
+    fs::write(&path, &damaged).unwrap();
+    for request in [
+        vec![document(3).id],
+        vec!["document:missing-a".to_string(), document(3).id],
+    ] {
+        let error = reader.lookup_documents(&request).unwrap_err();
+        assert!(matches!(error, HawDBError::Storage(_)), "{error:?}");
+        assert!(error.to_string().contains("payload checksum mismatch"));
+    }
+    // Absence is decided by the published routes, which are intact.
+    assert_eq!(
+        reader
+            .lookup_documents(&["document:missing-a".to_string()])
+            .unwrap()
+            .missing_document_ids,
+        vec!["document:missing-a"]
+    );
+    fs::write(&path, &valid).unwrap();
+    drop(reader);
+    drop(limited);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -761,4 +897,62 @@ fn candidates_succeed_when_owned_output_is_not_admitted() {
     assert_eq!(candidates.metrics.hydration_segment_bytes_read, 0);
     drop(reader);
     fs::remove_dir_all(root).unwrap();
+}
+
+/// Hydration decodes only selected lines (#1611); the summary of every other
+/// line must give its id and exactly the bytes its decoded document would
+/// count, so the reported peak stays the same.
+#[test]
+fn document_line_summary_matches_the_decoded_document() {
+    type Case<'a> = (
+        &'a str,
+        &'a str,
+        &'a str,
+        &'a [f32],
+        &'a [(&'a str, &'a str)],
+    );
+    let cases: [Case<'_>; 4] = [
+        ("a", "", "", &[], &[]),
+        (
+            "doc-1",
+            "Title",
+            "Body text",
+            &[0.5, -1.25, 3.0],
+            &[("kind", "memory")],
+        ),
+        (
+            "文档",
+            "标题",
+            "多字节内容",
+            &[1.0],
+            &[("k", "v"), ("other", "值")],
+        ),
+        ("z", "t", "c", &[0.1; 1024], &[]),
+    ];
+    for (id, title, content, embedding, metadata) in cases {
+        let metadata = metadata
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect::<BTreeMap<_, _>>();
+        let line = format!(
+            "doc\t{}\t{}\t{}\t{}\t{}",
+            crate::encode_string(id),
+            crate::encode_string(title),
+            crate::encode_string(content),
+            embedding
+                .iter()
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>()
+                .join(","),
+            crate::encode_metadata(&metadata),
+        );
+        let document = crate::decode_search_document_line(&line).unwrap();
+        assert_eq!(
+            summarize_document_line(&line).unwrap(),
+            (id.to_string(), search_document_bytes(&document)),
+            "{id}"
+        );
+    }
+    assert!(summarize_document_line("doc\tzz").is_err());
+    assert!(summarize_document_line("doc\t6\t\t\t\t").is_err());
 }

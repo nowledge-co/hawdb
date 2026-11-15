@@ -13,6 +13,8 @@ mod artifact;
 mod build;
 mod feedback;
 #[cfg(test)]
+mod parallel_build_tests;
+#[cfg(test)]
 mod tests;
 
 pub use artifact::{DiskAnnArtifactIdentity, DiskAnnArtifactMetadata, FileDiskAnn};

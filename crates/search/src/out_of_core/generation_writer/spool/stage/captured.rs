@@ -135,7 +135,7 @@ impl StageDirectory {
             checkpoint(task)?;
             let _name = memory.spool.reserve(128)?;
             let sequence = GENERATION_WRITER_SEQUENCE
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                     value.checked_add(1)
                 })
                 .map_err(|_| HawDBError::Execution("private stage name exhausted".into()))?;

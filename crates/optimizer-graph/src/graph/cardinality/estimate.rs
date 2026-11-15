@@ -6,6 +6,11 @@
 
 #[derive(Clone, Copy)]
 pub(in crate::graph) enum StatisticsUsage {
+    PropertyDistribution {
+        source: hawdb_core::PropertyEstimateSource,
+        sample_size: u64,
+        population: u64,
+    },
     Filter {
         keys: usize,
         conditioned: usize,
@@ -32,8 +37,19 @@ pub(in crate::graph) enum StatisticsUsage {
 }
 
 impl StatisticsUsage {
+    pub(in crate::graph) fn distribution(
+        estimate: hawdb_core::PropertyCardinalityEstimate,
+    ) -> Self {
+        Self::PropertyDistribution {
+            source: estimate.source,
+            sample_size: estimate.sample_size,
+            population: estimate.population_count,
+        }
+    }
     pub(in crate::graph) fn explain(self) -> String {
         match self {
+            Self::PropertyDistribution { source, sample_size, population } => format!(
+                "source={} operation=property_selectivity sample_size={sample_size} population={population}", source.as_str()),
             Self::Filter { keys, conditioned, population, indexed, ndv } => format!("source=catalog_composite_ndv operation=filter keys={keys} conditioned_keys={conditioned} population={population} complete_key_rows={indexed} joint_ndv={ndv}"),
             Self::Group { keys, population, indexed, ndv } => format!("source=catalog_composite_ndv operation=group keys={keys} population={population} complete_key_rows={indexed} joint_ndv={ndv} missing_key_rows={}",population.saturating_sub(indexed)),
             Self::HashJoin { left_ndv, right_ndv } => format!("source=catalog_property_ndv operation=hash_join left_ndv={left_ndv} right_ndv={right_ndv}"),

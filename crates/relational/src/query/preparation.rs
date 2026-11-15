@@ -129,15 +129,23 @@ pub(super) fn prepare_relational_select_with_snapshot(
     resources: RelationalQueryResourceContext<'_>,
     initial_stage_timings: RelationalSqlStageTimings,
 ) -> Result<(PreparedRelationalSelect, RelationalQueryPlanningSnapshot)> {
-    if select.vector_index.is_some() {
+    if select.vector_index().is_some() {
         return Err(HawDBError::Semantic(
             "vector index SQL requires a bound canonical/index read domain".into(),
+        ));
+    }
+    if select.text_search().is_some() {
+        return Err(HawDBError::Semantic(
+            "text_search supports SELECT and EXPLAIN through the relational query entrypoint; \
+             prepared plan reuse is not supported"
+                .into(),
         ));
     }
     let limits = resources.limits;
     let join_planning = resources.join_planning;
     let prepare_started = Instant::now();
     crate::materialized_view::prepare_select(&mut select, state)?;
+    crate::literal_coercion::coerce_select(&mut select, state, parameters)?;
     let mut current_state_bind_nanos = 0;
     let output_schema = measure_nanos(&mut current_state_bind_nanos, || -> Result<QuerySchema> {
         reject_non_public_schema(select.from_table().schema.as_deref())?;

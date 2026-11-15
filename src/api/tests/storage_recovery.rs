@@ -409,6 +409,68 @@ fn forced_out_of_core_checkpoint_reopen_and_mutation_are_equivalent() {
 }
 
 #[test]
+fn out_of_core_sql_scan_admits_consecutive_pages_wider_than_the_writer_target() {
+    let path = unique_test_dir("wide_row_page_scan_budget");
+    let row_count = 20usize;
+    let property_count = 64usize;
+    let config = DatabaseConfig {
+        storage_residency_mode: StorageResidencyMode::OutOfCore,
+        segment_cache_capacity_bytes: 1024 * 1024,
+        max_read_result_rows: Some(row_count),
+        ..DatabaseConfig::default()
+    };
+    let property_definitions = (0..property_count)
+        .map(|index| format!("p{index} TEXT NOT NULL"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let property_names = (0..property_count)
+        .map(|index| format!("p{index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let property_parameters = (0..property_count)
+        .map(|index| format!("${}", index + 3))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let payload = "x".repeat(3_500);
+    {
+        let mut db = Database::open_with_config(&path, config.clone()).unwrap();
+        db.query_sql(&format!(
+            "CREATE TABLE wide_rows (id BIGINT PRIMARY KEY, marker TEXT NOT NULL, \
+             {property_definitions})"
+        ))
+        .unwrap();
+        let insert = format!(
+            "INSERT INTO wide_rows (id, marker, {property_names}) \
+             VALUES ($1, $2, {property_parameters})"
+        );
+        for id in 0..row_count {
+            let mut parameters = vec![
+                Value::Int(id as i64),
+                Value::String(if id + 1 == row_count { "hit" } else { "miss" }.into()),
+            ];
+            parameters.extend(
+                std::iter::repeat_with(|| Value::String(payload.clone())).take(property_count),
+            );
+            db.query_sql_with_params(&insert, &parameters).unwrap();
+        }
+        db.checkpoint().unwrap();
+        assert!(db.storage_residency_report().unwrap().out_of_core);
+    }
+
+    let db = Database::open_with_config(&path, config).unwrap();
+    let read = db.begin_read_transaction().unwrap();
+    let output = read
+        .query_sql_bounded("SELECT id FROM wide_rows WHERE marker = 'hit'", Some(1))
+        .unwrap();
+    assert_eq!(output.rows.len(), 1);
+    assert_eq!(output.rows[0]["id"], Value::Int((row_count - 1) as i64));
+
+    drop(read);
+    drop(db);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn query_reads_and_mutations_include_checkpointed_canonical_rows() {
     let path = unique_test_dir("out_of_core_typed_canonical_rows");
     let config = DatabaseConfig {
@@ -1014,13 +1076,41 @@ fn external_optimizer_statistics_refresh_spills_and_persists_exact_stats() {
             },
         )
         .unwrap();
-        assert_eq!(db.statistics().unwrap(), refreshed_statistics);
+        let statistics = db.statistics().unwrap();
+        // The 8-KiB external budget omits row reservoirs; materialized capture
+        // can rebuild that optional family while preserving every legacy field.
+        assert!(refreshed_statistics.property_distributions.is_empty());
+        assert!(refreshed_statistics.rel_property_distributions.is_empty());
+        let id_distribution = statistics
+            .property_distributions
+            .iter()
+            .find(|((_, property), histogram)| {
+                property == "id" && histogram.population_count == 130
+            })
+            .unwrap()
+            .1;
+        assert_eq!(
+            id_distribution
+                .equality(&Value::String("filler".into()), 130, Some(3))
+                .rows,
+            128
+        );
+        assert!(!statistics
+            .property_distributions
+            .keys()
+            .any(|(_, property)| property == "body" || property == "mixed_value"));
+        let mut legacy = statistics;
+        legacy.property_distributions.clear();
+        legacy.rel_property_distributions.clear();
+        assert_eq!(legacy, refreshed_statistics);
     }
 
     {
         let db = Database::open_with_config(&path, config).unwrap();
         let statistics = db.statistics().unwrap();
         assert!(statistics.advanced_statistics_complete);
+        assert!(statistics.property_distributions.is_empty());
+        assert!(statistics.rel_property_distributions.is_empty());
         assert_eq!(
             statistics
                 .rel_property_distinct_counts
@@ -2158,7 +2248,7 @@ fn mem_shaped_graph_mutations_recover_across_checkpoint_and_wal() {
         assert_eq!(recovery.max_wal_replay_entries, Some(8));
         assert_eq!(recovery.recovered_commit_epoch, 5);
 
-        let mem_recovery = NowledgeMemStorageRecoveryReport::from_storage_report(&recovery);
+        let mem_recovery = EmbeddedStorageRecoveryReport::from_storage_report(&recovery);
         assert!(mem_recovery.ready);
         assert!(mem_recovery.durable_recovery_observed);
         assert!(mem_recovery.checkpoint_boundary_present);
@@ -2250,7 +2340,7 @@ fn mem_shaped_post_checkpoint_batch_replays_before_torn_tail() {
         assert_eq!(recovery.discarded_wal_tail_bytes, 0);
         assert!(recovery.torn_tail_reason.is_none());
 
-        let mem_recovery = NowledgeMemStorageRecoveryReport::from_storage_report(&recovery);
+        let mem_recovery = EmbeddedStorageRecoveryReport::from_storage_report(&recovery);
         assert!(mem_recovery.ready);
         assert!(mem_recovery.durable_recovery_observed);
         assert!(mem_recovery.checkpoint_boundary_present);

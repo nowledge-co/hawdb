@@ -335,7 +335,7 @@ impl Binder<'_> {
                                 self.error(
                                     Code::UnsupportedExpression,
                                     span,
-                                    "VECTOR graph properties are not supported",
+                                    unsupported_property_type(column.data_type),
                                 )
                             })?,
                         ),
@@ -381,6 +381,16 @@ impl Binder<'_> {
     }
 }
 
+/// The diagnostic for a source column type that SQL/PGQ properties refuse.
+pub(super) fn unsupported_property_type(data_type: SqlDataType) -> String {
+    match data_type {
+        SqlDataType::Timestamp(kind) => {
+            format!("{} graph properties are not supported", kind.name())
+        }
+        _ => "VECTOR graph properties are not supported".to_string(),
+    }
+}
+
 fn scalar_type(data_type: SqlDataType) -> Option<PgqDataType> {
     Some(match data_type {
         SqlDataType::Boolean => PgqDataType::Boolean,
@@ -389,7 +399,9 @@ fn scalar_type(data_type: SqlDataType) -> Option<PgqDataType> {
         SqlDataType::Text => PgqDataType::String,
         SqlDataType::Bytea => PgqDataType::Binary,
         SqlDataType::Uuid => PgqDataType::Uuid,
-        SqlDataType::Vector(_) | SqlDataType::Decimal(_) => return None,
+        SqlDataType::Vector(_) | SqlDataType::Decimal(_) | SqlDataType::Timestamp(_) => {
+            return None
+        }
     })
 }
 

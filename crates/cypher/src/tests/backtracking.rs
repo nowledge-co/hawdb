@@ -131,14 +131,19 @@ fn parser_backtracking_differential_campaign() {
                     "MATCH (__anon0:Source)-[:LINKS]->(e:Entity)",
                     1,
                 ),
+                // A WHERE pattern keeps its anonymous target in the explicit
+                // form: a named target is planned as a full pattern because
+                // the parser cannot tell whether it is bound (#1571), so only
+                // `()` takes the one-hop existence form. It still consumes a
+                // generated name.
                 2 => (
                     "MATCH (e:Entity) WHERE (e)-[:LINKS]->()",
-                    "MATCH (e:Entity) WHERE (e)-[:LINKS]->(__anon0)",
+                    "MATCH (e:Entity) WHERE (e)-[:LINKS]->()",
                     1,
                 ),
                 3 => (
                     "MATCH (:Source)-[:LINKS]->(e:Entity) WHERE (e)-[:LINKS]->()",
-                    "MATCH (__anon0:Source)-[:LINKS]->(e:Entity) WHERE (e)-[:LINKS]->(__anon1)",
+                    "MATCH (__anon0:Source)-[:LINKS]->(e:Entity) WHERE (e)-[:LINKS]->()",
                     2,
                 ),
                 _ => unreachable!(),

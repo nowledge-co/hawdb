@@ -201,6 +201,14 @@ fn hash_relational_value(hasher: &mut IntegrityHasher, value: &RelationalValue) 
             hasher.update(&[7]);
             hasher.update(value.as_bytes());
         }
+        RelationalValue::Timestamp(value) => {
+            hasher.update(&[10]);
+            hasher.update(&value.to_le_bytes());
+        }
+        RelationalValue::TimestampTz(value) => {
+            hasher.update(&[11]);
+            hasher.update(&value.to_le_bytes());
+        }
         RelationalValue::Overflow(reference) => {
             hasher.update(&[6, relational_scalar_type_tag(reference.scalar_type)]);
             hash_bounded_bytes(hasher, reference.digest.as_bytes());
@@ -220,6 +228,8 @@ const fn relational_scalar_type_tag(scalar_type: RelationalScalarType) -> u8 {
         RelationalScalarType::Uuid => 5,
         RelationalScalarType::Vector(_) => 6,
         RelationalScalarType::Decimal(_) => 7,
+        RelationalScalarType::Timestamp(_) => 8,
+        RelationalScalarType::TimestampTz(_) => 9,
     }
 }
 
@@ -3078,7 +3088,7 @@ mod tests {
                 },
             );
             assert!(
-                matches!(duplicate, Err(HawDBError::Storage(message)) if message.contains("duplicate key"))
+                matches!(duplicate, Err(HawDBError::Constraint { surface: hawdb_core::RelationalErrorSurface::Storage, message }) if message.contains("duplicate key"))
             );
             assert_eq!(store.commit_epoch, base_epoch);
             assert_eq!(
@@ -3101,7 +3111,7 @@ mod tests {
                 },
             );
             assert!(
-                matches!(missing_foreign_key, Err(HawDBError::Storage(message)) if message.contains("no visible target"))
+                matches!(missing_foreign_key, Err(HawDBError::Constraint { surface: hawdb_core::RelationalErrorSurface::Storage, message }) if message.contains("no visible target"))
             );
             assert_eq!(store.commit_epoch, base_epoch);
             assert_eq!(
@@ -3266,9 +3276,19 @@ mod tests {
             },
         )
         .expect_err("authoritative open must reject a missing binding");
+        // A checkpoint written with another index mode is a typed
+        // configuration mismatch, not corruption (#1781).
+        assert!(
+            matches!(
+                &missing,
+                HawDBError::UnsupportedStorageFormat(format)
+                    if format.format() == hawdb_core::RELATIONAL_CHECKPOINT_LAYOUT_FORMAT
+            ),
+            "{missing:?}"
+        );
         assert!(missing
             .to_string()
-            .contains("authoritative relational index"));
+            .contains("Authoritative relational indexes require"));
 
         let corrupt_path = std::env::temp_dir().join(format!(
             "hawdb-authoritative-corrupt-index-{}-{nonce}",

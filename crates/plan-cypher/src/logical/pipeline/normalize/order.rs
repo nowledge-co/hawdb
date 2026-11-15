@@ -133,9 +133,18 @@ fn promote_native_column_properties(
                 .map(|expression| promote_native_column_properties(expression, input))
                 .collect(),
         ),
-        ProjectionExpression::JsonValue { expression, path } => ProjectionExpression::JsonValue {
+        ProjectionExpression::JsonString { expression, path } => ProjectionExpression::JsonString {
             expression: Box::new(promote_native_column_properties(expression, input)),
             path: path.clone(),
+        },
+        ProjectionExpression::JsonValue {
+            expression,
+            path,
+            null_on_non_scalar,
+        } => ProjectionExpression::JsonValue {
+            expression: Box::new(promote_native_column_properties(expression, input)),
+            path: path.clone(),
+            null_on_non_scalar: *null_on_non_scalar,
         },
         ProjectionExpression::Left { expression, length } => ProjectionExpression::Left {
             expression: Box::new(promote_native_column_properties(expression, input)),
@@ -217,6 +226,7 @@ fn has_native_bindings(expression: &ProjectionExpression, input: &LogicalPlan) -
         | ProjectionExpression::Property { variable, .. }
         | ProjectionExpression::Id { variable }
         | ProjectionExpression::RelationshipType { variable }
+        | ProjectionExpression::Label { variable, .. }
         | ProjectionExpression::DatePart { variable, .. }
         | ProjectionExpression::DefaultIfNullOrEq { variable, .. }
         | ProjectionExpression::DefaultIfNull { variable, .. }
@@ -232,6 +242,7 @@ fn has_native_bindings(expression: &ProjectionExpression, input: &LogicalPlan) -
             .all(|expression| has_native_bindings(expression, input)),
         ProjectionExpression::Left { expression, .. }
         | ProjectionExpression::JsonValue { expression, .. }
+        | ProjectionExpression::JsonString { expression, .. }
         | ProjectionExpression::Lower(expression)
         | ProjectionExpression::Not(expression) => has_native_bindings(expression, input),
         ProjectionExpression::Case {
@@ -260,12 +271,17 @@ fn has_native_bindings(expression: &ProjectionExpression, input: &LogicalPlan) -
         | ProjectionExpression::List(_)
         | ProjectionExpression::ListIndex { .. }
         | ProjectionExpression::Conversion { .. }
+        | ProjectionExpression::NumericFunction { .. }
+        | ProjectionExpression::Reduce(_)
         | ProjectionExpression::ListSlice { .. }
         | ProjectionExpression::TemporalFunction { .. }
         | ProjectionExpression::PropertyAccess { .. }
+        | ProjectionExpression::RelationshipValueEndpoint { .. }
         | ProjectionExpression::MapLiteral(_) => {
             expression.all_children(|child| has_native_bindings(child, input))
         }
+        // The body reads variables the pattern introduces, which no input binds.
+        ProjectionExpression::Pattern(_) => false,
         // A comprehension element is bound by its enclosing expression.
         ProjectionExpression::LocalVariable { .. } => true,
         ProjectionExpression::CaseEntitySearchRank(rank) => {
@@ -277,7 +293,9 @@ fn has_native_bindings(expression: &ProjectionExpression, input: &LogicalPlan) -
         | ProjectionExpression::ColumnValueCasePropertyNotNullOrEq { .. }
         | ProjectionExpression::Column(_)
         | ProjectionExpression::ColumnProperty { .. }
-        | ProjectionExpression::Path { .. } => false,
+        | ProjectionExpression::Path { .. }
+        // Reads endpoint nodes the expression does not name.
+        | ProjectionExpression::RelationshipEndpoint { .. } => false,
     }
 }
 

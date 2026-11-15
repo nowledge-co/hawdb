@@ -64,7 +64,8 @@ pub(super) fn empty_manifest(count: usize) -> RelationalRowPageRootManifest {
         generation: 1,
         source_commit_epoch: 10,
         previous_generation: None,
-        page_bytes: RelationalRowPageLimits::default().max_page_bytes.get() as u64,
+        target_page_bytes: crate::relational::DEFAULT_RELATIONAL_ROW_PAGE_TARGET_BYTES as u64,
+        max_page_bytes: RelationalRowPageLimits::default().max_page_bytes.get() as u64,
         dirty_page_count: 0,
         relocated_page_count: 0,
         root_page_count: 0,
@@ -203,14 +204,16 @@ fn wide_manifest() -> RelationalRowPageRootManifest {
     root.tables[0].upper_bound = vec![0; 64 * 1024];
     root.root_page_count = 1;
     root.dirty_page_count = 1;
-    root.page_artifact = metadata(root.page_bytes);
+    root.page_artifact = metadata(4096);
     root.root_descriptor_artifact = metadata(root::ROOT_DESCRIPTOR_BYTES as u64);
     root.root_key_artifact = metadata(128 * 1024);
     root.physical_generations
         .push(RelationalRowPagePhysicalGeneration {
             generation: 1,
             allocated_pages: 1,
+            allocated_bytes: 4096,
             live_pages: 1,
+            live_bytes: 4096,
         });
     root.root_set_digest = manifest::root_set_digest(&root.tables).unwrap();
     root
@@ -291,7 +294,7 @@ fn checkpoint_units_row_manifest_matches_invalid_metadata_schema_and_budget_erro
             0 => root.generation = 0,
             1 => root.source_commit_epoch = 0,
             2 => root.previous_generation = Some(1),
-            3 => root.page_bytes += 1,
+            3 => root.max_page_bytes += 1,
             4 => root.dirty_page_count = config.max_dirty_pages.get() as u64 + 1,
             5 => root.dirty_page_count = 1,
             6 => root.page_artifact.encoded_len = 1,
@@ -301,14 +304,18 @@ fn checkpoint_units_row_manifest_matches_invalid_metadata_schema_and_budget_erro
                 .push(RelationalRowPagePhysicalGeneration {
                     generation: 0,
                     allocated_pages: 1,
+                    allocated_bytes: 4096,
                     live_pages: 1,
+                    live_bytes: 4096,
                 }),
             9 => root
                 .physical_generations
                 .push(RelationalRowPagePhysicalGeneration {
                     generation: 1,
                     allocated_pages: 1,
+                    allocated_bytes: 4096,
                     live_pages: 0,
+                    live_bytes: 0,
                 }),
             10 => root.root_descriptor_artifact.encoded_len = 1,
             11 => root.root_key_artifact.encoded_len = config.max_root_key_bytes.get() + 1,

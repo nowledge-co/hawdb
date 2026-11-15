@@ -1,0 +1,36 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+package(default_visibility = ["//tools:__subpackages__"])
+
+rust_library(
+    name = "query_lab",
+    crate_name = "query_lab",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    edition = "2024",
+    tags = ["manual"],
+    deps = [
+        "//:hawdb_minimal",
+        "//tools/query-workloads:query_workloads",
+        "@crate_index//:serde",
+        "@crate_index//:serde_json",
+        "@crate_index//:sha2",
+    ],
+)
+
+rust_binary(
+    name = "query_lab_cli",
+    crate_name = "query_lab_cli",
+    crate_root = "src/main.rs",
+    srcs = ["src/main.rs"],
+    edition = "2024",
+    tags = ["manual"],
+    deps = [":query_lab"],
+)
+
+rust_test(
+    name = "query_lab_tests",
+    crate = ":query_lab",
+    edition = "2024",
+    tags = ["manual"],
+)

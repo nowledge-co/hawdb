@@ -18,11 +18,10 @@ use super::{
     ProductionGraphQualificationError,
 };
 use hawdb::{
-    IoConcurrencyBudget, NowledgeGraphStatement, NowledgeMemEmbeddedStoreHandle,
-    NowledgeMemGraphMode, NowledgeMemOpenOptions, NowledgeMemReadOptions,
-    ProductionEvidenceBinding, ProductionQualificationIdentity, QueryStreamReport,
-    RuntimeCancellationToken, RuntimeGovernor, RuntimeGovernorConfig, RuntimeTaskContext,
-    StorageDeviceProfile, StorageResidencyMode,
+    EmbeddedReadOptions, EmbeddedStoreHandle, EmbeddedStoreOpenOptions, GraphMode,
+    IoConcurrencyBudget, NowledgeGraphStatement, ProductionEvidenceBinding,
+    ProductionQualificationIdentity, QueryStreamReport, RuntimeCancellationToken, RuntimeGovernor,
+    RuntimeGovernorConfig, RuntimeTaskContext, StorageDeviceProfile, StorageResidencyMode,
 };
 use hawdb_query::QueryIdentity;
 use serde::Serialize;
@@ -37,10 +36,10 @@ const MIN_PRODUCTION_LATENCY_SAMPLES: usize = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProductionMorselProfileConfig {
-    pub open_options: NowledgeMemOpenOptions,
+    pub open_options: EmbeddedStoreOpenOptions,
     pub runtime_governor_config: RuntimeGovernorConfig,
     pub statement: NowledgeGraphStatement,
-    pub read_options: NowledgeMemReadOptions,
+    pub read_options: EmbeddedReadOptions,
     pub evidence_binding: ProductionEvidenceBinding,
     pub expected_identity: ProductionQualificationIdentity,
     pub expected_workers: usize,
@@ -52,7 +51,7 @@ pub struct ProductionMorselProfileConfig {
 
 impl ProductionMorselProfileConfig {
     fn validate(&self) -> Result<(), ProductionGraphQualificationError> {
-        if self.open_options.mode != NowledgeMemGraphMode::ShadowReadOnly {
+        if self.open_options.mode != GraphMode::ShadowReadOnly {
             return Err(ProductionGraphQualificationError::new(
                 "production morsel qualification requires shadow read-only mode",
             ));
@@ -203,12 +202,11 @@ pub fn run_production_morsel_profile(
         &config.open_options.graph_path,
     ));
     let governor = RuntimeGovernor::detect(config.runtime_governor_config, storage_io);
-    let (store, open_report) =
-        NowledgeMemEmbeddedStoreHandle::open_with_options_and_runtime_governor(
-            config.open_options.clone(),
-            governor,
-        )
-        .map_err(ProductionGraphQualificationError::from_error)?;
+    let (store, open_report) = EmbeddedStoreHandle::open_with_options_and_runtime_governor(
+        config.open_options.clone(),
+        governor,
+    )
+    .map_err(ProductionGraphQualificationError::from_error)?;
     let graph_epoch = store
         .runtime_status()
         .map_err(ProductionGraphQualificationError::from_error)?
@@ -336,7 +334,7 @@ pub fn run_production_morsel_profile(
 }
 
 fn run_cancellation_probe(
-    store: &NowledgeMemEmbeddedStoreHandle,
+    store: &EmbeddedStoreHandle,
     config: &ProductionMorselProfileConfig,
 ) -> Result<ProductionMorselCancellationReport, ProductionGraphQualificationError> {
     let token = RuntimeCancellationToken::new();
@@ -956,9 +954,9 @@ mod tests {
         let mut qualification_identity = identity();
         qualification_identity.canonical_graph_commit_epoch = graph_commit_epoch;
         let report = run_production_morsel_profile(ProductionMorselProfileConfig {
-            open_options: NowledgeMemOpenOptions::graph_only(
+            open_options: EmbeddedStoreOpenOptions::graph_only(
                 &graph_path,
-                NowledgeMemGraphMode::ShadowReadOnly,
+                GraphMode::ShadowReadOnly,
             )
             .with_database_config(database_config),
             runtime_governor_config: RuntimeGovernorConfig {
@@ -974,7 +972,7 @@ mod tests {
                 cypher: "MATCH (m:Memory) RETURN m.id AS memory_id".to_string(),
                 parameters: BTreeMap::new(),
             },
-            read_options: NowledgeMemReadOptions {
+            read_options: EmbeddedReadOptions {
                 max_rows: Some(2048),
                 max_estimated_payload_bytes: Some(4 * 1024 * 1024),
             },
