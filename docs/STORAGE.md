@@ -1623,6 +1623,36 @@ Callers that need higher ingest throughput SHOULD batch related mutations into
 one transaction and one WAL batch rather than weakening the default durability
 contract.
 
+### Per-commit WAL record limits
+
+A commit writes one WAL record. Two `DatabaseConfig` options bound it on a
+persistent database:
+- `max_wal_record_bytes`: the encoded record size. The default is 16 MiB
+  (`DEFAULT_MAX_WAL_RECORD_BYTES`), so one property value of about 16 MiB
+  already exceeds it.
+- `max_wal_batch_operations`: the number of operations in the record.
+
+A record over either limit is refused before any byte is appended and before
+the commit is applied. This covers autocommit statements, `Database`
+transactions, concurrent autocommit and transactions, and
+`EmbeddedStoreHandle::with_transaction`. The refusal is the typed
+`HawDBError::WalRecordLimitExceeded(WalRecordLimitError { limit, requested,
+maximum })`, where `limit` is `WalRecordLimit::RecordBytes` or
+`WalRecordLimit::BatchOperations` and `WalRecordLimit::config_option()` names
+the option. It displays as an `execution error`.
+
+The refusal is a caller error about one transaction's size, not a storage
+failure. The commit epoch, earlier commits and the handle are unchanged; the
+next commit proceeds normally, and a reopen replays exactly the earlier commits.
+Hosts must not treat it as a reason to poison or reopen the runtime. Retrying
+the same transaction unchanged fails the same way. Instead, split it (for
+example, write a very large value in its own transaction, or use smaller
+batches) or raise the option for the database. Statements are still accepted
+while a transaction is open: the limit applies to the record built at commit.
+In-memory databases have no WAL and no such limit. Replay keeps its own limits
+(`WalReplayConfig`) and still reports an oversized or damaged record as a
+storage error.
+
 ## Relationship Locality
 
 The current in-memory adjacency key is:

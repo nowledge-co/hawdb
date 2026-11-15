@@ -233,6 +233,7 @@ mod transaction_merge;
 mod unbounded_var_length;
 mod unlabeled_endpoint_mutations;
 mod unwind_node_match;
+mod wal_record_limit;
 
 #[test]
 fn database_instance_identity_rejects_poisoned_store() {

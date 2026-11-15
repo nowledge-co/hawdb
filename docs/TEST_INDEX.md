@@ -2964,6 +2964,26 @@ and `cargo test --locked -p hawdb-plan-cypher --lib relationship_merge_batch`.
 See [the supported pipeline contract](CYPHER_DEFAULT_PIPELINE.md#bounded-relationship-mutation-input)
 and [#1397](https://github.com/nowledge-co/hawdb/issues/1397).
 
+### WAL record limit refusals
+
+Commits over `max_wal_record_bytes` or `max_wal_batch_operations` fail with the
+typed `HawDBError::WalRecordLimitExceeded` before anything is written
+([#1797](https://github.com/nowledge-co/hawdb/issues/1797)). The root general
+owner (`//:hawdb_unit_general_tests`) runs `api::tests::wal_record_limit`.
+It checks the refusal on `Database` autocommit and transaction commit
+(statements accepted, commit refused whole), concurrent autocommit and
+optimistic/default transactions, and `EmbeddedStoreHandle::with_transaction`.
+On each surface it confirms an unchanged commit epoch, that later writes and a
+smaller value still commit, and that a reopen sees exactly the earlier commits.
+It also covers the issue's ~16 MiB property under the default limit and the
+typed batch-operation limit. The existing
+`mutation_guards::wal_{batch_limit,record_byte_limit}_*` cases keep their
+message checks. The binding owners pin the mapping:
+- `bindings/ffi` `error_tests::wal_record_limit_is_delivered_as_its_own_kind`;
+- `bindings/python` `errors::tests::wal_record_limit_is_a_non_retryable_execution_error_with_its_limit`.
+No lane, feature matrix or timeout changes. Local replay:
+`cargo test --locked -p hawdb --lib wal_record_limit`.
+
 ### Mutation RETURN
 
 Kùzu-compatible `RETURN` after a mutation clause ([#1789](https://github.com/nowledge-co/hawdb/issues/1789), [#1794](https://github.com/nowledge-co/hawdb/issues/1794), [#1793](https://github.com/nowledge-co/hawdb/issues/1793)).

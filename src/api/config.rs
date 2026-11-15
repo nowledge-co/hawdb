@@ -88,7 +88,12 @@ pub struct DatabaseConfig {
     /// recovery and maintenance admission always use a non-strict policy.
     pub strict_capacity_limit: bool,
     pub max_wal_quarantine_bytes: u64,
+    /// Largest encoded WAL record one commit may write (persistent
+    /// databases). A larger commit is refused before anything is written with
+    /// the typed, non-poisoning `HawDBError::WalRecordLimitExceeded`. `None`
+    /// disables the check.
     pub max_wal_record_bytes: Option<usize>,
+    /// Most operations one commit's WAL record may hold; refused the same way.
     pub max_wal_batch_operations: Option<usize>,
     pub max_checkpoint_encoded_bytes: Option<u64>,
     pub max_checkpoint_decoded_bytes: Option<u64>,
