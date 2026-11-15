@@ -358,6 +358,9 @@ pub(super) fn bind_mutation_pipeline(
     query: &QueryPipeline,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<LogicalPlan> {
+    if let Some(plan) = match_set::bind_pipeline(&query.clauses, parameters) {
+        return plan;
+    }
     let has_unwind = query
         .clauses
         .iter()
@@ -451,28 +454,34 @@ pub(super) fn bind_mutation_pipeline(
                     let ClauseKind::Return(projection) = &clause.kind else {
                         unreachable!()
                     };
-                    if projection.distinct
-                        || projection.predicate.is_some()
-                        || !projection.order_by.is_empty()
-                        || projection.offset.is_some()
-                        || projection.limit.is_some()
-                    {
-                        return Err(unsupported("SET RETURN does not support result modifiers"));
-                    }
-                    (preceding, Some(projection.items.as_slice()))
+                    (preceding, Some(projection))
                 }
                 _ => (tail, None),
             };
             let mut assignments = sets.clone();
             assignments.extend(set_tail(tail)?);
-            if assignments
-                .iter()
-                .any(|set| match_set::needs_row_evaluation(set, parameters))
+            // The single-pattern commands return unmodified rows only.
+            let modified = projection.is_some_and(|projection| {
+                projection.distinct
+                    || projection.predicate.is_some()
+                    || !projection.order_by.is_empty()
+                    || projection.offset.is_some()
+                    || projection.limit.is_some()
+            });
+            if modified
+                || assignments
+                    .iter()
+                    .any(|set| match_set::needs_row_evaluation(set, parameters))
             {
                 let prefix = &query.clauses[..query.clauses.len() - clauses.len()];
                 return match_set::bind(prefix, &assignments, projection, parameters);
             }
-            node::bind_set(&input, &assignments, projection, parameters)
+            node::bind_set(
+                &input,
+                &assignments,
+                projection.map(|projection| projection.items.as_slice()),
+                parameters,
+            )
         }
         ClauseKind::Delete { detach, variables } => {
             if !tail.is_empty() {

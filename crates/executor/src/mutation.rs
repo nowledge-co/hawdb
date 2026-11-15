@@ -35,7 +35,10 @@ use crate::predicate::property_filter_from_properties;
 mod match_set;
 mod preflight;
 mod staged;
-pub use match_set::{affected_rows_exceeded, resolve_match_set, MatchSetOutcome, MatchSetRecord};
+pub use match_set::{
+    affected_rows_exceeded, match_set_account, match_set_row_bytes, resolve_match_set,
+    MatchSetOutcome, MatchSetRecord,
+};
 pub use preflight::{
     commit_staged_mutations, commit_staged_mutations_with_output, execute_mutation_with_store,
     execute_mutation_with_store_output_limits, materialize_load_csv_mutations,

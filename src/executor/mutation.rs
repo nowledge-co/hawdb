@@ -46,11 +46,18 @@ pub(crate) fn resolve_match_set<S: ExecutionStore>(
     memory: &ExecutionMemoryConfig,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<hawdb_executor::mutation::MatchSetOutcome> {
-    use hawdb_executor::mutation::{affected_rows_exceeded, MatchSetRecord};
+    use hawdb_executor::mutation::{
+        affected_rows_exceeded, match_set_account, match_set_row_bytes, MatchSetRecord,
+    };
     use hawdb_storage::mutation::MutationEntity;
 
     // Every input row may write, so the row budget is the affected-row limit.
+    // The rows, entity copies and computed values are charged to one account
+    // of the statement's query memory.
     let max_rows = limits.max_affected_rows.get();
+    let ledger = QueryMemoryLedger::for_query(memory, task_context)?;
+    let account = match_set_account(&ledger);
+    let mut charge = account.reserve(0)?;
     let mut rows = Vec::new();
     let mut external = NoExternalReadOperator;
     execute_with_request_consumer(
@@ -61,6 +68,7 @@ pub(crate) fn resolve_match_set<S: ExecutionStore>(
             if rows.len() == max_rows {
                 return Err(affected_rows_exceeded(limits));
             }
+            charge.grow(match_set_row_bytes(&row))?;
             rows.push(row);
             Ok(())
         },
@@ -79,6 +87,7 @@ pub(crate) fn resolve_match_set<S: ExecutionStore>(
                     .map(|relationship| relationship.map(MatchSetRecord::Relationship))
             }
         },
+        &mut charge,
         limits,
         output_limits,
         task_context,

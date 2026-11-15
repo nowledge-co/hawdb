@@ -10,7 +10,9 @@
 //! SET items over those rows.
 
 use super::*;
-use crate::logical::{MatchSet, MatchSetAssignment, MatchSetBinding, MatchSetValue};
+use crate::logical::{
+    MatchSet, MatchSetAssignment, MatchSetBinding, MatchSetReturn, MatchSetValue,
+};
 use hawdb_cypher::{ProjectionClause, QueryPipelineKind};
 
 /// The input column of `variable`. A NUL byte cannot occur in a Cypher name,
@@ -69,16 +71,80 @@ pub(super) fn needs_row_evaluation(
     }
 }
 
+/// Binds `<read clauses> SET ... [SET ...] [RETURN ...]` whose read clauses
+/// the single-pattern commands cannot take: `WITH`, `UNWIND`, `OPTIONAL
+/// MATCH` or a named path (#1795). Returns `None` for every other shape.
+pub(super) fn bind_pipeline(
+    clauses: &[Clause],
+    parameters: &BTreeMap<String, Value>,
+) -> Option<Result<LogicalPlan>> {
+    let start = clauses
+        .iter()
+        .position(|clause| matches!(clause.kind, ClauseKind::Set(_)))?;
+    let (prefix, tail) = clauses.split_at(start);
+    let read_only = prefix.iter().all(|clause| {
+        matches!(
+            clause.kind,
+            ClauseKind::Match { .. }
+                | ClauseKind::With(_)
+                | ClauseKind::Unwind { .. }
+                | ClauseKind::UnwindExpression { .. }
+        )
+    });
+    let needs_rows = prefix.iter().any(|clause| match &clause.kind {
+        ClauseKind::Match {
+            optional, patterns, ..
+        } => *optional || patterns.iter().any(|pattern| pattern.variable.is_some()),
+        _ => true,
+    });
+    if !read_only || !needs_rows {
+        return None;
+    }
+    let (sets, returns) = match tail.split_last() {
+        Some((
+            Clause {
+                kind: ClauseKind::Return(projection),
+                ..
+            },
+            sets,
+        )) => (sets, Some(projection)),
+        _ => (tail, None),
+    };
+    let mut assignments = Vec::new();
+    for clause in sets {
+        let ClauseKind::Set(items) = &clause.kind else {
+            return Some(Err(unsupported(
+                "mutation has unsupported following clauses",
+            )));
+        };
+        assignments.extend(items.iter().cloned());
+    }
+    Some(bind(prefix, &assignments, returns, parameters))
+}
+
 pub(super) fn bind(
     prefix: &[Clause],
     sets: &[SetProperty],
-    returns: Option<&[ReturnItem]>,
+    returns: Option<&ProjectionClause>,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<LogicalPlan> {
     if sets.is_empty() {
         return Err(unsupported("SET requires at least one assignment"));
     }
-    let (_, scope) = bind_read_clauses_scoped(prefix, None, Scope::default(), parameters)?;
+    // Bind the read clauses as the read input will be bound, with pattern
+    // properties that read row values lowered to predicates.
+    let pipeline = AstNode::synthetic(QueryPipelineKind {
+        clauses: prefix.to_vec(),
+    });
+    let lowered;
+    let pipeline = if pattern_properties::needs_lowering(&pipeline) {
+        lowered = pattern_properties::lower(&pipeline)?;
+        &lowered
+    } else {
+        &pipeline
+    };
+    let (_, scope) =
+        bind_read_clauses_scoped(&pipeline.clauses, None, Scope::default(), parameters)?;
     // Anonymous pattern nodes cannot be named by a SET item or RETURN.
     let anonymous = prefix
         .iter()
@@ -165,21 +231,7 @@ pub(super) fn bind(
         });
     }
     let returns = returns
-        .map(|items| {
-            let PlannedReturns::Projections(mut projections) =
-                plan_return_items_with_columns(&graph, &values, items, parameters)?
-            else {
-                return Err(unsupported(
-                    "RETURN after a row-evaluated SET does not support aggregation",
-                ));
-            };
-            let names =
-                unique_projection_names(projections.iter().map(|item| item.name.clone()).collect());
-            for (projection, name) in projections.iter_mut().zip(names) {
-                projection.name = name;
-            }
-            Ok(projections)
-        })
+        .map(|projection| bind_return(&graph, &values, projection, parameters))
         .transpose()?;
     let mut clauses = prefix.to_vec();
     clauses.push(AstNode::synthetic(ClauseKind::Return(ProjectionClause {
@@ -200,6 +252,75 @@ pub(super) fn bind(
         assignments,
         returns,
     })))
+}
+
+/// Plans the RETURN of the updated rows. `ORDER BY` reads a returned column
+/// by its name, which shadows a variable of the same name, or any variable
+/// of the row, as after any non-aggregating RETURN.
+fn bind_return(
+    graph: &BTreeSet<String>,
+    values: &BTreeSet<String>,
+    projection: &ProjectionClause,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<MatchSetReturn> {
+    if projection.predicate.is_some() {
+        return Err(unsupported("RETURN does not support WHERE"));
+    }
+    let PlannedReturns::Projections(mut items) =
+        plan_return_items_with_columns(graph, values, &projection.items, parameters)?
+    else {
+        return Err(unsupported(
+            "RETURN after a row-evaluated SET does not support aggregation",
+        ));
+    };
+    let names = unique_projection_names(items.iter().map(|item| item.name.clone()).collect());
+    for (item, name) in items.iter_mut().zip(names) {
+        item.name = name;
+    }
+    let returned = items
+        .iter()
+        .map(|item| item.name.clone())
+        .collect::<BTreeSet<_>>();
+    // A returned entity (`RETURN n`) stays a graph variable for its keys.
+    let shadowing = items
+        .iter()
+        .filter(|item| {
+            !matches!(&item.expression, ProjectionExpression::Variable { variable }
+                if *variable == item.name && graph.contains(variable))
+        })
+        .map(|item| item.name.clone())
+        .collect::<BTreeSet<_>>();
+    let key_graph = graph
+        .difference(&shadowing)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let key_columns = values.union(&shadowing).cloned().collect::<BTreeSet<_>>();
+    let order_by = plan_sort_items(&key_graph, &key_columns, &projection.order_by, parameters)?;
+    if projection.distinct
+        && order_by
+            .iter()
+            .any(|item| !matches!(&item.key, SortKey::Column(name) if returned.contains(name)))
+    {
+        return Err(unsupported(
+            "ORDER BY after RETURN DISTINCT must name returned columns",
+        ));
+    }
+    Ok(MatchSetReturn {
+        items,
+        distinct: projection.distinct,
+        order_by,
+        offset: projection
+            .offset
+            .as_ref()
+            .map(|value| bind_pagination_value(value, parameters, "offset"))
+            .transpose()?
+            .unwrap_or(0),
+        limit: projection
+            .limit
+            .as_ref()
+            .map(|value| bind_pagination_value(value, parameters, "limit"))
+            .transpose()?,
+    })
 }
 
 /// The expression a fixed SET form denotes, for the forms row evaluation
