@@ -35,7 +35,10 @@ decrement. Statements that use only those forms keep their plans.
 A statement is planned as `MatchSetExec` when it has any other SET value,
 when the clauses before `SET` include `WITH`, `UNWIND`, `OPTIONAL MATCH` or a
 named path, or when its `RETURN` has `DISTINCT`, `ORDER BY`, `SKIP` or
-`LIMIT`. Only further `SET` clauses and one final `RETURN` may follow:
+`LIMIT`. A relationship `SET` whose `WHERE` the storage command cannot
+evaluate as a property filter of the relationship or its source, such as
+`r.p = $old OR (r.p IS NULL AND $old IS NULL)`, takes it too (#1792).
+Only further `SET` clauses and one final `RETURN` may follow:
 
 - The clauses before `SET` become an ordinary read plan, optimized as its own
   root, that returns one column per variable in scope: the id of each node or
