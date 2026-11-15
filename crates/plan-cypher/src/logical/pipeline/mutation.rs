@@ -532,12 +532,29 @@ fn bind_atomic_mutation_pipeline(
                 let prefix = &query.clauses[..query.clauses.len() - clauses.len()];
                 return match_set::bind(prefix, &assignments, projection, parameters);
             }
-            node::bind_set(
+            let prefix = &query.clauses[..query.clauses.len() - clauses.len()];
+            let plan = match node::bind_set(
                 &input,
                 &assignments,
                 projection.map(|projection| projection.items.as_slice()),
                 parameters,
-            )
+            ) {
+                Ok(plan) => plan,
+                // Only single-node SET commands return rows; a relationship
+                // SET with RETURN is evaluated over the rows.
+                Err(error) if projection.is_some() => {
+                    return match_set::bind(prefix, &assignments, projection, parameters)
+                        .map_err(|_| error);
+                }
+                Err(error) => return Err(error),
+            };
+            // The relationship SET commands filter by stored properties only;
+            // an OR over parameters or another expression needs the rows
+            // (#1792).
+            if relationship_filters_need_rows(&plan) {
+                return match_set::bind(prefix, &assignments, projection, parameters);
+            }
+            Ok(plan)
         }
         ClauseKind::Delete { detach, variables } => {
             let projection = mutation_return(tail, "DELETE")?;
@@ -651,6 +668,25 @@ fn deleted_bindings(plan: &LogicalPlan) -> Result<Vec<MutationReturnBinding>> {
         _ => Err(unsupported(
             "DELETE RETURN supports node DELETE and relationship-variable DELETE",
         )),
+    }
+}
+
+fn relationship_filters_need_rows(plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::SetRelationshipProperty {
+            predicate,
+            rel_predicate,
+            ..
+        }
+        | LogicalPlan::SetRelationshipProperties {
+            predicate,
+            rel_predicate,
+            ..
+        } => predicate
+            .iter()
+            .chain(rel_predicate)
+            .any(|predicate| !predicate.is_property_filter()),
+        _ => false,
     }
 }
 

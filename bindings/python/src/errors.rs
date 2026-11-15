@@ -244,6 +244,21 @@ pub fn format_hawdb_error(error: &HawDBError) -> PyErr {
             })();
             attributes.err().unwrap_or(exception)
         }),
+        HawDBError::WalRecordLimitExceeded(limit) => Python::attach(|py| {
+            // A caller error about one transaction's size: nothing was
+            // written and the handle stays usable.
+            let exception = ExecutionError::new_err(message);
+            let value = exception.value(py);
+            let attributes = (|| -> PyResult<()> {
+                value.setattr("kind", "wal_record_limit_exceeded")?;
+                value.setattr("limit", limit.limit.as_str())?;
+                value.setattr("requested", limit.requested)?;
+                value.setattr("maximum", limit.maximum)?;
+                value.setattr("config_option", limit.limit.config_option())?;
+                value.setattr("retryable", false)
+            })();
+            attributes.err().unwrap_or(exception)
+        }),
         HawDBError::Execution(_) => Python::attach(|py| {
             let exception = ExecutionError::new_err(message);
             let attributes = exception
@@ -675,6 +690,33 @@ mod tests {
             assert_eq!(text("reason"), "projection_changed");
             assert_eq!(number("source_graph_commit_epoch"), 4);
             assert_eq!(number("target_graph_commit_epoch"), 9);
+            assert!(!value
+                .getattr("retryable")
+                .unwrap()
+                .extract::<bool>()
+                .unwrap());
+        });
+    }
+
+    #[test]
+    fn wal_record_limit_is_a_non_retryable_execution_error_with_its_limit() {
+        Python::initialize();
+        Python::attach(|py| {
+            let error = HawDBError::WalRecordLimitExceeded(Box::new(hawdb::WalRecordLimitError {
+                limit: hawdb::WalRecordLimit::RecordBytes,
+                requested: 20,
+                maximum: 16,
+            }));
+            let exception = format_hawdb_error(&error);
+            assert!(exception.is_instance_of::<ExecutionError>(py));
+            assert!(!exception.is_instance_of::<StorageError>(py));
+            let value = exception.value(py);
+            let text = |name: &str| value.getattr(name).unwrap().extract::<String>().unwrap();
+            let number = |name: &str| value.getattr(name).unwrap().extract::<u64>().unwrap();
+            assert_eq!(text("kind"), "wal_record_limit_exceeded");
+            assert_eq!(text("limit"), "record_bytes");
+            assert_eq!(text("config_option"), "DatabaseConfig.max_wal_record_bytes");
+            assert_eq!((number("requested"), number("maximum")), (20, 16));
             assert!(!value
                 .getattr("retryable")
                 .unwrap()

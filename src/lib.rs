@@ -345,10 +345,10 @@ pub use error::{
     FileDescriptorError, HawDBError, ReadBudgetError, ReadBudgetResource, RelationalErrorKind,
     RelationalErrorSurface, ResourceBudgetError, ResourceBudgetKind, ResourceBudgetScope, Result,
     SearchProjectionEpochAdvanceRefusal, SearchProjectionRebuildRefusal, StorageFormatError,
-    TransactionRetryError, TransactionRetryReason, APPEND_WAL_FORMAT, LOGICAL_DUMP_FORMAT,
-    RELATIONAL_CHECKPOINT_LAYOUT_FORMAT, RELATIONAL_DURABLE_CODEC_FORMAT,
-    RELATIONAL_ROW_PAGE_FORMAT, RELATIONAL_SCHEMA_FORMAT, SEARCH_PROJECTION_MANIFEST_FORMAT,
-    STORAGE_MANIFEST_FORMAT,
+    TransactionRetryError, TransactionRetryReason, WalRecordLimit, WalRecordLimitError,
+    APPEND_WAL_FORMAT, LOGICAL_DUMP_FORMAT, RELATIONAL_CHECKPOINT_LAYOUT_FORMAT,
+    RELATIONAL_DURABLE_CODEC_FORMAT, RELATIONAL_ROW_PAGE_FORMAT, RELATIONAL_SCHEMA_FORMAT,
+    SEARCH_PROJECTION_MANIFEST_FORMAT, STORAGE_MANIFEST_FORMAT,
 };
 pub use executor::{
     ProjectedRowRef, QueryRow, QueryRowRef, QueryRows, QuerySchema, ReadExecutionProfile, Row,

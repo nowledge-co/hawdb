@@ -556,6 +556,17 @@ fn json_error_from_hawdb(error: HawDBError) -> serde_json::Value {
             });
             response
         }
+        HawDBError::WalRecordLimitExceeded(cause) => {
+            let mut response = json_error("execution", cause.as_ref());
+            response["error"]["details"] = serde_json::json!({
+                "kind": "wal_record_limit_exceeded",
+                "limit": cause.limit.as_str(),
+                "requested": cause.requested,
+                "maximum": cause.maximum,
+                "config_option": cause.limit.config_option(),
+            });
+            response
+        }
         error @ (HawDBError::GraphExpansionCandidateLimitExceeded { .. }
         | HawDBError::GraphExpansionPayloadLimitExceeded { .. }) => json_error("execution", error),
         error @ (HawDBError::TransactionConflict { .. }

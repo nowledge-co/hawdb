@@ -701,6 +701,7 @@ fn error_class(error: &crate::HawDBError) -> String {
         }
         | crate::HawDBError::BranchEvidenceBudgetExceeded { .. }
         | crate::HawDBError::ReadBudgetExceeded(_)
+        | crate::HawDBError::WalRecordLimitExceeded(_)
         | crate::HawDBError::ResourceBudgetExceeded(_)
         | crate::HawDBError::GraphExpansionCandidateLimitExceeded { .. }
         | crate::HawDBError::GraphExpansionPayloadLimitExceeded { .. }

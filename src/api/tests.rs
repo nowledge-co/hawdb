@@ -180,6 +180,7 @@ mod relational_projection_expressions;
 mod relational_range;
 mod relational_row_dirty_budget;
 mod relational_update_delete_outcomes;
+mod relationship_or_predicates;
 mod relationship_patterns;
 mod relationship_property_mutations;
 mod relationship_property_seeds;
@@ -234,6 +235,7 @@ mod transaction_merge;
 mod unbounded_var_length;
 mod unlabeled_endpoint_mutations;
 mod unwind_node_match;
+mod wal_record_limit;
 
 #[test]
 fn database_instance_identity_rejects_poisoned_store() {
