@@ -243,8 +243,13 @@ pub fn apply_node_visibility_predicates(
                     restrict_expression(expression, predicate_for);
                 }
             }
-            if let Some(items) = &mut set.returns {
-                restrict_projections(items, predicate_for);
+            if let Some(returns) = &mut set.returns {
+                restrict_projections(&mut returns.items, predicate_for);
+                for item in &mut returns.order_by {
+                    if let SortKey::Expression(expression) = &mut item.key {
+                        restrict_expression(expression, predicate_for);
+                    }
+                }
             }
             set.input = apply_node_visibility_predicates(set.input, predicate_for);
             LogicalPlan::MatchSet(set)
@@ -559,7 +564,13 @@ pub fn validate_node_visibility_predicates(
                     MatchSetValue::Local(_) => None,
                 }
             }));
-            expressions.extend(set.returns.iter().flatten().map(|item| &item.expression));
+            if let Some(returns) = &set.returns {
+                expressions.extend(returns.items.iter().map(|item| &item.expression));
+                expressions.extend(returns.order_by.iter().filter_map(|item| match &item.key {
+                    SortKey::Expression(expression) => Some(expression),
+                    _ => None,
+                }));
+            }
             children.push(&set.input);
         }
         LogicalPlan::Aggregate {

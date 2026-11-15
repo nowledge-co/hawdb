@@ -1,7 +1,9 @@
 # Cypher SET expressions
 
 HawDB accepts a general expression on the right-hand side of `SET` in
-`MATCH ... SET`, with the semantics Kùzu (and Ladybug) give it (#1791):
+`MATCH ... SET` (#1791), read pipelines such as `WITH` before `SET`, and
+`DISTINCT`, `ORDER BY`, `SKIP` and `LIMIT` after `SET ... RETURN` (#1795), with
+the semantics Kùzu (and Ladybug) give them:
 
 ```cypher
 MATCH (e:Entity {id: $id})
@@ -14,6 +16,12 @@ RETURN e.score AS score
 MATCH (a:Entity)-[r:RELATES_TO]->(b:Entity)
 WHERE (a.id IN $ids OR b.id IN $ids) AND r.space = $from
 SET r.space = CASE WHEN a.space <> $from THEN a.space ELSE b.space END
+
+MATCH (g:Group {id: $id}) WHERE g.key = $key
+WITH g
+MATCH (m:Member) WHERE m.group_id = g.id
+SET m.space = $space
+RETURN m.id ORDER BY m.id LIMIT 10
 ```
 
 ## Planning
@@ -24,7 +32,10 @@ literals, parameters and a few fixed read-modify-writes of the written
 property, such as `n.p + 1`, `coalesce(n.p, 0) + 1` and the clamped
 decrement. Statements that use only those forms keep their plans.
 
-A statement with any other SET value is planned as `MatchSetExec`:
+A statement is planned as `MatchSetExec` when it has any other SET value,
+when the clauses before `SET` include `WITH`, `UNWIND`, `OPTIONAL MATCH` or a
+named path, or when its `RETURN` has `DISTINCT`, `ORDER BY`, `SKIP` or
+`LIMIT`. Only further `SET` clauses and one final `RETURN` may follow:
 
 - The clauses before `SET` become an ordinary read plan, optimized as its own
   root, that returns one column per variable in scope: the id of each node or
@@ -37,6 +48,10 @@ A statement with any other SET value is planned as `MatchSetExec`:
   still treats a missing `n.c` as `0`.
 - `RETURN` items are projections over the same variables. Aggregation after
   such a `SET` is refused.
+- `ORDER BY` keys read a returned column by its name, which shadows a
+  variable of the same name, or any variable of the row, such as a property
+  that is not returned. After `RETURN DISTINCT` the keys must name returned
+  columns.
 
 `EXPLAIN` shows `MatchSetExec` with its bindings, assignments and returned
 columns above the read input.
@@ -48,18 +63,39 @@ columns above the read input.
    Every row may write, so more input rows than `max_mutation_affected_rows`
    refuse the statement.
 2. Each node or relationship a row binds is read by id once.
+   The input rows, these entity copies, every computed value, the RETURN
+   rows and the values of the final mutation are charged to one account of
+   the statement's query memory (`ExecutionMemoryConfig.query_memory_bytes`
+   or the runtime grant), separate from the read input's own account.
+   Exceeding it refuses the statement with `ResourceBudgetExceeded` before
+   anything is written (#1801).
 3. SET items are applied in statement order. One item is evaluated for every
    row before it is applied, against the values the earlier items left.
    Within a row this is the sequential openCypher order
    (`SET n.a = n.a + 1, n.b = n.a` gives `n.b` the new `n.a`). Across rows of
    the same entity, every row of an item reads the value before that item, as
    in Kùzu: `MATCH (a), (b) SET a.n = a.n + 1` adds one, not one per row.
-4. `RETURN` projects every row after all items were applied.
+4. `RETURN` projects every row after all items were applied. `DISTINCT`
+   keeps the first row of each distinct result, then `ORDER BY` sorts stably
+   (equal keys keep the input order) and `SKIP`/`LIMIT` select the returned
+   rows. Without `ORDER BY` and `DISTINCT`, rows past `SKIP + LIMIT` are not
+   projected.
 5. The writes are committed as one mutation of per-entity values. Nothing is
    written before every row evaluated, so a failing row leaves no effect.
 
 A `SET` whose target variable is `NULL` (an unmatched `OPTIONAL MATCH`) is a
-no-op. A statement that matches no row writes nothing.
+no-op; the row is still returned. A statement that matches no row writes
+nothing.
+
+### ORDER BY and LIMIT after SET
+
+`ORDER BY`, `SKIP` and `LIMIT` after `SET ... RETURN` order and limit the
+returned rows only; the update applies to every matched row. This is what
+Kùzu does, checked on Ladybug:
+`MATCH (e:E) SET e.a = 10 RETURN e.id ORDER BY e.id LIMIT 1` returns one row
+and sets `a` on every `E`. To update only some rows, limit the rows before
+`SET`: `MATCH (e:E) WITH e ORDER BY e.id LIMIT 1 SET e.a = 10` updates one.
+Sort keys read the values after the update.
 
 ## Value semantics
 

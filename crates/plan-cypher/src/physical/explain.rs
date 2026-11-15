@@ -336,13 +336,20 @@ impl PhysicalPlan {
                     .join(", ");
                 let returns = set.returns.as_ref().map_or_else(
                     || "none".to_string(),
-                    |items| {
-                        let columns = items
+                    |returns| {
+                        let columns = returns
+                            .items
                             .iter()
                             .map(|item| item.name.as_str())
                             .collect::<Vec<_>>()
                             .join(", ");
-                        format!("[{columns}]")
+                        format!(
+                            "[{columns}] distinct={} order_keys={} offset={} limit={:?}",
+                            returns.distinct,
+                            returns.order_by.len(),
+                            returns.offset,
+                            returns.limit
+                        )
                     },
                 );
                 format!(

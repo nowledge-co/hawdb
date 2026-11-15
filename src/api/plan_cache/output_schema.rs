@@ -59,6 +59,7 @@ pub(super) fn logical_output_columns(
                 break set
                     .returns
                     .as_ref()?
+                    .items
                     .iter()
                     .map(|item| item.name.clone())
                     .collect();

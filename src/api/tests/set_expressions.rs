@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! General expressions on the right-hand side of `MATCH ... SET` (#1791),
-//! with Kùzu semantics. Expected values were checked against Ladybug.
+//! `WITH` pipelines feeding SET and RETURN modifiers after SET (#1795), with
+//! Kùzu semantics. Expected values were checked against Ladybug.
 
 use super::*;
 use crate::{ConcurrentDatabase, ConcurrentTransactionOptions};
@@ -448,4 +449,378 @@ fn explain_shows_the_row_evaluated_set() {
     let plan = format!("{:?}", output.rows);
     assert!(plan.contains("MatchSetExec"), "{plan}");
     assert!(plan.contains("e.score=expression"), "{plan}");
+}
+
+// `WITH` pipelines feeding SET and RETURN modifiers after SET (#1795).
+
+const NUMBERED: &[&str] = &[
+    "CREATE (:E {id: 'a', a: 1})",
+    "CREATE (:E {id: 'b', a: 2})",
+    "CREATE (:E {id: 'c', a: 3})",
+];
+const READ_NUMBERED: &str = "MATCH (e:E) RETURN e.id AS id, e.a AS a, e.y AS y, \
+    e.v AS v, e.first AS first ORDER BY id";
+
+fn ids(rows: &[BTreeMap<String, Value>], name: &str) -> Vec<Value> {
+    column(rows, name)
+}
+
+#[test]
+fn with_projection_feeds_set_and_return_orders_and_limits_after_updating_every_row() {
+    on_every_surface(
+        NUMBERED,
+        "MATCH (n:E) WITH n, n.a + 1 AS x SET n.y = x \
+         RETURN n.id AS id, n.y AS y ORDER BY id DESC LIMIT 2",
+        &BTreeMap::new(),
+        READ_NUMBERED,
+        |surface, returned, stored| {
+            assert_eq!(
+                ids(&returned, "id"),
+                [string("c"), string("b")],
+                "{surface}"
+            );
+            assert_eq!(
+                ids(&returned, "y"),
+                [Value::Int(4), Value::Int(3)],
+                "{surface}"
+            );
+            assert_eq!(
+                ids(&stored, "y"),
+                [Value::Int(2), Value::Int(3), Value::Int(4)],
+                "{surface}"
+            );
+        },
+    );
+}
+
+/// A literal SET with RETURN modifiers takes the same row-evaluated path:
+/// Kùzu updates every matched row and orders and limits only the result.
+#[test]
+fn order_skip_limit_and_distinct_select_returned_rows_only() {
+    for (statement, expected) in [
+        (
+            "MATCH (e:E) SET e.v = 'x' RETURN e.id AS id ORDER BY e.id SKIP 1 LIMIT 1",
+            vec![string("b")],
+        ),
+        (
+            "MATCH (e:E) SET e.v = 'x' RETURN e.id AS id ORDER BY e.a DESC",
+            vec![string("c"), string("b"), string("a")],
+        ),
+        (
+            "MATCH (e:E) SET e.v = 'x' RETURN e.v AS id ORDER BY id LIMIT 5",
+            vec![string("x"), string("x"), string("x")],
+        ),
+        (
+            "MATCH (e:E) SET e.v = 'x' RETURN DISTINCT e.v AS id ORDER BY id",
+            vec![string("x")],
+        ),
+        (
+            "MATCH (e:E) SET e.v = 'x' RETURN e.id AS id LIMIT 0",
+            Vec::new(),
+        ),
+        // Keys read post-update values; ties keep their order by the next key.
+        (
+            "MATCH (e:E) SET e.a = e.a * 0 + 7, e.v = 'x' \
+             RETURN e.id AS id ORDER BY e.a DESC, id DESC",
+            vec![string("c"), string("b"), string("a")],
+        ),
+    ] {
+        on_every_surface(
+            NUMBERED,
+            statement,
+            &BTreeMap::new(),
+            READ_NUMBERED,
+            |surface, returned, stored| {
+                assert_eq!(ids(&returned, "id"), expected, "{surface}: {statement}");
+                assert_eq!(
+                    ids(&stored, "v"),
+                    [string("x"), string("x"), string("x")],
+                    "{surface}: {statement}"
+                );
+            },
+        );
+    }
+}
+
+/// A grouped pipeline in the generic shape of a membership move: find the
+/// group under a computed default, carry it with WITH, then update and return
+/// its members whose space matches either side of the move.
+#[test]
+fn carried_node_feeds_a_second_match_and_set() {
+    let statement = "MATCH (g:Group {id: $group}) WHERE g.key = $key AND \
+        CASE WHEN g.space IS NULL OR g.space = '' THEN 'default' ELSE g.space END = $desired \
+        WITH g \
+        MATCH (m:Member) WHERE m.group_id = g.id AND m.key = $key AND \
+        (CASE WHEN m.space IS NULL OR m.space = '' THEN 'default' ELSE m.space END = $source \
+         OR CASE WHEN m.space IS NULL OR m.space = '' THEN 'default' ELSE m.space END = $target) \
+        SET m.space = $desired, m.updated = $updated \
+        RETURN m.id AS id ORDER BY id";
+    on_every_surface(
+        &[
+            "CREATE (:Group {id: 'g1', key: 'k', space: 'next'})",
+            "CREATE (:Member {id: 'm1', group_id: 'g1', key: 'k', space: ''})",
+            "CREATE (:Member {id: 'm2', group_id: 'g1', key: 'k', space: 'next'})",
+            "CREATE (:Member {id: 'm3', group_id: 'g1', key: 'k', space: 'other'})",
+            "CREATE (:Member {id: 'm4', group_id: 'g2', key: 'k', space: ''})",
+        ],
+        statement,
+        &params(&[
+            ("group", string("g1")),
+            ("key", string("k")),
+            ("desired", string("next")),
+            ("source", string("default")),
+            ("target", string("next")),
+            ("updated", Value::Int(9)),
+        ]),
+        "MATCH (m:Member) RETURN m.id AS id, m.space AS space, m.updated AS updated \
+         ORDER BY id",
+        |surface, returned, stored| {
+            assert_eq!(
+                ids(&returned, "id"),
+                [string("m1"), string("m2")],
+                "{surface}"
+            );
+            assert_eq!(
+                ids(&stored, "space"),
+                [string("next"), string("next"), string("other"), string("")],
+                "{surface}"
+            );
+            assert_eq!(
+                ids(&stored, "updated"),
+                [Value::Int(9), Value::Int(9), Value::Null, Value::Null],
+                "{surface}"
+            );
+        },
+    );
+    // A group that does not match writes nothing and returns no row.
+    let mut db = Database::new();
+    db.query("CREATE (:Group {id: 'g1', key: 'k', space: 'next'})")
+        .unwrap();
+    db.query("CREATE (:Member {id: 'm1', group_id: 'g1', key: 'k', space: ''})")
+        .unwrap();
+    let epoch = db.commit_epoch().unwrap();
+    let output = db
+        .query_with_params(
+            statement,
+            &params(&[
+                ("group", string("g1")),
+                ("key", string("k")),
+                ("desired", string("elsewhere")),
+                ("source", string("default")),
+                ("target", string("next")),
+                ("updated", Value::Int(9)),
+            ]),
+        )
+        .unwrap();
+    assert!(output.rows.is_empty());
+    assert_eq!(db.commit_epoch().unwrap(), epoch);
+}
+
+#[test]
+fn pipelines_with_optional_match_aggregation_unwind_and_with_limits() {
+    // SET on an unmatched OPTIONAL variable is a no-op; the row is returned.
+    on_every_surface(
+        NUMBERED,
+        "MATCH (a:E {id: 'a'}) OPTIONAL MATCH (a)-[:R]->(b:E) SET b.v = 'x' \
+         RETURN a.id AS id, b.v AS v",
+        &BTreeMap::new(),
+        READ_NUMBERED,
+        |surface, returned, stored| {
+            assert_eq!(ids(&returned, "id"), [string("a")], "{surface}");
+            assert_eq!(ids(&returned, "v"), [Value::Null], "{surface}");
+            assert_eq!(
+                ids(&stored, "v"),
+                [Value::Null, Value::Null, Value::Null],
+                "{surface}"
+            );
+        },
+    );
+    on_every_surface(
+        NUMBERED,
+        "MATCH (e:E) WITH count(e) AS c MATCH (x:E {id: 'a'}) SET x.y = c RETURN x.y AS y",
+        &BTreeMap::new(),
+        READ_NUMBERED,
+        |surface, returned, stored| {
+            assert_eq!(ids(&returned, "y"), [Value::Int(3)], "{surface}");
+            assert_eq!(ids(&stored, "y")[0], Value::Int(3), "{surface}");
+        },
+    );
+    let rows = Value::List(
+        [("b", "vb"), ("c", "vc")]
+            .into_iter()
+            .map(|(id, v)| {
+                Value::Map(BTreeMap::from([
+                    ("id".to_string(), string(id)),
+                    ("v".to_string(), string(v)),
+                ]))
+            })
+            .collect(),
+    );
+    on_every_surface(
+        NUMBERED,
+        "UNWIND $rows AS row MATCH (e:E {id: row.id}) SET e.v = row.v \
+         RETURN e.id AS id ORDER BY id",
+        &params(&[("rows", rows)]),
+        READ_NUMBERED,
+        |surface, returned, stored| {
+            assert_eq!(
+                ids(&returned, "id"),
+                [string("b"), string("c")],
+                "{surface}"
+            );
+            assert_eq!(
+                ids(&stored, "v"),
+                [Value::Null, string("vb"), string("vc")],
+                "{surface}"
+            );
+        },
+    );
+    // WITH ... ORDER BY ... LIMIT before SET selects the rows that are updated.
+    on_every_surface(
+        NUMBERED,
+        "MATCH (e:E) WITH e ORDER BY e.id LIMIT 1 SET e.first = true RETURN e.id AS id",
+        &BTreeMap::new(),
+        READ_NUMBERED,
+        |surface, returned, stored| {
+            assert_eq!(ids(&returned, "id"), [string("a")], "{surface}");
+            assert_eq!(
+                ids(&stored, "first"),
+                [Value::Bool(true), Value::Null, Value::Null],
+                "{surface}"
+            );
+        },
+    );
+}
+
+#[test]
+fn pipeline_refusals_are_atomic() {
+    let config = DatabaseConfig {
+        mutation_limits: crate::store::MutationLimits {
+            max_affected_rows: NonZeroUsize::new(2).unwrap(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let fixture = |db: &mut Database| {
+        for query in NUMBERED {
+            db.query(query).unwrap();
+        }
+        db.query(READ_NUMBERED).unwrap().rows
+    };
+    // LIMIT selects returned rows; every input row still counts.
+    let mut db = Database::new_with_config(config);
+    let before = fixture(&mut db);
+    let error = db
+        .query("MATCH (e:E) WITH e SET e.v = 'x' RETURN e.id LIMIT 1")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("max_mutation_affected_rows 2"), "{error}");
+    assert_eq!(db.query(READ_NUMBERED).unwrap().rows, before);
+
+    let mut db = Database::new();
+    let before = fixture(&mut db);
+    for (statement, message) in [
+        (
+            "MATCH (e:E) WITH e, e.a AS a SET e.v = a + 'x'",
+            "numeric operands",
+        ),
+        (
+            "MATCH (e:E) SET e.v = 'x' RETURN DISTINCT e.v ORDER BY e.a",
+            "must name returned columns",
+        ),
+        (
+            "MATCH (e:E) SET e.v = 'x' RETURN count(e) ORDER BY count(e)",
+            "does not support aggregation",
+        ),
+        (
+            "MATCH (e:E) WITH e SET e.v = 'x' WITH e RETURN e",
+            "unsupported following clauses",
+        ),
+    ] {
+        let error = db.query(statement).unwrap_err().to_string();
+        assert!(error.contains(message), "{statement}: {error}");
+        assert_eq!(db.query(READ_NUMBERED).unwrap().rows, before, "{statement}");
+    }
+}
+
+/// Distinct variables: each item reads the values the earlier items left
+/// (checked on Ladybug), also when the rows of a product swap roles.
+#[test]
+fn items_read_other_variables_in_statement_order() {
+    for (statement, expected) in [
+        (
+            "MATCH (a:E {id: 'a'}), (b:E {id: 'b'}) SET a.x = b.y, b.y = 1",
+            [(Value::Int(7), Value::Int(5)), (Value::Null, Value::Int(1))],
+        ),
+        (
+            "MATCH (a:E {id: 'a'}), (b:E {id: 'b'}) SET b.y = 1, a.x = b.y",
+            [(Value::Int(1), Value::Int(5)), (Value::Null, Value::Int(1))],
+        ),
+        (
+            "MATCH (a:E), (b:E) WHERE a.id <> b.id SET a.x = b.y, b.y = 9",
+            [
+                (Value::Int(7), Value::Int(9)),
+                (Value::Int(5), Value::Int(9)),
+            ],
+        ),
+    ] {
+        on_every_surface(
+            &["CREATE (:E {id: 'a', y: 5})", "CREATE (:E {id: 'b', y: 7})"],
+            statement,
+            &BTreeMap::new(),
+            "MATCH (e:E) RETURN e.x AS x, e.y AS y ORDER BY e.id",
+            |surface, _, stored| {
+                let actual = stored
+                    .iter()
+                    .map(|row| (row["x"].clone(), row["y"].clone()))
+                    .collect::<Vec<_>>();
+                assert_eq!(actual, expected, "{surface}: {statement}");
+            },
+        );
+    }
+}
+
+/// The entity copies and computed values of a multi-row SET are charged to
+/// the statement's query memory (#1801).
+#[test]
+fn large_multi_row_set_is_bounded_by_query_memory() {
+    let config = |bytes: usize| DatabaseConfig {
+        execution_memory: crate::executor::ExecutionMemoryConfig {
+            query_memory_bytes: NonZeroUsize::new(bytes).unwrap(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let text = string(&"x".repeat(64 * 1024));
+    let statement = "MATCH (e:E) SET e.text = e.text + e.text + e.text + e.text";
+    let fixture = |db: &mut Database| {
+        for id in 0..16 {
+            db.query_with_params(
+                "CREATE (:E {id: $id, text: $text})",
+                &params(&[("id", Value::Int(id)), ("text", text.clone())]),
+            )
+            .unwrap();
+        }
+    };
+    let total = "MATCH (e:E) RETURN sum(size(e.text)) AS total";
+
+    let mut db = Database::new_with_config(config(2 << 20));
+    fixture(&mut db);
+    let error = db.query(statement).unwrap_err();
+    assert!(
+        matches!(error, HawDBError::ResourceBudgetExceeded(_)),
+        "{error:?}"
+    );
+    assert_eq!(
+        db.query(total).unwrap().rows[0].get("total"),
+        Some(&Value::Int(16 * 64 * 1024))
+    );
+
+    let mut db = Database::new_with_config(config(64 << 20));
+    fixture(&mut db);
+    db.query(statement).unwrap();
+    assert_eq!(
+        db.query(total).unwrap().rows[0].get("total"),
+        Some(&Value::Int(16 * 4 * 64 * 1024))
+    );
 }

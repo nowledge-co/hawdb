@@ -243,6 +243,19 @@ pub struct MatchSetAssignment {
     pub value: MatchSetValue,
 }
 
+/// The RETURN of a [`MatchSet`]: projections of the updated rows, then
+/// `DISTINCT`, `ORDER BY`, `SKIP` and `LIMIT` over the returned rows only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatchSetReturn {
+    pub items: Vec<Projection>,
+    pub distinct: bool,
+    /// Keys over the updated row's bindings, with each returned column also
+    /// readable as a value under its name.
+    pub order_by: Vec<SortItem>,
+    pub offset: usize,
+    pub limit: Option<usize>,
+}
+
 /// `MATCH ... SET ... [RETURN ...]` whose SET items are general expressions.
 ///
 /// `input` is a complete read plan with one row per SET input row and one
@@ -255,7 +268,7 @@ pub struct MatchSet<P> {
     pub input: P,
     pub bindings: Vec<MatchSetBinding>,
     pub assignments: Vec<MatchSetAssignment>,
-    pub returns: Option<Vec<Projection>>,
+    pub returns: Option<MatchSetReturn>,
 }
 
 impl<P> MatchSet<P> {
@@ -950,6 +963,15 @@ hawdb_core::impl_retained_heap_for_struct!(MatchSetAssignment {
     variable,
     property,
     value
+});
+
+// Retained query ownership: MatchSetReturn.
+hawdb_core::impl_retained_heap_for_struct!(MatchSetReturn {
+    items,
+    distinct,
+    order_by,
+    offset,
+    limit
 });
 
 // Retained query ownership: MatchSet.

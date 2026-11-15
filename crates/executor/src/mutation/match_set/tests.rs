@@ -3,7 +3,8 @@
 
 use super::*;
 use hawdb_plan_cypher::{
-    MatchSetAssignment, MatchSetBinding, Projection, ProjectionExpression, ScalarBinaryOp, SetValue,
+    MatchSetAssignment, MatchSetBinding, Projection, ProjectionExpression, ScalarBinaryOp,
+    SetValue, SortItem,
 };
 use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
@@ -57,10 +58,20 @@ fn row(entries: &[(&str, Value)]) -> Row {
         .collect()
 }
 
+fn returns(items: Vec<Projection>) -> MatchSetReturn {
+    MatchSetReturn {
+        items,
+        distinct: false,
+        order_by: Vec::new(),
+        offset: 0,
+        limit: None,
+    }
+}
+
 fn plan(
     bindings: Vec<MatchSetBinding>,
     assignments: Vec<MatchSetAssignment>,
-    returns: Option<Vec<Projection>>,
+    returns: Option<MatchSetReturn>,
 ) -> MatchSet<PhysicalPlan> {
     MatchSet {
         input: PhysicalPlan::EmptyExec,
@@ -76,6 +87,18 @@ fn resolve(
     nodes: &[NodeRecord],
     limits: MutationLimits,
 ) -> Result<MatchSetOutcome> {
+    let ledger = QueryMemoryLedger::new(NonZeroUsize::new(64 << 20).unwrap());
+    resolve_with(plan, input, nodes, limits, &ledger)
+}
+
+fn resolve_with(
+    plan: &MatchSet<PhysicalPlan>,
+    input: Vec<Row>,
+    nodes: &[NodeRecord],
+    limits: MutationLimits,
+    ledger: &QueryMemoryLedger,
+) -> Result<MatchSetOutcome> {
+    let mut charge = match_set_account(ledger).reserve(0)?;
     resolve_match_set(
         plan,
         input,
@@ -90,6 +113,7 @@ fn resolve(
                 MutationEntity::Relationship(_) => None,
             })
         },
+        &mut charge,
         limits,
         OutputLimits::default(),
         None,
@@ -124,10 +148,10 @@ fn every_row_of_an_item_reads_the_state_before_that_item() {
             // A later item reads the earlier item's result.
             assignment("a", "copy", MatchSetValue::Expression(property("a", "n"))),
         ],
-        Some(vec![Projection {
+        Some(returns(vec![Projection {
             expression: property("a", "copy"),
             name: "copy".into(),
-        }]),
+        }])),
     );
     let nodes = [node(1, &[("n", Value::Int(100))]), node(2, &[])];
     let input = vec![
@@ -174,10 +198,10 @@ fn null_targets_are_skipped_and_scalar_columns_are_read() {
                 }),
             ),
         ],
-        Some(vec![Projection {
+        Some(returns(vec![Projection {
             expression: property("n", "value"),
             name: "value".into(),
-        }]),
+        }])),
     );
     let nodes = [node(7, &[])];
     let input = vec![
@@ -255,4 +279,142 @@ fn refusals_leave_no_mutation() {
     // A matched id the store cannot read is an error, not a skipped row.
     let error = resolve(&constant, input(), &nodes[..1], MutationLimits::default()).unwrap_err();
     assert!(error.to_string().contains("matched node 2 is missing"));
+}
+
+/// ORDER BY, SKIP, LIMIT and DISTINCT select returned rows only; the SET
+/// already applied to every row.
+#[test]
+fn return_modifiers_select_rows_after_every_row_was_updated() {
+    let nodes = (1..=4)
+        .map(|id| node(id, &[("rank", Value::Int(id as i64 % 2))]))
+        .collect::<Vec<_>>();
+    let input = || {
+        (1..=4)
+            .map(|id| row(&[("n", Value::Int(id))]))
+            .collect::<Vec<_>>()
+    };
+    let set = |returns| {
+        plan(
+            vec![binding("n", Some(GraphEntityKind::Node))],
+            vec![assignment(
+                "n",
+                "seen",
+                MatchSetValue::Local(SetValue::Value(Value::Bool(true))),
+            )],
+            Some(returns),
+        )
+    };
+    let id = Projection {
+        expression: ProjectionExpression::Id {
+            variable: "n".into(),
+        },
+        name: "id".into(),
+    };
+    let ordered = MatchSetReturn {
+        // Descending by a property that is not returned, then by the column.
+        order_by: vec![
+            SortItem {
+                key: SortKey::Property {
+                    variable: "n".into(),
+                    property: "rank".into(),
+                },
+                direction: SortDirection::Desc,
+            },
+            SortItem {
+                key: SortKey::Column("id".into()),
+                direction: SortDirection::Asc,
+            },
+        ],
+        offset: 1,
+        limit: Some(2),
+        ..returns(vec![id.clone()])
+    };
+    let outcome = resolve(&set(ordered), input(), &nodes, MutationLimits::default()).unwrap();
+    assert_eq!(updates(&outcome).len(), 4);
+    assert_eq!(
+        outcome.rows,
+        vec![
+            BTreeMap::from([("id".into(), Value::Int(3))]),
+            BTreeMap::from([("id".into(), Value::Int(2))]),
+        ]
+    );
+
+    let distinct = MatchSetReturn {
+        distinct: true,
+        ..returns(vec![Projection {
+            expression: property("n", "rank"),
+            name: "rank".into(),
+        }])
+    };
+    let outcome = resolve(&set(distinct), input(), &nodes, MutationLimits::default()).unwrap();
+    assert_eq!(updates(&outcome).len(), 4);
+    assert_eq!(
+        outcome.rows,
+        vec![
+            BTreeMap::from([("rank".into(), Value::Int(1))]),
+            BTreeMap::from([("rank".into(), Value::Int(0))]),
+        ]
+    );
+
+    // LIMIT 0 returns nothing and still writes every row.
+    let none = MatchSetReturn {
+        limit: Some(0),
+        ..returns(vec![id])
+    };
+    let outcome = resolve(&set(none), input(), &nodes, MutationLimits::default()).unwrap();
+    assert_eq!(updates(&outcome).len(), 4);
+    assert!(outcome.rows.is_empty());
+}
+
+/// Entity copies and computed values are charged to the statement's query
+/// memory: a multi-row SET of large strings is refused with a typed budget
+/// error, and the charge is released when the statement ends.
+#[test]
+fn entity_copies_and_computed_values_are_charged_to_query_memory() {
+    let text = "x".repeat(64 * 1024);
+    let nodes = (1..=8)
+        .map(|id| node(id, &[("text", Value::String(text.clone()))]))
+        .collect::<Vec<_>>();
+    let input = || {
+        (1..=8)
+            .map(|id| row(&[("n", Value::Int(id))]))
+            .collect::<Vec<_>>()
+    };
+    let doubled = plan(
+        vec![binding("n", Some(GraphEntityKind::Node))],
+        vec![assignment(
+            "n",
+            "text",
+            MatchSetValue::Expression(plus(property("n", "text"), property("n", "text"))),
+        )],
+        None,
+    );
+    // Eight 64 KiB copies fit; doubling every string does not.
+    let ledger = QueryMemoryLedger::new(NonZeroUsize::new(1 << 20).unwrap());
+    let error = resolve_with(
+        &doubled,
+        input(),
+        &nodes,
+        MutationLimits::default(),
+        &ledger,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, HawDBError::ResourceBudgetExceeded(_)),
+        "{error:?}"
+    );
+    assert_eq!(ledger.snapshot().used_bytes, 0);
+
+    let ledger = QueryMemoryLedger::new(NonZeroUsize::new(4 << 20).unwrap());
+    let outcome = resolve_with(
+        &doubled,
+        input(),
+        &nodes,
+        MutationLimits::default(),
+        &ledger,
+    )
+    .unwrap();
+    assert_eq!(updates(&outcome).len(), 8);
+    assert_eq!(ledger.snapshot().used_bytes, 0);
+    assert!(ledger.snapshot().peak_bytes > 8 * 3 * 64 * 1024);
 }

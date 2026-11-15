@@ -44,8 +44,6 @@ fn atomic_mutations_reject_conditions_the_storage_command_cannot_represent() {
         "MERGE p = (n:Node {id: 1})",
         "MATCH (a:Node), (b:Node), (unused:Node) CREATE (a)-[:LINK]->(b)",
         "MATCH (a:Node), (b:Node) CREATE (a)-[:LINK* ALL SHORTEST 1..1]->(b)",
-        "OPTIONAL MATCH (n:Node) SET n.id = 1",
-        "MATCH (n:Node) WITH n SET n.id = 1",
         "UNWIND row.id AS value CREATE (n:Node)",
         "MATCH (row:Node) UNWIND row.ids AS value CREATE (n:Node {id: value})",
         "MATCH (a:Node), (b:Node) MERGE (a {id: 1})-[:LINK]->(b)",
@@ -1165,10 +1163,6 @@ fn relationship_merge_batch_keeps_unrelated_mutation_errors_specific() {
             "mutation has unsupported following clauses",
         ),
         (
-            "UNWIND [1] AS row MATCH (n:A {id: row}) SET n.seen = true",
-            "UNWIND mutation pipeline is unsupported",
-        ),
-        (
             "UNWIND [1] AS row CREATE (:A {id: row})",
             "row-bound value 'row' is not supported in this position",
         ),
@@ -1438,7 +1432,7 @@ fn general_set_values_bind_row_evaluation_and_fixed_forms_keep_their_commands() 
             amount: 1
         })
     );
-    assert_eq!(set.returns.as_ref().unwrap()[0].name, "score".to_string());
+    assert_eq!(set.returns.as_ref().unwrap().items[0].name, "score");
 
     // A string increment or another variable's property is row-evaluated.
     for query in [
@@ -1471,6 +1465,69 @@ fn general_set_values_bind_row_evaluation_and_fixed_forms_keep_their_commands() 
             "MERGE (e:E {id: $id}) ON MATCH SET e.name = e.name + $s + '!'",
             "general SET expressions require MATCH ... SET",
         ),
+    ] {
+        let error = plan(query).unwrap_err().to_string();
+        assert!(error.contains(message), "{query}: {error}");
+    }
+}
+
+#[test]
+fn read_pipelines_and_return_modifiers_feed_row_evaluated_set() {
+    let parameters = BTreeMap::from([("id".to_string(), Value::String("a".into()))]);
+    let plan = |query: &str| plan_pipeline_query(query, &parameters);
+    for query in [
+        "MATCH (n:N) WITH n, n.a + 1 AS x SET n.y = x",
+        "MATCH (t:T {id: $id}) WITH t MATCH (m:M) WHERE m.t = t.id SET m.s = 'x' RETURN m.id",
+        "OPTIONAL MATCH (n:N) SET n.id = 1",
+        "MATCH (n:N) WITH n SET n.id = 1",
+        "UNWIND [1, 2] AS v MATCH (n:N {id: v}) SET n.seen = true",
+    ] {
+        assert!(
+            matches!(plan(query).unwrap(), LogicalPlan::MatchSet(_)),
+            "{query}"
+        );
+    }
+    let LogicalPlan::MatchSet(set) = plan(
+        "MATCH (n:N) SET n.v = 1 RETURN n.id AS id, n ORDER BY id DESC, n.rank SKIP 1 LIMIT 2",
+    )
+    .unwrap() else {
+        panic!("RETURN modifiers need row evaluation");
+    };
+    let returns = set.returns.unwrap();
+    assert_eq!((returns.offset, returns.limit), (1, Some(2)));
+    // A returned alias is read as a column; a returned entity keeps its
+    // variable, so its property is read from the updated row.
+    assert_eq!(
+        returns.order_by,
+        vec![
+            SortItem {
+                key: SortKey::Column("id".into()),
+                direction: SortDirection::Desc,
+            },
+            SortItem {
+                key: SortKey::Property {
+                    variable: "n".into(),
+                    property: "rank".into(),
+                },
+                direction: SortDirection::Asc,
+            },
+        ]
+    );
+    // An unmodified RETURN keeps the single-pattern command.
+    assert!(matches!(
+        plan("MATCH (n:N {id: $id}) SET n.v = 1 RETURN n.id").unwrap(),
+        LogicalPlan::SetNodePropertiesReturn { .. }
+    ));
+    for (query, message) in [
+        (
+            "MATCH (n:N) SET n.v = 1 RETURN DISTINCT n.id ORDER BY n.rank",
+            "must name returned columns",
+        ),
+        (
+            "MATCH (n:N) WITH n SET n.v = 1 CREATE (:M)",
+            "unsupported following clauses",
+        ),
+        ("MATCH (n:N) WITH n SET x.v = 1", "unknown variable 'x'"),
     ] {
         let error = plan(query).unwrap_err().to_string();
         assert!(error.contains(message), "{query}: {error}");

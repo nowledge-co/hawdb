@@ -703,7 +703,21 @@ impl PhysicalPlan {
                 }
                 output.push_str("],returns=");
                 match &set.returns {
-                    Some(items) => write_projection_list(output, items),
+                    Some(returns) => {
+                        write_projection_list(output, &returns.items);
+                        output.push_str(if returns.distinct {
+                            ",distinct"
+                        } else {
+                            ",all"
+                        });
+                        output.push_str(",order=");
+                        write_sort_list(output, &returns.order_by);
+                        output.push_str(&format!(",offset={}", returns.offset));
+                        match returns.limit {
+                            Some(limit) => output.push_str(&format!(",limit={limit}")),
+                            None => output.push_str(",limit=none"),
+                        }
+                    }
                     None => output.push_str("none"),
                 }
                 output.push_str(",input=");
