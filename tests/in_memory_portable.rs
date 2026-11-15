@@ -23,6 +23,68 @@ use wasm_bindgen_test::{wasm_bindgen_test as test, wasm_bindgen_test_configure};
 wasm_bindgen_test_configure!(run_in_dedicated_worker);
 
 #[test]
+fn vector_distances_preserve_ordered_scalar_bits_through_sql_and_cypher() {
+    use hawdb::Vector;
+
+    let mut db = Database::new();
+    for dimension in [15, 16, 17, 384, 8193] {
+        let left = (0..dimension)
+            .map(|i| (i % 19) as f32 - 9.25)
+            .collect::<Vec<_>>();
+        let right = (0..dimension)
+            .map(|i| (i % 23) as f32 / 7.0 - 1.5)
+            .collect::<Vec<_>>();
+        let (mut dot, mut left_norm, mut right_norm, mut squared) =
+            (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        for (&left, &right) in left.iter().zip(&right) {
+            let (left, right) = (f64::from(left), f64::from(right));
+            dot += left * right;
+            left_norm += left * left;
+            right_norm += right * right;
+            squared += (left - right).powi(2);
+        }
+        let expected = [
+            (
+                "cosine",
+                1.0 - (dot / (left_norm.sqrt() * right_norm.sqrt())).clamp(-1.0, 1.0),
+            ),
+            ("l2", squared.sqrt()),
+        ];
+        let left = Value::Vector(Vector::new(&left).unwrap());
+        let right = Value::Vector(Vector::new(&right).unwrap());
+        let sql = db
+            .sql_session()
+            .query(
+                "SELECT cosine_distance($1, $2) AS cosine, l2_distance($1, $2) AS l2",
+                &[left.clone(), right.clone()],
+            )
+            .unwrap()
+            .output
+            .rows;
+        let cypher = db
+            .query_with_params(
+                "RETURN cosine_distance($left, $right) AS cosine, l2_distance($left, $right) AS l2",
+                &BTreeMap::from([("left".into(), left), ("right".into(), right)]),
+            )
+            .unwrap()
+            .rows;
+        for rows in [&sql, &cypher] {
+            assert_eq!(rows.len(), 1);
+            for (column, expected) in expected {
+                let Value::Float(actual) = rows[0][column] else {
+                    panic!("expected a float distance")
+                };
+                assert_eq!(
+                    actual.to_bits(),
+                    expected.to_bits(),
+                    "{column}, dimension={dimension}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn writes_parameters_traversal_and_error_recovery_share_one_database() {
     let mut db = Database::new();
     db.query_with_params(
