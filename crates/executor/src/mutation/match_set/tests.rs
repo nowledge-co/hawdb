@@ -419,3 +419,72 @@ fn entity_copies_and_computed_values_are_charged_to_query_memory() {
     assert_eq!(ledger.snapshot().used_bytes, 0);
     assert!(ledger.snapshot().peak_bytes > 8 * 3 * 64 * 1024);
 }
+
+/// Result limits refuse as soon as the result is certain to exceed them,
+/// before later rows are projected: the fourth row's RETURN value would fail.
+#[test]
+fn result_limits_refuse_before_projecting_every_row() {
+    let nodes = (1..=6)
+        .map(|id| {
+            let name = if id == 4 {
+                Value::Int(0)
+            } else {
+                Value::String("n".into())
+            };
+            node(id, &[("name", name)])
+        })
+        .collect::<Vec<_>>();
+    let input = || {
+        (1..=6)
+            .map(|id| row(&[("n", Value::Int(id))]))
+            .collect::<Vec<_>>()
+    };
+    let lower = Projection {
+        expression: ProjectionExpression::Lower(Box::new(property("n", "name"))),
+        name: "name".into(),
+    };
+    let limits = MutationLimits {
+        max_result_rows: NonZeroUsize::new(2).unwrap(),
+        ..MutationLimits::default()
+    };
+    let unsorted = returns(vec![lower.clone()]);
+    let sorted = MatchSetReturn {
+        order_by: vec![SortItem {
+            key: SortKey::Column("name".into()),
+            direction: SortDirection::Asc,
+        }],
+        ..returns(vec![lower.clone()])
+    };
+    for returns in [unsorted, sorted] {
+        let set = plan(
+            vec![binding("n", Some(GraphEntityKind::Node))],
+            vec![assignment(
+                "n",
+                "seen",
+                MatchSetValue::Local(SetValue::Value(Value::Bool(true))),
+            )],
+            Some(returns),
+        );
+        let error = resolve(&set, input(), &nodes, limits).unwrap_err();
+        assert!(
+            error.to_string().contains("max_mutation_result_rows 2"),
+            "{error}"
+        );
+    }
+    // A LIMIT within the budget is not refused early; here the bad row fails.
+    let limited = MatchSetReturn {
+        order_by: vec![SortItem {
+            key: SortKey::Column("name".into()),
+            direction: SortDirection::Asc,
+        }],
+        limit: Some(2),
+        ..returns(vec![lower])
+    };
+    let set = plan(
+        vec![binding("n", Some(GraphEntityKind::Node))],
+        Vec::new(),
+        Some(limited),
+    );
+    let error = resolve(&set, input(), &nodes, limits).unwrap_err();
+    assert!(error.to_string().contains("LOWER"), "{error}");
+}

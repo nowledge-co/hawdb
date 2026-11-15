@@ -824,3 +824,31 @@ fn large_multi_row_set_is_bounded_by_query_memory() {
         Some(&Value::Int(16 * 4 * 64 * 1024))
     );
 }
+
+/// Several UNWIND rows writing the same property of one node: the last row
+/// wins, as in Kùzu (#1803). A value that reads the property reads the value
+/// from before the SET item in every row.
+#[test]
+fn repeated_unwind_rows_on_one_node_keep_the_last_write() {
+    on_every_surface(
+        &["CREATE (:E {id: 'a', v: 10})"],
+        "UNWIND $values AS x MATCH (n:E {id: 'a'}) SET n.v = x, n.seen = n.v + x \
+         RETURN x AS x, n.v AS v",
+        &params(&[(
+            "values",
+            Value::List(vec![Value::Int(1), Value::Int(3), Value::Int(2)]),
+        )]),
+        "MATCH (n:E) RETURN n.v AS v, n.seen AS seen",
+        |surface, returned, stored| {
+            assert_eq!(column(&stored, "v"), [Value::Int(2)], "{surface}");
+            // `n.seen` reads `n.v` after the first item: the last row's 2.
+            assert_eq!(column(&stored, "seen"), [Value::Int(4)], "{surface}");
+            // RETURN projects every row after the whole SET.
+            assert_eq!(
+                column(&returned, "v"),
+                [Value::Int(2), Value::Int(2), Value::Int(2)],
+                "{surface}"
+            );
+        },
+    );
+}

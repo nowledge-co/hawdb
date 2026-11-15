@@ -250,27 +250,25 @@ pub fn resolve_match_set(
         output = project_returns(
             returns,
             &mut rows,
-            plan,
-            &records,
-            catalog,
+            ReturnContext {
+                plan,
+                records: &records,
+                catalog,
+                limits,
+                output_limits,
+            },
             charge,
             task_context,
         )?;
         if output.len() > limits.max_result_rows.get() {
-            return Err(HawDBError::Execution(format!(
-                "mutation would exceed max_mutation_result_rows {}",
-                limits.max_result_rows
-            )));
+            return Err(result_rows_exceeded(limits));
         }
         let payload_bytes = output.iter().fold(0usize, |total, row| {
             total.saturating_add(map_payload_bytes(row))
         });
         output_limits.validate(output.len(), payload_bytes)?;
         if payload_bytes > limits.max_result_payload_bytes.get() {
-            return Err(HawDBError::Execution(format!(
-                "mutation result payload would exceed max_mutation_result_payload_bytes {}",
-                limits.max_result_payload_bytes
-            )));
+            return Err(result_payload_exceeded(limits));
         }
     }
 
@@ -366,15 +364,43 @@ fn relationship_mutation(
 
 /// Projects every updated row, then applies DISTINCT, ORDER BY, SKIP and
 /// LIMIT to the returned rows. The SET already applied to every row.
+struct ReturnContext<'a> {
+    plan: &'a MatchSet<PhysicalPlan>,
+    records: &'a BTreeMap<MutationEntity, Loaded>,
+    catalog: &'a Catalog,
+    limits: MutationLimits,
+    output_limits: OutputLimits,
+}
+
+/// The refusal of more returned rows than the mutation result limit.
+fn result_rows_exceeded(limits: MutationLimits) -> HawDBError {
+    HawDBError::Execution(format!(
+        "mutation would exceed max_mutation_result_rows {}",
+        limits.max_result_rows
+    ))
+}
+
+fn result_payload_exceeded(limits: MutationLimits) -> HawDBError {
+    HawDBError::Execution(format!(
+        "mutation result payload would exceed max_mutation_result_payload_bytes {}",
+        limits.max_result_payload_bytes
+    ))
+}
+
 fn project_returns(
     returns: &MatchSetReturn,
     rows: &mut [InputRow],
-    plan: &MatchSet<PhysicalPlan>,
-    records: &BTreeMap<MutationEntity, Loaded>,
-    catalog: &Catalog,
+    context: ReturnContext<'_>,
     charge: &mut QueryMemoryLease,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<Vec<Row>> {
+    let ReturnContext {
+        plan,
+        records,
+        catalog,
+        limits,
+        output_limits,
+    } = context;
     let keys = returns
         .order_by
         .iter()
@@ -403,6 +429,8 @@ fn project_returns(
         .flatten();
     let mut projected = Vec::<(Row, Vec<Value>)>::new();
     let mut distinct = BTreeSet::<Vec<Value>>::new();
+    let mut returned_rows = 0usize;
+    let mut returned_bytes = 0usize;
     for (index, row) in rows.iter_mut().enumerate() {
         if needed.is_some_and(|needed| projected.len() >= needed) {
             break;
@@ -421,6 +449,29 @@ fn project_returns(
             if !distinct.insert(key) {
                 continue;
             }
+        }
+        // Refuse an over-limit result as soon as it is certain, instead of
+        // after projecting every row (#1803).
+        if keys.is_empty() {
+            // Unsorted rows past OFFSET are returned in input order.
+            if projected.len() >= returns.offset {
+                returned_rows += 1;
+                returned_bytes = returned_bytes.saturating_add(map_payload_bytes(&values));
+                if returned_rows > limits.max_result_rows.get() {
+                    return Err(result_rows_exceeded(limits));
+                }
+                if returned_bytes > limits.max_result_payload_bytes.get() {
+                    return Err(result_payload_exceeded(limits));
+                }
+                output_limits.validate(returned_rows, returned_bytes)?;
+            }
+        } else if returns
+            .limit
+            .is_none_or(|limit| limit > limits.max_result_rows.get())
+            && projected.len().saturating_sub(returns.offset) >= limits.max_result_rows.get()
+        {
+            // Sorting cannot shrink the result below LIMIT or the rows left.
+            return Err(result_rows_exceeded(limits));
         }
         projected.push((values, sort_values));
     }
