@@ -414,6 +414,7 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
                 returns: hawdb_plan_cypher::MutationReturn {
                     bindings: Vec::new(),
                     mode: SetNodePropertiesReturnMode::Project(Vec::new()),
+                    state: hawdb_plan_cypher::MutationReturnState::Written,
                 },
             },
             false,

@@ -769,10 +769,19 @@ pub trait GraphExecutionRead {
     }
 }
 
-/// Projects a mutation's `RETURN` rows from the working catalog, the mutated
-/// store and the storage summary, before the mutation is published.
+/// The statement states a mutation `RETURN` can read: the store before the
+/// mutation and the working store after it.
+#[derive(Clone, Copy)]
+pub struct MutationReturnStores<'a> {
+    pub before: &'a dyn GraphExecutionRead,
+    pub after: &'a dyn GraphExecutionRead,
+}
+
+/// Projects a mutation's `RETURN` rows from the working catalog, the stores
+/// before and after the mutation and the storage summary, before the
+/// mutation is published.
 pub type MutationOutputProjector<'a> =
-    dyn FnMut(&Catalog, &dyn GraphExecutionRead, &MutationSummary) -> Result<Vec<crate::Row>> + 'a;
+    dyn FnMut(&Catalog, MutationReturnStores<'_>, &MutationSummary) -> Result<Vec<crate::Row>> + 'a;
 
 /// The mutation operations required by storage-independent executor preflight.
 ///
@@ -811,7 +820,8 @@ pub trait GraphExecutionWrite: GraphExecutionRead {
     ) -> Result<Vec<NodeId>>;
 
     /// Applies `mutation` to a private working copy and passes the working
-    /// catalog, store and storage summary to `project`. The mutation is
+    /// catalog, the unchanged and working stores and the storage summary to
+    /// `project`. The mutation is
     /// published only when `project` succeeds, so a statement and its
     /// `RETURN` rows commit or fail together.
     fn commit_mutation_with_output(

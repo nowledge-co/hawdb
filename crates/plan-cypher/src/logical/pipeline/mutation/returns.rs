@@ -12,6 +12,7 @@ use hawdb_cypher::{AggregateExpression, ProjectionClause, ReturnExpressionKind};
 
 pub(super) fn bind(
     mutation: LogicalPlan,
+    state: MutationReturnState,
     bindings: Vec<MutationReturnBinding>,
     projection: &ProjectionClause,
     parameters: &BTreeMap<String, Value>,
@@ -81,6 +82,10 @@ pub(super) fn bind(
     };
     Ok(LogicalPlan::MutationReturn {
         mutation: Box::new(mutation),
-        returns: MutationReturn { bindings, mode },
+        returns: MutationReturn {
+            bindings,
+            mode,
+            state,
+        },
     })
 }

@@ -2966,7 +2966,7 @@ and [#1397](https://github.com/nowledge-co/hawdb/issues/1397).
 
 ### Mutation RETURN
 
-Kùzu-compatible `RETURN` after a mutation clause ([#1789](https://github.com/nowledge-co/hawdb/issues/1789)).
+Kùzu-compatible `RETURN` after a mutation clause ([#1789](https://github.com/nowledge-co/hawdb/issues/1789), [#1794](https://github.com/nowledge-co/hawdb/issues/1794)).
 The root general owner (`//:hawdb_unit_general_tests`) runs
 `api::tests::mutation_returns`: node and relationship `CREATE ... RETURN` over
 properties, whole entities, expressions, aliases and `count(*)`/`count(var)`;
@@ -2975,14 +2975,22 @@ no row and no write when MATCH finds nothing; refusals of unbound variables and
 result modifiers with no write; output row/payload refusals that leave no
 partial write on `Database`, explicit and concurrent transactions and
 concurrent autocommit; transaction visibility and rollback; and WAL reopen.
+`mutation_returns::delete` covers `DELETE`/`DETACH DELETE ... RETURN`: the
+guarded orphan-entity cleanup returning `e.id` only for a match, `count(*)`
+over several deleted rows and `0` without a match, deleted nodes returned
+exactly as a prior read saw them (including a creation `DEFAULT`), relationship
+delete returning the relationship and endpoints, refused shapes and a refused
+connected `DELETE` that delete nothing, the same budget surfaces, transaction
+reads of earlier statements with rollback, and WAL reopen.
 The cypher crate owns `create_followed_by_return_parses_as_a_pipeline`
 (statement routing, unchanged plain CREATE/DDL forms) and plan-cypher owns
 `create_return_binds_created_variables_to_summary_columns` (summary-column
-bindings, count mode, refused shapes). The executor dispatch fixture covers the
+bindings, count mode, refused shapes) and
+`delete_return_binds_deleted_entities_from_the_pre_statement_state`. The executor dispatch fixture covers the
 `MutationReturn` operator. No carrier, feature matrix, timeout or CI lane is
 added. Local replay: `cargo test --locked -p hawdb --lib mutation_returns`,
 `cargo test --locked -p hawdb-cypher create_followed_by_return` and
-`cargo test --locked -p hawdb-plan-cypher create_return`. See
+`cargo test --locked -p hawdb-plan-cypher create_return` and `... delete_return`. See
 [the pipeline contract](CYPHER_DEFAULT_PIPELINE.md#mutation-return).
 
 ### Property mutation query fixtures

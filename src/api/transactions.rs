@@ -463,7 +463,10 @@ pub(super) fn execute_graph_transaction_plan(
                     Some(hawdb_executor::mutation::project_mutation_return_rows(
                         returns,
                         transaction.catalog(),
-                        transaction.store(),
+                        hawdb_executor::store::MutationReturnStores {
+                            before: statement_savepoint.store(),
+                            after: transaction.store(),
+                        },
                         &summary.rows,
                         runtime.config.mutation_limits,
                         hawdb_executor::result_delivery::OutputLimits::default(),

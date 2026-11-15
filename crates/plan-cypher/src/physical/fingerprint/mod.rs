@@ -16,9 +16,9 @@ use super::{NodeProjectionAccess, PhysicalPlan, PlanChildren};
 use crate::{
     AggregateFunction, AggregateTarget, Aggregation, BatchMutationOperation, BatchMutationValue,
     ComparisonOp, GraphAlgorithmKind, GraphGroupKeys, MutationReturnBinding, MutationReturnEntity,
-    PathFunction, Predicate, Projection, ProjectionExpression, RelationshipCountFilter,
-    RelationshipCountLeg, RelationshipOnCreateValue, SetAssignment, SetNodePropertiesReturnMode,
-    SetValue, SortDirection, SortItem, SortKey,
+    MutationReturnState, PathFunction, Predicate, Projection, ProjectionExpression,
+    RelationshipCountFilter, RelationshipCountLeg, RelationshipOnCreateValue, SetAssignment,
+    SetNodePropertiesReturnMode, SetValue, SortDirection, SortItem, SortKey,
 };
 use hawdb_core::Value;
 use hawdb_cypher::RelationshipDirection;
@@ -726,7 +726,10 @@ impl PhysicalPlan {
                 output.push(')');
             }
             PhysicalPlan::MutationReturn { mutation, returns } => {
-                output.push_str("MutationReturn(");
+                output.push_str(match returns.state {
+                    MutationReturnState::Written => "MutationReturn(written,",
+                    MutationReturnState::Deleted => "MutationReturn(deleted,",
+                });
                 write_mutation_return_bindings(output, &returns.bindings);
                 output.push_str(",returns=");
                 write_set_return_mode(output, &returns.mode);

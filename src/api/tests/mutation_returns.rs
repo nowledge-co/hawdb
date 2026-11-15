@@ -422,3 +422,350 @@ mod create {
         );
     }
 }
+
+mod delete {
+    use super::*;
+
+    /// The issue's guarded orphan-entity cleanup.
+    const ORPHAN_DELETE: &str = "MATCH (e:Entity {id: $entity_id}) WHERE NOT (e)<-[:MENTIONS]-(:Memory) AND NOT (e)-[:RELATES_TO]-() AND NOT (e)-[:HAS_LABEL]-() AND (e.metadata IS NULL OR NOT contains(e.metadata, 'identity_profile_revision')) DETACH DELETE e RETURN e.id";
+
+    fn entity_ids(db: &mut Database) -> Vec<Value> {
+        let mut ids = db
+            .query("MATCH (e:Entity) RETURN e.id AS id")
+            .unwrap()
+            .rows
+            .iter()
+            .map(|row| row["id"].clone())
+            .collect::<Vec<_>>();
+        ids.sort_by_key(|value| format!("{value:?}"));
+        ids
+    }
+
+    fn fixture() -> Database {
+        let mut db = Database::new();
+        for query in [
+            "CREATE (:Entity {id: 'orphan', name: 'Orphan'})",
+            "CREATE (:Entity {id: 'profiled', metadata: '{\"identity_profile_revision\": 2}'})",
+            "CREATE (:Entity {id: 'mentioned'})",
+            "CREATE (:Entity {id: 'related'})",
+            "CREATE (:Entity {id: 'peer'})",
+            "CREATE (:Memory {id: 'm'})",
+            "MATCH (m:Memory {id: 'm'}), (e:Entity {id: 'mentioned'}) CREATE (m)-[:MENTIONS]->(e)",
+            "MATCH (a:Entity {id: 'related'}), (b:Entity {id: 'peer'}) CREATE (a)-[:RELATES_TO {w: 3}]->(b)",
+        ] {
+            db.query(query).unwrap();
+        }
+        db
+    }
+
+    #[test]
+    fn guarded_detach_delete_returns_the_deleted_entity_only_when_it_matched() {
+        let mut db = fixture();
+        let delete = |db: &mut Database, id: &str| {
+            db.query_with_params(ORPHAN_DELETE, &params(&[("entity_id", string(id))]))
+                .unwrap()
+        };
+        let output = delete(&mut db, "orphan");
+        assert_eq!(output.rows.schema().columns(), &["e.id"]);
+        assert_eq!(output.rows.len(), 1);
+        assert_eq!(output.rows[0]["e.id"], string("orphan"));
+        // Guarded entities and a missing id: no row, nothing deleted.
+        for id in [
+            "profiled",
+            "mentioned",
+            "related",
+            "peer",
+            "missing",
+            "orphan",
+        ] {
+            let output = delete(&mut db, id);
+            assert!(output.rows.is_empty(), "{id}");
+            assert_eq!(output.rows.schema().columns(), &["e.id"]);
+        }
+        assert_eq!(
+            entity_ids(&mut db),
+            vec![
+                string("mentioned"),
+                string("peer"),
+                string("profiled"),
+                string("related")
+            ]
+        );
+    }
+
+    #[test]
+    fn delete_count_counts_deleted_rows_and_is_zero_without_a_match() {
+        let mut db = fixture();
+        let output = db
+            .query("MATCH (e:Entity {id: 'orphan'}) DETACH DELETE e RETURN count(*)")
+            .unwrap();
+        assert_eq!(output.rows.schema().columns(), &["count(*)"]);
+        assert_eq!(output.rows[0]["count(*)"], Value::Int(1));
+        let output = db
+            .query("MATCH (e:Entity {id: 'orphan'}) DETACH DELETE e RETURN count(*)")
+            .unwrap();
+        assert_eq!(output.rows.len(), 1);
+        assert_eq!(output.rows[0]["count(*)"], Value::Int(0));
+        // Several rows, with incident relationships removed by DETACH.
+        let output = db
+            .query("MATCH (e:Entity) WHERE e.id <> 'profiled' DETACH DELETE e RETURN count(e) AS total")
+            .unwrap();
+        assert_eq!(output.rows[0]["total"], Value::Int(3));
+        assert_eq!(entity_ids(&mut db), vec![string("profiled")]);
+        assert_eq!(
+            count(&mut db, "MATCH ()-[r]->() RETURN count(r) AS total"),
+            0
+        );
+        // A plain DELETE with RETURN also counts.
+        let output = db
+            .query("MATCH (m:Memory) DELETE m RETURN count(*) AS total")
+            .unwrap();
+        assert_eq!(output.rows[0]["total"], Value::Int(1));
+    }
+
+    #[test]
+    fn delete_return_reads_entities_as_they_were_before_the_delete() {
+        let mut db = fixture();
+        db.query("CREATE PROPERTY ON NODE TABLE Entity(status) TYPE STRING DEFAULT 'active'")
+            .unwrap();
+        db.query("CREATE (:Entity {id: 'late', name: 'Late'})")
+            .unwrap();
+        let selected = "MATCH (e:Entity) WHERE e.id = 'orphan' OR e.id = 'late'";
+        let sorted = |rows: &crate::executor::QueryRows, column: &str| {
+            let mut values = rows
+                .iter()
+                .map(|row| row[column].clone())
+                .collect::<Vec<_>>();
+            values.sort_by_key(|value| format!("{value:?}"));
+            values
+        };
+        let before = db.query(&format!("{selected} RETURN e")).unwrap();
+        let output = db
+            .query(&format!(
+                "{selected} DETACH DELETE e RETURN e, e.name AS name, e.status AS status, e.id AS id"
+            ))
+            .unwrap();
+        assert_eq!(
+            output.rows.schema().columns(),
+            &["e", "name", "status", "id"]
+        );
+        // The returned nodes are the nodes as a read saw them before.
+        assert_eq!(sorted(&output.rows, "e"), sorted(&before.rows, "e"));
+        let late = output
+            .rows
+            .iter()
+            .find(|row| row["id"] == string("late"))
+            .unwrap();
+        assert_eq!(late["name"], string("Late"));
+        // A property DEFAULT filled at creation is part of the deleted node.
+        assert_eq!(late["status"], string("active"));
+        assert_eq!(
+            map(&late["e"])["labels"],
+            Value::List(vec![string("Entity")])
+        );
+        assert_eq!(
+            count(&mut db, &format!("{selected} RETURN count(e) AS total")),
+            0
+        );
+    }
+
+    #[test]
+    fn relationship_delete_returns_the_relationship_and_its_endpoints() {
+        let mut db = fixture();
+        db.query("MATCH (a:Entity {id: 'peer'}), (b:Entity {id: 'orphan'}) CREATE (a)-[:RELATES_TO {w: 5}]->(b)")
+            .unwrap();
+        let output = db
+            .query("MATCH (a:Entity)-[r:RELATES_TO]->(b:Entity) WHERE a.id = 'related' DELETE r RETURN a.id AS source, r.w AS w, b.id AS target, r")
+            .unwrap();
+        assert_eq!(output.rows.len(), 1);
+        assert_eq!(output.rows[0]["source"], string("related"));
+        assert_eq!(output.rows[0]["w"], Value::Int(3));
+        assert_eq!(output.rows[0]["target"], string("peer"));
+        assert_eq!(map(&output.rows[0]["r"])["type"], string("RELATES_TO"));
+        let output = db
+            .query("MATCH (a:Entity)-[r:RELATES_TO]->(b:Entity) DELETE r RETURN count(*) AS total")
+            .unwrap();
+        assert_eq!(output.rows[0]["total"], Value::Int(1));
+        let output = db
+            .query("MATCH (a:Entity)-[r:RELATES_TO]->(b:Entity) DELETE r RETURN count(*) AS total")
+            .unwrap();
+        assert_eq!(output.rows[0]["total"], Value::Int(0));
+        // The endpoints remain.
+        assert_eq!(entity_ids(&mut db).len(), 5);
+    }
+
+    #[test]
+    fn delete_return_refusals_delete_nothing() {
+        let mut db = fixture();
+        // A plain DELETE of a connected node fails, with or without RETURN.
+        let error = db
+            .query("MATCH (e:Entity {id: 'related'}) DELETE e RETURN e.id")
+            .unwrap_err();
+        assert!(error.to_string().contains("DETACH DELETE"), "{error:?}");
+        for (query, message) in [
+            (
+                "MATCH (e:Entity) DETACH DELETE e RETURN e.id ORDER BY e.id",
+                "modifiers",
+            ),
+            (
+                "MATCH (e:Entity) DETACH DELETE e RETURN e.id LIMIT 1",
+                "modifiers",
+            ),
+            ("MATCH (e:Entity) DETACH DELETE e RETURN x.id", "x"),
+            (
+                "MATCH (e:Entity) DETACH DELETE e WITH e RETURN e",
+                "following clauses",
+            ),
+            (
+                "MATCH (m:Memory {id: 'm'})-[:MENTIONS]->(e:Entity) DETACH DELETE e RETURN e.id",
+                "DELETE RETURN supports",
+            ),
+        ] {
+            let error = db.query(query).unwrap_err();
+            assert!(
+                matches!(&error, HawDBError::Semantic(text) if text.contains(message)),
+                "{query}: {error:?}"
+            );
+        }
+        assert_eq!(entity_ids(&mut db).len(), 5);
+    }
+
+    #[test]
+    fn delete_return_persists_and_replays_from_wal() {
+        let path = unique_test_dir("delete_return_wal_replay");
+        {
+            let mut db = Database::open(&path).unwrap();
+            db.query("CREATE (:Entity {id: 'a'})-[:RELATES_TO]->(:Entity {id: 'b'})")
+                .unwrap();
+            let output = db
+                .query("MATCH (e:Entity {id: 'a'}) DETACH DELETE e RETURN e.id AS id")
+                .unwrap();
+            assert_eq!(output.rows[0]["id"], string("a"));
+        }
+        {
+            let mut db = Database::open(&path).unwrap();
+            assert_eq!(entity_ids(&mut db), vec![string("b")]);
+            assert_eq!(
+                count(&mut db, "MATCH ()-[r]->() RETURN count(r) AS total"),
+                0
+            );
+        }
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn delete_return_in_a_transaction_reads_earlier_statements_and_rolls_back() {
+        let mut db = fixture();
+        let mut transaction = db.begin_transaction().unwrap();
+        transaction
+            .query("CREATE (:Entity {id: 'fresh', name: 'Fresh'})")
+            .unwrap();
+        let output = transaction
+            .query("MATCH (e:Entity {id: 'fresh'}) DETACH DELETE e RETURN e.name AS name")
+            .unwrap();
+        assert_eq!(output.rows[0]["name"], string("Fresh"));
+        let output = transaction
+            .query_with_params(ORPHAN_DELETE, &params(&[("entity_id", string("orphan"))]))
+            .unwrap();
+        assert_eq!(output.rows.len(), 1);
+        assert_eq!(
+            transaction
+                .query("MATCH (e:Entity) RETURN count(e) AS total")
+                .unwrap()
+                .rows[0]["total"],
+            Value::Int(4)
+        );
+        transaction.rollback();
+        assert_eq!(entity_ids(&mut db).len(), 5);
+    }
+
+    const MULTI_DELETE: &str =
+        "MATCH (e:Entity) WHERE e.id = 'orphan' OR e.id = 'peer' DETACH DELETE e RETURN e.id AS id";
+
+    fn assert_output_refusal(
+        mut execute: impl for<'a> FnMut(QueryRequest<'a>) -> crate::Result<QueryOutput>,
+    ) {
+        execute(QueryRequest::new("CREATE (:Retained {id: 1})")).unwrap();
+        let remaining =
+            |execute: &mut dyn for<'a> FnMut(QueryRequest<'a>) -> crate::Result<QueryOutput>| {
+                execute(QueryRequest::new(
+                "MATCH (e:Entity) WHERE e.id = 'orphan' OR e.id = 'peer' RETURN count(e) AS total",
+            ))
+            .unwrap()
+            .rows[0]["total"]
+                .clone()
+            };
+        for limits in [
+            QueryStreamOptions {
+                max_rows: Some(1),
+                max_payload_bytes: None,
+            },
+            QueryStreamOptions {
+                max_rows: None,
+                max_payload_bytes: Some(1),
+            },
+        ] {
+            let error =
+                execute(QueryRequest::new(MULTI_DELETE).with_output_limits(limits)).unwrap_err();
+            assert!(
+                matches!(error, HawDBError::ReadBudgetExceeded(_)),
+                "{error:?}"
+            );
+            assert_eq!(remaining(&mut execute), Value::Int(2));
+        }
+        let counted = execute(
+            QueryRequest::new(
+                "MATCH (e:Entity) WHERE e.id = 'orphan' DETACH DELETE e RETURN count(*) AS total",
+            )
+            .with_output_limits(QueryStreamOptions {
+                max_rows: Some(1),
+                max_payload_bytes: None,
+            }),
+        )
+        .unwrap();
+        assert_eq!(counted.rows[0]["total"], Value::Int(1));
+        assert_eq!(
+            execute(QueryRequest::new(MULTI_DELETE)).unwrap().rows.len(),
+            1
+        );
+        assert_eq!(remaining(&mut execute), Value::Int(0));
+        assert_eq!(
+            execute(QueryRequest::new("MATCH (n:Retained) RETURN n.id"))
+                .unwrap()
+                .rows
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn delete_return_budgets_are_atomic_on_every_execution_surface() {
+        let mut db = fixture();
+        assert_output_refusal(|request| db.query_request(request));
+
+        let mut db = fixture();
+        let mut transaction = db.begin_transaction().unwrap();
+        assert_output_refusal(|request| transaction.query_request(request));
+        transaction.rollback();
+        assert_eq!(entity_ids(&mut db).len(), 5);
+
+        let database = ConcurrentDatabase::new(fixture());
+        assert_output_refusal(|request| database.query_request(request));
+        for options in [
+            ConcurrentTransactionOptions::optimistic(),
+            ConcurrentTransactionOptions::default(),
+        ] {
+            let database = ConcurrentDatabase::new(fixture());
+            let mut transaction = database.begin_transaction(options).unwrap();
+            assert_output_refusal(|request| transaction.query_request(request));
+            transaction.commit().unwrap();
+            assert_eq!(
+                database
+                    .query("MATCH (e:Entity) RETURN count(e) AS total")
+                    .unwrap()
+                    .rows[0]["total"],
+                Value::Int(3)
+            );
+        }
+    }
+}
