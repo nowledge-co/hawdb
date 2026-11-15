@@ -406,6 +406,19 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
             false,
         ),
         (
+            PhysicalPlan::MutationReturn {
+                mutation: Box::new(PhysicalPlan::CreateNode {
+                    label: String::new(),
+                    properties: BTreeMap::new(),
+                }),
+                returns: hawdb_plan_cypher::MutationReturn {
+                    bindings: Vec::new(),
+                    mode: SetNodePropertiesReturnMode::Project(Vec::new()),
+                },
+            },
+            false,
+        ),
+        (
             PhysicalPlan::SetRelationshipProperty {
                 source_variable: String::new(),
                 source_label: String::new(),

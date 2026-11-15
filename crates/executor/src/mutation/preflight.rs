@@ -108,6 +108,33 @@ pub fn execute_mutation_with_store_output_limits(
         ));
     }
 
+    if let PhysicalPlan::MutationReturn { mutation, returns } = plan {
+        let command = super::mutation_return_command(
+            mutation,
+            catalog,
+            &*store,
+            limits,
+            memory,
+            task_context,
+        )?;
+        runtime_checkpoint(task_context)?;
+        return store.commit_mutation_with_output(
+            catalog,
+            command,
+            super::mutation_return_staging_limits(returns, limits),
+            &mut |catalog, store, summary| {
+                super::project_mutation_return_rows(
+                    returns,
+                    catalog,
+                    store,
+                    &summary.rows,
+                    limits,
+                    output_limits,
+                    task_context,
+                )
+            },
+        );
+    }
     if let PhysicalPlan::SetNodePropertiesReturn {
         variable,
         label,

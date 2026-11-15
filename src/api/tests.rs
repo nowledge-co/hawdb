@@ -142,6 +142,7 @@ mod merge_relationships;
 mod multi_with_normalization;
 mod mutation_guards;
 mod mutation_persistence;
+mod mutation_returns;
 mod neighbor_reads;
 mod node_column_lookup_conjuncts;
 mod nowledge_graph_adapter;

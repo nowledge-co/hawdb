@@ -486,6 +486,17 @@ impl GraphExecutionWrite for RecordingStore {
         }
         Ok(ids.to_vec())
     }
+
+    fn commit_mutation_with_output(
+        &mut self,
+        catalog: &mut Catalog,
+        mutation: GraphMutation,
+        limits: MutationLimits,
+        project: &mut crate::store::MutationOutputProjector<'_>,
+    ) -> Result<Vec<crate::Row>> {
+        let summary = self.commit_mutation_with_limits(catalog, mutation, limits)?;
+        project(catalog, self, &summary)
+    }
 }
 
 fn fixture(count: usize) -> (Catalog, RecordingStore) {

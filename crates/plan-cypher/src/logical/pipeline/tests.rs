@@ -1533,3 +1533,95 @@ fn read_pipelines_and_return_modifiers_feed_row_evaluated_set() {
         assert!(error.contains(message), "{query}: {error}");
     }
 }
+
+#[test]
+fn create_return_binds_created_variables_to_summary_columns() {
+    let bindings = |query: &str| {
+        let plan = plan_pipeline_query(query, &BTreeMap::new()).unwrap();
+        let LogicalPlan::MutationReturn { mutation, returns } = plan else {
+            panic!("{query}: expected a mutation RETURN, got {plan:?}");
+        };
+        (
+            *mutation,
+            returns
+                .bindings
+                .into_iter()
+                .map(|binding| (binding.variable, binding.entity, binding.column))
+                .collect::<Vec<_>>(),
+            returns.mode,
+        )
+    };
+    let (mutation, variables, mode) = bindings("CREATE (o:Item {id: 1}) RETURN o.id, o");
+    assert!(matches!(mutation, LogicalPlan::CreateNode { .. }));
+    assert_eq!(
+        variables,
+        vec![("o".into(), MutationReturnEntity::Node, "node_id".into())]
+    );
+    let SetNodePropertiesReturnMode::Project(items) = mode else {
+        panic!("expected projections");
+    };
+    assert_eq!(
+        items
+            .iter()
+            .map(|item| item.name.as_str())
+            .collect::<Vec<_>>(),
+        ["o.id", "o"]
+    );
+    let (mutation, variables, _) = bindings(
+        "MATCH (a:Memory {id: 1}), (b:Label {id: 2}) CREATE (a)-[r:HAS_LABEL]->(b) RETURN r",
+    );
+    assert!(matches!(
+        mutation,
+        LogicalPlan::CreateMatchedRelationship { .. }
+    ));
+    assert_eq!(
+        variables,
+        vec![
+            (
+                "a".into(),
+                MutationReturnEntity::Node,
+                "source_node_id".into()
+            ),
+            (
+                "r".into(),
+                MutationReturnEntity::Relationship,
+                "rel_id".into()
+            ),
+            (
+                "b".into(),
+                MutationReturnEntity::Node,
+                "target_node_id".into()
+            ),
+        ]
+    );
+    let (mutation, variables, mode) =
+        bindings("CREATE (:Item)-[:LINK]->(b:Item) RETURN count(*) AS total");
+    assert!(matches!(mutation, LogicalPlan::CreateRelationship { .. }));
+    assert_eq!(
+        variables,
+        vec![(
+            "b".into(),
+            MutationReturnEntity::Node,
+            "target_node_id".into()
+        )]
+    );
+    assert_eq!(
+        mode,
+        SetNodePropertiesReturnMode::Count {
+            name: "total".into()
+        }
+    );
+    for query in [
+        "CREATE (o:Item) RETURN x",
+        "CREATE (o:Item) RETURN o ORDER BY o.id",
+        "CREATE (o:Item) RETURN o SKIP 1",
+        "CREATE (o:Item) RETURN o, count(*)",
+        "CREATE (o:Item) WITH o RETURN o",
+        "CREATE (o:Item) SET o.id = 1 RETURN o",
+    ] {
+        assert!(
+            plan_pipeline_query(query, &BTreeMap::new()).is_err(),
+            "{query}"
+        );
+    }
+}

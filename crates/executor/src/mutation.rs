@@ -34,6 +34,7 @@ use crate::predicate::property_filter_from_properties;
 
 mod match_set;
 mod preflight;
+mod returns;
 mod staged;
 pub use match_set::{
     affected_rows_exceeded, match_set_account, match_set_row_bytes, resolve_match_set,
@@ -45,11 +46,16 @@ pub use preflight::{
     materialize_node_mutation, materialize_unwind_mutations, project_staged_mutation_return_rows,
     resolve_relationship_merge_endpoints, stage_row_mutations, stage_unwind_mutations,
 };
+pub use returns::{
+    mutation_return_command, mutation_return_staging_limits, project_mutation_return_rows,
+};
 pub use staged::{EndpointResolutionReport, StagedCharge, StagedMutations};
 
 pub fn mutation_returns_rows(plan: &PhysicalPlan) -> bool {
-    matches!(plan, PhysicalPlan::SetNodePropertiesReturn { .. })
-        || matches!(plan, PhysicalPlan::MatchSetExec(set) if set.returns.is_some())
+    matches!(
+        plan,
+        PhysicalPlan::SetNodePropertiesReturn { .. } | PhysicalPlan::MutationReturn { .. }
+    ) || matches!(plan, PhysicalPlan::MatchSetExec(set) if set.returns.is_some())
         || matches!(plan, PhysicalPlan::UnwindMutation {
             operation: hawdb_plan_cypher::BatchMutationOperation::MergeRelationship(merge), ..
         } if merge.returns.is_some())
@@ -159,6 +165,7 @@ pub fn mutation_command(plan: &PhysicalPlan) -> Result<Option<GraphMutation>> {
                 property: property.clone(),
             }),
         ),
+        PhysicalPlan::MutationReturn { mutation, .. } => mutation_command(mutation),
         PhysicalPlan::CreateNode { label, properties } => Ok(Some(GraphMutation::CreateNode {
             label: label.clone(),
             properties: properties.clone(),

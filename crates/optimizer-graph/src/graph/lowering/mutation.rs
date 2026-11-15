@@ -190,6 +190,10 @@ pub(super) fn lower(logical: &LogicalPlan) -> Option<PhysicalPlan> {
             predicate: predicate.clone(),
             assignments: assignments.clone(),
         }),
+        LogicalPlan::MutationReturn { mutation, returns } => Some(PhysicalPlan::MutationReturn {
+            mutation: Box::new(lower(mutation)?),
+            returns: returns.clone(),
+        }),
         LogicalPlan::SetNodePropertiesReturn {
             variable,
             label,

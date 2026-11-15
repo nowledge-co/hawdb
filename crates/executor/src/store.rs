@@ -213,6 +213,14 @@ pub trait GraphExecutionRead {
 
     fn node_owned(&self, id: NodeId) -> Result<Option<NodeRecord>>;
 
+    /// One whole relationship by id, for projecting mutation `RETURN` rows.
+    /// Readers without owned relationship point reads fail closed.
+    fn relationship_owned(&self, _id: hawdb_storage::RelId) -> Result<Option<RelRecord>> {
+        Err(hawdb_core::HawDBError::Execution(
+            "storage reader does not support owned relationship point reads".into(),
+        ))
+    }
+
     /// Full point ownership with optional label pruning and a transferable
     /// before-copy permit. Unsupported readers fail closed.
     fn node_with_allocation(
@@ -761,6 +769,11 @@ pub trait GraphExecutionRead {
     }
 }
 
+/// Projects a mutation's `RETURN` rows from the working catalog, the mutated
+/// store and the storage summary, before the mutation is published.
+pub type MutationOutputProjector<'a> =
+    dyn FnMut(&Catalog, &dyn GraphExecutionRead, &MutationSummary) -> Result<Vec<crate::Row>> + 'a;
+
 /// The mutation operations required by storage-independent executor preflight.
 ///
 /// Transaction ownership, WAL publication, and recovery remain implementation
@@ -796,4 +809,16 @@ pub trait GraphExecutionWrite: GraphExecutionRead {
         detach: bool,
         limits: MutationLimits,
     ) -> Result<Vec<NodeId>>;
+
+    /// Applies `mutation` to a private working copy and passes the working
+    /// catalog, store and storage summary to `project`. The mutation is
+    /// published only when `project` succeeds, so a statement and its
+    /// `RETURN` rows commit or fail together.
+    fn commit_mutation_with_output(
+        &mut self,
+        catalog: &mut Catalog,
+        mutation: GraphMutation,
+        limits: MutationLimits,
+        project: &mut crate::store::MutationOutputProjector<'_>,
+    ) -> Result<Vec<crate::Row>>;
 }

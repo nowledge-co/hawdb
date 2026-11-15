@@ -456,6 +456,43 @@ mod tests {
             assert!(parse_pipeline(query).is_err(), "{query}");
         }
     }
+
+    #[test]
+    fn create_followed_by_return_parses_as_a_pipeline() {
+        for (query, clauses) in [
+            ("CREATE (o:Completion {id: $id}) RETURN o.id", 2),
+            (
+                "MATCH (a:Memory {id: $a}), (b:Label {id: $b}) CREATE (a)-[r:HAS_LABEL]->(b) RETURN r",
+                3,
+            ),
+            ("CREATE (:Item)-[r:LINK]->(:Item) RETURN count(*)", 2),
+        ] {
+            let Statement::Pipeline(pipeline) = parse(query).unwrap() else {
+                panic!("{query} is not a pipeline");
+            };
+            assert_eq!(pipeline.clauses.len(), clauses, "{query}");
+            assert!(matches!(
+                pipeline.clauses.last().map(|clause| &clause.kind),
+                Some(ClauseKind::Return(_))
+            ));
+        }
+        let Statement::Explain(explain) = parse("EXPLAIN CREATE (n:Item) RETURN n").unwrap() else {
+            panic!("expected EXPLAIN");
+        };
+        assert!(matches!(explain.statement, Statement::Pipeline(_)));
+        // Without RETURN, the CREATE statement forms are unchanged.
+        assert!(matches!(
+            parse("CREATE (n:Item {id: 1})").unwrap(),
+            Statement::CreateNode(_)
+        ));
+        assert!(matches!(
+            parse("CREATE INDEX ON :Item(id)").unwrap(),
+            Statement::CreateIndex(_)
+        ));
+        // An incomplete RETURN still reports the trailing input.
+        let error = parse("CREATE (n:Item) RETURN").unwrap_err().to_string();
+        assert!(error.contains("RETURN"), "{error}");
+    }
 }
 
 #[cfg(test)]

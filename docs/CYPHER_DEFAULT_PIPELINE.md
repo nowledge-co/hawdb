@@ -188,6 +188,37 @@ This supplies exact member rows to a host count guard; it does not silently
 accept a partial match or implement Mem's complete Skills adapter/activation.
 Tracked in [#1397](https://github.com/nowledge-co/hawdb/issues/1397).
 
+## Mutation RETURN
+
+A `CREATE` may end in `RETURN`, with Kùzu semantics: one row per created
+node or relationship, describing it as the statement left it, including
+declared property `DEFAULT`s. For example:
+
+```cypher
+CREATE (o:Completion {id: $id, body: $body}) RETURN o.id
+
+MATCH (a:Memory {id: $source_id}), (b:Label {id: $target_id})
+CREATE (a)-[r:HAS_LABEL {weight: $weight}]->(b)
+RETURN r
+```
+
+A node create binds its node; a relationship create binds its source,
+relationship and target variables. Items may be properties, whole entities,
+scalar expressions and aliases. A single `count(*)` or `count(variable)` returns
+one row with the number of created entities, `0` when MATCH found nothing.
+Other aggregates, `DISTINCT`, `WHERE`, `ORDER BY`, `SKIP`, `LIMIT` and further
+clauses are refused before any write.
+
+The mutation keeps its existing storage command. The planner wraps it in a
+`MutationReturn` operator naming the summary-row column that identifies each
+returned variable. Execution stages the mutation in a private transaction
+workspace, projects the rows from that working state, and publishes only if
+projection succeeds; in an explicit transaction the statement savepoint is
+restored instead. Returned rows count against `max_mutation_result_rows`,
+`max_mutation_result_payload_bytes` and the request output limits; a refusal
+leaves no partial write. A count's mutation summary is bounded by
+`max_mutation_affected_rows`. No WAL or on-disk format changes.
+
 ## Frozen corpus qualification
 
 The original 1,427 queries, their parameters, 94 Mem source hashes and historical

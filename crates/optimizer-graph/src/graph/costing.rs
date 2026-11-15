@@ -864,6 +864,7 @@ fn estimate_local_operator_cost(
         | PhysicalPlan::SetNodeProperty { .. }
         | PhysicalPlan::SetNodeProperties { .. }
         | PhysicalPlan::SetNodePropertiesReturn { .. }
+        | PhysicalPlan::MutationReturn { .. }
         | PhysicalPlan::SetRelationshipProperty { .. }
         | PhysicalPlan::SetRelationshipProperties { .. }
         | PhysicalPlan::DeleteNode { .. }

@@ -119,6 +119,7 @@ impl PhysicalPlan {
             | PhysicalPlan::SetNodeProperties { .. }
             | PhysicalPlan::SetNodePropertiesReturn { .. }
             | PhysicalPlan::MatchSetExec(_)
+            | PhysicalPlan::MutationReturn { .. }
             | PhysicalPlan::SetRelationshipProperty { .. }
             | PhysicalPlan::SetRelationshipProperties { .. }
             | PhysicalPlan::DeleteNode { .. }

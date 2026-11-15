@@ -155,6 +155,7 @@ pub(super) fn execute_bindings_with_limit(
         | PhysicalPlan::SetNodeProperty { .. }
         | PhysicalPlan::SetNodeProperties { .. }
         | PhysicalPlan::SetNodePropertiesReturn { .. }
+        | PhysicalPlan::MutationReturn { .. }
         | PhysicalPlan::SetRelationshipProperty { .. }
         | PhysicalPlan::SetRelationshipProperties { .. }
         | PhysicalPlan::DeleteNode { .. }

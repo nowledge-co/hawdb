@@ -494,6 +494,12 @@ pub enum LogicalPlan {
     },
     /// SET over the rows of a general read plan; see [`MatchSet`].
     MatchSet(Box<MatchSet<LogicalPlan>>),
+    /// A mutation whose statement ends in `RETURN`. The rows are projected
+    /// from the entities the mutation reports, in the same statement.
+    MutationReturn {
+        mutation: Box<LogicalPlan>,
+        returns: MutationReturn,
+    },
     SetRelationshipProperty {
         source_variable: String,
         source_label: String,
@@ -742,6 +748,29 @@ pub struct Projection {
 pub enum SetNodePropertiesReturnMode {
     Project(Vec<Projection>),
     Count { name: String },
+}
+
+/// The `RETURN` of a mutation statement: the variables each storage summary
+/// row binds, and the projection evaluated over those bindings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MutationReturn {
+    pub bindings: Vec<MutationReturnBinding>,
+    pub mode: SetNodePropertiesReturnMode,
+}
+
+/// One returned variable and the summary-row column holding its id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MutationReturnBinding {
+    pub variable: String,
+    pub entity: MutationReturnEntity,
+    /// Summary-row column holding the entity id, such as `node_id`.
+    pub column: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MutationReturnEntity {
+    Node,
+    Relationship,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1124,6 +1153,26 @@ impl hawdb_core::RetainedHeapBytes for SetValue {
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(preserve),
             ]),
         }
+    }
+}
+
+// Retained query ownership: MutationReturn.
+impl hawdb_core::RetainedHeapBytes for MutationReturn {
+    fn retained_heap_bytes(&self) -> Option<usize> {
+        hawdb_core::checked_retained_heap_sum([
+            hawdb_core::RetainedHeapBytes::retained_heap_bytes(&self.bindings),
+            hawdb_core::RetainedHeapBytes::retained_heap_bytes(&self.mode),
+        ])
+    }
+}
+
+// Retained query ownership: MutationReturnBinding.
+impl hawdb_core::RetainedHeapBytes for MutationReturnBinding {
+    fn retained_heap_bytes(&self) -> Option<usize> {
+        hawdb_core::checked_retained_heap_sum([
+            hawdb_core::RetainedHeapBytes::retained_heap_bytes(&self.variable),
+            hawdb_core::RetainedHeapBytes::retained_heap_bytes(&self.column),
+        ])
     }
 }
 
