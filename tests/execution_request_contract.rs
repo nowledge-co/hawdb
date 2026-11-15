@@ -1476,7 +1476,9 @@ fn assert_host_row_ceiling(error: hawdb::HawDBError) {
         matches!(&error, hawdb::HawDBError::ReadBudgetExceeded(cause)
             if cause.resource == hawdb::ReadBudgetResource::Rows && cause.limit == 2)
             || matches!(&error, hawdb::HawDBError::Execution(message)
-                if message.contains("max_mutation_result_rows 2")),
+                if message.contains("max_mutation_result_rows 2"))
+            || matches!(&error, hawdb::HawDBError::ResourceBudgetExceeded(cause)
+                if cause.budget_option == "MutationLimits.max_result_rows" && cause.budget == 2),
         "unexpected host-ceiling refusal: {error}"
     );
 }

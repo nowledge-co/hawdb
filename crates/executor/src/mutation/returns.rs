@@ -53,10 +53,7 @@ pub fn mutation_return_command(
 /// limits apply to the projected `RETURN` rows instead (see
 /// [`project_mutation_return_rows`]), so a `count(...)` reports one row however
 /// many entities change and every refusal is a typed budget error.
-pub fn mutation_return_staging_limits(
-    _returns: &MutationReturn,
-    limits: MutationLimits,
-) -> MutationLimits {
+pub fn mutation_return_staging_limits(limits: MutationLimits) -> MutationLimits {
     MutationLimits {
         max_result_rows: limits.max_affected_rows,
         max_result_payload_bytes: NonZeroUsize::MAX,
@@ -196,41 +193,64 @@ fn admit_row(
     output_limits: OutputLimits,
 ) -> Result<usize> {
     if admitted >= limits.max_result_rows.get() {
-        return Err(ResourceBudgetError {
-            resource: ResourceBudgetKind::MetadataEntries,
-            scope: ResourceBudgetScope::Query,
-            owner: "mutation RETURN rows".to_string(),
-            memory_class: None,
-            requested: 1,
-            used: admitted as u64,
-            budget: limits.max_result_rows.get() as u64,
-            budget_option: "MutationLimits.max_result_rows",
-            message: format!(
-                "mutation would exceed max_mutation_result_rows {}",
-                limits.max_result_rows
-            ),
-        }
-        .into());
+        return Err(result_rows_exceeded(admitted, 1, limits));
     }
     let row_bytes = map_payload_bytes(row);
     let next = payload_bytes.saturating_add(row_bytes);
     if next > limits.max_result_payload_bytes.get() {
-        return Err(ResourceBudgetError {
-            resource: ResourceBudgetKind::MemoryBytes,
-            scope: ResourceBudgetScope::Query,
-            owner: "mutation RETURN rows".to_string(),
-            memory_class: None,
-            requested: row_bytes as u64,
-            used: payload_bytes as u64,
-            budget: limits.max_result_payload_bytes.get() as u64,
-            budget_option: "MutationLimits.max_result_payload_bytes",
-            message: format!(
-                "mutation result payload would exceed max_mutation_result_payload_bytes {}",
-                limits.max_result_payload_bytes
-            ),
-        }
-        .into());
+        return Err(result_payload_exceeded(payload_bytes, row_bytes, limits));
     }
     output_limits.validate(admitted + 1, next)?;
     Ok(next)
+}
+
+/// The typed refusal of mutation `RETURN` rows over
+/// `MutationLimits.max_result_rows`: `requested` more rows on top of `used`.
+/// Every mutation `RETURN` form (`CREATE`, `MERGE`, `SET`, `DELETE`, and
+/// relationship `MERGE` after `UNWIND`) reports this error.
+pub(crate) fn result_rows_exceeded(
+    used: usize,
+    requested: usize,
+    limits: MutationLimits,
+) -> HawDBError {
+    ResourceBudgetError {
+        resource: ResourceBudgetKind::MetadataEntries,
+        scope: ResourceBudgetScope::Query,
+        owner: "mutation RETURN rows".to_string(),
+        memory_class: None,
+        requested: u64::try_from(requested).unwrap_or(u64::MAX),
+        used: u64::try_from(used).unwrap_or(u64::MAX),
+        budget: u64::try_from(limits.max_result_rows.get()).unwrap_or(u64::MAX),
+        budget_option: "MutationLimits.max_result_rows",
+        message: format!(
+            "mutation would exceed max_mutation_result_rows {}",
+            limits.max_result_rows
+        ),
+    }
+    .into()
+}
+
+/// The typed refusal of mutation `RETURN` rows over
+/// `MutationLimits.max_result_payload_bytes`: `requested` more bytes on top of
+/// `used`.
+pub(crate) fn result_payload_exceeded(
+    used: usize,
+    requested: usize,
+    limits: MutationLimits,
+) -> HawDBError {
+    ResourceBudgetError {
+        resource: ResourceBudgetKind::MemoryBytes,
+        scope: ResourceBudgetScope::Query,
+        owner: "mutation RETURN rows".to_string(),
+        memory_class: None,
+        requested: u64::try_from(requested).unwrap_or(u64::MAX),
+        used: u64::try_from(used).unwrap_or(u64::MAX),
+        budget: u64::try_from(limits.max_result_payload_bytes.get()).unwrap_or(u64::MAX),
+        budget_option: "MutationLimits.max_result_payload_bytes",
+        message: format!(
+            "mutation result payload would exceed max_mutation_result_payload_bytes {}",
+            limits.max_result_payload_bytes
+        ),
+    }
+    .into()
 }

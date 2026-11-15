@@ -164,6 +164,11 @@ fn mutation_payload_limit_rejects_set_return_before_commit() {
     assert!(error
         .to_string()
         .contains("max_mutation_result_payload_bytes 32"));
+    assert!(
+        matches!(&error, HawDBError::ResourceBudgetExceeded(cause)
+            if cause.budget_option == "MutationLimits.max_result_payload_bytes"),
+        "{error:?}"
+    );
     assert_eq!(db.statistics().unwrap().computed_at_commit_epoch, epoch);
     let rows = db
         .query("MATCH (t:Thread {id: 'payload'}) RETURN t.state AS state")
@@ -189,6 +194,11 @@ fn transaction_mutation_return_error_restores_the_statement_savepoint() {
     assert!(error
         .to_string()
         .contains("max_mutation_result_payload_bytes 32"));
+    assert!(
+        matches!(&error, HawDBError::ResourceBudgetExceeded(cause)
+            if cause.budget_option == "MutationLimits.max_result_payload_bytes"),
+        "{error:?}"
+    );
     let staged = tx
         .query("MATCH (t:Thread {id: 'payload'}) RETURN t.state AS state")
         .unwrap();

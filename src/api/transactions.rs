@@ -319,9 +319,18 @@ pub(super) fn execute_graph_transaction_plan(
                     .expect("usize::MAX is non-zero"),
                 ..runtime.config.mutation_limits
             },
-            PhysicalPlan::MutationReturn { returns, .. } => {
+            // The returned rows, not the internal summary, carry the result
+            // limits; they are projected and checked as typed refusals.
+            PhysicalPlan::MutationReturn { .. } => {
                 hawdb_executor::mutation::mutation_return_staging_limits(
-                    returns,
+                    runtime.config.mutation_limits,
+                )
+            }
+            PhysicalPlan::UnwindMutation {
+                operation: hawdb_plan_cypher::BatchMutationOperation::MergeRelationship(merge),
+                ..
+            } if merge.returns.is_some() => {
+                hawdb_executor::mutation::mutation_return_staging_limits(
                     runtime.config.mutation_limits,
                 )
             }

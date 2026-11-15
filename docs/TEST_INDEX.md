@@ -2987,6 +2987,12 @@ reads of earlier statements with rollback, and WAL reopen.
 `ResourceBudgetExceeded` with no write on every surface, while a count stays
 within a one-row result limit; for a relationship MERGE the refused statement
 creates nothing and applies no ON MATCH update.
+`set_and_unwind_merge_return_limits_are_typed_on_every_execution_surface`
+([#1800](https://github.com/nowledge-co/hawdb/issues/1800)) extends these
+checks to `SET ... RETURN` (single-pattern, and row-evaluated with `WITH` and
+`ORDER BY`), to `UNWIND` relationship `MERGE ... RETURN`, and to `SET ...
+RETURN` payload refusals; a `count(*)` stays one row. The `mutation_guards`
+SET RETURN payload cases also assert the typed variant.
 `mutation_returns::merge` covers node `MERGE ... RETURN` (created then
 matched, ON CREATE/ON MATCH/following SET, `count(*)`, a creation `DEFAULT`),
 relationship `MERGE ... ON CREATE SET ... ON MATCH SET ... RETURN` incrementing
