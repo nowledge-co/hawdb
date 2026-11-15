@@ -292,6 +292,11 @@ pub enum SetValueExpression {
         default: ValueExpression,
         value: ValueExpression,
     },
+    /// Any other scalar expression: `CASE`, comparisons, arithmetic, string
+    /// concatenation or functions over the matched row and parameters. Each
+    /// row evaluates it against the values the earlier SET items of the same
+    /// statement left (#1791).
+    Expression(ScalarExpression),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

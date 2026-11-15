@@ -664,6 +664,52 @@ impl PhysicalPlan {
                 write_set_return_mode(output, returns);
                 output.push(')');
             }
+            PhysicalPlan::MatchSetExec(set) => {
+                output.push_str("MatchSetExec(bindings=[");
+                for (index, binding) in set.bindings.iter().enumerate() {
+                    if index > 0 {
+                        output.push(',');
+                    }
+                    write_identifier(output, &binding.variable);
+                    output.push(':');
+                    write_identifier(output, &binding.column);
+                    output.push_str(match binding.entity {
+                        Some(crate::GraphEntityKind::Node) => ":node",
+                        Some(crate::GraphEntityKind::Relationship) => ":relationship",
+                        None => ":value",
+                    });
+                }
+                output.push_str("],assignments=[");
+                for (index, assignment) in set.assignments.iter().enumerate() {
+                    if index > 0 {
+                        output.push(',');
+                    }
+                    write_identifier(output, &assignment.variable);
+                    output.push('.');
+                    write_identifier(output, &assignment.property);
+                    output.push('=');
+                    match &assignment.value {
+                        crate::MatchSetValue::Expression(expression) => {
+                            output.push_str("expression(");
+                            projection::write_projection_expression(output, expression);
+                            output.push(')');
+                        }
+                        crate::MatchSetValue::Local(value) => {
+                            output.push_str("local(");
+                            write_set_value(output, value);
+                            output.push(')');
+                        }
+                    }
+                }
+                output.push_str("],returns=");
+                match &set.returns {
+                    Some(items) => write_projection_list(output, items),
+                    None => output.push_str("none"),
+                }
+                output.push_str(",input=");
+                set.input.write_instance_fingerprint(output);
+                output.push(')');
+            }
             PhysicalPlan::SetRelationshipProperty {
                 source_variable,
                 source_label,

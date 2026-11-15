@@ -9,6 +9,7 @@ use hawdb_cypher::{
     ValueExpressionKind,
 };
 
+mod match_set;
 mod node;
 mod relationship;
 mod relationship_batch;
@@ -464,6 +465,13 @@ pub(super) fn bind_mutation_pipeline(
             };
             let mut assignments = sets.clone();
             assignments.extend(set_tail(tail)?);
+            if assignments
+                .iter()
+                .any(|set| match_set::needs_row_evaluation(set, parameters))
+            {
+                let prefix = &query.clauses[..query.clauses.len() - clauses.len()];
+                return match_set::bind(prefix, &assignments, projection, parameters);
+            }
             node::bind_set(&input, &assignments, projection, parameters)
         }
         ClauseKind::Delete { detach, variables } => {

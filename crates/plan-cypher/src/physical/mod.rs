@@ -300,6 +300,8 @@ pub enum PhysicalPlan {
         assignments: Vec<SetAssignment>,
         returns: SetNodePropertiesReturnMode,
     },
+    /// SET over the rows of an optimized read plan; see [`crate::MatchSet`].
+    MatchSetExec(Box<crate::MatchSet<PhysicalPlan>>),
     SetRelationshipProperty {
         source_variable: String,
         source_label: String,

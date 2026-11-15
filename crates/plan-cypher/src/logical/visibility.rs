@@ -237,6 +237,18 @@ pub fn apply_node_visibility_predicates(
         LogicalPlan::Distinct { input } => LogicalPlan::Distinct {
             input: Box::new(apply_node_visibility_predicates(*input, predicate_for)),
         },
+        LogicalPlan::MatchSet(mut set) => {
+            for assignment in &mut set.assignments {
+                if let MatchSetValue::Expression(expression) = &mut assignment.value {
+                    restrict_expression(expression, predicate_for);
+                }
+            }
+            if let Some(items) = &mut set.returns {
+                restrict_projections(items, predicate_for);
+            }
+            set.input = apply_node_visibility_predicates(set.input, predicate_for);
+            LogicalPlan::MatchSet(set)
+        }
         LogicalPlan::Sort { mut items, input } => {
             for item in &mut items {
                 if let SortKey::Expression(expression) = &mut item.key {
@@ -539,6 +551,16 @@ pub fn validate_node_visibility_predicates(
         LogicalPlan::Project { items, input } => {
             expressions.extend(items.iter().map(|item| &item.expression));
             children.push(input);
+        }
+        LogicalPlan::MatchSet(set) => {
+            expressions.extend(set.assignments.iter().filter_map(|assignment| {
+                match &assignment.value {
+                    MatchSetValue::Expression(expression) => Some(expression),
+                    MatchSetValue::Local(_) => None,
+                }
+            }));
+            expressions.extend(set.returns.iter().flatten().map(|item| &item.expression));
+            children.push(&set.input);
         }
         LogicalPlan::Aggregate {
             group_keys,

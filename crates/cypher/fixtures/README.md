@@ -101,6 +101,17 @@ else changes. The planner golden `owner-0090` changes the same way (recorded in
 and acceptance: the Kùzu snapshot cases `mem-0057`..`mem-0060` stay rejected
 because they also use `offset(id(x))`.
 
+`migration_main_1791_set_expressions_peg_baseline_v1.jsonl` records the 129
+reviewed statement/pipeline transitions introduced by issue #1791. Each case was
+a parse error whose SET value continued past the fixed SET forms (arithmetic,
+unary minus, parenthesized or postfix property access, map literals, a bare
+function name). Such a value now parses as a general scalar expression; binding
+rejects names that are not in scope. No accepted case changes its AST.
+`migration_main_1791_set_expressions_diagnostics_v1.json` records the 21
+diagnostic fixture cases that stay rejected with a different message, because
+the general expression parser reports its own farthest failure (for example
+the `size()` arity or the nesting limit).
+
 Run the default owner and complete local fuzz surface:
 
 ```sh
