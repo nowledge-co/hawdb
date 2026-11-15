@@ -2982,6 +2982,10 @@ exactly as a prior read saw them (including a creation `DEFAULT`), relationship
 delete returning the relationship and endpoints, refused shapes and a refused
 connected `DELETE` that delete nothing, the same budget surfaces, transaction
 reads of earlier statements with rollback, and WAL reopen.
+`mutation_returns::budgets` checks that exceeding `max_result_rows` or
+`max_result_payload_bytes` with RETURN rows is a typed
+`ResourceBudgetExceeded` with no write on every surface, while a count stays
+within a one-row result limit.
 The cypher crate owns `create_followed_by_return_parses_as_a_pipeline`
 (statement routing, unchanged plain CREATE/DDL forms) and plan-cypher owns
 `create_return_binds_created_variables_to_summary_columns` (summary-column

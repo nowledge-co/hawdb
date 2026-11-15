@@ -236,8 +236,12 @@ mutation in a private transaction workspace, projects the rows from those
 states, and publishes only if projection succeeds; in an explicit transaction the statement savepoint is
 restored instead. Returned rows count against `max_mutation_result_rows`,
 `max_mutation_result_payload_bytes` and the request output limits; a refusal
-leaves no partial write. A count's mutation summary is bounded by
-`max_mutation_affected_rows`. No WAL or on-disk format changes.
+leaves no partial write. Exceeding a mutation result limit is a typed
+`HawDBError::ResourceBudgetExceeded` naming `MutationLimits.max_result_rows` or
+`MutationLimits.max_result_payload_bytes` (owner `mutation RETURN rows`); the
+request output limits keep `ReadBudgetExceeded`. The internal mutation summary
+is bounded by `max_mutation_affected_rows`, so a count returns one row however
+many entities change. No WAL or on-disk format changes.
 
 ## Frozen corpus qualification
 

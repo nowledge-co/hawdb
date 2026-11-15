@@ -12,7 +12,10 @@ use crate::pipeline::runtime_checkpoint;
 use crate::result_delivery::OutputLimits;
 use crate::store::{GraphExecutionRead, MutationReturnStores};
 use crate::{ExecutionMemoryConfig, Row};
-use hawdb_core::{Catalog, HawDBError, Result, RuntimeTaskContext, Value};
+use hawdb_core::{
+    Catalog, HawDBError, ResourceBudgetError, ResourceBudgetKind, ResourceBudgetScope, Result,
+    RuntimeTaskContext, Value,
+};
 use hawdb_plan_cypher::{
     MutationReturn, MutationReturnEntity, MutationReturnState, PhysicalPlan,
     SetNodePropertiesReturnMode,
@@ -45,20 +48,19 @@ pub fn mutation_return_command(
     }
 }
 
-/// Limits for staging the mutation itself. A `count(...)` RETURN reports one
-/// row however many entities change, so its summary rows are bounded by the
-/// affected-row limit instead of the result-row and payload limits.
+/// Limits for staging the mutation itself. Its storage summary rows are
+/// internal ids, bounded by the affected-row limit; the result-row and payload
+/// limits apply to the projected `RETURN` rows instead (see
+/// [`project_mutation_return_rows`]), so a `count(...)` reports one row however
+/// many entities change and every refusal is a typed budget error.
 pub fn mutation_return_staging_limits(
-    returns: &MutationReturn,
+    _returns: &MutationReturn,
     limits: MutationLimits,
 ) -> MutationLimits {
-    match returns.mode {
-        SetNodePropertiesReturnMode::Count { .. } => MutationLimits {
-            max_result_rows: limits.max_affected_rows,
-            max_result_payload_bytes: NonZeroUsize::MAX,
-            ..limits
-        },
-        SetNodePropertiesReturnMode::Project(_) => limits,
+    MutationLimits {
+        max_result_rows: limits.max_affected_rows,
+        max_result_payload_bytes: NonZeroUsize::MAX,
+        ..limits
     }
 }
 
@@ -179,17 +181,40 @@ fn admit_row(
     output_limits: OutputLimits,
 ) -> Result<usize> {
     if admitted >= limits.max_result_rows.get() {
-        return Err(HawDBError::Execution(format!(
-            "mutation would exceed max_mutation_result_rows {}",
-            limits.max_result_rows
-        )));
+        return Err(ResourceBudgetError {
+            resource: ResourceBudgetKind::MetadataEntries,
+            scope: ResourceBudgetScope::Query,
+            owner: "mutation RETURN rows".to_string(),
+            memory_class: None,
+            requested: 1,
+            used: admitted as u64,
+            budget: limits.max_result_rows.get() as u64,
+            budget_option: "MutationLimits.max_result_rows",
+            message: format!(
+                "mutation would exceed max_mutation_result_rows {}",
+                limits.max_result_rows
+            ),
+        }
+        .into());
     }
-    let next = payload_bytes.saturating_add(map_payload_bytes(row));
+    let row_bytes = map_payload_bytes(row);
+    let next = payload_bytes.saturating_add(row_bytes);
     if next > limits.max_result_payload_bytes.get() {
-        return Err(HawDBError::Execution(format!(
-            "mutation result payload would exceed max_mutation_result_payload_bytes {}",
-            limits.max_result_payload_bytes
-        )));
+        return Err(ResourceBudgetError {
+            resource: ResourceBudgetKind::MemoryBytes,
+            scope: ResourceBudgetScope::Query,
+            owner: "mutation RETURN rows".to_string(),
+            memory_class: None,
+            requested: row_bytes as u64,
+            used: payload_bytes as u64,
+            budget: limits.max_result_payload_bytes.get() as u64,
+            budget_option: "MutationLimits.max_result_payload_bytes",
+            message: format!(
+                "mutation result payload would exceed max_mutation_result_payload_bytes {}",
+                limits.max_result_payload_bytes
+            ),
+        }
+        .into());
     }
     output_limits.validate(admitted + 1, next)?;
     Ok(next)

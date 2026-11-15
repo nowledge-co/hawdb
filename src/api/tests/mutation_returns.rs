@@ -769,3 +769,103 @@ mod delete {
         }
     }
 }
+
+mod budgets {
+    use super::*;
+    use std::num::NonZeroUsize;
+
+    fn limited(rows: usize, payload_bytes: usize) -> Database {
+        let mut config = DatabaseConfig::default();
+        config.mutation_limits.max_result_rows = NonZeroUsize::new(rows).unwrap();
+        config.mutation_limits.max_result_payload_bytes = NonZeroUsize::new(payload_bytes).unwrap();
+        let mut db = Database::new_with_config(config);
+        for id in ["a", "b"] {
+            db.query(&format!("CREATE (:Entity {{id: '{id}'}})"))
+                .unwrap();
+        }
+        db
+    }
+
+    fn assert_budget(error: HawDBError, option: &str) {
+        let HawDBError::ResourceBudgetExceeded(error) = error else {
+            panic!("expected a typed budget refusal, got {error:?}");
+        };
+        assert_eq!(error.budget_option, option, "{error:?}");
+        assert_eq!(error.owner, "mutation RETURN rows");
+    }
+
+    const DELETE_BOTH: &str = "MATCH (e:Entity) DETACH DELETE e RETURN e.id AS id";
+    const CREATE_ONE: &str = "CREATE (n:Item {id: 'a', body: 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'}) RETURN n.body AS body";
+
+    /// Mutation result limits on RETURN rows are typed budget refusals that
+    /// write nothing; a count stays one row.
+    fn assert_typed_refusals(
+        rows_limited: &mut dyn for<'a> FnMut(QueryRequest<'a>) -> crate::Result<QueryOutput>,
+        payload_limited: &mut dyn for<'a> FnMut(QueryRequest<'a>) -> crate::Result<QueryOutput>,
+    ) {
+        let total =
+            |execute: &mut dyn for<'a> FnMut(QueryRequest<'a>) -> crate::Result<QueryOutput>,
+             query: &str| {
+                execute(QueryRequest::new(query)).unwrap().rows[0]["total"].clone()
+            };
+        assert_budget(
+            rows_limited(QueryRequest::new(DELETE_BOTH)).unwrap_err(),
+            "MutationLimits.max_result_rows",
+        );
+        assert_eq!(
+            total(rows_limited, "MATCH (e:Entity) RETURN count(e) AS total"),
+            Value::Int(2)
+        );
+        assert_budget(
+            payload_limited(QueryRequest::new(CREATE_ONE)).unwrap_err(),
+            "MutationLimits.max_result_payload_bytes",
+        );
+        assert_eq!(
+            total(payload_limited, "MATCH (n:Item) RETURN count(n) AS total"),
+            Value::Int(0)
+        );
+        let counted = rows_limited(QueryRequest::new(
+            "MATCH (e:Entity) DETACH DELETE e RETURN count(*) AS total",
+        ))
+        .unwrap();
+        assert_eq!(counted.rows[0]["total"], Value::Int(2));
+    }
+
+    #[test]
+    fn mutation_return_result_limits_are_typed_on_every_execution_surface() {
+        let (mut rows, mut payload) = (limited(1, 1 << 20), limited(16, 64));
+        assert_typed_refusals(&mut |request| rows.query_request(request), &mut |request| {
+            payload.query_request(request)
+        });
+
+        let (mut rows, mut payload) = (limited(1, 1 << 20), limited(16, 64));
+        let mut rows_transaction = rows.begin_transaction().unwrap();
+        let mut payload_transaction = payload.begin_transaction().unwrap();
+        assert_typed_refusals(
+            &mut |request| rows_transaction.query_request(request),
+            &mut |request| payload_transaction.query_request(request),
+        );
+        rows_transaction.rollback();
+        payload_transaction.rollback();
+
+        let rows = ConcurrentDatabase::new(limited(1, 1 << 20));
+        let payload = ConcurrentDatabase::new(limited(16, 64));
+        assert_typed_refusals(&mut |request| rows.query_request(request), &mut |request| {
+            payload.query_request(request)
+        });
+        let rows = ConcurrentDatabase::new(limited(1, 1 << 20));
+        let payload = ConcurrentDatabase::new(limited(16, 64));
+        let mut rows_transaction = rows
+            .begin_transaction(ConcurrentTransactionOptions::default())
+            .unwrap();
+        let mut payload_transaction = payload
+            .begin_transaction(ConcurrentTransactionOptions::default())
+            .unwrap();
+        assert_typed_refusals(
+            &mut |request| rows_transaction.query_request(request),
+            &mut |request| payload_transaction.query_request(request),
+        );
+        rows_transaction.commit().unwrap();
+        payload_transaction.commit().unwrap();
+    }
+}
