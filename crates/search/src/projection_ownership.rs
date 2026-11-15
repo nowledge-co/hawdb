@@ -12,24 +12,29 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Durable record of a projection's externally owned kinds (#1814).
+//! Durable records of a projection's externally owned kinds (#1814).
 //!
 //! A host that supplies the documents of some kinds itself (its own text,
 //! metadata and embeddings) must keep graph changefeed catch-up from
-//! re-deriving and replacing them. The set is passed at open and recorded in
-//! one sidecar file in the projection directory, beside the existing
-//! `.reindex_needed` markers. It is deliberately not a selector manifest
-//! field: readers from 0.31 through 0.33 refuse unknown manifest fields,
-//! while they ignore this file (it parses as no artifact, does not start with
-//! the `search_` prefix that headless-root checks refuse, and matches no
-//! scratch pattern), so the projection stays readable after a downgrade.
+//! re-deriving and replacing them. Two sidecar files in the projection
+//! directory, beside the existing `.reindex_needed` markers, carry this:
 //!
-//! Recovery rule: when no record exists, a maintenance open records the
-//! requested set (this also restores a record that an older binary's
-//! operator removed). When a record exists and differs from the requested
-//! set, the open is refused with
-//! [`HawDBError::SearchProjectionOwnershipMismatch`]; nothing diverges
-//! silently between, for example, a preparation flow and a runtime.
+//! - [`MARKER`] records the set passed at open;
+//! - [`ROWS_MARKER`] records whether the host must (re)supply its rows, as a
+//!   monotonically increasing epoch.
+//!
+//! Neither is a selector manifest field: readers from 0.31 through 0.33
+//! refuse unknown manifest fields, while they ignore these files (they parse
+//! as no artifact, do not start with the `search_` prefix that headless-root
+//! checks refuse, and match no scratch pattern), so the projection stays
+//! readable after a downgrade.
+//!
+//! Recovery rule: when no set record exists, a maintenance open records the
+//! requested set and raises the rows-required epoch, because nothing proves
+//! the host's rows are present (a new projection, or a record removed out of
+//! band). When a record exists and differs from the requested set, the open
+//! is refused with [`HawDBError::SearchProjectionOwnershipMismatch`]; nothing
+//! diverges silently between, for example, a preparation flow and a runtime.
 
 use crate::SearchProjectionKind;
 use hawdb_core::{HawDBError, Result};
@@ -38,49 +43,141 @@ use std::fs::{self, File};
 use std::io::{ErrorKind, Read, Write};
 use std::path::Path;
 
-/// File name of the record inside the projection directory.
+/// File name of the set record inside the projection directory.
 pub const MARKER: &str = ".externally_owned_search_kinds";
+/// File name of the rows-required state inside the projection directory.
+pub const ROWS_MARKER: &str = ".externally_owned_rows_required";
 const HEADER: &str = "hawdb externally owned search kinds v1";
-/// Header, six kind names and their separators fit comfortably.
+const ROWS_HEADER: &str = "hawdb externally owned rows v1";
+/// Headers, six kind names, an epoch and their separators fit comfortably.
 const MAX_MARKER_BYTES: u64 = 4096;
 
-/// Whether `name` is the record or one of its write temporaries. Generation
+/// Whether `name` is a record or one of its write temporaries. Generation
 /// cleanup never treats these as candidates.
 pub(crate) fn is_record_name(name: &str) -> bool {
-    name.strip_prefix(MARKER)
-        .is_some_and(|rest| rest.is_empty() || rest.starts_with(".tmp."))
+    [MARKER, ROWS_MARKER].iter().any(|marker| {
+        name.strip_prefix(marker)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(".tmp."))
+    })
+}
+
+/// Whether the host must (re)supply the documents of its externally owned
+/// kinds.
+///
+/// `epoch` only grows. It is raised whenever HawDB cannot prove the host's
+/// documents are present: when ownership is first recorded for a projection
+/// directory, or when a rebuild could not carry the previous documents over.
+/// The host re-pushes its rows, then acknowledges the epoch it observed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ExternallyOwnedRowsState {
+    pub epoch: u64,
+    pub required: bool,
+}
+
+impl ExternallyOwnedRowsState {
+    /// The epoch the host must acknowledge, while rows are required.
+    pub fn required_epoch(self) -> Option<u64> {
+        self.required.then_some(self.epoch)
+    }
+
+    /// The next raised state.
+    pub fn raised(self) -> Self {
+        Self {
+            epoch: self.epoch.saturating_add(1),
+            required: true,
+        }
+    }
 }
 
 /// Reads the recorded set, or `None` when the projection has no record.
 pub fn read_recorded_kinds(projection: &Path) -> Result<Option<BTreeSet<SearchProjectionKind>>> {
-    let path = projection.join(MARKER);
-    let file = match File::open(&path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
+    let Some(text) = read_bounded(projection, MARKER)? else {
+        return Ok(None);
     };
-    let mut text = String::new();
-    file.take(MAX_MARKER_BYTES + 1).read_to_string(&mut text)?;
-    if text.len() as u64 > MAX_MARKER_BYTES {
-        return Err(malformed(projection, "exceeds its size bound"));
-    }
     let mut lines = text.lines();
     if lines.next() != Some(HEADER) {
-        return Err(malformed(projection, "has an unknown header"));
+        return Err(malformed(projection, MARKER, "has an unknown header"));
     }
     let mut kinds = BTreeSet::new();
     for line in lines.filter(|line| !line.is_empty()) {
         let kind = SearchProjectionKind::from_name(line)
-            .ok_or_else(|| malformed(projection, "names an unknown kind"))?;
+            .ok_or_else(|| malformed(projection, MARKER, "names an unknown kind"))?;
         if !kinds.insert(kind) {
-            return Err(malformed(projection, "repeats a kind"));
+            return Err(malformed(projection, MARKER, "repeats a kind"));
         }
     }
     Ok(Some(kinds))
 }
 
+/// Reads the rows-required state; an absent file is epoch 0, not required.
+pub fn read_rows_state(projection: &Path) -> Result<ExternallyOwnedRowsState> {
+    let Some(text) = read_bounded(projection, ROWS_MARKER)? else {
+        return Ok(ExternallyOwnedRowsState::default());
+    };
+    let bad = |problem| malformed(projection, ROWS_MARKER, problem);
+    let mut lines = text.lines();
+    if lines.next() != Some(ROWS_HEADER) {
+        return Err(bad("has an unknown header"));
+    }
+    let epoch = lines
+        .next()
+        .and_then(|line| line.strip_prefix("epoch "))
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or_else(|| bad("has no epoch"))?;
+    let required = match lines.next() {
+        Some("required") => true,
+        Some("restored") => false,
+        _ => return Err(bad("has no state")),
+    };
+    if lines.any(|line| !line.is_empty()) {
+        return Err(bad("has trailing lines"));
+    }
+    Ok(ExternallyOwnedRowsState { epoch, required })
+}
+
+/// Durably writes `state`.
+pub fn write_rows_state(projection: &Path, state: ExternallyOwnedRowsState) -> Result<()> {
+    let text = format!(
+        "{ROWS_HEADER}\nepoch {}\n{}\n",
+        state.epoch,
+        if state.required {
+            "required"
+        } else {
+            "restored"
+        }
+    );
+    write_durably(projection, ROWS_MARKER, &text)
+}
+
+/// Raises the rows-required epoch and returns it.
+pub fn raise_rows_required(projection: &Path) -> Result<u64> {
+    let raised = read_rows_state(projection)?.raised();
+    write_rows_state(projection, raised)?;
+    Ok(raised.epoch)
+}
+
+/// Clears the requirement only if `epoch` is still the required epoch.
+///
+/// Returns `false`, changing nothing, when no rows are required or `epoch`
+/// is stale because a later rebuild raised a newer one.
+pub fn acknowledge_rows_restored(projection: &Path, epoch: u64) -> Result<bool> {
+    let state = read_rows_state(projection)?;
+    if state.required_epoch() != Some(epoch) {
+        return Ok(false);
+    }
+    write_rows_state(
+        projection,
+        ExternallyOwnedRowsState {
+            epoch,
+            required: false,
+        },
+    )?;
+    Ok(true)
+}
+
 /// Compares the requested set with the record and, when `may_record` and no
-/// record exists, durably records a non-empty requested set.
+/// record exists, durably records a non-empty requested set after raising
+/// the rows-required epoch.
 ///
 /// An empty request against an absent record writes nothing, so projections
 /// that never opt in keep their exact directory contents.
@@ -97,19 +194,42 @@ pub fn reconcile(
             requested: names(requested),
         }),
         None if requested.is_empty() || !may_record => Ok(()),
-        None => write_record(projection, requested),
+        None => {
+            // Raise first: a crash before the set is recorded raises again.
+            raise_rows_required(projection)?;
+            write_record(projection, requested)
+        }
     }
 }
 
-fn write_record(projection: &Path, kinds: &BTreeSet<SearchProjectionKind>) -> Result<()> {
+/// Durably records `kinds` without consulting an existing record.
+pub fn write_record(projection: &Path, kinds: &BTreeSet<SearchProjectionKind>) -> Result<()> {
     let mut text = String::from(HEADER);
     for kind in kinds {
         text.push('\n');
         text.push_str(kind.as_str());
     }
     text.push('\n');
-    let target = projection.join(MARKER);
-    let temporary = projection.join(format!("{MARKER}.tmp.{}", std::process::id()));
+    write_durably(projection, MARKER, &text)
+}
+
+fn read_bounded(projection: &Path, name: &str) -> Result<Option<String>> {
+    let file = match File::open(projection.join(name)) {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let mut text = String::new();
+    file.take(MAX_MARKER_BYTES + 1).read_to_string(&mut text)?;
+    if text.len() as u64 > MAX_MARKER_BYTES {
+        return Err(malformed(projection, name, "exceeds its size bound"));
+    }
+    Ok(Some(text))
+}
+
+fn write_durably(projection: &Path, name: &str, text: &str) -> Result<()> {
+    let target = projection.join(name);
+    let temporary = projection.join(format!("{name}.tmp.{}", std::process::id()));
     let written = (|| -> std::io::Result<()> {
         let mut file = File::create(&temporary)?;
         file.write_all(text.as_bytes())?;
@@ -127,10 +247,10 @@ fn names(kinds: &BTreeSet<SearchProjectionKind>) -> Vec<String> {
     kinds.iter().map(|kind| kind.as_str().to_string()).collect()
 }
 
-fn malformed(projection: &Path, problem: &str) -> HawDBError {
+fn malformed(projection: &Path, name: &str, problem: &str) -> HawDBError {
     HawDBError::StorageIntegrity(format!(
-        "externally owned search kinds record {} {problem}",
-        projection.join(MARKER).display()
+        "externally owned search record {} {problem}",
+        projection.join(name).display()
     ))
 }
 
@@ -163,6 +283,8 @@ mod tests {
             fs::read_to_string(root.join(MARKER)).unwrap(),
             format!("{HEADER}\nmemory\nentity\n")
         );
+        // Nothing proves the host's rows are present yet.
+        assert_eq!(read_rows_state(&root).unwrap().required_epoch(), Some(1));
         reconcile(&root, &owned, true).unwrap();
         for requested in [
             BTreeSet::new(),
@@ -179,10 +301,54 @@ mod tests {
             );
         }
         assert_eq!(read_recorded_kinds(&root).unwrap(), Some(owned.clone()));
-        // A record removed out of band is restored from the requested set.
+        // A record removed out of band is restored and raises a newer epoch.
         fs::remove_file(root.join(MARKER)).unwrap();
         reconcile(&root, &owned, true).unwrap();
         assert_eq!(read_recorded_kinds(&root).unwrap(), Some(owned));
+        assert_eq!(read_rows_state(&root).unwrap().required_epoch(), Some(2));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn acknowledgement_clears_only_the_current_epoch() {
+        let root = directory("acknowledge");
+        assert_eq!(
+            read_rows_state(&root).unwrap(),
+            ExternallyOwnedRowsState::default()
+        );
+        assert!(!acknowledge_rows_restored(&root, 0).unwrap());
+        assert_eq!(raise_rows_required(&root).unwrap(), 1);
+        assert_eq!(raise_rows_required(&root).unwrap(), 2);
+        assert!(
+            !acknowledge_rows_restored(&root, 1).unwrap(),
+            "a stale epoch changes nothing"
+        );
+        assert_eq!(read_rows_state(&root).unwrap().required_epoch(), Some(2));
+        assert!(acknowledge_rows_restored(&root, 2).unwrap());
+        assert_eq!(
+            read_rows_state(&root).unwrap(),
+            ExternallyOwnedRowsState {
+                epoch: 2,
+                required: false
+            }
+        );
+        assert!(!acknowledge_rows_restored(&root, 2).unwrap());
+        assert_eq!(
+            raise_rows_required(&root).unwrap(),
+            3,
+            "epochs never repeat"
+        );
+        for text in [
+            "epoch 1\nrequired\n",
+            &format!("{ROWS_HEADER}\nepoch x\nrequired\n"),
+            &format!("{ROWS_HEADER}\nepoch 1\nmaybe\n"),
+        ] {
+            fs::write(root.join(ROWS_MARKER), text).unwrap();
+            assert!(matches!(
+                read_rows_state(&root),
+                Err(HawDBError::StorageIntegrity(_))
+            ));
+        }
         fs::remove_dir_all(root).unwrap();
     }
 

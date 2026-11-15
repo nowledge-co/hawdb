@@ -76,6 +76,11 @@ impl Default for SearchProjectionRebuildOptions {
 /// catch-up hydrator applies. The rebuild calls the source twice, once to
 /// build and once to verify, against the same snapshot; both passes must
 /// produce the same documents.
+///
+/// Rows of kinds the store declares externally owned (#1814) never reach
+/// `hydrate_graph_rows`: the rebuild carries the current projection's
+/// document for each live node over instead. `visit_host_rows` output is
+/// unaffected.
 pub trait SearchProjectionRebuildSource {
     /// Adjusts one bounded batch of canonical graph rows, for example by
     /// attaching embeddings. Rows may be changed or removed; each document ID
@@ -239,7 +244,41 @@ impl EmbeddedStoreHandle {
         let task = permit
             .bind_task_context(task)
             .with_memory_reservation(hawdb_core::RuntimeMemoryReservation::new(working, 0));
-        let result = self.rebuild_into_stage(&stage, &options, source, &task);
+        let (owned, previous) = {
+            let store = self.read_store()?;
+            (
+                Arc::clone(&store.externally_owned_search_kinds),
+                store.search_projection_path.clone(),
+            )
+        };
+        let unavailable = (!owned.is_empty())
+            .then(|| self.carry_over_unavailable(&owned))
+            .flatten();
+        let mut carry_over;
+        let source: &mut dyn SearchProjectionRebuildSource = if owned.is_empty() {
+            source
+        } else {
+            carry_over = CarryOver {
+                handle: self,
+                owned: &owned,
+                inner: source,
+                available: unavailable.is_none(),
+            };
+            &mut carry_over
+        };
+        let result = self
+            .rebuild_into_stage(&stage, &options, source, &task)
+            .and_then(|built| {
+                if !owned.is_empty() {
+                    record_ownership(
+                        &stage.path,
+                        &owned,
+                        previous.as_deref(),
+                        unavailable.is_some(),
+                    )?;
+                }
+                Ok(built)
+            });
         let BuiltStage {
             sorting,
             build,
@@ -407,6 +446,153 @@ impl EmbeddedStoreHandle {
             verification: SearchProjectionRebuildVerification { graph, generation },
             counts,
             epoch,
+        })
+    }
+}
+
+/// Upper bound of one carry-over lookup's payload admission.
+const CARRY_OVER_MAX_BATCH_BYTES: usize = 64 * 1024 * 1024;
+
+#[cfg(test)]
+thread_local! {
+    /// Makes the previous projection unavailable to carry-over in tests.
+    pub(super) static FAIL_CARRY_OVER_PROBE: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// Carries the host's current documents of externally owned kinds into a
+/// rebuild instead of deriving them from the graph (#1814).
+///
+/// Rows of owned kinds never reach the host's `hydrate_graph_rows`: for each
+/// live node the document the current projection holds is used unchanged,
+/// and a node without one gets no document. When the current projection is
+/// unavailable at the start, owned rows are dropped and the rebuilt
+/// directory raises the rows-required epoch so the host re-pushes them.
+struct CarryOver<'a> {
+    handle: &'a EmbeddedStoreHandle,
+    owned: &'a BTreeSet<SearchProjectionKind>,
+    inner: &'a mut dyn SearchProjectionRebuildSource,
+    available: bool,
+}
+
+/// Records the set and the rows-required state in the verified stage, so
+/// both install atomically with the generation. The epoch continues from the
+/// previous directory and is raised when carry-over was impossible.
+fn record_ownership(
+    stage: &Path,
+    owned: &BTreeSet<SearchProjectionKind>,
+    previous: Option<&Path>,
+    carry_over_failed: bool,
+) -> Result<()> {
+    use crate::search::projection_ownership::{
+        read_rows_state, write_record, write_rows_state, ExternallyOwnedRowsState,
+    };
+    let (base, readable) = match previous.map(read_rows_state).transpose() {
+        Ok(state) => (state.unwrap_or_default(), true),
+        Err(_) => (ExternallyOwnedRowsState::default(), false),
+    };
+    let state = if carry_over_failed || !readable {
+        base.raised()
+    } else {
+        base
+    };
+    if state != ExternallyOwnedRowsState::default() {
+        write_rows_state(stage, state)?;
+    }
+    write_record(stage, owned)
+}
+
+impl SearchProjectionRebuildSource for CarryOver<'_> {
+    fn hydrate_graph_rows(
+        &mut self,
+        snapshot: &mut DatabaseReadTransaction,
+        rows: &mut Vec<SearchProjectionRow>,
+    ) -> Result<()> {
+        let (owned, mut others): (Vec<_>, Vec<_>) = std::mem::take(rows)
+            .into_iter()
+            .partition(|row| self.owned.contains(&row.kind));
+        self.inner.hydrate_graph_rows(snapshot, &mut others)?;
+        if !owned.is_empty() && self.available {
+            let ids = owned
+                .iter()
+                .map(|row| format!("{}:{}", row.kind.as_str(), row.external_id))
+                .collect::<Vec<_>>();
+            let found = self.handle.lookup_previous(&ids)?;
+            let mut by_id = found
+                .into_iter()
+                .map(|document| (document.id.clone(), document))
+                .collect::<BTreeMap<_, _>>();
+            for (row, id) in owned.into_iter().zip(ids) {
+                if let Some(document) = by_id.remove(&id) {
+                    others.push(row_from_carried(row, document));
+                }
+            }
+        }
+        *rows = others;
+        Ok(())
+    }
+
+    fn visit_host_rows(
+        &mut self,
+        snapshot: &mut DatabaseReadTransaction,
+        emit: &mut dyn FnMut(SearchProjectionRow) -> Result<()>,
+    ) -> Result<()> {
+        self.inner.visit_host_rows(snapshot, emit)
+    }
+
+    fn progress(&mut self, progress: &SearchProjectionRebuildProgress) {
+        self.inner.progress(progress);
+    }
+}
+
+/// Turns a carried document back into the row that reproduces it exactly:
+/// `into_document` re-inserts the identity keys removed here.
+fn row_from_carried(row: SearchProjectionRow, document: SearchDocument) -> SearchProjectionRow {
+    let SearchDocument {
+        title,
+        content,
+        embedding,
+        mut metadata,
+        ..
+    } = document;
+    metadata.remove("kind");
+    metadata.remove("external_id");
+    let source_id = metadata.remove("source_id");
+    SearchProjectionRow {
+        kind: row.kind,
+        external_id: row.external_id,
+        title,
+        body: content,
+        embedding,
+        source_id,
+        metadata,
+    }
+}
+
+impl EmbeddedStoreHandle {
+    /// Why the current projection cannot serve carry-over, if it cannot.
+    fn carry_over_unavailable(&self, owned: &BTreeSet<SearchProjectionKind>) -> Option<String> {
+        #[cfg(test)]
+        if FAIL_CARRY_OVER_PROBE.with(std::cell::Cell::get) {
+            return Some("injected carry-over failure".into());
+        }
+        let kind = owned.first()?.as_str();
+        self.lookup_previous(&[format!("{kind}:")])
+            .err()
+            .map(|error| error.to_string())
+    }
+
+    /// Documents the current projection holds for `ids`, missing ones
+    /// omitted, under one bounded read admission.
+    fn lookup_previous(&self, ids: &[String]) -> Result<Vec<SearchDocument>> {
+        let budget = crate::EmbeddedReadSnapshotBudget {
+            max_rows: ids.len(),
+            max_payload_bytes: CARRY_OVER_MAX_BATCH_BYTES,
+        };
+        self.with_bounded_read_snapshot(budget, |snapshot| {
+            snapshot
+                .lookup_search_projection_documents(ids)
+                .map(|lookup| lookup.documents)
         })
     }
 }

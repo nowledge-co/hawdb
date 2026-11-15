@@ -511,8 +511,15 @@ kinds stay graph-derived, that all six kinds can be owned at once, and that
 reopen keeps the mode. The default open still replaces the document and writes
 no record. A different set, including the empty set, is refused with the typed
 `SearchProjectionOwnershipMismatch` without changing the record, and a removed
-record is restored. Search-crate owners `projection_ownership::tests` and
-`generation_cleanup::tests::cleanup_preserves_the_externally_owned_kinds_record`
+record is restored. The rows-required epoch is raised on first record and on
+restore. A stale acknowledgement does not clear a newer epoch, and read-only
+opens report the epoch but cannot acknowledge it. A manufactured changefeed gap
+(a change log of two entries) is recovered by the resident rebuild with metadata
+repair and by the out-of-core rebuild. In both, documents of live nodes are
+carried over byte-identical, and documents of nodes deleted during the gap are
+dropped. When carry-over is made impossible by an injected probe failure, the
+rebuilt directory raises the epoch instead. Search-crate owners `projection_ownership::tests` and
+`generation_cleanup::tests::cleanup_preserves_the_externally_owned_records`
 cover the record format and cleanup preservation; `bindings/python`
 `errors::tests::search_projection_ownership_mismatch_is_an_execution_error_with_both_sets`
 pins the binding mapping. The fixtures are small temporary stores; no lane,

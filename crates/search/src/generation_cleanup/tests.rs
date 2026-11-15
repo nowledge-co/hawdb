@@ -265,12 +265,14 @@ fn quarantined_generation_is_deleted_without_removing_the_live_artifact() {
 }
 
 #[test]
-fn cleanup_preserves_the_externally_owned_kinds_record() {
+fn cleanup_preserves_the_externally_owned_records() {
     let root = test_root("ownership-record");
     fs::create_dir_all(&root).unwrap();
     let record = root.join(crate::EXTERNALLY_OWNED_KINDS_MARKER);
     let temporary = root.join(format!("{}.tmp.7", crate::EXTERNALLY_OWNED_KINDS_MARKER));
+    let rows = root.join(crate::EXTERNALLY_OWNED_ROWS_MARKER);
     let obsolete = root.join("search_rabitq.7.hawdb.corrupt.42.9");
+    fs::write(&rows, b"rows").unwrap();
     fs::write(&record, b"record").unwrap();
     fs::write(&temporary, b"temporary").unwrap();
     fs::write(&obsolete, b"obsolete").unwrap();
@@ -288,6 +290,7 @@ fn cleanup_preserves_the_externally_owned_kinds_record() {
     assert_eq!(report.deleted_files, 1);
     assert!(!obsolete.exists());
     assert!(record.exists());
+    assert!(rows.exists());
     assert!(temporary.exists());
     fs::remove_dir_all(root).unwrap();
 }

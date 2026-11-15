@@ -4,8 +4,14 @@
 //! Externally owned search projection kinds (#1814).
 
 use super::*;
-use crate::search::{SearchDocument, EXTERNALLY_OWNED_KINDS_MARKER};
-use crate::IncrementalSearchMaintenanceOptions;
+use crate::search::{
+    MetadataRepairOptions, SearchDocument, SearchRebuildOptions, EXTERNALLY_OWNED_KINDS_MARKER,
+    EXTERNALLY_OWNED_ROWS_MARKER,
+};
+use crate::{
+    GraphOnlySearchProjectionRebuild, IncrementalSearchMaintenanceOptions, RuntimeTaskContext,
+    SearchProjectionRebuildOptions,
+};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -27,12 +33,33 @@ fn options(
     layout: Layout,
     kinds: BTreeSet<SearchProjectionKind>,
 ) -> EmbeddedStoreOpenOptions {
-    let options = EmbeddedStoreOpenOptions::with_search_projection(
-        root.join("graph"),
-        root.join("search"),
+    options_at(
+        root,
+        "search",
+        layout,
+        kinds,
         GraphMode::WritableCutover,
+        None,
+    )
+}
+
+fn options_at(
+    root: &Path,
+    search: &str,
+    layout: Layout,
+    kinds: BTreeSet<SearchProjectionKind>,
+    mode: GraphMode,
+    config: Option<&DatabaseConfig>,
+) -> EmbeddedStoreOpenOptions {
+    let mut options = EmbeddedStoreOpenOptions::with_search_projection(
+        root.join("graph"),
+        root.join(search),
+        mode,
     )
     .with_externally_owned_search_kinds(kinds);
+    if let Some(config) = config {
+        options = options.with_database_config(config.clone());
+    }
     match layout {
         Layout::Resident => options,
         Layout::OutOfCore => options
@@ -46,6 +73,15 @@ fn open_fresh(
     name: &str,
     layout: Layout,
     kinds: BTreeSet<SearchProjectionKind>,
+) -> (PathBuf, EmbeddedStoreHandle) {
+    open_fresh_with(name, layout, kinds, None)
+}
+
+fn open_fresh_with(
+    name: &str,
+    layout: Layout,
+    kinds: BTreeSet<SearchProjectionKind>,
+    config: Option<&DatabaseConfig>,
 ) -> (PathBuf, EmbeddedStoreHandle) {
     let root = unique_embedded_store_test_dir(name);
     if layout == Layout::OutOfCore {
@@ -64,8 +100,15 @@ fn open_fresh(
         index.checkpoint().unwrap();
         drop(index);
     }
-    let (handle, _) =
-        EmbeddedStoreHandle::open_with_options(options(&root, layout, kinds)).unwrap();
+    let (handle, _) = EmbeddedStoreHandle::open_with_options(options_at(
+        &root,
+        "search",
+        layout,
+        kinds,
+        GraphMode::WritableCutover,
+        config,
+    ))
+    .unwrap();
     (root, handle)
 }
 
@@ -136,10 +179,20 @@ fn host_document_then_graph_update(handle: &EmbeddedStoreHandle) -> SearchDocume
 
 fn assert_owned_lifecycle(layout: Layout) {
     let (root, handle) = open_fresh(&format!("owned_kinds_{layout:?}"), layout, owned());
+    let status = handle.runtime_status().unwrap().json();
     assert_eq!(
-        handle.runtime_status().unwrap().json()["projection"]["externally_owned_kinds"],
+        status["projection"]["externally_owned_kinds"],
         serde_json::json!(["memory", "entity"])
     );
+    // Newly recorded ownership: nothing proves the host's rows are present.
+    assert_eq!(
+        status["projection"]["externally_owned_rows_required_epoch"],
+        serde_json::json!(1)
+    );
+    assert!(handle
+        .acknowledge_externally_owned_rows_restored(1)
+        .unwrap());
+    assert_eq!(handle.externally_owned_rows_required_epoch().unwrap(), None);
     handle
         .query_with_report("CREATE (:Memory {id: 'early', title: 'no host row yet'})")
         .unwrap();
@@ -217,10 +270,10 @@ fn default_open_keeps_graph_derived_replacement() {
         let replaced = document(&handle, MEMORY).expect("graph-derived document");
         assert_eq!(replaced.title, "retitled");
         assert_eq!(replaced.embedding, None);
-        assert!(!root
-            .join("search")
-            .join(EXTERNALLY_OWNED_KINDS_MARKER)
-            .exists());
+        for marker in [EXTERNALLY_OWNED_KINDS_MARKER, EXTERNALLY_OWNED_ROWS_MARKER] {
+            assert!(!root.join("search").join(marker).exists());
+        }
+        assert_eq!(handle.externally_owned_rows_required_epoch().unwrap(), None);
         assert!(handle
             .runtime_status()
             .unwrap()
@@ -270,6 +323,59 @@ fn reopen_refuses_a_different_set_and_restores_a_missing_record() {
         let (handle, _) =
             EmbeddedStoreHandle::open_with_options(options(&root, layout, owned())).unwrap();
         assert_eq!(std::fs::read(&record).unwrap(), recorded);
+        // The host observed epoch 1 before the record was restored, which
+        // raised epoch 2: its stale acknowledgement must not clear it.
+        assert_eq!(
+            handle.externally_owned_rows_required_epoch().unwrap(),
+            Some(2)
+        );
+        assert!(!handle
+            .acknowledge_externally_owned_rows_restored(1)
+            .unwrap());
+        assert_eq!(
+            handle.externally_owned_rows_required_epoch().unwrap(),
+            Some(2)
+        );
+        drop(handle);
+
+        // Read-only openers see the epoch and cannot acknowledge it.
+        let (reader, _) = EmbeddedStoreHandle::open_with_options(options_at(
+            &root,
+            "search",
+            layout,
+            owned(),
+            GraphMode::ShadowReadOnly,
+            None,
+        ))
+        .unwrap();
+        assert_eq!(
+            reader
+                .runtime_status()
+                .unwrap()
+                .externally_owned_rows_required_epoch,
+            Some(2)
+        );
+        assert!(matches!(
+            reader.acknowledge_externally_owned_rows_restored(2),
+            Err(HawDBError::Semantic(_))
+        ));
+        drop(reader);
+
+        let (handle, _) =
+            EmbeddedStoreHandle::open_with_options(options(&root, layout, owned())).unwrap();
+        assert!(handle
+            .acknowledge_externally_owned_rows_restored(2)
+            .unwrap());
+        assert!(!handle
+            .acknowledge_externally_owned_rows_restored(2)
+            .unwrap());
+        assert_eq!(
+            handle
+                .runtime_status()
+                .unwrap()
+                .externally_owned_rows_required_epoch,
+            None
+        );
         drop(handle);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -361,6 +467,175 @@ fn every_projection_kind_can_be_externally_owned() {
         for id in &ids {
             assert_eq!(document(&handle, id), None, "{layout:?} {id}");
         }
+        drop(handle);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+fn gap_config() -> DatabaseConfig {
+    DatabaseConfig {
+        max_search_projection_change_log_entries: Some(2),
+        ..DatabaseConfig::default()
+    }
+}
+
+fn host_row(kind: SearchProjectionKind, id: &str) -> SearchProjectionRow {
+    SearchProjectionRow {
+        kind,
+        external_id: id.into(),
+        title: format!("host {id}"),
+        body: format!("host body {id}"),
+        embedding: Some(vec![0.6, 0.8]),
+        source_id: Some(format!("thread-{id}")),
+        metadata: BTreeMap::from([
+            ("space_id".to_string(), "default".to_string()),
+            ("host_key".to_string(), id.to_string()),
+        ]),
+    }
+}
+
+/// Host rows for `kept` and `gone`, then more graph commits than the change
+/// log retains: `kept` is retitled, `gone` deleted and `late` created. Returns
+/// the host documents before the gap.
+fn manufacture_gap(handle: &EmbeddedStoreHandle) -> (SearchDocument, SearchDocument) {
+    for statement in [
+        "CREATE (:Memory {id: 'kept', title: 'graph kept'})",
+        "CREATE (:Memory {id: 'gone', title: 'graph gone'})",
+    ] {
+        handle.query_with_report(statement).unwrap();
+        catch_up(handle);
+    }
+    handle
+        .apply_search_projection_delta_and_checkpoint(SearchProjectionDelta {
+            upserts: vec![
+                host_row(SearchProjectionKind::Memory, "kept"),
+                host_row(SearchProjectionKind::Memory, "gone"),
+            ],
+            max_operations: Some(2),
+            ..Default::default()
+        })
+        .unwrap();
+    let kept = document(handle, "memory:kept").unwrap();
+    let gone = document(handle, "memory:gone").unwrap();
+    for statement in [
+        "MATCH (m:Memory {id: 'kept'}) SET m.title = 'retitled', m.access_count = 9",
+        "MATCH (m:Memory {id: 'gone'}) DETACH DELETE m",
+        "CREATE (:Memory {id: 'late', title: 'no host row'})",
+        "CREATE (:Source {id: 's1', title: 'graph source'})",
+        "CREATE (:Label {name: 'bookkeeping'})",
+    ] {
+        handle.query_with_report(statement).unwrap();
+    }
+    let error = handle
+        .catch_up_search_projection_with_batch_hydrator(64, 64, 8, |_, _| {
+            Ok(SearchProjectionRelationalDelta::default())
+        })
+        .unwrap_err();
+    assert!(error.to_string().contains("rebuild"), "{error}");
+    (kept, gone)
+}
+
+/// The resident recovery for a changefeed gap is a full rebuild from the
+/// graph; owned documents of live nodes are carried over unchanged.
+#[test]
+fn resident_rebuild_after_changefeed_gap_carries_host_documents_over() {
+    let config = gap_config();
+    let owned = BTreeSet::from([SearchProjectionKind::Memory]);
+    let (root, handle) =
+        open_fresh_with("owned_gap_resident", Layout::Resident, owned, Some(&config));
+    assert!(handle
+        .acknowledge_externally_owned_rows_restored(1)
+        .unwrap());
+    let (kept, gone) = manufacture_gap(&handle);
+    {
+        let mut store = handle.write_store().unwrap();
+        let EmbeddedStore {
+            graph,
+            search_projection,
+            ..
+        } = &mut *store;
+        let index = search_projection.as_mut().unwrap().index_mut();
+        graph
+            .database()
+            .rebuild_search_projection(index, SearchRebuildOptions::default())
+            .unwrap();
+        graph
+            .database()
+            .repair_search_projection_metadata(index, MetadataRepairOptions::default())
+            .unwrap();
+        index.checkpoint().unwrap();
+    }
+    assert_eq!(document(&handle, "memory:kept"), Some(kept));
+    assert_eq!(document(&handle, &gone.id), None, "deleted during the gap");
+    assert_eq!(document(&handle, "memory:late"), None, "no host row yet");
+    assert_eq!(document(&handle, SOURCE).unwrap().title, "graph source");
+    assert_eq!(handle.externally_owned_rows_required_epoch().unwrap(), None);
+    catch_up(&handle);
+    drop(handle);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// The out-of-core recovery for a changefeed gap rebuilds into a new
+/// directory: owned documents of live nodes are carried over from the
+/// current projection, or, when it cannot be read, the rebuilt directory
+/// raises the rows-required epoch.
+#[test]
+fn out_of_core_rebuild_after_changefeed_gap_carries_over_or_raises_the_epoch() {
+    for carry_over_fails in [false, true] {
+        let config = gap_config();
+        let owned = BTreeSet::from([SearchProjectionKind::Memory]);
+        let (root, handle) = open_fresh_with(
+            &format!("owned_gap_out_of_core_{carry_over_fails}"),
+            Layout::OutOfCore,
+            owned.clone(),
+            Some(&config),
+        );
+        assert!(handle
+            .acknowledge_externally_owned_rows_restored(1)
+            .unwrap());
+        let (kept, gone) = manufacture_gap(&handle);
+        super::super::search_projection_rebuild::FAIL_CARRY_OVER_PROBE
+            .with(|fail| fail.set(carry_over_fails));
+        let rebuilt = handle.rebuild_out_of_core_search_projection(
+            root.join("rebuilt"),
+            SearchProjectionRebuildOptions::default(),
+            &mut GraphOnlySearchProjectionRebuild,
+            RuntimeTaskContext::default(),
+        );
+        super::super::search_projection_rebuild::FAIL_CARRY_OVER_PROBE.with(|fail| fail.set(false));
+        rebuilt.unwrap();
+        drop(handle);
+
+        let (handle, _) = EmbeddedStoreHandle::open_with_options(options_at(
+            &root,
+            "rebuilt",
+            Layout::OutOfCore,
+            owned.clone(),
+            GraphMode::WritableCutover,
+            Some(&config),
+        ))
+        .unwrap();
+        assert_eq!(document(&handle, &gone.id), None);
+        assert_eq!(document(&handle, "memory:late"), None);
+        assert_eq!(document(&handle, SOURCE).unwrap().title, "graph source");
+        if carry_over_fails {
+            assert_eq!(document(&handle, "memory:kept"), None);
+            let epoch = handle.externally_owned_rows_required_epoch().unwrap();
+            assert_eq!(epoch, Some(2), "continues past the acknowledged epoch 1");
+            handle
+                .apply_search_projection_delta_and_checkpoint(SearchProjectionDelta {
+                    upserts: vec![host_row(SearchProjectionKind::Memory, "kept")],
+                    max_operations: Some(1),
+                    ..Default::default()
+                })
+                .unwrap();
+            assert!(handle
+                .acknowledge_externally_owned_rows_restored(2)
+                .unwrap());
+        }
+        assert_eq!(document(&handle, "memory:kept"), Some(kept));
+        assert_eq!(handle.externally_owned_rows_required_epoch().unwrap(), None);
+        catch_up(&handle);
         drop(handle);
         std::fs::remove_dir_all(root).unwrap();
     }

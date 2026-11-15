@@ -324,6 +324,8 @@ pub const METADATA_REPAIR_MARKER: &str = ".projection_metadata_repair_needed";
 /// selector instead of inside it so earlier readers, which refuse unknown
 /// manifest fields, still open the projection. See [`projection_ownership`].
 pub const EXTERNALLY_OWNED_KINDS_MARKER: &str = projection_ownership::MARKER;
+/// Records whether the host must resupply externally owned rows (#1814).
+pub const EXTERNALLY_OWNED_ROWS_MARKER: &str = projection_ownership::ROWS_MARKER;
 /// The BM25 constants shared with the SQL search index access path.
 use hawdb_executor::bm25::{BM25_B, BM25_K1};
 const TITLE_TERM_FREQUENCY_WEIGHT: usize = 2;
@@ -2230,8 +2232,10 @@ impl SearchIndex {
     /// for nodes of these kinds: their documents are written only by host
     /// deltas, and are removed only when the graph node is deleted (or the
     /// host deletes them). Graph-derived rows of other kinds and every host
-    /// delta are unaffected. Full rebuilds and metadata repair from the graph
-    /// still derive every kind. The set is not persisted by the index; an
+    /// delta are unaffected. A full rebuild from the graph carries the current
+    /// document of every live node of these kinds over unchanged, dropping
+    /// documents whose node no longer exists, and metadata repair leaves them
+    /// untouched. The set is not persisted by the index; an
     /// embedded store records it with
     /// `EmbeddedStoreOpenOptions::with_externally_owned_search_kinds`.
     pub fn set_externally_owned_kinds(&mut self, kinds: BTreeSet<SearchProjectionKind>) {
@@ -2686,6 +2690,20 @@ impl SearchIndex {
                 ) else {
                     return Ok(());
                 };
+                // The host is the only writer of owned kinds: carry its
+                // current document over for a live node instead of deriving
+                // one. Documents of nodes that no longer exist are dropped.
+                let owned = self.externally_owned_kinds.contains(&row.kind);
+                let carried = owned
+                    .then(|| {
+                        self.documents
+                            .get(&format!("{}:{}", row.kind.as_str(), row.external_id))
+                            .cloned()
+                    })
+                    .flatten();
+                if owned && carried.is_none() {
+                    return Ok(());
+                }
                 if options
                     .max_rows
                     .map(|limit| next_documents.len() >= limit)
@@ -2697,7 +2715,7 @@ impl SearchIndex {
                         next_documents.len()
                     )));
                 }
-                let document = row.into_document();
+                let document = carried.unwrap_or_else(|| row.into_document());
                 next_documents.insert(document.id.clone(), document);
                 Ok(())
             })?;
@@ -2860,6 +2878,10 @@ impl SearchIndex {
                 ) else {
                     return Ok(());
                 };
+                // The host owns these documents' metadata as well.
+                if self.externally_owned_kinds.contains(&row.kind) {
+                    return Ok(());
+                }
                 let document = row.into_document();
                 if !self.documents.contains_key(&document.id) {
                     missing_documents += 1;

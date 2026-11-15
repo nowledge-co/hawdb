@@ -35,6 +35,9 @@ pub struct EmbeddedRuntimeStatus {
     /// Kinds whose documents only the host writes; changefeed catch-up derives
     /// no rows for them (#1814). Empty by default.
     pub externally_owned_search_kinds: Vec<SearchProjectionKind>,
+    /// The epoch at which the host must resupply its externally owned rows,
+    /// or `None` when nothing is required (#1814).
+    pub externally_owned_rows_required_epoch: Option<u64>,
 }
 
 impl EmbeddedRuntimeStatus {
@@ -89,6 +92,7 @@ impl EmbeddedRuntimeStatus {
                 "embedding_version": freshness.and_then(|freshness| freshness.embedding_version.as_deref()),
                 "embedding_dimension": freshness.and_then(|freshness| freshness.embedding_dimension),
                 "externally_owned_kinds": self.externally_owned_search_kinds.iter().map(|kind| kind.as_str()).collect::<Vec<_>>(),
+                "externally_owned_rows_required_epoch": self.externally_owned_rows_required_epoch,
                 "commit_lag": self.projection_commit_lag(),
                 "stale": self.projection_stale(),
             },
@@ -290,6 +294,7 @@ mod tests {
                 ..Default::default()
             }),
             externally_owned_search_kinds: Vec::new(),
+            externally_owned_rows_required_epoch: None,
         };
 
         assert_eq!(status.projection_commit_lag(), 8);
@@ -319,6 +324,7 @@ mod tests {
                 projection_freshness: None,
                 file_descriptors: None,
                 externally_owned_search_kinds: Vec::new(),
+                externally_owned_rows_required_epoch: None,
             },
             None,
         );

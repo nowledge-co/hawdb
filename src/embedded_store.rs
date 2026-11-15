@@ -464,8 +464,9 @@ impl EmbeddedStoreOpenOptions {
     /// longer replaces the host's document or drops its embedding. Deleting
     /// the graph node still removes the document. Host deltas remain the only
     /// writer: a node created after opt-in has no document until the host
-    /// supplies one. Other kinds keep graph-derived rows. Full rebuilds and
-    /// metadata repair from the graph still derive every kind. The default
+    /// supplies one. Other kinds keep graph-derived rows. Full rebuilds
+    /// carry the current document of every live node of these kinds over
+    /// instead of deriving it, and metadata repair skips them. The default
     /// is empty, which keeps the graph-derived behaviour for every kind.
     ///
     /// The set is recorded with the projection, in the sidecar file
@@ -477,7 +478,10 @@ impl EmbeddedStoreOpenOptions {
     /// [`HawDBError::SearchProjectionOwnershipMismatch`]. Every opener must
     /// therefore pass the same set; changing it requires rebuilding the
     /// projection into a new directory. `runtime_status()` reports the
-    /// active set.
+    /// active set and, as
+    /// [`EmbeddedStore::externally_owned_rows_required_epoch`], when the host
+    /// must re-push its rows; see
+    /// [`EmbeddedStoreHandle::acknowledge_externally_owned_rows_restored`].
     pub fn with_externally_owned_search_kinds<I>(mut self, kinds: I) -> Self
     where
         I: IntoIterator<Item = SearchProjectionKind>,
@@ -2129,6 +2133,9 @@ pub struct EmbeddedStore {
     non_projection_relational_tables: Arc<BTreeSet<String>>,
     /// Fixed at open by `with_externally_owned_search_kinds` (#1814).
     externally_owned_search_kinds: Arc<BTreeSet<SearchProjectionKind>>,
+    /// The projection directory this store was opened with, when known. Its
+    /// ownership sidecar files are read on demand (#1814).
+    search_projection_path: Option<PathBuf>,
 }
 
 /// Validates the host's declared non-projection relational tables.
@@ -2189,6 +2196,7 @@ impl EmbeddedStore {
             retrieval_projection_advisor: RetrievalProjectionAdvisor::default(),
             non_projection_relational_tables: Arc::default(),
             externally_owned_search_kinds: Arc::default(),
+            search_projection_path: None,
         }
     }
 
@@ -2204,6 +2212,7 @@ impl EmbeddedStore {
             retrieval_projection_advisor,
             non_projection_relational_tables: Arc::default(),
             externally_owned_search_kinds: Arc::default(),
+            search_projection_path: None,
         }
     }
 
@@ -2246,7 +2255,41 @@ impl EmbeddedStore {
                 .set_externally_owned_kinds(owned.clone());
         }
         store.externally_owned_search_kinds = Arc::new(owned);
+        store.search_projection_path = search_projection_path;
         Ok((store, report))
+    }
+
+    /// The epoch at which the host must (re)supply the documents of its
+    /// externally owned kinds, or `None` when nothing is required (#1814).
+    ///
+    /// Read from the projection directory on every call, so read-only
+    /// openers observe it too. The epoch only grows: it is raised when
+    /// ownership is first recorded for a projection directory and when an
+    /// out-of-core rebuild could not carry the previous documents over.
+    pub fn externally_owned_rows_required_epoch(&self) -> Result<Option<u64>> {
+        let Some(path) = &self.search_projection_path else {
+            return Ok(None);
+        };
+        Ok(crate::search::projection_ownership::read_rows_state(path)?.required_epoch())
+    }
+
+    /// Clears the rows-required state after the host re-pushed its rows,
+    /// but only if `epoch` is still the required epoch.
+    ///
+    /// Returns `Ok(false)` and changes nothing when no rows are required or
+    /// `epoch` is stale, for example because a rebuild raised a newer epoch
+    /// after the host observed `epoch`; the host then re-pushes again and
+    /// acknowledges the newer epoch. Read-only opens are refused.
+    pub fn acknowledge_externally_owned_rows_restored(&mut self, epoch: u64) -> Result<bool> {
+        if self.graph.database().config().read_only {
+            return Err(HawDBError::Semantic(
+                "acknowledging externally owned rows requires a writable store".into(),
+            ));
+        }
+        let Some(path) = &self.search_projection_path else {
+            return Ok(false);
+        };
+        crate::search::projection_ownership::acknowledge_rows_restored(path, epoch)
     }
 
     /// Kinds whose search documents only the host writes (#1814), fixed at
@@ -2604,6 +2647,8 @@ impl EmbeddedStore {
                     .iter()
                     .copied()
                     .collect(),
+                externally_owned_rows_required_epoch: self
+                    .externally_owned_rows_required_epoch()?,
             }
         })
     }
