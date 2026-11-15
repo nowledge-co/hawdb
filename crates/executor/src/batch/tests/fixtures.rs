@@ -307,6 +307,7 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
                 rel_type: String::new(),
                 rel_match_properties: BTreeMap::new(),
                 on_create_properties: BTreeMap::new(),
+                on_match_assignments: Vec::new(),
             },
             false,
         ),
@@ -393,6 +394,32 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
                 predicate: None,
                 assignments: Vec::new(),
                 returns: SetNodePropertiesReturnMode::Project(Vec::new()),
+            },
+            false,
+        ),
+        (
+            PhysicalPlan::MatchSetExec(Box::new(MatchSet {
+                input: PhysicalPlan::EmptyExec,
+                bindings: Vec::new(),
+                assignments: Vec::new(),
+                relationship: None,
+                returns: None,
+            })),
+            false,
+        ),
+        (
+            PhysicalPlan::MutationReturn {
+                mutation: Box::new(PhysicalPlan::CreateNode {
+                    label: String::new(),
+                    properties: BTreeMap::new(),
+                }),
+                returns: hawdb_plan_cypher::MutationReturn {
+                    bindings: Vec::new(),
+                    mode: SetNodePropertiesReturnMode::Project(Vec::new()),
+                    state: hawdb_plan_cypher::MutationReturnState::Written,
+                    offset: 0,
+                    limit: None,
+                },
             },
             false,
         ),

@@ -289,8 +289,10 @@ impl CanonicalEndpointBloom {
     fn decode_descriptor_bytes(encoded: &[u8]) -> Result<Self, CanonicalSegmentError> {
         let hash_count = Self::validate_descriptor_bytes(encoded)?;
         let words = encoded[8..]
-            .chunks_exact(8)
-            .map(|word| u64::from_le_bytes(word.try_into().expect("fixed bloom word")))
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|word| u64::from_le_bytes(*word))
             .collect::<Vec<_>>()
             .into_boxed_slice();
         Ok(Self { words, hash_count })

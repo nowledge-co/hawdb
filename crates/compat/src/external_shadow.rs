@@ -556,6 +556,17 @@ fn json_error_from_hawdb(error: HawDBError) -> serde_json::Value {
             });
             response
         }
+        HawDBError::WalRecordLimitExceeded(cause) => {
+            let mut response = json_error("execution", cause.as_ref());
+            response["error"]["details"] = serde_json::json!({
+                "kind": "wal_record_limit_exceeded",
+                "limit": cause.limit.as_str(),
+                "requested": cause.requested,
+                "maximum": cause.maximum,
+                "config_option": cause.limit.config_option(),
+            });
+            response
+        }
         error @ (HawDBError::GraphExpansionCandidateLimitExceeded { .. }
         | HawDBError::GraphExpansionPayloadLimitExceeded { .. }) => json_error("execution", error),
         error @ (HawDBError::TransactionConflict { .. }
@@ -1423,7 +1434,9 @@ fn decode_binary_hex(encoded: &str) -> Result<Vec<u8>> {
     }
     encoded
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|digits| {
             let high = decode_binary_hex_digit(digits[0])?;
             let low = decode_binary_hex_digit(digits[1])?;

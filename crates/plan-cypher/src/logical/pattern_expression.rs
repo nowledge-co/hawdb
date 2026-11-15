@@ -236,8 +236,8 @@ pub(super) fn plan_pattern_expression(
             })
         });
     let mut body = Vec::new();
-    let mut predicate = predicate.as_ref().map(&plan_body).transpose()?;
-    let mut projection = parts.projection.map(&plan_body).transpose()?;
+    let mut predicate = predicate.as_ref().map(plan_body).transpose()?;
+    let mut projection = parts.projection.map(plan_body).transpose()?;
     body.extend(predicate.iter_mut());
     body.extend(projection.iter_mut());
     // Column and map-key reads become locals the executor lends; forms that

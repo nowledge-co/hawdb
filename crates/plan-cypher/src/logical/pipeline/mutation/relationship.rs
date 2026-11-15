@@ -44,9 +44,20 @@ pub(super) fn bind_merge(
     input: &MutationInput<'_>,
     pattern: &MatchPattern,
     on_create: &[SetProperty],
+    on_match: &[SetProperty],
     parameters: &BTreeMap<String, Value>,
 ) -> Result<LogicalPlan> {
     let (relationship, target) = one_hop(pattern, "MERGE")?;
+    let matched_endpoints = !input.patterns.is_empty()
+        && input
+            .patterns
+            .iter()
+            .all(|pattern| pattern.steps.is_empty());
+    if !on_match.is_empty() && !matched_endpoints {
+        return Err(unsupported(
+            "relationship MERGE ON MATCH SET requires two independently matched endpoints",
+        ));
+    }
     if input.patterns.is_empty() {
         require_node_label(&pattern.first)?;
         require_node_label(target)?;
@@ -70,6 +81,13 @@ pub(super) fn bind_merge(
         .all(|pattern| pattern.steps.is_empty())
     {
         let (source, target) = bound_endpoints(input, &pattern.first, target)?;
+        if relationship
+            .variable
+            .as_deref()
+            .is_some_and(|variable| variable == source.variable || variable == target.variable)
+        {
+            return Err(unsupported("MERGE relationship variable is already bound"));
+        }
         let (source_properties, target_properties) =
             bound_filters(input, source, target, parameters)?;
         let on_create_properties = bind_relationship_on_create_set_properties(
@@ -77,6 +95,13 @@ pub(super) fn bind_merge(
             on_create,
             parameters,
         )?;
+        if !on_match.is_empty() && relationship.variable.is_none() {
+            return Err(unsupported(
+                "relationship MERGE ON MATCH SET requires a bound relationship variable",
+            ));
+        }
+        let on_match_assignments =
+            bind_on_match_set_assignments(relationship.variable.as_deref(), on_match, parameters)?;
         return Ok(LogicalPlan::MergeMatchedRelationship {
             source_label: source.label.clone(),
             source_properties,
@@ -85,6 +110,7 @@ pub(super) fn bind_merge(
             rel_type: relationship.rel_type.clone(),
             rel_match_properties: bind_properties(&relationship.properties, parameters)?,
             on_create_properties,
+            on_match_assignments,
         });
     }
     require_reference(&pattern.first)?;

@@ -41,7 +41,7 @@ impl OwnedRoot {
         static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
         loop {
             let serial = NEXT_ROOT
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                     value.checked_add(1)
                 })
                 .expect("text fixture root sequence exhausted");

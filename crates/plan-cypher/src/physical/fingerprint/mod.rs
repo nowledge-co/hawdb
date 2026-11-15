@@ -15,9 +15,10 @@
 use super::{NodeProjectionAccess, PhysicalPlan, PlanChildren};
 use crate::{
     AggregateFunction, AggregateTarget, Aggregation, BatchMutationOperation, BatchMutationValue,
-    ComparisonOp, GraphAlgorithmKind, GraphGroupKeys, PathFunction, Predicate, Projection,
-    ProjectionExpression, RelationshipCountFilter, RelationshipCountLeg, RelationshipOnCreateValue,
-    SetAssignment, SetNodePropertiesReturnMode, SetValue, SortDirection, SortItem, SortKey,
+    ComparisonOp, GraphAlgorithmKind, GraphGroupKeys, MutationReturnBinding, MutationReturnEntity,
+    MutationReturnState, PathFunction, Predicate, Projection, ProjectionExpression,
+    RelationshipCountFilter, RelationshipCountLeg, RelationshipOnCreateValue, SetAssignment,
+    SetNodePropertiesReturnMode, SetValue, SortDirection, SortItem, SortKey,
 };
 use hawdb_core::Value;
 use hawdb_cypher::RelationshipDirection;
@@ -466,6 +467,7 @@ impl PhysicalPlan {
                 rel_type,
                 rel_match_properties,
                 on_create_properties,
+                on_match_assignments,
             } => {
                 output.push_str("MergeMatchedRelationship(");
                 write_identifier(output, source_label);
@@ -477,6 +479,10 @@ impl PhysicalPlan {
                 write_properties(output, rel_match_properties);
                 output.push(',');
                 write_properties(output, on_create_properties);
+                if !on_match_assignments.is_empty() {
+                    output.push_str(",on_match=");
+                    write_set_assignments(output, on_match_assignments);
+                }
                 output.push_str("]->(");
                 write_identifier(output, target_label);
                 output.push(',');
@@ -662,6 +668,113 @@ impl PhysicalPlan {
                 write_set_assignments(output, assignments);
                 output.push_str(",returns=");
                 write_set_return_mode(output, returns);
+                output.push(')');
+            }
+            PhysicalPlan::MatchSetExec(set) => {
+                output.push_str("MatchSetExec(bindings=[");
+                for (index, binding) in set.bindings.iter().enumerate() {
+                    if index > 0 {
+                        output.push(',');
+                    }
+                    write_identifier(output, &binding.variable);
+                    output.push(':');
+                    write_identifier(output, &binding.column);
+                    output.push_str(match binding.entity {
+                        Some(crate::GraphEntityKind::Node) => ":node",
+                        Some(crate::GraphEntityKind::Relationship) => ":relationship",
+                        None => ":value",
+                    });
+                }
+                output.push_str("],assignments=[");
+                for (index, assignment) in set.assignments.iter().enumerate() {
+                    if index > 0 {
+                        output.push(',');
+                    }
+                    write_identifier(output, &assignment.variable);
+                    output.push('.');
+                    write_identifier(output, &assignment.property);
+                    output.push('=');
+                    match &assignment.value {
+                        crate::MatchSetValue::Expression(expression) => {
+                            output.push_str("expression(");
+                            projection::write_projection_expression(output, expression);
+                            output.push(')');
+                        }
+                        crate::MatchSetValue::Local(value) => {
+                            output.push_str("local(");
+                            write_set_value(output, value);
+                            output.push(')');
+                        }
+                    }
+                }
+                output.push(']');
+                if let Some(relationship) = &set.relationship {
+                    output.push_str(if relationship.merge {
+                        ",merge("
+                    } else {
+                        ",create("
+                    });
+                    write_identifier(output, &relationship.source);
+                    output.push(':');
+                    write_identifier(output, &relationship.rel_type);
+                    output.push(':');
+                    write_identifier(output, &relationship.target);
+                    for (name, items) in [
+                        ("properties", &relationship.properties),
+                        ("on_create", &relationship.on_create),
+                    ] {
+                        output.push(',');
+                        output.push_str(name);
+                        output.push_str("={");
+                        for (index, (property, expression)) in items.iter().enumerate() {
+                            if index > 0 {
+                                output.push(',');
+                            }
+                            write_identifier(output, property);
+                            output.push('=');
+                            projection::write_projection_expression(output, expression);
+                        }
+                        output.push('}');
+                    }
+                    output.push(')');
+                }
+                output.push_str(",returns=");
+                match &set.returns {
+                    Some(returns) => {
+                        write_projection_list(output, &returns.items);
+                        output.push_str(if returns.distinct {
+                            ",distinct"
+                        } else {
+                            ",all"
+                        });
+                        output.push_str(",order=");
+                        write_sort_list(output, &returns.order_by);
+                        output.push_str(&format!(",offset={}", returns.offset));
+                        match returns.limit {
+                            Some(limit) => output.push_str(&format!(",limit={limit}")),
+                            None => output.push_str(",limit=none"),
+                        }
+                    }
+                    None => output.push_str("none"),
+                }
+                output.push_str(",input=");
+                set.input.write_instance_fingerprint(output);
+                output.push(')');
+            }
+            PhysicalPlan::MutationReturn { mutation, returns } => {
+                output.push_str(match returns.state {
+                    MutationReturnState::Written => "MutationReturn(written,",
+                    MutationReturnState::Deleted => "MutationReturn(deleted,",
+                });
+                write_mutation_return_bindings(output, &returns.bindings);
+                output.push_str(",returns=");
+                write_set_return_mode(output, &returns.mode);
+                output.push_str(&format!(
+                    ",offset={},limit={:?}",
+                    returns.offset, returns.limit
+                ));
+                output.push_str(",mutation=");
+                mutation.write_instance_fingerprint(output);
                 output.push(')');
             }
             PhysicalPlan::SetRelationshipProperty {

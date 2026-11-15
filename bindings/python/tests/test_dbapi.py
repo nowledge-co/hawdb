@@ -25,6 +25,7 @@ import inspect
 import pickle
 import sys
 import threading
+import time
 import tracemalloc
 from collections import deque
 
@@ -35,6 +36,8 @@ from hawdb import dbapi
 
 CREATE = "CREATE TABLE items (id BIGINT PRIMARY KEY, name TEXT)"
 INSERT = "INSERT INTO items (id, name) VALUES ($1, $2)"
+# 2026-11-14T00:00:00.25Z, a quarter second past midnight UTC.
+TICKS = 1_794_614_400.25
 
 PEP249_ERRORS = [
     dbapi.InterfaceError, dbapi.DatabaseError, dbapi.DataError,
@@ -1189,3 +1192,95 @@ def test_cursor_timestamp_conversion_keeps_unrepresentable_values():
     assert dbapi._sql_value({"$datetime": "2026-01-01T00:00:00.1234567+02:00"}) == {
         "$datetime": "2026-01-01T00:00:00.1234567+02:00"
     }
+
+
+def test_temporal_constructors_follow_pep_249():
+    utc = datetime.timezone.utc
+    assert dbapi.Date is datetime.date and dbapi.Time is datetime.time
+    assert dbapi.Timestamp is datetime.datetime
+    assert dbapi.Timestamp(2026, 11, 14, 3, 4, 5) == datetime.datetime(
+        2026, 11, 14, 3, 4, 5
+    )
+    stamp = dbapi.TimestampFromTicks(TICKS)
+    assert stamp == datetime.datetime(2026, 11, 14, 0, 0, 0, 250000, tzinfo=utc)
+    assert stamp.tzinfo is utc
+    assert dbapi.TimestampFromTicks(0) == datetime.datetime(1970, 1, 1, tzinfo=utc)
+    # Instants before 1970 work on every platform, unlike fromtimestamp().
+    assert dbapi.TimestampFromTicks(-1.5) == datetime.datetime(
+        1969, 12, 31, 23, 59, 58, 500000, tzinfo=utc
+    )
+    date, moment = dbapi.DateFromTicks(TICKS), dbapi.TimeFromTicks(TICKS)
+    assert type(date) is datetime.date and date == datetime.date(2026, 11, 14)
+    assert moment == datetime.time(0, 0, 0, 250000) and moment.tzinfo is None
+    assert dbapi.DateFromTicks(-1) == datetime.date(1969, 12, 31)
+    assert dbapi.TimeFromTicks(-1) == datetime.time(23, 59, 59)
+
+    class Day:  # an integer that timedelta refuses, such as numpy.int64
+        def __index__(self):
+            return 86_400
+
+    assert dbapi.DateFromTicks(Day()) == datetime.date(1970, 1, 2)
+    with pytest.raises(TypeError):
+        dbapi.TimestampFromTicks("0")
+    with pytest.raises(OverflowError):
+        dbapi.TimestampFromTicks(1e300)
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="time.tzset is POSIX-only")
+def test_from_ticks_constructors_ignore_the_local_time_zone(monkeypatch):
+    # A POSIX TZ string needs no tz database: "XYZ+8" is eight hours behind
+    # UTC, where TICKS is still 2026-11-13.
+    monkeypatch.setenv("TZ", "XYZ+8")
+    time.tzset()
+    try:
+        assert time.localtime(TICKS).tm_mday == 13
+        assert dbapi.TimestampFromTicks(TICKS) == datetime.datetime(
+            2026, 11, 14, 0, 0, 0, 250000, tzinfo=datetime.timezone.utc
+        )
+        assert dbapi.DateFromTicks(TICKS) == datetime.date(2026, 11, 14)
+        assert dbapi.TimeFromTicks(TICKS) == datetime.time(0, 0, 0, 250000)
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+
+@pytest.mark.parametrize("autocommit", [False, True])
+def test_temporal_constructors_bind_as_sql_timestamps(connection, autocommit):
+    utc = datetime.timezone.utc
+    connection.autocommit = autocommit
+    cursor = connection.cursor()
+    cursor.execute(
+        "CREATE TABLE ticks (id BIGINT PRIMARY KEY, at TIMESTAMP, seen TIMESTAMPTZ)"
+    )
+    insert = "INSERT INTO ticks (id, at, seen) VALUES ($1, $2, $3)"
+    stamp = dbapi.TimestampFromTicks(TICKS)
+    wall = dbapi.Timestamp(2026, 11, 14, 3, 4, 5, 678901)
+    cursor.execute(insert, [1, stamp, stamp])
+    cursor.execute(insert, [2, wall, wall])
+    # An aware value stores its UTC wall-clock time in a TIMESTAMP column,
+    # and a naive one is read as UTC in a TIMESTAMPTZ column.
+    cursor.execute("SELECT at, seen FROM ticks ORDER BY id")
+    assert cursor.fetchall() == [
+        (stamp.replace(tzinfo=None), stamp),
+        (wall, wall.replace(tzinfo=utc)),
+    ]
+    cursor.execute("SELECT id FROM ticks WHERE seen = $1", [stamp])
+    assert cursor.fetchall() == [(1,)]
+    cursor.execute("SELECT id FROM ticks WHERE at = $1", [stamp.replace(tzinfo=None)])
+    assert cursor.fetchall() == [(1,)]
+    with pytest.raises(dbapi.ProgrammingError, match="incompatible"):
+        cursor.execute("SELECT id FROM ticks WHERE at = $1", [stamp])
+    # SQL has no DATE or TIME values.
+    for value in (
+        dbapi.Date(2026, 11, 14),
+        dbapi.Time(3, 4, 5),
+        dbapi.DateFromTicks(TICKS),
+        dbapi.TimeFromTicks(TICKS),
+    ):
+        with pytest.raises(dbapi.ProgrammingError, match="DATE, TIME") as caught:
+            cursor.execute("INSERT INTO ticks (id, at) VALUES ($1, $2)", [3, value])
+        assert isinstance(caught.value, hawdb.exceptions.SemanticError)
+    # The refusals staged nothing, and in a transaction they left it usable.
+    connection.commit()
+    cursor.execute("SELECT count(*) FROM ticks")
+    assert cursor.fetchone() == (2,)

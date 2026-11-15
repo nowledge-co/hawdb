@@ -331,8 +331,10 @@ fn decode_row(
     document.id.push_str(head.id(index));
     document.embedding.clear();
     document.embedding.extend(
-        row.chunks_exact(4)
-            .map(|value| f32::from_le_bytes(value.try_into().expect("four-byte chunk"))),
+        row.as_chunks::<4>()
+            .0
+            .iter()
+            .map(|value| f32::from_le_bytes(*value)),
     );
     if document.embedding.iter().any(|value| !value.is_finite()) {
         return Err(invalid(segment_id, "has an invalid embedding"));

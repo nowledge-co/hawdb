@@ -1,0 +1,132 @@
+{
+  "cases": [
+    {
+      "entry": "statement",
+      "expected": "Err(Parse(\"size() expects 1 argument(s), got 0 at byte 26 line 1 column 27 near ``\"))",
+      "previous": "Err(Parse(\"unexpected trailing input at byte 24 line 1 column 25 near `()`\"))",
+      "query": "MATCH (n) SET n.p = SIZE()"
+    },
+    {
+      "entry": "pipeline",
+      "expected": "Err(Parse(\"size() expects 1 argument(s), got 0 at byte 26 line 1 column 27 near ``\"))",
+      "previous": "Err(Parse(\"unexpected trailing input at byte 24 line 1 column 25 near `()`\"))",
+      "query": "MATCH (n) SET n.p = SIZE()"
+    },
+    {
+      "entry": "statement",
+      "expected": "Err(Parse(\"expected identifier at byte 26 line 1 column 27 near `)`\"))",
+      "previous": "Err(Parse(\"unexpected trailing input at byte 25 line 1 column 26 near `()`\"))",
+      "query": "MATCH (n) SET n.p = LOWER()"
+    },
+    {
+      "entry": "pipeline",
+      "expected": "Err(Parse(\"expected identifier at byte 26 line 1 column 27 near `)`\"))",
+      "previous": "Err(Parse(\"unexpected trailing input at byte 25 line 1 column 26 near `()`\"))",
+      "query": "MATCH (n) SET n.p = LOWER()"
+    },
+    {
+      "entry": "statement",
+      "expected": "Err(Parse(\"expected identifier at byte 23 line 1 column 24 near `)`\"))",
+      "previous": "Err(Parse(\"unexpected trailing input at byte 22 line 1 column 23 near `()`\"))",
+      "query": "MATCH (n) SET n.p = ID()"
+    },
+    {
+      "entry": "pipeline",
+      "expected": "Err(Parse(\"expected identifier at byte 23 line 1 column 24 near `)`\"))",
+      "previous": "Err(Parse(\"unexpected trailing input at byte 22 line 1 column 23 near `()`\"))",
+      "query": "MATCH (n) SET n.p = ID()"
+    },
+    {
+      "entry": "statement",
+      "expected": "Err(Parse(\"expected ')' at byte 26 line 1 column 27 near `p)`\"))",
+      "previous": "Err(Parse(\"unexpected trailing input at byte 23 line 1 column 24 near `(n.p)`\"))",
+      "query": "MATCH (n) SET n.p = ID (n.p)"
+    },
+    {
+      "entry": "pipeline",
+      "expected": "Err(Parse(\"expected ')' at byte 26 line 1 column 27 near `p)`\"))",
+      "previous": "Err(Parse(\"unexpected trailing input at byte 23 line 1 column 24 near `(n.p)`\"))",
+      "query": "MATCH (n) SET n.p = ID (n.p)"
+    },
+    {
+      "entry": "statement",
+      "expected": "Err(Parse(\"Cypher parser nesting exceeds limit of 32 at byte 136 line 1 column 137 near `+ 1`\"))",
+      "previous": "Err(Parse(\"unexpected trailing input at byte 24 line 1 column 25 near `+ 1 + 1 + 1 + 1 + 1 + 1 `\"))",
+      "query": "MATCH (n:N) SET n.p = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1"
+    },
+    {
+      "entry": "statement",
+      "expected": "Err(Parse(\"Cypher parser nesting exceeds limit of 32 at byte 136 line 1 column 137 near `+ 1 + 1`\"))",
+      "previous": "Err(Parse(\"unexpected trailing input at byte 24 line 1 column 25 near `+ 1 + 1 + 1 + 1 + 1 + 1 `\"))",
+      "query": "MATCH (n:N) SET n.p = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1"
+    },
+    {
+      "entry": "pipeline",
+      "expected": "Err(Parse(\"Cypher parser nesting exceeds limit of 32 at byte 140 line 1 column 141 near `+ 1`\"))",
+      "previous": "Err(Parse(\"unexpected trailing input at byte 24 line 1 column 25 near `+ 1 + 1 + 1 + 1 + 1 + 1 `\"))",
+      "query": "MATCH (n:N) SET n.p = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1"
+    },
+    {
+      "entry": "statement",
+      "expected": "Err(Parse(\"Cypher parser nesting exceeds limit of 32 at byte 136 line 1 column 137 near `+ 1 + 1 + 1`\"))",
+      "previous": "Err(Parse(\"unexpected trailing input at byte 24 line 1 column 25 near `+ 1 + 1 + 1 + 1 + 1 + 1 `\"))",
+      "query": "MATCH (n:N) SET n.p = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1"
+    },
+    {
+      "entry": "pipeline",
+      "expected": "Err(Parse(\"Cypher parser nesting exceeds limit of 32 at byte 140 line 1 column 141 near `+ 1 + 1`\"))",
+      "previous": "Err(Parse(\"unexpected trailing input at byte 24 line 1 column 25 near `+ 1 + 1 + 1 + 1 + 1 + 1 `\"))",
+      "query": "MATCH (n:N) SET n.p = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1"
+    },
+    {
+      "entry": "statement",
+      "expected": "Err(Parse(\"Cypher parser nesting exceeds limit of 32 at byte 136 line 1 column 137 near `+ 1 + 1 + 1 + 1`\"))",
+      "previous": "Err(Parse(\"unexpected trailing input at byte 24 line 1 column 25 near `+ 1 + 1 + 1 + 1 + 1 + 1 `\"))",
+      "query": "MATCH (n:N) SET n.p = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1"
+    },
+    {
+      "entry": "pipeline",
+      "expected": "Err(Parse(\"Cypher parser nesting exceeds limit of 32 at byte 140 line 1 column 141 near `+ 1 + 1 + 1`\"))",
+      "previous": "Err(Parse(\"unexpected trailing input at byte 24 line 1 column 25 near `+ 1 + 1 + 1 + 1 + 1 + 1 `\"))",
+      "query": "MATCH (n:N) SET n.p = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1"
+    },
+    {
+      "entry": "statement",
+      "expected": "Err(Parse(\"Cypher parser nesting exceeds limit of 32 at byte 136 line 1 column 137 near `+ 1 + 1 + 1 + 1 + 1`\"))",
+      "previous": "Err(Parse(\"unexpected trailing input at byte 24 line 1 column 25 near `+ 1 + 1 + 1 + 1 + 1 + 1 `\"))",
+      "query": "MATCH (n:N) SET n.p = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1"
+    },
+    {
+      "entry": "pipeline",
+      "expected": "Err(Parse(\"Cypher parser nesting exceeds limit of 32 at byte 140 line 1 column 141 near `+ 1 + 1 + 1 + 1`\"))",
+      "previous": "Err(Parse(\"unexpected trailing input at byte 24 line 1 column 25 near `+ 1 + 1 + 1 + 1 + 1 + 1 `\"))",
+      "query": "MATCH (n:N) SET n.p = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1"
+    },
+    {
+      "entry": "statement",
+      "expected": "Err(Parse(\"Cypher parser nesting exceeds limit of 32 at byte 136 line 1 column 137 near `+ 1 + 1 + 1 + 1 + 1 + 1 `\"))",
+      "previous": "Err(Parse(\"unexpected trailing input at byte 24 line 1 column 25 near `+ 1 + 1 + 1 + 1 + 1 + 1 `\"))",
+      "query": "MATCH (n:N) SET n.p = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1"
+    },
+    {
+      "entry": "pipeline",
+      "expected": "Err(Parse(\"Cypher parser nesting exceeds limit of 32 at byte 140 line 1 column 141 near `+ 1 + 1 + 1 + 1 + 1 + 1 `\"))",
+      "previous": "Err(Parse(\"unexpected trailing input at byte 24 line 1 column 25 near `+ 1 + 1 + 1 + 1 + 1 + 1 `\"))",
+      "query": "MATCH (n:N) SET n.p = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1"
+    },
+    {
+      "entry": "statement",
+      "expected": "Err(Parse(\"Cypher parser nesting exceeds limit of 32 at byte 136 line 1 column 137 near `+ 1 + 1 + 1 + 1 + 1 + 1 `\"))",
+      "previous": "Err(Parse(\"unexpected trailing input at byte 24 line 1 column 25 near `+ 1 + 1 + 1 + 1 + 1 + 1 `\"))",
+      "query": "MATCH (n:N) SET n.p = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1"
+    },
+    {
+      "entry": "pipeline",
+      "expected": "Err(Parse(\"Cypher parser nesting exceeds limit of 32 at byte 140 line 1 column 141 near `+ 1 + 1 + 1 + 1 + 1 + 1 `\"))",
+      "previous": "Err(Parse(\"unexpected trailing input at byte 24 line 1 column 25 near `+ 1 + 1 + 1 + 1 + 1 + 1 `\"))",
+      "query": "MATCH (n:N) SET n.p = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1"
+    }
+  ],
+  "issue": 1791,
+  "reason": "A SET value that continues past the fixed forms is parsed as a general scalar expression, which reports its own farthest failure"
+}

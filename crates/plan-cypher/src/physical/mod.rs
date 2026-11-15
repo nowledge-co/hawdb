@@ -14,7 +14,7 @@
 
 use crate::{
     Aggregation, BatchMutationOperation, GraphAlgorithmKind, GraphAlgorithmOptions, GraphGroupKeys,
-    Predicate, Projection, RelationshipCountLeg, RelationshipOnCreateValue,
+    MutationReturn, Predicate, Projection, RelationshipCountLeg, RelationshipOnCreateValue,
     RelationshipSetAssignment, SchemaObjectState, SchemaPropertyType, SchemaTableKind,
     SetAssignment, SetNodePropertiesReturnMode, SetValue, ShortestPathProjection, SortItem,
 };
@@ -234,6 +234,8 @@ pub enum PhysicalPlan {
         rel_type: String,
         rel_match_properties: BTreeMap<String, Value>,
         on_create_properties: BTreeMap<String, Value>,
+        /// `ON MATCH SET` items for a relationship the MERGE finds.
+        on_match_assignments: Vec<SetAssignment>,
     },
     MergeRelationshipFromMatchedRelationship {
         source_label: String,
@@ -299,6 +301,14 @@ pub enum PhysicalPlan {
         predicate: Option<Predicate>,
         assignments: Vec<SetAssignment>,
         returns: SetNodePropertiesReturnMode,
+    },
+    /// SET over the rows of an optimized read plan; see [`crate::MatchSet`].
+    MatchSetExec(Box<crate::MatchSet<PhysicalPlan>>),
+    /// A mutation followed by `RETURN`, projected from the summary rows of
+    /// the same atomic statement.
+    MutationReturn {
+        mutation: Box<PhysicalPlan>,
+        returns: MutationReturn,
     },
     SetRelationshipProperty {
         source_variable: String,

@@ -166,26 +166,26 @@ impl Kernel {
 }
 
 unsafe fn scalar(left: Input<'_>, right: Input<'_>, mode: Mode, sums: &mut Sums) -> bool {
-    let decode = |bytes: &[u8]| f32::from_le_bytes(bytes.try_into().expect("coordinate"));
+    let decode = |bytes: &[u8; 4]| f32::from_le_bytes(*bytes);
     match (left, right) {
         (Input::Slice(left), Input::Slice(right)) => {
             scalar_values(left.iter().copied(), right.iter().copied(), mode, sums)
         }
         (Input::Slice(left), Input::Encoded(right)) => scalar_values(
             left.iter().copied(),
-            right.chunks_exact(4).map(decode),
+            right.as_chunks::<4>().0.iter().map(decode),
             mode,
             sums,
         ),
         (Input::Encoded(left), Input::Slice(right)) => scalar_values(
-            left.chunks_exact(4).map(decode),
+            left.as_chunks::<4>().0.iter().map(decode),
             right.iter().copied(),
             mode,
             sums,
         ),
         (Input::Encoded(left), Input::Encoded(right)) => scalar_values(
-            left.chunks_exact(4).map(decode),
-            right.chunks_exact(4).map(decode),
+            left.as_chunks::<4>().0.iter().map(decode),
+            right.as_chunks::<4>().0.iter().map(decode),
             mode,
             sums,
         ),

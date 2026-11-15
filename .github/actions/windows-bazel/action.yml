@@ -15,7 +15,7 @@ runs:
   using: composite
   steps:
     - name: Install pinned Rust
-      uses: dtolnay/rust-toolchain@1.97.1
+      uses: dtolnay/rust-toolchain@1.99.1
     - name: Locate native Windows toolchain
       shell: pwsh
       run: |

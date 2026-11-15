@@ -50,7 +50,7 @@ fn reference_decode(input: &str) -> Option<String> {
         _ => None,
     };
     let mut bytes = Vec::new();
-    for pair in input.as_bytes().chunks_exact(2) {
+    for pair in input.as_bytes().as_chunks::<2>().0.iter() {
         // The existing unsigned radix parser accepts a leading plus per pair.
         let high = if pair[0] == b'+' { 0 } else { digit(pair[0])? };
         bytes.push(high * 16 + digit(pair[1])?);

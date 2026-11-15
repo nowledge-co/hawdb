@@ -52,10 +52,27 @@ impl GraphStore {
             .relational_index_shadow
             .generation_artifacts
             .ok_or_else(|| {
-                HawDBError::StorageIntegrity(
-                    "authoritative relational indexes require a canonical generation binding"
-                        .to_string(),
-                )
+                // A durable checkpoint that never published a relational
+                // index generation was written with another index mode: a
+                // configuration mismatch rather than corruption.
+                match self.durable.as_ref() {
+                    Some(durable)
+                        if durable.checkpoint_epoch != 0
+                            && durable.relational_index_generation_artifacts.is_none() =>
+                    {
+                        HawDBError::UnsupportedStorageFormat(
+                            hawdb_core::StorageFormatError::UnsupportedFeature {
+                                format: hawdb_core::RELATIONAL_CHECKPOINT_LAYOUT_FORMAT,
+                                feature: "checkpoint without a persistent relational index generation, which Authoritative relational indexes require; reopen with another relational index mode, or publish one with Shadow indexes first",
+                                tag: durable.checkpoint_epoch,
+                            },
+                        )
+                    }
+                    _ => HawDBError::StorageIntegrity(
+                        "authoritative relational indexes require a canonical generation binding"
+                            .to_string(),
+                    ),
+                }
             })?;
         if self
             .durable

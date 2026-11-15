@@ -326,7 +326,7 @@ impl Fold<'_> {
             name if name.starts_with("Legacy") => return self.expression(self.first(node)),
             "Or" | "And" | "Concat" | "Sum" | "Product" => {
                 let mut left = self.expression(children[0]);
-                for pair in children[1..].chunks_exact(2) {
+                for pair in children[1..].as_chunks::<2>().0 {
                     let right = self.expression(pair[1]);
                     let operator = self.operator(pair[0]);
                     left = ExpressionSyntax {

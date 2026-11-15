@@ -4,7 +4,7 @@
 use std::io;
 use std::path::Path;
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
 pub(super) fn native(source: &Path, destination: &Path) -> io::Result<()> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
@@ -23,7 +23,7 @@ pub(super) fn native(source: &Path, destination: &Path) -> io::Result<()> {
         )
     };
     // SAFETY: same argument lifetime and no-replace contract as above.
-    #[cfg(target_os = "macos")]
+    #[cfg(target_vendor = "apple")]
     let result =
         unsafe { libc::renamex_np(source.as_ptr(), destination.as_ptr(), libc::RENAME_EXCL) };
     if result == 0 {
@@ -77,7 +77,7 @@ pub(super) fn native(source: &Path, destination: &Path) -> io::Result<()> {
     }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+#[cfg(not(any(target_os = "linux", target_vendor = "apple", windows)))]
 pub(super) fn native(_source: &Path, _destination: &Path) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
@@ -101,7 +101,7 @@ pub(super) fn after_destination_check() {
     });
 }
 
-#[cfg(all(test, any(target_os = "linux", target_os = "macos", windows)))]
+#[cfg(all(test, any(target_os = "linux", target_vendor = "apple", windows)))]
 mod tests {
     use crate::file_descriptors::ProjectFileDescriptors;
     use crate::file_io as fs;

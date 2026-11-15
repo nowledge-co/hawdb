@@ -23,6 +23,7 @@ use crate::store::{
     WalEntry, WalOp, CHECKPOINT_TEMPORARY_SPACE_MULTIPLIER, MIN_CHECKPOINT_TEMPORARY_SPACE_BYTES,
     WAL_BINARY_FILE_HEADER_BYTES,
 };
+use hawdb_core::{WalRecordLimit, WalRecordLimitError};
 use hawdb_storage::{
     config::DurabilityPolicy,
     durability::{
@@ -257,10 +258,11 @@ impl DurableStore {
             .max_batch_operations
             .is_some_and(|limit| operation_count > limit)
         {
-            return Err(HawDBError::Storage(format!(
-                "WAL batch operation limit exceeded before append: max_wal_batch_operations={}",
-                self.max_batch_operations.unwrap_or_default()
-            )));
+            return Err(wal_record_limit(
+                WalRecordLimit::BatchOperations,
+                operation_count,
+                self.max_batch_operations.unwrap_or_default(),
+            ));
         }
         self.append_entry(WalOp::Batch(ops), operation_count, pressure_signals)
     }
@@ -275,10 +277,11 @@ impl DurableStore {
             .max_batch_operations
             .is_some_and(|limit| operation_count > limit)
         {
-            return Err(HawDBError::Storage(format!(
-                "WAL batch operation limit exceeded before append: max_wal_batch_operations={}",
-                self.max_batch_operations.unwrap_or_default()
-            )));
+            return Err(wal_record_limit(
+                WalRecordLimit::BatchOperations,
+                operation_count,
+                self.max_batch_operations.unwrap_or_default(),
+            ));
         }
         let payload = prepared.bind(self.next_lsn, self.wal_commit_epoch.saturating_add(1));
         self.append_encoded_entry(payload, operation_count, pressure_signals)
@@ -308,10 +311,11 @@ impl DurableStore {
             .max_record_bytes
             .is_some_and(|limit| payload.len() > limit)
         {
-            return Err(HawDBError::Storage(format!(
-                "WAL record byte limit exceeded before append: max_wal_record_bytes={}",
-                self.max_record_bytes.unwrap_or_default()
-            )));
+            return Err(wal_record_limit(
+                WalRecordLimit::RecordBytes,
+                payload.len(),
+                self.max_record_bytes.unwrap_or_default(),
+            ));
         }
         let header_bytes = encode_binary_wal_header(self.wal_generation, self.wal_replay_start_lsn);
         let position = self
@@ -819,6 +823,16 @@ thread_local! {
     static BEFORE_WAL_ROLLBACK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const {
         std::cell::RefCell::new(None)
     };
+}
+
+/// A typed, non-poisoning refusal of a WAL record over a per-record limit.
+/// Callers check it before any byte is appended or the commit is applied.
+fn wal_record_limit(limit: WalRecordLimit, requested: usize, maximum: usize) -> HawDBError {
+    HawDBError::WalRecordLimitExceeded(Box::new(WalRecordLimitError {
+        limit,
+        requested: u64::try_from(requested).unwrap_or(u64::MAX),
+        maximum: u64::try_from(maximum).unwrap_or(u64::MAX),
+    }))
 }
 
 #[cfg(test)]

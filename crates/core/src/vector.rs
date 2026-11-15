@@ -114,9 +114,11 @@ impl<'a> VectorRef<'a> {
         let dimension = shape().map_err(&map_invalid)?;
         for block in encoded[4..].chunks(64 * 1024) {
             let unit = start()?;
-            let finite = block.chunks_exact(4).all(|bytes| {
-                f32::from_le_bytes(bytes.try_into().expect("fixed-width coordinate")).is_finite()
-            });
+            let finite = block
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|bytes| f32::from_le_bytes(*bytes).is_finite());
             finish(unit)?;
             if !finite {
                 return Err(map_invalid(invalid("coordinates must be finite")));
@@ -134,8 +136,10 @@ impl<'a> VectorRef<'a> {
 
     pub fn coordinates(self) -> impl ExactSizeIterator<Item = f32> + 'a {
         self.encoded[4..]
-            .chunks_exact(4)
-            .map(|bytes| f32::from_le_bytes(bytes.try_into().expect("fixed-width coordinate")))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|bytes| f32::from_le_bytes(*bytes))
     }
 
     /// The caller must admit the payload before materializing a borrowed value.

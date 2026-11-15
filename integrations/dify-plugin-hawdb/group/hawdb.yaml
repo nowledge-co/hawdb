@@ -1,0 +1,60 @@
+settings:
+  - name: database_path
+    type: text-input
+    required: true
+    label:
+      en_US: Database path
+      zh_Hans: 数据库路径
+    placeholder:
+      en_US: /data/hawdb/graph
+      zh_Hans: /data/hawdb/graph
+    help:
+      en_US: Absolute path of an existing HawDB database directory on the plugin daemon's host. The endpoint opens it read-only.
+      zh_Hans: 插件守护进程所在主机上已有 HawDB 数据库目录的绝对路径。该端点以只读方式打开它。
+  - name: api_key
+    type: secret-input
+    required: true
+    label:
+      en_US: API key
+      zh_Hans: API 密钥
+    help:
+      en_US: Enter the same key as the API key of the External Knowledge API in Dify. Requests must send it as a Bearer token.
+      zh_Hans: 填写与 Dify 中外部知识库 API 的 API Key 相同的密钥。请求必须以 Bearer 令牌发送它。
+  - name: retrieval_statement
+    type: text-input
+    required: true
+    label:
+      en_US: Retrieval statement (Cypher)
+      zh_Hans: 检索语句（Cypher）
+    placeholder:
+      en_US: MATCH (c:Chunk) WHERE c.kb = $knowledge_id AND c.text CONTAINS $query RETURN c.text AS content, 1.0 AS score, c.title AS title LIMIT $top_k
+      zh_Hans: MATCH (c:Chunk) WHERE c.kb = $knowledge_id AND c.text CONTAINS $query RETURN c.text AS content, 1.0 AS score, c.title AS title LIMIT $top_k
+    help:
+      en_US: One Cypher statement. It receives $query, $knowledge_id, $top_k and $score_threshold, and must return the columns content and score, and optionally title and metadata.
+      zh_Hans: 一条 Cypher 语句。它接收 $query、$knowledge_id、$top_k 和 $score_threshold，必须返回 content 和 score 列，可选返回 title 和 metadata 列。
+  - name: max_read_result_rows
+    type: text-input
+    required: false
+    label:
+      en_US: Row budget
+      zh_Hans: 行数预算
+    placeholder:
+      en_US: Engine default (no row ceiling)
+      zh_Hans: 引擎默认值（不限行数）
+    help:
+      en_US: The engine's max_read_result_rows. A statement that returns more rows fails, and the endpoint returns no records. Empty or 0 means no row ceiling.
+      zh_Hans: 引擎的 max_read_result_rows。返回行数超过该值的语句会失败，端点不返回任何记录。留空或 0 表示不限行数。
+  - name: max_read_result_payload_bytes
+    type: text-input
+    required: false
+    label:
+      en_US: Payload budget (bytes)
+      zh_Hans: 结果大小预算（字节）
+    placeholder:
+      en_US: Engine default (67108864)
+      zh_Hans: 引擎默认值（67108864）
+    help:
+      en_US: The engine's max_read_result_payload_bytes. A statement whose result is larger fails, and the endpoint returns no records. Empty keeps the 64 MiB default; the smallest budget is 1.
+      zh_Hans: 引擎的 max_read_result_payload_bytes。结果超过该大小的语句会失败，端点不返回任何记录。留空使用 64 MiB 默认值；最小为 1。
+endpoints:
+  - endpoints/retrieval.yaml

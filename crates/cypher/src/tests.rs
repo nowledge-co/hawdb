@@ -183,6 +183,7 @@ mod math_reduce_endpoints;
 mod migration_corpus;
 mod order_by_expressions;
 mod pattern_expressions;
+mod set_expressions;
 mod source_spans;
 mod temporal;
 
@@ -3342,6 +3343,38 @@ fn parses_coalesce_and_left_return_items() {
             ])
         )))
     );
+}
+
+#[test]
+fn parses_json_string_as_an_explicit_selector() {
+    for function in ["json_string", "JSON_STRING", "JsOn_StRiNg"] {
+        let statement = parse(&format!(
+            "MATCH (m:Memory) WHERE {function}(m.metadata, $path) = 'active' RETURN {function}(m.metadata, '$.state') AS state"
+        ))
+        .unwrap();
+        let Statement::Pipeline(query) = statement else {
+            panic!("expected pipeline");
+        };
+        let ReturnExpressionKind::Value(value) = &pipeline_return(&query).items[0].expression.kind
+        else {
+            panic!("expected scalar return");
+        };
+        assert!(matches!(
+            &value.kind,
+            ScalarExpressionKind::JsonString { .. }
+        ));
+    }
+    for expression in [
+        "json_string(m.metadata)",
+        "json_string(m.metadata, '$.state', 1)",
+        "json_string(m.metadata, '$.state' NULL ON NONSCALAR)",
+        "json_string(m.metadata, '$.state' NULL ON ERROR)",
+    ] {
+        assert!(
+            parse(&format!("MATCH (m:Memory) RETURN {expression}")).is_err(),
+            "{expression}"
+        );
+    }
 }
 
 #[test]

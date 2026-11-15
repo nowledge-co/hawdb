@@ -70,7 +70,7 @@ impl Registration {
             ));
         }
         let index = NEXT_OWNER
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |index| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |index| {
                 index.checked_add(1)
             })
             .map_err(|_| HawDBError::Execution("search cleanup owner identity exhausted".into()))?;
@@ -291,7 +291,7 @@ fn retry_registered(
                         && matches!(&owner.slot, Slot::Pending(ticket) if ticket.matches_root(root)) =>
                 {
                     owner.last_retry = NEXT_RETRY_SEQUENCE
-                        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |sequence| {
+                        .try_update(Ordering::Relaxed, Ordering::Relaxed, |sequence| {
                             sequence.checked_add(1)
                         })
                         .map_err(|_| {

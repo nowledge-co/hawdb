@@ -807,7 +807,9 @@ pub fn validate_sql_expression_depth(
         };
         let value = match tree.nodes[id].name {
             Some("Or" | "And" | "Concat" | "Sum" | "Product") => children[1..]
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .fold(height(children[0]), |left, pair| {
                     left.max(height(pair[1])) + 1
                 }),

@@ -104,7 +104,7 @@ impl Transformer<'_> {
         let input = self.input;
         let mut keys = BTreeSet::new();
         let mut entries = Vec::new();
-        for pair in self.tree.children(node).chunks_exact(2) {
+        for pair in self.tree.children(node).as_chunks::<2>().0 {
             let span = self.tree.span(pair[0], self.tokens);
             let key = &input[span.start..span.end];
             if !keys.insert(key) {
@@ -122,7 +122,7 @@ impl Transformer<'_> {
     fn value_map(&mut self, node: NodeId, depth: usize) -> Result<ValueExpression> {
         self.check_depth(node, depth, 1)?;
         let mut entries = BTreeMap::new();
-        for pair in self.tree.children(node).chunks_exact(2) {
+        for pair in self.tree.children(node).as_chunks::<2>().0 {
             let key = self.text(pair[0]).to_owned();
             if entries.contains_key(&key) {
                 return Err(super::parse_error(
@@ -152,7 +152,7 @@ impl Transformer<'_> {
         } else {
             self.scalar_arithmetic(children[0], depth)?
         };
-        for (index, pair) in children[1..].chunks_exact(2).enumerate() {
+        for (index, pair) in children[1..].as_chunks::<2>().0.iter().enumerate() {
             self.expression_budget(pair[0], depth + index + 3)?;
             let op = match self.text(pair[0]) {
                 "+" => ScalarBinaryOp::Add,
@@ -340,7 +340,7 @@ impl Transformer<'_> {
         let mut entries = Vec::new();
         let mut keys = BTreeSet::new();
         let input = self.input;
-        for pair in self.tree.children(node).chunks_exact(2) {
+        for pair in self.tree.children(node).as_chunks::<2>().0 {
             let span = self.tree.span(pair[0], self.tokens);
             let key = &input[span.start..span.end];
             if !keys.insert(key) {

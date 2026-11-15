@@ -222,16 +222,17 @@ pub(super) fn bind_non_negative_usize(
 fn bind_json_value_path(
     expression: &ValueExpression,
     parameters: &BTreeMap<String, Value>,
+    function: &str,
 ) -> Result<String> {
     let Value::String(path) = bind_value(expression, parameters)? else {
-        return Err(HawDBError::Semantic(
-            "JSON_VALUE path must be a string".into(),
-        ));
+        return Err(HawDBError::Semantic(format!(
+            "{function} path must be a string"
+        )));
     };
     let Some(fields) = path.strip_prefix("$.") else {
-        return Err(HawDBError::Semantic(
-            "JSON_VALUE path must start with $.".into(),
-        ));
+        return Err(HawDBError::Semantic(format!(
+            "{function} path must start with $."
+        )));
     };
     if path.len() > 256
         || fields.split('.').any(|field| {
@@ -241,9 +242,9 @@ fn bind_json_value_path(
                     .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
         })
     {
-        return Err(HawDBError::Semantic(
-            "JSON_VALUE path must contain bounded dotted field names".into(),
-        ));
+        return Err(HawDBError::Semantic(format!(
+            "{function} path must contain bounded dotted field names"
+        )));
     }
     Ok(path)
 }
@@ -588,6 +589,18 @@ pub(super) fn plan_projection_with_columns(
             ),
             "coalesce".to_string(),
         ),
+        ScalarExpressionKind::JsonString { expression, path } => (
+            ProjectionExpression::JsonString {
+                expression: Box::new(plan_scalar_expression_with_columns(
+                    scope,
+                    column_scope,
+                    expression,
+                    parameters,
+                )?),
+                path: bind_json_value_path(path, parameters, "JSON_STRING")?,
+            },
+            "json_string".to_string(),
+        ),
         ScalarExpressionKind::JsonValue {
             expression,
             path,
@@ -600,7 +613,7 @@ pub(super) fn plan_projection_with_columns(
                     expression,
                     parameters,
                 )?),
-                path: bind_json_value_path(path, parameters)?,
+                path: bind_json_value_path(path, parameters, "JSON_VALUE")?,
                 null_on_non_scalar: *null_on_non_scalar,
             },
             "json_value".to_string(),
@@ -889,7 +902,16 @@ pub(super) fn bind_relationship_set_value(
                 "relationship property increment SET is not supported".to_string(),
             ))
         }
+        hawdb_cypher::SetValueExpression::Expression(_) => Err(expression_set_unsupported()),
     }
+}
+
+/// General SET expressions are evaluated over the rows of `MATCH ... SET`;
+/// the fixed-form SET of other clauses accepts no other value.
+fn expression_set_unsupported() -> HawDBError {
+    HawDBError::Semantic(
+        "this SET accepts only literals, parameters and fixed property updates; general SET expressions require MATCH ... SET".to_string(),
+    )
 }
 
 pub(super) fn plan_set_value(
@@ -900,6 +922,7 @@ pub(super) fn plan_set_value(
         hawdb_cypher::SetValueExpression::Value(value) => {
             Ok(SetValue::Value(bind_value(value, parameters)?))
         }
+        hawdb_cypher::SetValueExpression::Expression(_) => Err(expression_set_unsupported()),
         hawdb_cypher::SetValueExpression::Property { .. } => Err(HawDBError::Semantic(
             "property reference SET is only supported by relationship-copy MERGE".to_string(),
         )),
@@ -1406,6 +1429,17 @@ pub(super) fn plan_scalar_expression_with_columns(
                 })
                 .collect::<Result<Vec<_>>>()?,
         )),
+        ScalarExpressionKind::JsonString { expression, path } => {
+            Ok(ProjectionExpression::JsonString {
+                expression: Box::new(plan_scalar_expression_with_columns(
+                    scope,
+                    column_scope,
+                    expression,
+                    parameters,
+                )?),
+                path: bind_json_value_path(path, parameters, "JSON_STRING")?,
+            })
+        }
         ScalarExpressionKind::JsonValue {
             expression,
             path,
@@ -1417,7 +1451,7 @@ pub(super) fn plan_scalar_expression_with_columns(
                 expression,
                 parameters,
             )?),
-            path: bind_json_value_path(path, parameters)?,
+            path: bind_json_value_path(path, parameters, "JSON_VALUE")?,
             null_on_non_scalar: *null_on_non_scalar,
         }),
         ScalarExpressionKind::Left { expression, length } => Ok(ProjectionExpression::Left {

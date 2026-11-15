@@ -501,7 +501,7 @@ impl ImmutableFileHandles {
 
     fn next_tick(&self) -> u64 {
         self.access_tick
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |tick| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |tick| {
                 Some(tick.saturating_add(1))
             })
             .expect("the access tick update always succeeds")

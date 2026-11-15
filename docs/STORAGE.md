@@ -76,12 +76,30 @@ An unknown materialized-view expression tag returns `UnsupportedFeature` with
 the schema format, feature name, and numeric tag. `StorageFormatError::format()`
 is always one of the constants exported from `hawdb` and `hawdb_core`:
 `STORAGE_MANIFEST_FORMAT`, `RELATIONAL_DURABLE_CODEC_FORMAT`,
-`RELATIONAL_SCHEMA_FORMAT`, `RELATIONAL_ROW_PAGE_FORMAT`, `APPEND_WAL_FORMAT`,
+`RELATIONAL_SCHEMA_FORMAT`, `RELATIONAL_ROW_PAGE_FORMAT`,
+`RELATIONAL_CHECKPOINT_LAYOUT_FORMAT`, `APPEND_WAL_FORMAT`,
 `LOGICAL_DUMP_FORMAT` or `SEARCH_PROJECTION_MANIFEST_FORMAT`. Hosts compare
 against these constants instead of matching message text. They are recorded in
 `docs/persistent-format.lock`. Current relational schema tags
 0 through 5 represent column, COUNT(*), COUNT(column), SUM, MIN, and MAX.
 This change does not add a feature bitmap or change any encoded bytes.
+
+`RELATIONAL_CHECKPOINT_LAYOUT_FORMAT` refuses intact checkpoints this reader
+cannot serve in the requested configuration, with `UnsupportedFeature` whose
+tag is the checkpoint generation:
+
+- relational rows stored only in the canonical row-page root, without a
+  full-row `relational.<generation>.hawdb` file, opened in any mode other than
+  `OutOfCore` residency with `Authoritative` relational indexes. Releases with
+  [#1737](https://github.com/nowledge-co/hawdb/issues/1737) write that layout,
+  as does any `OutOfCore` + `Authoritative` checkpoint;
+- `Authoritative` relational indexes on a checkpoint that never published a
+  persistent relational index generation.
+
+Both are configuration or layout mismatches, not corruption; the open
+changes no database file (each branch's disposable `runtime/` mount is
+rebuilt). A missing index binding on a database without a checkpoint, and
+binding or identity mismatches, remain `StorageIntegrity`.
 
 Compatibility refusal is distinct from malformed data, invalid reserved fields,
 truncation, or checksum failure in supported formats. Streaming checkpoint readers finish integrity
@@ -208,8 +226,11 @@ and vector files), each synced and renamed into place. The rename of
 snapshot's object reference, is the single commit point. Only then are
 `search_projection.hawdb`, `search_projection_segment_payloads.hawdb`,
 `search_projection_segments.hawdb` and `search_lexical.manifest.hawdb`, in that
-order, replaced by hard links (or synced copies) to the selected generation. A loss
-before the selector leaves every current name and the selector at the previous
+order, replaced by hard links (or synced copies) to the selected generation.
+Copy fallback is limited to hard-link capability or policy refusals and uses an
+admitted bounded buffer with task cancellation checkpoints; unrelated I/O errors
+fail without replacing the old alias. A loss before the selector leaves every
+current name and the selector at the previous
 checkpoint. After it, `SearchIndex::open` re-links any current name that differs
 from the selected generation, but only from a generation file whose bytes match
 the selector's object reference. The repair runs only when the selected
@@ -217,10 +238,11 @@ generation snapshot exists and matches its receipt. Older layouts and selectors
 from other writers keep the existing validation. Before the selector, every
 installed generation file, including the snapshot, is re-read and checked
 against the reference the selector records. Reopen also removes alias-link and
-generation-write temporaries left by an interrupted checkpoint. On Windows,
-which has no stable file identity in std, each reopen hashes the four current
-files once. The current and previous generation snapshots stay under the
-ordinary content-generation retention. See
+generation-write temporaries left by an interrupted checkpoint. Unix compares
+device/inode identity; Windows compares the volume serial and full 128-bit file
+ID through counted validation handles. Content hashing is needed only when an
+alias differs or native identity is unsupported. The current and previous
+generation snapshots stay under the ordinary content-generation retention. See
 [resident checkpoint qualification](SEARCH_SEGMENT_POWER_LOSS_QUALIFICATION.md#resident-checkpoint).
 
 Compatibility: a projection written before #1711 has no generation snapshot
@@ -1618,6 +1640,36 @@ all branch paths have already been implemented or qualified.
 Callers that need higher ingest throughput SHOULD batch related mutations into
 one transaction and one WAL batch rather than weakening the default durability
 contract.
+
+### Per-commit WAL record limits
+
+A commit writes one WAL record. Two `DatabaseConfig` options bound it on a
+persistent database:
+- `max_wal_record_bytes`: the encoded record size. The default is 16 MiB
+  (`DEFAULT_MAX_WAL_RECORD_BYTES`), so one property value of about 16 MiB
+  already exceeds it.
+- `max_wal_batch_operations`: the number of operations in the record.
+
+A record over either limit is refused before any byte is appended and before
+the commit is applied. This covers autocommit statements, `Database`
+transactions, concurrent autocommit and transactions, and
+`EmbeddedStoreHandle::with_transaction`. The refusal is the typed
+`HawDBError::WalRecordLimitExceeded(WalRecordLimitError { limit, requested,
+maximum })`, where `limit` is `WalRecordLimit::RecordBytes` or
+`WalRecordLimit::BatchOperations` and `WalRecordLimit::config_option()` names
+the option. It displays as an `execution error`.
+
+The refusal is a caller error about one transaction's size, not a storage
+failure. The commit epoch, earlier commits and the handle are unchanged; the
+next commit proceeds normally, and a reopen replays exactly the earlier commits.
+Hosts must not treat it as a reason to poison or reopen the runtime. Retrying
+the same transaction unchanged fails the same way. Instead, split it (for
+example, write a very large value in its own transaction, or use smaller
+batches) or raise the option for the database. Statements are still accepted
+while a transaction is open: the limit applies to the record built at commit.
+In-memory databases have no WAL and no such limit. Replay keeps its own limits
+(`WalReplayConfig`) and still reports an oversized or damaged record as a
+storage error.
 
 ## Relationship Locality
 

@@ -25,7 +25,22 @@ const MANIFEST: &str = include_str!("../../cypher/fixtures/migration_manifest_v1
 // Expect its explicit None default without rewriting that historical corpus;
 // a populated policy or any other plan change still fails the exact comparison.
 fn frozen_plan_text(case: &Value) -> String {
-    with_default_property_default(&with_default_graph_keys(&frozen_lookup_text(case)))
+    with_default_on_match_assignments(&with_default_property_default(&with_default_graph_keys(
+        &frozen_lookup_text(case),
+    )))
+}
+
+/// Frozen plans also predate the relationship MERGE `ON MATCH SET` slot
+/// (#1793). Expect its empty default without rewriting them; any ON MATCH
+/// item or other change still fails the exact comparison.
+fn with_default_on_match_assignments(text: &str) -> String {
+    if !text.starts_with("MergeMatchedRelationship {") || text.contains("on_match_assignments: ") {
+        return text.to_string();
+    }
+    match text.strip_suffix(" }") {
+        Some(fields) => format!("{fields}, on_match_assignments: [] }}"),
+        None => text.to_string(),
+    }
 }
 
 /// Frozen plans also predate the `CreateProperty` default slot (#1683).

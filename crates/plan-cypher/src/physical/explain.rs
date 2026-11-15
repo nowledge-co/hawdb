@@ -315,6 +315,80 @@ impl PhysicalPlan {
                     set_return_mode_summary(returns)
                 )
             }
+            PhysicalPlan::MatchSetExec(set) => {
+                let assignments = set
+                    .assignments
+                    .iter()
+                    .map(|assignment| {
+                        let value = match &assignment.value {
+                            crate::MatchSetValue::Expression(_) => "expression",
+                            crate::MatchSetValue::Local(_) => "local",
+                        };
+                        format!("{}.{}={value}", assignment.variable, assignment.property)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let bindings = set
+                    .bindings
+                    .iter()
+                    .map(|binding| binding.variable.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let returns = set.returns.as_ref().map_or_else(
+                    || "none".to_string(),
+                    |returns| {
+                        let columns = returns
+                            .items
+                            .iter()
+                            .map(|item| item.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!(
+                            "[{columns}] distinct={} order_keys={} offset={} limit={:?}",
+                            returns.distinct,
+                            returns.order_by.len(),
+                            returns.offset,
+                            returns.limit
+                        )
+                    },
+                );
+                let relationship = set.relationship.as_ref().map_or_else(String::new, |write| {
+                    format!(
+                        " {}=({})-[:{}]->({}) properties={} on_create={}",
+                        if write.merge { "merge" } else { "create" },
+                        write.source,
+                        write.rel_type,
+                        write.target,
+                        write.properties.len(),
+                        write.on_create.len()
+                    )
+                });
+                format!(
+                    "{pad}MatchSetExec bindings=[{bindings}] assignments=[{assignments}]{relationship} returns={returns}"
+                )
+            }
+            PhysicalPlan::MutationReturn { returns, .. } => {
+                let bindings = returns
+                    .bindings
+                    .iter()
+                    .map(|binding| format!("{}<-{}", binding.variable, binding.column))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let limit = returns
+                    .limit
+                    .map(|limit| format!(" limit={limit}"))
+                    .unwrap_or_default();
+                let offset = if returns.offset > 0 {
+                    format!(" offset={}", returns.offset)
+                } else {
+                    String::new()
+                };
+                format!(
+                    "{pad}MutationReturn state={:?} bindings=[{bindings}] returns={}{offset}{limit}",
+                    returns.state,
+                    set_return_mode_summary(&returns.mode)
+                )
+            }
             PhysicalPlan::SetRelationshipProperty {
                 source_variable,
                 source_label,

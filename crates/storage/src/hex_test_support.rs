@@ -26,7 +26,9 @@ pub(crate) fn reference_decode(input: &str) -> Option<Vec<u8>> {
     }
     input
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             // Preserve the legacy unsigned radix parser's leading-plus pair.
             let high = if pair[0] == b'+' { 0 } else { nibble(pair[0])? };

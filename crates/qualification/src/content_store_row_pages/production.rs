@@ -1263,7 +1263,7 @@ mod tests {
         assert!(report.initial_residency.index_artifact_exceeds_cache);
         assert!(report.initial_residency.row_index_epoch_aligned);
         assert_eq!(report.initial_residency.segment_cache_pinned_bytes, 0);
-        for runs in report.runs.chunks_exact(2) {
+        for runs in report.runs.as_chunks::<2>().0 {
             assert!(runs[0].read.cache.misses > 0);
             assert!(runs[0].read.execution.physical_pages > 0);
             assert!(runs[1].read.cache.hits > 0);
