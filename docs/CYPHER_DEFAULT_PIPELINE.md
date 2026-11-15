@@ -203,7 +203,9 @@ RETURN r
 ```
 
 A node create binds its node; a relationship create binds its source,
-relationship and target variables. Items may be properties, whole entities,
+relationship and target variables. `RETURN` may reference only these
+variables of the CREATE pattern: an anonymous node or relationship binds
+nothing, and any other name is refused at planning (`unknown variable`). Items may be properties, whole entities,
 scalar expressions and aliases. A single `count(*)` or `count(variable)` returns
 one row with the number of created entities, `0` when MATCH found nothing.
 Other aggregates, `DISTINCT`, `WHERE`, `ORDER BY`, `SKIP`, `LIMIT` and further

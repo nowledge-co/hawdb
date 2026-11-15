@@ -235,8 +235,15 @@ mod create {
             ("CREATE (n:Item {id: 1}) RETURN DISTINCT n.id", "modifiers"),
             ("CREATE (n:Item {id: 1}) RETURN count(m)", "count variable"),
             (
+                // The CREATE shape itself is refused before RETURN is bound.
                 "MATCH (a:Memory {id: 'a'}) CREATE (a)-[:R]->(:Item {id: 1}) RETURN a.id",
-                "",
+                "undecorated variable reference",
+            ),
+            (
+                // RETURN sees only the variables the CREATE pattern binds; an
+                // anonymous relationship binds none.
+                "MATCH (a:Memory {id: 'a'}), (b:Memory {id: 'a'}) CREATE (a)-[:R]->(b) RETURN r",
+                "unknown variable 'r'",
             ),
         ] {
             let error = db.query(query).unwrap_err();
