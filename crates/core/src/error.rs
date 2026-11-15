@@ -27,7 +27,9 @@ pub use storage_format::{
     STORAGE_MANIFEST_FORMAT,
 };
 mod relational;
+mod wal_record;
 pub use relational::{find_relational_error_kind, RelationalErrorKind, RelationalErrorSurface};
+pub use wal_record::{WalRecordLimit, WalRecordLimitError};
 
 /// Descriptor admission failures are distinct from corrupt storage or a busy
 /// branch. Project quota counts belong to one engine resource domain; OS-limit
@@ -250,6 +252,10 @@ pub enum HawDBError {
     /// Box the diagnostic so successful Result values do not grow with its fields.
     ResourceBudgetExceeded(Box<ResourceBudgetError>),
     ReadBudgetExceeded(ReadBudgetError),
+    /// A commit's WAL record would exceed a configured per-record limit. It
+    /// is refused before anything is written and leaves the handle usable;
+    /// see [`WalRecordLimitError`]. Not a storage failure.
+    WalRecordLimitExceeded(Box<WalRecordLimitError>),
     GraphExpansionCandidateLimitExceeded {
         requested: usize,
         limit: usize,
@@ -345,6 +351,7 @@ impl Display for HawDBError {
                 f,
                 "graph expansion candidate_limit exceeded: requested {requested} rows, limit {limit} rows; configure ExecutionMemoryConfig.graph_expansion_budget.candidate_limit"
             ),
+            HawDBError::WalRecordLimitExceeded(error) => write!(f, "execution error: {error}"),
             HawDBError::GraphExpansionPayloadLimitExceeded { requested, limit } => write!(
                 f,
                 "graph expansion payload_byte_limit exceeded: requested {requested} bytes, limit {limit} bytes; configure ExecutionMemoryConfig.graph_expansion_budget.payload_byte_limit"
@@ -399,6 +406,7 @@ impl std::error::Error for HawDBError {
             Self::FileDescriptors(error) => Some(error),
             Self::ResourceBudgetExceeded(error) => Some(error.as_ref()),
             Self::ReadBudgetExceeded(error) => Some(error),
+            Self::WalRecordLimitExceeded(error) => Some(error.as_ref()),
             Self::TransactionRetryRequired(error) => Some(error.as_ref()),
             Self::UnsupportedStorageFormat(error) => Some(error),
             Self::BranchReclamationBlocked { cause, .. } => Some(cause.as_ref()),

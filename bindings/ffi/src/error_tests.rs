@@ -175,3 +175,15 @@ fn newer_relational_checkpoint_layout_reports_unsupported_storage_format() {
         expected
     );
 }
+
+#[test]
+fn wal_record_limit_is_delivered_as_its_own_kind() {
+    let error = HawDBError::WalRecordLimitExceeded(Box::new(hawdb::WalRecordLimitError {
+        limit: hawdb::WalRecordLimit::RecordBytes,
+        requested: 20,
+        maximum: 16,
+    }));
+    let delivered = delivered(FfiError::open(&error));
+    assert_eq!(delivered["kind"], "wal_record_limit_exceeded", "{delivered}");
+    assert_eq!(delivered["message"], error.to_string());
+}
