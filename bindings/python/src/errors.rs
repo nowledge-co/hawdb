@@ -226,6 +226,20 @@ pub fn format_hawdb_error(error: &HawDBError) -> PyErr {
                 attributes.err().unwrap_or(exception)
             })
         }
+        HawDBError::SearchProjectionOwnershipMarkerCorrupt {
+            projection, marker, ..
+        } => Python::attach(|py| {
+            // Not poisoning: reopen with the ownership reset to rewrite it.
+            let exception = ExecutionError::new_err(message);
+            let value = exception.value(py);
+            let attributes = (|| -> PyResult<()> {
+                value.setattr("kind", "search_projection_ownership_marker_corrupt")?;
+                value.setattr("projection", projection.display().to_string())?;
+                value.setattr("marker", marker.as_str())?;
+                value.setattr("retryable", false)
+            })();
+            attributes.err().unwrap_or(exception)
+        }),
         HawDBError::SearchProjectionOwnershipMismatch {
             projection,
             recorded,
@@ -745,6 +759,26 @@ mod tests {
                 .unwrap()
                 .extract::<bool>()
                 .unwrap());
+        });
+    }
+
+    #[test]
+    fn search_projection_ownership_marker_corruption_is_a_non_poisoning_execution_error() {
+        Python::initialize();
+        Python::attach(|py| {
+            let error = HawDBError::SearchProjectionOwnershipMarkerCorrupt {
+                projection: "/data/search".into(),
+                marker: ".externally_owned_rows_required".into(),
+                message: "has no epoch".into(),
+            };
+            let exception = format_hawdb_error(&error);
+            assert!(exception.is_instance_of::<ExecutionError>(py));
+            assert!(!exception.is_instance_of::<IntegrityError>(py));
+            let value = exception.value(py);
+            let text = |name: &str| value.getattr(name).unwrap().extract::<String>().unwrap();
+            assert_eq!(text("kind"), "search_projection_ownership_marker_corrupt");
+            assert_eq!(text("projection"), "/data/search");
+            assert_eq!(text("marker"), ".externally_owned_rows_required");
         });
     }
 

@@ -35,6 +35,9 @@
 //! band). When a record exists and differs from the requested set, the open
 //! is refused with [`HawDBError::SearchProjectionOwnershipMismatch`]; nothing
 //! diverges silently between, for example, a preparation flow and a runtime.
+//! An unparsable record is the typed, non-poisoning
+//! [`HawDBError::SearchProjectionOwnershipMarkerCorrupt`]; [`reset`] rewrites
+//! both records and raises the epoch.
 
 use crate::SearchProjectionKind;
 use hawdb_core::{HawDBError, Result};
@@ -156,6 +159,33 @@ pub fn raise_rows_required(projection: &Path) -> Result<u64> {
     Ok(raised.epoch)
 }
 
+/// The raised state that follows `previous`. An unreadable previous state
+/// jumps to the current time in microseconds, which exceeds every epoch a
+/// counter could have reached, so epochs never repeat.
+pub fn raised_after(previous: Result<ExternallyOwnedRowsState>) -> ExternallyOwnedRowsState {
+    match previous {
+        Ok(state) => state.raised(),
+        Err(_) => ExternallyOwnedRowsState {
+            epoch: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX))
+                .unwrap_or(u64::MAX >> 1)
+                .max(1),
+            required: true,
+        },
+    }
+}
+
+/// Rewrites both records from `kinds` regardless of their current content,
+/// raising the rows-required epoch. This is the recovery for an unreadable
+/// record ([`HawDBError::SearchProjectionOwnershipMarkerCorrupt`]).
+pub fn reset(projection: &Path, kinds: &BTreeSet<SearchProjectionKind>) -> Result<u64> {
+    let raised = raised_after(read_rows_state(projection));
+    write_rows_state(projection, raised)?;
+    write_record(projection, kinds)?;
+    Ok(raised.epoch)
+}
+
 /// Clears the requirement only if `epoch` is still the required epoch.
 ///
 /// Returns `false`, changing nothing, when no rows are required or `epoch`
@@ -248,10 +278,11 @@ fn names(kinds: &BTreeSet<SearchProjectionKind>) -> Vec<String> {
 }
 
 fn malformed(projection: &Path, name: &str, problem: &str) -> HawDBError {
-    HawDBError::StorageIntegrity(format!(
-        "externally owned search record {} {problem}",
-        projection.join(name).display()
-    ))
+    HawDBError::SearchProjectionOwnershipMarkerCorrupt {
+        projection: projection.to_path_buf(),
+        marker: name.to_string(),
+        message: problem.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -346,9 +377,33 @@ mod tests {
             fs::write(root.join(ROWS_MARKER), text).unwrap();
             assert!(matches!(
                 read_rows_state(&root),
-                Err(HawDBError::StorageIntegrity(_))
+                Err(HawDBError::SearchProjectionOwnershipMarkerCorrupt { .. })
             ));
         }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reset_rewrites_unreadable_records_and_raises_past_every_epoch() {
+        let root = directory("reset");
+        let owned = BTreeSet::from([SearchProjectionKind::Memory]);
+        fs::write(root.join(MARKER), "garbage").unwrap();
+        fs::write(root.join(ROWS_MARKER), "garbage").unwrap();
+        assert!(matches!(
+            reconcile(&root, &owned, true),
+            Err(HawDBError::SearchProjectionOwnershipMarkerCorrupt { ref marker, .. }) if marker == MARKER
+        ));
+        let epoch = reset(&root, &owned).unwrap();
+        assert!(
+            epoch > 1_000_000_000,
+            "time-based epoch after an unreadable state"
+        );
+        assert_eq!(read_recorded_kinds(&root).unwrap(), Some(owned.clone()));
+        assert_eq!(
+            read_rows_state(&root).unwrap().required_epoch(),
+            Some(epoch)
+        );
+        assert_eq!(reset(&root, &owned).unwrap(), epoch + 1);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -363,7 +418,7 @@ mod tests {
             fs::write(root.join(MARKER), text).unwrap();
             assert!(matches!(
                 reconcile(&root, &BTreeSet::new(), true),
-                Err(HawDBError::StorageIntegrity(_))
+                Err(HawDBError::SearchProjectionOwnershipMarkerCorrupt { .. })
             ));
         }
         fs::remove_dir_all(root).unwrap();

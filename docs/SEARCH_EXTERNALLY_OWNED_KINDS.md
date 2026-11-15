@@ -48,31 +48,46 @@ and in JSON as `projection.externally_owned_kinds`.
 
 HawDB never rebuilds a search projection on its own. A changefeed gap makes
 catch-up refuse, and background maintenance only ranks a rebuild candidate;
-the host runs the rebuild. Both rebuild paths keep host documents:
+the host runs the rebuild. Both rebuild paths carry host documents over, so
+search keeps serving them, and both raise the rows-required epoch, so the
+host re-pushes:
 
 - **Resident** (`Database::rebuild_search_projection` and its background and
   scheduled variants, all `SearchIndex::rebuild_from_graph`): for every live
   node of an owned kind, the document the index holds is carried over
   unchanged instead of being derived. Documents whose node no longer exists
   are dropped, and a node without a host document gets none. Metadata repair
-  (`repair_metadata_from_graph`) skips owned kinds.
+  (`repair_metadata_from_graph`) skips owned kinds. Both raise the epoch of a
+  persistent index before they start.
 - **Out-of-core** (`EmbeddedStoreHandle::rebuild_out_of_core_search_projection`):
   graph rows of owned kinds do not reach the host's `hydrate_graph_rows`.
-  Each live node's document is looked up in the store's current projection
-  (bounded reads of up to 64 MiB per hydration batch) and written unchanged.
-  The verification pass reads the same documents. `visit_host_rows` output
-  is applied as before. The set record and the rows-required state are
-  written into the stage before it is installed, so they appear atomically
-  with the generation.
+  - In the build pass, each live node's document is looked up in the store's
+    current projection and written unchanged. Lookups are bounded to 64 MiB
+    per hydration batch; a larger batch fails the rebuild with the typed
+    `ReadBudgetExceeded`, so lower `hydration_batch_rows`. If the current
+    projection is unreadable at the start, owned rows are dropped.
+  - The verification pass excludes owned kinds from the compared digests,
+    and only the document total includes them. A host writing to the current
+    projection during the rebuild therefore cannot make verification fail.
+  - `visit_host_rows` output is applied as before.
+  - The set record and a raised rows-required state (the previous
+    directory's epoch plus one) are written into the stage before it is
+    installed, so they appear atomically with the generation.
+
+The epoch is always raised after a rebuild or repair. Host writes made to
+the current projection during an out-of-core rebuild, or after installation
+until the host reopens on the target, are not in the target. Host deltas are
+not in the graph change log, so catch-up cannot replay them. A high-water
+mark kept in memory could not cover the window between installation and the
+host's reopen, which can span processes.
 
 When HawDB cannot prove the host's documents are present, it raises a
 durable rows-required epoch:
 
 - ownership is first recorded for a projection directory, either a new
   directory or a removed record that is being restored;
-- an out-of-core rebuild finds the current projection unreadable at its
-  start. Owned rows are then dropped, and the rebuilt directory's epoch is
-  the previous directory's epoch plus one.
+- any rebuild or metadata repair runs, as described above;
+- a reset rewrites the records (see below).
 
 `runtime_status().externally_owned_rows_required_epoch` (JSON
 `projection.externally_owned_rows_required_epoch`) is `Some(epoch)` while
@@ -91,6 +106,31 @@ the epoch it observed:
 - read-only opens are refused as `Semantic`.
 
 Epochs only grow and are never reused.
+
+## Unreadable records
+
+A record that cannot be parsed returns the typed
+`HawDBError::SearchProjectionOwnershipMarkerCorrupt { projection, marker,
+message }`. It is classed as execution, not `StorageIntegrity`, so hosts do
+not treat it as poisoning, and nothing is changed:
+
+- an unreadable set record refuses the open, because HawDB cannot tell which
+  kinds catch-up may derive;
+- an unreadable rows-required state makes `runtime_status`, the epoch query
+  and acknowledgement fail with this error. They never report the rows as
+  restored. A rebuild that finds it unreadable raises a time-based epoch.
+
+Recovery is an explicit, writable open:
+`EmbeddedStoreOpenOptions::with_externally_owned_search_kinds_reset()`
+together with the intended set. It rewrites both records from that set and
+raises the epoch. An unreadable epoch is replaced by the current time in
+microseconds, which exceeds every epoch a counter could have reached.
+Read-only and qualified out-of-core opens refuse a reset as `Semantic`.
+
+Qualified out-of-core opens never record the set; only maintenance opens
+do. A preparation flow that opens in qualified mode must therefore still
+declare the set, and the projection must have been recorded by a maintenance
+open.
 
 ## Durable records
 
@@ -158,13 +198,19 @@ into a new directory.
   - the rows-required epoch: raised on first record and on restore, the race
     where a stale acknowledgement does not clear a newer epoch, read-only
     visibility, and refusal of a read-only acknowledgement;
-  - a manufactured changefeed gap (a change log of two entries) recovered by
-    the resident rebuild plus metadata repair, and by the out-of-core
-    rebuild: documents of live nodes are carried over byte-identical, the
+  - a manufactured changefeed gap (a change log of two entries), recovered by
+    the resident rebuild plus metadata repair and by the out-of-core
+    rebuild. Documents of live nodes are carried over byte-identical, the
     document of a node deleted during the gap is dropped, a node without a
-    host row gets none, and other kinds are derived. With carry-over made
-    impossible, the rebuilt directory raises the epoch past the acknowledged
-    one, and re-push plus acknowledgement clears it.
+    host row gets none, other kinds are derived, and the epoch is raised past
+    the acknowledged one. With carry-over made impossible, owned documents
+    are absent until the host re-pushes them;
+  - a host write to the current projection during an out-of-core rebuild:
+    the rebuild still verifies, and the target raises the epoch;
+  - unreadable set and rows records: typed refusals; a read-only reset is
+    refused; a reset reopen rewrites both records, and the time-based epoch
+    exceeds every earlier one.
 - `projection_ownership::tests` (hawdb-search) covers the record formats, the
-  refusal, acknowledgement of only the current epoch, and malformed records.
+  refusal, acknowledgement of only the current epoch, malformed records, and
+  the reset.
 - `generation_cleanup::tests::cleanup_preserves_the_externally_owned_records`.

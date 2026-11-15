@@ -2235,7 +2235,8 @@ impl SearchIndex {
     /// delta are unaffected. A full rebuild from the graph carries the current
     /// document of every live node of these kinds over unchanged, dropping
     /// documents whose node no longer exists, and metadata repair leaves them
-    /// untouched. The set is not persisted by the index; an
+    /// untouched. Both raise the persisted rows-required epoch of a
+    /// persistent index, so the host re-pushes its rows. The set is not persisted by the index; an
     /// embedded store records it with
     /// `EmbeddedStoreOpenOptions::with_externally_owned_search_kinds`.
     pub fn set_externally_owned_kinds(&mut self, kinds: BTreeSet<SearchProjectionKind>) {
@@ -2244,6 +2245,26 @@ impl SearchIndex {
 
     pub fn externally_owned_kinds(&self) -> &BTreeSet<SearchProjectionKind> {
         &self.externally_owned_kinds
+    }
+
+    /// Raises the persisted rows-required epoch before a rebuild or metadata
+    /// repair of a projection with externally owned kinds (#1814).
+    ///
+    /// Carry-over keeps the documents the index holds, but host writes that
+    /// have not reached this index (for example to another directory during
+    /// an out-of-core rebuild) cannot be proven present, so the host always
+    /// re-pushes after maintenance. Raising first keeps a failed rebuild
+    /// fail-safe. An unreadable state is replaced by a time-based epoch.
+    fn raise_externally_owned_rows_required(&self) -> Result<()> {
+        if self.externally_owned_kinds.is_empty() {
+            return Ok(());
+        }
+        let Some(path) = self.path.as_deref() else {
+            return Ok(());
+        };
+        let raised =
+            projection_ownership::raised_after(projection_ownership::read_rows_state(path));
+        projection_ownership::write_rows_state(path, raised)
     }
 
     pub fn upsert(&mut self, document: SearchDocument) -> Result<()> {
@@ -2672,6 +2693,7 @@ impl SearchIndex {
         options: SearchRebuildOptions,
     ) -> Result<SearchRebuildSummary> {
         let _consumer_mutation = self.require_owned_mutation_or_unregistered()?;
+        self.raise_externally_owned_rows_required()?;
         let started = hawdb_core::time::Instant::now();
         let mut next_documents = BTreeMap::new();
         let mut scanned_nodes = 0;
@@ -2859,6 +2881,7 @@ impl SearchIndex {
         options: MetadataRepairOptions,
     ) -> Result<MetadataRepairSummary> {
         let _consumer_mutation = self.require_owned_mutation_or_unregistered()?;
+        self.raise_externally_owned_rows_required()?;
         let started = hawdb_core::time::Instant::now();
         let mut repairs = Vec::new();
         let mut scanned_nodes = 0;

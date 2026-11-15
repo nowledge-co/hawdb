@@ -258,6 +258,17 @@ pub enum HawDBError {
         recorded: Vec<String>,
         requested: Vec<String>,
     },
+    /// An externally owned search projection record (#1814) in the
+    /// projection directory cannot be parsed. Not a storage failure and not
+    /// poisoning: nothing was changed. Reopen with
+    /// `EmbeddedStoreOpenOptions::with_externally_owned_search_kinds_reset`
+    /// to rewrite both records from the passed set; that raises the
+    /// rows-required epoch so the host re-pushes its rows.
+    SearchProjectionOwnershipMarkerCorrupt {
+        projection: std::path::PathBuf,
+        marker: String,
+        message: String,
+    },
     Execution(String),
     /// Box the diagnostic so successful Result values do not grow with its fields.
     ResourceBudgetExceeded(Box<ResourceBudgetError>),
@@ -364,6 +375,15 @@ impl Display for HawDBError {
                 projection.display(),
                 recorded.join(", "),
                 requested.join(", ")
+            ),
+            HawDBError::SearchProjectionOwnershipMarkerCorrupt {
+                projection,
+                marker,
+                message,
+            } => write!(
+                f,
+                "search projection ownership record {marker} in {} is unreadable ({message}); reopen with the externally owned search kinds reset to rewrite it",
+                projection.display()
             ),
             HawDBError::Execution(message) => write!(f, "execution error: {message}"),
             HawDBError::ResourceBudgetExceeded(error) => write!(f, "execution error: {error}"),

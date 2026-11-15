@@ -10,7 +10,8 @@ use crate::search::{
 };
 use crate::{
     GraphOnlySearchProjectionRebuild, IncrementalSearchMaintenanceOptions, RuntimeTaskContext,
-    SearchProjectionRebuildOptions,
+    RuntimeWorkPriority, SearchProjectionRebuildOptions, SearchProjectionRebuildPhase,
+    SearchProjectionRebuildProgress, SearchProjectionRebuildSource,
 };
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -569,7 +570,14 @@ fn resident_rebuild_after_changefeed_gap_carries_host_documents_over() {
     assert_eq!(document(&handle, &gone.id), None, "deleted during the gap");
     assert_eq!(document(&handle, "memory:late"), None, "no host row yet");
     assert_eq!(document(&handle, SOURCE).unwrap().title, "graph source");
-    assert_eq!(handle.externally_owned_rows_required_epoch().unwrap(), None);
+    // Rebuild and repair each raise the epoch, past the acknowledged 1.
+    assert_eq!(
+        handle.externally_owned_rows_required_epoch().unwrap(),
+        Some(3)
+    );
+    assert!(handle
+        .acknowledge_externally_owned_rows_restored(3)
+        .unwrap());
     catch_up(&handle);
     drop(handle);
     std::fs::remove_dir_all(root).unwrap();
@@ -618,10 +626,13 @@ fn out_of_core_rebuild_after_changefeed_gap_carries_over_or_raises_the_epoch() {
         assert_eq!(document(&handle, &gone.id), None);
         assert_eq!(document(&handle, "memory:late"), None);
         assert_eq!(document(&handle, SOURCE).unwrap().title, "graph source");
+        // Always raised after a rebuild, past the acknowledged epoch 1.
+        assert_eq!(
+            handle.externally_owned_rows_required_epoch().unwrap(),
+            Some(2)
+        );
         if carry_over_fails {
             assert_eq!(document(&handle, "memory:kept"), None);
-            let epoch = handle.externally_owned_rows_required_epoch().unwrap();
-            assert_eq!(epoch, Some(2), "continues past the acknowledged epoch 1");
             handle
                 .apply_search_projection_delta_and_checkpoint(SearchProjectionDelta {
                     upserts: vec![host_row(SearchProjectionKind::Memory, "kept")],
@@ -632,10 +643,195 @@ fn out_of_core_rebuild_after_changefeed_gap_carries_over_or_raises_the_epoch() {
             assert!(handle
                 .acknowledge_externally_owned_rows_restored(2)
                 .unwrap());
+        } else {
+            assert_eq!(document(&handle, "memory:kept"), Some(kept.clone()));
+            assert!(handle
+                .acknowledge_externally_owned_rows_restored(2)
+                .unwrap());
         }
         assert_eq!(document(&handle, "memory:kept"), Some(kept));
         assert_eq!(handle.externally_owned_rows_required_epoch().unwrap(), None);
         catch_up(&handle);
+        drop(handle);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+/// Applies one host delta to `memory:kept` after the first scan batch, while
+/// the rebuild holds no store lock.
+struct WriteDuringScan<'a> {
+    handle: &'a EmbeddedStoreHandle,
+    written: bool,
+}
+
+impl SearchProjectionRebuildSource for WriteDuringScan<'_> {
+    fn progress(&mut self, progress: &SearchProjectionRebuildProgress) {
+        if self.written
+            || progress.phase != SearchProjectionRebuildPhase::Scan
+            || progress.graph_documents == 0
+        {
+            return;
+        }
+        self.written = true;
+        let mut row = host_row(SearchProjectionKind::Memory, "kept");
+        row.body = "written during the rebuild".into();
+        self.handle
+            .apply_search_projection_delta_and_checkpoint(SearchProjectionDelta {
+                upserts: vec![row],
+                max_operations: Some(1),
+                ..Default::default()
+            })
+            .unwrap();
+    }
+}
+
+/// A host write to the current projection during an out-of-core rebuild is
+/// not in the target. The rebuild still verifies (owned kinds are excluded
+/// from the comparison), and the target raises the epoch so the host
+/// re-pushes.
+#[test]
+fn host_write_during_out_of_core_rebuild_leaves_the_epoch_raised() {
+    let config = gap_config();
+    let owned = BTreeSet::from([SearchProjectionKind::Memory]);
+    let (root, handle) = open_fresh_with(
+        "owned_write_during_rebuild",
+        Layout::OutOfCore,
+        owned.clone(),
+        Some(&config),
+    );
+    assert!(handle
+        .acknowledge_externally_owned_rows_restored(1)
+        .unwrap());
+    manufacture_gap(&handle);
+    let mut source = WriteDuringScan {
+        handle: &handle,
+        written: false,
+    };
+    let options = SearchProjectionRebuildOptions {
+        hydration_batch_rows: std::num::NonZeroUsize::new(1).unwrap(),
+        priority: RuntimeWorkPriority::Foreground,
+        ..SearchProjectionRebuildOptions::default()
+    };
+    handle
+        .rebuild_out_of_core_search_projection(
+            root.join("rebuilt"),
+            options,
+            &mut source,
+            RuntimeTaskContext::default(),
+        )
+        .unwrap();
+    assert!(source.written);
+    assert_eq!(
+        document(&handle, "memory:kept").unwrap().content,
+        "written during the rebuild"
+    );
+    drop(handle);
+
+    let (handle, _) = EmbeddedStoreHandle::open_with_options(options_at(
+        &root,
+        "rebuilt",
+        Layout::OutOfCore,
+        owned,
+        GraphMode::WritableCutover,
+        Some(&config),
+    ))
+    .unwrap();
+    let epoch = handle.externally_owned_rows_required_epoch().unwrap();
+    assert_eq!(epoch, Some(2));
+    let mut row = host_row(SearchProjectionKind::Memory, "kept");
+    row.body = "written during the rebuild".into();
+    handle
+        .apply_search_projection_delta_and_checkpoint(SearchProjectionDelta {
+            upserts: vec![row],
+            max_operations: Some(1),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(handle
+        .acknowledge_externally_owned_rows_restored(2)
+        .unwrap());
+    assert_eq!(
+        document(&handle, "memory:kept").unwrap().content,
+        "written during the rebuild"
+    );
+    drop(handle);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// An unreadable record is a typed, non-poisoning refusal; reopening with
+/// the reset rewrites both records and raises the epoch past every earlier
+/// one.
+#[test]
+fn corrupt_ownership_records_are_typed_and_reset_by_an_explicit_open() {
+    for layout in [Layout::Resident, Layout::OutOfCore] {
+        let (root, handle) = open_fresh(&format!("owned_corrupt_{layout:?}"), layout, owned());
+        drop(handle);
+        let search = root.join("search");
+        let kinds = search.join(EXTERNALLY_OWNED_KINDS_MARKER);
+        let rows = search.join(EXTERNALLY_OWNED_ROWS_MARKER);
+
+        std::fs::write(&kinds, "not a record").unwrap();
+        let Err(error) = EmbeddedStoreHandle::open_with_options(options(&root, layout, owned()))
+        else {
+            panic!("a corrupt set record refuses the open");
+        };
+        assert!(
+            matches!(
+                &error,
+                HawDBError::SearchProjectionOwnershipMarkerCorrupt { marker, .. }
+                    if marker == EXTERNALLY_OWNED_KINDS_MARKER
+            ),
+            "{error}"
+        );
+        let Err(error) = EmbeddedStoreHandle::open_with_options(
+            options_at(
+                &root,
+                "search",
+                layout,
+                owned(),
+                GraphMode::ShadowReadOnly,
+                None,
+            )
+            .with_externally_owned_search_kinds_reset(),
+        ) else {
+            panic!("a read-only open cannot reset");
+        };
+        assert!(matches!(error, HawDBError::Semantic(_)), "{error}");
+        let (handle, _) = EmbeddedStoreHandle::open_with_options(
+            options(&root, layout, owned()).with_externally_owned_search_kinds_reset(),
+        )
+        .unwrap();
+        assert_eq!(
+            handle.externally_owned_rows_required_epoch().unwrap(),
+            Some(2)
+        );
+        drop(handle);
+
+        // A corrupt rows state is reported typed, not as rows silently restored.
+        std::fs::write(&rows, "not a state").unwrap();
+        let (handle, _) =
+            EmbeddedStoreHandle::open_with_options(options(&root, layout, owned())).unwrap();
+        assert!(matches!(
+            handle.runtime_status(),
+            Err(HawDBError::SearchProjectionOwnershipMarkerCorrupt { .. })
+        ));
+        drop(handle);
+        let (handle, _) = EmbeddedStoreHandle::open_with_options(
+            options(&root, layout, owned()).with_externally_owned_search_kinds_reset(),
+        )
+        .unwrap();
+        let epoch = handle
+            .runtime_status()
+            .unwrap()
+            .externally_owned_rows_required_epoch
+            .unwrap();
+        assert!(
+            epoch > 2,
+            "time-based epoch {epoch} exceeds every earlier one"
+        );
+        assert!(handle
+            .acknowledge_externally_owned_rows_restored(epoch)
+            .unwrap());
         drop(handle);
         std::fs::remove_dir_all(root).unwrap();
     }

@@ -517,12 +517,18 @@ opens report the epoch but cannot acknowledge it. A manufactured changefeed gap
 (a change log of two entries) is recovered by the resident rebuild with metadata
 repair and by the out-of-core rebuild. In both, documents of live nodes are
 carried over byte-identical, and documents of nodes deleted during the gap are
-dropped. When carry-over is made impossible by an injected probe failure, the
-rebuilt directory raises the epoch instead. Search-crate owners `projection_ownership::tests` and
+dropped, and every rebuild and repair raises the epoch. When carry-over is made
+impossible by an injected probe failure, owned documents are absent until the
+host re-pushes them. A host delta applied during an out-of-core rebuild does not
+fail verification, and the target raises the epoch. Unreadable records are the
+typed `SearchProjectionOwnershipMarkerCorrupt`; a read-only reset is refused,
+and a reset reopen rewrites both records with a time-based epoch.
+Search-crate owners `projection_ownership::tests` and
 `generation_cleanup::tests::cleanup_preserves_the_externally_owned_records`
 cover the record format and cleanup preservation; `bindings/python`
 `errors::tests::search_projection_ownership_mismatch_is_an_execution_error_with_both_sets`
-pins the binding mapping. The fixtures are small temporary stores; no lane,
+and `search_projection_ownership_marker_corruption_is_a_non_poisoning_execution_error`
+pin the binding mapping. The fixtures are small temporary stores; no lane,
 profile or timeout is added. Local replay:
 `cargo test --locked -p hawdb --lib externally_owned_search_kinds -- --test-threads=4`
 and `cargo test --locked -p hawdb-search --lib projection_ownership`. See

@@ -303,6 +303,9 @@ pub struct EmbeddedStoreOpenOptions {
     /// Search projection kinds whose documents only the host writes.
     /// See [`Self::with_externally_owned_search_kinds`].
     pub externally_owned_search_kinds: BTreeSet<SearchProjectionKind>,
+    /// Rewrite the ownership records at open instead of comparing them.
+    /// See [`Self::with_externally_owned_search_kinds_reset`].
+    pub externally_owned_search_kinds_reset: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -366,6 +369,7 @@ impl EmbeddedStoreOpenOptions {
             system_schema_registries: Vec::new(),
             non_projection_relational_tables: Vec::new(),
             externally_owned_search_kinds: BTreeSet::new(),
+            externally_owned_search_kinds_reset: false,
         }
     }
 
@@ -387,6 +391,7 @@ impl EmbeddedStoreOpenOptions {
             system_schema_registries: Vec::new(),
             non_projection_relational_tables: Vec::new(),
             externally_owned_search_kinds: BTreeSet::new(),
+            externally_owned_search_kinds_reset: false,
         }
     }
 
@@ -411,6 +416,7 @@ impl EmbeddedStoreOpenOptions {
             system_schema_registries: Vec::new(),
             non_projection_relational_tables: Vec::new(),
             externally_owned_search_kinds: BTreeSet::new(),
+            externally_owned_search_kinds_reset: false,
         }
     }
 
@@ -487,6 +493,24 @@ impl EmbeddedStoreOpenOptions {
         I: IntoIterator<Item = SearchProjectionKind>,
     {
         self.externally_owned_search_kinds = kinds.into_iter().collect();
+        self
+    }
+
+    /// Makes this open rewrite both externally owned records from the set
+    /// passed to [`Self::with_externally_owned_search_kinds`] instead of
+    /// comparing them, and raise the rows-required epoch so the host
+    /// re-pushes its rows.
+    ///
+    /// This is the recovery for
+    /// [`HawDBError::SearchProjectionOwnershipMarkerCorrupt`]. An unreadable
+    /// rows-required state is replaced by an epoch derived from the current
+    /// time in microseconds, which exceeds every epoch observed before. The
+    /// open needs write access: read-only and qualified out-of-core opens
+    /// refuse the reset as `Semantic`. Hosts should reset only on that
+    /// error; changing the declared set still calls for a rebuild into a new
+    /// directory.
+    pub fn with_externally_owned_search_kinds_reset(mut self) -> Self {
+        self.externally_owned_search_kinds_reset = true;
         self
     }
 
@@ -2244,10 +2268,20 @@ impl EmbeddedStore {
                 SearchProjectionOpenMode::QualifiedOutOfCore(_)
             );
         let search_projection_path = options.search_projection_path.clone();
+        let reset_ownership = options.externally_owned_search_kinds_reset;
+        if reset_ownership && (!may_record_ownership || search_projection_path.is_none()) {
+            return Err(HawDBError::Semantic(
+                "resetting externally owned search kinds requires a writable maintenance search projection".into(),
+            ));
+        }
         let (mut store, report) = Self::open_with_validated_options(options, runtime_governor)?;
         store.non_projection_relational_tables = tables;
         if let Some(path) = search_projection_path.as_deref() {
-            crate::search::projection_ownership::reconcile(path, &owned, may_record_ownership)?;
+            if reset_ownership {
+                crate::search::projection_ownership::reset(path, &owned)?;
+            } else {
+                crate::search::projection_ownership::reconcile(path, &owned, may_record_ownership)?;
+            }
         }
         if let Some(projection) = store.search_projection.as_mut() {
             projection
