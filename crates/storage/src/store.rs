@@ -854,6 +854,14 @@ pub struct GraphMutationSavepoint {
     row_len: usize,
 }
 
+impl GraphMutationSavepoint {
+    /// The graph state when the savepoint was taken, before later statements.
+    #[doc(hidden)]
+    pub fn store(&self) -> &GraphStore {
+        &self.store
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[doc(hidden)]
 pub struct GraphAdjacencyLockIdentity {

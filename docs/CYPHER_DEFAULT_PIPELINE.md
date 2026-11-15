@@ -203,21 +203,47 @@ RETURN r
 ```
 
 A node create binds its node; a relationship create binds its source,
-relationship and target variables. Items may be properties, whole entities,
+relationship and target variables. `RETURN` may reference only these
+variables of the CREATE pattern: an anonymous node or relationship binds
+nothing, and any other name is refused at planning (`unknown variable`). Items may be properties, whole entities,
 scalar expressions and aliases. A single `count(*)` or `count(variable)` returns
 one row with the number of created entities, `0` when MATCH found nothing.
 Other aggregates, `DISTINCT`, `WHERE`, `ORDER BY`, `SKIP`, `LIMIT` and further
 clauses are refused before any write.
 
+`DELETE` and `DETACH DELETE` may end in `RETURN` the same way. As in Kùzu, the
+rows describe the deleted entities as they were before the statement, one row
+per deleted node or relationship; `count(*)` counts the deleted rows and is `0`
+when MATCH found nothing:
+
+```cypher
+MATCH (e:Entity {id: $entity_id})
+WHERE NOT (e)<-[:MENTIONS]-(:Memory) AND NOT (e)-[:RELATES_TO]-()
+DETACH DELETE e RETURN e.id
+
+MATCH (a:Memory)-[r:HAS_LABEL]->(l:Label {id: $label}) DELETE r
+RETURN count(*)
+```
+
+A node delete binds the deleted node; a relationship delete binds the
+relationship and its two endpoints. A target-node `DETACH DELETE` after a
+relationship MATCH is refused with `RETURN`, because storage reports each
+deleted node once while MATCH can produce it on several rows.
+
 The mutation keeps its existing storage command. The planner wraps it in a
 `MutationReturn` operator naming the summary-row column that identifies each
-returned variable. Execution stages the mutation in a private transaction
-workspace, projects the rows from that working state, and publishes only if
-projection succeeds; in an explicit transaction the statement savepoint is
+returned variable, and whether the entities are read after the write or, for
+a delete, from the state the statement started from. Execution stages the
+mutation in a private transaction workspace, projects the rows from those
+states, and publishes only if projection succeeds; in an explicit transaction the statement savepoint is
 restored instead. Returned rows count against `max_mutation_result_rows`,
 `max_mutation_result_payload_bytes` and the request output limits; a refusal
-leaves no partial write. A count's mutation summary is bounded by
-`max_mutation_affected_rows`. No WAL or on-disk format changes.
+leaves no partial write. Exceeding a mutation result limit is a typed
+`HawDBError::ResourceBudgetExceeded` naming `MutationLimits.max_result_rows` or
+`MutationLimits.max_result_payload_bytes` (owner `mutation RETURN rows`); the
+request output limits keep `ReadBudgetExceeded`. The internal mutation summary
+is bounded by `max_mutation_affected_rows`, so a count returns one row however
+many entities change. No WAL or on-disk format changes.
 
 ## Frozen corpus qualification
 

@@ -364,7 +364,8 @@ impl PhysicalPlan {
                     .collect::<Vec<_>>()
                     .join(",");
                 format!(
-                    "{pad}MutationReturn bindings=[{bindings}] returns={}",
+                    "{pad}MutationReturn state={:?} bindings=[{bindings}] returns={}",
+                    returns.state,
                     set_return_mode_summary(&returns.mode)
                 )
             }

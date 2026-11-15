@@ -48,6 +48,8 @@ pub(super) fn write_mutation_return_bindings(
         output.push_str(match binding.entity {
             MutationReturnEntity::Node => "node(",
             MutationReturnEntity::Relationship => "relationship(",
+            MutationReturnEntity::RelationshipSource => "relationship_source(",
+            MutationReturnEntity::RelationshipTarget => "relationship_target(",
         });
         write_identifier(output, &binding.variable);
         output.push(',');

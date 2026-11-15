@@ -756,6 +756,17 @@ pub enum SetNodePropertiesReturnMode {
 pub struct MutationReturn {
     pub bindings: Vec<MutationReturnBinding>,
     pub mode: SetNodePropertiesReturnMode,
+    /// Which state the returned entities are read from.
+    pub state: MutationReturnState,
+}
+
+/// `Written` entities are read after the mutation (CREATE, MERGE, SET);
+/// `Deleted` entities are read as they were before the statement deleted
+/// them, as Kùzu returns the values of deleted nodes and relationships.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MutationReturnState {
+    Written,
+    Deleted,
 }
 
 /// One returned variable and the summary-row column holding its id.
@@ -771,6 +782,10 @@ pub struct MutationReturnBinding {
 pub enum MutationReturnEntity {
     Node,
     Relationship,
+    /// The source node of the relationship whose id is in the column.
+    RelationshipSource,
+    /// The target node of the relationship whose id is in the column.
+    RelationshipTarget,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

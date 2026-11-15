@@ -415,9 +415,13 @@ pub(super) fn bind_mutation_pipeline(
             require_unbound_path(pattern)?;
             let plan = relationship::bind_create(&input, pattern, parameters)?;
             match projection {
-                Some(projection) => {
-                    returns::bind(plan, created_bindings(pattern), projection, parameters)
-                }
+                Some(projection) => returns::bind(
+                    plan,
+                    MutationReturnState::Written,
+                    created_bindings(pattern),
+                    projection,
+                    parameters,
+                ),
                 None => Ok(plan),
             }
         }
@@ -489,13 +493,24 @@ pub(super) fn bind_mutation_pipeline(
             )
         }
         ClauseKind::Delete { detach, variables } => {
-            if !tail.is_empty() {
-                return Err(unsupported("DELETE has unsupported following clauses"));
-            }
+            let projection = mutation_return(tail, "DELETE")?;
             let [variable] = variables.as_slice() else {
                 return Err(unsupported("atomic DELETE requires one target variable"));
             };
-            node::bind_delete(&input, variable, *detach, parameters)
+            let plan = node::bind_delete(&input, variable, *detach, parameters)?;
+            match projection {
+                Some(projection) => {
+                    let bindings = deleted_bindings(&plan)?;
+                    returns::bind(
+                        plan,
+                        MutationReturnState::Deleted,
+                        bindings,
+                        projection,
+                        parameters,
+                    )
+                }
+                None => Ok(plan),
+            }
         }
         _ => Err(unsupported(
             "clause cannot feed the atomic mutation command",
@@ -550,6 +565,46 @@ fn created_bindings(pattern: &MatchPattern) -> Vec<MutationReturnBinding> {
         .chain(relationship)
         .chain(node(&step.target, "target_node_id"))
         .collect()
+}
+
+/// The variables a DELETE can return, read as they were before the delete:
+/// the deleted node, or the deleted relationship and its endpoints.
+fn deleted_bindings(plan: &LogicalPlan) -> Result<Vec<MutationReturnBinding>> {
+    let binding = |variable: &str, entity, column: &str| MutationReturnBinding {
+        variable: variable.to_string(),
+        entity,
+        column: column.to_string(),
+    };
+    match plan {
+        LogicalPlan::DeleteNode { variable, .. } => Ok(vec![binding(
+            variable,
+            MutationReturnEntity::Node,
+            "node_id",
+        )]),
+        LogicalPlan::DeleteRelationship {
+            source_variable,
+            rel_variable,
+            target_variable,
+            ..
+        } => Ok(vec![
+            binding(
+                source_variable,
+                MutationReturnEntity::RelationshipSource,
+                "rel_id",
+            ),
+            binding(rel_variable, MutationReturnEntity::Relationship, "rel_id"),
+            binding(
+                target_variable,
+                MutationReturnEntity::RelationshipTarget,
+                "rel_id",
+            ),
+        ]),
+        // Storage reports each deleted target node once, while a MATCH row
+        // exists per source and relationship; refuse rather than miscount.
+        _ => Err(unsupported(
+            "DELETE RETURN supports node DELETE and relationship-variable DELETE",
+        )),
+    }
 }
 
 fn set_tail(clauses: &[Clause]) -> Result<Vec<SetProperty>> {

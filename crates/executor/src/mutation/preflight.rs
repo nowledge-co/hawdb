@@ -122,11 +122,11 @@ pub fn execute_mutation_with_store_output_limits(
             catalog,
             command,
             super::mutation_return_staging_limits(returns, limits),
-            &mut |catalog, store, summary| {
+            &mut |catalog, stores, summary| {
                 super::project_mutation_return_rows(
                     returns,
                     catalog,
-                    store,
+                    stores,
                     &summary.rows,
                     limits,
                     output_limits,

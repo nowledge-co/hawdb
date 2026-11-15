@@ -1625,3 +1625,64 @@ fn create_return_binds_created_variables_to_summary_columns() {
         );
     }
 }
+
+#[test]
+fn delete_return_binds_deleted_entities_from_the_pre_statement_state() {
+    let plan = |query: &str| plan_pipeline_query(query, &BTreeMap::new());
+    let LogicalPlan::MutationReturn { mutation, returns } =
+        plan("MATCH (e:Entity {id: 1}) WHERE NOT (e)-[:R]-() DETACH DELETE e RETURN count(*)")
+            .unwrap()
+    else {
+        panic!("expected a mutation RETURN");
+    };
+    assert!(matches!(
+        *mutation,
+        LogicalPlan::DeleteNode { detach: true, .. }
+    ));
+    assert_eq!(returns.state, MutationReturnState::Deleted);
+    assert_eq!(
+        returns.mode,
+        SetNodePropertiesReturnMode::Count {
+            name: "count(*)".into()
+        }
+    );
+    assert_eq!(
+        returns
+            .bindings
+            .iter()
+            .map(|binding| (
+                binding.variable.as_str(),
+                binding.entity,
+                binding.column.as_str()
+            ))
+            .collect::<Vec<_>>(),
+        [("e", MutationReturnEntity::Node, "node_id")]
+    );
+    let LogicalPlan::MutationReturn { mutation, returns } =
+        plan("MATCH (a:A)-[r:R]->(b:B) DELETE r RETURN a.id, r, b.id").unwrap()
+    else {
+        panic!("expected a mutation RETURN");
+    };
+    assert!(matches!(*mutation, LogicalPlan::DeleteRelationship { .. }));
+    assert_eq!(
+        returns
+            .bindings
+            .iter()
+            .map(|binding| (binding.variable.as_str(), binding.entity))
+            .collect::<Vec<_>>(),
+        [
+            ("a", MutationReturnEntity::RelationshipSource),
+            ("r", MutationReturnEntity::Relationship),
+            ("b", MutationReturnEntity::RelationshipTarget),
+        ]
+    );
+    for query in [
+        "MATCH (e:Entity) DELETE e RETURN e ORDER BY e.id",
+        "MATCH (e:Entity) DELETE e RETURN DISTINCT e.id",
+        "MATCH (e:Entity) DELETE e RETURN x",
+        "MATCH (e:Entity) DELETE e SET e.id = 1",
+        "MATCH (t:Thread)-[:CONTAINS]->(m:Message) DETACH DELETE m RETURN count(*)",
+    ] {
+        assert!(plan(query).is_err(), "{query}");
+    }
+}
