@@ -63,7 +63,7 @@ fn vector_distances_preserve_ordered_scalar_bits_through_sql_and_cypher() {
             .rows;
         let cypher = db
             .query_with_params(
-                "RETURN cosine_distance($left, $right) AS cosine, l2_distance($left, $right) AS l2",
+                "UNWIND [1] AS row RETURN cosine_distance($left, $right) AS cosine, l2_distance($left, $right) AS l2",
                 &BTreeMap::from([("left".into(), left), ("right".into(), right)]),
             )
             .unwrap()
