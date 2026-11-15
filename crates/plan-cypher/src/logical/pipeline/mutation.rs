@@ -367,13 +367,9 @@ pub(super) fn bind_mutation_pipeline(
         .iter()
         .any(|clause| matches!(clause.kind, ClauseKind::Unwind { .. }));
     let has_relationship_merge = query.clauses.iter().any(|clause| matches!(&clause.kind, ClauseKind::Merge { pattern, .. } if !pattern.steps.is_empty()));
-    if has_relationship_merge
-        && (has_unwind
-            || matches!(
-                query.clauses.last().map(|clause| &clause.kind),
-                Some(ClauseKind::Return(_))
-            ))
-    {
+    // Without UNWIND, relationship MERGE ... RETURN uses the atomic MERGE
+    // command below and projects the merged relationship and endpoints.
+    if has_relationship_merge && has_unwind {
         return relationship_batch::bind(query, parameters);
     }
     if has_unwind {
@@ -431,8 +427,18 @@ pub(super) fn bind_mutation_pipeline(
             on_match,
         } => {
             require_unbound_path(pattern)?;
+            let (tail, projection) = match tail.split_last() {
+                Some((
+                    Clause {
+                        kind: ClauseKind::Return(projection),
+                        ..
+                    },
+                    preceding,
+                )) => (preceding, Some(projection)),
+                _ => (tail, None),
+            };
             let post_sets = set_tail(tail)?;
-            if input.patterns.is_empty() && pattern.steps.is_empty() {
+            let plan = if input.patterns.is_empty() && pattern.steps.is_empty() {
                 let node = &pattern.first;
                 require_node_label(node)?;
                 let variable = (!node.anonymous).then_some(node.variable.as_str());
@@ -442,20 +448,33 @@ pub(super) fn bind_mutation_pipeline(
                     bind_on_match_set_assignments(variable, on_match, parameters)?;
                 let post_merge_assignments =
                     bind_post_merge_set_assignments(variable, &post_sets, parameters)?;
-                return Ok(LogicalPlan::MergeNode {
+                LogicalPlan::MergeNode {
                     label: node.label.clone(),
                     match_properties: bind_properties(&node.properties, parameters)?,
                     on_create_properties,
                     on_match_assignments,
                     post_merge_assignments,
-                });
+                }
+            } else {
+                if !post_sets.is_empty() {
+                    return Err(unsupported(
+                        "relationship MERGE does not support a following SET; use ON CREATE SET or ON MATCH SET",
+                    ));
+                }
+                relationship::bind_merge(&input, pattern, on_create, on_match, parameters)?
+            };
+            match projection {
+                // MERGE summary rows use the CREATE columns: `node_id`, or
+                // `source_node_id`, `rel_id` and `target_node_id`.
+                Some(projection) => returns::bind(
+                    plan,
+                    MutationReturnState::Written,
+                    created_bindings(pattern),
+                    projection,
+                    parameters,
+                ),
+                None => Ok(plan),
             }
-            if !on_match.is_empty() || !post_sets.is_empty() {
-                return Err(unsupported(
-                    "relationship MERGE supports only ON CREATE assignments",
-                ));
-            }
-            relationship::bind_merge(&input, pattern, on_create, parameters)
         }
         ClauseKind::Set(sets) => {
             let (tail, projection) = match tail.split_last() {

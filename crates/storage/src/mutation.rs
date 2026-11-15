@@ -94,6 +94,9 @@ pub struct MatchedRelationshipMerge {
     pub rel_type: String,
     pub rel_match_properties: BTreeMap<String, Value>,
     pub on_create_properties: BTreeMap<String, Value>,
+    /// `ON MATCH SET` items, applied in order to each relationship the MERGE
+    /// finds (never to one it creates), evaluated against its properties.
+    pub on_match_assignments: Vec<NodeSetAssignment>,
     pub target_label: String,
     pub target_filter: Option<PropertyFilter>,
 }

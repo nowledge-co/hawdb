@@ -433,6 +433,8 @@ pub enum LogicalPlan {
         rel_type: String,
         rel_match_properties: BTreeMap<String, Value>,
         on_create_properties: BTreeMap<String, Value>,
+        /// `ON MATCH SET` items for a relationship the MERGE finds.
+        on_match_assignments: Vec<SetAssignment>,
     },
     MergeRelationshipFromMatchedRelationship {
         source_label: String,
@@ -758,6 +760,10 @@ pub struct MutationReturn {
     pub mode: SetNodePropertiesReturnMode,
     /// Which state the returned entities are read from.
     pub state: MutationReturnState,
+    /// `SKIP` and `LIMIT` over the returned rows; the mutation itself applies
+    /// to every matched row.
+    pub offset: usize,
+    pub limit: Option<usize>,
 }
 
 /// `Written` entities are read after the mutation (CREATE, MERGE, SET);

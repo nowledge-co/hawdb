@@ -284,6 +284,7 @@ impl RetainedHeapBytes for PhysicalPlan {
                 rel_type,
                 rel_match_properties,
                 on_create_properties,
+                on_match_assignments,
             } => checked_retained_heap_sum([
                 source_label.retained_heap_bytes(),
                 source_properties.retained_heap_bytes(),
@@ -292,6 +293,7 @@ impl RetainedHeapBytes for PhysicalPlan {
                 rel_type.retained_heap_bytes(),
                 rel_match_properties.retained_heap_bytes(),
                 on_create_properties.retained_heap_bytes(),
+                on_match_assignments.retained_heap_bytes(),
             ]),
             Self::MergeRelationshipFromMatchedRelationship {
                 source_label,

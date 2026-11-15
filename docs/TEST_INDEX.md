@@ -2966,7 +2966,7 @@ and [#1397](https://github.com/nowledge-co/hawdb/issues/1397).
 
 ### Mutation RETURN
 
-Kùzu-compatible `RETURN` after a mutation clause ([#1789](https://github.com/nowledge-co/hawdb/issues/1789), [#1794](https://github.com/nowledge-co/hawdb/issues/1794)).
+Kùzu-compatible `RETURN` after a mutation clause ([#1789](https://github.com/nowledge-co/hawdb/issues/1789), [#1794](https://github.com/nowledge-co/hawdb/issues/1794), [#1793](https://github.com/nowledge-co/hawdb/issues/1793)).
 The root general owner (`//:hawdb_unit_general_tests`) runs
 `api::tests::mutation_returns`: node and relationship `CREATE ... RETURN` over
 properties, whole entities, expressions, aliases and `count(*)`/`count(var)`;
@@ -2985,12 +2985,27 @@ reads of earlier statements with rollback, and WAL reopen.
 `mutation_returns::budgets` checks that exceeding `max_result_rows` or
 `max_result_payload_bytes` with RETURN rows is a typed
 `ResourceBudgetExceeded` with no write on every surface, while a count stays
-within a one-row result limit.
+within a one-row result limit; for a relationship MERGE the refused statement
+creates nothing and applies no ON MATCH update.
+`mutation_returns::merge` covers node `MERGE ... RETURN` (created then
+matched, ON CREATE/ON MATCH/following SET, `count(*)`, a creation `DEFAULT`),
+relationship `MERGE ... ON CREATE SET ... ON MATCH SET ... RETURN` incrementing
+only on match (with and without RETURN, a new match key not touched), the Mem
+label-assignment shape with `LIMIT 1` staying idempotent, `SKIP`/`LIMIT`
+selecting rows while every row is merged, refused shapes (float increment,
+missing relationship variable, ON MATCH after UNWIND, ORDER BY, DISTINCT,
+unbound variable, following SET) with no write, WAL reopen of ON MATCH state,
+transactions, and budget refusals that apply no ON MATCH update on every
+surface.
 The cypher crate owns `create_followed_by_return_parses_as_a_pipeline`
 (statement routing, unchanged plain CREATE/DDL forms) and plan-cypher owns
 `create_return_binds_created_variables_to_summary_columns` (summary-column
 bindings, count mode, refused shapes) and
-`delete_return_binds_deleted_entities_from_the_pre_statement_state`. The executor dispatch fixture covers the
+`delete_return_binds_deleted_entities_from_the_pre_statement_state` and
+`merge_return_and_relationship_on_match_bind_to_the_merge_command`; the
+cypher crate also owns `merge_followed_by_return_parses_as_a_pipeline`. The
+frozen plan corpora expect the empty `on_match_assignments` slot of
+`MergeMatchedRelationship` without rewriting their records. The executor dispatch fixture covers the
 `MutationReturn` operator. No carrier, feature matrix, timeout or CI lane is
 added. Local replay: `cargo test --locked -p hawdb --lib mutation_returns`,
 `cargo test --locked -p hawdb-cypher create_followed_by_return` and

@@ -83,6 +83,10 @@ pub fn project_mutation_return_rows(
                 name.clone(),
                 Value::Int(i64::try_from(mutation_rows.len()).unwrap_or(i64::MAX)),
             )]);
+            // SKIP/LIMIT apply to the single count row.
+            if returns.offset > 0 || returns.limit == Some(0) {
+                return Ok(Vec::new());
+            }
             admit_row(0, 0, &row, limits, output_limits)?;
             return Ok(vec![row]);
         }
@@ -92,9 +96,20 @@ pub fn project_mutation_return_rows(
         MutationReturnState::Written => stores.after,
         MutationReturnState::Deleted => stores.before,
     };
-    let mut output = Vec::with_capacity(mutation_rows.len().min(limits.max_result_rows.get()));
+    // Only the rows SKIP/LIMIT select are projected and charged.
+    let selected = mutation_rows
+        .iter()
+        .skip(returns.offset)
+        .take(returns.limit.unwrap_or(usize::MAX));
+    let mut output = Vec::with_capacity(
+        mutation_rows
+            .len()
+            .saturating_sub(returns.offset)
+            .min(returns.limit.unwrap_or(usize::MAX))
+            .min(limits.max_result_rows.get()),
+    );
     let mut payload_bytes = 0usize;
-    for row in mutation_rows {
+    for row in selected {
         runtime_checkpoint(task_context)?;
         let binding = bind_row(returns, store, row)?;
         let projected = items

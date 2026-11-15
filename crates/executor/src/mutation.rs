@@ -214,6 +214,7 @@ pub fn mutation_command(plan: &PhysicalPlan) -> Result<Option<GraphMutation>> {
             rel_type,
             rel_match_properties,
             on_create_properties,
+            on_match_assignments,
         } => Ok(Some(GraphMutation::MergeRelationshipsBetweenMatches(
             MatchedRelationshipMerge {
                 source_label: source_label.clone(),
@@ -221,6 +222,10 @@ pub fn mutation_command(plan: &PhysicalPlan) -> Result<Option<GraphMutation>> {
                 rel_type: rel_type.clone(),
                 rel_match_properties: rel_match_properties.clone(),
                 on_create_properties: on_create_properties.clone(),
+                on_match_assignments: on_match_assignments
+                    .iter()
+                    .map(node_set_assignment)
+                    .collect(),
                 target_label: target_label.clone(),
                 target_filter: property_filter_from_properties(target_properties),
             },

@@ -986,6 +986,7 @@ fn endpoint_merge(source: Option<PropertyFilter>, target: Option<PropertyFilter>
             rel_type: "LINK".into(),
             rel_match_properties: BTreeMap::new(),
             on_create_properties: BTreeMap::new(),
+            on_match_assignments: Vec::new(),
         },
     )
 }

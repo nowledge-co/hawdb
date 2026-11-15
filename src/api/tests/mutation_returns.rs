@@ -229,10 +229,9 @@ mod create {
             ("CREATE (n:Item {id: 1}) RETURN m.id", "m"),
             (
                 "CREATE (n:Item {id: 1}) RETURN n.id ORDER BY n.id",
-                "modifiers",
+                "ORDER BY",
             ),
-            ("CREATE (n:Item {id: 1}) RETURN n.id LIMIT 1", "modifiers"),
-            ("CREATE (n:Item {id: 1}) RETURN DISTINCT n.id", "modifiers"),
+            ("CREATE (n:Item {id: 1}) RETURN DISTINCT n.id", "DISTINCT"),
             ("CREATE (n:Item {id: 1}) RETURN count(m)", "count variable"),
             (
                 // The CREATE shape itself is refused before RETURN is bound.
@@ -612,11 +611,7 @@ mod delete {
         for (query, message) in [
             (
                 "MATCH (e:Entity) DETACH DELETE e RETURN e.id ORDER BY e.id",
-                "modifiers",
-            ),
-            (
-                "MATCH (e:Entity) DETACH DELETE e RETURN e.id LIMIT 1",
-                "modifiers",
+                "ORDER BY",
             ),
             ("MATCH (e:Entity) DETACH DELETE e RETURN x.id", "x"),
             (
@@ -777,6 +772,358 @@ mod delete {
     }
 }
 
+mod merge {
+    use super::*;
+
+    const LABEL_UPSERT: &str = "MERGE (l:Label {id: $id}) ON CREATE SET l.name = 'created', l.created_at = $ts ON MATCH SET l.name = 'matched' RETURN l.name";
+
+    #[test]
+    fn node_merge_returns_the_created_then_the_matched_node() {
+        let mut db = Database::new();
+        let parameters = params(&[("id", string("l1")), ("ts", Value::Int(7))]);
+        let first = db.query_with_params(LABEL_UPSERT, &parameters).unwrap();
+        assert_eq!(first.rows.schema().columns(), &["l.name"]);
+        assert_eq!(first.rows.len(), 1);
+        assert_eq!(first.rows[0]["l.name"], string("created"));
+        let second = db.query_with_params(LABEL_UPSERT, &parameters).unwrap();
+        assert_eq!(second.rows[0]["l.name"], string("matched"));
+        // ON CREATE values stay; ON MATCH changed only the name.
+        let output = db
+            .query("MERGE (l:Label {id: 'l1'}) RETURN l, l.created_at AS created_at, count(*) AS ignored")
+            .unwrap_err();
+        assert!(matches!(output, HawDBError::Semantic(_)), "{output:?}");
+        let output = db
+            .query("MERGE (l:Label {id: 'l1'}) RETURN l, l.created_at AS created_at")
+            .unwrap();
+        assert_eq!(output.rows[0]["created_at"], Value::Int(7));
+        assert_eq!(map(&output.rows[0]["l"])["name"], string("matched"));
+        assert_eq!(
+            count(&mut db, "MATCH (l:Label) RETURN count(l) AS total"),
+            1
+        );
+        let output = db
+            .query("MERGE (:Label {id: 'l2'}) RETURN count(*) AS total")
+            .unwrap();
+        assert_eq!(output.rows[0]["total"], Value::Int(1));
+        assert_eq!(
+            count(&mut db, "MATCH (l:Label) RETURN count(l) AS total"),
+            2
+        );
+    }
+
+    #[test]
+    fn node_merge_return_sees_following_set_and_declared_defaults() {
+        let mut db = Database::new();
+        db.query("CREATE PROPERTY ON NODE TABLE GraphMeta(state) TYPE STRING DEFAULT 'fresh'")
+            .unwrap();
+        let query = "MERGE (m:GraphMeta {meta_id: 'main'}) SET m.applied = $applied RETURN m.applied AS applied, m.state AS state";
+        let output = db
+            .query_with_params(query, &params(&[("applied", Value::Bool(true))]))
+            .unwrap();
+        assert_eq!(output.rows[0]["applied"], Value::Bool(true));
+        assert_eq!(output.rows[0]["state"], string("fresh"));
+        db.query("MATCH (m:GraphMeta) SET m.state = 'used'")
+            .unwrap();
+        let output = db
+            .query_with_params(query, &params(&[("applied", Value::Bool(false))]))
+            .unwrap();
+        assert_eq!(output.rows[0]["applied"], Value::Bool(false));
+        assert_eq!(output.rows[0]["state"], string("used"));
+    }
+
+    fn entities() -> Database {
+        let mut db = Database::new();
+        for query in [
+            "CREATE (:Entity {id: 'seed'})",
+            "CREATE (:Entity {id: 'seed2'})",
+            "CREATE (:Memory {id: 'm1'})",
+            "CREATE (:Memory {id: 'm2'})",
+            "CREATE (:Label {id: 'x'})",
+        ] {
+            db.query(query).unwrap();
+        }
+        db
+    }
+
+    const COUNTED_MERGE: &str = "MATCH (a:Entity {id:'seed'}), (b:Entity {id:'seed2'}) MERGE (a)-[r:RELATES_TO {relation_type: 'X'}]->(b) ON CREATE SET r.count = 1, r.origin = 'create' ON MATCH SET r.count = r.count + 1, r.touched = true RETURN r.count AS count, r.origin AS origin, r.touched AS touched";
+
+    #[test]
+    fn relationship_merge_on_match_set_applies_only_to_a_matched_relationship() {
+        let mut db = entities();
+        let rows = |db: &mut Database| {
+            let output = db.query(COUNTED_MERGE).unwrap();
+            assert_eq!(output.rows.len(), 1);
+            (
+                output.rows[0]["count"].clone(),
+                output.rows[0]["origin"].clone(),
+                output.rows[0]["touched"].clone(),
+            )
+        };
+        assert_eq!(
+            rows(&mut db),
+            (Value::Int(1), string("create"), Value::Null)
+        );
+        assert_eq!(
+            rows(&mut db),
+            (Value::Int(2), string("create"), Value::Bool(true))
+        );
+        // Without RETURN the same MERGE also applies ON MATCH.
+        db.query(&COUNTED_MERGE[..COUNTED_MERGE.find(" RETURN").unwrap()])
+            .unwrap();
+        assert_eq!(
+            rows(&mut db),
+            (Value::Int(4), string("create"), Value::Bool(true))
+        );
+        assert_eq!(
+            count(
+                &mut db,
+                "MATCH ()-[r:RELATES_TO]->() RETURN count(r) AS total"
+            ),
+            1
+        );
+        // A different match key creates a second relationship; ON MATCH does
+        // not run for it.
+        let output = db
+            .query("MATCH (a:Entity {id:'seed'}), (b:Entity {id:'seed2'}) MERGE (a)-[r:RELATES_TO {relation_type: 'Y'}]->(b) ON MATCH SET r.touched = true RETURN r.relation_type AS kind, r.touched AS touched, r")
+            .unwrap();
+        assert_eq!(output.rows[0]["kind"], string("Y"));
+        assert_eq!(output.rows[0]["touched"], Value::Null);
+        assert_eq!(map(&output.rows[0]["r"])["relation_type"], string("Y"));
+    }
+
+    const LABEL_ASSIGN: &str = "MATCH (m:Memory {id: $memory}), (l:Label {id: $label}) MERGE (m)-[r:HAS_LABEL]->(l) ON CREATE SET r.assigned_by = 'system', r.created_at = $now, r.properties = '{}' RETURN l.id LIMIT 1";
+
+    #[test]
+    fn matched_relationship_merge_return_with_limit_is_idempotent() {
+        let mut db = entities();
+        let parameters = |label: &str| {
+            params(&[
+                ("memory", string("m1")),
+                ("label", string(label)),
+                ("now", Value::Int(5)),
+            ])
+        };
+        for _ in 0..2 {
+            let output = db
+                .query_with_params(LABEL_ASSIGN, &parameters("x"))
+                .unwrap();
+            assert_eq!(output.rows.schema().columns(), &["l.id"]);
+            assert_eq!(output.rows.len(), 1);
+            assert_eq!(output.rows[0]["l.id"], string("x"));
+        }
+        let output = db
+            .query_with_params(LABEL_ASSIGN, &parameters("missing"))
+            .unwrap();
+        assert!(output.rows.is_empty());
+        let edges = db
+            .query("MATCH (:Memory)-[r:HAS_LABEL]->(:Label) RETURN r.assigned_by AS by, r.created_at AS at")
+            .unwrap();
+        assert_eq!(edges.rows.len(), 1);
+        assert_eq!(edges.rows[0]["by"], string("system"));
+        assert_eq!(edges.rows[0]["at"], Value::Int(5));
+    }
+
+    #[test]
+    fn relationship_merge_skip_and_limit_select_rows_but_every_row_is_merged() {
+        let mut db = entities();
+        let query = "MATCH (m:Memory), (l:Label {id: 'x'}) MERGE (m)-[r:HAS_LABEL]->(l) ON CREATE SET r.seen = 0 ON MATCH SET r.seen = r.seen + 1 RETURN m.id AS memory, r.seen AS seen";
+        let output = db.query(query).unwrap();
+        assert_eq!(output.rows.len(), 2);
+        assert!(output.rows.iter().all(|row| row["seen"] == Value::Int(0)));
+        let output = db.query(&format!("{query} LIMIT 1")).unwrap();
+        assert_eq!(output.rows.len(), 1);
+        assert_eq!(output.rows[0]["seen"], Value::Int(1));
+        let output = db.query(&format!("{query} SKIP 1")).unwrap();
+        assert_eq!(output.rows.len(), 1);
+        assert_eq!(output.rows[0]["seen"], Value::Int(2));
+        let output = db.query(&format!("{query} SKIP 2")).unwrap();
+        assert!(output.rows.is_empty());
+        let seen = db
+            .query("MATCH (:Memory)-[r:HAS_LABEL]->(:Label) RETURN r.seen AS seen")
+            .unwrap();
+        assert_eq!(seen.rows.len(), 2);
+        assert!(seen.rows.iter().all(|row| row["seen"] == Value::Int(3)));
+        let output = db
+            .query("MATCH (m:Memory), (l:Label {id: 'x'}) MERGE (m)-[r:HAS_LABEL]->(l) RETURN count(*) AS total LIMIT 0")
+            .unwrap();
+        assert!(output.rows.is_empty());
+    }
+
+    #[test]
+    fn merge_return_refusals_write_nothing() {
+        let mut db = entities();
+        for (query, message) in [
+            // Only integer increments are supported in SET right-hand sides.
+            (
+                "MATCH (a:Entity {id:'seed'}), (b:Entity {id:'seed2'}) MERGE (a)-[r:R]->(b) ON MATCH SET r.w = r.w + 1.0 RETURN r.w",
+                "integer increment",
+            ),
+            (
+                "MATCH (a:Entity {id:'seed'}), (b:Entity {id:'seed2'}) MERGE (a)-[:R]->(b) ON MATCH SET r.w = 1",
+                "relationship variable",
+            ),
+            (
+                "UNWIND ['seed2'] AS id MATCH (a:Entity {id:'seed'}), (b:Entity {id: id}) MERGE (a)-[r:R]->(b) ON MATCH SET r.w = 1 RETURN b.id",
+                "ON CREATE",
+            ),
+            ("MERGE (l:Label {id: 'n'}) RETURN l ORDER BY l.id", "ORDER BY"),
+            ("MERGE (l:Label {id: 'n'}) RETURN DISTINCT l.id", "DISTINCT"),
+            ("MERGE (l:Label {id: 'n'}) RETURN m", "m"),
+            (
+                "MATCH (a:Entity {id:'seed'}), (b:Entity {id:'seed2'}) MERGE (a)-[r:R]->(b) SET r.w = 1 RETURN r",
+                "following SET",
+            ),
+        ] {
+            let error = db.query(query).unwrap_err();
+            assert!(
+                matches!(&error, HawDBError::Semantic(text) if text.contains(message)),
+                "{query}: {error:?}"
+            );
+        }
+        assert_eq!(
+            count(&mut db, "MATCH ()-[r]->() RETURN count(r) AS total"),
+            0
+        );
+        assert_eq!(
+            count(
+                &mut db,
+                "MATCH (l:Label {id: 'n'}) RETURN count(l) AS total"
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn merge_return_persists_and_replays_from_wal() {
+        let path = unique_test_dir("merge_return_wal_replay");
+        {
+            let mut db = Database::open(&path).unwrap();
+            db.query("CREATE (:Entity {id: 'seed'})").unwrap();
+            db.query("CREATE (:Entity {id: 'seed2'})").unwrap();
+            for expected in [1, 2] {
+                let output = db.query(COUNTED_MERGE).unwrap();
+                assert_eq!(output.rows[0]["count"], Value::Int(expected));
+            }
+            let output = db
+                .query_with_params(
+                    LABEL_UPSERT,
+                    &params(&[("id", string("l")), ("ts", Value::Int(1))]),
+                )
+                .unwrap();
+            assert_eq!(output.rows[0]["l.name"], string("created"));
+        }
+        {
+            let mut db = Database::open(&path).unwrap();
+            let output = db.query(COUNTED_MERGE).unwrap();
+            assert_eq!(output.rows[0]["count"], Value::Int(3));
+            let output = db
+                .query_with_params(
+                    LABEL_UPSERT,
+                    &params(&[("id", string("l")), ("ts", Value::Int(1))]),
+                )
+                .unwrap();
+            assert_eq!(output.rows[0]["l.name"], string("matched"));
+        }
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn merge_return_in_a_transaction_sees_earlier_statements_and_rolls_back() {
+        let mut db = entities();
+        let mut transaction = db.begin_transaction().unwrap();
+        for expected in [1, 2, 3] {
+            let output = transaction.query(COUNTED_MERGE).unwrap();
+            assert_eq!(output.rows[0]["count"], Value::Int(expected));
+        }
+        transaction.rollback();
+        assert_eq!(
+            count(&mut db, "MATCH ()-[r]->() RETURN count(r) AS total"),
+            0
+        );
+        let mut transaction = db.begin_transaction().unwrap();
+        transaction.query(COUNTED_MERGE).unwrap();
+        transaction.commit().unwrap();
+        assert_eq!(
+            db.query(COUNTED_MERGE).unwrap().rows[0]["count"],
+            Value::Int(2)
+        );
+    }
+
+    const PAIR_MERGE: &str = "MATCH (m:Memory), (l:Label {id: 'x'}) MERGE (m)-[r:HAS_LABEL]->(l) ON CREATE SET r.seen = 0 ON MATCH SET r.seen = r.seen + 1 RETURN m.id AS memory, r";
+    const SEEN_TOTAL: &str =
+        "MATCH (:Memory)-[r:HAS_LABEL]->(:Label) RETURN count(r) AS total, sum(r.seen) AS seen";
+
+    fn assert_output_refusal(
+        mut execute: impl for<'a> FnMut(QueryRequest<'a>) -> crate::Result<QueryOutput>,
+    ) {
+        execute(QueryRequest::new(PAIR_MERGE)).unwrap();
+        for limits in [
+            QueryStreamOptions {
+                max_rows: Some(1),
+                max_payload_bytes: None,
+            },
+            QueryStreamOptions {
+                max_rows: None,
+                max_payload_bytes: Some(1),
+            },
+        ] {
+            let error =
+                execute(QueryRequest::new(PAIR_MERGE).with_output_limits(limits)).unwrap_err();
+            assert!(
+                matches!(error, HawDBError::ReadBudgetExceeded(_)),
+                "{error:?}"
+            );
+            // The refused statement applied no ON MATCH update.
+            let totals = execute(QueryRequest::new(SEEN_TOTAL)).unwrap();
+            assert_eq!(totals.rows[0]["total"], Value::Int(2));
+            assert_eq!(totals.rows[0]["seen"], Value::Int(0));
+        }
+        let limited = execute(
+            QueryRequest::new(&format!("{PAIR_MERGE} LIMIT 1")).with_output_limits(
+                QueryStreamOptions {
+                    max_rows: Some(1),
+                    max_payload_bytes: None,
+                },
+            ),
+        )
+        .unwrap();
+        assert_eq!(limited.rows.len(), 1);
+        let totals = execute(QueryRequest::new(SEEN_TOTAL)).unwrap();
+        assert_eq!(totals.rows[0]["seen"], Value::Int(2));
+    }
+
+    #[test]
+    fn merge_return_budgets_are_atomic_on_every_execution_surface() {
+        let mut db = entities();
+        assert_output_refusal(|request| db.query_request(request));
+
+        let mut db = entities();
+        let mut transaction = db.begin_transaction().unwrap();
+        assert_output_refusal(|request| transaction.query_request(request));
+        transaction.rollback();
+        assert_eq!(
+            count(&mut db, "MATCH ()-[r]->() RETURN count(r) AS total"),
+            0
+        );
+
+        let database = ConcurrentDatabase::new(entities());
+        assert_output_refusal(|request| database.query_request(request));
+        for options in [
+            ConcurrentTransactionOptions::optimistic(),
+            ConcurrentTransactionOptions::default(),
+        ] {
+            let database = ConcurrentDatabase::new(entities());
+            let mut transaction = database.begin_transaction(options).unwrap();
+            assert_output_refusal(|request| transaction.query_request(request));
+            transaction.commit().unwrap();
+            assert_eq!(
+                database.query(SEEN_TOTAL).unwrap().rows[0]["seen"],
+                Value::Int(2)
+            );
+        }
+    }
+}
+
 mod budgets {
     use super::*;
     use std::num::NonZeroUsize;
@@ -874,5 +1221,32 @@ mod budgets {
         );
         rows_transaction.commit().unwrap();
         payload_transaction.commit().unwrap();
+    }
+
+    #[test]
+    fn merge_return_result_limit_is_typed_and_applies_no_on_match_update() {
+        let mut db = limited(1, 1 << 20);
+        db.query("CREATE (:Label {id: 'x'})").unwrap();
+        let merge = "MATCH (e:Entity), (l:Label {id: 'x'}) MERGE (e)-[r:HAS_LABEL]->(l) ON CREATE SET r.seen = 0 ON MATCH SET r.seen = r.seen + 1 RETURN r.seen AS seen";
+        // Two rows exceed max_result_rows 1, so the MERGE creates nothing.
+        assert_budget(
+            db.query(merge).unwrap_err(),
+            "MutationLimits.max_result_rows",
+        );
+        assert_eq!(
+            count(&mut db, "MATCH ()-[r]->() RETURN count(r) AS total"),
+            0
+        );
+        assert_eq!(db.query(&format!("{merge} LIMIT 1")).unwrap().rows.len(), 1);
+        assert_budget(
+            db.query(merge).unwrap_err(),
+            "MutationLimits.max_result_rows",
+        );
+        let seen = db
+            .query("MATCH ()-[r:HAS_LABEL]->() RETURN sum(r.seen) AS total")
+            .unwrap();
+        assert_eq!(seen.rows[0]["total"], Value::Int(0));
+        let node = "MERGE (n:Item {id: 'n'}) RETURN n.id AS id";
+        assert_eq!(db.query(node).unwrap().rows.len(), 1);
     }
 }

@@ -158,7 +158,9 @@ Scalar UNWIND elements and map-element properties are bound only after their
 row variable is introduced. A final RETURN projects the existing endpoints;
 relationship projections, aggregates, result modifiers, additional mutation
 clauses, optional matches and correlated graph traversals remain refused.
-The same endpoint RETURN is available without UNWIND. This does not enable
+Without UNWIND, relationship `MERGE ... RETURN` uses the atomic MERGE
+command and the mutation RETURN below, which also returns the relationship and
+supports `ON MATCH SET`, `SKIP` and `LIMIT`. This does not enable
 general-purpose read-only UNWIND composition.
 
 Lowering produces the existing `UnwindMutationExec` with a typed matched-edge
@@ -208,7 +210,8 @@ variables of the CREATE pattern: an anonymous node or relationship binds
 nothing, and any other name is refused at planning (`unknown variable`). Items may be properties, whole entities,
 scalar expressions and aliases. A single `count(*)` or `count(variable)` returns
 one row with the number of created entities, `0` when MATCH found nothing.
-Other aggregates, `DISTINCT`, `WHERE`, `ORDER BY`, `SKIP`, `LIMIT` and further
+`SKIP` and `LIMIT` select returned rows only; the mutation applies to every
+matched row. Other aggregates, `DISTINCT`, `WHERE`, `ORDER BY` and further
 clauses are refused before any write.
 
 `DELETE` and `DETACH DELETE` may end in `RETURN` the same way. As in Kùzu, the
@@ -224,6 +227,30 @@ DETACH DELETE e RETURN e.id
 MATCH (a:Memory)-[r:HAS_LABEL]->(l:Label {id: $label}) DELETE r
 RETURN count(*)
 ```
+
+`MERGE` may end in `RETURN` too, optionally after `SET` clauses. The row is
+the matched or created entity after `ON CREATE SET`, `ON MATCH SET` and `SET`,
+including declared `DEFAULT`s when MERGE creates it. A relationship MERGE
+between two independently matched endpoints also accepts `ON MATCH SET`, which
+applies only to a relationship the MERGE finds:
+
+```cypher
+MERGE (l:Label {id: $id})
+ON CREATE SET l.name = 'created' ON MATCH SET l.name = 'matched'
+RETURN l.name
+
+MATCH (a:Entity {id: $a}), (b:Entity {id: $b})
+MERGE (a)-[r:RELATES_TO {relation_type: $kind}]->(b)
+ON CREATE SET r.count = 1 ON MATCH SET r.count = r.count + 1
+RETURN r.count
+```
+
+Relationship `ON MATCH SET` items accept the same right-hand sides as node
+`SET`: values, parameters, integer self-increments, `COALESCE` and the CASE
+forms; a float increment is refused. They are applied in order inside the same
+storage command, so a refused statement applies none of them. `ON MATCH SET` is
+refused after UNWIND and for MERGE shapes other than two independent endpoint
+matches.
 
 A node delete binds the deleted node; a relationship delete binds the
 relationship and its two endpoints. A target-node `DETACH DELETE` after a

@@ -463,6 +463,7 @@ fn resolve_row_mutation(
                     rel_type: merge.rel_type.clone(),
                     rel_match_properties,
                     on_create_properties: created(&merge.on_create_properties)?,
+                    on_match_assignments: Vec::new(),
                 },
             )))
         }

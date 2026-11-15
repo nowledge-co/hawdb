@@ -363,8 +363,17 @@ impl PhysicalPlan {
                     .map(|binding| format!("{}<-{}", binding.variable, binding.column))
                     .collect::<Vec<_>>()
                     .join(",");
+                let limit = returns
+                    .limit
+                    .map(|limit| format!(" limit={limit}"))
+                    .unwrap_or_default();
+                let offset = if returns.offset > 0 {
+                    format!(" offset={}", returns.offset)
+                } else {
+                    String::new()
+                };
                 format!(
-                    "{pad}MutationReturn state={:?} bindings=[{bindings}] returns={}",
+                    "{pad}MutationReturn state={:?} bindings=[{bindings}] returns={}{offset}{limit}",
                     returns.state,
                     set_return_mode_summary(&returns.mode)
                 )
