@@ -159,6 +159,13 @@ pub fn write_projection_expression(output: &mut String, expression: &ProjectionE
             }
             output.push(')');
         }
+        ProjectionExpression::JsonString { expression, path } => {
+            output.push_str("json_string(");
+            write_projection_expression(output, expression);
+            output.push(',');
+            write_identifier(output, path);
+            output.push(')');
+        }
         ProjectionExpression::JsonValue {
             expression,
             path,
@@ -719,6 +726,19 @@ mod tests {
         let mut output = String::new();
         write_projection_expression(&mut output, &expression);
         output
+    }
+
+    #[test]
+    fn json_string_has_a_distinct_fingerprint() {
+        let expression = ProjectionExpression::JsonString {
+            expression: Box::new(ProjectionExpression::Column("metadata".into())),
+            path: "$.state".into(),
+        };
+        let mut fingerprint = String::new();
+        write_projection_expression(&mut fingerprint, &expression);
+        assert!(fingerprint.starts_with("json_string("), "{fingerprint}");
+        assert_ne!(fingerprint, json_value_fingerprint(false));
+        assert_ne!(fingerprint, json_value_fingerprint(true));
     }
 
     #[test]

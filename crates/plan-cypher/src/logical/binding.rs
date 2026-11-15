@@ -1503,7 +1503,8 @@ pub(super) fn collect_scalar_expression_variables(
             }
         }
         ScalarExpressionKind::Left { expression, .. }
-        | ScalarExpressionKind::JsonValue { expression, .. } => {
+        | ScalarExpressionKind::JsonValue { expression, .. }
+        | ScalarExpressionKind::JsonString { expression, .. } => {
             collect_scalar_expression_variables(expression, variables);
         }
         ScalarExpressionKind::VectorDistance { left, right, .. } => {

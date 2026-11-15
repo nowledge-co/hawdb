@@ -183,6 +183,7 @@ fn native_projection_self(expression: &ProjectionExpression, needed: &mut BTreeS
         ProjectionExpression::Literal(_)
         | ProjectionExpression::Coalesce(_)
         | ProjectionExpression::JsonValue { .. }
+        | ProjectionExpression::JsonString { .. }
         | ProjectionExpression::Left { .. }
         | ProjectionExpression::Lower(_)
         | ProjectionExpression::Case { .. }
