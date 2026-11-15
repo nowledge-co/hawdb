@@ -36,6 +36,29 @@ pub(super) fn write_set_return_mode(output: &mut String, returns: &SetNodeProper
     }
 }
 
+pub(super) fn write_mutation_return_bindings(
+    output: &mut String,
+    bindings: &[MutationReturnBinding],
+) {
+    output.push('[');
+    for (index, binding) in bindings.iter().enumerate() {
+        if index > 0 {
+            output.push(',');
+        }
+        output.push_str(match binding.entity {
+            MutationReturnEntity::Node => "node(",
+            MutationReturnEntity::Relationship => "relationship(",
+            MutationReturnEntity::RelationshipSource => "relationship_source(",
+            MutationReturnEntity::RelationshipTarget => "relationship_target(",
+        });
+        write_identifier(output, &binding.variable);
+        output.push(',');
+        write_identifier(output, &binding.column);
+        output.push(')');
+    }
+    output.push(']');
+}
+
 pub(super) fn write_relationship_count_leg(output: &mut String, leg: &RelationshipCountLeg) {
     output.push_str("RelationshipCountLeg(");
     match leg.direction {
@@ -157,6 +180,13 @@ pub fn write_projection_expression(output: &mut String, expression: &ProjectionE
                 }
                 write_projection_expression(output, expression);
             }
+            output.push(')');
+        }
+        ProjectionExpression::JsonString { expression, path } => {
+            output.push_str("json_string(");
+            write_projection_expression(output, expression);
+            output.push(',');
+            write_identifier(output, path);
             output.push(')');
         }
         ProjectionExpression::JsonValue {
@@ -719,6 +749,19 @@ mod tests {
         let mut output = String::new();
         write_projection_expression(&mut output, &expression);
         output
+    }
+
+    #[test]
+    fn json_string_has_a_distinct_fingerprint() {
+        let expression = ProjectionExpression::JsonString {
+            expression: Box::new(ProjectionExpression::Column("metadata".into())),
+            path: "$.state".into(),
+        };
+        let mut fingerprint = String::new();
+        write_projection_expression(&mut fingerprint, &expression);
+        assert!(fingerprint.starts_with("json_string("), "{fingerprint}");
+        assert_ne!(fingerprint, json_value_fingerprint(false));
+        assert_ne!(fingerprint, json_value_fingerprint(true));
     }
 
     #[test]

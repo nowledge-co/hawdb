@@ -133,6 +133,10 @@ fn promote_native_column_properties(
                 .map(|expression| promote_native_column_properties(expression, input))
                 .collect(),
         ),
+        ProjectionExpression::JsonString { expression, path } => ProjectionExpression::JsonString {
+            expression: Box::new(promote_native_column_properties(expression, input)),
+            path: path.clone(),
+        },
         ProjectionExpression::JsonValue {
             expression,
             path,
@@ -238,6 +242,7 @@ fn has_native_bindings(expression: &ProjectionExpression, input: &LogicalPlan) -
             .all(|expression| has_native_bindings(expression, input)),
         ProjectionExpression::Left { expression, .. }
         | ProjectionExpression::JsonValue { expression, .. }
+        | ProjectionExpression::JsonString { expression, .. }
         | ProjectionExpression::Lower(expression)
         | ProjectionExpression::Not(expression) => has_native_bindings(expression, input),
         ProjectionExpression::Case {

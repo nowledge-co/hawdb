@@ -301,7 +301,7 @@ fn decode(
     }
     let mut roots = Vec::with_capacity(count as usize);
     let mut previous = 0;
-    for entry in payload[HEADER_BYTES..].chunks_exact(ENTRY_BYTES) {
+    for entry in payload[HEADER_BYTES..].as_chunks::<ENTRY_BYTES>().0.iter() {
         let id = u64::from_le_bytes(entry[..8].try_into().unwrap());
         let format_version = u16::from_le_bytes(entry[8..10].try_into().unwrap());
         if id <= previous || format_version == 0 {

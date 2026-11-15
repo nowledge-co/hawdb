@@ -215,6 +215,92 @@ pub struct BatchMatchedRelationship {
     pub rel_properties: BTreeMap<String, BatchMutationValue>,
 }
 
+/// A variable that a [`MatchSet`] reads from every input row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatchSetBinding {
+    pub variable: String,
+    /// The input column holding the value: the entity id of a node or
+    /// relationship, otherwise the scalar value itself.
+    pub column: String,
+    /// `Some` for a node or relationship, which execution reads by id.
+    pub entity: Option<GraphEntityKind>,
+}
+
+/// How a [`MatchSet`] computes the value of one SET item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MatchSetValue {
+    /// An expression over the row's bindings and the statement parameters.
+    Expression(ProjectionExpression),
+    /// A fixed read-modify-write of the written property itself, with the
+    /// semantics the single-pattern SET commands give it.
+    Local(SetValue),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatchSetAssignment {
+    pub variable: String,
+    pub property: String,
+    pub value: MatchSetValue,
+}
+
+/// The RETURN of a [`MatchSet`]: projections of the updated rows, then
+/// `DISTINCT`, `ORDER BY`, `SKIP` and `LIMIT` over the returned rows only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatchSetReturn {
+    pub items: Vec<Projection>,
+    pub distinct: bool,
+    /// Keys over the updated row's bindings, with each returned column also
+    /// readable as a value under its name.
+    pub order_by: Vec<SortItem>,
+    pub offset: usize,
+    pub limit: Option<usize>,
+}
+
+/// A relationship that a [`MatchSet`] creates, or merges, between the two
+/// bound nodes of every input row (#1790).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatchSetRelationship {
+    /// `MERGE` reuses a relationship of this type between the two nodes whose
+    /// properties include `properties`; `CREATE` always creates one.
+    pub merge: bool,
+    pub source: String,
+    pub target: String,
+    pub rel_type: String,
+    /// The pattern's property map, evaluated for each row.
+    pub properties: Vec<(String, ProjectionExpression)>,
+    /// `ON CREATE SET` values of a `MERGE`, evaluated for each row.
+    pub on_create: Vec<(String, ProjectionExpression)>,
+}
+
+/// `MATCH ... SET ... [RETURN ...]` whose SET items are general expressions.
+///
+/// `input` is a complete read plan with one row per SET input row and one
+/// column per [`MatchSetBinding`]. Execution evaluates every SET item in
+/// statement order, each over all rows against the values the earlier items
+/// left, and applies the result as one atomic mutation. `returns` projects
+/// every row after all items were applied.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MatchSet<P> {
+    pub input: P,
+    pub bindings: Vec<MatchSetBinding>,
+    pub assignments: Vec<MatchSetAssignment>,
+    /// A relationship written for each row instead of SET items.
+    pub relationship: Option<MatchSetRelationship>,
+    pub returns: Option<MatchSetReturn>,
+}
+
+impl<P> MatchSet<P> {
+    pub fn map_input<Q>(self, lower: impl FnOnce(P) -> Q) -> MatchSet<Q> {
+        MatchSet {
+            input: lower(self.input),
+            bindings: self.bindings,
+            assignments: self.assignments,
+            relationship: self.relationship,
+            returns: self.returns,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum LogicalPlan {
     CreateNodeLabel {
@@ -366,6 +452,8 @@ pub enum LogicalPlan {
         rel_type: String,
         rel_match_properties: BTreeMap<String, Value>,
         on_create_properties: BTreeMap<String, Value>,
+        /// `ON MATCH SET` items for a relationship the MERGE finds.
+        on_match_assignments: Vec<SetAssignment>,
     },
     MergeRelationshipFromMatchedRelationship {
         source_label: String,
@@ -424,6 +512,14 @@ pub enum LogicalPlan {
         predicate: Option<Predicate>,
         assignments: Vec<SetAssignment>,
         returns: SetNodePropertiesReturnMode,
+    },
+    /// SET over the rows of a general read plan; see [`MatchSet`].
+    MatchSet(Box<MatchSet<LogicalPlan>>),
+    /// A mutation whose statement ends in `RETURN`. The rows are projected
+    /// from the entities the mutation reports, in the same statement.
+    MutationReturn {
+        mutation: Box<LogicalPlan>,
+        returns: MutationReturn,
     },
     SetRelationshipProperty {
         source_variable: String,
@@ -675,6 +771,48 @@ pub enum SetNodePropertiesReturnMode {
     Count { name: String },
 }
 
+/// The `RETURN` of a mutation statement: the variables each storage summary
+/// row binds, and the projection evaluated over those bindings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MutationReturn {
+    pub bindings: Vec<MutationReturnBinding>,
+    pub mode: SetNodePropertiesReturnMode,
+    /// Which state the returned entities are read from.
+    pub state: MutationReturnState,
+    /// `SKIP` and `LIMIT` over the returned rows; the mutation itself applies
+    /// to every matched row.
+    pub offset: usize,
+    pub limit: Option<usize>,
+}
+
+/// `Written` entities are read after the mutation (CREATE, MERGE, SET);
+/// `Deleted` entities are read as they were before the statement deleted
+/// them, as Kùzu returns the values of deleted nodes and relationships.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MutationReturnState {
+    Written,
+    Deleted,
+}
+
+/// One returned variable and the summary-row column holding its id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MutationReturnBinding {
+    pub variable: String,
+    pub entity: MutationReturnEntity,
+    /// Summary-row column holding the entity id, such as `node_id`.
+    pub column: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MutationReturnEntity {
+    Node,
+    Relationship,
+    /// The source node of the relationship whose id is in the column.
+    RelationshipSource,
+    /// The target node of the relationship whose id is in the column.
+    RelationshipTarget,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShortestPathProjection {
     pub expression: ShortestPathProjectionExpression,
@@ -870,6 +1008,71 @@ impl<P: hawdb_core::RetainedHeapBytes> hawdb_core::RetainedHeapBytes for VectorI
     }
 }
 
+// Retained query ownership: MatchSetBinding.
+hawdb_core::impl_retained_heap_for_struct!(MatchSetBinding {
+    variable,
+    column,
+    entity
+});
+
+// Retained query ownership: MatchSetValue.
+impl hawdb_core::RetainedHeapBytes for MatchSetValue {
+    fn retained_heap_bytes(&self) -> Option<usize> {
+        match self {
+            Self::Expression(expression) => {
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(expression)
+            }
+            Self::Local(value) => hawdb_core::RetainedHeapBytes::retained_heap_bytes(value),
+        }
+    }
+}
+
+// Retained query ownership: MatchSetAssignment.
+hawdb_core::impl_retained_heap_for_struct!(MatchSetAssignment {
+    variable,
+    property,
+    value
+});
+
+// Retained query ownership: MatchSetReturn.
+hawdb_core::impl_retained_heap_for_struct!(MatchSetReturn {
+    items,
+    distinct,
+    order_by,
+    offset,
+    limit
+});
+
+// Retained query ownership: MatchSetRelationship.
+hawdb_core::impl_retained_heap_for_struct!(MatchSetRelationship {
+    merge,
+    source,
+    target,
+    rel_type,
+    properties,
+    on_create
+});
+
+// Retained query ownership: MatchSet.
+impl<P: hawdb_core::RetainedHeapBytes> hawdb_core::RetainedHeapBytes for MatchSet<P> {
+    fn retained_heap_bytes(&self) -> Option<usize> {
+        let Self {
+            input,
+            bindings,
+            assignments,
+            relationship,
+            returns,
+        } = self;
+        hawdb_core::checked_retained_heap_sum([
+            hawdb_core::RetainedHeapBytes::retained_heap_bytes(input),
+            hawdb_core::RetainedHeapBytes::retained_heap_bytes(bindings),
+            hawdb_core::RetainedHeapBytes::retained_heap_bytes(assignments),
+            hawdb_core::RetainedHeapBytes::retained_heap_bytes(relationship),
+            hawdb_core::RetainedHeapBytes::retained_heap_bytes(returns),
+        ])
+    }
+}
+
 // Retained query ownership: BatchRelationshipMerge.
 hawdb_core::impl_retained_heap_for_struct!(BatchRelationshipMerge {
     source_variable,
@@ -1002,6 +1205,26 @@ impl hawdb_core::RetainedHeapBytes for SetValue {
                 hawdb_core::RetainedHeapBytes::retained_heap_bytes(preserve),
             ]),
         }
+    }
+}
+
+// Retained query ownership: MutationReturn.
+impl hawdb_core::RetainedHeapBytes for MutationReturn {
+    fn retained_heap_bytes(&self) -> Option<usize> {
+        hawdb_core::checked_retained_heap_sum([
+            hawdb_core::RetainedHeapBytes::retained_heap_bytes(&self.bindings),
+            hawdb_core::RetainedHeapBytes::retained_heap_bytes(&self.mode),
+        ])
+    }
+}
+
+// Retained query ownership: MutationReturnBinding.
+impl hawdb_core::RetainedHeapBytes for MutationReturnBinding {
+    fn retained_heap_bytes(&self) -> Option<usize> {
+        hawdb_core::checked_retained_heap_sum([
+            hawdb_core::RetainedHeapBytes::retained_heap_bytes(&self.variable),
+            hawdb_core::RetainedHeapBytes::retained_heap_bytes(&self.column),
+        ])
     }
 }
 

@@ -109,7 +109,7 @@ fn buffer_provenance(
 impl NumericBufferIdentity {
     fn new() -> Result<Self> {
         let allocation = NEXT_ALLOCATION
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                 value.checked_add(1)
             })
             .map_err(|_| HawDBError::Execution("numeric buffer identity exhausted".into()))?;

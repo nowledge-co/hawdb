@@ -32,18 +32,30 @@ use crate::expression::{
 };
 use crate::predicate::property_filter_from_properties;
 
+mod match_set;
 mod preflight;
+mod returns;
 mod staged;
+pub use match_set::{
+    affected_rows_exceeded, match_set_account, match_set_row_bytes, resolve_match_set,
+    MatchSetOutcome, MatchSetRecord,
+};
 pub use preflight::{
     commit_staged_mutations, commit_staged_mutations_with_output, execute_mutation_with_store,
     execute_mutation_with_store_output_limits, materialize_load_csv_mutations,
     materialize_node_mutation, materialize_unwind_mutations, project_staged_mutation_return_rows,
     resolve_relationship_merge_endpoints, stage_row_mutations, stage_unwind_mutations,
 };
+pub use returns::{
+    mutation_return_command, mutation_return_staging_limits, project_mutation_return_rows,
+};
 pub use staged::{EndpointResolutionReport, StagedCharge, StagedMutations};
 
 pub fn mutation_returns_rows(plan: &PhysicalPlan) -> bool {
-    matches!(plan, PhysicalPlan::SetNodePropertiesReturn { .. })
+    matches!(
+        plan,
+        PhysicalPlan::SetNodePropertiesReturn { .. } | PhysicalPlan::MutationReturn { .. }
+    ) || matches!(plan, PhysicalPlan::MatchSetExec(set) if set.returns.is_some())
         || matches!(plan, PhysicalPlan::UnwindMutation {
             operation: hawdb_plan_cypher::BatchMutationOperation::MergeRelationship(merge), ..
         } if merge.returns.is_some())
@@ -51,6 +63,11 @@ pub fn mutation_returns_rows(plan: &PhysicalPlan) -> bool {
 
 pub fn mutation_command(plan: &PhysicalPlan) -> Result<Option<GraphMutation>> {
     match plan {
+        // Its values depend on the rows of its read input.
+        PhysicalPlan::MatchSetExec(_) => Err(HawDBError::Semantic(
+            "MATCH ... SET with row-evaluated values requires the database query runtime"
+                .to_string(),
+        )),
         PhysicalPlan::CreateNodeLabel { label } => Ok(Some(GraphMutation::CreateNodeLabel {
             label: label.clone(),
         })),
@@ -148,6 +165,7 @@ pub fn mutation_command(plan: &PhysicalPlan) -> Result<Option<GraphMutation>> {
                 property: property.clone(),
             }),
         ),
+        PhysicalPlan::MutationReturn { mutation, .. } => mutation_command(mutation),
         PhysicalPlan::CreateNode { label, properties } => Ok(Some(GraphMutation::CreateNode {
             label: label.clone(),
             properties: properties.clone(),
@@ -196,6 +214,7 @@ pub fn mutation_command(plan: &PhysicalPlan) -> Result<Option<GraphMutation>> {
             rel_type,
             rel_match_properties,
             on_create_properties,
+            on_match_assignments,
         } => Ok(Some(GraphMutation::MergeRelationshipsBetweenMatches(
             MatchedRelationshipMerge {
                 source_label: source_label.clone(),
@@ -203,6 +222,10 @@ pub fn mutation_command(plan: &PhysicalPlan) -> Result<Option<GraphMutation>> {
                 rel_type: rel_type.clone(),
                 rel_match_properties: rel_match_properties.clone(),
                 on_create_properties: on_create_properties.clone(),
+                on_match_assignments: on_match_assignments
+                    .iter()
+                    .map(node_set_assignment)
+                    .collect(),
                 target_label: target_label.clone(),
                 target_filter: property_filter_from_properties(target_properties),
             },

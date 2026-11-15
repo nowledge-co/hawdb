@@ -815,7 +815,7 @@ pub(crate) mod tests {
                 (QosTelemetryPhase::Completion, _) => {
                     // A batch admitted before this sink was installed can
                     // complete under it.
-                    let _ = self.active_units.fetch_update(
+                    let _ = self.active_units.try_update(
                         Ordering::SeqCst,
                         Ordering::SeqCst,
                         |active| active.checked_sub(1),

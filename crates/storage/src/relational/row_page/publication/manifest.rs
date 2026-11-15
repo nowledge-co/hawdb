@@ -437,7 +437,10 @@ fn decode_manifest_inner(
     finish_unit(unit);
     let tables = decode_tables(&payload[..generations_offset], table_count, config, work)?;
     let mut physical_generations = Vec::with_capacity(generation_count);
-    for entry in payload[generations_offset..trailer_offset].chunks_exact(PHYSICAL_GENERATION_BYTES)
+    for entry in payload[generations_offset..trailer_offset]
+        .as_chunks::<PHYSICAL_GENERATION_BYTES>()
+        .0
+        .iter()
     {
         let unit = start_unit(work)?;
         physical_generations.push(RelationalRowPagePhysicalGeneration {

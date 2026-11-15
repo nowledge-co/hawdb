@@ -3276,9 +3276,19 @@ mod tests {
             },
         )
         .expect_err("authoritative open must reject a missing binding");
+        // A checkpoint written with another index mode is a typed
+        // configuration mismatch, not corruption (#1781).
+        assert!(
+            matches!(
+                &missing,
+                HawDBError::UnsupportedStorageFormat(format)
+                    if format.format() == hawdb_core::RELATIONAL_CHECKPOINT_LAYOUT_FORMAT
+            ),
+            "{missing:?}"
+        );
         assert!(missing
             .to_string()
-            .contains("authoritative relational index"));
+            .contains("Authoritative relational indexes require"));
 
         let corrupt_path = std::env::temp_dir().join(format!(
             "hawdb-authoritative-corrupt-index-{}-{nonce}",

@@ -1247,7 +1247,8 @@ fn marker_use_in_projection_expression(
         }
         ProjectionExpression::Left { expression, .. }
         | ProjectionExpression::Lower(expression)
-        | ProjectionExpression::JsonValue { expression, .. } => {
+        | ProjectionExpression::JsonValue { expression, .. }
+        | ProjectionExpression::JsonString { expression, .. } => {
             marker_use_in_projection_expression(expression, name, safe)
         }
         ProjectionExpression::DefaultIfNullOrEq { empty, default, .. }
@@ -1529,6 +1530,9 @@ fn bind_physical_plan(plan: &mut PhysicalPlan, parameters: BindingAction<'_>) ->
         | PhysicalPlan::SetNodeProperty { .. }
         | PhysicalPlan::SetNodeProperties { .. }
         | PhysicalPlan::SetNodePropertiesReturn { .. }
+        // Mutation statements bypass the plan cache.
+        | PhysicalPlan::MatchSetExec(_)
+        | PhysicalPlan::MutationReturn { .. }
         | PhysicalPlan::SetRelationshipProperty { .. }
         | PhysicalPlan::SetRelationshipProperties { .. }
         | PhysicalPlan::DeleteNode { .. }
@@ -1897,7 +1901,8 @@ fn bind_projection_expression(
         }
         ProjectionExpression::Left { expression, .. }
         | ProjectionExpression::Lower(expression)
-        | ProjectionExpression::JsonValue { expression, .. } => {
+        | ProjectionExpression::JsonValue { expression, .. }
+        | ProjectionExpression::JsonString { expression, .. } => {
             bind_projection_expression(expression, parameters)?;
         }
         ProjectionExpression::DefaultIfNullOrEq { empty, default, .. }

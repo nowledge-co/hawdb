@@ -56,7 +56,7 @@ impl RelationalMonotonicAppendMetrics {
 }
 
 fn saturating_add_atomic(counter: &AtomicU64, value: u64) {
-    let _ = counter.fetch_update(
+    let _ = counter.try_update(
         AtomicOrdering::Relaxed,
         AtomicOrdering::Relaxed,
         |current| Some(current.saturating_add(value)),

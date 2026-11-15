@@ -16,7 +16,7 @@
 
 // Assemble the publishable npm packages from built C ABI libraries:
 //
-//   bun scripts/assemble-npm.ts --version 0.32.0 --out ../../dist/npm \
+//   bun scripts/assemble-npm.ts --version 0.33.0 --out ../../dist/npm \
 //     --library darwin-arm64=/path/to/libhawdb_ffi.dylib [--library <id>=<path> ...] \
 //     [--placeholders 0.0.0-placeholder.0]
 //

@@ -327,12 +327,12 @@ pub use hawdb_storage::{
         StorageResidencyMode, WalReplayConfig,
     },
     mutation::{
-        ConnectedNodesCreate, GraphMutation, MatchedRelationshipCopyMerge,
+        ConnectedNodesCreate, EntityPropertyUpdate, GraphMutation, MatchedRelationshipCopyMerge,
         MatchedRelationshipCreate, MatchedRelationshipMerge, MatchedRelationshipRetargetMerge,
-        MatchedRelationshipSourceRetargetMerge, MutationLimits, MutationSummary, NodeSetAssignment,
-        NodeSetValue, PropertyFilter, RelationshipDeleteRequest, RelationshipOnCreatePropertyValue,
-        RelationshipPropertiesUpdate, RelationshipPropertyUpdate, RelationshipSetAssignment,
-        RelationshipTargetNodeDelete,
+        MatchedRelationshipSourceRetargetMerge, MutationEntity, MutationLimits, MutationSummary,
+        NodeSetAssignment, NodeSetValue, PropertyFilter, RelationshipDeleteRequest,
+        RelationshipOnCreatePropertyValue, RelationshipPropertiesUpdate,
+        RelationshipPropertyUpdate, RelationshipSetAssignment, RelationshipTargetNodeDelete,
     },
     pressure::{
         StorageDebtController, StoragePressureReasonCode, StoragePressureSignals,
@@ -852,6 +852,14 @@ pub struct GraphMutationSavepoint {
     store: GraphStore,
     op_len: usize,
     row_len: usize,
+}
+
+impl GraphMutationSavepoint {
+    /// The graph state when the savepoint was taken, before later statements.
+    #[doc(hidden)]
+    pub fn store(&self) -> &GraphStore {
+        &self.store
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1483,6 +1491,15 @@ impl GraphMutationTransaction {
         limits: MutationLimits,
     ) -> Result<MutationSummary> {
         self.stage_mutations(vec![mutation], limits, false)
+    }
+
+    #[doc(hidden)]
+    pub fn stage_mutations_without_commit_rows(
+        &mut self,
+        mutations: Vec<GraphMutation>,
+        limits: MutationLimits,
+    ) -> Result<MutationSummary> {
+        self.stage_mutations(mutations, limits, false)
     }
 
     fn stage_mutations(

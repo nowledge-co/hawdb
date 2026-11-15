@@ -181,9 +181,13 @@ impl AdmittedSearchRead<'_> {
                 let mut documents = Vec::with_capacity(document_ids.len());
                 let mut payload_bytes = 0usize;
                 for id in document_ids {
-                    let Some(document) = lease.snapshot().document(id) else {
-                        continue;
-                    };
+                    // Refuse an unknown id, as out-of-core hydration does, so
+                    // the output stays positional and all-or-nothing (#1767).
+                    let document = lease.snapshot().document(id).ok_or_else(|| {
+                        HawDBError::Semantic(format!(
+                            "search hydration by id requested document {id}, which the published search projection does not contain"
+                        ))
+                    })?;
                     payload_bytes =
                         payload_bytes.saturating_add(search_document_payload_bytes(document));
                     check_hydration_budget(

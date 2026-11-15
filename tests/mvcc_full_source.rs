@@ -20,6 +20,7 @@ fn budget(work: usize, items: usize, bytes: usize) -> ProjectionFeedLimits {
 fn setup(cold: bool) -> (TestRoot, Database) {
     let (root, mut db) = fixture(DurabilityPolicy::SyncOnEveryWrite);
     db.query("MATCH (n:Other) DELETE n").unwrap();
+    db.query("CREATE (:Other {id: 'visible'})").unwrap();
     db.query_sql("CREATE TABLE records (id TEXT PRIMARY KEY, body TEXT)")
         .unwrap();
     db.query_sql("CREATE TABLE empty_records (id TEXT PRIMARY KEY)")
@@ -127,7 +128,7 @@ fn full_source_pins_every_table_key_and_graph_candidate_across_writes_and_checkp
                 break;
             }
         }
-        assert_eq!(nodes, BTreeSet::from([0, 1]));
+        assert_eq!(nodes, BTreeSet::from([0, 2]));
         assert_eq!(
             tables,
             BTreeSet::from([

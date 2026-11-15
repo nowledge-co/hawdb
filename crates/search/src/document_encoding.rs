@@ -79,7 +79,7 @@ impl<W: io::Write> DocumentSink for IoSink<'_, W> {
         const HEX: &[u8; 16] = b"0123456789abcdef";
         let mut buffer = [0u8; HEX_BUFFER_BYTES];
         for input in value.as_bytes().chunks(HEX_BUFFER_BYTES / 2) {
-            for (byte, output) in input.iter().zip(buffer.chunks_exact_mut(2)) {
+            for (byte, output) in input.iter().zip(buffer.as_chunks_mut::<2>().0.iter_mut()) {
                 output[0] = HEX[usize::from(byte >> 4)];
                 output[1] = HEX[usize::from(byte & 15)];
             }

@@ -155,10 +155,23 @@ impl Transformer<'_> {
                         .rev()
                         .nth(1)
                         .is_some_and(|token| token.is_keyword(self.input, "NONSCALAR"));
-                    ScalarExpressionKind::JsonValue {
-                        expression,
-                        path: value,
-                        null_on_non_scalar,
+                    if self.tokens[self.tree.node(node).start].is_keyword(self.input, "JSON_STRING")
+                    {
+                        if null_on_non_scalar {
+                            return Err(
+                                self.error(node, "JSON_STRING does not accept NULL ON NONSCALAR")
+                            );
+                        }
+                        ScalarExpressionKind::JsonString {
+                            expression,
+                            path: value,
+                        }
+                    } else {
+                        ScalarExpressionKind::JsonValue {
+                            expression,
+                            path: value,
+                            null_on_non_scalar,
+                        }
                     }
                 } else {
                     ScalarExpressionKind::Left {

@@ -105,7 +105,7 @@ impl RuntimeWorkBudget {
         // A parent's refusal may leave a conservative child charge, never an
         // undercharge. Query failure discards the complete scoped result.
         self.used
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
                 used.checked_add(units).filter(|next| *next <= self.limit)
             })
             .map_err(|used| {

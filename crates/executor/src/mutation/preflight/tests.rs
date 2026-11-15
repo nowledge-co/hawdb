@@ -486,6 +486,24 @@ impl GraphExecutionWrite for RecordingStore {
         }
         Ok(ids.to_vec())
     }
+
+    fn commit_mutation_with_output(
+        &mut self,
+        catalog: &mut Catalog,
+        mutation: GraphMutation,
+        limits: MutationLimits,
+        project: &mut crate::store::MutationOutputProjector<'_>,
+    ) -> Result<Vec<crate::Row>> {
+        let summary = self.commit_mutation_with_limits(catalog, mutation, limits)?;
+        project(
+            catalog,
+            crate::store::MutationReturnStores {
+                before: self,
+                after: self,
+            },
+            &summary,
+        )
+    }
 }
 
 fn fixture(count: usize) -> (Catalog, RecordingStore) {
@@ -968,6 +986,7 @@ fn endpoint_merge(source: Option<PropertyFilter>, target: Option<PropertyFilter>
             rel_type: "LINK".into(),
             rel_match_properties: BTreeMap::new(),
             on_create_properties: BTreeMap::new(),
+            on_match_assignments: Vec::new(),
         },
     )
 }

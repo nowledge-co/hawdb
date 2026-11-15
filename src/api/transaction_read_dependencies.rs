@@ -237,6 +237,9 @@ fn qualified_sets(sets: &[cypher::SetProperty]) -> bool {
             incoming, preserve, ..
         } => deterministic(incoming) && deterministic(preserve),
         S::Property { .. } | S::DecrementFloorZero { .. } => true,
+        S::Expression(expression) => {
+            super::plan_cache::determinism::scalar_is_deterministic(expression)
+        }
     })
 }
 

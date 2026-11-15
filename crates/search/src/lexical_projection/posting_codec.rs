@@ -59,8 +59,8 @@ fn pack(values: &[u32; BLOCK_LEN], output: &mut Vec<u8>) -> u8 {
     let width = packer.num_bits(values);
     let mut bytes = [0u8; BLOCK_LEN * 4];
     let size = packer.compress(values, &mut bytes, width);
-    for word in bytes[..size].chunks_exact(4) {
-        output.extend_from_slice(&u32::from_ne_bytes(word.try_into().unwrap()).to_le_bytes());
+    for word in bytes[..size].as_chunks::<4>().0.iter() {
+        output.extend_from_slice(&u32::from_ne_bytes(*word).to_le_bytes());
     }
     width
 }
@@ -70,8 +70,13 @@ fn unpack(input: &[u8], width: u8, output: &mut [u32; BLOCK_LEN]) -> Result<()> 
         return Err("invalid bitpack extent");
     }
     let mut native = [0u8; BLOCK_LEN * 4];
-    for (source, target) in input.chunks_exact(4).zip(native.chunks_exact_mut(4)) {
-        target.copy_from_slice(&u32::from_le_bytes(source.try_into().unwrap()).to_ne_bytes());
+    for (source, target) in input
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(native.as_chunks_mut::<4>().0.iter_mut())
+    {
+        target.copy_from_slice(&u32::from_le_bytes(*source).to_ne_bytes());
     }
     BitPacker4x::new().decompress(&native[..input.len()], output, width);
     Ok(())

@@ -193,13 +193,55 @@ fn candidate_cache_refusal_keeps_previous_cache_and_refunds_new_block() {
 
 #[test]
 #[cfg(feature = "vector-search")]
+fn candidate_ordinals_over_working_budget_are_a_typed_refusal() {
+    with_query(|_, _, _, context, scratch| {
+        let set = set(context, scratch);
+        let mut metrics = SearchOutOfCoreMetrics::default();
+        let (_, required) = set.vector_allowlist_layout(0).unwrap();
+        // One byte short of the allowlist and its largest block is a resource
+        // refusal naming the option the caller says bound it (#1767).
+        let Err(error) = set.vector_ordinals_for_layer(
+            0,
+            required - 1,
+            "VectorSearchExecutionOptions.max_working_bytes",
+            Some(context.task),
+            &mut metrics,
+        ) else {
+            panic!("an allowlist over its working budget was admitted");
+        };
+        match error {
+            HawDBError::ResourceBudgetExceeded(details) => {
+                assert_eq!(
+                    details.resource,
+                    hawdb_core::ResourceBudgetKind::MemoryBytes
+                );
+                assert_eq!(details.requested, required);
+                assert_eq!(details.budget, required - 1);
+                assert_eq!(
+                    details.budget_option,
+                    "VectorSearchExecutionOptions.max_working_bytes"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+    });
+}
+
+#[test]
+#[cfg(feature = "vector-search")]
 fn candidate_ordinals_keep_funding_after_spill_closes() {
     with_query(|_, _, memory, context, scratch| {
         let baseline = memory.ledger.snapshot().used_bytes;
         let set = set(context, scratch);
         let mut metrics = SearchOutOfCoreMetrics::default();
         let ordinals = set
-            .vector_ordinals_for_layer(0, 1024, Some(context.task), &mut metrics)
+            .vector_ordinals_for_layer(
+                0,
+                1024,
+                "SearchOutOfCoreConfig.max_vector_search_working_bytes",
+                Some(context.task),
+                &mut metrics,
+            )
             .unwrap();
         assert_eq!(ordinals.values, [0, 1]);
         drop(set);

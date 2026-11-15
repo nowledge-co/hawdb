@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 # Copyright 2026 Nowledge
+# SPDX-License-Identifier: Apache-2.0
+
+# Copyright 2026 Nowledge
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -97,7 +100,7 @@ def main():
         "cargo_lock_sha256": {"baseline": sha256(args.baseline_source / "Cargo.lock"), "candidate": sha256(source / "Cargo.lock")},
         "effective_cargo_config_sha256": sha256(source / ".cargo/config.toml"),
         "build_profile": "bench; opt-level=3, codegen-units=1, thin LTO, strip=none; both builds invoked from candidate repository",
-        "toolchain": "Rust 1.97.1", "default_features": True,
+        "toolchain": subprocess.check_output(["rustc", "--version"], cwd=source, text=True).strip(), "default_features": True,
         "baseline_overlay": "identical writer harness and Cargo benchmark registration only",
         "measured_pairs": 40, "warm_up_pairs": 1, "interval_ranks_one_based": [rank, 41 - rank],
         "writers": args.writers, "readers": args.readers, "cpu_topology": topology,

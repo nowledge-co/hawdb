@@ -53,7 +53,7 @@ pub(crate) fn decode(encoded: &str) -> Result<VectorIndexDescriptor> {
         return Err(invalid("invalid encoded descriptor length"));
     }
     let mut bytes = Vec::with_capacity(encoded.len() / 2);
-    for pair in encoded.as_bytes().chunks_exact(2) {
+    for pair in encoded.as_bytes().as_chunks::<2>().0.iter() {
         let digit = |byte: u8| match byte {
             b'0'..=b'9' => Ok(byte - b'0'),
             b'a'..=b'f' => Ok(byte - b'a' + 10),

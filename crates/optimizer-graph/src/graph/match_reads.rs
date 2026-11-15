@@ -610,6 +610,7 @@ fn expression(expression: &ProjectionExpression, demand: &mut Demand) {
         ProjectionExpression::Coalesce(_)
         | ProjectionExpression::VectorDistance { .. }
         | ProjectionExpression::JsonValue { .. }
+        | ProjectionExpression::JsonString { .. }
         | ProjectionExpression::Left { .. }
         | ProjectionExpression::Lower(_)
         | ProjectionExpression::Case { .. }
