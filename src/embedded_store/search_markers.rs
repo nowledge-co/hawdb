@@ -29,8 +29,8 @@ impl EmbeddedStoreHandle {
     /// Requires write admission and a writable graph. A read-only handle, a
     /// handle without a search projection, and an empty, multi-line or longer
     /// than [`MAX_SEARCH_PROJECTION_MARKER_REASON_BYTES`] reason are refused
-    /// before anything is written, with `Execution` (read-only) or `Semantic`
-    /// errors. Returns the projection freshness after the mark.
+    /// before anything is written, with [`HawDBError::ReadOnly`] (read-only
+    /// handle) or `Semantic` errors. Returns the projection freshness after the mark.
     pub fn mark_search_projection_full_reindex_needed(
         &self,
         reason: &str,
@@ -68,10 +68,16 @@ impl EmbeddedStore {
         reason: &str,
     ) -> Result<SearchProjectionFreshness> {
         if self.graph.database().config().read_only {
-            return Err(HawDBError::Execution(
-                "database is opened in read-only mode; search projection markers need a writable handle"
-                    .to_string(),
-            ));
+            return Err(HawDBError::ReadOnly {
+                operation: match marker {
+                    SearchProjectionMarker::FullReindexNeeded => {
+                        "mark_search_projection_full_reindex_needed"
+                    }
+                    SearchProjectionMarker::MetadataRepairNeeded => {
+                        "mark_search_projection_metadata_repair_needed"
+                    }
+                },
+            });
         }
         match (
             self.search_projection.as_ref(),

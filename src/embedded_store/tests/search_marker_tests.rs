@@ -123,9 +123,10 @@ fn resident_projection_markers_are_durable_idempotent_and_validated() {
                 .unwrap_err(),
         ] {
             assert!(
-                matches!(&error, HawDBError::Execution(message) if message.contains("read-only")),
+                matches!(&error, HawDBError::ReadOnly { operation } if operation.starts_with("mark_search_projection_")),
                 "{error:?}"
             );
+            assert!(error.to_string().contains("read-only"), "{error}");
         }
         assert_marked(&handle);
     }

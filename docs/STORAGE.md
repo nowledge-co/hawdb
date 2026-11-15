@@ -355,7 +355,7 @@ reason twice changes nothing; a full-reindex marker collects distinct reasons,
 and the metadata-repair marker keeps the latest one.
 
 Refusals happen before anything is written:
-- a read-only handle (`GraphMode::ShadowReadOnly`): `Execution`;
+- a read-only handle (`GraphMode::ShadowReadOnly`): the typed `HawDBError::ReadOnly { operation }`, a caller error that displays as an `execution error` (Python `ExecutionError` with `kind="read_only"`, C ABI kind `read_only`);
 - a handle without a search projection: `Semantic`;
 - an empty, multi-line, whitespace-padded or longer than
   `MAX_SEARCH_PROJECTION_MARKER_REASON_BYTES` (1 KiB) reason: `Semantic`.

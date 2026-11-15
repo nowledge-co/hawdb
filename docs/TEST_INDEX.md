@@ -2993,7 +2993,7 @@ general owner runs `embedded_store::tests::search_marker_tests`.
   It covers idempotence, distinct full-reindex reasons and the latest
   metadata-repair reason, as reported by the returned freshness and by
   `runtime_status`. The markers survive a reopen, and a `ShadowReadOnly`
-  handle reports them but refuses to write with `Execution`.
+  handle reports them but refuses to write with the typed `HawDBError::ReadOnly`.
 - With incremental out-of-core maintenance, the same marking survives a
   reopen, graph writes continue while marked, and a full rebuild into a new
   directory reopens unmarked.
