@@ -115,7 +115,11 @@ pub(super) fn build_with_context<T: HeaderSource>(
                     return Ok(());
                 }
                 // A raw value above the bound is omitted before normalization
-                // allocates a lowercase copy of it.
+                // allocates a lowercase copy of it. This measures the raw
+                // trimmed bytes, while the check below and the decode bound
+                // measure normalized bytes; lowercasing can change the byte
+                // length, so the two can disagree near the bound. That is
+                // fine: omitting a value set is always safe for pruning.
                 if value.trim().len() > SEARCH_SEGMENT_VALUE_SUMMARY_MAX_VALUE_BYTES {
                     kept.omit(summary, retained, &mut budget);
                     return Ok(());
