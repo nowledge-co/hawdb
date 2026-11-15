@@ -402,6 +402,7 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
                 input: PhysicalPlan::EmptyExec,
                 bindings: Vec::new(),
                 assignments: Vec::new(),
+                relationship: None,
                 returns: None,
             })),
             false,

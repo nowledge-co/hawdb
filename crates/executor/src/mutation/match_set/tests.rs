@@ -77,6 +77,7 @@ fn plan(
         input: PhysicalPlan::EmptyExec,
         bindings,
         assignments,
+        relationship: None,
         returns,
     }
 }
@@ -121,8 +122,8 @@ fn resolve_with(
 }
 
 fn updates(outcome: &MatchSetOutcome) -> &[EntityPropertyUpdate] {
-    match &outcome.mutation {
-        Some(GraphMutation::SetEntityProperties(updates)) => updates,
+    match outcome.mutations.as_slice() {
+        [GraphMutation::SetEntityProperties(updates)] => updates,
         other => panic!("expected entity updates, got {other:?}"),
     }
 }
@@ -240,7 +241,7 @@ fn no_matched_row_writes_nothing() {
         None,
     );
     let outcome = resolve(&plan, Vec::new(), &[], MutationLimits::default()).unwrap();
-    assert!(outcome.mutation.is_none());
+    assert!(outcome.mutations.is_empty());
     assert!(outcome.rows.is_empty());
 }
 

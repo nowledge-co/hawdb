@@ -707,7 +707,38 @@ impl PhysicalPlan {
                         }
                     }
                 }
-                output.push_str("],returns=");
+                output.push(']');
+                if let Some(relationship) = &set.relationship {
+                    output.push_str(if relationship.merge {
+                        ",merge("
+                    } else {
+                        ",create("
+                    });
+                    write_identifier(output, &relationship.source);
+                    output.push(':');
+                    write_identifier(output, &relationship.rel_type);
+                    output.push(':');
+                    write_identifier(output, &relationship.target);
+                    for (name, items) in [
+                        ("properties", &relationship.properties),
+                        ("on_create", &relationship.on_create),
+                    ] {
+                        output.push(',');
+                        output.push_str(name);
+                        output.push_str("={");
+                        for (index, (property, expression)) in items.iter().enumerate() {
+                            if index > 0 {
+                                output.push(',');
+                            }
+                            write_identifier(output, property);
+                            output.push('=');
+                            projection::write_projection_expression(output, expression);
+                        }
+                        output.push('}');
+                    }
+                    output.push(')');
+                }
+                output.push_str(",returns=");
                 match &set.returns {
                     Some(returns) => {
                         write_projection_list(output, &returns.items);

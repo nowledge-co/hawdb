@@ -8,18 +8,18 @@
 use super::*;
 use crate::{ConcurrentDatabase, ConcurrentTransactionOptions};
 
-fn params(entries: &[(&str, Value)]) -> BTreeMap<String, Value> {
+pub(super) fn params(entries: &[(&str, Value)]) -> BTreeMap<String, Value> {
     entries
         .iter()
         .map(|(name, value)| (name.to_string(), value.clone()))
         .collect()
 }
 
-fn string(value: &str) -> Value {
+pub(super) fn string(value: &str) -> Value {
     Value::String(value.into())
 }
 
-fn column(rows: &[BTreeMap<String, Value>], name: &str) -> Vec<Value> {
+pub(super) fn column(rows: &[BTreeMap<String, Value>], name: &str) -> Vec<Value> {
     rows.iter()
         .map(|row| row.get(name).cloned().unwrap_or(Value::Null))
         .collect()
@@ -28,7 +28,7 @@ fn column(rows: &[BTreeMap<String, Value>], name: &str) -> Vec<Value> {
 /// Runs `statement` on every write surface: `Database` autocommit and
 /// transaction, `ConcurrentDatabase` autocommit and both transaction modes.
 /// Each surface starts from `setup` and must leave the same entity rows.
-fn on_every_surface(
+pub(super) fn on_every_surface(
     setup: &[&str],
     statement: &str,
     parameters: &BTreeMap<String, Value>,

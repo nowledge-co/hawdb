@@ -21,8 +21,6 @@ fn relationship_merge_batch_preserves_scope_and_refuses_unrepresented_clauses() 
     ));
     for query in [
         format!("{prefix} RETURN r.weight"),
-        format!("{prefix} RETURN DISTINCT m.id"),
-        format!("{prefix} RETURN m.id LIMIT 1"),
         format!("{prefix} ON MATCH SET r.weight = 2 RETURN m.id"),
         format!("{prefix} SET s.used = true RETURN m.id"),
         "MATCH (s:Skill), (m:Memory) MERGE (s)-[s:EVIDENCE]->(m) RETURN m.id".into(),
@@ -30,9 +28,19 @@ fn relationship_merge_batch_preserves_scope_and_refuses_unrepresented_clauses() 
         "MATCH (s:Skill) WHERE s.id = key UNWIND $ids AS key MATCH (m:Memory {id: key}) MERGE (s)-[:EVIDENCE]->(m) RETURN m.id".into(),
         "MATCH (s:Skill) WHERE m.id = 1 UNWIND $ids AS key MATCH (m:Memory {id: key}) MERGE (s)-[:EVIDENCE]->(m) RETURN m.id".into(),
         "MATCH (s:Skill) UNWIND $ids AS s MATCH (m:Memory) MERGE (s)-[:EVIDENCE]->(m) RETURN m.id".into(),
+    ] { assert!(plan_pipeline_query(&query, &parameters).is_err(), "{query}"); }
+    // The batch command declines these; they are bound over the read rows (#1790).
+    for query in [
+        format!("{prefix} RETURN DISTINCT m.id"),
+        format!("{prefix} RETURN m.id LIMIT 1"),
         "MATCH (s:Skill) UNWIND $ids AS key UNWIND $ids AS other MATCH (m:Memory) MERGE (s)-[:EVIDENCE]->(m) RETURN m.id".into(),
         "MATCH (s:Skill) OPTIONAL MATCH (m:Memory) MERGE (s)-[:EVIDENCE]->(m) RETURN m.id".into(),
-    ] { assert!(plan_pipeline_query(&query, &parameters).is_err(), "{query}"); }
+    ] {
+        assert!(
+            matches!(plan_pipeline_query(&query, &parameters).unwrap(), LogicalPlan::MatchSet(_)),
+            "{query}"
+        );
+    }
 }
 
 #[test]
@@ -42,7 +50,6 @@ fn atomic_mutations_reject_conditions_the_storage_command_cannot_represent() {
         "MERGE (n {id: 1})",
         "CREATE p = (n:Node {id: 1})",
         "MERGE p = (n:Node {id: 1})",
-        "MATCH (a:Node), (b:Node), (unused:Node) CREATE (a)-[:LINK]->(b)",
         "MATCH (a:Node), (b:Node) CREATE (a)-[:LINK* ALL SHORTEST 1..1]->(b)",
         "UNWIND row.id AS value CREATE (n:Node)",
         "MATCH (row:Node) UNWIND row.ids AS value CREATE (n:Node {id: value})",
@@ -1761,6 +1768,54 @@ fn merge_return_and_relationship_on_match_bind_to_the_merge_command() {
         "MATCH (a:A), (b:B) MERGE (a)-[r:R]->(b) SET r.w = 1",
         "MERGE (n:A {id: 1}) RETURN n ORDER BY n.id",
         "UNWIND [1] AS x MATCH (a:A), (b:B {id: x}) MERGE (a)-[r:R]->(b) ON MATCH SET r.w = 1 RETURN b",
+    ] {
+        assert!(plan(query).is_err(), "{query}");
+    }
+}
+
+#[test]
+fn relationship_writes_the_endpoint_commands_decline_bind_over_read_rows() {
+    let parameters = BTreeMap::from([
+        ("ids".to_string(), Value::List(vec![Value::Int(1)])),
+        ("id".to_string(), Value::Int(1)),
+    ]);
+    let plan = |query: &str| plan_pipeline_query(query, &parameters);
+    for (query, merge) in [
+        (
+            "MATCH (s:S {id: $id}), (m:M) WHERE m.id IN $ids MERGE (s)-[r:R]->(m) ON CREATE SET r.w = 1.0",
+            true,
+        ),
+        (
+            "MATCH (s:S {id: $id}) UNWIND $ids AS x MATCH (m:M {id: x}) CREATE (s)-[:R {k: x}]->(m) RETURN m.id",
+            false,
+        ),
+        (
+            "MATCH (t:T {id: $id}), (m:M {id: $id}) WHERE NOT EXISTS { MATCH (t)-[:R]->(m) } CREATE (t)-[:R]->(m)",
+            false,
+        ),
+        ("MATCH (a:M {id: $id}) CREATE (a)-[:R]->(a)", false),
+        ("MATCH (a:M {id: $id}), (b:M) CREATE (a)<-[:R]-(b)", false),
+    ] {
+        let LogicalPlan::MatchSet(set) = plan(query).unwrap() else {
+            panic!("expected row evaluation: {query}");
+        };
+        let relationship = set.relationship.as_ref().unwrap();
+        assert_eq!(relationship.merge, merge, "{query}");
+        assert!(set.assignments.is_empty());
+        if query.contains("<-[:R]-") {
+            assert_eq!((relationship.source.as_str(), relationship.target.as_str()), ("b", "a"));
+        }
+    }
+    // The two-endpoint commands keep the shapes they plan.
+    assert!(matches!(
+        plan("MATCH (a:M {id: $id}), (b:M {id: 2}) CREATE (a)-[:R]->(b)").unwrap(),
+        LogicalPlan::CreateMatchedRelationship { .. }
+    ));
+    for query in [
+        "MATCH (a:M) WHERE a.id IN $ids CREATE (a)-[:R]->(:M {id: 3})",
+        "MATCH (a:M) WHERE a.id IN $ids MERGE (a)-[r:R]->(a) ON MATCH SET r.n = 1",
+        "MATCH (a:M) WHERE a.id IN $ids CREATE (a)-[r:R]->(a) RETURN r",
+        "MATCH (a:M) WHERE a.id IN $ids CREATE (a)-[:R]-(a)",
     ] {
         assert!(plan(query).is_err(), "{query}");
     }

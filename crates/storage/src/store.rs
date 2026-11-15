@@ -1493,6 +1493,15 @@ impl GraphMutationTransaction {
         self.stage_mutations(vec![mutation], limits, false)
     }
 
+    #[doc(hidden)]
+    pub fn stage_mutations_without_commit_rows(
+        &mut self,
+        mutations: Vec<GraphMutation>,
+        limits: MutationLimits,
+    ) -> Result<MutationSummary> {
+        self.stage_mutations(mutations, limits, false)
+    }
+
     fn stage_mutations(
         &mut self,
         mutations: Vec<GraphMutation>,

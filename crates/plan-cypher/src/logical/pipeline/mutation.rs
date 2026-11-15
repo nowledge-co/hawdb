@@ -60,7 +60,10 @@ pub(super) fn bind_unwind_mutation_pipeline(
         unreachable!("UNWIND binding requires an UNWIND first clause")
     };
     let rows = bind_unwind_rows(source, parameters)?;
-    let operation = bind_row_mutation("UNWIND", variable, tail, parameters)?;
+    let operation = match bind_row_mutation("UNWIND", variable, tail, parameters) {
+        Ok(operation) => operation,
+        Err(error) => return relationship_from_rows(query, parameters, error),
+    };
     Ok(LogicalPlan::UnwindMutation {
         rows,
         variable: variable.clone(),
@@ -356,6 +359,31 @@ fn bind_batch_value(
 }
 
 pub(super) fn bind_mutation_pipeline(
+    query: &QueryPipeline,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<LogicalPlan> {
+    bind_atomic_mutation_pipeline(query, parameters)
+        .or_else(|error| relationship_from_rows(query, parameters, error))
+}
+
+/// A relationship CREATE or MERGE the two-endpoint commands refuse is bound
+/// over the rows of its read clauses when its shape allows; otherwise the
+/// commands' own refusal stands.
+pub(super) fn relationship_from_rows(
+    query: &QueryPipeline,
+    parameters: &BTreeMap<String, Value>,
+    error: HawDBError,
+) -> Result<LogicalPlan> {
+    if !matches!(error, HawDBError::Semantic(_)) {
+        return Err(error);
+    }
+    match match_set::bind_relationship_pipeline(&query.clauses, parameters) {
+        Some(Ok(plan)) => Ok(plan),
+        _ => Err(error),
+    }
+}
+
+fn bind_atomic_mutation_pipeline(
     query: &QueryPipeline,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<LogicalPlan> {

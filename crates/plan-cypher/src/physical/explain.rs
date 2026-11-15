@@ -352,8 +352,19 @@ impl PhysicalPlan {
                         )
                     },
                 );
+                let relationship = set.relationship.as_ref().map_or_else(String::new, |write| {
+                    format!(
+                        " {}=({})-[:{}]->({}) properties={} on_create={}",
+                        if write.merge { "merge" } else { "create" },
+                        write.source,
+                        write.rel_type,
+                        write.target,
+                        write.properties.len(),
+                        write.on_create.len()
+                    )
+                });
                 format!(
-                    "{pad}MatchSetExec bindings=[{bindings}] assignments=[{assignments}] returns={returns}"
+                    "{pad}MatchSetExec bindings=[{bindings}] assignments=[{assignments}]{relationship} returns={returns}"
                 )
             }
             PhysicalPlan::MutationReturn { returns, .. } => {

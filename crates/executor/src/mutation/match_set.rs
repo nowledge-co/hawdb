@@ -20,12 +20,13 @@ use crate::Row;
 use crate::{QueryMemoryAccount, QueryMemoryClass, QueryMemoryLease, QueryMemoryLedger};
 use hawdb_core::{Catalog, HawDBError, Result, RuntimeTaskContext, Value};
 use hawdb_plan_cypher::{
-    GraphEntityKind, MatchSet, MatchSetReturn, MatchSetValue, PhysicalPlan, ProjectionExpression,
-    SortDirection, SortKey,
+    GraphEntityKind, MatchSet, MatchSetRelationship, MatchSetReturn, MatchSetValue, PhysicalPlan,
+    ProjectionExpression, SortDirection, SortKey,
 };
 use hawdb_storage::mutation::evaluate::evaluate_node_set_value;
 use hawdb_storage::mutation::{
-    EntityPropertyUpdate, GraphMutation, MutationEntity, MutationLimits, NodeSetAssignment,
+    EntityPropertyUpdate, GraphMutation, MatchedRelationshipCreate, MatchedRelationshipMerge,
+    MutationEntity, MutationLimits, NodeSetAssignment, PropertyFilter,
 };
 use hawdb_storage::{NodeId, NodeRecord, RelId, RelRecord};
 use std::collections::{BTreeMap, BTreeSet};
@@ -41,8 +42,8 @@ pub enum MatchSetRecord {
 /// The mutation to commit and the RETURN rows of a [`MatchSet`].
 #[derive(Debug)]
 pub struct MatchSetOutcome {
-    /// `None` when no row targets an entity.
-    pub mutation: Option<GraphMutation>,
+    /// The mutations to commit together, in order; empty when no row writes.
+    pub mutations: Vec<GraphMutation>,
     /// The projected rows; empty without RETURN.
     pub rows: Vec<Row>,
 }
@@ -232,6 +233,18 @@ pub fn resolve_match_set(
         }
     }
 
+    let mut mutations = Vec::new();
+    if let Some(relationship) = &plan.relationship {
+        for (index, row) in rows.iter_mut().enumerate() {
+            checkpoint(index, task_context)?;
+            if let Some(mutation) =
+                relationship_mutation(relationship, row, plan, &records, catalog, charge)?
+            {
+                mutations.push(mutation);
+            }
+        }
+    }
+
     let mut output = Vec::new();
     if let Some(returns) = &plan.returns {
         output = project_returns(
@@ -275,10 +288,80 @@ pub fn resolve_match_set(
             assignments,
         });
     }
+    if !updates.is_empty() {
+        mutations.insert(0, GraphMutation::SetEntityProperties(updates));
+    }
     Ok(MatchSetOutcome {
-        mutation: (!updates.is_empty()).then_some(GraphMutation::SetEntityProperties(updates)),
+        mutations,
         rows: output,
     })
+}
+
+/// The relationship CREATE or MERGE of one row between its two nodes, with
+/// property values evaluated over the row. A row whose endpoint is NULL (an
+/// unmatched OPTIONAL MATCH) writes nothing.
+fn relationship_mutation(
+    relationship: &MatchSetRelationship,
+    row: &mut InputRow,
+    plan: &MatchSet<PhysicalPlan>,
+    records: &BTreeMap<MutationEntity, Loaded>,
+    catalog: &Catalog,
+    charge: &mut QueryMemoryLease,
+) -> Result<Option<GraphMutation>> {
+    let endpoint = |variable: &str| {
+        row.entities
+            .iter()
+            .find(|(position, _)| plan.bindings[*position].variable == variable)
+            .and_then(|(_, entity)| *entity)
+    };
+    let (Some(MutationEntity::Node(source)), Some(MutationEntity::Node(target))) = (
+        endpoint(&relationship.source),
+        endpoint(&relationship.target),
+    ) else {
+        return Ok(None);
+    };
+    attach(&mut row.binding, &row.entities, plan, records);
+    let evaluate = |items: &[(String, ProjectionExpression)]| {
+        items
+            .iter()
+            .map(|(property, expression)| {
+                evaluate_projection_expression(expression, catalog, &row.binding)
+                    .map(|value| (property.clone(), value))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()
+    };
+    let values = evaluate(&relationship.properties)
+        .and_then(|properties| Ok((properties, evaluate(&relationship.on_create)?)));
+    row.binding.nodes.clear();
+    row.binding.relationships.clear();
+    let (properties, on_create) = values?;
+    charge.grow(map_memory_bytes(&properties).saturating_add(map_memory_bytes(&on_create)))?;
+    let filter = |id: NodeId| {
+        Some(PropertyFilter::IdEq {
+            value: Value::Int(id.0 as i64),
+        })
+    };
+    Ok(Some(if relationship.merge {
+        GraphMutation::MergeRelationshipsBetweenMatches(MatchedRelationshipMerge {
+            source_label: String::new(),
+            source_filter: filter(source),
+            rel_type: relationship.rel_type.clone(),
+            rel_match_properties: properties,
+            on_create_properties: on_create,
+            on_match_assignments: Vec::new(),
+            target_label: String::new(),
+            target_filter: filter(target),
+        })
+    } else {
+        GraphMutation::CreateRelationshipsBetweenMatches(MatchedRelationshipCreate {
+            source_label: String::new(),
+            source_filter: filter(source),
+            rel_type: relationship.rel_type.clone(),
+            rel_properties: properties,
+            target_label: String::new(),
+            target_filter: filter(target),
+        })
+    }))
 }
 
 /// Projects every updated row, then applies DISTINCT, ORDER BY, SKIP and

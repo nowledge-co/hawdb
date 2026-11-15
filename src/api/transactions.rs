@@ -372,12 +372,15 @@ pub(super) fn execute_graph_transaction_plan(
                     &runtime.config.execution_memory,
                     task_context,
                 )?;
-                if let Some(mutation) = outcome.mutation {
+                if !outcome.mutations.is_empty() {
                     if is_mutation_return {
-                        transaction
-                            .stage_mutation_without_commit_rows(mutation, mutation_limits)?;
+                        transaction.stage_mutations_without_commit_rows(
+                            outcome.mutations,
+                            mutation_limits,
+                        )?;
                     } else {
-                        transaction.stage_mutation_with_limits(mutation, mutation_limits)?;
+                        transaction
+                            .stage_mutations_with_limits(outcome.mutations, mutation_limits)?;
                     }
                 }
                 return finish(transaction, outcome.rows);
