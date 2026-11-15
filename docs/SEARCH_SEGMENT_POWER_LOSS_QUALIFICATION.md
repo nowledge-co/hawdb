@@ -99,11 +99,10 @@ so no live checkpoint owns them. Other pre-existing temporary names are out of
 scope here.
 
 Reopen cost: on Unix (including macOS) a linked current name is recognized by
-its device and inode, so a completed checkpoint costs a few `metadata` calls.
-Stable Rust exposes no file identity on Windows. There, while the selected
-generation snapshot exists, every reopen hashes each of the four current files
-once to compare it with the selector. The snapshot is therefore read twice per
-open.
+its device and inode. Windows opens a counted validation handle and compares the
+volume serial plus full 128-bit file ID. A completed checkpoint therefore needs
+only native identity checks on both platforms; content hashing remains the
+fallback for unsupported targets or aliases whose identity differs.
 
 Two owners qualify the protocol:
 

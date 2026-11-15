@@ -10,9 +10,10 @@ for its recorded runtime. It is not evidence that the new path passes a gate.
 `begin_search_projection_consumer_catch_up_in` accepts a `ProjectionSourceScope`.
 `Database` preserves conservative whole-source validation. `Domains` enumerates
 only the named graph labels and relational tables, including absence and empty
-tables. Label membership is checked against the same pinned source as hydration;
-allocation holes and excluded candidates still consume bounded enumeration work.
-A node with multiple selected labels is visited once. The full mapper cannot
+tables. Label membership is checked against the same pinned source as hydration.
+Actual records inspected for membership consume bounded enumeration work;
+allocation holes and deleted records are not manufactured as candidates. A node
+with multiple selected labels is visited once. The full mapper cannot
 replace the complete comparison with a sampled or partially applied delta.
 
 The stable Consumer ID identifies the scope and deterministic mapper version.

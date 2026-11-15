@@ -78,14 +78,26 @@ impl CanonicalNodeLabelCursor {
         labels: &[LabelId],
         task: &RuntimeTaskContext,
     ) -> Result<(), CanonicalSegmentError> {
-        let result = self.load_segment_inner(labels, task);
+        let result = self.load_segment_inner(Some(labels), task);
+        self.reader.poison_on_physical_failure(&result);
+        result
+    }
+
+    /// Load the next node segment without a label filter. Descriptor and
+    /// segment admission are identical to label-filtered enumeration, but no
+    /// Bloom pruning is possible because every actual node record is selected.
+    pub(crate) fn load_segment_all(
+        &mut self,
+        task: &RuntimeTaskContext,
+    ) -> Result<(), CanonicalSegmentError> {
+        let result = self.load_segment_inner(None, task);
         self.reader.poison_on_physical_failure(&result);
         result
     }
 
     fn load_segment_inner(
         &mut self,
-        labels: &[LabelId],
+        labels: Option<&[LabelId]>,
         task: &RuntimeTaskContext,
     ) -> Result<(), CanonicalSegmentError> {
         let work = CheckpointWorkContext::new(task.clone());
@@ -96,10 +108,12 @@ impl CanonicalNodeLabelCursor {
             self.ended = true;
             return Ok(());
         };
-        if !labels.iter().any(|label| {
-            descriptor
-                .node_label_bloom
-                .might_contain(u64::from(label.0))
+        if labels.is_some_and(|labels| {
+            !labels.iter().any(|label| {
+                descriptor
+                    .node_label_bloom
+                    .might_contain(u64::from(label.0))
+            })
         }) {
             self.pending_descriptor = None;
             return Ok(());
@@ -134,6 +148,21 @@ impl CanonicalNodeLabelCursor {
         &mut self,
         labels: &[LabelId],
     ) -> Result<bool, CanonicalSegmentError> {
+        self.accept_record_inner(Some(labels))
+    }
+
+    /// Accept the charged current record without decoding properties or
+    /// testing label membership.
+    pub(crate) fn accept_record_all(&mut self) -> Result<(), CanonicalSegmentError> {
+        let selected = self.accept_record_inner(None)?;
+        debug_assert!(selected);
+        Ok(())
+    }
+
+    fn accept_record_inner(
+        &mut self,
+        labels: Option<&[LabelId]>,
+    ) -> Result<bool, CanonicalSegmentError> {
         let segment = self.segment.as_mut().ok_or_else(|| {
             CanonicalSegmentError::Corrupt("label cursor has no selected segment".into())
         })?;
@@ -142,7 +171,10 @@ impl CanonicalNodeLabelCursor {
             .next(&segment.bytes, &segment.descriptor)?
             .ok_or_else(|| CanonicalSegmentError::Corrupt("label cursor has no record".into()))?;
         let payload = &segment.bytes[frame.payload_start..frame.payload_end];
-        let matches = node_payload_has_any_label(payload, labels)?;
+        let matches = match labels {
+            Some(labels) => node_payload_has_any_label(payload, labels)?,
+            None => true,
+        };
         segment.records.accept(frame);
         Ok(matches)
     }
