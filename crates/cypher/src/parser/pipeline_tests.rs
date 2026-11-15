@@ -493,6 +493,31 @@ mod tests {
         let error = parse("CREATE (n:Item) RETURN").unwrap_err().to_string();
         assert!(error.contains("RETURN"), "{error}");
     }
+
+    #[test]
+    fn merge_followed_by_return_parses_as_a_pipeline() {
+        for (query, clauses) in [
+            (
+                "MERGE (l:Label {id: $id}) ON CREATE SET l.name = 'c' ON MATCH SET l.name = 'm' RETURN l.name",
+                2,
+            ),
+            ("MERGE (m:Meta {id: 'main'}) SET m.a = 1 SET m.b = 2 RETURN m", 4),
+        ] {
+            let Statement::Pipeline(pipeline) = parse(query).unwrap() else {
+                panic!("{query} is not a pipeline");
+            };
+            assert_eq!(pipeline.clauses.len(), clauses, "{query}");
+        }
+        // Without RETURN, MERGE keeps its statement form.
+        assert!(matches!(
+            parse("MERGE (l:Label {id: 1}) ON CREATE SET l.name = 'c'").unwrap(),
+            Statement::MergeNode(_)
+        ));
+        assert!(matches!(
+            parse("MERGE (m:Meta {id: 'main'}) SET m.a = 1").unwrap(),
+            Statement::MergeNode(_)
+        ));
+    }
 }
 
 #[cfg(test)]

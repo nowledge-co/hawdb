@@ -1159,7 +1159,7 @@ fn nested_aggregate_arguments_are_rejected() {
 fn relationship_merge_batch_keeps_unrelated_mutation_errors_specific() {
     for (query, expected) in [
         (
-            "MERGE (n:A {id: 1}) RETURN n",
+            "MERGE (n:A {id: 1}) WITH n RETURN n",
             "mutation has unsupported following clauses",
         ),
         (
@@ -1614,7 +1614,6 @@ fn create_return_binds_created_variables_to_summary_columns() {
     for query in [
         "CREATE (o:Item) RETURN x",
         "CREATE (o:Item) RETURN o ORDER BY o.id",
-        "CREATE (o:Item) RETURN o SKIP 1",
         "CREATE (o:Item) RETURN o, count(*)",
         "CREATE (o:Item) WITH o RETURN o",
         "CREATE (o:Item) SET o.id = 1 RETURN o",
@@ -1682,6 +1681,86 @@ fn delete_return_binds_deleted_entities_from_the_pre_statement_state() {
         "MATCH (e:Entity) DELETE e RETURN x",
         "MATCH (e:Entity) DELETE e SET e.id = 1",
         "MATCH (t:Thread)-[:CONTAINS]->(m:Message) DETACH DELETE m RETURN count(*)",
+    ] {
+        assert!(plan(query).is_err(), "{query}");
+    }
+}
+
+#[test]
+fn merge_return_and_relationship_on_match_bind_to_the_merge_command() {
+    let plan = |query: &str| plan_pipeline_query(query, &BTreeMap::new());
+    let LogicalPlan::MutationReturn { mutation, returns } =
+        plan("MERGE (l:Label {id: 1}) ON CREATE SET l.n = 'c' ON MATCH SET l.n = 'm' SET l.t = 2 RETURN l.n").unwrap()
+    else {
+        panic!("expected a mutation RETURN");
+    };
+    let LogicalPlan::MergeNode {
+        on_match_assignments,
+        post_merge_assignments,
+        ..
+    } = *mutation
+    else {
+        panic!("expected a node MERGE");
+    };
+    assert_eq!(on_match_assignments.len(), 1);
+    assert_eq!(post_merge_assignments.len(), 1);
+    assert_eq!(returns.state, MutationReturnState::Written);
+    assert_eq!(returns.bindings[0].column, "node_id");
+
+    let LogicalPlan::MutationReturn { mutation, returns } = plan(
+        "MATCH (a:A {id: 1}), (b:B {id: 2}) MERGE (a)-[r:R {k: 1}]->(b) ON CREATE SET r.c = 1 ON MATCH SET r.c = r.c + 1 RETURN r.c SKIP 1 LIMIT 2",
+    )
+    .unwrap()
+    else {
+        panic!("expected a mutation RETURN");
+    };
+    let LogicalPlan::MergeMatchedRelationship {
+        on_create_properties,
+        on_match_assignments,
+        ..
+    } = *mutation
+    else {
+        panic!("expected a matched relationship MERGE");
+    };
+    assert_eq!(on_create_properties.len(), 1);
+    assert_eq!(
+        on_match_assignments,
+        vec![SetAssignment {
+            property: "c".into(),
+            value: SetValue::AddInt {
+                property: "c".into(),
+                amount: 1
+            },
+        }]
+    );
+    assert_eq!((returns.offset, returns.limit), (1, Some(2)));
+    assert_eq!(
+        returns
+            .bindings
+            .iter()
+            .map(|binding| binding.column.as_str())
+            .collect::<Vec<_>>(),
+        ["source_node_id", "rel_id", "target_node_id"]
+    );
+    // Without RETURN, ON MATCH SET reaches the same command.
+    let LogicalPlan::MergeMatchedRelationship {
+        on_match_assignments,
+        ..
+    } = plan("MATCH (a:A), (b:B) MERGE (a)-[r:R]->(b) ON MATCH SET r.seen = true").unwrap()
+    else {
+        panic!("expected a matched relationship MERGE");
+    };
+    assert_eq!(on_match_assignments.len(), 1);
+    for query in [
+        "MATCH (a:A), (b:B) MERGE (a)-[:R]->(b) ON MATCH SET a.seen = true",
+        "MATCH (a:A), (b:B) MERGE (a)-[r:R]->(b) ON MATCH SET a.seen = true",
+        "MATCH (a:A), (b:B) MERGE (a)-[r:R]->(b) ON MATCH SET r.w = r.w + 1.5",
+        "MATCH (a:A), (b:B) MERGE (a)-[a:R]->(b) RETURN a",
+        "MERGE (a:A {id: 1})-[r:R]->(b:B {id: 2}) ON MATCH SET r.seen = true",
+        "MATCH (a:A)-[o:OLD]->(b:B) MERGE (a)-[r:NEW]->(b) ON MATCH SET r.seen = true",
+        "MATCH (a:A), (b:B) MERGE (a)-[r:R]->(b) SET r.w = 1",
+        "MERGE (n:A {id: 1}) RETURN n ORDER BY n.id",
+        "UNWIND [1] AS x MATCH (a:A), (b:B {id: x}) MERGE (a)-[r:R]->(b) ON MATCH SET r.w = 1 RETURN b",
     ] {
         assert!(plan(query).is_err(), "{query}");
     }

@@ -467,6 +467,7 @@ impl PhysicalPlan {
                 rel_type,
                 rel_match_properties,
                 on_create_properties,
+                on_match_assignments,
             } => {
                 output.push_str("MergeMatchedRelationship(");
                 write_identifier(output, source_label);
@@ -478,6 +479,10 @@ impl PhysicalPlan {
                 write_properties(output, rel_match_properties);
                 output.push(',');
                 write_properties(output, on_create_properties);
+                if !on_match_assignments.is_empty() {
+                    output.push_str(",on_match=");
+                    write_set_assignments(output, on_match_assignments);
+                }
                 output.push_str("]->(");
                 write_identifier(output, target_label);
                 output.push(',');
@@ -733,6 +738,10 @@ impl PhysicalPlan {
                 write_mutation_return_bindings(output, &returns.bindings);
                 output.push_str(",returns=");
                 write_set_return_mode(output, &returns.mode);
+                output.push_str(&format!(
+                    ",offset={},limit={:?}",
+                    returns.offset, returns.limit
+                ));
                 output.push_str(",mutation=");
                 mutation.write_instance_fingerprint(output);
                 output.push(')');

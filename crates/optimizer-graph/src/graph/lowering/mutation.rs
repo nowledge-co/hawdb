@@ -70,6 +70,7 @@ pub(super) fn lower(logical: &LogicalPlan) -> Option<PhysicalPlan> {
             rel_type,
             rel_match_properties,
             on_create_properties,
+            on_match_assignments,
         } => Some(PhysicalPlan::MergeMatchedRelationship {
             source_label: source_label.clone(),
             source_properties: source_properties.clone(),
@@ -78,6 +79,7 @@ pub(super) fn lower(logical: &LogicalPlan) -> Option<PhysicalPlan> {
             rel_type: rel_type.clone(),
             rel_match_properties: rel_match_properties.clone(),
             on_create_properties: on_create_properties.clone(),
+            on_match_assignments: on_match_assignments.clone(),
         }),
         LogicalPlan::MergeRelationshipFromMatchedRelationship {
             source_label,

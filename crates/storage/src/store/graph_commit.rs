@@ -1691,6 +1691,17 @@ impl GraphStore {
                                     .map(|(id, _, _, _, _)| *id)
                             };
                             if let Some(relationship) = current.or(pending) {
+                                if !request.on_match_assignments.is_empty() {
+                                    apply_relationship_on_match_assignments(
+                                        self,
+                                        &mut ops,
+                                        &mut pending_relationships,
+                                        relationship,
+                                        current.is_some(),
+                                        &request.on_match_assignments,
+                                        limits,
+                                    )?;
+                                }
                                 rows.push(BTreeMap::from([
                                     ("source_node_id".to_string(), Value::Int(source.0 as i64)),
                                     ("target_node_id".to_string(), Value::Int(target.0 as i64)),
@@ -2998,6 +3009,54 @@ impl GraphStore {
         }
         Ok(())
     }
+}
+
+/// Applies relationship `ON MATCH SET` items, in order, to a relationship a
+/// MERGE found: committed relationships receive property operations,
+/// relationships created earlier in this batch are updated in place.
+fn apply_relationship_on_match_assignments(
+    store: &GraphStore,
+    ops: &mut Vec<WalOp>,
+    pending_relationships: &mut [PendingRelationship],
+    relationship: RelId,
+    committed: bool,
+    assignments: &[NodeSetAssignment],
+    limits: MutationLimits,
+) -> Result<()> {
+    ensure_additional_mutation_limits(ops.len(), 0, assignments.len(), 0, limits)?;
+    if committed {
+        let mut properties = store
+            .relationship_owned(relationship)?
+            .ok_or_else(|| {
+                HawDBError::Storage(format!("merged relationship {} is missing", relationship.0))
+            })?
+            .properties;
+        for assignment in assignments {
+            let value = evaluate_node_set_value(&properties, assignment)?;
+            properties.insert(assignment.property.clone(), value.clone());
+            ops.push(WalOp::SetRelationshipProperty {
+                id: relationship,
+                property: assignment.property.clone(),
+                value,
+            });
+        }
+        return Ok(());
+    }
+    let (_, _, _, _, properties) = pending_relationships
+        .iter_mut()
+        .find(|(id, ..)| *id == relationship)
+        .ok_or_else(|| {
+            HawDBError::Storage(format!(
+                "pending merged relationship {} is missing",
+                relationship.0
+            ))
+        })?;
+    for assignment in assignments {
+        let value = evaluate_node_set_value(properties, assignment)?;
+        properties.insert(assignment.property.clone(), value.clone());
+        apply_pending_relationship_property(ops, relationship, &assignment.property, value);
+    }
+    Ok(())
 }
 
 fn transaction_conflict_error(read_epoch: u64, conflict: VersionConflict) -> HawDBError {
