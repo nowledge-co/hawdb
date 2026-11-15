@@ -749,7 +749,10 @@ mod tests {
             let value = exception.value(py);
             let text = |name: &str| value.getattr(name).unwrap().extract::<String>().unwrap();
             assert_eq!(text("kind"), "read_only");
-            assert_eq!(text("operation"), "mark_search_projection_full_reindex_needed");
+            assert_eq!(
+                text("operation"),
+                "mark_search_projection_full_reindex_needed"
+            );
             assert!(!value
                 .getattr("retryable")
                 .unwrap()
