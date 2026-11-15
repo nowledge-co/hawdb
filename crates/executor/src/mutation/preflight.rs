@@ -121,7 +121,7 @@ pub fn execute_mutation_with_store_output_limits(
         return store.commit_mutation_with_output(
             catalog,
             command,
-            super::mutation_return_staging_limits(returns, limits),
+            super::mutation_return_staging_limits(limits),
             &mut |catalog, stores, summary| {
                 super::project_mutation_return_rows(
                     returns,
@@ -664,13 +664,22 @@ pub fn project_staged_mutation_return_rows(
                             .map(|value| (item.name.clone(), value))
                     })
                     .collect::<Result<BTreeMap<_, _>>>()?;
-                payload_bytes = payload_bytes.saturating_add(map_payload_bytes(&projected));
-                if payload_bytes > limits.max_result_payload_bytes.get() {
-                    return Err(HawDBError::Execution(format!(
-                        "mutation result payload would exceed max_mutation_result_payload_bytes {}",
-                        limits.max_result_payload_bytes
-                    )));
+                let row_bytes = map_payload_bytes(&projected);
+                if output.len() >= limits.max_result_rows.get() {
+                    return Err(super::returns::result_rows_exceeded(
+                        output.len(),
+                        1,
+                        limits,
+                    ));
                 }
+                if payload_bytes.saturating_add(row_bytes) > limits.max_result_payload_bytes.get() {
+                    return Err(super::returns::result_payload_exceeded(
+                        payload_bytes,
+                        row_bytes,
+                        limits,
+                    ));
+                }
+                payload_bytes = payload_bytes.saturating_add(row_bytes);
                 output.push(projected);
             }
             output
@@ -681,10 +690,11 @@ pub fn project_staged_mutation_return_rows(
                 Value::Int(i64::try_from(mutation_rows.len()).unwrap_or(i64::MAX)),
             )]);
             if map_payload_bytes(&row) > limits.max_result_payload_bytes.get() {
-                return Err(HawDBError::Execution(format!(
-                    "mutation result payload would exceed max_mutation_result_payload_bytes {}",
-                    limits.max_result_payload_bytes
-                )));
+                return Err(super::returns::result_payload_exceeded(
+                    0,
+                    map_payload_bytes(&row),
+                    limits,
+                ));
             }
             vec![row]
         }
@@ -849,10 +859,11 @@ fn node_mutation_targets(
         Ok(ScanControl::Continue)
     })?;
     if ids.len() > limits.max_result_rows.get() {
-        return Err(HawDBError::Execution(format!(
-            "mutation would exceed max_mutation_result_rows {}",
-            limits.max_result_rows
-        )));
+        return Err(super::returns::result_rows_exceeded(
+            limits.max_result_rows.get(),
+            ids.len() - limits.max_result_rows.get(),
+            limits,
+        ));
     }
     Ok(Some((ids, action)))
 }
@@ -964,10 +975,11 @@ fn execute_set_node_properties_return_with_limits(
         ids.push(id);
         if let SetNodePropertiesReturnMode::Project(returns) = returns {
             if projected_rows.len() == limits.max_result_rows.get() {
-                return Err(HawDBError::Execution(format!(
-                    "mutation would exceed max_mutation_result_rows {}",
-                    limits.max_result_rows
-                )));
+                return Err(super::returns::result_rows_exceeded(
+                    projected_rows.len(),
+                    1,
+                    limits,
+                ));
             }
             let mut projected_node = node;
             for assignment in &assignments {
@@ -987,13 +999,15 @@ fn execute_set_node_properties_return_with_limits(
                     project_value(item, catalog, &binding).map(|value| (item.name.clone(), value))
                 })
                 .collect::<Result<BTreeMap<_, _>>>()?;
-            let next_payload = projected_payload_bytes.saturating_add(map_payload_bytes(&values));
+            let row_bytes = map_payload_bytes(&values);
+            let next_payload = projected_payload_bytes.saturating_add(row_bytes);
             output_limits.validate(projected_rows.len() + 1, next_payload)?;
             if next_payload > limits.max_result_payload_bytes.get() {
-                return Err(HawDBError::Execution(format!(
-                    "mutation result payload would exceed max_mutation_result_payload_bytes {}",
-                    limits.max_result_payload_bytes
-                )));
+                return Err(super::returns::result_payload_exceeded(
+                    projected_payload_bytes,
+                    row_bytes,
+                    limits,
+                ));
             }
             projected_payload_bytes = next_payload;
             projected_rows.push(values);
@@ -1007,10 +1021,11 @@ fn execute_set_node_properties_return_with_limits(
             let row = BTreeMap::from([(name.clone(), Value::Int(ids.len() as i64))]);
             output_limits.validate(1, map_payload_bytes(&row))?;
             if map_payload_bytes(&row) > limits.max_result_payload_bytes.get() {
-                return Err(HawDBError::Execution(format!(
-                    "mutation result payload would exceed max_mutation_result_payload_bytes {}",
-                    limits.max_result_payload_bytes
-                )));
+                return Err(super::returns::result_payload_exceeded(
+                    0,
+                    map_payload_bytes(&row),
+                    limits,
+                ));
             }
             vec![row]
         }

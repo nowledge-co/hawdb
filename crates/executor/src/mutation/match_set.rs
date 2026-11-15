@@ -257,20 +257,23 @@ pub fn resolve_match_set(
             task_context,
         )?;
         if output.len() > limits.max_result_rows.get() {
-            return Err(HawDBError::Execution(format!(
-                "mutation would exceed max_mutation_result_rows {}",
-                limits.max_result_rows
-            )));
+            return Err(super::returns::result_rows_exceeded(
+                limits.max_result_rows.get(),
+                output.len() - limits.max_result_rows.get(),
+                limits,
+            ));
         }
         let payload_bytes = output.iter().fold(0usize, |total, row| {
             total.saturating_add(map_payload_bytes(row))
         });
         output_limits.validate(output.len(), payload_bytes)?;
         if payload_bytes > limits.max_result_payload_bytes.get() {
-            return Err(HawDBError::Execution(format!(
-                "mutation result payload would exceed max_mutation_result_payload_bytes {}",
-                limits.max_result_payload_bytes
-            )));
+            let budget = limits.max_result_payload_bytes.get();
+            return Err(super::returns::result_payload_exceeded(
+                budget,
+                payload_bytes - budget,
+                limits,
+            ));
         }
     }
 

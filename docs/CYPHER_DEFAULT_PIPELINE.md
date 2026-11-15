@@ -268,9 +268,12 @@ restored instead. Returned rows count against `max_mutation_result_rows`,
 leaves no partial write. Exceeding a mutation result limit is a typed
 `HawDBError::ResourceBudgetExceeded` naming `MutationLimits.max_result_rows` or
 `MutationLimits.max_result_payload_bytes` (owner `mutation RETURN rows`); the
-request output limits keep `ReadBudgetExceeded`. The internal mutation summary
-is bounded by `max_mutation_affected_rows`, so a count returns one row however
-many entities change. No WAL or on-disk format changes.
+request output limits keep `ReadBudgetExceeded`. The same typed refusal covers
+every mutation `RETURN` form, including `SET ... RETURN`, with or without a
+read pipeline, `ORDER BY` or `LIMIT`, and relationship `MERGE ... RETURN` after
+`UNWIND` (#1800). The internal mutation summary is bounded by
+`max_mutation_affected_rows`, so a count returns one row however many entities
+change. No WAL or on-disk format changes.
 
 ## Frozen corpus qualification
 
