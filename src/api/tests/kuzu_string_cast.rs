@@ -239,11 +239,8 @@ fn epoch_nanosecond_timestamps_render_as_integers() {
     );
 }
 
-/// Mem's exact stamp expression. Blocked on string `+` concatenation, which
-/// fails in HawDB Cypher with "arithmetic requires numeric operands"
-/// independently of `string(x)`; tracked separately from #1682.
+/// Mem's exact stamp expression, joining the parts with string `+` (#1791).
 #[test]
-#[ignore = "string + concatenation is unsupported in Cypher RETURN; tracked separately from #1682"]
 fn thread_version_stamp_expression_matches_kuzu() {
     let mut db = Database::new();
     create_threads(&mut db);

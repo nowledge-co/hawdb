@@ -24,7 +24,7 @@ HawDB is a Rust library. Published releases are on crates.io. The repository pin
 
 ```toml
 [dependencies]
-hawdb = "0.32"
+hawdb = "0.33"
 ```
 
 To follow the repository tip instead of a release:
@@ -312,6 +312,17 @@ db.close()
 ```
 
 Build and test instructions are in [`bindings/python/README.md`](bindings/python/README.md).
+
+## Swift
+
+The repository-root Swift package exports `HawDB` for Swift 6 hosts on macOS,
+iOS/iPadOS and Linux, using the same embedded C ABI. It supports in-memory and persistent
+databases, parameterized SQL/Cypher, transactions, typed values and read budgets.
+The host supplies a matching native library; iOS hosts can build a static
+XCFramework and self-contained Swift package. See
+[`bindings/swift/README.md`](bindings/swift/README.md) for SwiftPM linking,
+examples, platform scope and verification. The on-disk format carries no
+compatibility promise until HawDB declares one.
 
 ## Production hosts
 

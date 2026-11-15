@@ -1,0 +1,101 @@
+name: Swift Apple
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".cargo/**"
+      - "bindings/ffi/**"
+      - "bindings/swift/**"
+      - "Package.swift"
+      - ".github/workflows/swift-apple.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".cargo/**"
+      - "bindings/ffi/**"
+      - "bindings/swift/**"
+      - "Package.swift"
+      - ".github/workflows/swift-apple.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: swift-apple-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios:
+    name: iOS XCFramework and simulator
+    runs-on: macos-15
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned Rust and iOS targets
+        uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+          components: clippy
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Test Apple packaging contracts
+        run: python3 bindings/swift/test_build_apple.py
+      - name: Build the iOS XCFramework and Swift package
+        run: python3 bindings/swift/build-apple.py
+      - name: Strict iOS C ABI Clippy
+        run: |
+          export IPHONEOS_DEPLOYMENT_TARGET=15.0
+          for target in aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios; do
+            sdk=iphonesimulator
+            if [[ "$target" == aarch64-apple-ios ]]; then sdk=iphoneos; fi
+            SDKROOT="$(xcrun --sdk "$sdk" --show-sdk-path)" \
+              cargo clippy --locked --release --manifest-path bindings/ffi/Cargo.toml \
+              --target "$target" --target-dir target/swift-apple/cargo -j 2 \
+              --all-targets --all-features -- -D warnings
+          done
+      - name: Compile the Swift product for an iOS device
+        working-directory: target/swift-apple/package/HawDB
+        run: >-
+          xcodebuild -scheme HawDB -destination 'generic/platform=iOS'
+          -derivedDataPath "$RUNNER_TEMP/hawdb-ios-device"
+          CODE_SIGNING_ALLOWED=NO build
+      - name: Run the complete Swift suite in the iOS simulator
+        working-directory: target/swift-apple/package/HawDB
+        run: |
+          simulator_id="$(xcrun simctl list devices available --json | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          print(next(device["udid"] for runtime in sorted(devices, reverse=True)
+                     if ".iOS-" in runtime for device in devices[runtime]
+                     if device["isAvailable"] and device["name"].startswith("iPhone")))')"
+          xcodebuild -scheme HawDB -destination "platform=iOS Simulator,id=$simulator_id" \
+            -derivedDataPath "$RUNNER_TEMP/hawdb-ios-simulator" \
+            -resultBundlePath "$RUNNER_TEMP/hawdb-ios-tests.xcresult" \
+            -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO test
+      - name: Upload source-bound iOS package
+        uses: actions/upload-artifact@v7
+        with:
+          name: hawdb-ios-${{ github.sha }}
+          path: target/swift-apple/package/HawDB
+          if-no-files-found: error
+      - name: Upload build logs and simulator results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hawdb-ios-evidence-${{ github.sha }}
+          path: |
+            target/swift-apple/package/build/*.log
+            ${{ runner.temp }}/hawdb-ios-tests.xcresult
+          if-no-files-found: warn

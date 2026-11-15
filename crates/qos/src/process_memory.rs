@@ -586,14 +586,16 @@ fn capture_process_memory() -> io::Result<ProcessMemorySnapshot> {
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 #[allow(unsafe_code, reason = "process-local Mach memory counters FFI")]
 fn current_resident_bytes() -> io::Result<u64> {
     let mut info = std::mem::MaybeUninit::<libc::mach_task_basic_info>::uninit();
     let mut count = libc::MACH_TASK_BASIC_INFO_COUNT;
-    #[allow(deprecated)]
+    unsafe extern "C" {
+        static mach_task_self_: libc::mach_port_t;
+    }
     // SAFETY: reading the current process task port does not transfer ownership.
-    let task = unsafe { libc::mach_task_self() };
+    let task = unsafe { mach_task_self_ };
     // SAFETY: task_info writes at most count natural_t values into the correctly sized buffer.
     let status = unsafe {
         libc::task_info(
@@ -631,7 +633,7 @@ fn current_resident_bytes() -> io::Result<u64> {
     Ok(resident_pages.saturating_mul(page_size as u64))
 }
 
-#[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "linux"))))]
 #[allow(unsafe_code, reason = "process-local getrusage FFI")]
 fn current_resident_bytes() -> io::Result<u64> {
     let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
@@ -644,12 +646,12 @@ fn current_resident_bytes() -> io::Result<u64> {
     Ok(peak_resident_bytes(usage.ru_maxrss))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 fn peak_resident_bytes(max_rss: libc::c_long) -> u64 {
     non_negative_counter(max_rss)
 }
 
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(target_vendor = "apple")))]
 fn peak_resident_bytes(max_rss: libc::c_long) -> u64 {
     non_negative_counter(max_rss).saturating_mul(1024)
 }
@@ -670,6 +672,18 @@ fn capture_process_memory() -> io::Result<ProcessMemorySnapshot> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(unix)]
+    fn peak_rss_uses_native_platform_units() {
+        let expected = if cfg!(target_vendor = "apple") {
+            41
+        } else {
+            41 * 1024
+        };
+        assert_eq!(peak_resident_bytes(41), expected);
+        assert_eq!(peak_resident_bytes(-1), 0);
+    }
 
     fn policy_snapshot(resident_bytes: Option<u64>) -> ProcessMemorySnapshot {
         ProcessMemorySnapshot {

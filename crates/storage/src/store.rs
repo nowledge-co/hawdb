@@ -327,12 +327,12 @@ pub use hawdb_storage::{
         StorageResidencyMode, WalReplayConfig,
     },
     mutation::{
-        ConnectedNodesCreate, GraphMutation, MatchedRelationshipCopyMerge,
+        ConnectedNodesCreate, EntityPropertyUpdate, GraphMutation, MatchedRelationshipCopyMerge,
         MatchedRelationshipCreate, MatchedRelationshipMerge, MatchedRelationshipRetargetMerge,
-        MatchedRelationshipSourceRetargetMerge, MutationLimits, MutationSummary, NodeSetAssignment,
-        NodeSetValue, PropertyFilter, RelationshipDeleteRequest, RelationshipOnCreatePropertyValue,
-        RelationshipPropertiesUpdate, RelationshipPropertyUpdate, RelationshipSetAssignment,
-        RelationshipTargetNodeDelete,
+        MatchedRelationshipSourceRetargetMerge, MutationEntity, MutationLimits, MutationSummary,
+        NodeSetAssignment, NodeSetValue, PropertyFilter, RelationshipDeleteRequest,
+        RelationshipOnCreatePropertyValue, RelationshipPropertiesUpdate,
+        RelationshipPropertyUpdate, RelationshipSetAssignment, RelationshipTargetNodeDelete,
     },
     pressure::{
         StorageDebtController, StoragePressureReasonCode, StoragePressureSignals,

@@ -1250,6 +1250,16 @@ fn binary<'a>(
         return list::contains(left.as_ref(), right.as_ref(), account, work)
             .map(ProjectedValue::scalar);
     }
+    if op == ScalarBinaryOp::Add
+        && let Some(bytes) = concatenation_bytes(left.as_ref(), right.as_ref())
+    {
+        work.charge(bytes)?;
+        return allocated(
+            std::mem::size_of::<Value>().saturating_add(bytes),
+            account,
+            || concatenate(left.as_ref(), right.as_ref(), bytes),
+        );
+    }
     if matches!(
         op,
         ScalarBinaryOp::Add

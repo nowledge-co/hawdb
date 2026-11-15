@@ -229,6 +229,7 @@ impl RetainedHeapBytes for PhysicalPlan {
             Self::VectorIndexScan(value0) => {
                 checked_retained_heap_sum([value0.retained_heap_bytes()])
             }
+            Self::MatchSetExec(value0) => checked_retained_heap_sum([value0.retained_heap_bytes()]),
             Self::CreateNode { label, properties } => checked_retained_heap_sum([
                 label.retained_heap_bytes(),
                 properties.retained_heap_bytes(),

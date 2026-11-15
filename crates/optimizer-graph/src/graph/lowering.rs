@@ -590,6 +590,8 @@ impl GroupExpr {
             | LogicalPlan::SetNodeProperty { .. }
             | LogicalPlan::SetNodeProperties { .. }
             | LogicalPlan::SetNodePropertiesReturn { .. }
+            // Its read input is optimized as an independent root.
+            | LogicalPlan::MatchSet(_)
             | LogicalPlan::SetRelationshipProperty { .. }
             | LogicalPlan::SetRelationshipProperties { .. }
             | LogicalPlan::DeleteNode { .. }
@@ -911,6 +913,7 @@ fn logical_group_count(logical: &LogicalPlan) -> usize {
         | LogicalPlan::SetNodeProperty { .. }
         | LogicalPlan::SetNodeProperties { .. }
         | LogicalPlan::SetNodePropertiesReturn { .. }
+        | LogicalPlan::MatchSet(_)
         | LogicalPlan::SetRelationshipProperty { .. }
         | LogicalPlan::SetRelationshipProperties { .. }
         | LogicalPlan::DeleteNode { .. }
@@ -1000,6 +1003,19 @@ fn lower_logical(
                     stage_events,
                 )
             })))
+        }
+        LogicalPlan::MatchSet(set) => {
+            // The input is a complete read plan. Optimize it as its own root,
+            // with the rewrites, search and finalization of a read query.
+            let (input, trace) = CascadesOptimizer::with_context(optimizer_context.clone())
+                .optimize_with_catalog(&set.input, catalog);
+            decisions.extend(
+                trace
+                    .decisions
+                    .into_iter()
+                    .map(|decision| format!("MatchSetExec input: {decision}")),
+            );
+            PhysicalPlan::MatchSetExec(Box::new((**set).clone().map_input(|_| input)))
         }
         LogicalPlan::GraphMatch { program, input } => {
             let input = input.as_ref().map(|input| {

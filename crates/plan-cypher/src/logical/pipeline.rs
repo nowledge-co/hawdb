@@ -1237,10 +1237,20 @@ pub(super) fn validate_bounded_relationship(relationship: &RelationshipPattern) 
 
 fn bind_read_clauses(
     clauses: &[hawdb_cypher::Clause],
+    input: Option<LogicalPlan>,
+    scope: Scope,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<LogicalPlan> {
+    bind_read_clauses_scoped(clauses, input, scope, parameters).map(|(plan, _)| plan)
+}
+
+/// Binds read clauses and returns the variables in scope after the last one.
+fn bind_read_clauses_scoped(
+    clauses: &[hawdb_cypher::Clause],
     mut input: Option<LogicalPlan>,
     mut scope: Scope,
     parameters: &BTreeMap<String, Value>,
-) -> Result<LogicalPlan> {
+) -> Result<(LogicalPlan, Scope)> {
     for clause in clauses {
         match &clause.kind {
             ClauseKind::UnwindExpression { source, variable } => {
@@ -1461,7 +1471,9 @@ fn bind_read_clauses(
             }
         }
     }
-    input.ok_or_else(|| HawDBError::Semantic("empty query pipeline".to_string()))
+    input
+        .map(|plan| (plan, scope))
+        .ok_or_else(|| HawDBError::Semantic("empty query pipeline".to_string()))
 }
 
 fn bind_node(

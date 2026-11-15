@@ -753,7 +753,7 @@ fn declared_defaults_are_introspectable_across_reopen() {
 const PRE_DEFAULTS_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/pre_1683_property_descriptors.bundle");
 
-fn unpack_fixture(bundle: &[u8], target: &std::path::Path) {
+pub(super) fn unpack_fixture(bundle: &[u8], target: &std::path::Path) {
     let mut rest = bundle
         .strip_prefix(b"HAWDBFIX1\n".as_slice())
         .expect("fixture bundle magic");

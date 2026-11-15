@@ -100,6 +100,7 @@ crates/core/src/error/storage_format.rs pub const STORAGE_MANIFEST_FORMAT: &str 
 crates/core/src/error/storage_format.rs pub const RELATIONAL_DURABLE_CODEC_FORMAT: &str = "relational durable codec";
 crates/core/src/error/storage_format.rs pub const RELATIONAL_SCHEMA_FORMAT: &str = "relational schema";
 crates/core/src/error/storage_format.rs pub const RELATIONAL_ROW_PAGE_FORMAT: &str = "relational row-page format (recreate the development database)";
+crates/core/src/error/storage_format.rs pub const RELATIONAL_CHECKPOINT_LAYOUT_FORMAT: &str = "relational checkpoint layout";
 crates/core/src/error/storage_format.rs pub const APPEND_WAL_FORMAT: &str = "append WAL";
 crates/core/src/error/storage_format.rs pub const LOGICAL_DUMP_FORMAT: &str = "logical dump";
 crates/core/src/error/storage_format.rs pub const SEARCH_PROJECTION_MANIFEST_FORMAT: &str = "search projection manifest";

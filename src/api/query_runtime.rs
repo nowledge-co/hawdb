@@ -979,7 +979,18 @@ impl Database {
                                     output_limits.max_payload_bytes,
                                 ),
                             };
-                            if let Some(staged) = staged_mutations {
+                            if let PhysicalPlan::MatchSetExec(set) = &optimized.physical_plan {
+                                executor::execute_match_set(
+                                    set,
+                                    parameters,
+                                    &mut branch_runtime.catalog,
+                                    &mut branch_runtime.store,
+                                    mutation_limits,
+                                    output_limits,
+                                    &self.config.execution_memory,
+                                    task_context,
+                                )
+                            } else if let Some(staged) = staged_mutations {
                                 executor::commit_staged_mutations_with_output(
                                     &optimized.physical_plan,
                                     staged,

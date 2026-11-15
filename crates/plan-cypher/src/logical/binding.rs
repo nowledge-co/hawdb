@@ -376,7 +376,8 @@ pub(super) fn bind_relationship_copy_on_create_set_properties(
             | SetValueExpression::DecrementFloorZero { .. }
             | SetValueExpression::PreserveNewerExisting { .. }
             | SetValueExpression::PreserveOlderExisting { .. }
-            | SetValueExpression::CoalescePropertyAdd { .. } => {
+            | SetValueExpression::CoalescePropertyAdd { .. }
+            | SetValueExpression::Expression(_) => {
                 return Err(HawDBError::Semantic(
                     "relationship-copy MERGE ON CREATE SET supports only values and matched relationship properties"
                         .to_string(),

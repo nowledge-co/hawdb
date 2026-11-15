@@ -902,7 +902,16 @@ pub(super) fn bind_relationship_set_value(
                 "relationship property increment SET is not supported".to_string(),
             ))
         }
+        hawdb_cypher::SetValueExpression::Expression(_) => Err(expression_set_unsupported()),
     }
+}
+
+/// General SET expressions are evaluated over the rows of `MATCH ... SET`;
+/// the fixed-form SET of other clauses accepts no other value.
+fn expression_set_unsupported() -> HawDBError {
+    HawDBError::Semantic(
+        "this SET accepts only literals, parameters and fixed property updates; general SET expressions require MATCH ... SET".to_string(),
+    )
 }
 
 pub(super) fn plan_set_value(
@@ -913,6 +922,7 @@ pub(super) fn plan_set_value(
         hawdb_cypher::SetValueExpression::Value(value) => {
             Ok(SetValue::Value(bind_value(value, parameters)?))
         }
+        hawdb_cypher::SetValueExpression::Expression(_) => Err(expression_set_unsupported()),
         hawdb_cypher::SetValueExpression::Property { .. } => Err(HawDBError::Semantic(
             "property reference SET is only supported by relationship-copy MERGE".to_string(),
         )),

@@ -215,6 +215,60 @@ pub struct BatchMatchedRelationship {
     pub rel_properties: BTreeMap<String, BatchMutationValue>,
 }
 
+/// A variable that a [`MatchSet`] reads from every input row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatchSetBinding {
+    pub variable: String,
+    /// The input column holding the value: the entity id of a node or
+    /// relationship, otherwise the scalar value itself.
+    pub column: String,
+    /// `Some` for a node or relationship, which execution reads by id.
+    pub entity: Option<GraphEntityKind>,
+}
+
+/// How a [`MatchSet`] computes the value of one SET item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MatchSetValue {
+    /// An expression over the row's bindings and the statement parameters.
+    Expression(ProjectionExpression),
+    /// A fixed read-modify-write of the written property itself, with the
+    /// semantics the single-pattern SET commands give it.
+    Local(SetValue),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatchSetAssignment {
+    pub variable: String,
+    pub property: String,
+    pub value: MatchSetValue,
+}
+
+/// `MATCH ... SET ... [RETURN ...]` whose SET items are general expressions.
+///
+/// `input` is a complete read plan with one row per SET input row and one
+/// column per [`MatchSetBinding`]. Execution evaluates every SET item in
+/// statement order, each over all rows against the values the earlier items
+/// left, and applies the result as one atomic mutation. `returns` projects
+/// every row after all items were applied.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MatchSet<P> {
+    pub input: P,
+    pub bindings: Vec<MatchSetBinding>,
+    pub assignments: Vec<MatchSetAssignment>,
+    pub returns: Option<Vec<Projection>>,
+}
+
+impl<P> MatchSet<P> {
+    pub fn map_input<Q>(self, lower: impl FnOnce(P) -> Q) -> MatchSet<Q> {
+        MatchSet {
+            input: lower(self.input),
+            bindings: self.bindings,
+            assignments: self.assignments,
+            returns: self.returns,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum LogicalPlan {
     CreateNodeLabel {
@@ -425,6 +479,8 @@ pub enum LogicalPlan {
         assignments: Vec<SetAssignment>,
         returns: SetNodePropertiesReturnMode,
     },
+    /// SET over the rows of a general read plan; see [`MatchSet`].
+    MatchSet(Box<MatchSet<LogicalPlan>>),
     SetRelationshipProperty {
         source_variable: String,
         source_label: String,
@@ -866,6 +922,50 @@ impl<P: hawdb_core::RetainedHeapBytes> hawdb_core::RetainedHeapBytes for VectorI
             hawdb_core::RetainedHeapBytes::retained_heap_bytes(eligible_variable),
             hawdb_core::RetainedHeapBytes::retained_heap_bytes(max_work),
             hawdb_core::RetainedHeapBytes::retained_heap_bytes(input),
+        ])
+    }
+}
+
+// Retained query ownership: MatchSetBinding.
+hawdb_core::impl_retained_heap_for_struct!(MatchSetBinding {
+    variable,
+    column,
+    entity
+});
+
+// Retained query ownership: MatchSetValue.
+impl hawdb_core::RetainedHeapBytes for MatchSetValue {
+    fn retained_heap_bytes(&self) -> Option<usize> {
+        match self {
+            Self::Expression(expression) => {
+                hawdb_core::RetainedHeapBytes::retained_heap_bytes(expression)
+            }
+            Self::Local(value) => hawdb_core::RetainedHeapBytes::retained_heap_bytes(value),
+        }
+    }
+}
+
+// Retained query ownership: MatchSetAssignment.
+hawdb_core::impl_retained_heap_for_struct!(MatchSetAssignment {
+    variable,
+    property,
+    value
+});
+
+// Retained query ownership: MatchSet.
+impl<P: hawdb_core::RetainedHeapBytes> hawdb_core::RetainedHeapBytes for MatchSet<P> {
+    fn retained_heap_bytes(&self) -> Option<usize> {
+        let Self {
+            input,
+            bindings,
+            assignments,
+            returns,
+        } = self;
+        hawdb_core::checked_retained_heap_sum([
+            hawdb_core::RetainedHeapBytes::retained_heap_bytes(input),
+            hawdb_core::RetainedHeapBytes::retained_heap_bytes(bindings),
+            hawdb_core::RetainedHeapBytes::retained_heap_bytes(assignments),
+            hawdb_core::RetainedHeapBytes::retained_heap_bytes(returns),
         ])
     }
 }

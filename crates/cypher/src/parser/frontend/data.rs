@@ -141,6 +141,10 @@ impl<'a> Transformer<'a> {
     fn set_value(&mut self, node: NodeId, depth: usize) -> Result<SetValueExpression> {
         match self.tree.node(node).name.expect("set value syntax") {
             "v_value" => Ok(SetValueExpression::Value(self.value(node, depth)?)),
+            // Every other value expression, after the fixed forms declined it.
+            "x_or" => Ok(SetValueExpression::Expression(
+                self.case_boolean(node, depth)?,
+            )),
             "v_property_value" => Ok(SetValueExpression::Value(self.property_value(node, depth)?)),
             "d_property_value" | "d_coalesce" => {
                 let (variable, property) =

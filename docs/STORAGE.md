@@ -76,12 +76,30 @@ An unknown materialized-view expression tag returns `UnsupportedFeature` with
 the schema format, feature name, and numeric tag. `StorageFormatError::format()`
 is always one of the constants exported from `hawdb` and `hawdb_core`:
 `STORAGE_MANIFEST_FORMAT`, `RELATIONAL_DURABLE_CODEC_FORMAT`,
-`RELATIONAL_SCHEMA_FORMAT`, `RELATIONAL_ROW_PAGE_FORMAT`, `APPEND_WAL_FORMAT`,
+`RELATIONAL_SCHEMA_FORMAT`, `RELATIONAL_ROW_PAGE_FORMAT`,
+`RELATIONAL_CHECKPOINT_LAYOUT_FORMAT`, `APPEND_WAL_FORMAT`,
 `LOGICAL_DUMP_FORMAT` or `SEARCH_PROJECTION_MANIFEST_FORMAT`. Hosts compare
 against these constants instead of matching message text. They are recorded in
 `docs/persistent-format.lock`. Current relational schema tags
 0 through 5 represent column, COUNT(*), COUNT(column), SUM, MIN, and MAX.
 This change does not add a feature bitmap or change any encoded bytes.
+
+`RELATIONAL_CHECKPOINT_LAYOUT_FORMAT` refuses intact checkpoints this reader
+cannot serve in the requested configuration, with `UnsupportedFeature` whose
+tag is the checkpoint generation:
+
+- relational rows stored only in the canonical row-page root, without a
+  full-row `relational.<generation>.hawdb` file, opened in any mode other than
+  `OutOfCore` residency with `Authoritative` relational indexes. Releases with
+  [#1737](https://github.com/nowledge-co/hawdb/issues/1737) write that layout,
+  as does any `OutOfCore` + `Authoritative` checkpoint;
+- `Authoritative` relational indexes on a checkpoint that never published a
+  persistent relational index generation.
+
+Both are configuration or layout mismatches, not corruption; the open
+changes no database file (each branch's disposable `runtime/` mount is
+rebuilt). A missing index binding on a database without a checkpoint, and
+binding or identity mismatches, remain `StorageIntegrity`.
 
 Compatibility refusal is distinct from malformed data, invalid reserved fields,
 truncation, or checksum failure in supported formats. Streaming checkpoint readers finish integrity

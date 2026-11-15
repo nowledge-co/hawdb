@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::wal::WalOp;
+use hawdb_core::ids::{NodeId, RelId};
 use hawdb_core::{
     HawDBError, PropertyType, Result, SchemaObjectState, TableKind, ValidatedRegex, Value,
 };
@@ -332,6 +333,23 @@ pub enum GraphMutation {
     CreateConnectedNodes(ConnectedNodesCreate),
     /// All selectors must match before any constant assignment is applied.
     SetMatchedNodes(Vec<MatchedNodeSet>),
+    /// Values a statement already computed for individual nodes and
+    /// relationships, applied in order. Every entity must exist.
+    SetEntityProperties(Vec<EntityPropertyUpdate>),
+}
+
+/// A node or relationship addressed by its id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MutationEntity {
+    Node(NodeId),
+    Relationship(RelId),
+}
+
+/// Ordered property writes, including duplicates, to one entity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntityPropertyUpdate {
+    pub entity: MutationEntity,
+    pub assignments: Vec<(String, Value)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

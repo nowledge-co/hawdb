@@ -77,6 +77,7 @@ impl PhysicalPlan {
             PhysicalPlan::SetNodePropertiesReturn { .. } => {
                 PhysicalPlanKind::SetNodePropertiesReturn
             }
+            PhysicalPlan::MatchSetExec(_) => PhysicalPlanKind::MatchSetExec,
             PhysicalPlan::SetRelationshipProperty { .. } => {
                 PhysicalPlanKind::SetRelationshipProperty
             }
@@ -148,6 +149,7 @@ impl PhysicalPlan {
             PhysicalPlan::GraphMatchExec { input, .. } => input
                 .as_deref()
                 .map_or(PlanChildren::None, PlanChildren::Unary),
+            PhysicalPlan::MatchSetExec(set) => PlanChildren::Unary(&set.input),
             PhysicalPlan::NodeCartesianProductExec { left, right }
             | PhysicalPlan::HashJoinExec { left, right, .. } => PlanChildren::Binary(left, right),
             PhysicalPlan::NodeColumnLookupExec { input, .. }

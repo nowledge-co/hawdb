@@ -1161,6 +1161,74 @@ impl GraphStore {
                         }
                     }
                 }
+                GraphMutation::SetEntityProperties(updates) => {
+                    for update in updates {
+                        ensure_additional_mutation_limits(
+                            ops.len(),
+                            rows.len(),
+                            update.assignments.len(),
+                            1,
+                            limits,
+                        )?;
+                        match update.entity {
+                            MutationEntity::Node(id) => {
+                                let assignments = update
+                                    .assignments
+                                    .into_iter()
+                                    .map(|(property, value)| NodeSetAssignment {
+                                        property,
+                                        value: NodeSetValue::Value(value),
+                                    })
+                                    .collect::<Vec<_>>();
+                                if pending_node_index(&pending_nodes, id).is_some() {
+                                    Self::apply_pending_node_assignments(
+                                        &mut ops,
+                                        &mut pending_nodes,
+                                        id,
+                                        &assignments,
+                                    )?;
+                                } else {
+                                    ops.extend(self.node_set_property_ops(&[id], &assignments)?);
+                                }
+                                rows.push(BTreeMap::from([(
+                                    "node_id".to_string(),
+                                    Value::Int(id.0 as i64),
+                                )]));
+                            }
+                            MutationEntity::Relationship(id) => {
+                                if let Some(pending) = pending_relationships
+                                    .iter_mut()
+                                    .find(|pending| pending.0 == id)
+                                {
+                                    for (property, value) in update.assignments {
+                                        pending.4.insert(property.clone(), value.clone());
+                                        apply_pending_relationship_property(
+                                            &mut ops, id, &property, value,
+                                        );
+                                    }
+                                } else {
+                                    if self.relationship_owned(id)?.is_none() {
+                                        return Err(HawDBError::Storage(format!(
+                                            "relationship {} disappeared during property update",
+                                            id.0
+                                        )));
+                                    }
+                                    ops.extend(update.assignments.into_iter().map(
+                                        |(property, value)| WalOp::SetRelationshipProperty {
+                                            id,
+                                            property,
+                                            value,
+                                        },
+                                    ));
+                                }
+                                rows.push(BTreeMap::from([(
+                                    "rel_id".to_string(),
+                                    Value::Int(id.0 as i64),
+                                )]));
+                            }
+                        }
+                    }
+                }
                 GraphMutation::SetNodeProperties {
                     label,
                     filter,

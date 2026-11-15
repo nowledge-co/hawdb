@@ -32,8 +32,10 @@ use crate::expression::{
 };
 use crate::predicate::property_filter_from_properties;
 
+mod match_set;
 mod preflight;
 mod staged;
+pub use match_set::{affected_rows_exceeded, resolve_match_set, MatchSetOutcome, MatchSetRecord};
 pub use preflight::{
     commit_staged_mutations, commit_staged_mutations_with_output, execute_mutation_with_store,
     execute_mutation_with_store_output_limits, materialize_load_csv_mutations,
@@ -44,6 +46,7 @@ pub use staged::{EndpointResolutionReport, StagedCharge, StagedMutations};
 
 pub fn mutation_returns_rows(plan: &PhysicalPlan) -> bool {
     matches!(plan, PhysicalPlan::SetNodePropertiesReturn { .. })
+        || matches!(plan, PhysicalPlan::MatchSetExec(set) if set.returns.is_some())
         || matches!(plan, PhysicalPlan::UnwindMutation {
             operation: hawdb_plan_cypher::BatchMutationOperation::MergeRelationship(merge), ..
         } if merge.returns.is_some())
@@ -51,6 +54,11 @@ pub fn mutation_returns_rows(plan: &PhysicalPlan) -> bool {
 
 pub fn mutation_command(plan: &PhysicalPlan) -> Result<Option<GraphMutation>> {
     match plan {
+        // Its values depend on the rows of its read input.
+        PhysicalPlan::MatchSetExec(_) => Err(HawDBError::Semantic(
+            "MATCH ... SET with row-evaluated values requires the database query runtime"
+                .to_string(),
+        )),
         PhysicalPlan::CreateNodeLabel { label } => Ok(Some(GraphMutation::CreateNodeLabel {
             label: label.clone(),
         })),

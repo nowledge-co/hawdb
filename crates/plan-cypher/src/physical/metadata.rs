@@ -75,6 +75,7 @@ pub enum PhysicalPlanKind {
     SetNodeProperty,
     SetNodeProperties,
     SetNodePropertiesReturn,
+    MatchSetExec,
     SetRelationshipProperty,
     SetRelationshipProperties,
     DeleteNode,
@@ -186,6 +187,7 @@ impl PhysicalPlanKind {
             PhysicalPlanKind::SetNodeProperty,
             PhysicalPlanKind::SetNodeProperties,
             PhysicalPlanKind::SetNodePropertiesReturn,
+            PhysicalPlanKind::MatchSetExec,
             PhysicalPlanKind::SetRelationshipProperty,
             PhysicalPlanKind::SetRelationshipProperties,
             PhysicalPlanKind::DeleteNode,
@@ -281,6 +283,7 @@ impl PhysicalPlanKind {
             PhysicalPlanKind::SetNodeProperty => "SetNodeProperty",
             PhysicalPlanKind::SetNodeProperties => "SetNodeProperties",
             PhysicalPlanKind::SetNodePropertiesReturn => "SetNodePropertiesReturn",
+            PhysicalPlanKind::MatchSetExec => "MatchSetExec",
             PhysicalPlanKind::SetRelationshipProperty => "SetRelationshipProperty",
             PhysicalPlanKind::SetRelationshipProperties => "SetRelationshipProperties",
             PhysicalPlanKind::DeleteNode => "DeleteNode",
@@ -359,6 +362,7 @@ impl PhysicalPlanKind {
             | PhysicalPlanKind::SetNodeProperty
             | PhysicalPlanKind::SetNodeProperties
             | PhysicalPlanKind::SetNodePropertiesReturn
+            | PhysicalPlanKind::MatchSetExec
             | PhysicalPlanKind::SetRelationshipProperty
             | PhysicalPlanKind::SetRelationshipProperties
             | PhysicalPlanKind::DeleteNode
