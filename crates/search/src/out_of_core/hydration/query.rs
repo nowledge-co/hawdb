@@ -449,7 +449,7 @@ fn decode_hex(raw: &str, query: QueryContext<'_>) -> Result<String> {
     if bytes.capacity() != raw.len() / 2 {
         return Err(invalid("string decode exceeded admission"));
     }
-    for (index, pair) in raw.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in raw.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         if index.is_multiple_of(1024) {
             query.checkpoint()?;
         }

@@ -267,7 +267,7 @@ fn artifact_fixture_preserves_codes_and_candidate_bits() -> Result<()> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let directory = loop {
         let nonce = NEXT
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                 value.checked_add(1)
             })
             .expect("benchmark fixture counter overflow");

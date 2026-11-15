@@ -465,7 +465,9 @@ impl RelationalIndexShadowManifest {
                     .map_err(|error| RelationalIndexShadowError::Admission(error.to_string()))?;
             }
             let leading_prefixes = statistics_bytes
-                .chunks_exact(3 * 8)
+                .as_chunks::<{ 3 * 8 }>()
+                .0
+                .iter()
                 .map(|encoded| RelationalIndexPrefixStatistics {
                     distinct_non_null_values: read_u64(&encoded[..8]),
                     non_null_rows: read_u64(&encoded[8..16]),

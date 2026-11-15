@@ -297,7 +297,7 @@ jobs:
         with:
           fetch-depth: 2
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@1.97.1
+        uses: dtolnay/rust-toolchain@1.99.1
         with:
           components: clippy
       - name: Restore native Clippy dependencies
@@ -479,7 +479,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@1.97.1
+        uses: dtolnay/rust-toolchain@1.99.1
         with:
           components: clippy
 
@@ -545,7 +545,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@1.97.1
+        uses: dtolnay/rust-toolchain@1.99.1
 
       - name: Record exact source and compile with the repository profile
         shell: bash

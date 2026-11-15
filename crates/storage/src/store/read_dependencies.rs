@@ -297,7 +297,7 @@ impl ValidationFailureCounters {
             GraphReadDependencyError::CaptureRefused => &self.capture_refused,
             GraphReadDependencyError::Unavailable(_) => &self.unavailable,
         };
-        let _ = counter.fetch_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |value| {
+        let _ = counter.try_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |value| {
             Some(value.saturating_add(1))
         });
     }
@@ -374,7 +374,7 @@ impl GraphStore {
             ));
         }
         self.read_dependency_readers
-            .fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |count| {
+            .try_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |count| {
                 count.checked_add(1)
             })
             .map_err(|_| {

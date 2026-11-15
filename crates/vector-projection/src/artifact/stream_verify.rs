@@ -247,11 +247,8 @@ fn column<const WIDTH: usize>(
         hashes.0.update(&buffer[..length]);
         hashes.1.update(&buffer[..length]);
         observe(&buffer[..length])?;
-        for (offset, word) in buffer[..length].chunks_exact(WIDTH).enumerate() {
-            visit(
-                row + offset,
-                word.try_into().expect("complete fixed-width column word"),
-            );
+        for (offset, word) in buffer[..length].as_chunks::<WIDTH>().0.iter().enumerate() {
+            visit(row + offset, word);
         }
         row += count;
     }

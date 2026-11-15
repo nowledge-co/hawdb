@@ -2470,7 +2470,7 @@ impl GraphStore {
         self.commit_epoch = next_commit_epoch;
         self.version_index = staged_versions;
         if collapsed_read_summaries {
-            let _ = self.read_summary_collapses.fetch_update(
+            let _ = self.read_summary_collapses.try_update(
                 AtomicOrdering::Relaxed,
                 AtomicOrdering::Relaxed,
                 |value| Some(value.saturating_add(1)),

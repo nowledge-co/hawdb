@@ -517,7 +517,9 @@ fn public_analytics_identity_output_uses_query_budget_above_retained_state_cap()
         assert_eq!(identity.len(), 1024 * 1024);
         assert!(identity
             .as_bytes()
-            .chunks_exact(8)
+            .as_chunks::<8>()
+            .0
+            .iter()
             .all(|part| part == b"large-id"));
         assert_eq!(rows[0]["node_label"], Value::String("Oversized".into()));
         assert!(

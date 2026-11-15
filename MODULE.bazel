@@ -21,7 +21,7 @@ local_path_override(
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
     edition = "2024",
-    versions = ["1.97.1"],
+    versions = ["1.99.1"],
 )
 use_repo(rust, "rust_toolchains")
 
