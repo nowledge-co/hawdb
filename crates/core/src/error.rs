@@ -248,6 +248,16 @@ pub enum HawDBError {
         target_graph_commit_epoch: u64,
         message: String,
     },
+    /// The externally owned search projection kinds requested at open differ
+    /// from the set recorded with the projection (#1814). The open is refused
+    /// and nothing is changed. Kinds are their lowercase projection names,
+    /// sorted. Pass the recorded set again, or rebuild the projection into a
+    /// new directory to change it. Not a storage failure.
+    SearchProjectionOwnershipMismatch {
+        projection: std::path::PathBuf,
+        recorded: Vec<String>,
+        requested: Vec<String>,
+    },
     Execution(String),
     /// Box the diagnostic so successful Result values do not grow with its fields.
     ResourceBudgetExceeded(Box<ResourceBudgetError>),
@@ -343,6 +353,17 @@ impl Display for HawDBError {
                 f,
                 "search projection epoch advance refused ({}): {message}",
                 reason.as_str()
+            ),
+            HawDBError::SearchProjectionOwnershipMismatch {
+                projection,
+                recorded,
+                requested,
+            } => write!(
+                f,
+                "search projection ownership mismatch: {} records externally owned kinds [{}], open requested [{}]; pass the recorded set or rebuild the projection into a new directory",
+                projection.display(),
+                recorded.join(", "),
+                requested.join(", ")
             ),
             HawDBError::Execution(message) => write!(f, "execution error: {message}"),
             HawDBError::ResourceBudgetExceeded(error) => write!(f, "execution error: {error}"),

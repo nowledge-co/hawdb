@@ -138,6 +138,7 @@ fn error_class(error: &HawDBError) -> &'static str {
         | HawDBError::TransactionReadDependencyRefused { .. }
         | HawDBError::BranchCommandUnsupported { .. }
         | HawDBError::SearchProjectionRebuildRefused { .. }
+        | HawDBError::SearchProjectionOwnershipMismatch { .. }
         | HawDBError::SearchProjectionEpochAdvanceRefused { .. } => "execution",
         HawDBError::CapabilityUnavailable { .. } => "capability_unavailable",
     }

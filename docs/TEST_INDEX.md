@@ -500,6 +500,27 @@ no lane, profile or timeout is added. Local replay:
 and `cargo test --locked -p hawdb-search --lib epoch_advance`. See
 [the contract](SEARCH_PROJECTION_EPOCH_ADVANCE.md).
 
+`embedded_store::tests::externally_owned_search_kinds_tests`
+(`nowledge-co/hawdb#1814`) belongs to the existing root
+`//:hawdb_unit_general_tests` owner. On the resident and the incremental
+out-of-core path, with kinds declared through
+`EmbeddedStoreOpenOptions::with_externally_owned_search_kinds`, it checks that
+a graph-only update followed by changefeed catch-up leaves the host's document
+byte-identical (embedding included), that a node delete removes it, that other
+kinds stay graph-derived, that all six kinds can be owned at once, and that
+reopen keeps the mode. The default open still replaces the document and writes
+no record. A different set, including the empty set, is refused with the typed
+`SearchProjectionOwnershipMismatch` without changing the record, and a removed
+record is restored. Search-crate owners `projection_ownership::tests` and
+`generation_cleanup::tests::cleanup_preserves_the_externally_owned_kinds_record`
+cover the record format and cleanup preservation; `bindings/python`
+`errors::tests::search_projection_ownership_mismatch_is_an_execution_error_with_both_sets`
+pins the binding mapping. The fixtures are small temporary stores; no lane,
+profile or timeout is added. Local replay:
+`cargo test --locked -p hawdb --lib externally_owned_search_kinds -- --test-threads=4`
+and `cargo test --locked -p hawdb-search --lib projection_ownership`. See
+[the contract](SEARCH_EXTERNALLY_OWNED_KINDS.md).
+
 Search-crate owner `out_of_core::manifest_version::tests` (`nowledge-co/hawdb#1763`),
 in the same `hawdb-search` unit lane, covers the selector version gate. A newer
 selector is refused as the typed `UnsupportedStorageFormat`, never `Storage`,

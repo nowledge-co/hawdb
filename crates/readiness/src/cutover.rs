@@ -249,6 +249,7 @@ mod tests {
                 },
                 projection_freshness: None,
                 file_descriptors: None,
+                externally_owned_search_kinds: Vec::new(),
             },
             None,
         );

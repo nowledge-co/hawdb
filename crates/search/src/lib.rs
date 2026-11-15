@@ -104,6 +104,7 @@ mod projection_delta_contracts;
 pub mod projection_evidence;
 #[doc(hidden)]
 pub mod projection_evidence_cli;
+pub mod projection_ownership;
 mod query_control;
 mod resident_bm25;
 #[cfg(feature = "vector-search")]
@@ -319,6 +320,10 @@ const SEARCH_RABITQ_PROJECTION_PREFIX: &str = "search_rabitq.";
 const SEARCH_RABITQ_PROJECTION_SUFFIX: &str = ".hawdb";
 pub const FULL_REINDEX_MARKER: &str = ".reindex_needed";
 pub const METADATA_REPAIR_MARKER: &str = ".projection_metadata_repair_needed";
+/// Records the projection's externally owned kinds (#1814). Kept beside the
+/// selector instead of inside it so earlier readers, which refuse unknown
+/// manifest fields, still open the projection. See [`projection_ownership`].
+pub const EXTERNALLY_OWNED_KINDS_MARKER: &str = projection_ownership::MARKER;
 /// The BM25 constants shared with the SQL search index access path.
 use hawdb_executor::bm25::{BM25_B, BM25_K1};
 const TITLE_TERM_FREQUENCY_WEIGHT: usize = 2;
@@ -395,6 +400,19 @@ impl SearchProjectionKind {
             SearchProjectionKind::SourceChunk => "source_chunk",
             SearchProjectionKind::Community => "community",
         }
+    }
+
+    /// Parses a name produced by [`Self::as_str`].
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "memory" => SearchProjectionKind::Memory,
+            "message" => SearchProjectionKind::Message,
+            "entity" => SearchProjectionKind::Entity,
+            "source" => SearchProjectionKind::Source,
+            "source_chunk" => SearchProjectionKind::SourceChunk,
+            "community" => SearchProjectionKind::Community,
+            _ => return None,
+        })
     }
 }
 
@@ -1723,6 +1741,9 @@ pub struct SearchIndex {
     cleanup_options: SearchProjectionCleanupOptions,
     runtime_capabilities: RuntimeCapabilities,
     telemetry: Option<Arc<dyn TelemetrySink>>,
+    /// Kinds whose documents only the host writes (#1814). Runtime policy,
+    /// never persisted here; see [`Self::set_externally_owned_kinds`].
+    externally_owned_kinds: BTreeSet<SearchProjectionKind>,
 }
 
 impl SearchIndex {
@@ -2201,6 +2222,24 @@ impl SearchIndex {
 
     pub fn runtime_capabilities(&self) -> RuntimeCapabilities {
         self.runtime_capabilities
+    }
+
+    /// Declares kinds whose documents the host supplies itself (#1814).
+    ///
+    /// Graph changefeed catch-up applied to this index then derives no rows
+    /// for nodes of these kinds: their documents are written only by host
+    /// deltas, and are removed only when the graph node is deleted (or the
+    /// host deletes them). Graph-derived rows of other kinds and every host
+    /// delta are unaffected. Full rebuilds and metadata repair from the graph
+    /// still derive every kind. The set is not persisted by the index; an
+    /// embedded store records it with
+    /// `EmbeddedStoreOpenOptions::with_externally_owned_search_kinds`.
+    pub fn set_externally_owned_kinds(&mut self, kinds: BTreeSet<SearchProjectionKind>) {
+        self.externally_owned_kinds = kinds;
+    }
+
+    pub fn externally_owned_kinds(&self) -> &BTreeSet<SearchProjectionKind> {
+        &self.externally_owned_kinds
     }
 
     pub fn upsert(&mut self, document: SearchDocument) -> Result<()> {
@@ -5190,6 +5229,7 @@ impl Default for SearchIndex {
             cleanup_options: SearchProjectionCleanupOptions::default(),
             runtime_capabilities: crate::compiled_runtime_capabilities(),
             telemetry: None,
+            externally_owned_kinds: BTreeSet::new(),
         }
     }
 }

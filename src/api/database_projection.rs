@@ -592,10 +592,21 @@ impl Database {
         &self,
         request: &SearchProjectionGraphDeltaRequest,
     ) -> Result<SearchProjectionDelta> {
+        self.build_search_projection_graph_delta_excluding(request, &BTreeSet::new())
+    }
+
+    /// Like [`Self::build_search_projection_graph_delta`], deriving no rows
+    /// for `externally_owned` kinds (#1814). Deletes are unaffected.
+    pub(crate) fn build_search_projection_graph_delta_excluding(
+        &self,
+        request: &SearchProjectionGraphDeltaRequest,
+        externally_owned: &BTreeSet<SearchProjectionKind>,
+    ) -> Result<SearchProjectionDelta> {
         let result = search_projection_graph_delta_for(
             &self.runtime.get()?.catalog,
             &self.runtime.get()?.store,
             request,
+            externally_owned,
         );
         self.runtime.get()?.store.poison_on_storage_error(&result);
         result
@@ -614,7 +625,10 @@ impl Database {
         search_index: &mut SearchIndex,
         request: SearchProjectionGraphDeltaRequest,
     ) -> Result<SearchProjectionDeltaReport> {
-        let delta = self.build_search_projection_graph_delta(&request)?;
+        let delta = self.build_search_projection_graph_delta_excluding(
+            &request,
+            search_index.externally_owned_kinds(),
+        )?;
         search_index.apply_projection_delta(delta)
     }
 
@@ -624,7 +638,11 @@ impl Database {
         batch: SearchProjectionChangeBatch,
         relational: SearchProjectionRelationalDelta,
     ) -> Result<SearchProjectionDeltaReport> {
-        let delta = self.build_search_projection_change_delta(batch, relational)?;
+        let delta = self.build_search_projection_change_delta_excluding(
+            batch,
+            relational,
+            search_index.externally_owned_kinds(),
+        )?;
         search_index.apply_projection_delta(delta)
     }
 
@@ -635,6 +653,18 @@ impl Database {
         &self,
         batch: SearchProjectionChangeBatch,
         relational: SearchProjectionRelationalDelta,
+    ) -> Result<SearchProjectionDelta> {
+        self.build_search_projection_change_delta_excluding(batch, relational, &BTreeSet::new())
+    }
+
+    /// Like [`Self::build_search_projection_change_delta`], deriving no graph
+    /// rows for `externally_owned` kinds (#1814). Host-hydrated rows and all
+    /// deletes are kept.
+    pub(crate) fn build_search_projection_change_delta_excluding(
+        &self,
+        batch: SearchProjectionChangeBatch,
+        relational: SearchProjectionRelationalDelta,
+        externally_owned: &BTreeSet<SearchProjectionKind>,
     ) -> Result<SearchProjectionDelta> {
         let expected_primary_key_count = batch
             .relational_primary_key_changes()
@@ -655,7 +685,8 @@ impl Database {
         }
         let complete_through_commit_epoch = batch.complete_through_commit_epoch();
         let max_operations = batch.graph_delta().max_operations;
-        let mut graph = self.build_search_projection_graph_delta(batch.graph_delta())?;
+        let mut graph = self
+            .build_search_projection_graph_delta_excluding(batch.graph_delta(), externally_owned)?;
         let SearchProjectionDelta {
             upserts,
             deletes,
