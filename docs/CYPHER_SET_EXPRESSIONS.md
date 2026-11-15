@@ -97,6 +97,41 @@ and sets `a` on every `E`. To update only some rows, limit the rows before
 `SET`: `MATCH (e:E) WITH e ORDER BY e.id LIMIT 1 SET e.a = 10` updates one.
 Sort keys read the values after the update.
 
+## Relationship CREATE and MERGE from rows
+
+A relationship `CREATE` or `MERGE` between two nodes bound by earlier clauses
+takes the same plan when the two-endpoint commands decline its read clauses:
+`IN` lists, pattern predicates such as `NOT EXISTS { MATCH ... }`, `UNWIND`
+rows, `WITH`, `OPTIONAL MATCH`, more than two node patterns, or the same node
+at both ends (#1790):
+
+```cypher
+MATCH (o:Owner {id: $owner}), (i:Item) WHERE i.id IN $items
+MERGE (o)-[r:HAS]->(i) ON CREATE SET r.created = $now
+
+MATCH (o:Owner {id: $owner}) UNWIND $items AS item MATCH (i:Item {id: item})
+CREATE (o)-[:HAS {key: item}]->(i) RETURN i.id
+```
+
+- The pattern is one directed relationship of one type between two bound
+  nodes without labels or properties in the pattern; new endpoint nodes are
+  not created from rows. An incoming pattern is written as its outgoing form.
+- For every input row, in order, the property map and `ON CREATE SET` values
+  are evaluated over the row. `CREATE` writes one relationship per row.
+  `MERGE` reuses a relationship of the type between the two nodes whose
+  properties include the map, including one an earlier row of the same
+  statement created, and creates one otherwise (Kùzu, checked on Ladybug).
+- A row with a NULL endpoint (unmatched `OPTIONAL MATCH`) writes nothing.
+- `ON MATCH SET` on a relationship `MERGE` runs through the two-endpoint
+  command (#1793) but is not evaluated over rows: such a `MERGE` fed by a
+  general read is refused.
+- `RETURN` projects the matched variables of each row; the created
+  relationship is not in its scope.
+- All rows commit as one batch of the existing two-endpoint create and merge
+  commands, addressed by node id, so constraints and limits apply as for
+  them. Ladybug's self-loop `MERGE` neither returns nor creates a row; HawDB
+  merges the loop like any other pair.
+
 ## Value semantics
 
 The expression evaluator is the one `RETURN` uses:

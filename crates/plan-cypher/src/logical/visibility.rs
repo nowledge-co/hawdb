@@ -243,6 +243,15 @@ pub fn apply_node_visibility_predicates(
                     restrict_expression(expression, predicate_for);
                 }
             }
+            if let Some(relationship) = &mut set.relationship {
+                for (_, expression) in relationship
+                    .properties
+                    .iter_mut()
+                    .chain(relationship.on_create.iter_mut())
+                {
+                    restrict_expression(expression, predicate_for);
+                }
+            }
             if let Some(returns) = &mut set.returns {
                 restrict_projections(&mut returns.items, predicate_for);
                 for item in &mut returns.order_by {
@@ -576,6 +585,15 @@ pub fn validate_node_visibility_predicates(
                     MatchSetValue::Local(_) => None,
                 }
             }));
+            if let Some(relationship) = &set.relationship {
+                expressions.extend(
+                    relationship
+                        .properties
+                        .iter()
+                        .chain(&relationship.on_create)
+                        .map(|(_, expression)| expression),
+                );
+            }
             if let Some(returns) = &set.returns {
                 expressions.extend(returns.items.iter().map(|item| &item.expression));
                 expressions.extend(returns.order_by.iter().filter_map(|item| match &item.key {

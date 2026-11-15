@@ -186,6 +186,7 @@ mod relationship_property_seeds;
 mod relationship_reads;
 mod relationship_type_disjunction;
 mod relationship_value_point_reads;
+mod relationship_writes_from_rows;
 mod result_column_order;
 mod row_bound_pattern_properties;
 mod row_goal_planning;
