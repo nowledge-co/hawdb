@@ -244,6 +244,17 @@ pub fn format_hawdb_error(error: &HawDBError) -> PyErr {
             })();
             attributes.err().unwrap_or(exception)
         }),
+        HawDBError::ReadOnly { operation } => Python::attach(|py| {
+            // A caller error: the handle is read-only and nothing was written.
+            let exception = ExecutionError::new_err(message);
+            let value = exception.value(py);
+            let attributes = (|| -> PyResult<()> {
+                value.setattr("kind", "read_only")?;
+                value.setattr("operation", *operation)?;
+                value.setattr("retryable", false)
+            })();
+            attributes.err().unwrap_or(exception)
+        }),
         HawDBError::WalRecordLimitExceeded(limit) => Python::attach(|py| {
             // A caller error about one transaction's size: nothing was
             // written and the handle stays usable.
@@ -717,6 +728,31 @@ mod tests {
             assert_eq!(text("limit"), "record_bytes");
             assert_eq!(text("config_option"), "DatabaseConfig.max_wal_record_bytes");
             assert_eq!((number("requested"), number("maximum")), (20, 16));
+            assert!(!value
+                .getattr("retryable")
+                .unwrap()
+                .extract::<bool>()
+                .unwrap());
+        });
+    }
+
+    #[test]
+    fn read_only_is_a_non_retryable_execution_error_with_its_operation() {
+        Python::initialize();
+        Python::attach(|py| {
+            let error = HawDBError::ReadOnly {
+                operation: "mark_search_projection_full_reindex_needed",
+            };
+            let exception = format_hawdb_error(&error);
+            assert!(exception.is_instance_of::<ExecutionError>(py));
+            assert!(!exception.is_instance_of::<StorageError>(py));
+            let value = exception.value(py);
+            let text = |name: &str| value.getattr(name).unwrap().extract::<String>().unwrap();
+            assert_eq!(text("kind"), "read_only");
+            assert_eq!(
+                text("operation"),
+                "mark_search_projection_full_reindex_needed"
+            );
             assert!(!value
                 .getattr("retryable")
                 .unwrap()

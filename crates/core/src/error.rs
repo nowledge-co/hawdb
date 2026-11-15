@@ -283,6 +283,13 @@ pub enum HawDBError {
     CapabilityUnavailable {
         capability: RuntimeCapability,
     },
+    /// A write was refused because the handle is read-only (for example an
+    /// embedded store opened in `GraphMode::ShadowReadOnly`). Nothing was
+    /// written. This is a caller error, not a storage failure: reopen the
+    /// store writable to perform `operation`.
+    ReadOnly {
+        operation: &'static str,
+    },
     BranchCommandUnsupported {
         command: &'static str,
         context: &'static str,
@@ -378,6 +385,9 @@ impl Display for HawDBError {
             }
             HawDBError::CapabilityUnavailable { capability } => {
                 write!(f, "capability unavailable: {}", capability.as_str())
+            }
+            HawDBError::ReadOnly { operation } => {
+                write!(f, "execution error: {operation} requires a writable handle; this handle is read-only")
             }
             HawDBError::BranchCommandUnsupported { command, context } => {
                 write!(f, "{command} is unavailable in {context}")

@@ -95,6 +95,7 @@ impl QueryBridge {
                     | HawDBError::TransactionReadDependencyRefused { .. }
                     | HawDBError::ReadBudgetExceeded(_)
                     | HawDBError::WalRecordLimitExceeded(_)
+                    | HawDBError::ReadOnly { .. }
                     | HawDBError::ResourceBudgetExceeded(_)
                     | HawDBError::GraphExpansionCandidateLimitExceeded { .. }
                     | HawDBError::GraphExpansionPayloadLimitExceeded { .. } => "execution",

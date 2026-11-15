@@ -2985,6 +2985,24 @@ message checks. The binding owners pin the mapping:
 - `bindings/python` `errors::tests::wal_record_limit_is_a_non_retryable_execution_error_with_its_limit`.
 No lane, feature matrix or timeout changes. Local replay:
 `cargo test --locked -p hawdb --lib wal_record_limit`.
+### Search projection staleness markers
+
+Host-requested search projection markers
+([#1809](https://github.com/nowledge-co/hawdb/issues/1809)). The root
+general owner runs `embedded_store::tests::search_marker_tests`.
+- On a resident projection, it marks both flags twice and checks the reasons.
+  It covers idempotence, distinct full-reindex reasons and the latest
+  metadata-repair reason, as reported by the returned freshness and by
+  `runtime_status`. The markers survive a reopen, and a `ShadowReadOnly`
+  handle reports them but refuses to write with the typed `HawDBError::ReadOnly`.
+- With incremental out-of-core maintenance, the same marking survives a
+  reopen, graph writes continue while marked, and a full rebuild into a new
+  directory reopens unmarked.
+- Empty, whitespace, multi-line, padded and over-long reasons are refused with
+  `Semantic` before anything is written. So is a handle without a projection.
+
+No lane, feature matrix or timeout changes. Local replay:
+`cargo test --locked -p hawdb --lib search_marker`.
 
 ### Mutation RETURN
 
