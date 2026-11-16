@@ -123,9 +123,9 @@ jobs:
         run: |
           set -euo pipefail
           profile=debug
-          flags=()
+          flags=(--locked --manifest-path bindings/node/Cargo.toml)
           if [[ "$MODE" == release ]]; then profile=release; flags+=(--release); fi
-          cargo build --locked --manifest-path bindings/node/Cargo.toml "${flags[@]}"
+          cargo build "${flags[@]}"
           echo "NODE_ADDON=$GITHUB_WORKSPACE/bindings/node/target/$profile/${{ matrix.library }}" >> "$GITHUB_ENV"
       - name: Build and test the installed npm boundary
         working-directory: bindings/node

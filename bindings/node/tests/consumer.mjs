@@ -21,6 +21,7 @@ export function command(binary, args, cwd) {
     return execFileSync(process.execPath, [cli, ...args], {
       cwd,
       encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
       timeout: 120000,
     });
   }
@@ -60,6 +61,7 @@ export function installConsumer(directory) {
     join(consumer, "package.json"),
     JSON.stringify({
       name: "hawdb-node-consumer",
+      version: "1.0.0",
       private: true,
       main: "main.cjs",
     }),
