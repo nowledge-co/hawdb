@@ -387,6 +387,7 @@ dependencies = [
  "num-traits",
  "regex",
  "uuid",
+ "wasm-bindgen-test",
  "web-time",
 ]
 
