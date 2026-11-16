@@ -62,6 +62,7 @@ export function installConsumer(directory) {
     JSON.stringify({
       name: "hawdb-node-consumer",
       version: "1.0.0",
+      author: "Nowledge",
       private: true,
       main: "main.cjs",
     }),
