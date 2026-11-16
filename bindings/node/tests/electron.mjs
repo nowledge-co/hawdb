@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -52,13 +52,12 @@ try {
     ),
   );
   const [platformPackage] = Object.keys(installed.optionalDependencies);
+  const addonPath = join("node_modules", platformPackage, "hawdb.node");
   assert.equal(
-    statFile(
-      join(resources, "app.asar"),
-      `node_modules/${platformPackage}/hawdb.node`,
-    ).unpacked,
+    statFile(join(resources, "app.asar"), addonPath).unpacked,
     true,
   );
+  assert.ok(statSync(join(resources, "app.asar.unpacked", addonPath)).isFile());
   const binary =
     process.platform === "darwin"
       ? join(application, "HawDBNodeSmoke.app/Contents/MacOS/HawDBNodeSmoke")
