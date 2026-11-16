@@ -27,7 +27,8 @@ license = "Apache-2.0"
 [workspace]
 
 [lib]
-crate-type = ["cdylib", "staticlib"]
+# The Node-API binding links the same host boundary without a companion DLL.
+crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
 hawdb = { path = "../.." }
