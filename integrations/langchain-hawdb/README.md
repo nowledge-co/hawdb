@@ -151,9 +151,10 @@ The chain runs whatever Cypher the LLM writes, which is why it requires
 here, and HawDB refuses any statement that would change it.
 
 The chain's default prompt asks for Neo4j Cypher. HawDB Cypher is a subset: it
-has no backtick-quoted names, `OPTIONAL MATCH` or `toLower`, among others, so
-a generated statement can fail with a `hawdb.exceptions.Error` from `invoke`.
-Pass a `cypher_prompt` that describes the dialect if that happens often.
+has no backtick-quoted names, `OPTIONAL MATCH` is only a one-hop relationship,
+and the case function is `lower`, not `toLower`, so a generated statement can
+fail with a `hawdb.exceptions.Error` from `invoke`. Pass a `cypher_prompt` that
+describes the dialect if that happens often.
 
 ## Schema
 
