@@ -722,6 +722,10 @@ fn large_calendar_boundaries_and_offset_conversion_are_checked() {
     assert!(parse_datetime("+999999-12-31T23:59:59-01:00").is_err());
     assert!(parse_datetime("-999999-01-01T00:00:00+01:00").is_err());
     let pin = parse_datetime("2026-10-30T13:00:00+01:00").unwrap();
+    assert_eq!(
+        evaluate(DATETIME, &[], pin).unwrap(),
+        datetime("2026-10-30T12:00:00Z")
+    );
     with_statement_clock(pin, || {
         assert_eq!(
             evaluate(DATETIME, &[], statement_now()).unwrap(),

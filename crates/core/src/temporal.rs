@@ -343,7 +343,12 @@ pub fn evaluate(
         return Ok(Value::Null);
     }
     match function {
-        TemporalFunction::Construct(kind) => construct(kind, arguments.first(), now),
+        TemporalFunction::Construct(kind) => {
+            let now = now.checked_to_offset(UtcOffset::UTC).ok_or_else(|| {
+                TemporalError::new("statement clock UTC datetime is out of range")
+            })?;
+            construct(kind, arguments.first(), now)
+        }
         TemporalFunction::Duration => construct::duration(&arguments[0]),
         TemporalFunction::DurationBetween => {
             between(&arguments[0], &arguments[1], arithmetic::BetweenMode::Full)
@@ -497,6 +502,9 @@ fn system_now() -> OffsetDateTime {
 
 /// Runs `f` with the statement clock pinned to `instant` on this thread.
 /// The previous pin is restored afterwards, also on unwind.
+///
+/// # Panics
+/// Panics if `instant` has no representable UTC calendar value.
 pub fn with_statement_clock<R>(instant: OffsetDateTime, f: impl FnOnce() -> R) -> R {
     struct Restore(Option<OffsetDateTime>);
     impl Drop for Restore {
