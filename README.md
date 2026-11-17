@@ -18,6 +18,10 @@ The site and in-browser playground are at [hawdb.ai](https://hawdb.ai). Their so
 For synchronous SQL materialized views, see [the materialized view guide](docs/MATERIALIZED_VIEWS.md).
 For BM25 full-text search over SQL rows, see [the SQL search index guide](docs/SQL_SEARCH_INDEXES.md).
 
+Node.js and Electron hosts can use the [Node-API binding](bindings/node/README.md),
+with a utility-process example and prebuilt package workflow. Runtime and package
+qualification are separate from the embedded Rust API; see the binding notes.
+
 ## Install
 
 HawDB is a Rust library. Published releases are on crates.io. The repository pins Rust 1.99.1.

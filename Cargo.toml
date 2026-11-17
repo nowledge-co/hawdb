@@ -9,6 +9,7 @@ repository = "https://github.com/nowledge-co/hawdb"
 homepage = "https://hawdb.ai"
 readme = "README.md"
 exclude = [
+  "/bindings/node/**",
   "/experiments/bftree-mvcc/**",
   "/tools/mvcc-fuzz/**",
   "/tools/shiro/**",

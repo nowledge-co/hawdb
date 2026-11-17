@@ -2,8 +2,12 @@
 
 A small `extern "C"` surface over `HawDBEmbedded` so non-Rust hosts can
 embed HawDB: open a database, run one Cypher or SQL statement per call,
-close. The crate builds both `cdylib` and `staticlib` and lives outside
+close. The crate builds `cdylib` and `staticlib` artifacts and lives outside
 the Cargo workspace, like `bindings/python`.
+
+An internal `rlib` also lets the [Node-API binding](../node/README.md) link this
+same host boundary without loading a companion shared library. Rust applications
+should depend on the `hawdb` embedded facade directly.
 
 ```sh
 cargo build --release           # target/release/libhawdb_ffi.{dylib,so,a}
