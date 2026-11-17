@@ -17,18 +17,20 @@
 //! Both types store a signed count of microseconds since 1970-01-01 00:00:00.
 //! `TIMESTAMP` is a local date and time without a zone; `TIMESTAMPTZ` is a UTC
 //! instant (an input offset is applied and then discarded, as in PostgreSQL).
-//! The representable range is chrono's `NaiveDateTime` range truncated to
-//! whole microseconds, so every value converts to [`Value::LocalDateTime`] or
-//! [`Value::DateTime`] without loss.
+//! The finite range follows PostgreSQL 18. A wider internal carrier keeps the
+//! Unix epoch without overflowing near PostgreSQL's upper bound. Host values
+//! use time with large-dates and retain microsecond precision.
 
-use chrono::{DateTime, Datelike, FixedOffset, NaiveDate, NaiveDateTime, Timelike, Utc};
+use crate::temporal::types::*;
+
+use crate::temporal::{OffsetDateTime, PlainDateTime, SignedDuration};
 
 use crate::{HawDBError, Result, Value};
 
-const MICROS_PER_SECOND: i64 = 1_000_000;
+const MICROS_PER_SECOND: i128 = 1_000_000;
 /// PostgreSQL's timestamp epoch, 2000-01-01, in Unix microseconds. Precision
 /// rounding is symmetric around this instant, matching PostgreSQL.
-const POSTGRES_EPOCH_MICROS: i64 = 946_684_800 * MICROS_PER_SECOND;
+const POSTGRES_EPOCH_MICROS: i128 = 946_684_800 * MICROS_PER_SECOND;
 
 /// A validated SQL fractional-second precision `p` in `TIMESTAMP(p)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -62,26 +64,24 @@ impl TimestampPrecision {
 
     /// Rounds to this precision. Halfway values round away from PostgreSQL's
     /// 2000-01-01 epoch, as `AdjustTimestampForTypmod` does.
-    pub fn round(self, micros: i64) -> Result<i64> {
+    pub fn round(self, micros: i128) -> Result<i128> {
+        checked(micros)?;
         let scale = self.scale();
         if scale == 1 {
             return Ok(micros);
         }
-        let relative = i128::from(micros) - i128::from(POSTGRES_EPOCH_MICROS);
+        let relative = micros - POSTGRES_EPOCH_MICROS;
         let (scale, offset) = (i128::from(scale), i128::from(scale / 2));
         let rounded = if relative >= 0 {
             (relative + offset) / scale * scale
         } else {
             -((-relative + offset) / scale * scale)
         };
-        i64::try_from(rounded + i128::from(POSTGRES_EPOCH_MICROS))
-            .ok()
-            .filter(|value| in_range(*value))
-            .ok_or_else(out_of_range)
+        checked(rounded + POSTGRES_EPOCH_MICROS)
     }
 
     /// Whether `micros` is already representable at this precision.
-    pub fn accepts(self, micros: i64) -> bool {
+    pub fn accepts(self, micros: i128) -> bool {
         in_range(micros) && self.round(micros).is_ok_and(|rounded| rounded == micros)
     }
 }
@@ -92,18 +92,21 @@ impl Default for TimestampPrecision {
     }
 }
 
-/// The earliest representable microsecond (chrono's minimum datetime).
-pub fn min_micros() -> i64 {
-    NaiveDateTime::MIN.and_utc().timestamp_micros()
+/// SQL microseconds since the Unix epoch. The wider carrier preserves the
+/// existing epoch while covering PostgreSQL's entire finite timestamp domain.
+pub type TimestampMicros = i128;
+
+/// PostgreSQL 18's lower finite limit, translated from its 2000 epoch.
+pub const fn min_micros() -> TimestampMicros {
+    -211_813_488_000_000_000 + POSTGRES_EPOCH_MICROS
 }
 
-/// The latest representable microsecond (chrono's maximum datetime,
-/// truncated to whole microseconds).
-pub fn max_micros() -> i64 {
-    NaiveDateTime::MAX.and_utc().timestamp_micros()
+/// PostgreSQL 18's exclusive upper finite limit minus one microsecond.
+pub const fn max_micros() -> TimestampMicros {
+    9_223_371_331_200_000_000 + POSTGRES_EPOCH_MICROS - 1
 }
 
-pub fn in_range(micros: i64) -> bool {
+pub fn in_range(micros: i128) -> bool {
     (min_micros()..=max_micros()).contains(&micros)
 }
 
@@ -112,49 +115,106 @@ fn out_of_range() -> HawDBError {
 }
 
 /// Validates a stored microsecond count.
-pub fn checked(micros: i64) -> Result<i64> {
+pub fn checked(micros: i128) -> Result<i128> {
     in_range(micros).then_some(micros).ok_or_else(out_of_range)
 }
 
+/// The old finite domain never included i64::MAX. It now introduces an
+/// unsigned excess while every previously valid payload keeps its bytes.
+pub const EXTENDED_MICROS: i64 = i64::MAX;
+
+pub fn split_micros(micros: TimestampMicros) -> Result<(i64, Option<u64>)> {
+    checked(micros)?;
+    if micros >= i128::from(EXTENDED_MICROS) {
+        Ok((
+            EXTENDED_MICROS,
+            Some((micros - i128::from(EXTENDED_MICROS)) as u64),
+        ))
+    } else {
+        Ok((i64::try_from(micros).map_err(|_| out_of_range())?, None))
+    }
+}
+
+pub fn join_micros(narrow: i64, excess: Option<u64>) -> Result<TimestampMicros> {
+    match (narrow == EXTENDED_MICROS, excess) {
+        (true, Some(excess)) => checked(i128::from(narrow) + i128::from(excess)),
+        (false, None) => checked(i128::from(narrow)),
+        _ => Err(out_of_range()),
+    }
+}
+
+pub const fn encoded_micros_len(micros: TimestampMicros) -> usize {
+    if micros >= EXTENDED_MICROS as i128 {
+        16
+    } else {
+        8
+    }
+}
+
+pub struct EncodedMicros {
+    bytes: [u8; 16],
+    len: usize,
+}
+
+impl EncodedMicros {
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+}
+
+pub fn encode_micros(micros: TimestampMicros) -> Result<EncodedMicros> {
+    let (narrow, excess) = split_micros(micros)?;
+    let mut bytes = [0; 16];
+    bytes[..8].copy_from_slice(&narrow.to_le_bytes());
+    if let Some(excess) = excess {
+        bytes[8..].copy_from_slice(&excess.to_le_bytes());
+    }
+    Ok(EncodedMicros {
+        bytes,
+        len: encoded_micros_len(micros),
+    })
+}
+
 /// Converts a local datetime, rounding sub-microsecond digits half up.
-pub fn from_naive(value: NaiveDateTime) -> Result<i64> {
-    let utc = value.and_utc();
-    let micros = i128::from(utc.timestamp()) * i128::from(MICROS_PER_SECOND)
-        + i128::from((utc.timestamp_subsec_nanos() + 500) / 1_000);
-    i64::try_from(micros)
-        .ok()
-        .filter(|value| in_range(*value))
-        .ok_or_else(out_of_range)
+pub fn from_naive(value: PlainDateTime) -> Result<TimestampMicros> {
+    let utc = value.assume_utc();
+    // Split around a floored second, so sub-microsecond rounding is correct
+    // for pre-epoch values as well as positive timestamps.
+    checked(
+        i128::from(utc.unix_timestamp()) * MICROS_PER_SECOND
+            + i128::from((utc.nanosecond() + 500) / 1_000),
+    )
 }
 
 /// Converts a zoned datetime to its UTC instant.
-pub fn from_datetime(value: DateTime<FixedOffset>) -> Result<i64> {
-    from_naive(value.naive_utc())
+pub fn from_datetime(value: OffsetDateTime) -> Result<TimestampMicros> {
+    let utc = value
+        .checked_to_offset(crate::temporal::UtcOffset::UTC)
+        .ok_or_else(out_of_range)?;
+    from_naive(utc_datetime(utc))
 }
 
-pub fn to_naive(micros: i64) -> Result<NaiveDateTime> {
-    DateTime::<Utc>::from_timestamp_micros(checked(micros)?)
-        .map(|value| value.naive_utc())
-        .ok_or_else(out_of_range)
+pub fn to_naive(micros: TimestampMicros) -> Result<PlainDateTime> {
+    to_datetime(micros).map(utc_datetime)
 }
 
-pub fn to_datetime(micros: i64) -> Result<DateTime<FixedOffset>> {
-    Ok(to_naive(micros)?.and_utc().fixed_offset())
+pub fn to_datetime(micros: TimestampMicros) -> Result<OffsetDateTime> {
+    OffsetDateTime::from_unix_timestamp_nanos(checked(micros)? * 1_000).map_err(|_| out_of_range())
 }
 
 /// `TIMESTAMP` as a [`Value::LocalDateTime`].
-pub fn local_value(micros: i64) -> Result<Value> {
+pub fn local_value(micros: i128) -> Result<Value> {
     to_naive(micros).map(Value::LocalDateTime)
 }
 
 /// `TIMESTAMPTZ` as a UTC [`Value::DateTime`].
-pub fn zoned_value(micros: i64) -> Result<Value> {
+pub fn zoned_value(micros: i128) -> Result<Value> {
     to_datetime(micros).map(Value::DateTime)
 }
 
 /// Parses `TIMESTAMP` text: `YYYY-MM-DD`, optionally followed by a space or
 /// `T` and `HH:MM[:SS[.fraction]]`. A time zone offset is rejected.
-pub fn parse_timestamp(input: &str) -> Result<i64> {
+pub fn parse_timestamp(input: &str) -> Result<i128> {
     let (local, offset) = parse(input)?;
     if offset.is_some() {
         return Err(invalid(
@@ -167,36 +227,41 @@ pub fn parse_timestamp(input: &str) -> Result<i64> {
 
 /// Parses `TIMESTAMPTZ` text. An offset (`Z`, `±HH`, `±HHMM`, `±HH:MM`,
 /// `±HH:MM:SS`) is applied; text without an offset is UTC.
-pub fn parse_timestamptz(input: &str) -> Result<i64> {
+pub fn parse_timestamptz(input: &str) -> Result<i128> {
     let (local, offset) = parse(input)?;
     let offset = offset.unwrap_or(0);
     let utc = local
-        .checked_sub_signed(chrono::TimeDelta::seconds(i64::from(offset)))
+        .checked_sub(SignedDuration::seconds(i64::from(offset)))
         .ok_or_else(out_of_range)?;
     from_naive(utc)
 }
 
 /// PostgreSQL ISO output: `YYYY-MM-DD HH:MM:SS[.ffffff]` with trailing
-/// fractional zeros removed. Years outside 0000..=9999 carry a sign.
-pub fn format_timestamp(micros: i64) -> Result<String> {
-    to_naive(micros).map(|value| format_naive(&value))
+/// fractional zeros removed. Years before AD 1 use a positive year and `BC`.
+pub fn format_timestamp(micros: i128) -> Result<String> {
+    to_naive(micros).map(|value| {
+        let mut text = format_naive(&value);
+        if value.year() <= 0 {
+            text.push_str(" BC");
+        }
+        text
+    })
 }
 
 /// [`format_timestamp`] in UTC followed by `+00`.
-pub fn format_timestamptz(micros: i64) -> Result<String> {
-    format_timestamp(micros).map(|text| text + "+00")
+pub fn format_timestamptz(micros: i128) -> Result<String> {
+    format_timestamp(micros).map(|text| match text.strip_suffix(" BC") {
+        Some(text) => text.to_owned() + "+00 BC",
+        None => text + "+00",
+    })
 }
 
-fn format_naive(value: &NaiveDateTime) -> String {
+fn format_naive(value: &PlainDateTime) -> String {
     let year = value.year();
-    let mut text = if (0..=9999).contains(&year) {
-        format!("{year:04}")
-    } else {
-        format!("{year:+05}")
-    };
+    let mut text = format!("{:04}", if year <= 0 { 1 - year } else { year });
     text.push_str(&format!(
         "-{:02}-{:02} {:02}:{:02}:{:02}",
-        value.month(),
+        (value.month() as u32),
         value.day(),
         value.hour(),
         value.minute(),
@@ -231,7 +296,7 @@ impl TimestampType {
     /// local and zoned datetimes convert through UTC (HawDB has no session
     /// time zone), and the result is rounded to the declared precision.
     /// `NULL` yields `None`.
-    pub fn convert(self, value: &Value) -> Result<Option<i64>> {
+    pub fn convert(self, value: &Value) -> Result<Option<i128>> {
         let micros = match value {
             Value::Null => return Ok(None),
             Value::String(text) if self.zoned => parse_timestamptz(text)?,
@@ -250,7 +315,7 @@ impl TimestampType {
     }
 
     /// The host [`Value`] of a stored microsecond count.
-    pub fn value(self, micros: i64) -> Result<Value> {
+    pub fn value(self, micros: i128) -> Result<Value> {
         if self.zoned {
             zoned_value(micros)
         } else {
@@ -267,9 +332,9 @@ impl TimestampType {
 /// `LOCALTIMESTAMP` is the UTC wall-clock time because HawDB has no session
 /// time zone.
 pub fn current_timestamp(kind: TimestampType) -> Result<Value> {
-    let micros = kind.precision.round(from_datetime(
-        crate::temporal::statement_now().fixed_offset(),
-    )?)?;
+    let micros = kind
+        .precision
+        .round(from_datetime(crate::temporal::statement_now())?)?;
     kind.value(micros)
 }
 
@@ -369,8 +434,19 @@ impl Cursor<'_> {
     }
 }
 
-fn parse(input: &str) -> Result<(NaiveDateTime, Option<i32>)> {
+fn parse(input: &str) -> Result<(PlainDateTime, Option<i32>)> {
     let trimmed = input.trim_matches(|c: char| c.is_ascii_whitespace());
+    let era_start = trimmed.len().saturating_sub(3);
+    let era = trimmed
+        .get(era_start..)
+        .filter(|suffix| suffix.eq_ignore_ascii_case(" BC") || suffix.eq_ignore_ascii_case(" AD"));
+    let (trimmed, bc) = match era {
+        Some(suffix) => (
+            &trimmed[..era_start],
+            Some(suffix.eq_ignore_ascii_case(" BC")),
+        ),
+        None => (trimmed, None),
+    };
     let mut cursor = Cursor {
         input,
         text: trimmed,
@@ -385,7 +461,20 @@ fn parse(input: &str) -> Result<(NaiveDateTime, Option<i32>)> {
     };
     let (year, _) = cursor.digits(4, 6)?;
     let year = i32::try_from(year).map_err(|_| out_of_range())?;
-    let year = if negative { -year } else { year };
+    let year = if let Some(bc) = bc {
+        if negative || year == 0 {
+            return Err(invalid(input, "invalid era year"));
+        }
+        if bc {
+            1 - year
+        } else {
+            year
+        }
+    } else if negative {
+        -year
+    } else {
+        year
+    };
     if !cursor.eat(b'-') {
         return Err(invalid(input, "expected YYYY-MM-DD"));
     }
@@ -394,7 +483,7 @@ fn parse(input: &str) -> Result<(NaiveDateTime, Option<i32>)> {
         return Err(invalid(input, "expected YYYY-MM-DD"));
     }
     let day = cursor.fixed(2)?;
-    let date = NaiveDate::from_ymd_opt(year, month, day)
+    let mut date = date_from_ymd(year, month, day)
         .ok_or_else(|| invalid(input, "date field value out of range"))?;
     let (mut hour, mut minute, mut second, mut nanos) = (0, 0, 0, 0u32);
     let mut round_up = false;
@@ -429,12 +518,16 @@ fn parse(input: &str) -> Result<(NaiveDateTime, Option<i32>)> {
             }
         }
     }
-    let time = chrono::NaiveTime::from_hms_nano_opt(hour, minute, second, nanos)
+    if hour == 24 && minute == 0 && second == 0 && nanos == 0 && !round_up {
+        date = date.next_day().ok_or_else(out_of_range)?;
+        hour = 0;
+    }
+    let time = time_from_hms_nano(hour, minute, second, nanos)
         .ok_or_else(|| invalid(input, "time field value out of range"))?;
-    let mut local = NaiveDateTime::new(date, time);
+    let mut local = PlainDateTime::new(date, time);
     if round_up {
         local = local
-            .checked_add_signed(chrono::TimeDelta::microseconds(1))
+            .checked_add(SignedDuration::microseconds(1))
             .ok_or_else(out_of_range)?;
     }
     let _ = cursor.eat(b' ');

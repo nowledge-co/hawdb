@@ -223,7 +223,7 @@ fn sql_timestamp_torn_wal_tail_discards_only_the_incomplete_transaction() {
         .unwrap();
     let acknowledged = std::fs::metadata(active_wal_path(&path)).unwrap().len();
     database
-        .query_sql("INSERT INTO events (id, at, seen) VALUES (11, '2031-01-01', '2031-01-01Z')")
+        .query_sql("INSERT INTO events (id, at, seen) VALUES (11, '294276-12-31 23:59:59.999999', '294276-12-31 23:59:59.999999Z')")
         .unwrap();
     let complete = std::fs::metadata(active_wal_path(&path)).unwrap().len();
     drop(database);
@@ -500,7 +500,7 @@ fn sql_timestamp_casts_parameters_and_information_schema() {
     let Value::DateTime(b) = &rows[0]["b"] else {
         panic!("TIMESTAMPTZ is a zoned datetime");
     };
-    assert_eq!(b.offset().local_minus_utc(), 0);
+    assert_eq!(b.offset().whole_seconds(), 0);
     // Text parameters coerce in assignment and comparison.
     database
         .query_sql_with_params(
@@ -571,10 +571,7 @@ fn sql_timestamp_rejects_invalid_literals_types_and_mixed_comparisons() {
         ),
         ("SELECT TIMESTAMP 'now'", "invalid timestamp"),
         ("SELECT TIMESTAMP 'infinity'", "invalid timestamp"),
-        (
-            "SELECT TIMESTAMP '+262143-01-01 00:00:00'",
-            "invalid timestamp",
-        ),
+        ("SELECT TIMESTAMP '294277-01-01 00:00:00'", "out of range"),
         (
             "SELECT DATE '2026-01-01'",
             "unsupported PostgreSQL typed literal",
@@ -717,4 +714,75 @@ fn sql_timestamp_append_tables_convert_assignments_and_match_lookups() {
         error.contains("must not carry a time zone offset"),
         "{error}"
     );
+}
+
+#[test]
+fn sql_timestamp_postgres_domain_survives_indexes_wal_and_checkpoint() {
+    let boundary = i128::from(i64::MAX);
+    let micros = [
+        sql_timestamp::min_micros(),
+        -1,
+        0,
+        boundary - 1,
+        boundary,
+        boundary + 1,
+        sql_timestamp::max_micros(),
+    ];
+    for residency in [
+        StorageResidencyMode::Materialized,
+        StorageResidencyMode::OutOfCore,
+    ] {
+        let path = unique_test_dir("sql-timestamp-pg-domain");
+        let config = DatabaseConfig {
+            storage_residency_mode: residency,
+            relational_index_mode: RelationalIndexMode::DemandPaged,
+            ..Default::default()
+        };
+        let mut database = Database::open_with_config(&path, config.clone()).unwrap();
+        database
+            .query_sql(
+                "CREATE TABLE extremes (at TIMESTAMP PRIMARY KEY, seen TIMESTAMPTZ NOT NULL)",
+            )
+            .unwrap();
+        database
+            .query_sql("CREATE INDEX extremes_seen ON extremes (seen)")
+            .unwrap();
+        for value in micros {
+            database
+                .query_sql_with_params(
+                    "INSERT INTO extremes (at, seen) VALUES ($1, $2)",
+                    &[
+                        sql_timestamp::local_value(value).unwrap(),
+                        sql_timestamp::zoned_value(value).unwrap(),
+                    ],
+                )
+                .unwrap();
+        }
+        drop(database);
+        for checkpoint in [false, true] {
+            let mut database = Database::open_with_config(&path, config.clone()).unwrap();
+            let expected: Vec<_> = micros
+                .into_iter()
+                .map(|value| sql_timestamp::local_value(value).unwrap())
+                .collect();
+            assert_eq!(
+                column(&mut database, "SELECT at FROM extremes ORDER BY at", "at"),
+                expected
+            );
+            let boundary_text = sql_timestamp::format_timestamptz(boundary).unwrap();
+            let query = format!(
+                "SELECT at FROM extremes WHERE seen >= TIMESTAMPTZ '{boundary_text}' ORDER BY at"
+            );
+            assert!(explain_uses(&mut database, &query, "IndexRangeScanExec"));
+            assert_eq!(column(&mut database, &query, "at"), expected[4..]);
+            assert_eq!(column(&mut database, "SELECT CAST(at AS TEXT) AS t FROM extremes WHERE at = TIMESTAMP '4714-11-24 BC'", "t"), vec![Value::String("4714-11-24 00:00:00 BC".into())]);
+            for invalid in ["4714-11-23 BC", "294277-01-01"] {
+                assert!(database.query_sql(&format!("INSERT INTO extremes (at, seen) VALUES (TIMESTAMP '{invalid}', TIMESTAMPTZ '1970-01-01')")).is_err());
+            }
+            if !checkpoint {
+                database.checkpoint().unwrap();
+            }
+        }
+        std::fs::remove_dir_all(path).unwrap();
+    }
 }

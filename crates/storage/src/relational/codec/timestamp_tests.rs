@@ -22,15 +22,18 @@ fn timestamp_row_codec_round_trips_edges_and_rejects_out_of_range_payloads() {
         for length in 0..encoded.len() {
             assert!(decode_relational_row_payload(&encoded[..length], 1, 64).is_err());
         }
-        let payload = encoded.len() - 8;
-        for invalid in [max + 1, min - 1, i64::MAX, i64::MIN] {
-            let mut corrupt = encoded.clone();
-            corrupt[payload..].copy_from_slice(&invalid.to_le_bytes());
-            assert!(matches!(
-                decode_relational_row_payload(&corrupt, 1, 64),
-                Err(RelationalError::Corruption(_))
-            ));
+        let mut corrupt = encoded.clone();
+        if encoded.len() >= 16 && value.estimated_payload_bytes() == 16 {
+            let length = corrupt.len();
+            corrupt[length - 8..].copy_from_slice(&u64::MAX.to_le_bytes());
+        } else {
+            let length = corrupt.len();
+            corrupt[length - 8..].copy_from_slice(&i64::MIN.to_le_bytes());
         }
+        assert!(matches!(
+            decode_relational_row_payload(&corrupt, 1, 64),
+            Err(RelationalError::Corruption(_))
+        ));
     }
 }
 

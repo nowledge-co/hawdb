@@ -341,7 +341,15 @@ impl<'a> OrderedKeyDecoder<'a> {
 
     fn timestamp(&mut self, tag: u8) -> Result<RelationalValue, OrderedRelationalKeyError> {
         let ordered = u64::from_be_bytes(self.fixed("TIMESTAMP value")?);
-        crate::relational::decode_timestamp_value(tag, (ordered ^ (1_u64 << 63)) as i64)
+        let narrow = (ordered ^ (1_u64 << 63)) as i64;
+        let excess = if narrow == hawdb_core::sql_timestamp::EXTENDED_MICROS {
+            Some(u64::from_be_bytes(self.fixed("TIMESTAMP excess")?))
+        } else {
+            None
+        };
+        let micros = hawdb_core::sql_timestamp::join_micros(narrow, excess)
+            .map_err(|error| OrderedRelationalKeyError::Corrupt(error.to_string()))?;
+        crate::relational::decode_timestamp_value(tag, micros)
             .map_err(|error| OrderedRelationalKeyError::Corrupt(error.to_string()))
     }
 
@@ -518,6 +526,9 @@ mod tests {
             RelationalValue::Timestamp(-1),
             RelationalValue::Timestamp(0),
             RelationalValue::Timestamp(1),
+            RelationalValue::Timestamp(i128::from(i64::MAX) - 1),
+            RelationalValue::Timestamp(i128::from(i64::MAX)),
+            RelationalValue::Timestamp(i128::from(i64::MAX) + 1),
             RelationalValue::Timestamp(hawdb_core::sql_timestamp::max_micros()),
             RelationalValue::TimestampTz(hawdb_core::sql_timestamp::min_micros()),
             RelationalValue::TimestampTz(-1),
@@ -649,7 +660,12 @@ mod tests {
                 hawdb_core::sql_timestamp::min_micros() - 1,
             ] {
                 let mut encoded = vec![tag];
-                encoded.extend_from_slice(&((micros as u64) ^ (1_u64 << 63)).to_be_bytes());
+                let narrow = micros.min(i128::from(i64::MAX)) as i64;
+                encoded.extend_from_slice(&((narrow as u64) ^ (1_u64 << 63)).to_be_bytes());
+                if narrow == i64::MAX {
+                    encoded
+                        .extend_from_slice(&((micros - i128::from(narrow)) as u64).to_be_bytes());
+                }
                 let mut key =
                     encode_ordered_relational_key(&RelationalKey(vec![RelationalValue::BigInt(0)]))
                         .unwrap();

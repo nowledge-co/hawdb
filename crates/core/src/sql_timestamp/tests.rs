@@ -14,7 +14,7 @@
 
 use super::*;
 
-fn ts(text: &str) -> i64 {
+fn ts(text: &str) -> i128 {
     parse_timestamp(text).unwrap()
 }
 
@@ -40,13 +40,13 @@ fn rejects_offsets_and_malformed_timestamp_text() {
         "2026-11-05 12",
         "2026-13-01",
         "2026-02-30",
-        "2026-11-05 24:00:00",
+        "2026-11-05 24:00:01",
         "2026-11-05 12:00:00.",
         "26-11-05",
         "20261105",
         "now",
         "infinity",
-        "2026-11-05 12:00:00 BC",
+        "0000-11-05 12:00:00 BC",
         "",
     ] {
         assert!(parse_timestamp(text).is_err(), "{text}");
@@ -75,7 +75,7 @@ fn sub_microsecond_input_rounds_half_up() {
     assert_eq!(ts("2026-11-05 12:00:00.0000005"), base + 1);
     assert_eq!(ts("2026-11-05 12:00:00.9999995"), base + MICROS_PER_SECOND);
     assert_eq!(ts("1969-12-31 23:59:59.9999995"), 0);
-    let naive = NaiveDateTime::parse_from_str("2026-11-05 12:00:00.000000500", "%F %T%.f").unwrap();
+    let naive = crate::temporal::parse_local_datetime("2026-11-05T12:00:00.000000500").unwrap();
     assert_eq!(from_naive(naive).unwrap(), base + 1);
 }
 
@@ -112,15 +112,15 @@ fn range_edges_and_overflow() {
     assert_eq!(checked(max).unwrap(), max);
     assert!(checked(min - 1).is_err());
     assert!(checked(max + 1).is_err());
-    assert!(checked(i64::MAX).is_err());
-    assert!(to_naive(i64::MIN).is_err());
+    assert!(checked(i128::from(i64::MAX)).is_ok());
+    assert!(to_naive(i128::from(i64::MIN)).is_err());
     let max_text = format_timestamp(max).unwrap();
     assert_eq!(parse_timestamp(&max_text).unwrap(), max);
     let min_text = format_timestamp(min).unwrap();
     assert_eq!(parse_timestamp(&min_text).unwrap(), min);
     assert!(TimestampPrecision::new(0).unwrap().round(max).is_err());
     assert!(parse_timestamp(&format!("{max_text}5")).is_err());
-    let beyond = format!("+{}-01-01", NaiveDateTime::MAX.year() + 1);
+    let beyond = format!("+{}-01-01", PlainDateTime::MAX.year() + 1);
     assert!(parse_timestamp(&beyond).is_err());
 }
 
@@ -134,11 +134,11 @@ fn formats_postgres_iso_text_and_converts_values() {
     );
     assert_eq!(
         format_timestamp(ts("-0044-03-15")).unwrap(),
-        "-0044-03-15 00:00:00"
+        "0045-03-15 00:00:00 BC"
     );
     assert_eq!(
         format_timestamp(ts("+12345-01-01")).unwrap(),
-        "+12345-01-01 00:00:00"
+        "12345-01-01 00:00:00"
     );
     let micros = ts("2026-11-05 12:00:00.123456");
     let Value::LocalDateTime(local) = local_value(micros).unwrap() else {
@@ -148,7 +148,7 @@ fn formats_postgres_iso_text_and_converts_values() {
     let Value::DateTime(zoned) = zoned_value(micros).unwrap() else {
         panic!("datetime");
     };
-    assert_eq!(zoned.offset().local_minus_utc(), 0);
+    assert_eq!(zoned.offset().whole_seconds(), 0);
     assert_eq!(from_datetime(zoned).unwrap(), micros);
 }
 
@@ -196,13 +196,60 @@ fn casts_and_conversions_between_text_and_timestamp_types() {
 }
 
 #[test]
-fn documented_range_matches_chrono() {
+fn documented_range_matches_postgres_18() {
     assert_eq!(
         format_timestamp(min_micros()).unwrap(),
-        "-262143-01-01 00:00:00"
+        "4714-11-24 00:00:00 BC"
     );
     assert_eq!(
         format_timestamp(max_micros()).unwrap(),
-        "+262142-12-31 23:59:59.999999"
+        "294276-12-31 23:59:59.999999"
     );
+}
+
+#[test]
+fn postgres_era_and_midnight_boundaries() {
+    assert_eq!(ts("0001-01-01 BC"), ts("0000-01-01"));
+    assert_eq!(ts("0001-01-01 AD"), ts("0001-01-01"));
+    assert_eq!(ts("1999-12-31 24:00:00"), ts("2000-01-01"));
+    assert_eq!(ts("4714-11-24 BC"), min_micros());
+    assert!(parse_timestamp("4714-11-23 BC").is_err());
+    assert!(parse_timestamp("294276-12-31 24:00:00").is_err());
+    assert_eq!(
+        format_timestamptz(ts("0001-01-01 BC")).unwrap(),
+        "0001-01-01 00:00:00+00 BC"
+    );
+    assert!(parse_timestamptz("4714-11-24 00:00:00+00:01 BC").is_err());
+    assert!(parse_timestamptz("294276-12-31 23:59:59.999999-00:01").is_err());
+}
+
+#[test]
+fn microsecond_encoding_preserves_old_bytes_and_extends_canonically() {
+    for micros in [
+        min_micros(),
+        -1,
+        0,
+        1,
+        i128::from(i64::MAX) - 1,
+        i128::from(i64::MAX),
+        i128::from(i64::MAX) + 1,
+        max_micros(),
+    ] {
+        let (narrow, excess) = split_micros(micros).unwrap();
+        assert_eq!(join_micros(narrow, excess).unwrap(), micros);
+        let encoded = encode_micros(micros).unwrap();
+        assert_eq!(encoded.as_bytes().len(), encoded_micros_len(micros));
+        if micros < i128::from(i64::MAX) {
+            assert_eq!(encoded.as_bytes(), (micros as i64).to_le_bytes());
+            assert!(excess.is_none());
+        } else {
+            assert_eq!(&encoded.as_bytes()[..8], &i64::MAX.to_le_bytes());
+            assert_eq!(&encoded.as_bytes()[8..], &excess.unwrap().to_le_bytes());
+        }
+    }
+    assert!(join_micros(i64::MAX, None).is_err());
+    assert!(join_micros(0, Some(0)).is_err());
+    assert!(join_micros(i64::MAX, Some(u64::MAX)).is_err());
+    assert!(encode_micros(min_micros() - 1).is_err());
+    assert!(encode_micros(max_micros() + 1).is_err());
 }

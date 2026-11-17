@@ -14,7 +14,9 @@
 
 //! ISO 8601 parsing for the openCypher temporal string forms.
 
-use chrono::{DateTime, Datelike, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Weekday};
+use super::types::*;
+
+use crate::temporal::{Date, OffsetDateTime, PlainDateTime, Time, UtcOffset, Weekday};
 
 use super::construct::DurationBuilder;
 use super::{Duration, TemporalError, TemporalResult};
@@ -37,7 +39,7 @@ fn number<T: std::str::FromStr>(input: &str, kind: &str, full: &str) -> Temporal
 /// Parses `YYYY-MM-DD`, `YYYYMMDD`, `YYYY-MM`, `YYYY`, `YYYY-Www[-D]`,
 /// `YYYYWww[D]`, `YYYY-DDD` and `YYYYDDD`. Years outside `0000..=9999`
 /// need an explicit sign.
-pub fn parse_date(input: &str) -> TemporalResult<NaiveDate> {
+pub fn parse_date(input: &str) -> TemporalResult<Date> {
     let text = input.trim();
     let (negative, unsigned) = match text.as_bytes().first() {
         Some(b'+') => (false, &text[1..]),
@@ -63,7 +65,7 @@ pub fn parse_date(input: &str) -> TemporalResult<NaiveDate> {
         year = -year;
     }
     let date = if rest.is_empty() {
-        NaiveDate::from_ymd_opt(year, 1, 1)
+        date_from_ymd(year, 1, 1)
     } else if let Some(rest) = rest.strip_prefix('-') {
         parse_date_rest(year, rest, true, input)?
     } else {
@@ -77,7 +79,7 @@ fn parse_date_rest(
     rest: &str,
     extended: bool,
     input: &str,
-) -> TemporalResult<Option<NaiveDate>> {
+) -> TemporalResult<Option<Date>> {
     if let Some(week) = rest.strip_prefix(['W', 'w']) {
         let (week_text, day_text) = if extended {
             match week.split_once('-') {
@@ -98,59 +100,51 @@ fn parse_date_rest(
             .transpose()?
             .unwrap_or(1);
         let weekday = weekday_from_number(day).ok_or_else(|| invalid("date", input))?;
-        return Ok(NaiveDate::from_isoywd_opt(year, week, weekday));
+        return Ok(date_from_iso_week(year, week, weekday));
     }
     if extended {
         return match rest.split_once('-') {
-            Some((month, day)) if month.len() == 2 && day.len() == 2 => {
-                Ok(NaiveDate::from_ymd_opt(
-                    year,
-                    number(month, "date", input)?,
-                    number(day, "date", input)?,
-                ))
-            }
-            None if rest.len() == 2 => Ok(NaiveDate::from_ymd_opt(
+            Some((month, day)) if month.len() == 2 && day.len() == 2 => Ok(date_from_ymd(
                 year,
-                number(rest, "date", input)?,
-                1,
+                number(month, "date", input)?,
+                number(day, "date", input)?,
             )),
-            None if rest.len() == 3 => {
-                Ok(NaiveDate::from_yo_opt(year, number(rest, "date", input)?))
-            }
+            None if rest.len() == 2 => Ok(date_from_ymd(year, number(rest, "date", input)?, 1)),
+            None if rest.len() == 3 => Ok(date_from_ordinal(year, number(rest, "date", input)?)),
             _ => Err(invalid("date", input)),
         };
     }
     match rest.len() {
-        4 => Ok(NaiveDate::from_ymd_opt(
+        4 => Ok(date_from_ymd(
             year,
             number(&rest[..2], "date", input)?,
             number(&rest[2..], "date", input)?,
         )),
-        3 => Ok(NaiveDate::from_yo_opt(year, number(rest, "date", input)?)),
+        3 => Ok(date_from_ordinal(year, number(rest, "date", input)?)),
         _ => Err(invalid("date", input)),
     }
 }
 
 pub(super) fn weekday_from_number(day: u32) -> Option<Weekday> {
     Some(match day {
-        1 => Weekday::Mon,
-        2 => Weekday::Tue,
-        3 => Weekday::Wed,
-        4 => Weekday::Thu,
-        5 => Weekday::Fri,
-        6 => Weekday::Sat,
-        7 => Weekday::Sun,
+        1 => Weekday::Monday,
+        2 => Weekday::Tuesday,
+        3 => Weekday::Wednesday,
+        4 => Weekday::Thursday,
+        5 => Weekday::Friday,
+        6 => Weekday::Saturday,
+        7 => Weekday::Sunday,
         _ => return None,
     })
 }
 
 /// Parses `HH:MM:SS.fffffffff`, `HH:MM:SS`, `HH:MM`, `HH` and the basic
 /// forms `HHMMSS[.f]` and `HHMM`. A comma is accepted as decimal mark.
-pub fn parse_local_time(input: &str) -> TemporalResult<NaiveTime> {
+pub fn parse_local_time(input: &str) -> TemporalResult<Time> {
     parse_time_text(input.trim(), input)
 }
 
-fn parse_time_text(text: &str, input: &str) -> TemporalResult<NaiveTime> {
+fn parse_time_text(text: &str, input: &str) -> TemporalResult<Time> {
     let (clock, fraction) = match text.find(['.', ',']) {
         Some(index) => (&text[..index], Some(&text[index + 1..])),
         None => (text, None),
@@ -189,7 +183,7 @@ fn parse_time_text(text: &str, input: &str) -> TemporalResult<NaiveTime> {
     if second > 59 {
         return Err(invalid("time", input));
     }
-    NaiveTime::from_hms_nano_opt(hour, minute, second, nanos).ok_or_else(|| invalid("time", input))
+    time_from_hms_nano(hour, minute, second, nanos).ok_or_else(|| invalid("time", input))
 }
 
 fn parse_fraction(fraction: &str, input: &str) -> TemporalResult<u32> {
@@ -221,21 +215,21 @@ fn split_date_time<'a>(
 }
 
 /// Parses `<date>[T<time>]`. A missing time is midnight.
-pub fn parse_local_datetime(input: &str) -> TemporalResult<NaiveDateTime> {
+pub fn parse_local_datetime(input: &str) -> TemporalResult<PlainDateTime> {
     let text = input.trim();
     let (date, time) = split_date_time(text, input, "local datetime")?;
     let date = parse_date(date).map_err(|_| invalid("local datetime", input))?;
     let time = time
         .map(|time| parse_time_text(time, input).map_err(|_| invalid("local datetime", input)))
         .transpose()?
-        .unwrap_or(NaiveTime::MIN);
-    Ok(date.and_time(time))
+        .unwrap_or(Time::MIDNIGHT);
+    Ok(date.with_time(time))
 }
 
 /// Parses `<date>[T<time>[<offset>]]`, where the offset is `Z`, `±HH`,
 /// `±HHMM`, `±HH:MM` or `±HH:MM:SS`. A missing offset means UTC. Named
 /// time-zone regions (`[Europe/Stockholm]`) are refused.
-pub fn parse_datetime(input: &str) -> TemporalResult<DateTime<FixedOffset>> {
+pub fn parse_datetime(input: &str) -> TemporalResult<OffsetDateTime> {
     let text = input.trim();
     if text.contains('[') {
         return Err(TemporalError::new(format!(
@@ -245,15 +239,12 @@ pub fn parse_datetime(input: &str) -> TemporalResult<DateTime<FixedOffset>> {
     let (date, time) = split_date_time(text, input, "datetime")?;
     let date = parse_date(date).map_err(|_| invalid("datetime", input))?;
     let (time, offset) = match time {
-        None => (
-            NaiveTime::MIN,
-            FixedOffset::east_opt(0).expect("UTC offset"),
-        ),
+        None => (Time::MIDNIGHT, offset_from_seconds(0).expect("UTC offset")),
         Some(time) => {
             let (clock, offset) = split_offset(time);
             let offset = match offset {
                 Some(offset) => parse_offset(offset).map_err(|_| invalid("datetime", input))?,
-                None => FixedOffset::east_opt(0).expect("UTC offset"),
+                None => offset_from_seconds(0).expect("UTC offset"),
             };
             (
                 parse_time_text(clock, input).map_err(|_| invalid("datetime", input))?,
@@ -261,10 +252,7 @@ pub fn parse_datetime(input: &str) -> TemporalResult<DateTime<FixedOffset>> {
             )
         }
     };
-    date.and_time(time)
-        .and_local_timezone(offset)
-        .single()
-        .ok_or_else(|| invalid("datetime", input))
+    super::construct::attach(date.with_time(time), offset).ok_or_else(|| invalid("datetime", input))
 }
 
 fn split_offset(time: &str) -> (&str, Option<&str>) {
@@ -275,10 +263,10 @@ fn split_offset(time: &str) -> (&str, Option<&str>) {
 }
 
 /// Parses a UTC offset: `Z`, `UTC`, `±HH`, `±HHMM`, `±HH:MM` or `±HH:MM:SS`.
-pub(crate) fn parse_offset(input: &str) -> TemporalResult<FixedOffset> {
+pub(crate) fn parse_offset(input: &str) -> TemporalResult<UtcOffset> {
     let text = input.trim();
     if text.eq_ignore_ascii_case("Z") || text.eq_ignore_ascii_case("UTC") {
-        return Ok(FixedOffset::east_opt(0).expect("UTC offset"));
+        return Ok(offset_from_seconds(0).expect("UTC offset"));
     }
     let sign = match text.as_bytes().first() {
         Some(b'+') => 1,
@@ -310,7 +298,7 @@ pub(crate) fn parse_offset(input: &str) -> TemporalResult<FixedOffset> {
     if seconds > 18 * 3_600 {
         return Err(invalid_offset(input));
     }
-    FixedOffset::east_opt(sign * seconds).ok_or_else(|| invalid_offset(input))
+    offset_from_seconds(sign * seconds).ok_or_else(|| invalid_offset(input))
 }
 
 fn invalid_offset(input: &str) -> TemporalError {
@@ -429,6 +417,6 @@ fn parse_duration_number(text: &str, input: &str) -> TemporalResult<super::const
 }
 
 /// The ISO day number of `date` (Monday is 1).
-pub(super) fn iso_weekday(date: NaiveDate) -> i64 {
+pub(super) fn iso_weekday(date: Date) -> i64 {
     i64::from(date.weekday().number_from_monday())
 }

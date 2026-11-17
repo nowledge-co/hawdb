@@ -441,7 +441,9 @@ impl ReplayBundle {
             graph_predicate_rewrite: case.graph_predicate_rewrite.clone(),
             metamorphic: case.metamorphic.clone(),
             index_enabled: case.index_enabled,
-            statement_clock: optimizer_qualification::qualification_clock().to_rfc3339(),
+            statement_clock: hawdb::temporal::format_datetime(
+                optimizer_qualification::qualification_clock(),
+            ),
         }
     }
 

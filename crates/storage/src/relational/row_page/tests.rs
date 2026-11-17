@@ -157,12 +157,17 @@ fn timestamp_row_page_round_trips_and_rejects_out_of_range_payloads() {
     // Overwrite the stored TIMESTAMPTZ of the last row with max + 1.
     let mut corrupt = encoded.clone();
     let mut needle = vec![11_u8];
-    needle.extend_from_slice(&max.to_le_bytes());
+    needle.extend_from_slice(
+        hawdb_core::sql_timestamp::encode_micros(max)
+            .unwrap()
+            .as_bytes(),
+    );
     let position = corrupt
         .windows(needle.len())
         .position(|window| window == needle.as_slice())
         .expect("encoded TIMESTAMPTZ payload");
-    corrupt[position + 1..position + 9].copy_from_slice(&(max + 1).to_le_bytes());
+    let excess = (max + 1 - i128::from(i64::MAX)) as u64;
+    corrupt[position + 9..position + 17].copy_from_slice(&excess.to_le_bytes());
     write_integrity(&mut corrupt);
     assert!(matches!(
         ImmutableRelationalRowPage::decode(&corrupt, limits),

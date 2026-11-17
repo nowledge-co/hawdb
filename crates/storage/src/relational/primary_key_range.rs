@@ -420,15 +420,26 @@ mod tests {
         }
     }
 
-    fn timestamp_domain(variant: fn(i64) -> RelationalValue) -> Vec<RelationalValue> {
+    fn timestamp_domain(variant: fn(i128) -> RelationalValue) -> Vec<RelationalValue> {
         let (min, max) = (
             hawdb_core::sql_timestamp::min_micros(),
             hawdb_core::sql_timestamp::max_micros(),
         );
-        [min, min + 1, -1, 0, 1, max - 1, max]
-            .into_iter()
-            .map(variant)
-            .collect()
+        [
+            min,
+            min + 1,
+            -1,
+            0,
+            1,
+            i128::from(i64::MAX) - 1,
+            i128::from(i64::MAX),
+            i128::from(i64::MAX) + 1,
+            max - 1,
+            max,
+        ]
+        .into_iter()
+        .map(variant)
+        .collect()
     }
 
     #[test]

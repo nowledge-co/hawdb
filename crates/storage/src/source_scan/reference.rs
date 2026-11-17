@@ -143,8 +143,7 @@ pub(super) fn summary(segment_id: u64, rows: &[SourceScanRow]) -> SegmentSummary
         let dates = observed
             .iter()
             .filter_map(|(_, value)| value.as_ref().as_str())
-            .filter_map(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
-            .map(|value| value.timestamp_millis())
+            .filter_map(hawdb_core::temporal::parse_rfc3339_millis)
             .collect::<BTreeSet<_>>();
         let dictionary = observed
             .iter()

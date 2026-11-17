@@ -21,7 +21,7 @@ use hawdb_core::temporal;
 fn samples() -> Vec<Value> {
     vec![
         Value::Date(temporal::parse_date("2026-10-30").unwrap()),
-        Value::Date(temporal::NaiveDate::MAX),
+        Value::Date(temporal::Date::MAX),
         Value::LocalTime(temporal::parse_local_time("00:00:00.000000001").unwrap()),
         Value::LocalDateTime(temporal::parse_local_datetime("-0001-12-31T23:59:59").unwrap()),
         Value::DateTime(temporal::parse_datetime("2026-10-30T12:00:00+02:00").unwrap()),

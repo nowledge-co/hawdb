@@ -9,7 +9,7 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-chrono = { version = "0.4", default-features = false, features = ["std"] }
+time = { version = "0.3.55", default-features = false, features = ["std", "large-dates", "parsing", "formatting", "macros"] }
 getrandom = "0.4"
 uuid = "1"
 regex = "1"

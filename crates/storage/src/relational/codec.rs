@@ -2156,7 +2156,15 @@ impl<I: DecodeInput> Decoder<I> {
                 .map(RelationalValue::Decimal)
                 .map_err(|error| RelationalError::Corruption(error.to_string())),
             tag @ (10 | 11) => {
-                super::decode_timestamp_value(tag, i64::from_le_bytes(self.fixed()?))
+                let narrow = i64::from_le_bytes(self.fixed()?);
+                let excess = if narrow == hawdb_core::sql_timestamp::EXTENDED_MICROS {
+                    Some(u64::from_le_bytes(self.fixed()?))
+                } else {
+                    None
+                };
+                let micros = hawdb_core::sql_timestamp::join_micros(narrow, excess)
+                    .map_err(|error| RelationalError::Corruption(error.to_string()))?;
+                super::decode_timestamp_value(tag, micros)
             }
             8 => {
                 let bytes = self.bounded_bytes(self.limits.max_value_bytes, "VECTOR value")?;

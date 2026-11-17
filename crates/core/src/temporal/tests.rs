@@ -16,8 +16,8 @@ use std::collections::BTreeMap;
 
 use super::*;
 
-fn now() -> DateTime<Utc> {
-    DateTime::from_timestamp(1_793_361_600, 0).unwrap() // 2026-10-30T12:00:00Z
+fn now() -> OffsetDateTime {
+    datetime_from_timestamp(1_793_361_600, 0).unwrap() // 2026-10-30T12:00:00Z
 }
 
 fn call(function: TemporalFunction, arguments: &[Value]) -> TemporalResult<Value> {
@@ -657,7 +657,7 @@ fn comparable_ordering_is_same_kind_and_matches_total_order() {
 
 #[test]
 fn statement_clock_is_pinned_and_restored() {
-    let pinned = DateTime::from_timestamp(0, 0).unwrap();
+    let pinned = datetime_from_timestamp(0, 0).unwrap();
     with_statement_clock(pinned, || {
         assert_eq!(statement_now(), pinned);
         with_stable_statement_clock(|| assert_eq!(statement_now(), pinned));
@@ -699,4 +699,34 @@ fn function_names_resolve_case_insensitively() {
     assert!(DATE.reads_clock(0));
     assert!(!DATE.reads_clock(1));
     assert!(!TemporalFunction::Duration.reads_clock(0));
+}
+
+#[test]
+fn large_calendar_boundaries_and_offset_conversion_are_checked() {
+    for text in [
+        "-999999-01-01",
+        "+999999-12-31",
+        "-262143-01-01",
+        "+294276-12-31",
+    ] {
+        let value = date(text);
+        assert_eq!(value.to_string(), text);
+        let kind = codec::TemporalValueKind::of(&value).unwrap();
+        assert_eq!(
+            codec::decode_payload(kind, &codec::payload(&value).unwrap()).unwrap(),
+            value
+        );
+    }
+    assert!(parse_date("+1000000-01-01").is_err());
+    assert!(parse_date("-1000000-01-01").is_err());
+    assert!(parse_datetime("+999999-12-31T23:59:59-01:00").is_err());
+    assert!(parse_datetime("-999999-01-01T00:00:00+01:00").is_err());
+    let pin = parse_datetime("2026-10-30T13:00:00+01:00").unwrap();
+    with_statement_clock(pin, || {
+        assert_eq!(
+            evaluate(DATETIME, &[], statement_now()).unwrap(),
+            datetime("2026-10-30T12:00:00Z")
+        );
+        assert_eq!(statement_now().offset(), UtcOffset::UTC);
+    });
 }

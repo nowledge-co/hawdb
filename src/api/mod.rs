@@ -611,7 +611,7 @@ pub(super) struct DatabaseTransactionState {
     /// The transaction-start instant. Every SQL statement of the transaction
     /// pins the statement clock to it, so `CURRENT_TIMESTAMP`, `now()`,
     /// `LOCALTIMESTAMP` and clock defaults agree across the transaction.
-    sql_clock: hawdb_core::temporal::DateTime<hawdb_core::temporal::Utc>,
+    sql_clock: hawdb_core::temporal::OffsetDateTime,
 }
 
 struct SparseRelationalStatementStage {
@@ -674,7 +674,7 @@ pub struct DatabaseReadTransaction<S: crate::executor::ExecutionStore = GraphSto
     _pin: Arc<ReaderPin>,
     retained_runtime: Arc<retained_query::RetainedRuntime>,
     /// The read transaction's start instant, pinned for its SQL statements.
-    sql_clock: hawdb_core::temporal::DateTime<hawdb_core::temporal::Utc>,
+    sql_clock: hawdb_core::temporal::OffsetDateTime,
 }
 
 /// An immutable canonical view that can create independent query contexts.
