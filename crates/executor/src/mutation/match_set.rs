@@ -11,7 +11,7 @@
 //! partial effect.
 
 use super::node_set_value;
-use crate::binding::{map_memory_bytes, map_payload_bytes, value_memory_bytes, Binding};
+use crate::binding::{map_memory_bytes, value_memory_bytes, Binding};
 use crate::expression::evaluate_projection_expression;
 use crate::memory::DEFAULT_EXECUTION_BATCH_ROWS;
 use crate::pipeline::runtime_checkpoint;
@@ -250,30 +250,25 @@ pub fn resolve_match_set(
         output = project_returns(
             returns,
             &mut rows,
-            plan,
-            &records,
-            catalog,
+            ReturnContext {
+                plan,
+                records: &records,
+                catalog,
+                limits,
+                output_limits,
+            },
             charge,
             task_context,
         )?;
-        if output.len() > limits.max_result_rows.get() {
-            return Err(super::returns::result_rows_exceeded(
-                limits.max_result_rows.get(),
-                output.len() - limits.max_result_rows.get(),
+        let mut payload_bytes = 0;
+        for (admitted, row) in output.iter().enumerate() {
+            payload_bytes = super::returns::admit_return_row(
+                admitted,
+                payload_bytes,
+                row,
                 limits,
-            ));
-        }
-        let payload_bytes = output.iter().fold(0usize, |total, row| {
-            total.saturating_add(map_payload_bytes(row))
-        });
-        output_limits.validate(output.len(), payload_bytes)?;
-        if payload_bytes > limits.max_result_payload_bytes.get() {
-            let budget = limits.max_result_payload_bytes.get();
-            return Err(super::returns::result_payload_exceeded(
-                budget,
-                payload_bytes - budget,
-                limits,
-            ));
+                output_limits,
+            )?;
         }
     }
 
@@ -369,15 +364,28 @@ fn relationship_mutation(
 
 /// Projects every updated row, then applies DISTINCT, ORDER BY, SKIP and
 /// LIMIT to the returned rows. The SET already applied to every row.
+struct ReturnContext<'a> {
+    plan: &'a MatchSet<PhysicalPlan>,
+    records: &'a BTreeMap<MutationEntity, Loaded>,
+    catalog: &'a Catalog,
+    limits: MutationLimits,
+    output_limits: OutputLimits,
+}
+
 fn project_returns(
     returns: &MatchSetReturn,
     rows: &mut [InputRow],
-    plan: &MatchSet<PhysicalPlan>,
-    records: &BTreeMap<MutationEntity, Loaded>,
-    catalog: &Catalog,
+    context: ReturnContext<'_>,
     charge: &mut QueryMemoryLease,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<Vec<Row>> {
+    let ReturnContext {
+        plan,
+        records,
+        catalog,
+        limits,
+        output_limits,
+    } = context;
     let keys = returns
         .order_by
         .iter()
@@ -406,6 +414,8 @@ fn project_returns(
         .flatten();
     let mut projected = Vec::<(Row, Vec<Value>)>::new();
     let mut distinct = BTreeSet::<Vec<Value>>::new();
+    let mut returned_rows = 0usize;
+    let mut returned_bytes = 0usize;
     for (index, row) in rows.iter_mut().enumerate() {
         if needed.is_some_and(|needed| projected.len() >= needed) {
             break;
@@ -424,6 +434,39 @@ fn project_returns(
             if !distinct.insert(key) {
                 continue;
             }
+        }
+        // Refuse an over-limit result as soon as it is certain, instead of
+        // after projecting every row (#1803). Only rows in the final window
+        // count: DISTINCT still evaluates every input row, and ORDER BY must
+        // choose its window before payload and host-output admission.
+        if keys.is_empty() {
+            // Unsorted rows are returned in their post-DISTINCT input order.
+            let position = projected.len();
+            let selected = position >= returns.offset
+                && returns
+                    .limit
+                    .is_none_or(|limit| position - returns.offset < limit);
+            if selected {
+                returned_bytes = super::returns::admit_return_row(
+                    returned_rows,
+                    returned_bytes,
+                    &values,
+                    limits,
+                    output_limits,
+                )?;
+                returned_rows += 1;
+            }
+        } else if returns
+            .limit
+            .is_none_or(|limit| limit > limits.max_result_rows.get())
+            && projected.len().saturating_sub(returns.offset) >= limits.max_result_rows.get()
+        {
+            // Sorting cannot shrink the result below LIMIT or the rows left.
+            return Err(super::returns::result_rows_exceeded(
+                limits.max_result_rows.get(),
+                1,
+                limits,
+            ));
         }
         projected.push((values, sort_values));
     }

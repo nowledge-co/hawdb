@@ -383,9 +383,13 @@ pub(super) fn execute_graph_transaction_plan(
                 )?;
                 if !outcome.mutations.is_empty() {
                     if is_mutation_return {
+                        let staging_limits =
+                            hawdb_executor::mutation::mutation_return_staging_limits(
+                                mutation_limits,
+                            );
                         transaction.stage_mutations_without_commit_rows(
                             outcome.mutations,
-                            mutation_limits,
+                            staging_limits,
                         )?;
                     } else {
                         transaction

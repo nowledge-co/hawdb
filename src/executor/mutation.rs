@@ -121,11 +121,16 @@ pub(crate) fn execute_match_set<S: ExecutionStore>(
     let committed = if outcome.mutations.is_empty() {
         Vec::new()
     } else {
+        let staging_limits = if set.returns.is_some() {
+            hawdb_executor::mutation::mutation_return_staging_limits(limits)
+        } else {
+            limits
+        };
         hawdb_executor::store::GraphExecutionWrite::commit_mutations_with_limits(
             store,
             catalog,
             outcome.mutations,
-            limits,
+            staging_limits,
         )?
         .rows
     };

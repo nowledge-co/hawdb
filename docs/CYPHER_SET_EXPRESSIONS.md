@@ -71,7 +71,12 @@ columns above the read input.
    the statement's query memory (`ExecutionMemoryConfig.query_memory_bytes`
    or the runtime grant), separate from the read input's own account.
    Exceeding it refuses the statement with `ResourceBudgetExceeded` before
-   anything is written (#1801).
+   anything is written (#1801). The read input's working memory (for
+   example a `WITH` sort or aggregation) is charged to the read's own
+   account and released when the read finishes, so while the read input
+   runs a statement can hold up to twice `query_memory_bytes`: the read's
+   working memory and the rows collected so far. Afterwards it holds at
+   most one budget (#1803).
 3. SET items are applied in statement order. One item is evaluated for every
    row before it is applied, against the values the earlier items left.
    Within a row this is the sequential openCypher order
@@ -82,9 +87,24 @@ columns above the read input.
    keeps the first row of each distinct result, then `ORDER BY` sorts stably
    (equal keys keep the input order) and `SKIP`/`LIMIT` select the returned
    rows. Without `ORDER BY` and `DISTINCT`, rows past `SKIP + LIMIT` are not
-   projected.
+   projected. Mutation-result and host-output budgets count only the final
+   window after `DISTINCT`, `ORDER BY`, `SKIP` and `LIMIT`. Without
+   `ORDER BY`, selected rows are admitted as they are projected; DISTINCT
+   still evaluates every input row, including rows after a satisfied LIMIT.
+   With `ORDER BY`, the row limit is refused early once the final row count is
+   certain to exceed it, while payload and host-output budgets are checked
+   after sorting identifies the final window (#1803).
 5. The writes are committed as one mutation of per-entity values. Nothing is
    written before every row evaluated, so a failing row leaves no effect.
+
+When several rows write the same property of one entity, for example
+`UNWIND $values AS x MATCH (n {id: $id}) SET n.v = x`, the last row wins, as
+in Kùzu. A value that reads the property reads it as the earlier items left
+it, in every row, and RETURN shows every row after the whole SET. Kùzu
+evaluates such rows one at a time when it looks each row's node up
+separately, so its RETURN shows each row's own value and an accumulating
+`SET n.v = n.v + x` adds every row; in a cartesian product it evaluates a
+batch at once, as HawDB always does (#1803).
 
 A `SET` whose target variable is `NULL` (an unmatched `OPTIONAL MATCH`) is a
 no-op; the row is still returned. A statement that matches no row writes

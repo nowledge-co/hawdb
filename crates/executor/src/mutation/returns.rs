@@ -84,7 +84,7 @@ pub fn project_mutation_return_rows(
             if returns.offset > 0 || returns.limit == Some(0) {
                 return Ok(Vec::new());
             }
-            admit_row(0, 0, &row, limits, output_limits)?;
+            admit_return_row(0, 0, &row, limits, output_limits)?;
             return Ok(vec![row]);
         }
         SetNodePropertiesReturnMode::Project(items) => items,
@@ -115,7 +115,7 @@ pub fn project_mutation_return_rows(
                 project_value(item, catalog, &binding).map(|value| (item.name.clone(), value))
             })
             .collect::<Result<Row>>()?;
-        payload_bytes = admit_row(
+        payload_bytes = admit_return_row(
             output.len(),
             payload_bytes,
             &projected,
@@ -185,7 +185,7 @@ fn bind_row(
 
 /// Admits one more returned row after `admitted` rows of `payload_bytes`, and
 /// returns the new payload total.
-fn admit_row(
+pub(crate) fn admit_return_row(
     admitted: usize,
     payload_bytes: usize,
     row: &Row,
