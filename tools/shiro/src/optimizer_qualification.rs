@@ -135,7 +135,7 @@ fn qualify_optimizer_read_at_statement_clock(
     )
     .0;
     let mut report = OptimizerQualificationReport {
-        statement_clock: qualification_clock().to_rfc3339(),
+        statement_clock: hawdb::temporal::format_datetime(qualification_clock()),
         baseline,
         comparisons: Vec::with_capacity(variants.len()),
         different_plan_agreements: 0,
@@ -244,10 +244,12 @@ pub(super) fn execute_qualified(
     })
 }
 
-pub(super) fn qualification_clock() -> hawdb::temporal::DateTime<hawdb::temporal::Utc> {
+pub(super) fn qualification_clock() -> hawdb::temporal::OffsetDateTime {
     hawdb::temporal::pinned_statement_clock().unwrap_or_else(|| {
-        hawdb::temporal::DateTime::from_timestamp(1_793_361_600, 0)
-            .expect("fixed fuzz statement clock")
+        hawdb::temporal::OffsetDateTime::from_unix_timestamp_nanos(
+            i128::from(1_793_361_600) * 1_000_000_000,
+        )
+        .expect("fixed fuzz statement clock")
     })
 }
 

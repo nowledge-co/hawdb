@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use chrono::{DateTime, NaiveDate, NaiveDateTime};
 mod projection_scan;
 pub use projection_scan::{SearchProjectionScanBudget, SearchProjectionScanReport};
 #[doc(hidden)]
@@ -7517,27 +7516,7 @@ fn metadata_numeric_value(value: &str) -> Option<f64> {
 }
 
 fn metadata_timestamp_value(value: &str) -> Option<i64> {
-    let value = value.trim();
-    if value.is_empty() {
-        return None;
-    }
-    if let Ok(timestamp) = DateTime::parse_from_rfc3339(value) {
-        return Some(timestamp.timestamp_millis());
-    }
-    for format in [
-        "%Y-%m-%d %H:%M:%S%.f",
-        "%Y-%m-%dT%H:%M:%S%.f",
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%dT%H:%M:%S",
-    ] {
-        if let Ok(timestamp) = NaiveDateTime::parse_from_str(value, format) {
-            return Some(timestamp.and_utc().timestamp_millis());
-        }
-    }
-    NaiveDate::parse_from_str(value, "%Y-%m-%d")
-        .ok()
-        .and_then(|date| date.and_hms_opt(0, 0, 0))
-        .map(|timestamp| timestamp.and_utc().timestamp_millis())
+    hawdb_core::temporal::parse_metadata_millis(value)
 }
 
 fn metadata_range_gt(actual: &str, expected: &str) -> bool {

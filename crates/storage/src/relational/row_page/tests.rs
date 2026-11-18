@@ -135,10 +135,10 @@ fn timestamp_row_page_round_trips_and_rejects_out_of_range_payloads() {
         rows: [min, -1, max]
             .into_iter()
             .map(|micros| RelationalRowPageEntry {
-                primary_key: RelationalKey(vec![RelationalValue::Timestamp(micros)]),
+                primary_key: RelationalKey(vec![RelationalValue::Timestamp(micros.into())]),
                 row: RelationalRow::new(vec![
-                    RelationalValue::Timestamp(micros),
-                    RelationalValue::TimestampTz(micros),
+                    RelationalValue::Timestamp(micros.into()),
+                    RelationalValue::TimestampTz(micros.into()),
                     RelationalValue::Null,
                 ]),
             })
@@ -149,20 +149,28 @@ fn timestamp_row_page_round_trips_and_rejects_out_of_range_payloads() {
     let decoded = ImmutableRelationalRowPage::decode(&encoded, limits).unwrap();
     assert_eq!(decoded.rows, page.rows);
     let view = RelationalRowPageView::open(&encoded, limits).unwrap();
-    let key = RelationalKey(vec![RelationalValue::Timestamp(-1)]);
+    let key = RelationalKey(vec![RelationalValue::Timestamp((-1).into())]);
     assert_eq!(view.find_row(&key).unwrap(), Some(1));
     let projected = view.find_projected_row(&key, &[1]).unwrap().unwrap();
-    assert_eq!(projected.fields[0].value, RelationalValue::TimestampTz(-1));
+    assert_eq!(
+        projected.fields[0].value,
+        RelationalValue::TimestampTz((-1).into())
+    );
 
     // Overwrite the stored TIMESTAMPTZ of the last row with max + 1.
     let mut corrupt = encoded.clone();
     let mut needle = vec![11_u8];
-    needle.extend_from_slice(&max.to_le_bytes());
+    needle.extend_from_slice(
+        hawdb_core::sql_timestamp::encode_micros(max)
+            .unwrap()
+            .as_bytes(),
+    );
     let position = corrupt
         .windows(needle.len())
         .position(|window| window == needle.as_slice())
         .expect("encoded TIMESTAMPTZ payload");
-    corrupt[position + 1..position + 9].copy_from_slice(&(max + 1).to_le_bytes());
+    let excess = (max + 1 - i128::from(i64::MAX)) as u64;
+    corrupt[position + 9..position + 17].copy_from_slice(&excess.to_le_bytes());
     write_integrity(&mut corrupt);
     assert!(matches!(
         ImmutableRelationalRowPage::decode(&corrupt, limits),

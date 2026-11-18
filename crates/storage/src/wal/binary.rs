@@ -974,7 +974,7 @@ mod tests {
         use hawdb_core::temporal;
         vec![
             Value::Date(temporal::parse_date("2026-10-30").unwrap()),
-            Value::Date(temporal::NaiveDate::MIN),
+            Value::Date(temporal::Date::MIN),
             Value::LocalTime(temporal::parse_local_time("23:59:59.999999999").unwrap()),
             Value::LocalDateTime(temporal::parse_local_datetime("1969-12-31T23:59:59.5").unwrap()),
             Value::DateTime(temporal::parse_datetime("2026-10-30T12:00:00+02:00").unwrap()),

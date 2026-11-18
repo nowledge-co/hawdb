@@ -375,14 +375,12 @@ fn default_sql(column: &Column) -> Result<Option<String>> {
             Value::Decimal(item) => item.to_string(),
             Value::String(item) => sql_string(&item),
             Value::Uuid(item) => sql_string(&item.to_string()),
-            Value::LocalDateTime(_) | Value::DateTime(_) => {
-                let text = match value::decode(literal)? {
-                    Value::LocalDateTime(item) => item.to_string(),
-                    Value::DateTime(item) => item.to_string(),
-                    _ => unreachable!("matched timestamp default"),
-                };
-                sql_string(&text)
-            }
+            Value::LocalDateTime(item) => sql_string(&hawdb_core::sql_timestamp::format_timestamp(
+                hawdb_core::sql_timestamp::from_naive(item)?,
+            )?),
+            Value::DateTime(item) => sql_string(&hawdb_core::sql_timestamp::format_timestamptz(
+                hawdb_core::sql_timestamp::from_datetime(item)?,
+            )?),
             other => {
                 return Err(malformed(format!(
                     "column {} has a {other:?} default that format 1 cannot render",

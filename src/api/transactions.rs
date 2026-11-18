@@ -1404,10 +1404,10 @@ pub(super) fn relational_value_to_query_value(
             Ok(Value::Vector(value.clone()))
         }
         hawdb_storage::relational::RelationalValue::Timestamp(value) => {
-            hawdb_core::sql_timestamp::local_value(*value)
+            hawdb_core::sql_timestamp::local_value(value.get())
         }
         hawdb_storage::relational::RelationalValue::TimestampTz(value) => {
-            hawdb_core::sql_timestamp::zoned_value(*value)
+            hawdb_core::sql_timestamp::zoned_value(value.get())
         }
         hawdb_storage::relational::RelationalValue::Overflow(_) => {
             Err(HawDBError::StorageIntegrity(

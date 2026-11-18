@@ -44,7 +44,7 @@ fn constant_temporal_window_bounds_fold_to_native_property_comparisons() {
     let text = rendered(&plan);
     assert!(!text.contains("TemporalFunction"), "{text}");
     assert!(
-        text.contains("PropertyCompare { variable: \"m\", property: \"creationDate\", op: Lt, value: DateTime(2012-09-01T00:00:00+00:00)"),
+        text.contains("PropertyCompare { variable: \"m\", property: \"creationDate\", op: Lt, value: DateTime(2012-09-01 0:00:00.0 +00:00:00)"),
         "{text}"
     );
     // A reversed comparison flips its operator.
@@ -78,7 +78,9 @@ fn non_constant_invalid_and_duration_comparisons_stay_expressions() {
 
 #[test]
 fn clock_reads_bind_once_per_statement_to_the_pinned_clock() {
-    let pinned = temporal::DateTime::from_timestamp(86_400, 0).unwrap();
+    let pinned =
+        temporal::OffsetDateTime::from_unix_timestamp_nanos(i128::from(86_400) * 1_000_000_000)
+            .unwrap();
     let plan = temporal::with_statement_clock(pinned, || {
         plan_query(
             "MATCH (n:N) RETURN date() AS d, datetime() AS dt, localtime() AS t",
@@ -88,10 +90,10 @@ fn clock_reads_bind_once_per_statement_to_the_pinned_clock() {
     let text = rendered(&plan);
     assert!(text.contains("Literal(Date(1970-01-02))"), "{text}");
     assert!(
-        text.contains("Literal(DateTime(1970-01-02T00:00:00+00:00))"),
+        text.contains("Literal(DateTime(1970-01-02 0:00:00.0 +00:00:00))"),
         "{text}"
     );
-    assert!(text.contains("Literal(LocalTime(00:00:00))"), "{text}");
+    assert!(text.contains("Literal(LocalTime(0:00:00.0))"), "{text}");
 }
 
 #[test]

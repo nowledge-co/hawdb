@@ -47,7 +47,6 @@ _SEARCH_TEST_PROFILES = {
 
 _SEARCH_BASE_DEPS = [
     "@crate_index//:bitpacking",
-    "@crate_index//:chrono",
     "@crate_index//:fst",
     "@crate_index//:jieba-rs",
     "@crate_index//:regex",

@@ -7,11 +7,11 @@
 
 use super::*;
 use hawdb_core::sql_timestamp;
-use hawdb_core::temporal::{parse_datetime, with_statement_clock, DateTime, Utc};
+use hawdb_core::temporal::{parse_datetime, with_statement_clock, OffsetDateTime, UtcOffset};
 use std::time::Duration;
 
-fn instant(text: &str) -> DateTime<Utc> {
-    parse_datetime(text).unwrap().with_timezone(&Utc)
+fn instant(text: &str) -> OffsetDateTime {
+    parse_datetime(text).unwrap().to_offset(UtcOffset::UTC)
 }
 
 fn tz(text: &str) -> Value {
@@ -22,7 +22,7 @@ fn ts(text: &str) -> Value {
     sql_timestamp::local_value(sql_timestamp::parse_timestamp(text).unwrap()).unwrap()
 }
 
-fn micros(value: &Value) -> i64 {
+fn micros(value: &Value) -> i128 {
     match value {
         Value::DateTime(value) => sql_timestamp::from_datetime(*value).unwrap(),
         Value::LocalDateTime(value) => sql_timestamp::from_naive(*value).unwrap(),

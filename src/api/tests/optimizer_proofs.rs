@@ -435,14 +435,15 @@ fn bounded_order_candidates_share_one_automatic_statement_clock() {
     let Value::DateTime(instant) = rows[0]["observed"] else {
         panic!("expected a statement datetime");
     };
-    let zoned = instant.with_timezone(&hawdb_core::temporal::FixedOffset::east_opt(3600).unwrap());
+    let zoned =
+        instant.to_offset(hawdb_core::temporal::UtcOffset::from_whole_seconds(3600).unwrap());
     assert_eq!(rows.len(), 30);
     for (index, row) in rows.iter().enumerate() {
         assert_eq!(row["id"], Value::Int(index as i64));
         assert_eq!(row["observed"], Value::DateTime(instant));
         assert_eq!(
             row["stamp"],
-            Value::Int(instant.timestamp_nanos_opt().unwrap())
+            Value::Int(i64::try_from(instant.unix_timestamp_nanos()).unwrap())
         );
         assert_eq!(row["zoned"], Value::DateTime(zoned));
     }
@@ -450,13 +451,13 @@ fn bounded_order_candidates_share_one_automatic_statement_clock() {
 
 #[test]
 fn bounded_order_clock_replay_preserves_the_caller_pin_and_refuses_another_instant() {
-    use hawdb_core::temporal::{self, DateTime, TimeDelta};
+    use hawdb_core::temporal::{self, OffsetDateTime, SignedDuration};
 
     let db = fixture(64);
     let mut read = db.begin_read_transaction().unwrap();
     let query =
         "MATCH (n:Item) RETURN n.external AS id, datetime() AS observed ORDER BY id LIMIT 30";
-    let instant = DateTime::from_timestamp(1_793_361_600, 123).unwrap();
+    let instant = OffsetDateTime::from_unix_timestamp_nanos(1_793_361_600_000_000_123).unwrap();
     let previous = temporal::pinned_statement_clock();
     temporal::with_statement_clock(instant, || {
         let first = read
@@ -490,16 +491,13 @@ fn bounded_order_clock_replay_preserves_the_caller_pin_and_refuses_another_insta
         assert_eq!(replay.distinct_candidate_count, 2);
         for candidate in &replay.candidates {
             let output = &candidate.output.result.as_ref().unwrap().output;
-            assert_eq!(
-                output.rows[0]["observed"],
-                Value::DateTime(instant.fixed_offset())
-            );
+            assert_eq!(output.rows[0]["observed"], Value::DateTime(instant));
             assert_eq!(
                 *output,
                 first.candidates[0].output.result.as_ref().unwrap().output
             );
         }
-        let stale = temporal::with_statement_clock(instant + TimeDelta::seconds(1), || {
+        let stale = temporal::with_statement_clock(instant + SignedDuration::seconds(1), || {
             read.qualify_optimizer_bounded_order_candidate_requests(
                 crate::QueryRequest::new(query),
                 &requests,

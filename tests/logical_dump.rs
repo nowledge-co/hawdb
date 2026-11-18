@@ -369,6 +369,38 @@ const COMPARED_QUERIES: &[&str] = &[
 ];
 
 #[test]
+fn timestamp_defaults_keep_sql_text_across_logical_import() {
+    let temp = TempDir::new("timestamp-defaults");
+    let mut source = HawDBEmbedded::open(temp.path().join("source")).unwrap();
+    sql(&mut source, "CREATE TABLE clocks (id BIGINT PRIMARY KEY, early TIMESTAMP DEFAULT '4714-11-24 BC', late TIMESTAMPTZ DEFAULT '294276-12-31 23:59:59.999999Z', midnight TIMESTAMP DEFAULT '2024-01-02 00:00:00')");
+    sql(&mut source, "INSERT INTO clocks (id) VALUES (1)");
+    let dump = temp.path().join("dump");
+    source.export_logical_dump(&dump).unwrap();
+    let destination = temp.path().join("imported");
+    Database::import_logical_dump(&dump, &destination).unwrap();
+    let mut imported = HawDBEmbedded::open(&destination).unwrap();
+    sql(&mut imported, "INSERT INTO clocks (id) VALUES (2)");
+    let first = rows(
+        &mut source,
+        "SELECT early, late, midnight FROM clocks WHERE id = 1",
+    );
+    assert_eq!(
+        rows(
+            &mut imported,
+            "SELECT early, late, midnight FROM clocks WHERE id = 1"
+        ),
+        first
+    );
+    assert_eq!(
+        rows(
+            &mut imported,
+            "SELECT early, late, midnight FROM clocks WHERE id = 2"
+        ),
+        first
+    );
+}
+
+#[test]
 fn round_trip_preserves_relational_and_graph_data_exactly() {
     let temp = TempDir::new("round-trip");
     let source_path = temp.path().join("source");

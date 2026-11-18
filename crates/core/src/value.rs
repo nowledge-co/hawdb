@@ -18,7 +18,7 @@ use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use uuid::Uuid;
 
-use crate::temporal::{self, DateTime, Duration, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime};
+use crate::temporal::{self, Date, Duration, OffsetDateTime, PlainDateTime, Time};
 use crate::{Decimal, LogicalType, Vector, VectorRef};
 
 #[derive(Debug, Clone)]
@@ -35,15 +35,15 @@ pub enum Value {
     List(Vec<Value>),
     Map(BTreeMap<String, Value>),
     /// An openCypher `DATE`.
-    Date(NaiveDate),
+    Date(Date),
     /// An openCypher `LOCAL TIME` (time of day without an offset).
-    LocalTime(NaiveTime),
+    LocalTime(Time),
     /// An openCypher `LOCAL DATETIME`.
-    LocalDateTime(NaiveDateTime),
+    LocalDateTime(PlainDateTime),
     /// An openCypher `ZONED DATETIME` with a fixed UTC offset. Values order
     /// by instant and then by offset; equal instants in different offsets
     /// are distinct values.
-    DateTime(DateTime<FixedOffset>),
+    DateTime(OffsetDateTime),
     /// An openCypher `DURATION`, boxed so that `Value` stays 32 bytes; every
     /// value in memory pays for the largest variant.
     Duration(Box<Duration>),
@@ -72,10 +72,10 @@ pub enum ValueRef<'a> {
     Uuid(Uuid),
     List(&'a [Value]),
     Map(&'a BTreeMap<String, Value>),
-    Date(NaiveDate),
-    LocalTime(NaiveTime),
-    LocalDateTime(NaiveDateTime),
-    DateTime(DateTime<FixedOffset>),
+    Date(Date),
+    LocalTime(Time),
+    LocalDateTime(PlainDateTime),
+    DateTime(OffsetDateTime),
     Duration(&'a Duration),
 }
 
@@ -184,9 +184,9 @@ impl Value {
 
 /// Hashes the components [`temporal::datetime_cmp`] compares, so that
 /// `Hash` agrees with `Eq` for zoned datetimes.
-fn hash_datetime<H: Hasher>(value: &DateTime<FixedOffset>, state: &mut H) {
-    value.naive_utc().hash(state);
-    value.offset().local_minus_utc().hash(state);
+fn hash_datetime<H: Hasher>(value: &OffsetDateTime, state: &mut H) {
+    value.unix_timestamp_nanos().hash(state);
+    value.offset().whole_seconds().hash(state);
 }
 
 impl<'a> ValueRef<'a> {
