@@ -48,6 +48,14 @@ fn sql_octet_length_projects_bytes_through_streams_sorts_and_joins() {
             assert_eq!(row["payload_bytes"], payload, "{sql}");
         }
     }
+    let coalesced = database.query_sql(
+        "SELECT id, COALESCE(OCTET_LENGTH(body), 0) AS body_bytes, COALESCE(OCTET_LENGTH(payload), 0) AS payload_bytes FROM lengths ORDER BY id",
+    ).unwrap();
+    for (row, (body_bytes, payload_bytes)) in coalesced.rows.iter().zip([(6, 3), (0, 0), (0, 0)]) {
+        assert_eq!(row["body_bytes"], Value::Int(body_bytes));
+        assert_eq!(row["payload_bytes"], Value::Int(payload_bytes));
+    }
+    assert_eq!(coalesced.rows.len(), 3);
     let output = database.query_sql_with_params(
         "SELECT octet_length($1) AS bytes, octet_length('') AS empty, octet_length(NULL) AS absent FROM lengths WHERE id = 1",
         &[Value::String("\u{e9}\u{1f980}".into())],
@@ -103,6 +111,15 @@ fn sql_octet_length_refuses_invalid_inputs_even_without_rows() {
                 .contains("OCTET_LENGTH requires TEXT or BYTEA input"),
             "{expression}: {error}"
         );
+    }
+    for sql in [
+        "SELECT id FROM lengths WHERE octet_length(id) = 1",
+        "SELECT id FROM lengths WHERE id = 1 AND octet_length(id) = 1",
+        "SELECT a.id FROM lengths AS a JOIN lengths AS b ON a.id = b.id WHERE octet_length(a.id) = 1",
+        "SELECT a.id FROM lengths AS a JOIN lengths AS b ON octet_length(a.id) = 1",
+    ] {
+        let error = database.query_sql(sql).expect_err("predicate types must not depend on rows or access path");
+        assert!(error.to_string().contains("OCTET_LENGTH requires TEXT or BYTEA input"), "{sql}: {error}");
     }
     for expression in [
         "octet_length()",

@@ -6,9 +6,12 @@ uses the existing SQL crate, relational crate and root general unit CI owners.
 without admitting aggregates into WHERE. Root
 `api::tests::relational_octet_length` checks TEXT/BYTEA byte counts, NULL/empty
 values, parameters, Boolean predicates, ordinary/ordered/joined projection,
-aggregate composition and invalid inputs on empty tables. Relational
+aggregate composition, COALESCE fallback and invalid inputs on empty tables
+across scans, point reads and joins. Relational
 `query::tests::octet_length` keeps 96 KiB overflow payloads metadata-only through
-scans, sorts and predicates. No new lane, profile, timeout or feature is added.
+scans, sorts and predicates; mixed raw-value comparisons still hydrate and
+compare the full value, including a same-length negative control. No new lane,
+profile, timeout or feature is added.
 Focused local entry points are `cargo test --locked -p hawdb --lib sql_octet_length`,
 `cargo test --locked -p hawdb-relational octet_length` and
 `cargo test --locked -p hawdb-sql parses_octet_length_in_predicate_scalar_positions`.

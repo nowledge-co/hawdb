@@ -58,7 +58,7 @@ pub(super) fn projection_uses_non_aggregate_scalar_function(
     })
 }
 
-pub(super) fn validate_non_aggregate_coalesce_projections(
+pub(super) fn validate_non_aggregate_scalar_expressions(
     select: &SelectStatement,
     parameters: &[Value],
     state: &RelationalState,
@@ -82,7 +82,21 @@ pub(super) fn validate_non_aggregate_coalesce_projections(
             infer_coalesce_scalar_type(expression, select, parameters, state)?;
         }
     }
-    Ok(())
+    let mut validation = Ok(());
+    for predicate in select
+        .selection
+        .iter()
+        .chain(select.joins.iter().map(|join| &join.on))
+    {
+        predicate.visit(&mut |expression| {
+            if validation.is_ok()
+                && matches!(&expression.kind, ExprKind::Function { name, .. } if name == "octet_length")
+            {
+                validation = infer_coalesce_scalar_type(expression, select, parameters, state).map(|_| ());
+            }
+        });
+    }
+    validation
 }
 
 pub(super) fn infer_coalesce_scalar_type(
@@ -574,7 +588,9 @@ pub(super) fn evaluate_coalesce(
             Expr {
                 kind: ExprKind::Function { name, .. },
                 ..
-            } if hawdb_core::VectorDistance::from_function_name(name).is_some() => {
+            } if name == "octet_length"
+                || hawdb_core::VectorDistance::from_function_name(name).is_some() =>
+            {
                 evaluate_projection_expression(expression, row, parameters)?
             }
             Expr {
