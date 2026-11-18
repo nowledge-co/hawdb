@@ -37,6 +37,7 @@ struct BoundStreamingColumn {
 #[derive(Clone, Copy)]
 enum BoundStreamingValue {
     Column(usize),
+    OctetLength(usize),
     UuidV7,
 }
 
@@ -75,6 +76,31 @@ impl BoundStreamingProjection {
                     });
                 }
                 SelectProjection::Expression { expression, alias } => match expression {
+                    Expr {
+                        kind:
+                            ExprKind::Function {
+                                name,
+                                arguments,
+                                distinct: false,
+                                filter: None,
+                            },
+                        ..
+                    } if name == "octet_length" => {
+                        let argument = crate::query_value::octet_length_argument(arguments)?;
+                        let ordinal = bind_streaming_column(
+                            argument.require_column()?,
+                            schema,
+                            table,
+                            qualifier,
+                        )?;
+                        crate::query_value::validate_octet_length_type(Some(
+                            schema.columns[ordinal].scalar_type.logical_type(),
+                        ))?;
+                        columns.push(BoundStreamingColumn {
+                            value: BoundStreamingValue::OctetLength(ordinal),
+                            output_name: alias.clone().unwrap_or_else(|| name.clone()),
+                        });
+                    }
                     Expr {
                         kind:
                             ExprKind::Function {
@@ -138,6 +164,10 @@ impl BoundStreamingProjection {
                         row.value(ordinal)?.estimated_payload_bytes()
                     }
                     BoundStreamingValue::UuidV7 => 16,
+                    BoundStreamingValue::OctetLength(ordinal) => {
+                        crate::query_value::octet_length(row.value(ordinal)?)?
+                            .estimated_payload_bytes()
+                    }
                 };
                 Ok::<_, HawDBError>(
                     bytes
@@ -164,6 +194,10 @@ impl BoundStreamingProjection {
                         row.value(ordinal)?.estimated_payload_bytes()
                     }
                     BoundStreamingValue::UuidV7 => 16,
+                    BoundStreamingValue::OctetLength(ordinal) => {
+                        crate::query_value::octet_length(row.value(ordinal)?)?
+                            .estimated_payload_bytes()
+                    }
                 };
                 Ok::<_, HawDBError>(bytes.saturating_add(payload))
             })?;
@@ -184,6 +218,9 @@ impl BoundStreamingProjection {
                     relational_ref_to_value(row.value(ordinal)?)?
                 }
                 BoundStreamingValue::UuidV7 => Value::Uuid(hawdb_core::generate_uuidv7()?),
+                BoundStreamingValue::OctetLength(ordinal) => {
+                    relational_ref_to_value(crate::query_value::octet_length(row.value(ordinal)?)?)?
+                }
             };
             *payload_bytes =
                 payload_bytes.saturating_add(hawdb_executor::query_value_payload_bytes(&value));

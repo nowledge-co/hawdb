@@ -33,6 +33,7 @@ mod decimal;
 mod distinct_output;
 mod exact_count_planning;
 mod having;
+mod octet_length;
 mod ordinary_aggregate;
 mod projection_admission;
 mod text_search_admission;

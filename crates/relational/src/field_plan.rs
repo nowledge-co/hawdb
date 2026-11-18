@@ -86,6 +86,7 @@ pub struct RelationalFieldPlan {
     scan_fields: BTreeMap<String, Arc<[usize]>>,
     scan_hydration_fields: BTreeMap<String, Arc<[usize]>>,
     output_fields: BTreeMap<String, Arc<[usize]>>,
+    output_hydration_fields: BTreeMap<String, Arc<[usize]>>,
 }
 
 impl RelationalFieldPlan {
@@ -116,6 +117,7 @@ impl RelationalFieldPlan {
         Self {
             scan_fields,
             scan_hydration_fields,
+            output_hydration_fields: output_fields.clone(),
             output_fields,
         }
     }
@@ -126,6 +128,10 @@ impl RelationalFieldPlan {
 
     pub fn scan_hydration_fields(&self, table: &str) -> Result<&[usize]> {
         Self::fields(&self.scan_hydration_fields, table)
+    }
+
+    pub(crate) fn output_hydration_fields(&self, table: &str) -> Result<&[usize]> {
+        Self::fields(&self.output_hydration_fields, table)
     }
 
     pub fn output_fields(&self, table: &str) -> Result<&[usize]> {
@@ -200,11 +206,9 @@ pub fn plan_relational_execution_field_plan(
         output_fields.clone()
     };
     let scan_hydration_fields = plan_scan_hydration_fields(select, state, &scan_fields)?;
-    Ok(RelationalFieldPlan::new(
-        scan_fields,
-        scan_hydration_fields,
-        output_fields,
-    ))
+    let mut plan = RelationalFieldPlan::new(scan_fields, scan_hydration_fields, output_fields);
+    plan.output_hydration_fields = plan_scan_hydration_fields(select, state, &plan.output_fields)?;
+    Ok(plan)
 }
 
 pub fn single_count_distinct_column(
@@ -358,10 +362,10 @@ fn plan_scan_hydration_fields(
     }
     let mut raw_references = Vec::new();
     if let Some(selection) = &select.selection {
-        collect_expression_columns(selection, &mut raw_references);
+        collect_expression_hydration_columns(selection, &mut metadata_columns, &mut value_columns);
     }
     for join in &select.joins {
-        collect_expression_columns(&join.on, &mut raw_references);
+        collect_expression_hydration_columns(&join.on, &mut metadata_columns, &mut value_columns);
     }
     raw_references.extend(select.group_by.iter());
     for item in &select.order_by {
@@ -604,7 +608,7 @@ fn collect_expression_hydration_columns(
                 }
             }
             if let Some(filter) = filter {
-                collect_predicate_hydration_columns(filter, value_columns);
+                collect_expression_hydration_columns(filter, metadata_columns, value_columns);
             }
         }
         Expr {
@@ -656,17 +660,6 @@ fn collect_expression_hydration_columns(
             collect_expression_hydration_columns(pattern, metadata_columns, value_columns);
         }
     }
-}
-
-fn collect_predicate_hydration_columns(
-    predicate: &SqlPredicate,
-    value_columns: &mut Vec<SqlColumnRef>,
-) {
-    predicate.visit(&mut |expression| {
-        if let Some(column) = expression.as_column() {
-            value_columns.push(column.clone());
-        }
-    });
 }
 
 fn collect_expression_columns<'a>(

@@ -173,6 +173,7 @@ mod relational_explain_output;
 mod relational_from_scopes;
 mod relational_having;
 mod relational_intermediate_row_limit;
+mod relational_octet_length;
 mod relational_ordering;
 mod relational_overlay_scans;
 mod relational_primary_key_range;
