@@ -767,15 +767,6 @@ impl Lowerer<'_> {
         if let Some(filter) = &filter {
             span = union(span, filter.span);
         }
-        if name == "octet_length"
-            && (*distinct
-                || filter.is_some()
-                || !matches!(arguments.as_slice(), [SqlFunctionArgument::Expression(_)]))
-        {
-            return Err(semantic(
-                "OCTET_LENGTH requires exactly one scalar argument without DISTINCT or FILTER",
-            ));
-        }
         if hawdb_core::VectorDistance::from_function_name(&name).is_some() {
             if *distinct
                 || filter.is_some()

@@ -86,6 +86,7 @@ pub struct RelationalFieldPlan {
     scan_fields: BTreeMap<String, Arc<[usize]>>,
     scan_hydration_fields: BTreeMap<String, Arc<[usize]>>,
     output_fields: BTreeMap<String, Arc<[usize]>>,
+    output_hydration_fields: BTreeMap<String, Arc<[usize]>>,
 }
 
 impl RelationalFieldPlan {
@@ -116,6 +117,7 @@ impl RelationalFieldPlan {
         Self {
             scan_fields,
             scan_hydration_fields,
+            output_hydration_fields: output_fields.clone(),
             output_fields,
         }
     }
@@ -126,6 +128,10 @@ impl RelationalFieldPlan {
 
     pub fn scan_hydration_fields(&self, table: &str) -> Result<&[usize]> {
         Self::fields(&self.scan_hydration_fields, table)
+    }
+
+    pub(crate) fn output_hydration_fields(&self, table: &str) -> Result<&[usize]> {
+        Self::fields(&self.output_hydration_fields, table)
     }
 
     pub fn output_fields(&self, table: &str) -> Result<&[usize]> {
@@ -200,11 +206,9 @@ pub fn plan_relational_execution_field_plan(
         output_fields.clone()
     };
     let scan_hydration_fields = plan_scan_hydration_fields(select, state, &scan_fields)?;
-    Ok(RelationalFieldPlan::new(
-        scan_fields,
-        scan_hydration_fields,
-        output_fields,
-    ))
+    let mut plan = RelationalFieldPlan::new(scan_fields, scan_hydration_fields, output_fields);
+    plan.output_hydration_fields = plan_scan_hydration_fields(select, state, &plan.output_fields)?;
+    Ok(plan)
 }
 
 pub fn single_count_distinct_column(

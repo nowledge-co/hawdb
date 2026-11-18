@@ -442,7 +442,8 @@ impl<'a> RelationalRowRuntime<'a> {
         key: &RelationalKey,
     ) -> Result<Option<RelationalReadRow>> {
         let fields = self.fields.output_fields(table)?;
-        self.read_point_with_fields(table, key, fields, fields)
+        let hydration_fields = self.fields.output_hydration_fields(table)?;
+        self.read_point_with_fields(table, key, fields, hydration_fields)
     }
 
     /// Reads each distinct key once while retaining the caller-owned mapping
