@@ -187,6 +187,9 @@ name = "deranged"
 version = "0.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e9de72ce2ad1f90dc62fa25f0f430ef85eb4b0d8fa0be4f30373bc40a21d28e"
+dependencies = [
+ "powerfmt",
+]
 
 [[package]]
 name = "digest"
@@ -281,7 +284,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "getrandom",
  "hawdb-analytics",
@@ -327,14 +330,14 @@ dependencies = [
 
 [[package]]
 name = "hawdb-analytics"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "hawdb-core",
 ]
 
 [[package]]
 name = "hawdb-artifact"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "hawdb-core",
  "hawdb-executor",
@@ -343,7 +346,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-bootstrap"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "hawdb-core",
  "hawdb-integrity",
@@ -354,15 +357,15 @@ dependencies = [
 
 [[package]]
 name = "hawdb-cascades"
-version = "0.35.0"
+version = "0.35.1"
 
 [[package]]
 name = "hawdb-cgroup"
-version = "0.35.0"
+version = "0.35.1"
 
 [[package]]
 name = "hawdb-compat"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "hawdb-analytics",
  "hawdb-core",
@@ -375,7 +378,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-core"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "getrandom",
  "num-bigint",
@@ -389,7 +392,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-cypher"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "hawdb-core",
  "hawdb-ddl",
@@ -401,14 +404,14 @@ dependencies = [
 
 [[package]]
 name = "hawdb-ddl"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "hawdb-core",
 ]
 
 [[package]]
 name = "hawdb-evidence"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "hawdb-core",
  "hawdb-integrity",
@@ -418,7 +421,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-executor"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "fs2",
  "hawdb-analytics",
@@ -433,7 +436,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-explain"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "hawdb-core",
  "hawdb-executor",
@@ -447,14 +450,14 @@ dependencies = [
 
 [[package]]
 name = "hawdb-expression"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "hawdb-core",
 ]
 
 [[package]]
 name = "hawdb-fuzz-contracts"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "hawdb-core",
  "serde_json",
@@ -462,7 +465,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-integrity"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "crc32c",
  "sha2",
@@ -470,7 +473,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-nowledge-contracts"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "hawdb-core",
  "hawdb-qos",
@@ -482,7 +485,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-optimizer"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "hawdb-cascades",
  "hawdb-optimizer-graph",
@@ -493,7 +496,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-optimizer-graph"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "hawdb-cascades",
  "hawdb-core",
@@ -506,7 +509,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-optimizer-predicate"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "hawdb-cascades",
  "serde_json",
@@ -514,7 +517,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-optimizer-relational"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "hawdb-cascades",
  "hawdb-core",
@@ -523,7 +526,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-optimizer-vector"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "hawdb-cascades",
  "hawdb-plan-core",
@@ -531,7 +534,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-plan-cache"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "hawdb-core",
  "hawdb-cypher",
@@ -542,11 +545,11 @@ dependencies = [
 
 [[package]]
 name = "hawdb-plan-core"
-version = "0.35.0"
+version = "0.35.1"
 
 [[package]]
 name = "hawdb-plan-cypher"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "hawdb-core",
  "hawdb-cypher",
@@ -558,7 +561,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-qos"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "hawdb-cgroup",
  "hawdb-core",
@@ -570,7 +573,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-qualification"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "hawdb",
  "hawdb-query",
@@ -582,14 +585,14 @@ dependencies = [
 
 [[package]]
 name = "hawdb-query"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "sha2",
 ]
 
 [[package]]
 name = "hawdb-query-policy"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "hawdb-core",
  "hawdb-cypher",
@@ -599,7 +602,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-readiness"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "hawdb-core",
  "hawdb-cypher",
@@ -617,7 +620,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-relational"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "hawdb-core",
  "hawdb-executor",
@@ -630,7 +633,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-resource-profile"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "hawdb-core",
  "hawdb-evidence",
@@ -641,14 +644,14 @@ dependencies = [
 
 [[package]]
 name = "hawdb-route-ownership"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "hawdb-runtime-tokio"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "hawdb-core",
  "hawdb-qos",
@@ -658,7 +661,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-search"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "bitpacking",
  "fst",
@@ -685,7 +688,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-sql"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "caseless",
  "hawdb-core",
@@ -700,11 +703,11 @@ dependencies = [
 
 [[package]]
 name = "hawdb-sql-syntax"
-version = "0.35.0"
+version = "0.35.1"
 
 [[package]]
 name = "hawdb-storage"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "fs2",
  "hawdb-analytics",
@@ -723,7 +726,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-system-sql"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "hawdb-core",
  "hawdb-executor",
@@ -737,7 +740,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-telemetry"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "hawdb-qos",
  "opentelemetry",
@@ -745,7 +748,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-test-contracts"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "hawdb",
  "hawdb-storage",
@@ -753,7 +756,7 @@ dependencies = [
 
 [[package]]
 name = "hawdb-vector-projection"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "crc32fast",
  "hawdb-core",
@@ -1279,11 +1282,12 @@ dependencies = [
 
 [[package]]
 name = "time"
-version = "0.3.55"
+version = "0.3.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cdb87b95ec50ddfa440816d227a17b2ccbdda963a316a727fda0fc4334f7d134"
+checksum = "743bd48c283afc0388f9b8827b976905fb217ad9e647fae3a379a9283c4def2c"
 dependencies = [
  "deranged",
+ "itoa",
  "num-conv",
  "powerfmt",
  "serde_core",
@@ -1293,15 +1297,15 @@ dependencies = [
 
 [[package]]
 name = "time-core"
-version = "0.1.9"
+version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e1c906769ad99c88eaa54e728060edef082f8e358ff32030cb7c7d315e81109"
+checksum = "7694e1cfe791f8d31026952abf09c69ca6f6fa4e1a1229e18988f06a04a12dca"
 
 [[package]]
 name = "time-macros"
-version = "0.2.32"
+version = "0.2.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e689342a48d2ea927c87ea50cabf8594854bf940e9310208848d680d668ed85"
+checksum = "2e70e4c5a0e0a8a4823ad65dfe1a6930e4f4d756dcd9dd7939022b5e8c501215"
 dependencies = [
  "num-conv",
  "time-core",
