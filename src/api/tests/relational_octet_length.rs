@@ -90,7 +90,9 @@ fn sql_octet_length_predicates_preserve_nulls_parameters_and_aggregate_results()
 #[test]
 fn sql_octet_length_refuses_invalid_inputs_even_without_rows() {
     let mut database = fixture();
-    database.query_sql("DELETE FROM lengths").unwrap();
+    database
+        .query_sql("DELETE FROM lengths WHERE id >= 1")
+        .unwrap();
     for expression in ["octet_length(id)", "octet_length(1)", "octet_length(TRUE)"] {
         let error = database
             .query_sql(&format!("SELECT {expression} FROM lengths"))
