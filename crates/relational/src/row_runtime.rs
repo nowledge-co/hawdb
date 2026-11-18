@@ -442,6 +442,17 @@ impl<'a> RelationalRowRuntime<'a> {
         key: &RelationalKey,
     ) -> Result<Option<RelationalReadRow>> {
         let fields = self.fields.output_fields(table)?;
+        self.read_point_with_fields(table, key, fields, fields)
+    }
+
+    /// SQL projection may need only a field's NULL marker or byte length.
+    /// Explicit output reads above retain their full-hydration contract.
+    pub(crate) fn read_output_point_for_projection(
+        &self,
+        table: &str,
+        key: &RelationalKey,
+    ) -> Result<Option<RelationalReadRow>> {
+        let fields = self.fields.output_fields(table)?;
         let hydration_fields = self.fields.output_hydration_fields(table)?;
         self.read_point_with_fields(table, key, fields, hydration_fields)
     }

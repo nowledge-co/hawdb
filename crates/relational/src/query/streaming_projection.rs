@@ -95,7 +95,7 @@ pub(super) fn execute_ordered_index_projection<'a>(
                 ))
             })?;
             let row = row_runtime
-                .read_output_point(&select.from_table().name, locator.primary_key())?
+                .read_output_point_for_projection(&select.from_table().name, locator.primary_key())?
                 .ok_or_else(|| {
                     HawDBError::StorageIntegrity(format!(
                         "relational index {name} on table {} points to missing row {:?}",
