@@ -3,6 +3,13 @@
 HawDB implements the openCypher temporal types as native `Value` variants
 built on [time](https://docs.rs/time) 0.3 with `large-dates` (issues #1361 and #1831).
 
+The minimum supported `time` version is 0.3.47, allowing hosts with Lance 9's
+exact dependency to share one temporal crate. The facade preserves
+`PlainDateTime` and `SignedDuration` through compatibility names available in
+both the minimum and newer 0.3 releases. This changes dependency composition,
+not temporal algorithms or binary encodings. See
+[the compatibility issue](https://github.com/nowledge-co/hawdb/issues/1837).
+
 ## Types
 
 | Cypher type | `Value` variant | Rust type | Notes |
