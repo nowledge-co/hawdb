@@ -1,6 +1,6 @@
 {
   "name": "@nowledge/hawdb-node",
-  "version": "0.34.0",
+  "version": "0.35.0",
   "private": true,
   "type": "module",
   "exports": {
