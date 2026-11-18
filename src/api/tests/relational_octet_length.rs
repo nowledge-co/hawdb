@@ -73,6 +73,12 @@ fn sql_octet_length_predicates_preserve_nulls_parameters_and_aggregate_results()
     assert_eq!(nulls.rows.len(), 2);
     assert_eq!(nulls.rows[0]["id"], Value::Int(2));
     assert_eq!(nulls.rows[1]["id"], Value::Int(3));
+    let joined = database.query_sql(
+        "SELECT a.id FROM lengths AS a JOIN lengths AS b ON a.id = b.id AND octet_length(a.body) = octet_length(b.body) ORDER BY a.id",
+    ).unwrap();
+    assert_eq!(joined.rows.len(), 2);
+    assert_eq!(joined.rows[0]["id"], Value::Int(1));
+    assert_eq!(joined.rows[1]["id"], Value::Int(2));
     let total = database
         .query_sql(
             "SELECT SUM(OCTET_LENGTH(body)) AS bytes FROM lengths WHERE octet_length(payload) <= 3",

@@ -358,10 +358,10 @@ fn plan_scan_hydration_fields(
     }
     let mut raw_references = Vec::new();
     if let Some(selection) = &select.selection {
-        collect_expression_columns(selection, &mut raw_references);
+        collect_expression_hydration_columns(selection, &mut metadata_columns, &mut value_columns);
     }
     for join in &select.joins {
-        collect_expression_columns(&join.on, &mut raw_references);
+        collect_expression_hydration_columns(&join.on, &mut metadata_columns, &mut value_columns);
     }
     raw_references.extend(select.group_by.iter());
     for item in &select.order_by {
@@ -604,7 +604,7 @@ fn collect_expression_hydration_columns(
                 }
             }
             if let Some(filter) = filter {
-                collect_predicate_hydration_columns(filter, value_columns);
+                collect_expression_hydration_columns(filter, metadata_columns, value_columns);
             }
         }
         Expr {
@@ -656,17 +656,6 @@ fn collect_expression_hydration_columns(
             collect_expression_hydration_columns(pattern, metadata_columns, value_columns);
         }
     }
-}
-
-fn collect_predicate_hydration_columns(
-    predicate: &SqlPredicate,
-    value_columns: &mut Vec<SqlColumnRef>,
-) {
-    predicate.visit(&mut |expression| {
-        if let Some(column) = expression.as_column() {
-            value_columns.push(column.clone());
-        }
-    });
 }
 
 fn collect_expression_columns<'a>(
