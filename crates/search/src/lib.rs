@@ -2235,9 +2235,9 @@ impl SearchIndex {
     /// delta are unaffected. A full rebuild from the graph carries the current
     /// document of every live node of these kinds over unchanged, dropping
     /// documents whose node no longer exists, and metadata repair leaves them
-    /// untouched. Both raise the persisted rows-required epoch of a
-    /// persistent index, so the host re-pushes its rows. The set is not persisted by the index; an
-    /// embedded store records it with
+    /// untouched. Both raise the persisted rows-required fence of a
+    /// persistent index, so the host re-pushes its rows. The set is not
+    /// persisted by the index; an embedded store records it with
     /// `EmbeddedStoreOpenOptions::with_externally_owned_search_kinds`.
     pub fn set_externally_owned_kinds(&mut self, kinds: BTreeSet<SearchProjectionKind>) {
         self.externally_owned_kinds = kinds;
@@ -2247,14 +2247,16 @@ impl SearchIndex {
         &self.externally_owned_kinds
     }
 
-    /// Raises the persisted rows-required epoch before a rebuild or metadata
+    /// Raises the persisted rows-required fence before a rebuild or metadata
     /// repair of a projection with externally owned kinds (#1814).
     ///
     /// Carry-over keeps the documents the index holds, but host writes that
     /// have not reached this index (for example to another directory during
     /// an out-of-core rebuild) cannot be proven present, so the host always
     /// re-pushes after maintenance. Raising first keeps a failed rebuild
-    /// fail-safe. An unreadable state is replaced by a time-based epoch.
+    /// fail-safe. An unreadable state fails closed; if a valid state disappears
+    /// after open, the raise creates a fresh incarnation that rejects retained
+    /// acknowledgements from the removed state.
     fn raise_externally_owned_rows_required(&self) -> Result<()> {
         if self.externally_owned_kinds.is_empty() {
             return Ok(());
@@ -2262,9 +2264,7 @@ impl SearchIndex {
         let Some(path) = self.path.as_deref() else {
             return Ok(());
         };
-        let raised =
-            projection_ownership::raised_after(projection_ownership::read_rows_state(path));
-        projection_ownership::write_rows_state(path, raised)
+        projection_ownership::raise_rows_required(path).map(|_| ())
     }
 
     pub fn upsert(&mut self, document: SearchDocument) -> Result<()> {

@@ -20,8 +20,8 @@
 //! directory, beside the existing `.reindex_needed` markers, carry this:
 //!
 //! - [`MARKER`] records the set passed at open;
-//! - [`ROWS_MARKER`] records whether the host must (re)supply its rows, as a
-//!   monotonically increasing epoch.
+//! - [`ROWS_MARKER`] records whether the host must (re)supply its rows, fenced
+//!   by a projection incarnation and an epoch within that incarnation.
 //!
 //! Neither is a selector manifest field: readers from 0.31 through 0.33
 //! refuse unknown manifest fields, while they ignore these files (they parse
@@ -30,17 +30,17 @@
 //! readable after a downgrade.
 //!
 //! Recovery rule: when no set record exists, a maintenance open records the
-//! requested set and raises the rows-required epoch, because nothing proves
+//! requested set and creates the rows-required fence, because nothing proves
 //! the host's rows are present (a new projection, or a record removed out of
 //! band). When a record exists and differs from the requested set, the open
 //! is refused with [`HawDBError::SearchProjectionOwnershipMismatch`]; nothing
 //! diverges silently between, for example, a preparation flow and a runtime.
 //! An unparsable record is the typed, non-poisoning
 //! [`HawDBError::SearchProjectionOwnershipMarkerCorrupt`]; [`reset`] rewrites
-//! both records and raises the epoch.
+//! both records with a fresh incarnation.
 
 use crate::SearchProjectionKind;
-use hawdb_core::{HawDBError, Result};
+use hawdb_core::{HawDBError, Result, Uuid};
 use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::{ErrorKind, Read, Write};
@@ -51,8 +51,8 @@ pub const MARKER: &str = ".externally_owned_search_kinds";
 /// File name of the rows-required state inside the projection directory.
 pub const ROWS_MARKER: &str = ".externally_owned_rows_required";
 const HEADER: &str = "hawdb externally owned search kinds v1";
-const ROWS_HEADER: &str = "hawdb externally owned rows v1";
-/// Headers, six kind names, an epoch and their separators fit comfortably.
+const ROWS_HEADER: &str = "hawdb externally owned rows v2";
+/// Headers, six kind names, an incarnation, an epoch and their separators fit comfortably.
 const MAX_MARKER_BYTES: u64 = 4096;
 
 /// Whether `name` is a record or one of its write temporaries. Generation
@@ -64,31 +64,49 @@ pub(crate) fn is_record_name(name: &str) -> bool {
     })
 }
 
-/// Whether the host must (re)supply the documents of its externally owned
-/// kinds.
+/// The fencing token the host must acknowledge after supplying its externally
+/// owned rows.
 ///
-/// `epoch` only grows. It is raised whenever HawDB cannot prove the host's
-/// documents are present: when ownership is first recorded for a projection
-/// directory, or when a rebuild could not carry the previous documents over.
-/// The host re-pushes its rows, then acknowledges the epoch it observed.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ExternallyOwnedRowsState {
+/// `incarnation` identifies one durable ownership-state lifetime. `epoch` only
+/// grows within that incarnation. A rebuild into a different projection or an
+/// explicit recovery reset receives a fresh incarnation, so an acknowledgement
+/// retained from an older projection can never clear the new requirement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExternallyOwnedRowsToken {
+    pub incarnation: Uuid,
     pub epoch: u64,
+}
+
+/// Whether the host must (re)supply the documents of its externally owned
+/// kinds in one projection incarnation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExternallyOwnedRowsState {
+    pub token: ExternallyOwnedRowsToken,
     pub required: bool,
 }
 
 impl ExternallyOwnedRowsState {
-    /// The epoch the host must acknowledge, while rows are required.
-    pub fn required_epoch(self) -> Option<u64> {
-        self.required.then_some(self.epoch)
+    /// The token the host must acknowledge, while rows are required.
+    pub fn required_token(self) -> Option<ExternallyOwnedRowsToken> {
+        self.required.then_some(self.token)
     }
 
-    /// The next raised state.
-    pub fn raised(self) -> Self {
-        Self {
-            epoch: self.epoch.saturating_add(1),
+    /// The next raised state in this incarnation.
+    fn raised(self, projection: &Path) -> Result<Self> {
+        let epoch = self.token.epoch.checked_add(1).ok_or_else(|| {
+            malformed(
+                projection,
+                ROWS_MARKER,
+                "has exhausted its acknowledgement epoch",
+            )
+        })?;
+        Ok(Self {
+            token: ExternallyOwnedRowsToken {
+                incarnation: self.token.incarnation,
+                epoch,
+            },
             required: true,
-        }
+        })
     }
 }
 
@@ -112,20 +130,27 @@ pub fn read_recorded_kinds(projection: &Path) -> Result<Option<BTreeSet<SearchPr
     Ok(Some(kinds))
 }
 
-/// Reads the rows-required state; an absent file is epoch 0, not required.
-pub fn read_rows_state(projection: &Path) -> Result<ExternallyOwnedRowsState> {
+/// Reads the rows-required state, or `None` when the file is absent.
+pub fn read_rows_state(projection: &Path) -> Result<Option<ExternallyOwnedRowsState>> {
     let Some(text) = read_bounded(projection, ROWS_MARKER)? else {
-        return Ok(ExternallyOwnedRowsState::default());
+        return Ok(None);
     };
     let bad = |problem| malformed(projection, ROWS_MARKER, problem);
     let mut lines = text.lines();
     if lines.next() != Some(ROWS_HEADER) {
         return Err(bad("has an unknown header"));
     }
+    let incarnation = lines
+        .next()
+        .and_then(|line| line.strip_prefix("incarnation "))
+        .and_then(|value| value.parse::<Uuid>().ok())
+        .filter(|value| !value.is_nil())
+        .ok_or_else(|| bad("has no valid incarnation"))?;
     let epoch = lines
         .next()
         .and_then(|line| line.strip_prefix("epoch "))
         .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
         .ok_or_else(|| bad("has no epoch"))?;
     let required = match lines.next() {
         Some("required") => true,
@@ -135,14 +160,18 @@ pub fn read_rows_state(projection: &Path) -> Result<ExternallyOwnedRowsState> {
     if lines.any(|line| !line.is_empty()) {
         return Err(bad("has trailing lines"));
     }
-    Ok(ExternallyOwnedRowsState { epoch, required })
+    Ok(Some(ExternallyOwnedRowsState {
+        token: ExternallyOwnedRowsToken { incarnation, epoch },
+        required,
+    }))
 }
 
 /// Durably writes `state`.
 pub fn write_rows_state(projection: &Path, state: ExternallyOwnedRowsState) -> Result<()> {
     let text = format!(
-        "{ROWS_HEADER}\nepoch {}\n{}\n",
-        state.epoch,
+        "{ROWS_HEADER}\nincarnation {}\nepoch {}\n{}\n",
+        state.token.incarnation,
+        state.token.epoch,
         if state.required {
             "required"
         } else {
@@ -152,53 +181,57 @@ pub fn write_rows_state(projection: &Path, state: ExternallyOwnedRowsState) -> R
     write_durably(projection, ROWS_MARKER, &text)
 }
 
-/// Raises the rows-required epoch and returns it.
-pub fn raise_rows_required(projection: &Path) -> Result<u64> {
-    let raised = read_rows_state(projection)?.raised();
+/// Raises the rows-required fence and returns its new token.
+///
+/// An absent state starts a fresh projection incarnation. Callers opening an
+/// already-owned projection must use [`require_rows_state`] first so a removed
+/// sidecar cannot look like an unowned projection.
+pub fn raise_rows_required(projection: &Path) -> Result<ExternallyOwnedRowsToken> {
+    let raised = match read_rows_state(projection)? {
+        Some(state) => state.raised(projection)?,
+        None => new_rows_state()?,
+    };
     write_rows_state(projection, raised)?;
-    Ok(raised.epoch)
+    Ok(raised.token)
 }
 
-/// The raised state that follows `previous`. An unreadable previous state
-/// jumps to the current time in microseconds, which exceeds every epoch a
-/// counter could have reached, so epochs never repeat.
-pub fn raised_after(previous: Result<ExternallyOwnedRowsState>) -> ExternallyOwnedRowsState {
-    match previous {
-        Ok(state) => state.raised(),
-        Err(_) => ExternallyOwnedRowsState {
-            epoch: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|elapsed| u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX))
-                .unwrap_or(u64::MAX >> 1)
-                .max(1),
-            required: true,
-        },
-    }
+/// Requires the state of a projection that already records externally owned
+/// kinds. Missing state is corruption, never an implicit restored state.
+pub fn require_rows_state(projection: &Path) -> Result<ExternallyOwnedRowsState> {
+    read_rows_state(projection)?.ok_or_else(|| malformed(projection, ROWS_MARKER, "is missing"))
 }
 
 /// Rewrites both records from `kinds` regardless of their current content,
-/// raising the rows-required epoch. This is the recovery for an unreadable
-/// record ([`HawDBError::SearchProjectionOwnershipMarkerCorrupt`]).
-pub fn reset(projection: &Path, kinds: &BTreeSet<SearchProjectionKind>) -> Result<u64> {
-    let raised = raised_after(read_rows_state(projection));
-    write_rows_state(projection, raised)?;
+/// creating a fresh projection incarnation. This is the explicit recovery for
+/// an unreadable or missing record
+/// ([`HawDBError::SearchProjectionOwnershipMarkerCorrupt`]).
+pub fn reset(
+    projection: &Path,
+    kinds: &BTreeSet<SearchProjectionKind>,
+) -> Result<ExternallyOwnedRowsToken> {
+    let state = new_rows_state()?;
+    write_rows_state(projection, state)?;
     write_record(projection, kinds)?;
-    Ok(raised.epoch)
+    Ok(state.token)
 }
 
-/// Clears the requirement only if `epoch` is still the required epoch.
+/// Clears the requirement only if `token` is still the required fence.
 ///
-/// Returns `false`, changing nothing, when no rows are required or `epoch`
-/// is stale because a later rebuild raised a newer one.
-pub fn acknowledge_rows_restored(projection: &Path, epoch: u64) -> Result<bool> {
-    let state = read_rows_state(projection)?;
-    if state.required_epoch() != Some(epoch) {
+/// Returns `false`, changing nothing, when no rows are required or `token` is
+/// stale because a later raise or a different projection incarnation replaced
+/// it.
+pub fn acknowledge_rows_restored(
+    projection: &Path,
+    token: ExternallyOwnedRowsToken,
+) -> Result<bool> {
+    let state = require_rows_state(projection)?;
+    if state.required_token() != Some(token) {
         return Ok(false);
     }
     write_rows_state(
         projection,
         ExternallyOwnedRowsState {
-            epoch,
+            token,
             required: false,
         },
     )?;
@@ -206,8 +239,8 @@ pub fn acknowledge_rows_restored(projection: &Path, epoch: u64) -> Result<bool> 
 }
 
 /// Compares the requested set with the record and, when `may_record` and no
-/// record exists, durably records a non-empty requested set after raising
-/// the rows-required epoch.
+/// record exists, durably records a non-empty requested set after creating or
+/// raising the rows-required fence.
 ///
 /// An empty request against an absent record writes nothing, so projections
 /// that never opt in keep their exact directory contents.
@@ -217,7 +250,13 @@ pub fn reconcile(
     may_record: bool,
 ) -> Result<()> {
     match read_recorded_kinds(projection)? {
-        Some(recorded) if &recorded == requested => Ok(()),
+        Some(recorded) if &recorded == requested => {
+            if requested.is_empty() {
+                Ok(())
+            } else {
+                require_rows_state(projection).map(|_| ())
+            }
+        }
         Some(recorded) => Err(HawDBError::SearchProjectionOwnershipMismatch {
             projection: projection.to_path_buf(),
             recorded: names(&recorded),
@@ -230,6 +269,16 @@ pub fn reconcile(
             write_record(projection, requested)
         }
     }
+}
+
+fn new_rows_state() -> Result<ExternallyOwnedRowsState> {
+    Ok(ExternallyOwnedRowsState {
+        token: ExternallyOwnedRowsToken {
+            incarnation: hawdb_core::generate_uuidv7()?,
+            epoch: 1,
+        },
+        required: true,
+    })
 }
 
 /// Durably records `kinds` without consulting an existing record.
@@ -298,6 +347,10 @@ mod tests {
         path
     }
 
+    fn required_token(root: &Path) -> ExternallyOwnedRowsToken {
+        require_rows_state(root).unwrap().required_token().unwrap()
+    }
+
     #[test]
     fn records_once_and_refuses_a_different_set() {
         let root = directory("record");
@@ -315,7 +368,8 @@ mod tests {
             format!("{HEADER}\nmemory\nentity\n")
         );
         // Nothing proves the host's rows are present yet.
-        assert_eq!(read_rows_state(&root).unwrap().required_epoch(), Some(1));
+        let first = required_token(&root);
+        assert_eq!(first.epoch, 1);
         reconcile(&root, &owned, true).unwrap();
         for requested in [
             BTreeSet::new(),
@@ -336,43 +390,48 @@ mod tests {
         fs::remove_file(root.join(MARKER)).unwrap();
         reconcile(&root, &owned, true).unwrap();
         assert_eq!(read_recorded_kinds(&root).unwrap(), Some(owned));
-        assert_eq!(read_rows_state(&root).unwrap().required_epoch(), Some(2));
+        let second = required_token(&root);
+        assert_eq!(second.incarnation, first.incarnation);
+        assert_eq!(second.epoch, 2);
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn acknowledgement_clears_only_the_current_epoch() {
+    fn acknowledgement_clears_only_the_current_token() {
         let root = directory("acknowledge");
-        assert_eq!(
-            read_rows_state(&root).unwrap(),
-            ExternallyOwnedRowsState::default()
-        );
-        assert!(!acknowledge_rows_restored(&root, 0).unwrap());
-        assert_eq!(raise_rows_required(&root).unwrap(), 1);
-        assert_eq!(raise_rows_required(&root).unwrap(), 2);
+        assert_eq!(read_rows_state(&root).unwrap(), None);
+        let first = raise_rows_required(&root).unwrap();
+        let second = raise_rows_required(&root).unwrap();
+        assert_eq!(second.incarnation, first.incarnation);
+        assert_eq!(second.epoch, 2);
         assert!(
-            !acknowledge_rows_restored(&root, 1).unwrap(),
-            "a stale epoch changes nothing"
+            !acknowledge_rows_restored(&root, first).unwrap(),
+            "a stale token changes nothing"
         );
-        assert_eq!(read_rows_state(&root).unwrap().required_epoch(), Some(2));
-        assert!(acknowledge_rows_restored(&root, 2).unwrap());
+        assert_eq!(required_token(&root), second);
+        assert!(acknowledge_rows_restored(&root, second).unwrap());
         assert_eq!(
             read_rows_state(&root).unwrap(),
-            ExternallyOwnedRowsState {
-                epoch: 2,
+            Some(ExternallyOwnedRowsState {
+                token: second,
                 required: false
-            }
+            })
         );
-        assert!(!acknowledge_rows_restored(&root, 2).unwrap());
-        assert_eq!(
-            raise_rows_required(&root).unwrap(),
-            3,
-            "epochs never repeat"
-        );
+        assert!(!acknowledge_rows_restored(&root, second).unwrap());
+        let third = raise_rows_required(&root).unwrap();
+        assert_eq!(third.incarnation, second.incarnation);
+        assert_eq!(third.epoch, 3, "epochs never repeat in an incarnation");
         for text in [
             "epoch 1\nrequired\n",
-            &format!("{ROWS_HEADER}\nepoch x\nrequired\n"),
-            &format!("{ROWS_HEADER}\nepoch 1\nmaybe\n"),
+            &format!("{ROWS_HEADER}\nincarnation x\nepoch 1\nrequired\n"),
+            &format!(
+                "{ROWS_HEADER}\nincarnation {}\nepoch x\nrequired\n",
+                first.incarnation
+            ),
+            &format!(
+                "{ROWS_HEADER}\nincarnation {}\nepoch 1\nmaybe\n",
+                first.incarnation
+            ),
         ] {
             fs::write(root.join(ROWS_MARKER), text).unwrap();
             assert!(matches!(
@@ -384,26 +443,72 @@ mod tests {
     }
 
     #[test]
-    fn reset_rewrites_unreadable_records_and_raises_past_every_epoch() {
+    fn missing_rows_state_fails_closed_and_reset_rejects_the_old_token() {
+        let root = directory("missing-rows");
+        let owned = BTreeSet::from([SearchProjectionKind::Memory]);
+        reconcile(&root, &owned, true).unwrap();
+        let old = required_token(&root);
+        fs::remove_file(root.join(ROWS_MARKER)).unwrap();
+        assert!(matches!(
+            reconcile(&root, &owned, true),
+            Err(HawDBError::SearchProjectionOwnershipMarkerCorrupt { ref marker, .. }) if marker == ROWS_MARKER
+        ));
+
+        let replacement = reset(&root, &owned).unwrap();
+        assert_ne!(replacement.incarnation, old.incarnation);
+        assert_eq!(replacement.epoch, 1);
+        assert!(!acknowledge_rows_restored(&root, old).unwrap());
+        assert_eq!(required_token(&root), replacement);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reset_rewrites_unreadable_records_with_a_fresh_incarnation() {
         let root = directory("reset");
         let owned = BTreeSet::from([SearchProjectionKind::Memory]);
-        fs::write(root.join(MARKER), "garbage").unwrap();
+        let old = reset(&root, &owned).unwrap();
+        assert!(acknowledge_rows_restored(&root, old).unwrap());
         fs::write(root.join(ROWS_MARKER), "garbage").unwrap();
         assert!(matches!(
             reconcile(&root, &owned, true),
-            Err(HawDBError::SearchProjectionOwnershipMarkerCorrupt { ref marker, .. }) if marker == MARKER
+            Err(HawDBError::SearchProjectionOwnershipMarkerCorrupt { ref marker, .. }) if marker == ROWS_MARKER
         ));
-        let epoch = reset(&root, &owned).unwrap();
-        assert!(
-            epoch > 1_000_000_000,
-            "time-based epoch after an unreadable state"
-        );
+        let replacement = reset(&root, &owned).unwrap();
+        assert_ne!(replacement.incarnation, old.incarnation);
+        assert_eq!(replacement.epoch, 1);
         assert_eq!(read_recorded_kinds(&root).unwrap(), Some(owned.clone()));
-        assert_eq!(
-            read_rows_state(&root).unwrap().required_epoch(),
-            Some(epoch)
-        );
-        assert_eq!(reset(&root, &owned).unwrap(), epoch + 1);
+        assert_eq!(required_token(&root), replacement);
+        assert!(!acknowledge_rows_restored(&root, old).unwrap());
+        let next = reset(&root, &owned).unwrap();
+        assert_ne!(next.incarnation, replacement.incarnation);
+        assert_eq!(next.epoch, 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn acknowledgement_identity_does_not_depend_on_incarnation_order() {
+        let root = directory("non-monotonic-incarnation");
+        let old = ExternallyOwnedRowsToken {
+            incarnation: Uuid::from_u128(2),
+            epoch: 1,
+        };
+        let replacement = ExternallyOwnedRowsToken {
+            // A lower UUID models an identity created after clock rollback.
+            incarnation: Uuid::from_u128(1),
+            epoch: 1,
+        };
+        write_rows_state(
+            &root,
+            ExternallyOwnedRowsState {
+                token: replacement,
+                required: true,
+            },
+        )
+        .unwrap();
+
+        assert!(!acknowledge_rows_restored(&root, old).unwrap());
+        assert_eq!(required_token(&root), replacement);
+        assert!(acknowledge_rows_restored(&root, replacement).unwrap());
         fs::remove_dir_all(root).unwrap();
     }
 

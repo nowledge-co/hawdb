@@ -511,18 +511,23 @@ kinds stay graph-derived, that all six kinds can be owned at once, and that
 reopen keeps the mode. The default open still replaces the document and writes
 no record. A different set, including the empty set, is refused with the typed
 `SearchProjectionOwnershipMismatch` without changing the record, and a removed
-record is restored. The rows-required epoch is raised on first record and on
-restore. A stale acknowledgement does not clear a newer epoch, and read-only
-opens report the epoch but cannot acknowledge it. A manufactured changefeed gap
+record is restored. The rows-required fence combines an immutable projection
+incarnation with an epoch that grows within that incarnation. A stale
+acknowledgement does not clear a newer epoch or a new incarnation, and read-only
+opens report the token but cannot acknowledge it. A manufactured changefeed gap
 (a change log of two entries) is recovered by the resident rebuild with metadata
 repair and by the out-of-core rebuild. In both, documents of live nodes are
 carried over byte-identical, and documents of nodes deleted during the gap are
-dropped, and every rebuild and repair raises the epoch. When carry-over is made
-impossible by an injected probe failure, owned documents are absent until the
-host re-pushes them. A host delta applied during an out-of-core rebuild does not
-fail verification, and the target raises the epoch. Unreadable records are the
-typed `SearchProjectionOwnershipMarkerCorrupt`; a read-only reset is refused,
-and a reset reopen rewrites both records with a time-based epoch.
+dropped. Resident rebuild and repair raise the epoch; an out-of-core rebuild
+publishes a fresh incarnation. When carry-over is made impossible by an
+injected probe failure, owned documents are absent until the host re-pushes
+them. A host delta applied during an out-of-core rebuild does not
+fail verification, and the target publishes a fresh fence. Missing and corrupt
+source rows states during an out-of-core rebuild are covered: the target uses a
+fresh incarnation and rejects the retained source token. Unreadable records are
+the typed `SearchProjectionOwnershipMarkerCorrupt`; a read-only reset is
+refused, and a reset reopen rewrites both records with a fresh incarnation that
+rejects the previous token.
 Search-crate owners `projection_ownership::tests` and
 `generation_cleanup::tests::cleanup_preserves_the_externally_owned_records`
 cover the record format and cleanup preservation; `bindings/python`

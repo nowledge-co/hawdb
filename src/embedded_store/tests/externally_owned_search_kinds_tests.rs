@@ -9,9 +9,10 @@ use crate::search::{
     EXTERNALLY_OWNED_ROWS_MARKER,
 };
 use crate::{
-    GraphOnlySearchProjectionRebuild, IncrementalSearchMaintenanceOptions, RuntimeTaskContext,
-    RuntimeWorkPriority, SearchProjectionRebuildOptions, SearchProjectionRebuildPhase,
-    SearchProjectionRebuildProgress, SearchProjectionRebuildSource,
+    ExternallyOwnedRowsToken, GraphOnlySearchProjectionRebuild,
+    IncrementalSearchMaintenanceOptions, RuntimeTaskContext, RuntimeWorkPriority,
+    SearchProjectionRebuildOptions, SearchProjectionRebuildPhase, SearchProjectionRebuildProgress,
+    SearchProjectionRebuildSource,
 };
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -133,6 +134,13 @@ fn document(handle: &EmbeddedStoreHandle, id: &str) -> Option<SearchDocument> {
     }
 }
 
+fn required_token(handle: &EmbeddedStoreHandle) -> ExternallyOwnedRowsToken {
+    handle
+        .externally_owned_rows_required()
+        .unwrap()
+        .expect("externally owned rows are required")
+}
+
 fn external_memory() -> SearchProjectionDelta {
     SearchProjectionDelta {
         upserts: vec![SearchProjectionRow {
@@ -186,14 +194,19 @@ fn assert_owned_lifecycle(layout: Layout) {
         serde_json::json!(["memory", "entity"])
     );
     // Newly recorded ownership: nothing proves the host's rows are present.
+    let required = required_token(&handle);
     assert_eq!(
-        status["projection"]["externally_owned_rows_required_epoch"],
+        status["projection"]["externally_owned_rows_required"]["epoch"],
         serde_json::json!(1)
     );
+    assert_eq!(
+        status["projection"]["externally_owned_rows_required"]["incarnation"],
+        serde_json::json!(required.incarnation.to_string())
+    );
     assert!(handle
-        .acknowledge_externally_owned_rows_restored(1)
+        .acknowledge_externally_owned_rows_restored(required)
         .unwrap());
-    assert_eq!(handle.externally_owned_rows_required_epoch().unwrap(), None);
+    assert_eq!(handle.externally_owned_rows_required().unwrap(), None);
     handle
         .query_with_report("CREATE (:Memory {id: 'early', title: 'no host row yet'})")
         .unwrap();
@@ -274,7 +287,7 @@ fn default_open_keeps_graph_derived_replacement() {
         for marker in [EXTERNALLY_OWNED_KINDS_MARKER, EXTERNALLY_OWNED_ROWS_MARKER] {
             assert!(!root.join("search").join(marker).exists());
         }
-        assert_eq!(handle.externally_owned_rows_required_epoch().unwrap(), None);
+        assert_eq!(handle.externally_owned_rows_required().unwrap(), None);
         assert!(handle
             .runtime_status()
             .unwrap()
@@ -289,6 +302,7 @@ fn default_open_keeps_graph_derived_replacement() {
 fn reopen_refuses_a_different_set_and_restores_a_missing_record() {
     for layout in [Layout::Resident, Layout::OutOfCore] {
         let (root, handle) = open_fresh(&format!("owned_kinds_reopen_{layout:?}"), layout, owned());
+        let first = required_token(&handle);
         drop(handle);
         let record = root.join("search").join(EXTERNALLY_OWNED_KINDS_MARKER);
         let recorded = std::fs::read(&record).unwrap();
@@ -325,18 +339,15 @@ fn reopen_refuses_a_different_set_and_restores_a_missing_record() {
             EmbeddedStoreHandle::open_with_options(options(&root, layout, owned())).unwrap();
         assert_eq!(std::fs::read(&record).unwrap(), recorded);
         // The host observed epoch 1 before the record was restored, which
-        // raised epoch 2: its stale acknowledgement must not clear it.
-        assert_eq!(
-            handle.externally_owned_rows_required_epoch().unwrap(),
-            Some(2)
-        );
+        // raised epoch 2 in the same incarnation: its stale token must not
+        // clear the new requirement.
+        let second = required_token(&handle);
+        assert_eq!(second.incarnation, first.incarnation);
+        assert_eq!(second.epoch, 2);
         assert!(!handle
-            .acknowledge_externally_owned_rows_restored(1)
+            .acknowledge_externally_owned_rows_restored(first)
             .unwrap());
-        assert_eq!(
-            handle.externally_owned_rows_required_epoch().unwrap(),
-            Some(2)
-        );
+        assert_eq!(required_token(&handle), second);
         drop(handle);
 
         // Read-only openers see the epoch and cannot acknowledge it.
@@ -353,11 +364,11 @@ fn reopen_refuses_a_different_set_and_restores_a_missing_record() {
             reader
                 .runtime_status()
                 .unwrap()
-                .externally_owned_rows_required_epoch,
-            Some(2)
+                .externally_owned_rows_required,
+            Some(second)
         );
         assert!(matches!(
-            reader.acknowledge_externally_owned_rows_restored(2),
+            reader.acknowledge_externally_owned_rows_restored(second),
             Err(HawDBError::Semantic(_))
         ));
         drop(reader);
@@ -365,16 +376,16 @@ fn reopen_refuses_a_different_set_and_restores_a_missing_record() {
         let (handle, _) =
             EmbeddedStoreHandle::open_with_options(options(&root, layout, owned())).unwrap();
         assert!(handle
-            .acknowledge_externally_owned_rows_restored(2)
+            .acknowledge_externally_owned_rows_restored(second)
             .unwrap());
         assert!(!handle
-            .acknowledge_externally_owned_rows_restored(2)
+            .acknowledge_externally_owned_rows_restored(second)
             .unwrap());
         assert_eq!(
             handle
                 .runtime_status()
                 .unwrap()
-                .externally_owned_rows_required_epoch,
+                .externally_owned_rows_required,
             None
         );
         drop(handle);
@@ -544,8 +555,9 @@ fn resident_rebuild_after_changefeed_gap_carries_host_documents_over() {
     let owned = BTreeSet::from([SearchProjectionKind::Memory]);
     let (root, handle) =
         open_fresh_with("owned_gap_resident", Layout::Resident, owned, Some(&config));
+    let initial = required_token(&handle);
     assert!(handle
-        .acknowledge_externally_owned_rows_restored(1)
+        .acknowledge_externally_owned_rows_restored(initial)
         .unwrap());
     let (kept, gone) = manufacture_gap(&handle);
     {
@@ -570,13 +582,12 @@ fn resident_rebuild_after_changefeed_gap_carries_host_documents_over() {
     assert_eq!(document(&handle, &gone.id), None, "deleted during the gap");
     assert_eq!(document(&handle, "memory:late"), None, "no host row yet");
     assert_eq!(document(&handle, SOURCE).unwrap().title, "graph source");
-    // Rebuild and repair each raise the epoch, past the acknowledged 1.
-    assert_eq!(
-        handle.externally_owned_rows_required_epoch().unwrap(),
-        Some(3)
-    );
+    // Rebuild and repair each raise the epoch in the same incarnation.
+    let required = required_token(&handle);
+    assert_eq!(required.incarnation, initial.incarnation);
+    assert_eq!(required.epoch, 3);
     assert!(handle
-        .acknowledge_externally_owned_rows_restored(3)
+        .acknowledge_externally_owned_rows_restored(required)
         .unwrap());
     catch_up(&handle);
     drop(handle);
@@ -586,9 +597,9 @@ fn resident_rebuild_after_changefeed_gap_carries_host_documents_over() {
 /// The out-of-core recovery for a changefeed gap rebuilds into a new
 /// directory: owned documents of live nodes are carried over from the
 /// current projection, or, when it cannot be read, the rebuilt directory
-/// raises the rows-required epoch.
+/// publishes a fresh rows-required fence.
 #[test]
-fn out_of_core_rebuild_after_changefeed_gap_carries_over_or_raises_the_epoch() {
+fn out_of_core_rebuild_after_changefeed_gap_carries_over_or_replaces_the_fence() {
     for carry_over_fails in [false, true] {
         let config = gap_config();
         let owned = BTreeSet::from([SearchProjectionKind::Memory]);
@@ -598,8 +609,9 @@ fn out_of_core_rebuild_after_changefeed_gap_carries_over_or_raises_the_epoch() {
             owned.clone(),
             Some(&config),
         );
+        let source_token = required_token(&handle);
         assert!(handle
-            .acknowledge_externally_owned_rows_restored(1)
+            .acknowledge_externally_owned_rows_restored(source_token)
             .unwrap());
         let (kept, gone) = manufacture_gap(&handle);
         super::super::search_projection_rebuild::FAIL_CARRY_OVER_PROBE
@@ -626,11 +638,14 @@ fn out_of_core_rebuild_after_changefeed_gap_carries_over_or_raises_the_epoch() {
         assert_eq!(document(&handle, &gone.id), None);
         assert_eq!(document(&handle, "memory:late"), None);
         assert_eq!(document(&handle, SOURCE).unwrap().title, "graph source");
-        // Always raised after a rebuild, past the acknowledged epoch 1.
-        assert_eq!(
-            handle.externally_owned_rows_required_epoch().unwrap(),
-            Some(2)
-        );
+        // A rebuilt directory is a new projection incarnation. A retained
+        // acknowledgement from the source must not clear its requirement.
+        let rebuilt_token = required_token(&handle);
+        assert_ne!(rebuilt_token.incarnation, source_token.incarnation);
+        assert_eq!(rebuilt_token.epoch, 1);
+        assert!(!handle
+            .acknowledge_externally_owned_rows_restored(source_token)
+            .unwrap());
         if carry_over_fails {
             assert_eq!(document(&handle, "memory:kept"), None);
             handle
@@ -641,18 +656,72 @@ fn out_of_core_rebuild_after_changefeed_gap_carries_over_or_raises_the_epoch() {
                 })
                 .unwrap();
             assert!(handle
-                .acknowledge_externally_owned_rows_restored(2)
+                .acknowledge_externally_owned_rows_restored(rebuilt_token)
                 .unwrap());
         } else {
             assert_eq!(document(&handle, "memory:kept"), Some(kept.clone()));
             assert!(handle
-                .acknowledge_externally_owned_rows_restored(2)
+                .acknowledge_externally_owned_rows_restored(rebuilt_token)
                 .unwrap());
         }
         assert_eq!(document(&handle, "memory:kept"), Some(kept));
-        assert_eq!(handle.externally_owned_rows_required_epoch().unwrap(), None);
+        assert_eq!(handle.externally_owned_rows_required().unwrap(), None);
         catch_up(&handle);
         drop(handle);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+/// Rebuilding from an owned projection whose rows sidecar was removed or
+/// corrupted never derives a replacement fence from the unreadable epoch.
+/// The target receives a fresh incarnation, so a retained acknowledgement
+/// from the source cannot clear its repush requirement.
+#[test]
+fn out_of_core_rebuild_rejects_old_tokens_when_the_source_fence_is_unreadable() {
+    for damage in ["missing", "corrupt"] {
+        let (root, handle) = open_fresh(
+            &format!("owned_rebuild_unreadable_fence_{damage}"),
+            Layout::OutOfCore,
+            BTreeSet::from([SearchProjectionKind::Memory]),
+        );
+        let old = required_token(&handle);
+        let rows = root.join("search").join(EXTERNALLY_OWNED_ROWS_MARKER);
+        if damage == "missing" {
+            std::fs::remove_file(rows).unwrap();
+        } else {
+            std::fs::write(rows, "corrupt prior rows state").unwrap();
+        }
+
+        handle
+            .rebuild_out_of_core_search_projection(
+                root.join("rebuilt"),
+                SearchProjectionRebuildOptions::default(),
+                &mut GraphOnlySearchProjectionRebuild,
+                RuntimeTaskContext::default(),
+            )
+            .unwrap();
+        drop(handle);
+
+        let (rebuilt, _) = EmbeddedStoreHandle::open_with_options(options_at(
+            &root,
+            "rebuilt",
+            Layout::OutOfCore,
+            BTreeSet::from([SearchProjectionKind::Memory]),
+            GraphMode::WritableCutover,
+            None,
+        ))
+        .unwrap();
+        let replacement = required_token(&rebuilt);
+        assert_ne!(replacement.incarnation, old.incarnation, "{damage}");
+        assert_eq!(replacement.epoch, 1, "{damage}");
+        assert!(!rebuilt
+            .acknowledge_externally_owned_rows_restored(old)
+            .unwrap());
+        assert_eq!(required_token(&rebuilt), replacement);
+        assert!(rebuilt
+            .acknowledge_externally_owned_rows_restored(replacement)
+            .unwrap());
+        drop(rebuilt);
         std::fs::remove_dir_all(root).unwrap();
     }
 }
@@ -687,10 +756,10 @@ impl SearchProjectionRebuildSource for WriteDuringScan<'_> {
 
 /// A host write to the current projection during an out-of-core rebuild is
 /// not in the target. The rebuild still verifies (owned kinds are excluded
-/// from the comparison), and the target raises the epoch so the host
+/// from the comparison), and the target publishes a new fence so the host
 /// re-pushes.
 #[test]
-fn host_write_during_out_of_core_rebuild_leaves_the_epoch_raised() {
+fn host_write_during_out_of_core_rebuild_leaves_the_fence_raised() {
     let config = gap_config();
     let owned = BTreeSet::from([SearchProjectionKind::Memory]);
     let (root, handle) = open_fresh_with(
@@ -699,8 +768,9 @@ fn host_write_during_out_of_core_rebuild_leaves_the_epoch_raised() {
         owned.clone(),
         Some(&config),
     );
+    let source_token = required_token(&handle);
     assert!(handle
-        .acknowledge_externally_owned_rows_restored(1)
+        .acknowledge_externally_owned_rows_restored(source_token)
         .unwrap());
     manufacture_gap(&handle);
     let mut source = WriteDuringScan {
@@ -736,8 +806,9 @@ fn host_write_during_out_of_core_rebuild_leaves_the_epoch_raised() {
         Some(&config),
     ))
     .unwrap();
-    let epoch = handle.externally_owned_rows_required_epoch().unwrap();
-    assert_eq!(epoch, Some(2));
+    let rebuilt_token = required_token(&handle);
+    assert_ne!(rebuilt_token.incarnation, source_token.incarnation);
+    assert_eq!(rebuilt_token.epoch, 1);
     let mut row = host_row(SearchProjectionKind::Memory, "kept");
     row.body = "written during the rebuild".into();
     handle
@@ -748,7 +819,7 @@ fn host_write_during_out_of_core_rebuild_leaves_the_epoch_raised() {
         })
         .unwrap();
     assert!(handle
-        .acknowledge_externally_owned_rows_restored(2)
+        .acknowledge_externally_owned_rows_restored(rebuilt_token)
         .unwrap());
     assert_eq!(
         document(&handle, "memory:kept").unwrap().content,
@@ -759,12 +830,12 @@ fn host_write_during_out_of_core_rebuild_leaves_the_epoch_raised() {
 }
 
 /// An unreadable record is a typed, non-poisoning refusal; reopening with
-/// the reset rewrites both records and raises the epoch past every earlier
-/// one.
+/// the reset rewrites both records under a fresh incarnation.
 #[test]
 fn corrupt_ownership_records_are_typed_and_reset_by_an_explicit_open() {
     for layout in [Layout::Resident, Layout::OutOfCore] {
         let (root, handle) = open_fresh(&format!("owned_corrupt_{layout:?}"), layout, owned());
+        let original = required_token(&handle);
         drop(handle);
         let search = root.join("search");
         let kinds = search.join(EXTERNALLY_OWNED_KINDS_MARKER);
@@ -801,36 +872,44 @@ fn corrupt_ownership_records_are_typed_and_reset_by_an_explicit_open() {
             options(&root, layout, owned()).with_externally_owned_search_kinds_reset(),
         )
         .unwrap();
-        assert_eq!(
-            handle.externally_owned_rows_required_epoch().unwrap(),
-            Some(2)
-        );
+        let after_set_reset = required_token(&handle);
+        assert_ne!(after_set_reset.incarnation, original.incarnation);
+        assert_eq!(after_set_reset.epoch, 1);
+        assert!(!handle
+            .acknowledge_externally_owned_rows_restored(original)
+            .unwrap());
         drop(handle);
 
         // A corrupt rows state is reported typed, not as rows silently restored.
         std::fs::write(&rows, "not a state").unwrap();
-        let (handle, _) =
-            EmbeddedStoreHandle::open_with_options(options(&root, layout, owned())).unwrap();
-        assert!(matches!(
-            handle.runtime_status(),
-            Err(HawDBError::SearchProjectionOwnershipMarkerCorrupt { .. })
-        ));
-        drop(handle);
+        let Err(error) = EmbeddedStoreHandle::open_with_options(options(&root, layout, owned()))
+        else {
+            panic!("a corrupt rows state refuses the open");
+        };
+        assert!(
+            matches!(
+                error,
+                HawDBError::SearchProjectionOwnershipMarkerCorrupt { ref marker, .. }
+                    if marker == EXTERNALLY_OWNED_ROWS_MARKER
+            ),
+            "{error}"
+        );
         let (handle, _) = EmbeddedStoreHandle::open_with_options(
             options(&root, layout, owned()).with_externally_owned_search_kinds_reset(),
         )
         .unwrap();
-        let epoch = handle
+        let after_rows_reset = handle
             .runtime_status()
             .unwrap()
-            .externally_owned_rows_required_epoch
+            .externally_owned_rows_required
             .unwrap();
-        assert!(
-            epoch > 2,
-            "time-based epoch {epoch} exceeds every earlier one"
-        );
+        assert_ne!(after_rows_reset.incarnation, after_set_reset.incarnation);
+        assert_eq!(after_rows_reset.epoch, 1);
+        assert!(!handle
+            .acknowledge_externally_owned_rows_restored(after_set_reset)
+            .unwrap());
         assert!(handle
-            .acknowledge_externally_owned_rows_restored(epoch)
+            .acknowledge_externally_owned_rows_restored(after_rows_reset)
             .unwrap());
         drop(handle);
         std::fs::remove_dir_all(root).unwrap();

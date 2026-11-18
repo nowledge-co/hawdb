@@ -44,12 +44,12 @@ that drives `Database` directly can set the policy on its index with
 `runtime_status()` reports the active set as `externally_owned_search_kinds`
 and in JSON as `projection.externally_owned_kinds`.
 
-## Rebuilds, metadata repair and the rows-required epoch
+## Rebuilds, metadata repair and the rows-required fence
 
 HawDB never rebuilds a search projection on its own. A changefeed gap makes
 catch-up refuse, and background maintenance only ranks a rebuild candidate;
 the host runs the rebuild. Both rebuild paths carry host documents over, so
-search keeps serving them, and both raise the rows-required epoch, so the
+search keeps serving them, and both raise the rows-required fence, so the
 host re-pushes:
 
 - **Resident** (`Database::rebuild_search_projection` and its background and
@@ -57,8 +57,8 @@ host re-pushes:
   node of an owned kind, the document the index holds is carried over
   unchanged instead of being derived. Documents whose node no longer exists
   are dropped, and a node without a host document gets none. Metadata repair
-  (`repair_metadata_from_graph`) skips owned kinds. Both raise the epoch of a
-  persistent index before they start.
+  (`repair_metadata_from_graph`) skips owned kinds. Both raise the epoch
+  within the current projection incarnation before they start.
 - **Out-of-core** (`EmbeddedStoreHandle::rebuild_out_of_core_search_projection`):
   graph rows of owned kinds do not reach the host's `hydrate_graph_rows`.
   - In the build pass, each live node's document is looked up in the store's
@@ -70,11 +70,12 @@ host re-pushes:
     and only the document total includes them. A host writing to the current
     projection during the rebuild therefore cannot make verification fail.
   - `visit_host_rows` output is applied as before.
-  - The set record and a raised rows-required state (the previous
-    directory's epoch plus one) are written into the stage before it is
-    installed, so they appear atomically with the generation.
+  - The set record and a rows-required state with a fresh projection
+    incarnation are written into the stage before it is installed, so they
+    appear atomically with the generation. The source directory's state is
+    not used to construct this fence.
 
-The epoch is always raised after a rebuild or repair. Host writes made to
+The fence is always raised or replaced after a rebuild or repair. Host writes made to
 the current projection during an out-of-core rebuild, or after installation
 until the host reopens on the target, are not in the target. Host deltas are
 not in the graph change log, so catch-up cannot replay them. A high-water
@@ -82,30 +83,36 @@ mark kept in memory could not cover the window between installation and the
 host's reopen, which can span processes.
 
 When HawDB cannot prove the host's documents are present, it raises a
-durable rows-required epoch:
+durable rows-required fence. The fence is an
+`ExternallyOwnedRowsToken { incarnation, epoch }`:
 
-- ownership is first recorded for a projection directory, either a new
-  directory or a removed record that is being restored;
-- any rebuild or metadata repair runs, as described above;
-- a reset rewrites the records (see below).
+- ownership first recorded for a projection directory creates an incarnation
+  and epoch 1;
+- resident rebuild and metadata repair increment the epoch in that same
+  incarnation;
+- an out-of-core rebuild into another directory creates a fresh incarnation
+  at epoch 1;
+- a reset rewrites the records with a fresh incarnation (see below).
 
-`runtime_status().externally_owned_rows_required_epoch` (JSON
-`projection.externally_owned_rows_required_epoch`) is `Some(epoch)` while
-rows are required. It is read from the directory on every call, so
-read-only opens report it too.
+`runtime_status().externally_owned_rows_required` (JSON
+`projection.externally_owned_rows_required`, with `incarnation` and `epoch`
+fields) is `Some(token)` while rows are required. It is read from the
+directory on every call, so read-only opens report it too.
 
 After re-pushing its rows, the host calls
-`EmbeddedStoreHandle::acknowledge_externally_owned_rows_restored(epoch)` with
-the epoch it observed:
+`EmbeddedStoreHandle::acknowledge_externally_owned_rows_restored(token)` with
+the complete token it observed:
 
-- if that epoch is still the required one, the call clears the requirement
+- if that token is still the required one, the call clears the requirement
   and returns `Ok(true)`;
-- if the epoch is stale (a later raise happened) or nothing is required, the
-  call returns `Ok(false)` and changes nothing. The host re-reads the epoch,
-  re-pushes and acknowledges again;
+- if the token is stale (a later raise or a different projection incarnation
+  happened) or nothing is required, the call returns `Ok(false)` and changes
+  nothing. The host re-reads the token, re-pushes and acknowledges again;
 - read-only opens are refused as `Semantic`.
 
-Epochs only grow and are never reused.
+Epochs only grow within an incarnation. Incarnations are immutable and never
+copied to a rebuilt directory, so an old acknowledgement cannot match a new
+projection even when both epochs are 1.
 
 ## Unreadable records
 
@@ -116,15 +123,17 @@ not treat it as poisoning, and nothing is changed:
 
 - an unreadable set record refuses the open, because HawDB cannot tell which
   kinds catch-up may derive;
-- an unreadable rows-required state makes `runtime_status`, the epoch query
-  and acknowledgement fail with this error. They never report the rows as
-  restored. A rebuild that finds it unreadable raises a time-based epoch.
+- an unreadable or missing rows-required state on an owned projection makes
+  open, `runtime_status`, the token query and acknowledgement fail with this
+  error. They never report the rows as restored. An out-of-core rebuild
+  already running from that projection does not trust the unreadable state;
+  its target receives a fresh incarnation.
 
 Recovery is an explicit, writable open:
 `EmbeddedStoreOpenOptions::with_externally_owned_search_kinds_reset()`
 together with the intended set. It rewrites both records from that set and
-raises the epoch. An unreadable epoch is replaced by the current time in
-microseconds, which exceeds every epoch a counter could have reached.
+creates a fresh incarnation at epoch 1. Recovery does not derive an identity
+from wall-clock time or from unreadable bytes.
 Read-only and qualified out-of-core opens refuse a reset as `Semantic`.
 
 Qualified out-of-core opens never record the set; only maintenance opens
@@ -146,7 +155,8 @@ entity
 ```
 
 ```text
-hawdb externally owned rows v1
+hawdb externally owned rows v2
+incarnation 019a9f2e-6eb1-7a34-8c15-217df59e3822
 epoch 2
 required
 ```
@@ -172,8 +182,10 @@ Open rules (`EmbeddedStoreOpenOptions` with a search projection):
 | Record | Requested set | Result |
 | --- | --- | --- |
 | absent | empty | nothing is written; behaviour unchanged |
-| absent | non-empty | rows-required epoch raised, then the set recorded durably (temporary file, sync, rename, directory sync) |
-| equal | any | open proceeds |
+| absent | non-empty | rows-required fence created or raised, then the set recorded durably (temporary file, sync, rename, directory sync) |
+| equal | empty | open proceeds |
+| equal | non-empty, valid rows state | open proceeds |
+| equal | non-empty, missing or unreadable rows state | typed `SearchProjectionOwnershipMarkerCorrupt`; explicit reset required |
 | different, including empty against non-empty | any | `HawDBError::SearchProjectionOwnershipMismatch`, nothing changed |
 
 Every opener (for example a preparation flow and the runtime) must pass the
@@ -195,22 +207,24 @@ into a new directory.
     record is restored;
   - all six kinds owned at once keep their host documents until their nodes
     are deleted;
-  - the rows-required epoch: raised on first record and on restore, the race
-    where a stale acknowledgement does not clear a newer epoch, read-only
-    visibility, and refusal of a read-only acknowledgement;
+  - the rows-required fence: created on first record and raised on restore,
+    the race where a stale acknowledgement does not clear a newer epoch,
+    read-only visibility, and refusal of a read-only acknowledgement;
   - a manufactured changefeed gap (a change log of two entries), recovered by
     the resident rebuild plus metadata repair and by the out-of-core
     rebuild. Documents of live nodes are carried over byte-identical, the
     document of a node deleted during the gap is dropped, a node without a
-    host row gets none, other kinds are derived, and the epoch is raised past
-    the acknowledged one. With carry-over made impossible, owned documents
+    host row gets none, other kinds are derived, and the target receives a
+    fresh incarnation. With carry-over made impossible, owned documents
     are absent until the host re-pushes them;
   - a host write to the current projection during an out-of-core rebuild:
-    the rebuild still verifies, and the target raises the epoch;
+    the rebuild still verifies, and the target publishes a fresh fence;
+  - missing and corrupt source rows states during out-of-core rebuild: the
+    target receives a fresh incarnation and rejects the retained source token;
   - unreadable set and rows records: typed refusals; a read-only reset is
-    refused; a reset reopen rewrites both records, and the time-based epoch
-    exceeds every earlier one.
+    refused; a reset reopen rewrites both records with a fresh incarnation and
+    rejects acknowledgements from the previous incarnation.
 - `projection_ownership::tests` (hawdb-search) covers the record formats, the
-  refusal, acknowledgement of only the current epoch, malformed records, and
-  the reset.
+  refusal, acknowledgement of only the current token, missing/malformed
+  records, and the reset.
 - `generation_cleanup::tests::cleanup_preserves_the_externally_owned_records`.

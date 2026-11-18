@@ -30,10 +30,10 @@ use crate::search_projection_evidence::{
 use crate::{
     cypher, BackgroundMaintenanceOptions, BackgroundMaintenanceSummary, BackgroundWorkHint,
     BackgroundWorkPlan, BoundedReadQueryOutput, Database, DatabaseConfig, DatabaseReadTransaction,
-    GraphRagGeneratedQuery, GraphRagSchemaContext, GraphRagSchemaContextOptions, HawDBError,
-    HawDBLightningBootstrapManifest, HawDBLightningInitialImportApplyReport,
-    HawDBLightningInitialImportCheckpoint, HawDBLightningInitialImportCutoverCatchUpReport,
-    HawDBLightningInitialImportDocumentIdentity,
+    ExternallyOwnedRowsToken, GraphRagGeneratedQuery, GraphRagSchemaContext,
+    GraphRagSchemaContextOptions, HawDBError, HawDBLightningBootstrapManifest,
+    HawDBLightningInitialImportApplyReport, HawDBLightningInitialImportCheckpoint,
+    HawDBLightningInitialImportCutoverCatchUpReport, HawDBLightningInitialImportDocumentIdentity,
     HawDBLightningInitialImportRecoveryReadinessReport, KnowledgeRetrievalOutput,
     KnowledgeRetrievalRequest, LocalQosPolicy, LocalQosState, NowledgeGraphStatement,
     PlanCacheLookup, QueryOutput, QueryStreamOptions, QueryStreamReport, ReadBudgetResource,
@@ -485,7 +485,7 @@ impl EmbeddedStoreOpenOptions {
     /// therefore pass the same set; changing it requires rebuilding the
     /// projection into a new directory. `runtime_status()` reports the
     /// active set and, as
-    /// [`EmbeddedStore::externally_owned_rows_required_epoch`], when the host
+    /// [`EmbeddedStore::externally_owned_rows_required`], when the host
     /// must re-push its rows; see
     /// [`EmbeddedStoreHandle::acknowledge_externally_owned_rows_restored`].
     pub fn with_externally_owned_search_kinds<I>(mut self, kinds: I) -> Self
@@ -498,17 +498,17 @@ impl EmbeddedStoreOpenOptions {
 
     /// Makes this open rewrite both externally owned records from the set
     /// passed to [`Self::with_externally_owned_search_kinds`] instead of
-    /// comparing them, and raise the rows-required epoch so the host
+    /// comparing them, and create a fresh rows-required fence so the host
     /// re-pushes its rows.
     ///
     /// This is the recovery for
     /// [`HawDBError::SearchProjectionOwnershipMarkerCorrupt`]. An unreadable
-    /// rows-required state is replaced by an epoch derived from the current
-    /// time in microseconds, which exceeds every epoch observed before. The
-    /// open needs write access: read-only and qualified out-of-core opens
-    /// refuse the reset as `Semantic`. Hosts should reset only on that
-    /// error; changing the declared set still calls for a rebuild into a new
-    /// directory.
+    /// rows-required state is replaced by a fresh projection incarnation at
+    /// epoch 1, so acknowledgements from the unreadable incarnation cannot
+    /// clear it. The open needs write access: read-only and qualified
+    /// out-of-core opens refuse the reset as `Semantic`. Hosts should reset
+    /// only on that error; changing the declared set still calls for a rebuild
+    /// into a new directory.
     pub fn with_externally_owned_search_kinds_reset(mut self) -> Self {
         self.externally_owned_search_kinds_reset = true;
         self
@@ -2293,28 +2293,34 @@ impl EmbeddedStore {
         Ok((store, report))
     }
 
-    /// The epoch at which the host must (re)supply the documents of its
-    /// externally owned kinds, or `None` when nothing is required (#1814).
+    /// The fencing token for which the host must (re)supply the documents of
+    /// its externally owned kinds, or `None` when nothing is required (#1814).
     ///
     /// Read from the projection directory on every call, so read-only
-    /// openers observe it too. The epoch only grows: it is raised when
-    /// ownership is first recorded for a projection directory and when an
-    /// out-of-core rebuild could not carry the previous documents over.
-    pub fn externally_owned_rows_required_epoch(&self) -> Result<Option<u64>> {
+    /// openers observe it too. The epoch grows within one projection
+    /// incarnation; rebuilds and explicit recovery resets create a new
+    /// incarnation so retained acknowledgements cannot cross that boundary.
+    pub fn externally_owned_rows_required(&self) -> Result<Option<ExternallyOwnedRowsToken>> {
         let Some(path) = &self.search_projection_path else {
             return Ok(None);
         };
-        Ok(crate::search::projection_ownership::read_rows_state(path)?.required_epoch())
+        if self.externally_owned_search_kinds.is_empty() {
+            return Ok(None);
+        }
+        Ok(crate::search::projection_ownership::require_rows_state(path)?.required_token())
     }
 
     /// Clears the rows-required state after the host re-pushed its rows,
-    /// but only if `epoch` is still the required epoch.
+    /// but only if `token` is still the required fence.
     ///
     /// Returns `Ok(false)` and changes nothing when no rows are required or
-    /// `epoch` is stale, for example because a rebuild raised a newer epoch
-    /// after the host observed `epoch`; the host then re-pushes again and
-    /// acknowledges the newer epoch. Read-only opens are refused.
-    pub fn acknowledge_externally_owned_rows_restored(&mut self, epoch: u64) -> Result<bool> {
+    /// `token` is stale, for example because a rebuild created a new
+    /// incarnation after the host observed it; the host then re-pushes again
+    /// and acknowledges the newer token. Read-only opens are refused.
+    pub fn acknowledge_externally_owned_rows_restored(
+        &mut self,
+        token: ExternallyOwnedRowsToken,
+    ) -> Result<bool> {
         if self.graph.database().config().read_only {
             return Err(HawDBError::Semantic(
                 "acknowledging externally owned rows requires a writable store".into(),
@@ -2323,7 +2329,7 @@ impl EmbeddedStore {
         let Some(path) = &self.search_projection_path else {
             return Ok(false);
         };
-        crate::search::projection_ownership::acknowledge_rows_restored(path, epoch)
+        crate::search::projection_ownership::acknowledge_rows_restored(path, token)
     }
 
     /// Kinds whose search documents only the host writes (#1814), fixed at
@@ -2681,8 +2687,7 @@ impl EmbeddedStore {
                     .iter()
                     .copied()
                     .collect(),
-                externally_owned_rows_required_epoch: self
-                    .externally_owned_rows_required_epoch()?,
+                externally_owned_rows_required: self.externally_owned_rows_required()?,
             }
         })
     }

@@ -244,13 +244,7 @@ impl EmbeddedStoreHandle {
         let task = permit
             .bind_task_context(task)
             .with_memory_reservation(hawdb_core::RuntimeMemoryReservation::new(working, 0));
-        let (owned, previous) = {
-            let store = self.read_store()?;
-            (
-                Arc::clone(&store.externally_owned_search_kinds),
-                store.search_projection_path.clone(),
-            )
-        };
+        let owned = Arc::clone(&self.read_store()?.externally_owned_search_kinds);
         let carry_over_available =
             !owned.is_empty() && self.carry_over_unavailable(&owned).is_none();
         let ownership = Ownership {
@@ -262,7 +256,7 @@ impl EmbeddedStoreHandle {
             .rebuild_into_stage(&stage, &options, source, &ownership, &task)
             .and_then(|built| {
                 if !owned.is_empty() {
-                    record_ownership(&stage.path, &owned, previous.as_deref())?;
+                    record_ownership(&stage.path, &owned)?;
                 }
                 Ok(built)
             });
@@ -519,23 +513,14 @@ enum Pass {
 }
 
 /// Records the set and a raised rows-required state in the verified stage,
-/// so both install atomically with the generation. Host writes made to the
+/// so both install atomically with the generation. The target is a new
+/// projection incarnation, so an acknowledgement retained from the source
+/// projection cannot clear its requirement. Host writes made to the
 /// current projection during the rebuild, or after installation until the
-/// host switches, are not in the target, so the epoch is always raised and
-/// continues past the previous directory's.
-fn record_ownership(
-    stage: &Path,
-    owned: &BTreeSet<SearchProjectionKind>,
-    previous: Option<&Path>,
-) -> Result<()> {
-    use crate::search::projection_ownership::{
-        raised_after, read_rows_state, write_record, write_rows_state, ExternallyOwnedRowsState,
-    };
-    let previous = match previous {
-        Some(path) => read_rows_state(path),
-        None => Ok(ExternallyOwnedRowsState::default()),
-    };
-    write_rows_state(stage, raised_after(previous))?;
+/// host switches, are not in the target, so rows are always required.
+fn record_ownership(stage: &Path, owned: &BTreeSet<SearchProjectionKind>) -> Result<()> {
+    use crate::search::projection_ownership::{raise_rows_required, write_record};
+    raise_rows_required(stage)?;
     write_record(stage, owned)
 }
 

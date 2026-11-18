@@ -19,7 +19,9 @@
 
 use crate::bounded_read_evidence::GraphMode;
 use hawdb_route_ownership::graph::RouteOwnershipReadinessReport;
-use hawdb_search::{SearchProjectionFreshness, SearchProjectionKind};
+use hawdb_search::{
+    projection_ownership::ExternallyOwnedRowsToken, SearchProjectionFreshness, SearchProjectionKind,
+};
 use hawdb_storage::projection::{SearchProjectionChangefeedStatus, SearchProjectionMutationId};
 
 pub const RUNTIME_STATUS_PROTOCOL: &str = "hawdb-nowledge-mem-runtime-status-v1";
@@ -35,9 +37,10 @@ pub struct EmbeddedRuntimeStatus {
     /// Kinds whose documents only the host writes; changefeed catch-up derives
     /// no rows for them (#1814). Empty by default.
     pub externally_owned_search_kinds: Vec<SearchProjectionKind>,
-    /// The epoch at which the host must resupply its externally owned rows,
-    /// or `None` when nothing is required (#1814).
-    pub externally_owned_rows_required_epoch: Option<u64>,
+    /// The fenced projection incarnation and epoch for which the host must
+    /// resupply its externally owned rows, or `None` when nothing is required
+    /// (#1814).
+    pub externally_owned_rows_required: Option<ExternallyOwnedRowsToken>,
 }
 
 impl EmbeddedRuntimeStatus {
@@ -92,7 +95,10 @@ impl EmbeddedRuntimeStatus {
                 "embedding_version": freshness.and_then(|freshness| freshness.embedding_version.as_deref()),
                 "embedding_dimension": freshness.and_then(|freshness| freshness.embedding_dimension),
                 "externally_owned_kinds": self.externally_owned_search_kinds.iter().map(|kind| kind.as_str()).collect::<Vec<_>>(),
-                "externally_owned_rows_required_epoch": self.externally_owned_rows_required_epoch,
+                "externally_owned_rows_required": self.externally_owned_rows_required.map(|token| serde_json::json!({
+                    "incarnation": token.incarnation.to_string(),
+                    "epoch": token.epoch,
+                })),
                 "commit_lag": self.projection_commit_lag(),
                 "stale": self.projection_stale(),
             },
@@ -294,7 +300,7 @@ mod tests {
                 ..Default::default()
             }),
             externally_owned_search_kinds: Vec::new(),
-            externally_owned_rows_required_epoch: None,
+            externally_owned_rows_required: None,
         };
 
         assert_eq!(status.projection_commit_lag(), 8);
@@ -324,7 +330,7 @@ mod tests {
                 projection_freshness: None,
                 file_descriptors: None,
                 externally_owned_search_kinds: Vec::new(),
-                externally_owned_rows_required_epoch: None,
+                externally_owned_rows_required: None,
             },
             None,
         );

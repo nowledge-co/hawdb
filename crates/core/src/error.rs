@@ -262,8 +262,8 @@ pub enum HawDBError {
     /// projection directory cannot be parsed. Not a storage failure and not
     /// poisoning: nothing was changed. Reopen with
     /// `EmbeddedStoreOpenOptions::with_externally_owned_search_kinds_reset`
-    /// to rewrite both records from the passed set; that raises the
-    /// rows-required epoch so the host re-pushes its rows.
+    /// to rewrite both records from the passed set; that creates a fresh
+    /// rows-required fence so the host re-pushes its rows.
     SearchProjectionOwnershipMarkerCorrupt {
         projection: std::path::PathBuf,
         marker: String,
