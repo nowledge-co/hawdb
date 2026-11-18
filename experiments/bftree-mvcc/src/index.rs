@@ -157,7 +157,9 @@ fn key_parts(bytes: &[u8], versioned: bool) -> Result<(&[u8], u64)> {
 }
 fn decode_key(prefix: &[u8]) -> Vec<u8> {
     prefix[1..prefix.len() - 1]
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| pair[1])
         .collect()
 }
