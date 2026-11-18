@@ -103,6 +103,7 @@ mod projection_delta_contracts;
 pub mod projection_evidence;
 #[doc(hidden)]
 pub mod projection_evidence_cli;
+pub mod projection_ownership;
 mod query_control;
 mod resident_bm25;
 #[cfg(feature = "vector-search")]
@@ -318,6 +319,12 @@ const SEARCH_RABITQ_PROJECTION_PREFIX: &str = "search_rabitq.";
 const SEARCH_RABITQ_PROJECTION_SUFFIX: &str = ".hawdb";
 pub const FULL_REINDEX_MARKER: &str = ".reindex_needed";
 pub const METADATA_REPAIR_MARKER: &str = ".projection_metadata_repair_needed";
+/// Records the projection's externally owned kinds (#1814). Kept beside the
+/// selector instead of inside it so earlier readers, which refuse unknown
+/// manifest fields, still open the projection. See [`projection_ownership`].
+pub const EXTERNALLY_OWNED_KINDS_MARKER: &str = projection_ownership::MARKER;
+/// Records whether the host must resupply externally owned rows (#1814).
+pub const EXTERNALLY_OWNED_ROWS_MARKER: &str = projection_ownership::ROWS_MARKER;
 /// The BM25 constants shared with the SQL search index access path.
 use hawdb_executor::bm25::{BM25_B, BM25_K1};
 const TITLE_TERM_FREQUENCY_WEIGHT: usize = 2;
@@ -394,6 +401,19 @@ impl SearchProjectionKind {
             SearchProjectionKind::SourceChunk => "source_chunk",
             SearchProjectionKind::Community => "community",
         }
+    }
+
+    /// Parses a name produced by [`Self::as_str`].
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "memory" => SearchProjectionKind::Memory,
+            "message" => SearchProjectionKind::Message,
+            "entity" => SearchProjectionKind::Entity,
+            "source" => SearchProjectionKind::Source,
+            "source_chunk" => SearchProjectionKind::SourceChunk,
+            "community" => SearchProjectionKind::Community,
+            _ => return None,
+        })
     }
 }
 
@@ -1722,6 +1742,9 @@ pub struct SearchIndex {
     cleanup_options: SearchProjectionCleanupOptions,
     runtime_capabilities: RuntimeCapabilities,
     telemetry: Option<Arc<dyn TelemetrySink>>,
+    /// Kinds whose documents only the host writes (#1814). Runtime policy,
+    /// never persisted here; see [`Self::set_externally_owned_kinds`].
+    externally_owned_kinds: BTreeSet<SearchProjectionKind>,
 }
 
 impl SearchIndex {
@@ -2202,6 +2225,47 @@ impl SearchIndex {
         self.runtime_capabilities
     }
 
+    /// Declares kinds whose documents the host supplies itself (#1814).
+    ///
+    /// Graph changefeed catch-up applied to this index then derives no rows
+    /// for nodes of these kinds: their documents are written only by host
+    /// deltas, and are removed only when the graph node is deleted (or the
+    /// host deletes them). Graph-derived rows of other kinds and every host
+    /// delta are unaffected. A full rebuild from the graph carries the current
+    /// document of every live node of these kinds over unchanged, dropping
+    /// documents whose node no longer exists, and metadata repair leaves them
+    /// untouched. Both raise the persisted rows-required fence of a
+    /// persistent index, so the host re-pushes its rows. The set is not
+    /// persisted by the index; an embedded store records it with
+    /// `EmbeddedStoreOpenOptions::with_externally_owned_search_kinds`.
+    pub fn set_externally_owned_kinds(&mut self, kinds: BTreeSet<SearchProjectionKind>) {
+        self.externally_owned_kinds = kinds;
+    }
+
+    pub fn externally_owned_kinds(&self) -> &BTreeSet<SearchProjectionKind> {
+        &self.externally_owned_kinds
+    }
+
+    /// Raises the persisted rows-required fence before a rebuild or metadata
+    /// repair of a projection with externally owned kinds (#1814).
+    ///
+    /// Carry-over keeps the documents the index holds, but host writes that
+    /// have not reached this index (for example to another directory during
+    /// an out-of-core rebuild) cannot be proven present, so the host always
+    /// re-pushes after maintenance. Raising first keeps a failed rebuild
+    /// fail-safe. An unreadable state fails closed; if a valid state disappears
+    /// after open, the raise creates a fresh incarnation that rejects retained
+    /// acknowledgements from the removed state.
+    fn raise_externally_owned_rows_required(&self) -> Result<()> {
+        if self.externally_owned_kinds.is_empty() {
+            return Ok(());
+        }
+        let Some(path) = self.path.as_deref() else {
+            return Ok(());
+        };
+        projection_ownership::raise_rows_required(path).map(|_| ())
+    }
+
     pub fn upsert(&mut self, document: SearchDocument) -> Result<()> {
         let _consumer_mutation = self.require_owned_mutation_or_unregistered()?;
         if let Some(embedding) = &document.embedding {
@@ -2628,6 +2692,7 @@ impl SearchIndex {
         options: SearchRebuildOptions,
     ) -> Result<SearchRebuildSummary> {
         let _consumer_mutation = self.require_owned_mutation_or_unregistered()?;
+        self.raise_externally_owned_rows_required()?;
         let started = hawdb_core::time::Instant::now();
         let mut next_documents = BTreeMap::new();
         let mut scanned_nodes = 0;
@@ -2646,6 +2711,20 @@ impl SearchIndex {
                 ) else {
                     return Ok(());
                 };
+                // The host is the only writer of owned kinds: carry its
+                // current document over for a live node instead of deriving
+                // one. Documents of nodes that no longer exist are dropped.
+                let owned = self.externally_owned_kinds.contains(&row.kind);
+                let carried = owned
+                    .then(|| {
+                        self.documents
+                            .get(&format!("{}:{}", row.kind.as_str(), row.external_id))
+                            .cloned()
+                    })
+                    .flatten();
+                if owned && carried.is_none() {
+                    return Ok(());
+                }
                 if options
                     .max_rows
                     .map(|limit| next_documents.len() >= limit)
@@ -2657,7 +2736,7 @@ impl SearchIndex {
                         next_documents.len()
                     )));
                 }
-                let document = row.into_document();
+                let document = carried.unwrap_or_else(|| row.into_document());
                 next_documents.insert(document.id.clone(), document);
                 Ok(())
             })?;
@@ -2801,6 +2880,7 @@ impl SearchIndex {
         options: MetadataRepairOptions,
     ) -> Result<MetadataRepairSummary> {
         let _consumer_mutation = self.require_owned_mutation_or_unregistered()?;
+        self.raise_externally_owned_rows_required()?;
         let started = hawdb_core::time::Instant::now();
         let mut repairs = Vec::new();
         let mut scanned_nodes = 0;
@@ -2820,6 +2900,10 @@ impl SearchIndex {
                 ) else {
                     return Ok(());
                 };
+                // The host owns these documents' metadata as well.
+                if self.externally_owned_kinds.contains(&row.kind) {
+                    return Ok(());
+                }
                 let document = row.into_document();
                 if !self.documents.contains_key(&document.id) {
                     missing_documents += 1;
@@ -5189,6 +5273,7 @@ impl Default for SearchIndex {
             cleanup_options: SearchProjectionCleanupOptions::default(),
             runtime_capabilities: crate::compiled_runtime_capabilities(),
             telemetry: None,
+            externally_owned_kinds: BTreeSet::new(),
         }
     }
 }

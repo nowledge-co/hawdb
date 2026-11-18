@@ -248,6 +248,27 @@ pub enum HawDBError {
         target_graph_commit_epoch: u64,
         message: String,
     },
+    /// The externally owned search projection kinds requested at open differ
+    /// from the set recorded with the projection (#1814). The open is refused
+    /// and nothing is changed. Kinds are their lowercase projection names,
+    /// sorted. Pass the recorded set again, or rebuild the projection into a
+    /// new directory to change it. Not a storage failure.
+    SearchProjectionOwnershipMismatch {
+        projection: std::path::PathBuf,
+        recorded: Vec<String>,
+        requested: Vec<String>,
+    },
+    /// An externally owned search projection record (#1814) in the
+    /// projection directory cannot be parsed. Not a storage failure and not
+    /// poisoning: nothing was changed. Reopen with
+    /// `EmbeddedStoreOpenOptions::with_externally_owned_search_kinds_reset`
+    /// to rewrite both records from the passed set; that creates a fresh
+    /// rows-required fence so the host re-pushes its rows.
+    SearchProjectionOwnershipMarkerCorrupt {
+        projection: std::path::PathBuf,
+        marker: String,
+        message: String,
+    },
     Execution(String),
     /// Box the diagnostic so successful Result values do not grow with its fields.
     ResourceBudgetExceeded(Box<ResourceBudgetError>),
@@ -350,6 +371,26 @@ impl Display for HawDBError {
                 f,
                 "search projection epoch advance refused ({}): {message}",
                 reason.as_str()
+            ),
+            HawDBError::SearchProjectionOwnershipMismatch {
+                projection,
+                recorded,
+                requested,
+            } => write!(
+                f,
+                "search projection ownership mismatch: {} records externally owned kinds [{}], open requested [{}]; pass the recorded set or rebuild the projection into a new directory",
+                projection.display(),
+                recorded.join(", "),
+                requested.join(", ")
+            ),
+            HawDBError::SearchProjectionOwnershipMarkerCorrupt {
+                projection,
+                marker,
+                message,
+            } => write!(
+                f,
+                "search projection ownership record {marker} in {} is unreadable ({message}); reopen with the externally owned search kinds reset to rewrite it",
+                projection.display()
             ),
             HawDBError::Execution(message) => write!(f, "execution error: {message}"),
             HawDBError::ResourceBudgetExceeded(error) => write!(f, "execution error: {error}"),

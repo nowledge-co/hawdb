@@ -38,8 +38,8 @@ use crate::search::{
     MetadataRepairSummary, SearchCandidateSetReport, SearchDerivedArtifactReport,
     SearchEmptyReasonCode, SearchFusionWeights, SearchIndex, SearchMatchedSpan,
     SearchPredicatePushdownReport, SearchProjectionDelta, SearchProjectionDeltaReport,
-    SearchProjectionFreshness, SearchQueryOptions, SearchRebuildOptions, SearchRebuildSummary,
-    SearchResultSet, SearchRetrieverCandidateSetReport,
+    SearchProjectionFreshness, SearchProjectionKind, SearchQueryOptions, SearchRebuildOptions,
+    SearchRebuildSummary, SearchResultSet, SearchRetrieverCandidateSetReport,
 };
 use crate::store::{
     restore_storage_backup, AdjacencyConsistencyReport, AdjacencyConsolidationPlan,
@@ -895,10 +895,13 @@ fn require_search_projection_source_epoch(expected: Option<u64>, actual: u64) ->
     Ok(())
 }
 
+/// `externally_owned` kinds derive no rows: the host is their only writer
+/// (#1814). Their documents are still removed through `delete_document_ids`.
 fn search_projection_graph_delta_for(
     catalog: &Catalog,
     store: &GraphStore,
     request: &SearchProjectionGraphDeltaRequest,
+    externally_owned: &BTreeSet<SearchProjectionKind>,
 ) -> Result<SearchProjectionDelta> {
     let operation_count = request.operation_count();
     if let Some(limit) = request.max_operations
@@ -920,7 +923,9 @@ fn search_projection_graph_delta_for(
         let Some(node) = store.node_owned(NodeId(*node_id))? else {
             continue;
         };
-        if let Some(row) = projection_row_from_node_with_graph_metadata(catalog, store, &node)? {
+        if let Some(row) = projection_row_from_node_with_graph_metadata(catalog, store, &node)?
+            && !externally_owned.contains(&row.kind)
+        {
             upserts.push(row);
         }
     }

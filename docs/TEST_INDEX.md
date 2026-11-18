@@ -500,6 +500,45 @@ no lane, profile or timeout is added. Local replay:
 and `cargo test --locked -p hawdb-search --lib epoch_advance`. See
 [the contract](SEARCH_PROJECTION_EPOCH_ADVANCE.md).
 
+`embedded_store::tests::externally_owned_search_kinds_tests`
+(`nowledge-co/hawdb#1814`) belongs to the existing root
+`//:hawdb_unit_general_tests` owner. On the resident and the incremental
+out-of-core path, with kinds declared through
+`EmbeddedStoreOpenOptions::with_externally_owned_search_kinds`, it checks that
+a graph-only update followed by changefeed catch-up leaves the host's document
+byte-identical (embedding included), that a node delete removes it, that other
+kinds stay graph-derived, that all six kinds can be owned at once, and that
+reopen keeps the mode. The default open still replaces the document and writes
+no record. A different set, including the empty set, is refused with the typed
+`SearchProjectionOwnershipMismatch` without changing the record, and a removed
+record is restored. The rows-required fence combines an immutable projection
+incarnation with an epoch that grows within that incarnation. A stale
+acknowledgement does not clear a newer epoch or a new incarnation, and read-only
+opens report the token but cannot acknowledge it. A manufactured changefeed gap
+(a change log of two entries) is recovered by the resident rebuild with metadata
+repair and by the out-of-core rebuild. In both, documents of live nodes are
+carried over byte-identical, and documents of nodes deleted during the gap are
+dropped. Resident rebuild and repair raise the epoch; an out-of-core rebuild
+publishes a fresh incarnation. When carry-over is made impossible by an
+injected probe failure, owned documents are absent until the host re-pushes
+them. A host delta applied during an out-of-core rebuild does not
+fail verification, and the target publishes a fresh fence. Missing and corrupt
+source rows states during an out-of-core rebuild are covered: the target uses a
+fresh incarnation and rejects the retained source token. Unreadable records are
+the typed `SearchProjectionOwnershipMarkerCorrupt`; a read-only reset is
+refused, and a reset reopen rewrites both records with a fresh incarnation that
+rejects the previous token.
+Search-crate owners `projection_ownership::tests` and
+`generation_cleanup::tests::cleanup_preserves_the_externally_owned_records`
+cover the record format and cleanup preservation; `bindings/python`
+`errors::tests::search_projection_ownership_mismatch_is_an_execution_error_with_both_sets`
+and `search_projection_ownership_marker_corruption_is_a_non_poisoning_execution_error`
+pin the binding mapping. The fixtures are small temporary stores; no lane,
+profile or timeout is added. Local replay:
+`cargo test --locked -p hawdb --lib externally_owned_search_kinds -- --test-threads=4`
+and `cargo test --locked -p hawdb-search --lib projection_ownership`. See
+[the contract](SEARCH_EXTERNALLY_OWNED_KINDS.md).
+
 Search-crate owner `out_of_core::manifest_version::tests` (`nowledge-co/hawdb#1763`),
 in the same `hawdb-search` unit lane, covers the selector version gate. A newer
 selector is refused as the typed `UnsupportedStorageFormat`, never `Storage`,

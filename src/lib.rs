@@ -556,6 +556,7 @@ pub use schema::{
     PropertyDescriptor, PropertyId, PropertySchema, PropertyType, SchemaObjectState,
     TableDescriptor, TableId, TableKind,
 };
+pub use search::projection_ownership::ExternallyOwnedRowsToken;
 #[cfg(feature = "vector-search")]
 pub use search::rabitq_projection::{
     RaBitQBitWidth, RaBitQCandidate, RaBitQCandidateOutput, RaBitQCandidateProjection,

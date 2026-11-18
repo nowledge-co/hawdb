@@ -462,6 +462,8 @@ impl ExpectedErrorClass {
             | HawDBError::TransactionReadDependencyRefused { .. }
             | HawDBError::BranchCommandUnsupported { .. }
             | HawDBError::SearchProjectionRebuildRefused { .. }
+            | HawDBError::SearchProjectionOwnershipMarkerCorrupt { .. }
+            | HawDBError::SearchProjectionOwnershipMismatch { .. }
             | HawDBError::SearchProjectionEpochAdvanceRefused { .. } => Self::Execution,
             HawDBError::CapabilityUnavailable { .. } => Self::CapabilityUnavailable,
         }

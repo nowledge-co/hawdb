@@ -1540,6 +1540,22 @@ impl EmbeddedStoreHandle {
         Ok(self.write_store()?.query_runtime_preflight_json(probes))
     }
 
+    /// See [`EmbeddedStore::externally_owned_rows_required`].
+    pub fn externally_owned_rows_required(&self) -> Result<Option<ExternallyOwnedRowsToken>> {
+        self.read_store()?.externally_owned_rows_required()
+    }
+
+    /// Acknowledges that the host re-pushed its externally owned rows for
+    /// `token`. See [`EmbeddedStore::acknowledge_externally_owned_rows_restored`]:
+    /// a stale token returns `Ok(false)` and changes nothing.
+    pub fn acknowledge_externally_owned_rows_restored(
+        &self,
+        token: ExternallyOwnedRowsToken,
+    ) -> Result<bool> {
+        self.write_store()?
+            .acknowledge_externally_owned_rows_restored(token)
+    }
+
     pub fn catch_up_search_projection(
         &self,
         max_operations_per_batch: usize,

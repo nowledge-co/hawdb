@@ -103,6 +103,12 @@ impl QueryBridge {
                     HawDBError::SearchProjectionRebuildRefused { .. } => {
                         "search_projection_rebuild_refused"
                     }
+                    HawDBError::SearchProjectionOwnershipMarkerCorrupt { .. } => {
+                        "search_projection_ownership_marker_corrupt"
+                    }
+                    HawDBError::SearchProjectionOwnershipMismatch { .. } => {
+                        "search_projection_ownership_mismatch"
+                    }
                     HawDBError::SearchProjectionEpochAdvanceRefused { .. } => {
                         "search_projection_epoch_advance_refused"
                     }
