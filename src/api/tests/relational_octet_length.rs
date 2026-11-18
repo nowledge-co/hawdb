@@ -140,6 +140,20 @@ fn sql_octet_length_refuses_invalid_inputs_even_without_rows() {
             "{expression}"
         );
     }
+    for expression in [
+        "SUM(OCTET_LENGTH(*))",
+        "SUM(OCTET_LENGTH())",
+        "SUM(OCTET_LENGTH(body, body))",
+        "SUM(OCTET_LENGTH(id))",
+        "COALESCE(SUM(OCTET_LENGTH(*)), 0)",
+    ] {
+        assert!(
+            database
+                .query_sql(&format!("SELECT {expression} FROM lengths"))
+                .is_err(),
+            "invalid nested arguments must fail even without aggregate input: {expression}"
+        );
+    }
     assert!(database
         .query_sql("SELECT id FROM lengths WHERE sum(id) = 1")
         .is_err());

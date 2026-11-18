@@ -58,7 +58,7 @@ pub(super) fn projection_uses_non_aggregate_scalar_function(
     })
 }
 
-pub(super) fn validate_non_aggregate_scalar_expressions(
+pub(super) fn validate_scalar_expressions(
     select: &SelectStatement,
     parameters: &[Value],
     state: &RelationalState,
@@ -83,12 +83,17 @@ pub(super) fn validate_non_aggregate_scalar_expressions(
         }
     }
     let mut validation = Ok(());
-    for predicate in select
-        .selection
+    for expression in select
+        .projection
         .iter()
+        .filter_map(|projection| match projection {
+            SelectProjection::Expression { expression, .. } => Some(expression),
+            SelectProjection::Wildcard => None,
+        })
+        .chain(select.selection.iter())
         .chain(select.joins.iter().map(|join| &join.on))
     {
-        predicate.visit(&mut |expression| {
+        expression.visit(&mut |expression| {
             if validation.is_ok()
                 && matches!(&expression.kind, ExprKind::Function { name, .. } if name == "octet_length")
             {

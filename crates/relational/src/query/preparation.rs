@@ -18,7 +18,7 @@ use super::{
     choose_base_access, choose_join_access, elapsed_nanos, measure_nanos,
     plan_relational_field_plan, projection_access_planning, projection_contains_aggregate,
     reject_non_public_schema, resolve_relational_order_target, select_output_schema,
-    validate_non_aggregate_scalar_expressions, HawDBError, Instant, PreparedRelationalAccessPlan,
+    validate_scalar_expressions, HawDBError, Instant, PreparedRelationalAccessPlan,
     PreparedRelationalExecutionDescriptor, PreparedRelationalSelect, QuerySchema,
     RelationalAccessPathDescriptor, RelationalBaseAccessPlanning, RelationalQueryLimits,
     RelationalQueryReadModes, RelationalQueryResourceContext, RelationalQueryStoreReader,
@@ -167,7 +167,7 @@ pub(super) fn prepare_relational_select_with_snapshot(
         join_order::bind_from_scopes(&mut select, state)?;
         join_order::promote_where_equalities(&mut select, state, parameters)?;
         super::having::validate_having(&select, parameters, state)?;
-        validate_non_aggregate_scalar_expressions(&select, parameters, state)?;
+        validate_scalar_expressions(&select, parameters, state)?;
         for item in &select.order_by {
             resolve_relational_order_target(&select, item)?;
         }
