@@ -135,10 +135,10 @@ fn timestamp_row_page_round_trips_and_rejects_out_of_range_payloads() {
         rows: [min, -1, max]
             .into_iter()
             .map(|micros| RelationalRowPageEntry {
-                primary_key: RelationalKey(vec![RelationalValue::Timestamp(micros)]),
+                primary_key: RelationalKey(vec![RelationalValue::Timestamp(micros.into())]),
                 row: RelationalRow::new(vec![
-                    RelationalValue::Timestamp(micros),
-                    RelationalValue::TimestampTz(micros),
+                    RelationalValue::Timestamp(micros.into()),
+                    RelationalValue::TimestampTz(micros.into()),
                     RelationalValue::Null,
                 ]),
             })
@@ -149,10 +149,13 @@ fn timestamp_row_page_round_trips_and_rejects_out_of_range_payloads() {
     let decoded = ImmutableRelationalRowPage::decode(&encoded, limits).unwrap();
     assert_eq!(decoded.rows, page.rows);
     let view = RelationalRowPageView::open(&encoded, limits).unwrap();
-    let key = RelationalKey(vec![RelationalValue::Timestamp(-1)]);
+    let key = RelationalKey(vec![RelationalValue::Timestamp((-1).into())]);
     assert_eq!(view.find_row(&key).unwrap(), Some(1));
     let projected = view.find_projected_row(&key, &[1]).unwrap().unwrap();
-    assert_eq!(projected.fields[0].value, RelationalValue::TimestampTz(-1));
+    assert_eq!(
+        projected.fields[0].value,
+        RelationalValue::TimestampTz((-1).into())
+    );
 
     // Overwrite the stored TIMESTAMPTZ of the last row with max + 1.
     let mut corrupt = encoded.clone();

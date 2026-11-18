@@ -126,9 +126,9 @@ fn prefix_successor(
                 None => false,
             },
             RelationalValue::Timestamp(value) | RelationalValue::TimestampTz(value)
-                if *value < hawdb_core::sql_timestamp::max_micros() =>
+                if value.get() < hawdb_core::sql_timestamp::max_micros() =>
             {
-                *value += 1;
+                *value = (value.get() + 1).into();
                 true
             }
             RelationalValue::Timestamp(_) | RelationalValue::TimestampTz(_) => false,
@@ -503,8 +503,8 @@ mod tests {
                 .into_iter()
                 .map(|value| RelationalValue::Uuid(Uuid::from_u128(value)))
                 .collect(),
-            timestamp_domain(RelationalValue::Timestamp),
-            timestamp_domain(RelationalValue::TimestampTz),
+            timestamp_domain(|value| RelationalValue::Timestamp(value.into())),
+            timestamp_domain(|value| RelationalValue::TimestampTz(value.into())),
         ];
         for domain in domains {
             let schema = RelationalTableSchema {

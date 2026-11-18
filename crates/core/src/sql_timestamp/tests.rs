@@ -253,3 +253,32 @@ fn microsecond_encoding_preserves_old_bytes_and_extends_canonically() {
     assert!(encode_micros(min_micros() - 1).is_err());
     assert!(encode_micros(max_micros() + 1).is_err());
 }
+
+#[test]
+fn timestamp_carrier_preserves_order_without_i128_alignment() {
+    assert_eq!(std::mem::size_of::<TimestampMicros>(), 16);
+    assert_eq!(
+        std::mem::align_of::<TimestampMicros>(),
+        std::mem::align_of::<u64>()
+    );
+    let raw = [
+        i128::MIN,
+        min_micros(),
+        -1,
+        0,
+        1,
+        i128::from(i64::MAX),
+        max_micros(),
+        i128::MAX,
+    ];
+    let carriers: Vec<_> = raw.into_iter().map(TimestampMicros::new).collect();
+    for (value, carrier) in raw.into_iter().zip(&carriers) {
+        assert_eq!(carrier.get(), value);
+        assert_eq!(format!("{carrier:?}"), value.to_string());
+    }
+    for (left, left_carrier) in raw.into_iter().zip(&carriers) {
+        for (right, right_carrier) in raw.into_iter().zip(&carriers) {
+            assert_eq!(left_carrier.cmp(right_carrier), left.cmp(&right));
+        }
+    }
+}

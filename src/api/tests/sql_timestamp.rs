@@ -223,7 +223,7 @@ fn sql_timestamp_torn_wal_tail_discards_only_the_incomplete_transaction() {
         .unwrap();
     let acknowledged = std::fs::metadata(active_wal_path(&path)).unwrap().len();
     database
-        .query_sql("INSERT INTO events (id, at, seen) VALUES (11, '294276-12-31 23:59:59.999999', '294276-12-31 23:59:59.999999Z')")
+        .query_sql("INSERT INTO events (id, at, seen) VALUES (11, '294276-12-31 23:59:59.999999', '294276-12-31 23:59:59.999Z')")
         .unwrap();
     let complete = std::fs::metadata(active_wal_path(&path)).unwrap().len();
     drop(database);

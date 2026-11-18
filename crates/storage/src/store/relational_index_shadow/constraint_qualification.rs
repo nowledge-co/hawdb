@@ -523,9 +523,9 @@ fn synthetic_value(
                 hawdb_core::sql_timestamp::min_micros().saturating_add(i128::from(offset)),
             )?;
             if matches!(kind, RelationalScalarType::Timestamp(_)) {
-                RelationalValue::Timestamp(micros)
+                RelationalValue::Timestamp(micros.into())
             } else {
-                RelationalValue::TimestampTz(micros)
+                RelationalValue::TimestampTz(micros.into())
             }
         }
         RelationalScalarType::Vector(_) => {

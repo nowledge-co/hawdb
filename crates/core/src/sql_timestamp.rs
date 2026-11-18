@@ -92,17 +92,67 @@ impl Default for TimestampPrecision {
     }
 }
 
-/// SQL microseconds since the Unix epoch. The wider carrier preserves the
-/// existing epoch while covering PostgreSQL's entire finite timestamp domain.
-pub type TimestampMicros = i128;
+/// SQL Unix microseconds in a full-width, eight-byte-aligned carrier.
+/// Keeping i128's native alignment out of row enums avoids increasing every
+/// scalar's resident size, including rows with no timestamp columns.
+/// This carrier preserves bits; [`checked`] validates the SQL value domain.
+#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(C)]
+pub struct TimestampMicros {
+    high: i64,
+    low: u64,
+}
+
+impl TimestampMicros {
+    pub const fn new(micros: i128) -> Self {
+        Self {
+            high: (micros >> 64) as i64,
+            low: micros as u64,
+        }
+    }
+
+    pub const fn get(self) -> i128 {
+        ((self.high as i128) << 64) | self.low as i128
+    }
+}
+
+impl From<i128> for TimestampMicros {
+    fn from(micros: i128) -> Self {
+        Self::new(micros)
+    }
+}
+
+impl From<i32> for TimestampMicros {
+    fn from(micros: i32) -> Self {
+        Self::new(i128::from(micros))
+    }
+}
+
+impl From<i64> for TimestampMicros {
+    fn from(micros: i64) -> Self {
+        Self::new(i128::from(micros))
+    }
+}
+
+impl From<TimestampMicros> for i128 {
+    fn from(micros: TimestampMicros) -> Self {
+        micros.get()
+    }
+}
+
+impl std::fmt::Debug for TimestampMicros {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.get().fmt(formatter)
+    }
+}
 
 /// PostgreSQL 18's lower finite limit, translated from its 2000 epoch.
-pub const fn min_micros() -> TimestampMicros {
+pub const fn min_micros() -> i128 {
     -211_813_488_000_000_000 + POSTGRES_EPOCH_MICROS
 }
 
 /// PostgreSQL 18's exclusive upper finite limit minus one microsecond.
-pub const fn max_micros() -> TimestampMicros {
+pub const fn max_micros() -> i128 {
     9_223_371_331_200_000_000 + POSTGRES_EPOCH_MICROS - 1
 }
 
@@ -123,7 +173,7 @@ pub fn checked(micros: i128) -> Result<i128> {
 /// unsigned excess while every previously valid payload keeps its bytes.
 pub const EXTENDED_MICROS: i64 = i64::MAX;
 
-pub fn split_micros(micros: TimestampMicros) -> Result<(i64, Option<u64>)> {
+pub fn split_micros(micros: i128) -> Result<(i64, Option<u64>)> {
     checked(micros)?;
     if micros >= i128::from(EXTENDED_MICROS) {
         Ok((
@@ -135,7 +185,7 @@ pub fn split_micros(micros: TimestampMicros) -> Result<(i64, Option<u64>)> {
     }
 }
 
-pub fn join_micros(narrow: i64, excess: Option<u64>) -> Result<TimestampMicros> {
+pub fn join_micros(narrow: i64, excess: Option<u64>) -> Result<i128> {
     match (narrow == EXTENDED_MICROS, excess) {
         (true, Some(excess)) => checked(i128::from(narrow) + i128::from(excess)),
         (false, None) => checked(i128::from(narrow)),
@@ -143,7 +193,7 @@ pub fn join_micros(narrow: i64, excess: Option<u64>) -> Result<TimestampMicros> 
     }
 }
 
-pub const fn encoded_micros_len(micros: TimestampMicros) -> usize {
+pub const fn encoded_micros_len(micros: i128) -> usize {
     if micros >= EXTENDED_MICROS as i128 {
         16
     } else {
@@ -162,7 +212,7 @@ impl EncodedMicros {
     }
 }
 
-pub fn encode_micros(micros: TimestampMicros) -> Result<EncodedMicros> {
+pub fn encode_micros(micros: i128) -> Result<EncodedMicros> {
     let (narrow, excess) = split_micros(micros)?;
     let mut bytes = [0; 16];
     bytes[..8].copy_from_slice(&narrow.to_le_bytes());
@@ -176,7 +226,7 @@ pub fn encode_micros(micros: TimestampMicros) -> Result<EncodedMicros> {
 }
 
 /// Converts a local datetime, rounding sub-microsecond digits half up.
-pub fn from_naive(value: PlainDateTime) -> Result<TimestampMicros> {
+pub fn from_naive(value: PlainDateTime) -> Result<i128> {
     let utc = value.assume_utc();
     // Split around a floored second, so sub-microsecond rounding is correct
     // for pre-epoch values as well as positive timestamps.
@@ -187,18 +237,18 @@ pub fn from_naive(value: PlainDateTime) -> Result<TimestampMicros> {
 }
 
 /// Converts a zoned datetime to its UTC instant.
-pub fn from_datetime(value: OffsetDateTime) -> Result<TimestampMicros> {
+pub fn from_datetime(value: OffsetDateTime) -> Result<i128> {
     let utc = value
         .checked_to_offset(crate::temporal::UtcOffset::UTC)
         .ok_or_else(out_of_range)?;
     from_naive(utc_datetime(utc))
 }
 
-pub fn to_naive(micros: TimestampMicros) -> Result<PlainDateTime> {
+pub fn to_naive(micros: i128) -> Result<PlainDateTime> {
     to_datetime(micros).map(utc_datetime)
 }
 
-pub fn to_datetime(micros: TimestampMicros) -> Result<OffsetDateTime> {
+pub fn to_datetime(micros: i128) -> Result<OffsetDateTime> {
     OffsetDateTime::from_unix_timestamp_nanos(checked(micros)? * 1_000).map_err(|_| out_of_range())
 }
 

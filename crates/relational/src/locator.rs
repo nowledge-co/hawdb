@@ -473,7 +473,7 @@ fn relational_value_encoded_len(value: &RelationalValue) -> Result<usize> {
         RelationalValue::Boolean(_) => Ok(2),
         RelationalValue::BigInt(_) | RelationalValue::DoublePrecision(_) => Ok(9),
         RelationalValue::Timestamp(value) | RelationalValue::TimestampTz(value) => {
-            Ok(1 + hawdb_core::sql_timestamp::encoded_micros_len(*value))
+            Ok(1 + hawdb_core::sql_timestamp::encoded_micros_len(value.get()))
         }
         RelationalValue::Text(value) => checked_add(5, value.len(), "text value"),
         RelationalValue::Bytea(value) => checked_add(5, value.len(), "bytea value"),
@@ -532,11 +532,15 @@ fn write_relational_value(
         }
         RelationalValue::Timestamp(value) => {
             output.push(9);
-            output.extend_from_slice(hawdb_core::sql_timestamp::encode_micros(*value)?.as_bytes());
+            output.extend_from_slice(
+                hawdb_core::sql_timestamp::encode_micros(value.get())?.as_bytes(),
+            );
         }
         RelationalValue::TimestampTz(value) => {
             output.push(10);
-            output.extend_from_slice(hawdb_core::sql_timestamp::encode_micros(*value)?.as_bytes());
+            output.extend_from_slice(
+                hawdb_core::sql_timestamp::encode_micros(value.get())?.as_bytes(),
+            );
         }
         RelationalValue::Overflow(_) => {
             return Err(HawDBError::Execution(
@@ -588,9 +592,9 @@ fn read_relational_value(
             let micros = hawdb_core::sql_timestamp::join_micros(narrow, excess)
                 .map_err(|_| invalid_typed_record("invalid TIMESTAMP value"))?;
             if tag == 9 {
-                RelationalValue::Timestamp(micros)
+                RelationalValue::Timestamp(micros.into())
             } else {
-                RelationalValue::TimestampTz(micros)
+                RelationalValue::TimestampTz(micros.into())
             }
         }
         _ => return Err(invalid_typed_record("invalid relational value tag")),
@@ -829,14 +833,14 @@ mod tests {
         ] {
             let record = RelationalSortRecord::new(
                 vec![RelationalSortKey::new(
-                    RelationalValue::Timestamp(micros),
+                    RelationalValue::Timestamp(micros.into()),
                     SqlOrderDirection::Asc,
                     SqlNullOrder::DialectDefault,
                 )
                 .unwrap()],
                 RelationalRowSetLocator::new(vec![Some(RelationalRowLocator::new(
                     0,
-                    RelationalKey(vec![RelationalValue::TimestampTz(micros)]),
+                    RelationalKey(vec![RelationalValue::TimestampTz(micros.into())]),
                 ))]),
             );
             let mut encoded = Vec::new();

@@ -8,12 +8,12 @@ use hawdb_core::{sql_timestamp, TimestampPrecision};
 fn timestamp_row_codec_round_trips_edges_and_rejects_out_of_range_payloads() {
     let (min, max) = (sql_timestamp::min_micros(), sql_timestamp::max_micros());
     for value in [
-        RelationalValue::Timestamp(min),
-        RelationalValue::Timestamp(-1),
-        RelationalValue::Timestamp(max),
-        RelationalValue::TimestampTz(min),
-        RelationalValue::TimestampTz(0),
-        RelationalValue::TimestampTz(max),
+        RelationalValue::Timestamp(min.into()),
+        RelationalValue::Timestamp((-1).into()),
+        RelationalValue::Timestamp(max.into()),
+        RelationalValue::TimestampTz(min.into()),
+        RelationalValue::TimestampTz(0.into()),
+        RelationalValue::TimestampTz(max.into()),
     ] {
         let row = RelationalRow::new(vec![value.clone()]);
         let encoded = encode_relational_row_payload(&row).unwrap();
@@ -58,7 +58,7 @@ fn timestamp_schema_codec_preserves_precision_and_rejects_invalid_precision() {
             ),
             RelationalColumnSchema {
                 default: Some(RelationalColumnDefault::Literal(
-                    RelationalValue::Timestamp(1_000),
+                    RelationalValue::Timestamp(1_000.into()),
                 )),
                 ..column(
                     "local",
@@ -93,4 +93,13 @@ fn timestamp_schema_codec_preserves_precision_and_rejects_invalid_precision() {
         .unwrap_err()
         .to_string()
         .contains("TIMESTAMP precision"));
+}
+
+#[test]
+fn timestamp_carrier_keeps_relational_values_at_eight_byte_alignment() {
+    assert!(std::mem::align_of::<RelationalValue>() <= std::mem::align_of::<u64>());
+    assert!(
+        std::mem::align_of::<crate::relational::RelationalValueRef<'static>>()
+            <= std::mem::align_of::<u64>()
+    );
 }

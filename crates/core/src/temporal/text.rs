@@ -6,10 +6,9 @@
 use std::borrow::Cow;
 
 use ::time::format_description::well_known::Rfc3339;
-use ::time::macros::format_description;
 
-use super::types::epoch_millis;
-use super::{Date, OffsetDateTime, PlainDateTime};
+use super::types::{date_from_ymd, epoch_millis, time_from_hms_nano};
+use super::OffsetDateTime;
 
 pub fn parse_rfc3339_millis(text: &str) -> Option<i64> {
     let (text, leap) = normalize_leap_second(text);
@@ -23,30 +22,72 @@ pub fn parse_metadata_millis(text: &str) -> Option<i64> {
     if let Some(millis) = parse_rfc3339_millis(text) {
         return Some(millis);
     }
-    let text = if text.chars().any(|c| c.is_whitespace() && c != ' ')
-        || text.as_bytes().windows(2).any(|pair| pair == b"  ")
-    {
-        Cow::Owned(text.split_whitespace().collect::<Vec<_>>().join(" "))
+    // Legacy strftime parsing skips whitespace before numeric fields, permits
+    // unpadded years, and permits zero whitespace between the date and clock.
+    // Keep that grammar separate from the strict Cypher/SQL constructors.
+    let mut rest = text;
+    let sign = if let Some(tail) = rest.strip_prefix('-') {
+        rest = tail;
+        -1
+    } else if let Some(tail) = rest.strip_prefix('+') {
+        rest = tail;
+        1
     } else {
-        Cow::Borrowed(text)
+        0
     };
-    let (text, leap) = normalize_leap_second(&text);
-    for format in [
-        format_description!("[year]-[month padding:none]-[day padding:none] [hour padding:none]:[minute padding:none]:[second padding:none].[subsecond]"),
-        format_description!("[year]-[month padding:none]-[day padding:none]T[hour padding:none]:[minute padding:none]:[second padding:none].[subsecond]"),
-        format_description!("[year]-[month padding:none]-[day padding:none] [hour padding:none]:[minute padding:none]:[second padding:none]"),
-        format_description!("[year]-[month padding:none]-[day padding:none]T[hour padding:none]:[minute padding:none]:[second padding:none]"),
-    ] {
-        if let Ok(value) = PlainDateTime::parse(&text, format) {
-            return Some(epoch_millis(value.assume_utc()) + if leap { 1_000 } else { 0 });
-        }
+    let year = digits(&mut rest, if sign == 0 { 4 } else { usize::MAX }, false)?;
+    let year = i32::try_from(year).ok()? * if sign == -1 { -1 } else { 1 };
+    rest = rest.strip_prefix('-')?;
+    let month = digits(&mut rest, 2, true)?;
+    rest = rest.strip_prefix('-')?;
+    let day = digits(&mut rest, 2, true)?;
+    let date = date_from_ymd(year, month, day)?;
+    if rest.is_empty() {
+        return Some(epoch_millis(date.midnight().assume_utc()));
     }
-    Date::parse(
-        &text,
-        format_description!("[year]-[month padding:none]-[day padding:none]"),
-    )
-    .ok()
-    .map(|date| epoch_millis(date.midnight().assume_utc()))
+    if let Some(tail) = rest.strip_prefix('T') {
+        rest = tail;
+    }
+    let hour = digits(&mut rest, 2, true)?;
+    rest = rest.strip_prefix(':')?;
+    let minute = digits(&mut rest, 2, true)?;
+    rest = rest.strip_prefix(':')?;
+    let second = digits(&mut rest, 2, true)?;
+    let nanos = if let Some(tail) = rest.strip_prefix('.') {
+        rest = tail;
+        let length = rest.bytes().take_while(u8::is_ascii_digit).count();
+        if length == 0 {
+            return None;
+        }
+        let retained = length.min(9);
+        let fraction = rest[..retained].parse::<u32>().ok()?;
+        rest = &rest[length..];
+        fraction * 10_u32.pow(9 - retained as u32)
+    } else {
+        0
+    };
+    if !rest.is_empty() || second > 60 {
+        return None;
+    }
+    let time = time_from_hms_nano(hour, minute, second.min(59), nanos)?;
+    Some(epoch_millis(date.with_time(time).assume_utc()) + if second == 60 { 1_000 } else { 0 })
+}
+
+fn digits(rest: &mut &str, width: usize, skip_space: bool) -> Option<u32> {
+    if skip_space {
+        *rest = rest.trim_start();
+    }
+    let length = rest
+        .bytes()
+        .take(width)
+        .take_while(u8::is_ascii_digit)
+        .count();
+    if length == 0 {
+        return None;
+    }
+    let value = rest[..length].parse().ok()?;
+    *rest = &rest[length..];
+    Some(value)
 }
 
 // Chrono's metadata parser counted :60 as the following second, while time's
@@ -81,6 +122,10 @@ mod tests {
             ("1969-12-31T23:59:59.999999999Z", -1),
             ("1969-12-31 23:59:59.999999999", -1),
             ("2026-11-05  12:34:56", 1_793_882_096_000),
+            ("2026-11-0512:34:56", 1_793_882_096_000),
+            ("2026- 1- 5 2: 3: 4", 1_767_578_584_000),
+            ("2026-11-05T 12:34:56", 1_793_882_096_000),
+            ("1-1-1", -62_135_596_800_000),
             ("2016-12-31T23:59:60Z", 1_483_228_800_000),
             ("2016-12-31T23:59:60.1Z", 1_483_228_800_100),
             ("2016-12-31 23:59:60.5", 1_483_228_800_500),

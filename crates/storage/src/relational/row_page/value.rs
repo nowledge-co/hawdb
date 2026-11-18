@@ -124,13 +124,13 @@ pub(super) fn encode_value_with_work<W: super::encoding::EncodeWork, O: ValueOut
         }
         RelationalValue::Timestamp(value) => {
             encoded.push(10)?;
-            let payload = hawdb_core::sql_timestamp::encode_micros(*value)
+            let payload = hawdb_core::sql_timestamp::encode_micros(value.get())
                 .map_err(|error| RelationalRowPageError::Corrupt(error.to_string()))?;
             encoded.extend_from_slice(payload.as_bytes())?;
         }
         RelationalValue::TimestampTz(value) => {
             encoded.push(11)?;
-            let payload = hawdb_core::sql_timestamp::encode_micros(*value)
+            let payload = hawdb_core::sql_timestamp::encode_micros(value.get())
                 .map_err(|error| RelationalRowPageError::Corrupt(error.to_string()))?;
             encoded.extend_from_slice(payload.as_bytes())?;
         }

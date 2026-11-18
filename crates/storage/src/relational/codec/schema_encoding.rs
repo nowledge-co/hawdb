@@ -116,13 +116,13 @@ pub(crate) fn value(sink: &mut impl Sink, item: &RelationalValue) -> Result<(), 
         }
         RelationalValue::Timestamp(value) => {
             sink.raw(&[10])?;
-            let encoded = hawdb_core::sql_timestamp::encode_micros(*value)
+            let encoded = hawdb_core::sql_timestamp::encode_micros(value.get())
                 .map_err(|error| RelationalError::Schema(error.to_string()))?;
             sink.raw(encoded.as_bytes())
         }
         RelationalValue::TimestampTz(value) => {
             sink.raw(&[11])?;
-            let encoded = hawdb_core::sql_timestamp::encode_micros(*value)
+            let encoded = hawdb_core::sql_timestamp::encode_micros(value.get())
                 .map_err(|error| RelationalError::Schema(error.to_string()))?;
             sink.raw(encoded.as_bytes())
         }

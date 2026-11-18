@@ -238,7 +238,10 @@ Astronomical signed years remain accepted as an input extension (year 0 is 1 BC)
 `24:00:00` advances to the following midnight.
 
 HawDB owns this domain independently of `time`'s calendar range. The Rust scalar
-carrier is `i128` Unix microseconds. Existing finite i64 payloads retain their
+arithmetic uses `i128` Unix microseconds. Relational values hold `TimestampMicros`,
+a 16-byte carrier aligned to 8 bytes; `new` / `From` preserve raw bits and
+`get()` returns i128. Publication still validates the finite domain. This
+keeps native i128 alignment from increasing every relational value. Existing finite i64 payloads retain their
 8 little-endian bytes. The previously invalid `i64::MAX` marker introduces an
 additional u64 excess for the final part of the PostgreSQL range. Row pages,
 WAL, checkpoints, spills and ordered keys validate the same domain; ordered

@@ -334,7 +334,7 @@ impl RelationalScalarType {
         match (self, value) {
             (Self::Timestamp(precision), RelationalValueRef::Timestamp(value))
             | (Self::TimestampTz(precision), RelationalValueRef::TimestampTz(value)) => {
-                precision.accepts(value)
+                precision.accepts(value.get())
             }
             (_, value) => value.scalar_type() == Some(self),
         }
@@ -346,7 +346,7 @@ impl RelationalScalarType {
             (Self::Decimal(kind), RelationalValueRef::Decimal(value)) => kind.accepts(value),
             (Self::Timestamp(precision), RelationalValueRef::Timestamp(value))
             | (Self::TimestampTz(precision), RelationalValueRef::TimestampTz(value)) => {
-                precision.accepts(value)
+                precision.accepts(value.get())
             }
             (_, value) => value.scalar_type() == Some(self),
         }
@@ -380,9 +380,9 @@ pub enum RelationalValue {
     Vector(hawdb_core::Vector),
     Uuid(Uuid),
     /// Microseconds since 1970-01-01 00:00:00 (local, no zone).
-    Timestamp(i128),
+    Timestamp(hawdb_core::sql_timestamp::TimestampMicros),
     /// Microseconds since 1970-01-01 00:00:00 UTC.
-    TimestampTz(i128),
+    TimestampTz(hawdb_core::sql_timestamp::TimestampMicros),
     Overflow(RelationalOverflowRef),
 }
 
@@ -403,9 +403,9 @@ pub enum RelationalValueRef<'a> {
     Vector(hawdb_core::VectorRef<'a>),
     Uuid(Uuid),
     /// Microseconds since 1970-01-01 00:00:00 (local, no zone).
-    Timestamp(i128),
+    Timestamp(hawdb_core::sql_timestamp::TimestampMicros),
     /// Microseconds since 1970-01-01 00:00:00 UTC.
-    TimestampTz(i128),
+    TimestampTz(hawdb_core::sql_timestamp::TimestampMicros),
     Overflow(RelationalOverflowRef),
 }
 
@@ -445,7 +445,7 @@ impl RelationalValue {
             Self::Boolean(_) => 1,
             Self::BigInt(_) | Self::DoublePrecision(_) => 8,
             Self::Timestamp(value) | Self::TimestampTz(value) => {
-                hawdb_core::sql_timestamp::encoded_micros_len(*value)
+                hawdb_core::sql_timestamp::encoded_micros_len(value.get())
             }
             Self::Decimal(_) => hawdb_core::Decimal::ENCODED_LEN,
             Self::Text(value) => value.len(),
@@ -509,7 +509,7 @@ impl<'a> RelationalValueRef<'a> {
             Self::Boolean(_) => 1,
             Self::BigInt(_) | Self::DoublePrecision(_) => 8,
             Self::Timestamp(value) | Self::TimestampTz(value) => {
-                hawdb_core::sql_timestamp::encoded_micros_len(value)
+                hawdb_core::sql_timestamp::encoded_micros_len(value.get())
             }
             Self::Decimal(_) => hawdb_core::Decimal::ENCODED_LEN,
             Self::Text(value) => value.len(),
@@ -1151,8 +1151,8 @@ pub(crate) fn decode_timestamp_value(
     let micros = hawdb_core::sql_timestamp::checked(micros)
         .map_err(|_| RelationalError::Corruption("TIMESTAMP value is out of range".into()))?;
     match tag {
-        10 => Ok(RelationalValue::Timestamp(micros)),
-        11 => Ok(RelationalValue::TimestampTz(micros)),
+        10 => Ok(RelationalValue::Timestamp(micros.into())),
+        11 => Ok(RelationalValue::TimestampTz(micros.into())),
         _ => Err(RelationalError::Corruption(format!(
             "invalid TIMESTAMP value tag {tag}"
         ))),

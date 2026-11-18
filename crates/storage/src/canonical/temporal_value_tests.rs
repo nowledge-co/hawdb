@@ -111,7 +111,8 @@ fn temporal_canonical_payloads_fail_closed() {
         temporal::parse_datetime("2026-10-30T12:00:00Z").unwrap(),
     ))
     .unwrap();
-    zoned[13..].copy_from_slice(&90_000i32.to_le_bytes());
+    // Native time offsets stop before 26 hours.
+    zoned[13..].copy_from_slice(&(26 * 3_600i32).to_le_bytes());
     corrupt.push(zoned);
     let mut duration = vec![15u8];
     duration.extend_from_slice(&[0; 24]);
