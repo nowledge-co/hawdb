@@ -15,8 +15,8 @@
 //! openCypher temporal values: dates, local times, local and zoned datetimes,
 //! and durations.
 //!
-//! Instants are represented with chrono types. Zoned datetimes carry a fixed
-//! UTC offset; named time-zone regions are not supported. A [`Duration`]
+//! Instants use time types with the large-dates feature. Zoned datetimes carry
+//! a fixed UTC offset; named time-zone regions are not supported. A [`Duration`]
 //! keeps calendar months and days separate from its exact time part, as
 //! openCypher requires: one month or one day has no fixed length.
 
@@ -26,12 +26,19 @@ mod component;
 mod construct;
 mod format;
 mod parse;
+mod text;
+pub use text::{parse_metadata_millis, parse_rfc3339_millis};
+
+use crate::temporal::types::*;
 
 use std::cell::Cell;
 use std::cmp::Ordering;
 use std::fmt::{Display, Formatter};
 
-pub use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, Utc};
+pub use ::time::{
+    Date, Month, OffsetDateTime, PlainDateTime, SignedDuration, Time, UtcOffset, Weekday,
+};
+pub(crate) mod types;
 
 use crate::Value;
 
@@ -92,17 +99,23 @@ pub type TemporalResult<T> = std::result::Result<T, TemporalError>;
 pub struct Duration {
     pub months: i64,
     pub days: i64,
-    pub time: TimeDelta,
+    time: SignedDuration,
 }
 
 impl Duration {
-    pub const fn new(months: i64, days: i64, time: TimeDelta) -> Self {
-        Self { months, days, time }
+    /// Rejects exact time parts outside the established i64-millisecond domain.
+    pub fn new(months: i64, days: i64, time: SignedDuration) -> Option<Self> {
+        delta_from_nanos(time.whole_nanoseconds())?;
+        Some(Self { months, days, time })
+    }
+
+    pub const fn time(&self) -> SignedDuration {
+        self.time
     }
 
     /// Builds a duration from a nanosecond time part.
     pub fn from_parts(months: i64, days: i64, nanos: i128) -> Option<Self> {
-        Some(Self::new(months, days, delta_from_nanos(nanos)?))
+        Self::new(months, days, delta_from_nanos(nanos)?)
     }
 
     /// The time part in nanoseconds.
@@ -122,19 +135,19 @@ impl Duration {
     }
 
     pub fn checked_add(self, other: Self) -> Option<Self> {
-        Some(Self::new(
+        Self::new(
             self.months.checked_add(other.months)?,
             self.days.checked_add(other.days)?,
-            self.time.checked_add(&other.time)?,
-        ))
+            delta_from_nanos(self.time_nanos().checked_add(other.time_nanos())?)?,
+        )
     }
 
     pub fn checked_neg(self) -> Option<Self> {
-        Some(Self::new(
+        Self::new(
             self.months.checked_neg()?,
             self.days.checked_neg()?,
             delta_from_nanos(-self.time_nanos())?,
-        ))
+        )
     }
 
     pub fn checked_sub(self, other: Self) -> Option<Self> {
@@ -148,14 +161,16 @@ impl Display for Duration {
     }
 }
 
-pub(crate) fn delta_nanos(delta: TimeDelta) -> i128 {
-    i128::from(delta.num_seconds()) * NANOS_PER_SECOND + i128::from(delta.subsec_nanos())
+pub(crate) fn delta_nanos(delta: SignedDuration) -> i128 {
+    delta.whole_nanoseconds()
 }
 
-pub(crate) fn delta_from_nanos(nanos: i128) -> Option<TimeDelta> {
-    let seconds = i64::try_from(nanos.div_euclid(NANOS_PER_SECOND)).ok()?;
-    let nanos = u32::try_from(nanos.rem_euclid(NANOS_PER_SECOND)).ok()?;
-    TimeDelta::new(seconds, nanos)
+pub(crate) fn delta_from_nanos(nanos: i128) -> Option<SignedDuration> {
+    // Preserve the existing duration payload domain (signed i64 milliseconds).
+    let limit = i128::from(i64::MAX) * 1_000_000;
+    (-limit..=limit)
+        .contains(&nanos)
+        .then(|| SignedDuration::nanoseconds_i128(nanos))
 }
 
 /// The four instant kinds that openCypher constructors and truncation produce.
@@ -309,7 +324,7 @@ impl TemporalFunction {
 pub fn evaluate(
     function: TemporalFunction,
     arguments: &[Value],
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> TemporalResult<Value> {
     let (min, max) = function.arity();
     if !(min..=max).contains(&arguments.len()) {
@@ -328,7 +343,12 @@ pub fn evaluate(
         return Ok(Value::Null);
     }
     match function {
-        TemporalFunction::Construct(kind) => construct(kind, arguments.first(), now),
+        TemporalFunction::Construct(kind) => {
+            let now = now.checked_to_offset(UtcOffset::UTC).ok_or_else(|| {
+                TemporalError::new("statement clock UTC datetime is out of range")
+            })?;
+            construct(kind, arguments.first(), now)
+        }
         TemporalFunction::Duration => construct::duration(&arguments[0]),
         TemporalFunction::DurationBetween => {
             between(&arguments[0], &arguments[1], arithmetic::BetweenMode::Full)
@@ -416,11 +436,11 @@ pub const fn ordering_is_null(left: &Value, right: &Value) -> bool {
 
 /// Orders zoned datetimes by UTC instant, then by offset (east of UTC last),
 /// so that equal instants in different offsets remain distinct values.
-pub fn datetime_cmp(left: &DateTime<FixedOffset>, right: &DateTime<FixedOffset>) -> Ordering {
-    left.naive_utc().cmp(&right.naive_utc()).then_with(|| {
+pub fn datetime_cmp(left: &OffsetDateTime, right: &OffsetDateTime) -> Ordering {
+    left.cmp(right).then_with(|| {
         left.offset()
-            .local_minus_utc()
-            .cmp(&right.offset().local_minus_utc())
+            .whole_seconds()
+            .cmp(&right.offset().whole_seconds())
     })
 }
 
@@ -463,33 +483,38 @@ pub fn from_json_tag(tag: &str, text: &str) -> Option<TemporalResult<Value>> {
 }
 
 thread_local! {
-    static STATEMENT_CLOCK: Cell<Option<DateTime<Utc>>> = const { Cell::new(None) };
+    static STATEMENT_CLOCK: Cell<Option<OffsetDateTime>> = const { Cell::new(None) };
 }
 
 /// The instant that clock-reading temporal functions observe: the pinned
 /// statement clock, or the system clock when none is pinned.
-pub fn statement_now() -> DateTime<Utc> {
+pub fn statement_now() -> OffsetDateTime {
     STATEMENT_CLOCK.with(Cell::get).unwrap_or_else(system_now)
 }
 
-fn system_now() -> DateTime<Utc> {
+fn system_now() -> OffsetDateTime {
     let nanos = crate::time::SystemTime::now()
         .duration_since(crate::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos().min(i64::MAX as u128) as i64)
         .unwrap_or(0);
-    DateTime::from_timestamp_nanos(nanos)
+    datetime_from_nanos(nanos)
 }
 
 /// Runs `f` with the statement clock pinned to `instant` on this thread.
 /// The previous pin is restored afterwards, also on unwind.
-pub fn with_statement_clock<R>(instant: DateTime<Utc>, f: impl FnOnce() -> R) -> R {
-    struct Restore(Option<DateTime<Utc>>);
+///
+/// # Panics
+/// Panics if `instant` has no representable UTC calendar value.
+pub fn with_statement_clock<R>(instant: OffsetDateTime, f: impl FnOnce() -> R) -> R {
+    struct Restore(Option<OffsetDateTime>);
     impl Drop for Restore {
         fn drop(&mut self) {
             STATEMENT_CLOCK.with(|clock| clock.set(self.0));
         }
     }
-    let _restore = Restore(STATEMENT_CLOCK.with(|clock| clock.replace(Some(instant))));
+    let _restore = Restore(
+        STATEMENT_CLOCK.with(|clock| clock.replace(Some(instant.to_offset(UtcOffset::UTC)))),
+    );
     f()
 }
 
@@ -505,14 +530,14 @@ pub fn with_stable_statement_clock<R>(f: impl FnOnce() -> R) -> R {
 /// The statement clock pinned on this thread, if any. Work handed to another
 /// thread re-pins it there with [`with_optional_statement_clock`], so that
 /// parallel workers observe the statement's instant too.
-pub fn pinned_statement_clock() -> Option<DateTime<Utc>> {
+pub fn pinned_statement_clock() -> Option<OffsetDateTime> {
     STATEMENT_CLOCK.with(Cell::get)
 }
 
 /// Runs `f` with the statement clock pinned to `instant` when it is `Some`,
 /// and with this thread's current clock otherwise.
 pub fn with_optional_statement_clock<R>(
-    instant: Option<DateTime<Utc>>,
+    instant: Option<OffsetDateTime>,
     f: impl FnOnce() -> R,
 ) -> R {
     match instant {

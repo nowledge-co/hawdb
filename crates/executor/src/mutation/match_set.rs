@@ -11,7 +11,7 @@
 //! partial effect.
 
 use super::node_set_value;
-use crate::binding::{map_memory_bytes, map_payload_bytes, value_memory_bytes, Binding};
+use crate::binding::{map_memory_bytes, value_memory_bytes, Binding};
 use crate::expression::evaluate_projection_expression;
 use crate::memory::DEFAULT_EXECUTION_BATCH_ROWS;
 use crate::pipeline::runtime_checkpoint;
@@ -260,15 +260,15 @@ pub fn resolve_match_set(
             charge,
             task_context,
         )?;
-        if output.len() > limits.max_result_rows.get() {
-            return Err(result_rows_exceeded(limits));
-        }
-        let payload_bytes = output.iter().fold(0usize, |total, row| {
-            total.saturating_add(map_payload_bytes(row))
-        });
-        output_limits.validate(output.len(), payload_bytes)?;
-        if payload_bytes > limits.max_result_payload_bytes.get() {
-            return Err(result_payload_exceeded(limits));
+        let mut payload_bytes = 0;
+        for (admitted, row) in output.iter().enumerate() {
+            payload_bytes = super::returns::admit_return_row(
+                admitted,
+                payload_bytes,
+                row,
+                limits,
+                output_limits,
+            )?;
         }
     }
 
@@ -372,21 +372,6 @@ struct ReturnContext<'a> {
     output_limits: OutputLimits,
 }
 
-/// The refusal of more returned rows than the mutation result limit.
-fn result_rows_exceeded(limits: MutationLimits) -> HawDBError {
-    HawDBError::Execution(format!(
-        "mutation would exceed max_mutation_result_rows {}",
-        limits.max_result_rows
-    ))
-}
-
-fn result_payload_exceeded(limits: MutationLimits) -> HawDBError {
-    HawDBError::Execution(format!(
-        "mutation result payload would exceed max_mutation_result_payload_bytes {}",
-        limits.max_result_payload_bytes
-    ))
-}
-
 fn project_returns(
     returns: &MatchSetReturn,
     rows: &mut [InputRow],
@@ -451,19 +436,25 @@ fn project_returns(
             }
         }
         // Refuse an over-limit result as soon as it is certain, instead of
-        // after projecting every row (#1803).
+        // after projecting every row (#1803). Only rows in the final window
+        // count: DISTINCT still evaluates every input row, and ORDER BY must
+        // choose its window before payload and host-output admission.
         if keys.is_empty() {
-            // Unsorted rows past OFFSET are returned in input order.
-            if projected.len() >= returns.offset {
+            // Unsorted rows are returned in their post-DISTINCT input order.
+            let position = projected.len();
+            let selected = position >= returns.offset
+                && returns
+                    .limit
+                    .is_none_or(|limit| position - returns.offset < limit);
+            if selected {
+                returned_bytes = super::returns::admit_return_row(
+                    returned_rows,
+                    returned_bytes,
+                    &values,
+                    limits,
+                    output_limits,
+                )?;
                 returned_rows += 1;
-                returned_bytes = returned_bytes.saturating_add(map_payload_bytes(&values));
-                if returned_rows > limits.max_result_rows.get() {
-                    return Err(result_rows_exceeded(limits));
-                }
-                if returned_bytes > limits.max_result_payload_bytes.get() {
-                    return Err(result_payload_exceeded(limits));
-                }
-                output_limits.validate(returned_rows, returned_bytes)?;
             }
         } else if returns
             .limit
@@ -471,7 +462,11 @@ fn project_returns(
             && projected.len().saturating_sub(returns.offset) >= limits.max_result_rows.get()
         {
             // Sorting cannot shrink the result below LIMIT or the rows left.
-            return Err(result_rows_exceeded(limits));
+            return Err(super::returns::result_rows_exceeded(
+                limits.max_result_rows.get(),
+                1,
+                limits,
+            ));
         }
         projected.push((values, sort_values));
     }

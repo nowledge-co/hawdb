@@ -1,0 +1,219 @@
+name: Node Bindings
+
+on:
+  pull_request:
+    paths:
+      - "bindings/node/**"
+      - "bindings/ffi/**"
+      - "bindings/bun/src/json.ts"
+      - "bindings/bun/src/platform.ts"
+      - "src/**"
+      - "crates/**"
+      - "Cargo.*"
+      - "rust-toolchain.toml"
+      - ".cargo/**"
+      - "scripts/native-release-mode.py"
+      - "scripts/npm/**"
+      - ".github/workflows/node-bindings.yml"
+  push:
+    branches: [main]
+    paths:
+      - "bindings/node/**"
+      - "bindings/ffi/**"
+      - "bindings/bun/src/json.ts"
+      - "bindings/bun/src/platform.ts"
+      - "src/**"
+      - "crates/**"
+      - "Cargo.*"
+      - "rust-toolchain.toml"
+      - ".cargo/**"
+      - ".github/workflows/node-bindings.yml"
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to publish; empty means validation only
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: node-bindings-${{ github.event_name }}-${{ github.event.pull_request.number || inputs.tag || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
+
+env:
+  CARGO_BUILD_JOBS: "2"
+  MACOSX_DEPLOYMENT_TARGET: "13.0"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  source:
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      mode: ${{ steps.source.outputs.mode }}
+      npm_tag: ${{ steps.source.outputs.npm_tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - id: source
+        env:
+          EVENT: ${{ github.event_name }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, tomllib
+          engine = tomllib.load(open('Cargo.toml', 'rb'))['package']['version']
+          node = tomllib.load(open('bindings/node/Cargo.toml', 'rb'))['package']['version']
+          package = json.load(open('bindings/node/package.json'))['version']
+          assert engine == node == package, (engine, node, package)
+          PY
+          version="$(python3 -c 'import json; print(json.load(open("bindings/node/package.json"))["version"])')"
+          if [[ "$EVENT" == release || -n "$TAG" ]]; then
+            gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json tagName,isDraft,isPrerelease > "$RUNNER_TEMP/release.json"
+            python3 scripts/native-release-mode.py --event release --version "$version" --tag "$TAG" --release "$RUNNER_TEMP/release.json" >> "$GITHUB_OUTPUT"
+            git merge-base --is-ancestor HEAD origin/main
+          else
+            python3 scripts/native-release-mode.py --event pull_request --version "$version" >> "$GITHUB_OUTPUT"
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Node and Electron (${{ matrix.platform }})
+    needs: source
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-15, platform: darwin-arm64, library: libhawdb_node.dylib }
+          - { os: macos-15-intel, platform: darwin-x64, library: libhawdb_node.dylib }
+          - { os: ubuntu-24.04, platform: linux-x64-gnu, library: libhawdb_node.so }
+          - { os: ubuntu-24.04-arm, platform: linux-arm64-gnu, library: libhawdb_node.so }
+          - { os: windows-2025, platform: win32-x64-msvc, library: hawdb_node.dll }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: bindings/node/package-lock.json
+      - name: Check binding formatting and strict Clippy
+        run: |
+          cargo fmt --manifest-path bindings/node/Cargo.toml -- --check
+          cargo clippy --locked --manifest-path bindings/node/Cargo.toml --all-targets --all-features -- -D warnings
+      - name: Build the Node-API addon with the repository profile
+        env:
+          MODE: ${{ needs.source.outputs.mode }}
+        run: |
+          set -euo pipefail
+          profile=debug
+          flags=(--locked --manifest-path bindings/node/Cargo.toml)
+          if [[ "$MODE" == release ]]; then profile=release; flags+=(--release); fi
+          cargo build "${flags[@]}"
+          echo "NODE_ADDON=$GITHUB_WORKSPACE/bindings/node/target/$profile/${{ matrix.library }}" >> "$GITHUB_ENV"
+      - name: Build and test the installed npm boundary
+        working-directory: bindings/node
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build -- --native "$NODE_ADDON"
+          npm run typecheck
+          npm test
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - name: Verify the same addon on the supported Node 22 line
+        working-directory: bindings/node
+        run: npm test
+      - name: Install the headless Electron runtime dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libgtk-3-0 libnss3 libasound2t64 libgbm1
+      - name: Test actual and ASAR-packaged Electron utility processes
+        working-directory: bindings/node
+        run: |
+          if [[ '${{ runner.os }}' == Linux ]]; then
+            xvfb-run -a npm run test:electron
+          else
+            npm run test:electron
+          fi
+      - name: Retain the qualified native artifact
+        run: |
+          mkdir -p "artifacts/${{ matrix.platform }}"
+          cp "$NODE_ADDON" "artifacts/${{ matrix.platform }}/hawdb.node"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: node-${{ matrix.platform }}
+          path: artifacts/
+          if-no-files-found: error
+
+  npm:
+    name: Publish Node npm packages
+    needs: [source, build]
+    if: needs.source.outputs.mode == 'release' && vars.NPM_NODE_TRUSTED_PUBLISHING == 'enabled'
+    runs-on: ubuntu-24.04
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: node-*
+          merge-multiple: true
+          path: artifacts
+      - name: Assemble all qualified platforms, then publish under the validated channel
+        env:
+          NPM_TAG: ${{ needs.source.outputs.npm_tag }}
+        run: |
+          set -euo pipefail
+          npm install --global npm@11.21.1
+          npm ci --prefix bindings/node --ignore-scripts
+          npm run build --prefix bindings/node
+          node bindings/node/scripts/assemble.mjs --out "$RUNNER_TEMP/npm" \
+            --addon "darwin-arm64=$GITHUB_WORKSPACE/artifacts/darwin-arm64/hawdb.node" \
+            --addon "darwin-x64=$GITHUB_WORKSPACE/artifacts/darwin-x64/hawdb.node" \
+            --addon "linux-x64-gnu=$GITHUB_WORKSPACE/artifacts/linux-x64-gnu/hawdb.node" \
+            --addon "linux-arm64-gnu=$GITHUB_WORKSPACE/artifacts/linux-arm64-gnu/hawdb.node" \
+            --addon "win32-x64-msvc=$GITHUB_WORKSPACE/artifacts/win32-x64-msvc/hawdb.node" \
+            > "$RUNNER_TEMP/node-npm-summary.json"
+          bash scripts/npm/publish-assembled.sh "$RUNNER_TEMP/node-npm-summary.json" --tag "$NPM_TAG" --publish --provenance
+      - name: Verify the publicly installed package
+        run: |
+          set -euo pipefail
+          version="$(node -p 'JSON.parse(require("node:fs").readFileSync("bindings/node/package.json")).version')"
+          mkdir -p "$RUNNER_TEMP/public-node-consumer"
+          cd "$RUNNER_TEMP/public-node-consumer"
+          npm init -y
+          npm install --ignore-scripts "@nowledge/hawdb-node@$version"
+          node --input-type=module - <<'JS'
+          import assert from "node:assert/strict";
+          import { openInMemory } from "@nowledge/hawdb-node";
+          const database = openInMemory();
+          assert.deepEqual(database.querySQL("SELECT $1 AS id", [9223372036854775807n]).rows, [[9223372036854775807n]]);
+          database.close();
+          JS

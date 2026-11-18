@@ -2586,6 +2586,52 @@ impl SearchOutOfCoreReader {
         self.runtime_capabilities
     }
 
+    /// Durably records that this projection needs a full reindex, under the
+    /// same `.reindex_needed` marker the resident projection uses. Repeating a
+    /// reason is a no-op; a different reason is appended. Only a full rebuild,
+    /// which publishes a new projection directory, clears it.
+    pub fn mark_full_reindex_needed(&self, reason: &str) -> Result<()> {
+        self.write_control_marker(FULL_REINDEX_MARKER, reason, true)
+    }
+
+    /// Durably records that this projection's metadata needs repair. The
+    /// marker holds the latest reason, as on the resident projection.
+    pub fn mark_metadata_repair_needed(&self, reason: &str) -> Result<()> {
+        self.write_control_marker(METADATA_REPAIR_MARKER, reason, false)
+    }
+
+    fn write_control_marker(&self, name: &str, reason: &str, append: bool) -> Result<()> {
+        let path = self.root.join(name);
+        let existing = read_marker_lines_bounded(&path, MAX_MARKER_BYTES)?;
+        let lines = if append {
+            if existing.iter().any(|line| line == reason) {
+                return Ok(());
+            }
+            let mut lines = existing;
+            lines.push(reason.to_string());
+            lines
+        } else {
+            if existing == [reason] {
+                return Ok(());
+            }
+            vec![reason.to_string()]
+        };
+        let content = lines.join("\n");
+        if content.len() as u64 > MAX_MARKER_BYTES {
+            return Err(HawDBError::Semantic(format!(
+                "search marker {name} would exceed {MAX_MARKER_BYTES} bytes"
+            )));
+        }
+        let temporary = self.root.join(format!("{name}.tmp"));
+        {
+            let mut file = File::create(&temporary)?;
+            std::io::Write::write_all(&mut file, content.as_bytes())?;
+            file.sync_all()?;
+        }
+        hawdb_storage::durability::durable_replace_file(&temporary, &path)?;
+        Ok(())
+    }
+
     pub fn projection_freshness(&self) -> SearchProjectionFreshness {
         let read_marker = |name| {
             read_marker_lines_bounded(&self.root.join(name), MAX_MARKER_BYTES)

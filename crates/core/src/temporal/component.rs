@@ -14,7 +14,9 @@
 
 //! Component access (`d.year`, `dt.epochMillis`, `duration.minutes`, ...).
 
-use chrono::{Datelike, FixedOffset, NaiveDate, NaiveTime, Timelike};
+use super::types::*;
+
+use crate::temporal::{Date, Time, UtcOffset};
 
 use super::construct::kind_name;
 use super::format::offset_string;
@@ -22,16 +24,16 @@ use super::parse::iso_weekday;
 use super::{Duration, TemporalError, TemporalResult};
 use crate::Value;
 
-fn date_component(date: NaiveDate, key: &str) -> Option<i64> {
+fn date_component(date: Date, key: &str) -> Option<i64> {
     Some(match key {
         "year" => i64::from(date.year()),
-        "quarter" => i64::from((date.month() - 1) / 3 + 1),
-        "month" => i64::from(date.month()),
-        "week" => i64::from(date.iso_week().week()),
-        "weekyear" => i64::from(date.iso_week().year()),
+        "quarter" => i64::from(((date.month() as u32) - 1) / 3 + 1),
+        "month" => i64::from(date.month() as u32),
+        "week" => i64::from(date.iso_week()),
+        "weekyear" => i64::from(date.to_iso_week_date().0),
         "dayofquarter" => {
-            let start = NaiveDate::from_ymd_opt(date.year(), (date.month() - 1) / 3 * 3 + 1, 1)?;
-            (date - start).num_days() + 1
+            let start = date_from_ymd(date.year(), ((date.month() as u32) - 1) / 3 * 3 + 1, 1)?;
+            (date - start).whole_days() + 1
         }
         "day" => i64::from(date.day()),
         "ordinalday" | "dayofyear" => i64::from(date.ordinal()),
@@ -40,7 +42,7 @@ fn date_component(date: NaiveDate, key: &str) -> Option<i64> {
     })
 }
 
-fn time_component(time: NaiveTime, key: &str) -> Option<i64> {
+fn time_component(time: Time, key: &str) -> Option<i64> {
     Some(match key {
         "hour" => i64::from(time.hour()),
         "minute" => i64::from(time.minute()),
@@ -52,8 +54,8 @@ fn time_component(time: NaiveTime, key: &str) -> Option<i64> {
     })
 }
 
-fn offset_component(offset: FixedOffset, key: &str) -> Option<Value> {
-    let seconds = offset.local_minus_utc();
+fn offset_component(offset: UtcOffset, key: &str) -> Option<Value> {
+    let seconds = offset.whole_seconds();
     Some(match key {
         "timezone" | "offset" => Value::String(offset_string(offset)),
         "offsetminutes" => Value::Int(i64::from(seconds / 60)),
@@ -102,13 +104,13 @@ pub fn component(value: &Value, key: &str) -> TemporalResult<Value> {
         Value::LocalDateTime(value) => date_component(value.date(), key_lower)
             .or_else(|| time_component(value.time(), key_lower))
             .map(Value::Int),
-        Value::DateTime(value) => date_component(value.date_naive(), key_lower)
+        Value::DateTime(value) => date_component(value.date(), key_lower)
             .or_else(|| time_component(value.time(), key_lower))
             .map(Value::Int)
-            .or_else(|| offset_component(*value.offset(), key_lower))
+            .or_else(|| offset_component(value.offset(), key_lower))
             .or_else(|| match key_lower {
-                "epochseconds" => Some(Value::Int(value.timestamp())),
-                "epochmillis" => Some(Value::Int(value.timestamp_millis())),
+                "epochseconds" => Some(Value::Int(value.unix_timestamp())),
+                "epochmillis" => Some(Value::Int(epoch_millis(*value))),
                 _ => None,
             }),
         Value::Duration(duration) => duration_component(duration, key_lower).map(Value::Int),

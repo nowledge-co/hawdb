@@ -47,8 +47,10 @@ pub fn relational_ref_to_value(value: RelationalValueRef<'_>) -> Result<Value> {
         RelationalValueRef::Bytea(value) => Ok(Value::Binary(value.to_vec())),
         RelationalValueRef::Uuid(value) => Ok(Value::Uuid(value)),
         RelationalValueRef::Vector(value) => Ok(Value::Vector(value.to_owned())),
-        RelationalValueRef::Timestamp(value) => hawdb_core::sql_timestamp::local_value(value),
-        RelationalValueRef::TimestampTz(value) => hawdb_core::sql_timestamp::zoned_value(value),
+        RelationalValueRef::Timestamp(value) => hawdb_core::sql_timestamp::local_value(value.get()),
+        RelationalValueRef::TimestampTz(value) => {
+            hawdb_core::sql_timestamp::zoned_value(value.get())
+        }
         RelationalValueRef::Overflow(_) => Err(HawDBError::Execution(
             "overflow value reached projection without hydration".to_string(),
         )),
@@ -92,10 +94,10 @@ pub fn value_to_relational(value: Value) -> Result<RelationalValue> {
         Value::Uuid(value) => Ok(RelationalValue::Uuid(value)),
         Value::Vector(value) => Ok(RelationalValue::Vector(value)),
         Value::LocalDateTime(value) => {
-            hawdb_core::sql_timestamp::from_naive(value).map(RelationalValue::Timestamp)
+            hawdb_core::sql_timestamp::from_naive(value).map(|micros| RelationalValue::Timestamp(micros.into()))
         }
         Value::DateTime(value) => {
-            hawdb_core::sql_timestamp::from_datetime(value).map(RelationalValue::TimestampTz)
+            hawdb_core::sql_timestamp::from_datetime(value).map(|micros| RelationalValue::TimestampTz(micros.into()))
         }
         Value::Date(_) | Value::LocalTime(_) | Value::Duration(_) => Err(HawDBError::Semantic(
             "relational SQL supports local datetimes (TIMESTAMP) and zoned datetimes (TIMESTAMPTZ); DATE, TIME and DURATION values are not supported".to_string(),
@@ -130,10 +132,12 @@ pub fn value_to_relational_as(
         // column's type without rounding to its precision, and a TIMESTAMP
         // never silently becomes a TIMESTAMPTZ (or the reverse).
         (RelationalScalarType::Timestamp(_), RelationalValue::Text(text)) => {
-            hawdb_core::sql_timestamp::parse_timestamp(&text).map(RelationalValue::Timestamp)
+            hawdb_core::sql_timestamp::parse_timestamp(&text)
+                .map(|micros| RelationalValue::Timestamp(micros.into()))
         }
         (RelationalScalarType::TimestampTz(_), RelationalValue::Text(text)) => {
-            hawdb_core::sql_timestamp::parse_timestamptz(&text).map(RelationalValue::TimestampTz)
+            hawdb_core::sql_timestamp::parse_timestamptz(&text)
+                .map(|micros| RelationalValue::TimestampTz(micros.into()))
         }
         (RelationalScalarType::Timestamp(_) | RelationalScalarType::TimestampTz(_), value) => {
             Ok(value)
@@ -153,8 +157,8 @@ pub fn relational_to_value(value: &RelationalValue) -> Result<Value> {
         RelationalValue::Bytea(value) => Ok(Value::Binary(value.clone())),
         RelationalValue::Uuid(value) => Ok(Value::Uuid(*value)),
         RelationalValue::Vector(value) => Ok(Value::Vector(value.clone())),
-        RelationalValue::Timestamp(value) => hawdb_core::sql_timestamp::local_value(*value),
-        RelationalValue::TimestampTz(value) => hawdb_core::sql_timestamp::zoned_value(*value),
+        RelationalValue::Timestamp(value) => hawdb_core::sql_timestamp::local_value(value.get()),
+        RelationalValue::TimestampTz(value) => hawdb_core::sql_timestamp::zoned_value(value.get()),
         RelationalValue::Overflow(_) => Err(HawDBError::Execution(
             "overflow value reached projection without hydration".to_string(),
         )),
@@ -223,10 +227,10 @@ pub(crate) fn core_value_ref(value: RelationalValueRef<'_>) -> Result<hawdb_core
         RelationalValueRef::Uuid(value) => ValueRef::Uuid(value),
         RelationalValueRef::Vector(value) => ValueRef::Vector(value),
         RelationalValueRef::Timestamp(value) => {
-            ValueRef::LocalDateTime(hawdb_core::sql_timestamp::to_naive(value)?)
+            ValueRef::LocalDateTime(hawdb_core::sql_timestamp::to_naive(value.get())?)
         }
         RelationalValueRef::TimestampTz(value) => {
-            ValueRef::DateTime(hawdb_core::sql_timestamp::to_datetime(value)?)
+            ValueRef::DateTime(hawdb_core::sql_timestamp::to_datetime(value.get())?)
         }
         RelationalValueRef::Overflow(_) => {
             return Err(HawDBError::Execution(

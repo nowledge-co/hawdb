@@ -441,7 +441,9 @@ impl ReplayBundle {
             graph_predicate_rewrite: case.graph_predicate_rewrite.clone(),
             metamorphic: case.metamorphic.clone(),
             index_enabled: case.index_enabled,
-            statement_clock: optimizer_qualification::qualification_clock().to_rfc3339(),
+            statement_clock: hawdb::temporal::format_datetime(
+                optimizer_qualification::qualification_clock(),
+            ),
         }
     }
 
@@ -2171,6 +2173,7 @@ fn error_class(error: &HawDBError) -> &'static str {
         }
         | HawDBError::ReadBudgetExceeded(_)
         | HawDBError::WalRecordLimitExceeded(_)
+        | HawDBError::ReadOnly { .. }
         | HawDBError::ResourceBudgetExceeded(_)
         | HawDBError::GraphExpansionCandidateLimitExceeded { .. }
         | HawDBError::GraphExpansionPayloadLimitExceeded { .. }
@@ -2179,6 +2182,8 @@ fn error_class(error: &HawDBError) -> &'static str {
         | HawDBError::TransactionReadDependencyRefused { .. }
         | HawDBError::BranchCommandUnsupported { .. }
         | HawDBError::SearchProjectionRebuildRefused { .. }
+        | HawDBError::SearchProjectionOwnershipMarkerCorrupt { .. }
+        | HawDBError::SearchProjectionOwnershipMismatch { .. }
         | HawDBError::SearchProjectionEpochAdvanceRefused { .. } => "execution",
         HawDBError::Storage(_)
         | HawDBError::Constraint {

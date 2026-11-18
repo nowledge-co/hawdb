@@ -91,7 +91,7 @@ pub(super) struct OptimizedQueryPlan {
     pub(super) configured_max_optimizer_groups: Option<usize>,
     pub(super) effective_max_optimizer_groups: usize,
     /// The statement clock planning observed; execution pins it.
-    pub(super) statement_clock: hawdb_core::temporal::DateTime<hawdb_core::temporal::Utc>,
+    pub(super) statement_clock: hawdb_core::temporal::OffsetDateTime,
 }
 
 impl OptimizedQueryPlan {

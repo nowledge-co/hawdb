@@ -285,3 +285,42 @@ fn relationship_constraints_and_explain() {
     assert!(plan.contains("create=(o)-[:HAS]->(i)"), "{plan}");
     assert!(db.query(LINKS).unwrap().rows.is_empty());
 }
+
+/// A row whose endpoint is NULL (an unmatched OPTIONAL MATCH) writes nothing,
+/// for CREATE and MERGE alike; the other rows still write and are returned.
+#[test]
+fn rows_with_a_null_endpoint_write_nothing() {
+    let setup = [NODES, &["CREATE (:Owner {id: 'lonely'})"]].concat();
+    for (statement, kind) in [
+        (
+            "MATCH (o:Owner) OPTIONAL MATCH (o)-[:PREFERS]->(i:Item) \
+             CREATE (o)-[:HAS {k: o.id}]->(i) RETURN o.id AS id",
+            "create",
+        ),
+        (
+            "MATCH (o:Owner) OPTIONAL MATCH (o)-[:PREFERS]->(i:Item) \
+             MERGE (o)-[r:HAS {k: o.id}]->(i) RETURN o.id AS id",
+            "merge",
+        ),
+    ] {
+        let mut setup = setup.clone();
+        setup.push("MATCH (o:Owner {id: 'o'}), (i:Item {id: 'b'}) CREATE (o)-[:PREFERS]->(i)");
+        on_every_surface(
+            &setup,
+            statement,
+            &BTreeMap::new(),
+            LINKS,
+            |surface, returned, stored| {
+                // Both owners are returned; only the one with an item writes.
+                let mut ids = column(&returned, "id");
+                ids.sort();
+                assert_eq!(ids, [string("lonely"), string("o")], "{surface} {kind}");
+                assert_eq!(
+                    links(&stored),
+                    vec![link("o", "b", Value::Null, string("o"))],
+                    "{surface} {kind}"
+                );
+            },
+        );
+    }
+}

@@ -76,6 +76,11 @@ impl Default for SearchProjectionRebuildOptions {
 /// catch-up hydrator applies. The rebuild calls the source twice, once to
 /// build and once to verify, against the same snapshot; both passes must
 /// produce the same documents.
+///
+/// Rows of kinds the store declares externally owned (#1814) never reach
+/// `hydrate_graph_rows`: the rebuild carries the current projection's
+/// document for each live node over instead. `visit_host_rows` output is
+/// unaffected.
 pub trait SearchProjectionRebuildSource {
     /// Adjusts one bounded batch of canonical graph rows, for example by
     /// attaching embeddings. Rows may be changed or removed; each document ID
@@ -239,7 +244,22 @@ impl EmbeddedStoreHandle {
         let task = permit
             .bind_task_context(task)
             .with_memory_reservation(hawdb_core::RuntimeMemoryReservation::new(working, 0));
-        let result = self.rebuild_into_stage(&stage, &options, source, &task);
+        let owned = Arc::clone(&self.read_store()?.externally_owned_search_kinds);
+        let carry_over_available =
+            !owned.is_empty() && self.carry_over_unavailable(&owned).is_none();
+        let ownership = Ownership {
+            handle: self,
+            owned: &owned,
+            carry_over: carry_over_available,
+        };
+        let result = self
+            .rebuild_into_stage(&stage, &options, source, &ownership, &task)
+            .and_then(|built| {
+                if !owned.is_empty() {
+                    record_ownership(&stage.path, &owned)?;
+                }
+                Ok(built)
+            });
         let BuiltStage {
             sorting,
             build,
@@ -283,6 +303,7 @@ impl EmbeddedStoreHandle {
         stage: &RebuildStage,
         options: &SearchProjectionRebuildOptions,
         source: &mut dyn SearchProjectionRebuildSource,
+        ownership: &Ownership<'_>,
         task: &RuntimeTaskContext,
     ) -> Result<BuiltStage> {
         // One pin serves the build scan, the verification scan and both host
@@ -320,6 +341,8 @@ impl EmbeddedStoreHandle {
             &scan,
             &mut host,
             source,
+            ownership,
+            Pass::Build,
             options.hydration_batch_rows,
             task,
             &mut progress,
@@ -365,11 +388,18 @@ impl EmbeddedStoreHandle {
             max_encoded_record_bytes: usize::try_from(build_options.max_record_bytes.get())
                 .unwrap_or(usize::MAX),
         };
+        // Owned documents are carried from a live projection the host may
+        // write concurrently, so verification compares only derived kinds;
+        // the total still has to match the build.
         let mut generation = SearchDocumentSetDigest::default();
+        let mut generation_total = 0usize;
         projection
             .reader
             .visit_projection_documents(budget, task, &mut |document| {
-                generation.add(document);
+                generation_total += 1;
+                if !ownership.owns_document(document) {
+                    generation.add(document);
+                }
                 Ok(())
             })?;
         drop(projection);
@@ -379,6 +409,8 @@ impl EmbeddedStoreHandle {
             &scan,
             &mut host,
             source,
+            ownership,
+            Pass::Verify,
             options.hydration_batch_rows,
             task,
             &mut verify_progress,
@@ -387,7 +419,7 @@ impl EmbeddedStoreHandle {
                 Ok(())
             },
         )?;
-        if graph != generation || generation.document_count() != build.document_count {
+        if graph != generation || generation_total != build.document_count {
             return Err(refused(
                 SearchProjectionRebuildRefusal::VerificationMismatch,
                 &stage.target,
@@ -411,11 +443,149 @@ impl EmbeddedStoreHandle {
     }
 }
 
+/// Upper bound of one carry-over lookup's payload admission.
+const CARRY_OVER_MAX_BATCH_BYTES: usize = 64 * 1024 * 1024;
+
+#[cfg(test)]
+thread_local! {
+    /// Makes the previous projection unavailable to carry-over in tests.
+    pub(super) static FAIL_CARRY_OVER_PROBE: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// Externally owned kinds of the store being rebuilt (#1814).
+///
+/// Rows of owned kinds never reach the host's `hydrate_graph_rows`. In the
+/// build pass each live node's document is carried over from the store's
+/// current projection when it is readable, and dropped otherwise; host rows
+/// pass through. The verification pass excludes owned kinds entirely.
+struct Ownership<'a> {
+    handle: &'a EmbeddedStoreHandle,
+    owned: &'a BTreeSet<SearchProjectionKind>,
+    carry_over: bool,
+}
+
+impl Ownership<'_> {
+    fn owns(&self, kind: SearchProjectionKind) -> bool {
+        self.owned.contains(&kind)
+    }
+
+    fn owns_document(&self, document: &SearchDocument) -> bool {
+        document
+            .id
+            .split_once(':')
+            .and_then(|(kind, _)| SearchProjectionKind::from_name(kind))
+            .is_some_and(|kind| self.owns(kind))
+    }
+
+    /// The carried rows for `owned`, in order, skipping nodes without a
+    /// current document.
+    fn carry(&self, owned: Vec<SearchProjectionRow>) -> Result<Vec<SearchProjectionRow>> {
+        if owned.is_empty() || !self.carry_over {
+            return Ok(Vec::new());
+        }
+        let ids = owned
+            .iter()
+            .map(|row| format!("{}:{}", row.kind.as_str(), row.external_id))
+            .collect::<Vec<_>>();
+        let mut by_id = self
+            .handle
+            .lookup_previous(&ids)?
+            .into_iter()
+            .map(|document| (document.id.clone(), document))
+            .collect::<BTreeMap<_, _>>();
+        Ok(owned
+            .into_iter()
+            .zip(ids)
+            .filter_map(|(row, id)| {
+                by_id
+                    .remove(&id)
+                    .map(|document| row_from_carried(row, document))
+            })
+            .collect())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pass {
+    Build,
+    Verify,
+}
+
+/// Records the set and a raised rows-required state in the verified stage,
+/// so both install atomically with the generation. The target is a new
+/// projection incarnation, so an acknowledgement retained from the source
+/// projection cannot clear its requirement. Host writes made to the
+/// current projection during the rebuild, or after installation until the
+/// host switches, are not in the target, so rows are always required.
+fn record_ownership(stage: &Path, owned: &BTreeSet<SearchProjectionKind>) -> Result<()> {
+    use crate::search::projection_ownership::{raise_rows_required, write_record};
+    raise_rows_required(stage)?;
+    write_record(stage, owned)
+}
+
+/// Turns a carried document back into the row that reproduces it exactly:
+/// `into_document` re-inserts the identity keys removed here.
+fn row_from_carried(row: SearchProjectionRow, document: SearchDocument) -> SearchProjectionRow {
+    let SearchDocument {
+        title,
+        content,
+        embedding,
+        mut metadata,
+        ..
+    } = document;
+    metadata.remove("kind");
+    metadata.remove("external_id");
+    let source_id = metadata.remove("source_id");
+    SearchProjectionRow {
+        kind: row.kind,
+        external_id: row.external_id,
+        title,
+        body: content,
+        embedding,
+        source_id,
+        metadata,
+    }
+}
+
+impl EmbeddedStoreHandle {
+    /// Why the current projection cannot serve carry-over, if it cannot.
+    fn carry_over_unavailable(&self, owned: &BTreeSet<SearchProjectionKind>) -> Option<String> {
+        #[cfg(test)]
+        if FAIL_CARRY_OVER_PROBE.with(std::cell::Cell::get) {
+            return Some("injected carry-over failure".into());
+        }
+        let kind = owned.first()?.as_str();
+        self.lookup_previous(&[format!("{kind}:")])
+            .err()
+            .map(|error| error.to_string())
+    }
+
+    /// Documents the current projection holds for `ids`, missing ones
+    /// omitted, under one bounded read admission.
+    fn lookup_previous(&self, ids: &[String]) -> Result<Vec<SearchDocument>> {
+        let budget = crate::EmbeddedReadSnapshotBudget {
+            max_rows: ids.len(),
+            max_payload_bytes: CARRY_OVER_MAX_BATCH_BYTES,
+        };
+        self.with_bounded_read_snapshot(budget, |snapshot| {
+            snapshot
+                .lookup_search_projection_documents(ids)
+                .map(|lookup| lookup.documents)
+        })
+    }
+}
+
 /// Feeds the pinned graph rows, hydrated in bounded batches, then host rows.
+/// Owned kinds are carried over in the build pass and excluded from the
+/// verification pass.
+#[allow(clippy::too_many_arguments)]
 fn stream_documents(
     scan: &DatabaseReadTransaction,
     host: &mut DatabaseReadTransaction,
     source: &mut dyn SearchProjectionRebuildSource,
+    ownership: &Ownership<'_>,
+    pass: Pass,
     batch_rows: NonZeroUsize,
     task: &RuntimeTaskContext,
     progress: &mut SearchProjectionRebuildProgress,
@@ -430,8 +600,16 @@ fn stream_documents(
                      host: &mut DatabaseReadTransaction,
                      progress: &mut SearchProjectionRebuildProgress|
      -> Result<()> {
-        source.hydrate_graph_rows(host, batch)?;
-        for row in batch.drain(..) {
+        let (owned, mut rows): (Vec<_>, Vec<_>) =
+            batch.drain(..).partition(|row| ownership.owns(row.kind));
+        source.hydrate_graph_rows(host, &mut rows)?;
+        if pass == Pass::Build {
+            rows.extend(ownership.carry(owned)?);
+        }
+        for row in rows {
+            if pass == Pass::Verify && ownership.owns(row.kind) {
+                continue;
+            }
             sink(row.into_document(), progress)?;
             progress.graph_documents += 1;
         }
@@ -454,6 +632,9 @@ fn stream_documents(
         task.checkpoint().map_err(|reason| {
             HawDBError::Execution(format!("search projection rebuild {reason}"))
         })?;
+        if pass == Pass::Verify && ownership.owns(row.kind) {
+            return Ok(());
+        }
         sink(row.into_document(), progress)?;
         host_documents += 1;
         Ok(())

@@ -16,7 +16,7 @@
 name = "hawdb-ffi"
 publish = false
 # Tracks the hawdb engine version; hawdb_version() reports this string.
-version = "0.33.0"
+version = "0.34.0"
 
 description = "C ABI bindings for the HawDB embedded database"
 edition = "2024"
@@ -27,7 +27,8 @@ license = "Apache-2.0"
 [workspace]
 
 [lib]
-crate-type = ["cdylib", "staticlib"]
+# The Node-API binding links the same host boundary without a companion DLL.
+crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
 hawdb = { path = "../.." }

@@ -1268,12 +1268,12 @@ fn relational_default_value(default: Option<&RelationalColumnDefault>) -> Value 
             Value::String(Value::Vector(value.clone()).to_string())
         }
         Some(RelationalColumnDefault::Literal(RelationalValue::Timestamp(value))) => {
-            hawdb_core::sql_timestamp::format_timestamp(*value).map_or(Value::Null, |text| {
+            hawdb_core::sql_timestamp::format_timestamp(value.get()).map_or(Value::Null, |text| {
                 Value::String(format!("'{text}'::timestamp without time zone"))
             })
         }
         Some(RelationalColumnDefault::Literal(RelationalValue::TimestampTz(value))) => {
-            hawdb_core::sql_timestamp::format_timestamptz(*value).map_or(Value::Null, |text| {
+            hawdb_core::sql_timestamp::format_timestamptz(value.get()).map_or(Value::Null, |text| {
                 Value::String(format!("'{text}'::timestamp with time zone"))
             })
         }

@@ -35,7 +35,10 @@ decrement. Statements that use only those forms keep their plans.
 A statement is planned as `MatchSetExec` when it has any other SET value,
 when the clauses before `SET` include `WITH`, `UNWIND`, `OPTIONAL MATCH` or a
 named path, or when its `RETURN` has `DISTINCT`, `ORDER BY`, `SKIP` or
-`LIMIT`. Only further `SET` clauses and one final `RETURN` may follow:
+`LIMIT`. A relationship `SET` whose `WHERE` the storage command cannot
+evaluate as a property filter of the relationship or its source, such as
+`r.p = $old OR (r.p IS NULL AND $old IS NULL)`, takes it too (#1792).
+Only further `SET` clauses and one final `RETURN` may follow:
 
 - The clauses before `SET` become an ordinary read plan, optimized as its own
   root, that returns one column per variable in scope: the id of each node or
@@ -84,11 +87,13 @@ columns above the read input.
    keeps the first row of each distinct result, then `ORDER BY` sorts stably
    (equal keys keep the input order) and `SKIP`/`LIMIT` select the returned
    rows. Without `ORDER BY` and `DISTINCT`, rows past `SKIP + LIMIT` are not
-   projected. The mutation result row and payload limits are checked while
-   rows are projected: without `ORDER BY` every returned row counts as it is
-   projected, and with `ORDER BY` the statement is refused as soon as more
-   rows than the row limit remain after `SKIP` and `LIMIT` cannot cut them
-   below it (#1803).
+   projected. Mutation-result and host-output budgets count only the final
+   window after `DISTINCT`, `ORDER BY`, `SKIP` and `LIMIT`. Without
+   `ORDER BY`, selected rows are admitted as they are projected; DISTINCT
+   still evaluates every input row, including rows after a satisfied LIMIT.
+   With `ORDER BY`, the row limit is refused early once the final row count is
+   certain to exceed it, while payload and host-output budgets are checked
+   after sorting identifies the final window (#1803).
 5. The writes are committed as one mutation of per-entity values. Nothing is
    written before every row evaluated, so a failing row leaves no effect.
 

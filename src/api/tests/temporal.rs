@@ -492,9 +492,13 @@ fn ldbc_messages(db: &mut Database) {
                 (
                     "ms",
                     Value::Int(
-                        temporal::parse_datetime(created)
-                            .unwrap()
-                            .timestamp_millis(),
+                        i64::try_from(
+                            temporal::parse_datetime(created)
+                                .unwrap()
+                                .unix_timestamp_nanos()
+                                .div_euclid(1_000_000),
+                        )
+                        .unwrap(),
                     ),
                 ),
             ]),
@@ -653,7 +657,10 @@ fn ldbc_ic7_latency_minutes_and_epoch_millis_construction() {
 #[test]
 fn clock_functions_share_one_pinned_statement_instant_and_bypass_the_plan_cache() {
     let mut db = database();
-    let pinned = temporal::DateTime::from_timestamp(1_793_361_600, 5).unwrap();
+    let pinned = temporal::OffsetDateTime::from_unix_timestamp_nanos(
+        i128::from(1_793_361_600) * 1_000_000_000 + 5,
+    )
+    .unwrap();
     let row = temporal::with_statement_clock(pinned, || {
         single_row(
             &mut db,
@@ -680,7 +687,10 @@ fn clock_functions_share_one_pinned_statement_instant_and_bypass_the_plan_cache(
     assert_eq!(row["ts"], Value::Int(1_793_361_600_000_000_005));
     assert_eq!(row["at"], datetime("2026-10-30T12:00:00.000000005Z"));
     assert_eq!(row["on"], date("2026-10-30"));
-    let later = temporal::DateTime::from_timestamp(1_793_448_000, 0).unwrap();
+    let later = temporal::OffsetDateTime::from_unix_timestamp_nanos(
+        i128::from(1_793_448_000) * 1_000_000_000,
+    )
+    .unwrap();
     let row = temporal::with_statement_clock(later, || {
         single_row(&mut db, "RETURN date() AS d, datetime() AS dt")
     });
@@ -906,7 +916,10 @@ fn clock_reads_evaluated_per_row_observe_the_planning_instant() {
                 ]
             })
             .map(|value| match value {
-                Value::DateTime(value) => value.naive_utc(),
+                Value::DateTime(value) => hawdb_core::temporal::PlainDateTime::new(
+                    value.to_offset(hawdb_core::temporal::UtcOffset::UTC).date(),
+                    value.to_offset(hawdb_core::temporal::UtcOffset::UTC).time(),
+                ),
                 other => panic!("expected a zoned datetime, got {other:?}"),
             })
             .collect::<BTreeSet<_>>()
@@ -922,11 +935,17 @@ fn clock_reads_evaluated_per_row_observe_the_planning_instant() {
     );
     // Pinned, and not replayed from the plan cache by the next statement.
     for seconds in [1_793_361_600, 1_793_448_000] {
-        let pinned = temporal::DateTime::from_timestamp(seconds, 7).unwrap();
+        let pinned = temporal::OffsetDateTime::from_unix_timestamp_nanos(
+            i128::from(seconds) * 1_000_000_000 + 7,
+        )
+        .unwrap();
         let output = temporal::with_statement_clock(pinned, || db.query(query).unwrap());
         assert_eq!(
             instants(&output),
-            BTreeSet::from([pinned.naive_utc()]),
+            BTreeSet::from([hawdb_core::temporal::PlainDateTime::new(
+                pinned.date(),
+                pinned.time()
+            )]),
             "{pinned}"
         );
     }
@@ -937,8 +956,14 @@ fn clock_reading_timezone_maps_are_not_replayed_from_the_plan_cache() {
     let mut db = database();
     db.query("CREATE (:Event {id: 1, at: datetime('2026-10-30T13:00:00Z')})")
         .unwrap();
-    let before = temporal::DateTime::from_timestamp(1_793_361_600, 0).unwrap(); // 12:00Z
-    let after = temporal::DateTime::from_timestamp(1_793_448_000, 0).unwrap(); // next day
+    let before = temporal::OffsetDateTime::from_unix_timestamp_nanos(
+        i128::from(1_793_361_600) * 1_000_000_000,
+    )
+    .unwrap(); // 12:00Z
+    let after = temporal::OffsetDateTime::from_unix_timestamp_nanos(
+        i128::from(1_793_448_000) * 1_000_000_000,
+    )
+    .unwrap(); // next day
     let tz = params(&[(
         "tz",
         Value::Map(BTreeMap::from([(

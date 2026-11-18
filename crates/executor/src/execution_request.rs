@@ -29,7 +29,7 @@ pub struct ExecutionRequest<'a> {
     memory: &'a ExecutionMemoryConfig,
     task_context: Option<&'a RuntimeTaskContext>,
     host_scorer: Option<&'a dyn crate::scoring::HostScorerProvider>,
-    statement_clock: Option<hawdb_core::temporal::DateTime<hawdb_core::temporal::Utc>>,
+    statement_clock: Option<hawdb_core::temporal::OffsetDateTime>,
     csv_import: Option<&'a crate::load_csv::CsvImportPolicy>,
 }
 
@@ -103,17 +103,12 @@ impl<'a> ExecutionRequest<'a> {
     /// The statement instant that planning observed. Execution pins it, so
     /// that clock reads evaluated per row (`datetime({timezone: '+01:00'})`)
     /// observe the same instant as clock reads bound during planning.
-    pub fn with_statement_clock(
-        mut self,
-        instant: hawdb_core::temporal::DateTime<hawdb_core::temporal::Utc>,
-    ) -> Self {
+    pub fn with_statement_clock(mut self, instant: hawdb_core::temporal::OffsetDateTime) -> Self {
         self.statement_clock = Some(instant);
         self
     }
 
-    pub fn statement_clock(
-        self,
-    ) -> Option<hawdb_core::temporal::DateTime<hawdb_core::temporal::Utc>> {
+    pub fn statement_clock(self) -> Option<hawdb_core::temporal::OffsetDateTime> {
         self.statement_clock
     }
 

@@ -852,3 +852,87 @@ fn repeated_unwind_rows_on_one_node_keep_the_last_write() {
         },
     );
 }
+
+/// DISTINCT evaluates every row, but result and host-output budgets apply
+/// only after SKIP/LIMIT select the returned window (#1803).
+#[test]
+fn distinct_set_return_budgets_apply_only_to_the_final_window() {
+    const WINDOW: &str = "MATCH (e:E) WITH e ORDER BY e.id SET e.seen = true \
+        RETURN DISTINCT CASE WHEN e.id = 'b' THEN 'ok' \
+        ELSE 'discarded payload exceeds the mutation limit' END AS body SKIP 1 LIMIT 1";
+    let fixture = || {
+        let mut config = DatabaseConfig::default();
+        config.mutation_limits.max_result_rows = NonZeroUsize::new(1).unwrap();
+        config.mutation_limits.max_result_payload_bytes = NonZeroUsize::new(32).unwrap();
+        let mut db = Database::new_with_config(config);
+        for id in ["a", "b", "c"] {
+            db.query_with_params("CREATE (:E {id: $id})", &params(&[("id", string(id))]))
+                .unwrap();
+        }
+        db
+    };
+    let window = || {
+        crate::QueryRequest::new(WINDOW).with_output_limits(crate::QueryStreamOptions {
+            max_rows: Some(1),
+            max_payload_bytes: Some(6),
+        })
+    };
+
+    let mut db = fixture();
+
+    let output = db.query_request(window()).unwrap();
+    assert_eq!(output.rows[0].get("body"), Some(&string("ok")));
+    let stored = db
+        .query("MATCH (e:E) RETURN e.seen AS seen ORDER BY e.id")
+        .unwrap();
+    assert_eq!(
+        stored
+            .rows
+            .iter()
+            .map(|row| row.get("seen").cloned().unwrap_or(Value::Null))
+            .collect::<Vec<_>>(),
+        vec![Value::Bool(true); 3]
+    );
+
+    let output = db
+        .query_request(
+            crate::QueryRequest::new(
+                "MATCH (e:E) WITH e ORDER BY e.id SET e.zero = true \
+                 RETURN DISTINCT e.id AS id LIMIT 0",
+            )
+            .with_output_limits(crate::QueryStreamOptions {
+                max_rows: Some(0),
+                max_payload_bytes: Some(0),
+            }),
+        )
+        .unwrap();
+    assert!(output.rows.is_empty());
+    let stored = db
+        .query("MATCH (e:E) RETURN e.zero AS zero ORDER BY e.id")
+        .unwrap();
+    assert_eq!(
+        stored
+            .rows
+            .iter()
+            .map(|row| row.get("zero").cloned().unwrap_or(Value::Null))
+            .collect::<Vec<_>>(),
+        vec![Value::Bool(true); 3]
+    );
+
+    let mut db = fixture();
+    let mut transaction = db.begin_transaction().unwrap();
+    let output = transaction.query_request(window()).unwrap();
+    transaction.commit().unwrap();
+    assert_eq!(output.rows[0].get("body"), Some(&string("ok")));
+    let stored = db
+        .query("MATCH (e:E) RETURN e.seen AS seen ORDER BY e.id")
+        .unwrap();
+    assert_eq!(
+        stored
+            .rows
+            .iter()
+            .map(|row| row.get("seen").cloned().unwrap_or(Value::Null))
+            .collect::<Vec<_>>(),
+        vec![Value::Bool(true); 3]
+    );
+}

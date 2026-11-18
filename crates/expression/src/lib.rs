@@ -138,6 +138,56 @@ pub enum Predicate {
     },
 }
 
+impl Predicate {
+    /// Whether the storage mutation commands can evaluate this predicate as a
+    /// property filter of one node or relationship. Expression predicates,
+    /// constants and pattern predicates need the row evaluator instead.
+    pub fn is_property_filter(&self) -> bool {
+        match self {
+            Self::And(predicates) | Self::Or(predicates) => {
+                predicates.iter().all(Self::is_property_filter)
+            }
+            Self::Not(predicate) => predicate.is_property_filter(),
+            Self::ExpressionEq { expression, value }
+            | Self::ExpressionNotEq { expression, value } => {
+                matches!(
+                    (expression, value),
+                    (
+                        ProjectionExpression::DefaultIfNullOrEq { .. },
+                        ProjectionExpression::Literal(_)
+                    ) | (
+                        ProjectionExpression::Literal(_),
+                        ProjectionExpression::DefaultIfNullOrEq { .. }
+                    )
+                )
+            }
+            Self::ExpressionCompare { .. }
+            | Self::ExpressionContains { .. }
+            | Self::ExpressionRegexMatch { .. }
+            | Self::ExpressionIn { .. }
+            | Self::ConstantBool(_)
+            | Self::RelationshipExists { .. }
+            | Self::BoundRelationshipExists { .. } => false,
+            Self::IdEq { .. }
+            | Self::IdNotEq { .. }
+            | Self::IdCompare { .. }
+            | Self::IdIn { .. }
+            | Self::PropertyEq { .. }
+            | Self::PropertyNotEq { .. }
+            | Self::PropertyCompare { .. }
+            | Self::PropertyListContains { .. }
+            | Self::PropertyListContainsLower { .. }
+            | Self::PropertyContains { .. }
+            | Self::PropertyStartsWith { .. }
+            | Self::PropertyEndsWith { .. }
+            | Self::PropertyRegexMatch { .. }
+            | Self::PropertyIsNull { .. }
+            | Self::PropertyIsNotNull { .. }
+            | Self::PropertyIn { .. } => true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComparisonOp {
     Lt,

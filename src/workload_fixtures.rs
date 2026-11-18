@@ -702,6 +702,7 @@ fn error_class(error: &crate::HawDBError) -> String {
         | crate::HawDBError::BranchEvidenceBudgetExceeded { .. }
         | crate::HawDBError::ReadBudgetExceeded(_)
         | crate::HawDBError::WalRecordLimitExceeded(_)
+        | crate::HawDBError::ReadOnly { .. }
         | crate::HawDBError::ResourceBudgetExceeded(_)
         | crate::HawDBError::GraphExpansionCandidateLimitExceeded { .. }
         | crate::HawDBError::GraphExpansionPayloadLimitExceeded { .. }
@@ -710,6 +711,8 @@ fn error_class(error: &crate::HawDBError) -> String {
         | crate::HawDBError::TransactionReadDependencyRefused { .. }
         | crate::HawDBError::BranchCommandUnsupported { .. }
         | crate::HawDBError::SearchProjectionRebuildRefused { .. }
+        | crate::HawDBError::SearchProjectionOwnershipMarkerCorrupt { .. }
+        | crate::HawDBError::SearchProjectionOwnershipMismatch { .. }
         | crate::HawDBError::SearchProjectionEpochAdvanceRefused { .. } => "execution",
         crate::HawDBError::Storage(_)
         | crate::HawDBError::Constraint {

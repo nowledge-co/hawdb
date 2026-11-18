@@ -126,9 +126,9 @@ fn prefix_successor(
                 None => false,
             },
             RelationalValue::Timestamp(value) | RelationalValue::TimestampTz(value)
-                if *value < hawdb_core::sql_timestamp::max_micros() =>
+                if value.get() < hawdb_core::sql_timestamp::max_micros() =>
             {
-                *value += 1;
+                *value = (value.get() + 1).into();
                 true
             }
             RelationalValue::Timestamp(_) | RelationalValue::TimestampTz(_) => false,
@@ -420,15 +420,26 @@ mod tests {
         }
     }
 
-    fn timestamp_domain(variant: fn(i64) -> RelationalValue) -> Vec<RelationalValue> {
+    fn timestamp_domain(variant: fn(i128) -> RelationalValue) -> Vec<RelationalValue> {
         let (min, max) = (
             hawdb_core::sql_timestamp::min_micros(),
             hawdb_core::sql_timestamp::max_micros(),
         );
-        [min, min + 1, -1, 0, 1, max - 1, max]
-            .into_iter()
-            .map(variant)
-            .collect()
+        [
+            min,
+            min + 1,
+            -1,
+            0,
+            1,
+            i128::from(i64::MAX) - 1,
+            i128::from(i64::MAX),
+            i128::from(i64::MAX) + 1,
+            max - 1,
+            max,
+        ]
+        .into_iter()
+        .map(variant)
+        .collect()
     }
 
     #[test]
@@ -492,8 +503,8 @@ mod tests {
                 .into_iter()
                 .map(|value| RelationalValue::Uuid(Uuid::from_u128(value)))
                 .collect(),
-            timestamp_domain(RelationalValue::Timestamp),
-            timestamp_domain(RelationalValue::TimestampTz),
+            timestamp_domain(|value| RelationalValue::Timestamp(value.into())),
+            timestamp_domain(|value| RelationalValue::TimestampTz(value.into())),
         ];
         for domain in domains {
             let schema = RelationalTableSchema {

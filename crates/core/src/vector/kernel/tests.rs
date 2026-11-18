@@ -4,6 +4,24 @@
 use super::*;
 use crate::vector::{PreparedVectorQuery, Vector, VectorDistance, VectorRef};
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use wasm_bindgen_test::wasm_bindgen_test as test;
+
+#[cfg(target_arch = "wasm32")]
+#[test]
+fn wasm_simd_is_selected_without_global_target_features() {
+    assert_eq!(Kernel::get().1, "simd128");
+    for mode in [
+        Mode::Cosine,
+        Mode::PreparedCosine,
+        Mode::Euclidean,
+        Mode::Norm,
+    ] {
+        assert_eq!(Kernel::for_mode(mode, 15).1, "scalar");
+        assert_eq!(Kernel::for_mode(mode, 16).1, "simd128");
+    }
+}
+
 fn kernels() -> Vec<Kernel> {
     let mut kernels = vec![Kernel(scalar, "scalar")];
     kernels.push(Kernel::get());
@@ -31,7 +49,7 @@ fn bits(sums: &Sums) -> [u64; 4] {
 }
 
 #[test]
-fn forced_native_blocks_cover_short_unaligned_loads_and_nonfinite_tails() {
+fn forced_simd_blocks_cover_short_unaligned_loads_and_nonfinite_tails() {
     for dimension in 0..=17 {
         let left = (0..dimension).map(|i| i as f32 - 3.5).collect::<Vec<_>>();
         for bad in [false, true] {
@@ -82,7 +100,7 @@ fn forced_native_blocks_cover_short_unaligned_loads_and_nonfinite_tails() {
 }
 
 #[test]
-fn native_kernels_match_ordered_scalar_for_tails_extremes_and_unaligned_bytes() {
+fn simd_kernels_match_ordered_scalar_for_tails_extremes_and_unaligned_bytes() {
     for dimension in [
         1, 2, 3, 4, 7, 8, 15, 31, 32, 65, 384, 768, 1536, 8191, 8192, 8193, 20000,
     ] {

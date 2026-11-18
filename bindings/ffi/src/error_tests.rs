@@ -184,6 +184,19 @@ fn wal_record_limit_is_delivered_as_its_own_kind() {
         maximum: 16,
     }));
     let delivered = delivered(FfiError::open(&error));
-    assert_eq!(delivered["kind"], "wal_record_limit_exceeded", "{delivered}");
+    assert_eq!(
+        delivered["kind"], "wal_record_limit_exceeded",
+        "{delivered}"
+    );
+    assert_eq!(delivered["message"], error.to_string());
+}
+
+#[test]
+fn read_only_is_delivered_as_its_own_kind() {
+    let error = HawDBError::ReadOnly {
+        operation: "mark_search_projection_full_reindex_needed",
+    };
+    let delivered = delivered(FfiError::open(&error));
+    assert_eq!(delivered["kind"], "read_only", "{delivered}");
     assert_eq!(delivered["message"], error.to_string());
 }
