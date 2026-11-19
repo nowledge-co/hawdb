@@ -1715,6 +1715,49 @@ that pin the resident projection are:
 Other graph and relational reads do not pin it. Neither do out-of-core
 projections, whose buffers are part of the read's own admission.
 
+## Graph Change Commit Epoch
+
+`graph_commit_epoch` (`Database::commit_epoch`) advances on every commit,
+including relational-only ones. A host that keeps a shadow of an external graph
+needs a weaker check: did the graph change since its comparison? For that,
+`Database::graph_change_commit_epoch()` (also on `ConcurrentDatabase`) returns
+the commit epoch of the newest commit that changed graph data or graph schema
+([#1840](https://github.com/nowledge-co/hawdb/issues/1840)).
+
+What advances it:
+- node and relationship creates, property writes and deletes, including
+  relationship-only writes;
+- graph schema: node/relationship tables, labels, relationship types,
+  property definitions and their states, indexes, constraints and projected
+  graphs.
+
+Relational rows and DDL, append records and the initial-import marker do not.
+
+It is part of the graph state, not the search projection change log. It is
+present without a search projection and never regresses when that log is
+pruned. WAL replay recomputes it. A checkpoint records it with a
+`graph_change_commit_epoch` line only when it is older than the checkpoint's
+commit epoch. An absent line means it equals the commit epoch, so checkpoints
+taken right after a graph change are unchanged for older readers.
+A checkpoint written by a release that predates the field reopens with the
+value set to its commit epoch. That bound is conservative: the value can only
+move forward, once.
+
+`EmbeddedRuntimeStatus` reports it as `graph_change_commit_epoch`. The
+production status and operations readiness reports show it as
+`graph.change_commit_epoch`.
+
+For compare-and-publish, read it inside the write transaction with
+`ConcurrentDatabaseTransaction::graph_change_commit_epoch()` (the transaction
+`EmbeddedStoreHandle::with_transaction` passes) or
+`DatabaseTransaction::graph_change_commit_epoch()`. The call returns the value
+at the transaction's base snapshot and makes the commit conditional on it. The
+check runs under the commit's exclusive access. If a graph-changing commit was
+published after that snapshot, the commit fails with the retryable
+`HawDBError::TransactionConflict { key: "graph_change_commit_epoch", .. }` and
+writes nothing. Concurrent relational-only commits never cause this refusal,
+and neither do the transaction's own graph writes.
+
 ## Relationship Locality
 
 The current in-memory adjacency key is:

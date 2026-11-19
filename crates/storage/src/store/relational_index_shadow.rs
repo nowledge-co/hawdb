@@ -650,12 +650,15 @@ impl GraphStore {
     /// mutation. Relational index contents do not change, but their immutable
     /// read view must advance to the same global commit epoch so a later
     /// snapshot cannot combine graph state with a stale relational identity.
+    /// Every such commit changes graph data or graph schema, so it also
+    /// advances the graph change epoch.
     pub(super) fn finish_non_relational_commit(&mut self) {
         let next_commit_epoch = self.commit_epoch + 1;
         let index_publication =
             self.stage_relational_index_live_publication(next_commit_epoch, None);
         let row_publication = self.stage_relational_row_live_publication(next_commit_epoch, None);
         self.commit_epoch = next_commit_epoch;
+        self.graph_change_commit_epoch = next_commit_epoch;
         self.version_index.apply_database_barrier(next_commit_epoch);
         self.publish_relational_index_live_view(index_publication);
         self.publish_relational_row_live_view(row_publication);

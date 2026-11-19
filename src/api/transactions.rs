@@ -111,7 +111,26 @@ impl DatabaseTransactionState {
                 .begin_authoritative_relational_transaction_rows()
                 .map_err(|error| error.to_string()),
             sql_clock: hawdb_core::temporal::statement_now(),
+            base_graph_change_commit_epoch: runtime.store.graph_change_commit_epoch(),
+            graph_change_guard: None,
         })
+    }
+
+    /// Returns the base snapshot's graph change epoch and makes commit
+    /// conditional on it: a graph-changing commit published after this
+    /// transaction's base refuses the commit with `TransactionConflict`.
+    pub(super) fn guard_graph_change_commit_epoch(&mut self) -> u64 {
+        self.graph_change_guard = Some(self.base_graph_change_commit_epoch);
+        self.base_graph_change_commit_epoch
+    }
+
+    /// Carries an armed graph change guard into a refreshed state. The
+    /// refreshed state reports the guarded value, never a newer one.
+    pub(super) fn keep_graph_change_guard(&mut self, previous: &Self) {
+        if let Some(expected) = previous.graph_change_guard {
+            self.base_graph_change_commit_epoch = expected;
+            self.graph_change_guard = Some(expected);
+        }
     }
 
     pub(crate) fn rollback(&mut self) {
@@ -149,6 +168,8 @@ impl DatabaseTransactionState {
             relational_index: std::mem::replace(&mut self.relational_index, Ok(None)),
             relational_rows: std::mem::replace(&mut self.relational_rows, Ok(None)),
             sql_clock: self.sql_clock,
+            base_graph_change_commit_epoch: self.base_graph_change_commit_epoch,
+            graph_change_guard: self.graph_change_guard.take(),
         }
     }
 
@@ -1568,6 +1589,18 @@ pub(super) fn commit_database_transaction_state_inner(
     if let Some(dependencies) = &state.read_dependencies {
         dependencies.validate(db)?;
     }
+    if let Some(expected) = state.graph_change_guard {
+        // Checked under the commit's exclusive database access, so no graph
+        // commit can slip in between this check and publication.
+        let current = db.graph_change_commit_epoch()?;
+        if current != expected {
+            return Err(HawDBError::TransactionConflict {
+                read_epoch: expected,
+                committed_epoch: current,
+                key: "graph_change_commit_epoch".to_string(),
+            });
+        }
+    }
     let returning = std::mem::take(&mut state.relational_returning);
     let relational_transaction = std::mem::take(&mut state.relational_transaction);
     let append_transaction = std::mem::take(&mut state.append_transaction);
@@ -1629,6 +1662,16 @@ pub(super) fn commit_database_transaction_state_inner(
 impl DatabaseTransaction<'_> {
     pub fn read_dependency_usage(&self) -> Option<TransactionReadDependencyUsage> {
         self.state.read_dependency_usage()
+    }
+
+    /// Returns the graph change commit epoch of this transaction's base
+    /// snapshot (see [`Database::graph_change_commit_epoch`]) and makes the
+    /// commit conditional on it. If a commit that changed graph data or schema
+    /// is published after the base snapshot, this transaction's commit fails
+    /// with `HawDBError::TransactionConflict` (key `graph_change_commit_epoch`)
+    /// and writes nothing. The transaction's own graph writes do not count.
+    pub fn graph_change_commit_epoch(&mut self) -> u64 {
+        self.state.guard_graph_change_commit_epoch()
     }
 
     pub(crate) fn apply_session_config(&mut self, config: SessionConfig) {

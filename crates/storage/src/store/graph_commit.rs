@@ -2465,6 +2465,7 @@ impl GraphStore {
         wal_result?;
         *catalog = working_catalog;
         self.install_search_projection_change(staged_projection_change);
+        let changes_graph = ops.iter().any(WalOp::changes_graph);
         for op in ops {
             if matches!(op, WalOp::Relational { .. }) {
                 self.relational_state = staged_relational_state
@@ -2479,6 +2480,9 @@ impl GraphStore {
             }
         }
         self.commit_epoch = next_commit_epoch;
+        if changes_graph {
+            self.graph_change_commit_epoch = next_commit_epoch;
+        }
         self.version_index = staged_versions;
         if collapsed_read_summaries {
             let _ = self.read_summary_collapses.try_update(

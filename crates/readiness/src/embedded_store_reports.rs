@@ -241,6 +241,7 @@ pub struct OperationsReadinessReport {
     pub graph_read_only: bool,
     pub search_projection_open: bool,
     pub graph_commit_epoch: u64,
+    pub graph_change_commit_epoch: u64,
     pub projection_commit_lag: u64,
     pub projection_stale: bool,
     pub storage_lifecycle_action: StorageLifecycleActionKind,
@@ -300,6 +301,7 @@ impl OperationsReadinessReport {
             graph_read_only,
             search_projection_open,
             graph_commit_epoch: runtime_status.graph_commit_epoch,
+            graph_change_commit_epoch: runtime_status.graph_change_commit_epoch,
             projection_commit_lag,
             projection_stale,
             storage_lifecycle_action: storage_lifecycle_decision.action,
@@ -326,6 +328,7 @@ impl OperationsReadinessReport {
                 "open": self.graph_open,
                 "read_only": self.graph_read_only,
                 "commit_epoch": self.graph_commit_epoch,
+                "change_commit_epoch": self.graph_change_commit_epoch,
             },
             "search_projection": {
                 "open": self.search_projection_open,

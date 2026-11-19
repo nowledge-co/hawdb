@@ -31,6 +31,10 @@ pub const PRODUCTION_STATUS_PROTOCOL: &str = "hawdb-nowledge-mem-production-stat
 pub struct EmbeddedRuntimeStatus {
     pub protocol: String,
     pub graph_commit_epoch: u64,
+    /// Commit epoch of the newest commit that changed graph data or schema;
+    /// relational-only commits do not advance it (#1840). Monotonic across
+    /// reopen and change-log pruning, and present without a search projection.
+    pub graph_change_commit_epoch: u64,
     pub changefeed: SearchProjectionChangefeedStatus,
     pub projection_freshness: Option<SearchProjectionFreshness>,
     pub file_descriptors: Option<hawdb_storage::file_descriptors::FileDescriptorMetrics>,
@@ -62,6 +66,7 @@ impl EmbeddedRuntimeStatus {
         serde_json::json!({
             "protocol": self.protocol,
             "graph_commit_epoch": self.graph_commit_epoch,
+            "graph_change_commit_epoch": self.graph_change_commit_epoch,
             "file_descriptors": self.file_descriptors.map(|metrics| serde_json::json!({
                 "strict_capacity_limit": metrics.strict_capacity_limit,
                 "configured_limit": metrics.configured_limit,
@@ -120,6 +125,7 @@ pub struct EmbeddedProductionStatus {
     pub search_projection_open: bool,
     pub search_hawdb_cutover_effective: bool,
     pub graph_commit_epoch: u64,
+    pub graph_change_commit_epoch: u64,
     pub search_projection_source_graph_commit_epoch: Option<u64>,
     pub search_projection_durable_source_graph_commit_epoch: Option<u64>,
     pub search_projection_commit_lag: u64,
@@ -210,6 +216,7 @@ impl EmbeddedProductionStatus {
             search_projection_open,
             search_hawdb_cutover_effective,
             graph_commit_epoch: runtime_status.graph_commit_epoch,
+            graph_change_commit_epoch: runtime_status.graph_change_commit_epoch,
             search_projection_source_graph_commit_epoch: freshness
                 .and_then(|freshness| freshness.source_graph_commit_epoch),
             search_projection_durable_source_graph_commit_epoch: freshness
@@ -240,6 +247,7 @@ impl EmbeddedProductionStatus {
                 "hawdb_route_count": self.graph_hawdb_route_count,
                 "legacy_route_count": self.graph_legacy_route_count,
                 "commit_epoch": self.graph_commit_epoch,
+                "change_commit_epoch": self.graph_change_commit_epoch,
             },
             "search": {
                 "projection_open": self.search_projection_open,
@@ -289,6 +297,7 @@ mod tests {
         let status = EmbeddedRuntimeStatus {
             protocol: "test".to_string(),
             graph_commit_epoch: 8,
+            graph_change_commit_epoch: 6,
             changefeed: changefeed(),
             projection_freshness: None,
             file_descriptors: Some(hawdb_storage::file_descriptors::FileDescriptorMetrics {
@@ -305,6 +314,7 @@ mod tests {
 
         assert_eq!(status.projection_commit_lag(), 8);
         assert!(status.projection_stale());
+        assert_eq!(status.json()["graph_change_commit_epoch"], 6);
         assert_eq!(status.json()["file_descriptors"]["configured_limit"], 1024);
         assert_eq!(status.json()["file_descriptors"]["effective_limit"], 192);
         assert_eq!(
@@ -326,6 +336,7 @@ mod tests {
             EmbeddedRuntimeStatus {
                 protocol: "test".to_string(),
                 graph_commit_epoch: 8,
+                graph_change_commit_epoch: 6,
                 changefeed: changefeed(),
                 projection_freshness: None,
                 file_descriptors: None,

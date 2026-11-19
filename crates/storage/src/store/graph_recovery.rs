@@ -418,6 +418,19 @@ impl GraphStore {
         if let Some(commit_epoch) = decoded.commit_epoch {
             self.commit_epoch = commit_epoch;
         }
+        // Absent means the checkpoint's own commit epoch: exact for current
+        // checkpoints, and a conservative (never regressing) bound for ones
+        // written before the field existed.
+        self.graph_change_commit_epoch = match decoded.graph_change_commit_epoch {
+            Some(epoch) if epoch > self.commit_epoch => {
+                return Err(HawDBError::Storage(format!(
+                    "checkpoint graph change commit epoch {epoch} exceeds its commit epoch {}",
+                    self.commit_epoch
+                )));
+            }
+            Some(epoch) => epoch,
+            None => self.commit_epoch,
+        };
         if let Some(start_epoch) = decoded.search_projection_change_log_start_epoch {
             self.search_projection_change_log_start_epoch = start_epoch;
         }
@@ -1009,6 +1022,7 @@ impl GraphStore {
             WalOp::Batch(operations) => operations.as_slice(),
             operation => std::slice::from_ref(operation),
         };
+        let changes_graph = operation.changes_graph();
         if let Some(work) = work {
             work.checkpoint().map_err(HawDBError::from_storage_error)?;
         }
@@ -1106,6 +1120,9 @@ impl GraphStore {
             }
         }
         self.commit_epoch = epoch;
+        if changes_graph {
+            self.graph_change_commit_epoch = epoch;
+        }
         self.advance_relational_row_recovery_epoch(epoch);
         Ok(())
     }

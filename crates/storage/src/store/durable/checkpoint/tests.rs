@@ -381,6 +381,7 @@ fn checkpoint_units_metadata_publication_cancels_every_io_preserves_evidence_and
     let image = || CheckpointImage {
         catalog: &catalog,
         commit_epoch: 41,
+        graph_change_commit_epoch: 41,
         next_node_id: 31,
         next_rel_id: 0,
         search_projection_change_log_start_epoch: 41,

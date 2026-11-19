@@ -80,6 +80,21 @@ impl Database {
         Ok(self.runtime.get()?.store.commit_epoch())
     }
 
+    /// Returns the commit epoch of the newest commit that changed graph data
+    /// or graph schema on the selected branch.
+    ///
+    /// Node and relationship writes (including property changes and deletes)
+    /// and graph DDL (node/relationship tables, labels, relationship types,
+    /// property definitions, indexes, constraints and projected graphs)
+    /// advance it to their commit epoch. Relational-only and append-only
+    /// commits do not. It never decreases: it is restored on reopen and does
+    /// not depend on the search projection change log. After reopening a
+    /// checkpoint written by an older release, which did not record it, it
+    /// starts at that checkpoint's commit epoch.
+    pub fn graph_change_commit_epoch(&self) -> Result<u64> {
+        Ok(self.runtime.get()?.store.graph_change_commit_epoch())
+    }
+
     pub fn published_read_view(&self) -> Result<PublishedReadView> {
         Ok(self.runtime.get()?.store.published_read_view())
     }

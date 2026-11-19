@@ -981,6 +981,9 @@ pub struct GraphStore {
     next_node_id: u64,
     next_rel_id: u64,
     commit_epoch: u64,
+    /// Commit epoch of the newest commit that changed graph data or graph
+    /// schema; relational-only and append-only commits leave it unchanged.
+    graph_change_commit_epoch: u64,
     // A maintenance capture's monotonic floor for any post-snapshot debt.
     // Live writers normally have no capture clock; handoff restores that fact.
     checkpoint_capture_started: Option<std::time::Instant>,
@@ -2010,6 +2013,7 @@ impl GraphStore {
             next_node_id: 0,
             next_rel_id: 0,
             commit_epoch: 0,
+            graph_change_commit_epoch: 0,
             checkpoint_capture_started: None,
             version_index: hawdb_storage::version::VersionIndex::default(),
             version_snapshot_pins: Default::default(),
@@ -2210,6 +2214,16 @@ impl GraphStore {
 
     pub fn commit_epoch(&self) -> u64 {
         self.commit_epoch
+    }
+
+    /// Returns the commit epoch of the newest commit that changed graph nodes,
+    /// relationships, their properties, or graph schema (tables, labels,
+    /// relationship types, property definitions, indexes, constraints and
+    /// projected graphs). Relational-only and append-only commits do not
+    /// advance it. It survives checkpoints and reopen, and it is independent
+    /// of the search projection change log, so pruning never regresses it.
+    pub fn graph_change_commit_epoch(&self) -> u64 {
+        self.graph_change_commit_epoch
     }
 
     pub fn published_read_view(&self) -> PublishedReadView {
@@ -2503,6 +2517,7 @@ impl GraphStore {
             next_node_id: self.next_node_id,
             next_rel_id: self.next_rel_id,
             commit_epoch: self.commit_epoch,
+            graph_change_commit_epoch: self.graph_change_commit_epoch,
             checkpoint_capture_started: self.checkpoint_capture_started,
             version_index: self.version_index.clone(),
             version_snapshot_pins: self.version_snapshot_pins.clone(),

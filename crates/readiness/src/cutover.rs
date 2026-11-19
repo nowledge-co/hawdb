@@ -236,6 +236,7 @@ mod tests {
             EmbeddedRuntimeStatus {
                 protocol: "test".to_string(),
                 graph_commit_epoch: 0,
+                graph_change_commit_epoch: 0,
                 changefeed: SearchProjectionChangefeedStatus {
                     graph_commit_epoch: 0,
                     resume_floor_commit_epoch: 0,

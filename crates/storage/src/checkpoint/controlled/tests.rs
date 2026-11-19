@@ -220,6 +220,8 @@ impl Fixture {
         CheckpointImage {
             catalog: &self.catalog,
             commit_epoch: 4099,
+            // Older than the commit epoch, so both encoders emit the line.
+            graph_change_commit_epoch: 4000,
             next_node_id: 4100,
             next_rel_id: 4101,
             search_projection_change_log_start_epoch: 2,
