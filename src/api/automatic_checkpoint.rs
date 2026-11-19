@@ -126,14 +126,18 @@ struct PrefixSealProbe {
 impl PrefixSealProbe {
     fn observe(&self, epoch: u64) -> Result<()> {
         self.sealed.send(epoch).map_err(|error| {
-            HawDBError::Execution(format!("checkpoint seal observer stopped: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Execution(format!("checkpoint seal observer stopped: {error}"))
+            })
         })?;
         self.resume
             .lock()
             .map_err(|_| Control::poisoned())?
             .recv_timeout(Duration::from_secs(15))
             .map_err(|error| {
-                HawDBError::Execution(format!("checkpoint seal observer stopped: {error}"))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!("checkpoint seal observer stopped: {error}"))
+                })
             })
     }
 }
@@ -1974,8 +1978,7 @@ fn prepare(
     report.admission_denial = None;
     report.memory_denial = None;
     report.operation_failed = false;
-    task.checkpoint()
-        .map_err(|reason| HawDBError::Storage(reason.to_string()))?;
+    task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
     if !scheduler.policy().background_enabled {
         return Err(HawDBError::Storage(
             "automatic checkpoint QoS deferred: background disabled".into(),

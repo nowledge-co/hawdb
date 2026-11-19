@@ -107,9 +107,11 @@ impl ScoringEvaluator<'_> {
     ) -> Result<f64> {
         match self {
             Self::Legacy(spec) => Ok(spec.evaluate_score(features, time)),
-            Self::Program(program) => program
-                .evaluate_score(features, time)
-                .map_err(|error| HawDBError::Execution(format!("scoring program failed: {error}"))),
+            Self::Program(program) => program.evaluate_score(features, time).map_err(|error| {
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!("scoring program failed: {error}"))
+                })
+            }),
         }
     }
 }
@@ -129,7 +131,9 @@ fn stream_scoring_batches(
     runtime_checkpoint(context.task_context)?;
     if let ScoringEvaluator::Legacy(spec) = spec {
         spec.validate().map_err(|error| {
-            HawDBError::Execution(format!("invalid scoring specification: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Execution(format!("invalid scoring specification: {error}"))
+            })
         })?;
     }
     let retained = limit.min(execution_limit.output_rows.unwrap_or(usize::MAX));

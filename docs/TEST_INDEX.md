@@ -3075,6 +3075,32 @@ pin the mapping:
 No lane, feature matrix or timeout changes. Local replay:
 `cargo test --locked -p hawdb --lib resident_snapshot_admission`.
 
+### Typed task stops everywhere
+
+Every producer reports a stopped runtime task as
+`HawDBError::RuntimeTaskStopped`
+([#1850](https://github.com/nowledge-co/hawdb/issues/1850)).
+`//:typed_task_stops_test` runs `scripts/check-typed-task-stops.py` over the
+production sources of the root, core, executor, search, relational, storage,
+analytics, runtime-tokio and vector-projection crates. It fails on:
+- a task check whose `map_err` builds `Execution` or `Storage`;
+- a `Stopped(..)` or `Cancelled(..)` arm (bound name, `_`, `..` or struct
+  pattern) whose body builds `Execution` or `Storage`, even from a prebuilt
+  message.
+
+`Storage` is allowed only through an explicit allowlist, which is empty today.
+`//:typed_task_stops_script_test` holds the scan's 10 negative and positive
+controls. They cover:
+- multi-line closures and `to_string`;
+- wildcard, rest and struct arms;
+- a block arm that must not leak into the next arm;
+- the `Storage` allowlist;
+- skipped test files and trailing test modules. The checker also runs as the `typed-task-stops` prek hook. The
+existing cancellation tests in search, executor, relational, storage and the
+embedded runtime assert the typed variant. Local replay:
+`python3 scripts/check-typed-task-stops.py` and
+`python3 scripts/check-typed-task-stops.test.py`.
+
 ### Write transaction deadlines and cancellation
 
 Write transactions under a caller `RuntimeTaskContext`

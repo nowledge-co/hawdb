@@ -883,7 +883,7 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
         self.context
             .read_context
             .admit_reported_usage(report)
-            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+            .map_err(HawDBError::from_execution_error)?;
         self.record_admitted_success(
             table,
             index,

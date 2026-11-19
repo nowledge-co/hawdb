@@ -195,14 +195,18 @@ impl SpoolSource<'_> {
             let mut raw_length = [0u8; 8];
             let mut raw_checksum = [0u8; 8];
             reader.read_exact(&mut raw_length).map_err(|error| {
-                HawDBError::Storage(format!(
-                    "search generation spool record {ordinal} has a truncated length: {error}"
-                ))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Storage(format!(
+                        "search generation spool record {ordinal} has a truncated length: {error}"
+                    ))
+                })
             })?;
             reader.read_exact(&mut raw_checksum).map_err(|error| {
-                HawDBError::Storage(format!(
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Storage(format!(
                     "search generation spool record {ordinal} has a truncated checksum: {error}"
                 ))
+                })
             })?;
             let length = u64::from_le_bytes(raw_length);
             if length == 0 || length > self.max_record_bytes {

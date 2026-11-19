@@ -189,12 +189,12 @@ fn check_stream(rng: &mut Rng, seed: u64, iteration: usize, mode: usize) {
         }
         7 => {
             case.cancel_before = true;
-            (Some("external read task stopped: cancelled"), 0, 0)
+            (Some("runtime task stopped: cancelled"), 0, 0)
         }
         8 => {
             case.cancel_after = true;
             case.response = Ok(output(rows + 1));
-            (Some("external read task stopped: cancelled"), 1, 0)
+            (Some("runtime task stopped: cancelled"), 1, 0)
         }
         9 => {
             case.cancel_after = true;

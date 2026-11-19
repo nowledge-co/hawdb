@@ -208,9 +208,9 @@ impl SessionTransaction<'_> {
 
     fn commit(self) -> Result<Option<TransactionCommitResult>> {
         if let Some(context) = &self.task_context {
-            context.checkpoint().map_err(|reason| {
-                HawDBError::Execution(format!("SQL session stopped before commit: {reason}"))
-            })?;
+            context
+                .checkpoint()
+                .map_err(HawDBError::RuntimeTaskStopped)?;
         }
         self.writer
             .map(DatabaseTransaction::commit_with_result)

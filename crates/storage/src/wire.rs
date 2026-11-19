@@ -139,8 +139,11 @@ pub fn decode_len_body<'a>(bytes: &'a [u8], pos: &mut usize) -> Result<&'a [u8]>
 
 pub fn decode_string_body(bytes: &[u8], pos: &mut usize) -> Result<String> {
     let body = decode_len_body(bytes, pos)?;
-    String::from_utf8(body.to_vec())
-        .map_err(|error| HawDBError::Storage(format!("wire string is not valid UTF-8: {error}")))
+    String::from_utf8(body.to_vec()).map_err(|error| {
+        HawDBError::or_stop(&error, || {
+            HawDBError::Storage(format!("wire string is not valid UTF-8: {error}"))
+        })
+    })
 }
 
 /// Skips one field body of the given wire type, enabling forward-compatible

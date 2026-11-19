@@ -29,7 +29,7 @@ pub fn reclaim_generations(
         .reserve(CONSUMER_CLEANUP_MEMORY_BOUND as usize)?;
     let _io = task
         .acquire_io_wave(std::num::NonZeroUsize::MIN)
-        .map_err(|e| HawDBError::Execution(e.to_string()))?
+        .map_err(HawDBError::from_execution_error)?
         .ok_or_else(|| invalid("Consumer cleanup requires I/O admission"))?;
     let captured;
     let parent = match original_parent {

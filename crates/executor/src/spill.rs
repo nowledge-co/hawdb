@@ -226,7 +226,9 @@ impl SpillWriter {
             .write_all(&payload_len.to_le_bytes())
             .and_then(|_| self.writer.write_all(payload))
             .map_err(|error| {
-                HawDBError::Execution(format!("failed to write spill run: {error}"))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!("failed to write spill run: {error}"))
+                })
             })?;
         reservation.commit(&self.lease);
         budget_reservation.commit();
@@ -235,7 +237,9 @@ impl SpillWriter {
 
     pub fn finish(mut self) -> Result<()> {
         self.writer.flush().map_err(|error| {
-            HawDBError::Execution(format!("failed to flush spill run: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Execution(format!("failed to flush spill run: {error}"))
+            })
         })?;
         self.lease.mark_flushed();
         Ok(())
@@ -385,14 +389,20 @@ impl SpillReader {
             .fill_buf()
             .map(|bytes| bytes.is_empty())
             .map_err(|error| {
-                HawDBError::Execution(format!("failed to inspect spill record boundary: {error}"))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!(
+                        "failed to inspect spill record boundary: {error}"
+                    ))
+                })
             })
     }
 
     pub fn read(&mut self, max_record_bytes: usize) -> Result<Option<(u64, Binding)>> {
         let mut encoded_len = [0u8; 8];
         let bytes_read = self.reader.read(&mut encoded_len).map_err(|error| {
-            HawDBError::Execution(format!("failed to read spill record length: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Execution(format!("failed to read spill record length: {error}"))
+            })
         })?;
         if bytes_read == 0 {
             return Ok(None);
@@ -400,7 +410,9 @@ impl SpillReader {
         self.reader
             .read_exact(&mut encoded_len[bytes_read..])
             .map_err(|error| {
-                HawDBError::Execution(format!("truncated spill record length: {error}"))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!("truncated spill record length: {error}"))
+                })
             })?;
         let payload_len = usize::try_from(u64::from_le_bytes(encoded_len)).map_err(|_| {
             HawDBError::Execution("spill record length does not fit in memory".to_string())
@@ -413,7 +425,9 @@ impl SpillReader {
         }
         let mut payload = vec![0; payload_len];
         self.reader.read_exact(&mut payload).map_err(|error| {
-            HawDBError::Execution(format!("truncated spill record payload: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Execution(format!("truncated spill record payload: {error}"))
+            })
         })?;
         let mut cursor = Cursor::new(payload.as_slice());
         let ordinal = read_u64(&mut cursor)?;
@@ -433,7 +447,9 @@ impl SpillReader {
     ) -> Result<Option<SpillRecordPayload>> {
         let mut encoded_len = [0u8; 8];
         let bytes_read = self.reader.read(&mut encoded_len).map_err(|error| {
-            HawDBError::Execution(format!("failed to read spill record length: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Execution(format!("failed to read spill record length: {error}"))
+            })
         })?;
         if bytes_read == 0 {
             return Ok(None);
@@ -441,7 +457,9 @@ impl SpillReader {
         self.reader
             .read_exact(&mut encoded_len[bytes_read..])
             .map_err(|error| {
-                HawDBError::Execution(format!("truncated spill record length: {error}"))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!("truncated spill record length: {error}"))
+                })
             })?;
         let payload_len = usize::try_from(u64::from_le_bytes(encoded_len)).map_err(|_| {
             HawDBError::Execution("spill record length does not fit in memory".to_string())
@@ -455,7 +473,9 @@ impl SpillReader {
         let lease = spill_budget.reserve_staging(payload_len)?;
         let mut bytes = vec![0; payload_len];
         self.reader.read_exact(&mut bytes).map_err(|error| {
-            HawDBError::Execution(format!("truncated spill record payload: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Execution(format!("truncated spill record payload: {error}"))
+            })
         })?;
         Ok(Some(SpillRecordPayload {
             bytes,
@@ -617,25 +637,27 @@ fn estimate_value_memory(
                 .get_ref()
                 .get(start..end)
                 .ok_or_else(|| HawDBError::Execution("truncated vector spill".into()))?;
-            hawdb_core::VectorRef::from_encoded(bytes)
-                .map_err(|error| HawDBError::Execution(error.to_string()))?;
+            hawdb_core::VectorRef::from_encoded(bytes).map_err(HawDBError::from_execution_error)?;
             input.set_position(end as u64);
             (len, 0)
         }
         8 => {
             let mut bytes = [0_u8; 16];
             input.read_exact(&mut bytes).map_err(|error| {
-                HawDBError::Execution(format!("truncated UUID in spill record: {error}"))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!("truncated UUID in spill record: {error}"))
+                })
             })?;
             (bytes.len(), 0)
         }
         15 => {
             let mut bytes = [0_u8; 17];
             input.read_exact(&mut bytes).map_err(|error| {
-                HawDBError::Execution(format!("truncated Decimal in spill record: {error}"))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!("truncated Decimal in spill record: {error}"))
+                })
             })?;
-            hawdb_core::Decimal::from_le_bytes(bytes)
-                .map_err(|error| HawDBError::Execution(error.to_string()))?;
+            hawdb_core::Decimal::from_le_bytes(bytes).map_err(HawDBError::from_execution_error)?;
             (0, 17)
         }
         tag if spill_temporal_kind(tag).is_some() => {
@@ -671,8 +693,11 @@ fn skip_string(input: &mut Cursor<&[u8]>) -> Result<usize> {
         .get_ref()
         .get(start..end)
         .ok_or_else(|| HawDBError::Execution("truncated string in spill record".to_string()))?;
-    std::str::from_utf8(bytes)
-        .map_err(|error| HawDBError::Execution(format!("invalid spill string: {error}")))?;
+    std::str::from_utf8(bytes).map_err(|error| {
+        HawDBError::or_stop(&error, || {
+            HawDBError::Execution(format!("invalid spill string: {error}"))
+        })
+    })?;
     input.set_position(end as u64);
     Ok(len)
 }
@@ -959,7 +984,9 @@ fn read_value(input: &mut Cursor<&[u8]>, depth: usize) -> Result<Value> {
             let len = read_len(input)?;
             let mut bytes = vec![0; len];
             input.read_exact(&mut bytes).map_err(|error| {
-                HawDBError::Execution(format!("truncated binary in spill record: {error}"))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!("truncated binary in spill record: {error}"))
+                })
             })?;
             Value::Binary(bytes)
         }
@@ -974,7 +1001,7 @@ fn read_value(input: &mut Cursor<&[u8]>, depth: usize) -> Result<Value> {
                 .get(start..end)
                 .ok_or_else(|| HawDBError::Execution("truncated vector spill".into()))?;
             let value = hawdb_core::VectorRef::from_encoded(bytes)
-                .map_err(|error| HawDBError::Execution(error.to_string()))?
+                .map_err(HawDBError::from_execution_error)?
                 .to_owned();
             input.set_position(end as u64);
             Value::Vector(value)
@@ -982,18 +1009,22 @@ fn read_value(input: &mut Cursor<&[u8]>, depth: usize) -> Result<Value> {
         8 => {
             let mut bytes = [0_u8; 16];
             input.read_exact(&mut bytes).map_err(|error| {
-                HawDBError::Execution(format!("truncated UUID in spill record: {error}"))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!("truncated UUID in spill record: {error}"))
+                })
             })?;
             Value::Uuid(hawdb_core::Uuid::from_bytes(bytes))
         }
         15 => {
             let mut bytes = [0_u8; 17];
             input.read_exact(&mut bytes).map_err(|error| {
-                HawDBError::Execution(format!("truncated Decimal in spill record: {error}"))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!("truncated Decimal in spill record: {error}"))
+                })
             })?;
             Value::Decimal(
                 hawdb_core::Decimal::from_le_bytes(bytes)
-                    .map_err(|error| HawDBError::Execution(error.to_string()))?,
+                    .map_err(HawDBError::from_execution_error)?,
             )
         }
         tag if spill_temporal_kind(tag).is_some() => {
@@ -1037,10 +1068,15 @@ fn read_spill_temporal(
     let mut bytes = [0_u8; 28];
     let bytes = &mut bytes[..kind.payload_len()];
     input.read_exact(bytes).map_err(|error| {
-        HawDBError::Execution(format!("truncated temporal value in spill record: {error}"))
+        HawDBError::or_stop(&error, || {
+            HawDBError::Execution(format!("truncated temporal value in spill record: {error}"))
+        })
     })?;
-    hawdb_core::temporal::codec::decode_payload(kind, bytes)
-        .map_err(|error| HawDBError::Execution(format!("spill record {error}")))
+    hawdb_core::temporal::codec::decode_payload(kind, bytes).map_err(|error| {
+        HawDBError::or_stop(&error, || {
+            HawDBError::Execution(format!("spill record {error}"))
+        })
+    })
 }
 
 fn check_depth(depth: usize) -> Result<()> {
@@ -1061,10 +1097,15 @@ fn read_string(input: &mut Cursor<&[u8]>) -> Result<String> {
     let len = read_len(input)?;
     let mut bytes = vec![0; len];
     input.read_exact(&mut bytes).map_err(|error| {
-        HawDBError::Execution(format!("truncated string in spill record: {error}"))
+        HawDBError::or_stop(&error, || {
+            HawDBError::Execution(format!("truncated string in spill record: {error}"))
+        })
     })?;
-    String::from_utf8(bytes)
-        .map_err(|error| HawDBError::Execution(format!("invalid spill string: {error}")))
+    String::from_utf8(bytes).map_err(|error| {
+        HawDBError::or_stop(&error, || {
+            HawDBError::Execution(format!("invalid spill string: {error}"))
+        })
+    })
 }
 
 fn write_len(output: &mut impl Write, value: usize) -> Result<()> {
@@ -1097,16 +1138,20 @@ fn write_u64(output: &mut impl Write, value: u64) -> Result<()> {
 }
 
 fn write_bytes(output: &mut impl Write, bytes: &[u8]) -> Result<()> {
-    output
-        .write_all(bytes)
-        .map_err(|error| HawDBError::Execution(format!("failed to write spill record: {error}")))
+    output.write_all(bytes).map_err(|error| {
+        HawDBError::or_stop(&error, || {
+            HawDBError::Execution(format!("failed to write spill record: {error}"))
+        })
+    })
 }
 
 fn read_u8(input: &mut Cursor<&[u8]>) -> Result<u8> {
     let mut bytes = [0; 1];
-    input
-        .read_exact(&mut bytes)
-        .map_err(|error| HawDBError::Execution(format!("truncated spill tag: {error}")))?;
+    input.read_exact(&mut bytes).map_err(|error| {
+        HawDBError::or_stop(&error, || {
+            HawDBError::Execution(format!("truncated spill tag: {error}"))
+        })
+    })?;
     Ok(bytes[0])
 }
 
@@ -1117,17 +1162,21 @@ fn read_u32(input: &mut Cursor<&[u8]>) -> Result<u32> {
 
 fn read_u64(input: &mut Cursor<&[u8]>) -> Result<u64> {
     let mut bytes = [0; 8];
-    input
-        .read_exact(&mut bytes)
-        .map_err(|error| HawDBError::Execution(format!("truncated spill integer: {error}")))?;
+    input.read_exact(&mut bytes).map_err(|error| {
+        HawDBError::or_stop(&error, || {
+            HawDBError::Execution(format!("truncated spill integer: {error}"))
+        })
+    })?;
     Ok(u64::from_le_bytes(bytes))
 }
 
 fn read_i64(input: &mut Cursor<&[u8]>) -> Result<i64> {
     let mut bytes = [0; 8];
-    input
-        .read_exact(&mut bytes)
-        .map_err(|error| HawDBError::Execution(format!("truncated spill integer: {error}")))?;
+    input.read_exact(&mut bytes).map_err(|error| {
+        HawDBError::or_stop(&error, || {
+            HawDBError::Execution(format!("truncated spill integer: {error}"))
+        })
+    })?;
     Ok(i64::from_le_bytes(bytes))
 }
 

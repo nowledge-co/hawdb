@@ -305,7 +305,7 @@ fn evaluate_arithmetic(left: &Value, op: ScalarBinaryOp, right: &Value) -> Resul
         _ => unreachable!("arithmetic operators only"),
     };
     if let Some(result) = hawdb_core::temporal::arithmetic(left, temporal_op, right) {
-        return result.map_err(|error| HawDBError::Execution(error.to_string()));
+        return result.map_err(HawDBError::from_execution_error);
     }
     use hawdb_core::numeric::{evaluate_numeric, NumericBinaryOp};
     let op = match op {

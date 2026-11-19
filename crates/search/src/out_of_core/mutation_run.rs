@@ -377,16 +377,20 @@ impl SearchMutationRunBody {
     pub(super) fn encode(&self) -> Result<Vec<u8>> {
         self.validate()?;
         let body = serde_json::to_vec(self).map_err(|error| {
-            HawDBError::Storage(format!("failed to encode search mutation run: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!("failed to encode search mutation run: {error}"))
+            })
         })?;
         serde_json::to_vec(&SearchMutationRunEnvelope {
             body: self.clone(),
             checksum: checksum_bytes(&body),
         })
         .map_err(|error| {
-            HawDBError::Storage(format!(
-                "failed to encode search mutation-run envelope: {error}"
-            ))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!(
+                    "failed to encode search mutation-run envelope: {error}"
+                ))
+            })
         })
     }
 
@@ -779,7 +783,7 @@ pub(super) fn validate_targets_with_admission<'a>(
         let _io = admission
             .map(|(admission, _)| admission.io())
             .transpose()
-            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+            .map_err(HawDBError::from_execution_error)?;
         Some(directory.create(&path)?)
     } else {
         None
@@ -826,7 +830,7 @@ pub(super) fn validate_targets_with_admission<'a>(
                 let _io = admission
                     .map(|(admission, _)| admission.io())
                     .transpose()
-                    .map_err(|error| HawDBError::Execution(error.to_string()))?;
+                    .map_err(HawDBError::from_execution_error)?;
                 if let Some(body) = &mut captured_body {
                     use std::io::{Seek, SeekFrom};
                     body.set_len(0)?;

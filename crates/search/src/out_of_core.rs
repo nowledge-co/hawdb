@@ -319,7 +319,7 @@ pub(crate) fn open_stationary_candidate(
         .ok_or_else(|| HawDBError::Execution("shared candidate allocation overflows".into()))?;
     let memory = permit
         .reserve_retained_memory(shared_bytes as u64)
-        .map_err(|error| HawDBError::Execution(error.to_string()))?;
+        .map_err(HawDBError::from_execution_error)?;
     Ok(CandidateView(Arc::new(SharedCandidateView {
         opened,
         _memory: memory,
@@ -861,18 +861,22 @@ impl SearchOutOfCoreManifestBody {
         manifest.stamp_reader_version();
         manifest.validate_names()?;
         let body = serde_json::to_vec(&manifest).map_err(|error| {
-            HawDBError::Storage(format!(
-                "failed to encode search out-of-core manifest: {error}"
-            ))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!(
+                    "failed to encode search out-of-core manifest: {error}"
+                ))
+            })
         })?;
         serde_json::to_vec(&SearchOutOfCoreManifestEnvelope {
             body: manifest,
             checksum: checksum_bytes(&body),
         })
         .map_err(|error| {
-            HawDBError::Storage(format!(
-                "failed to encode search out-of-core manifest envelope: {error}"
-            ))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!(
+                    "failed to encode search out-of-core manifest envelope: {error}"
+                ))
+            })
         })
     }
 
@@ -898,7 +902,9 @@ impl SearchOutOfCoreManifestBody {
         let envelope = serde_json::from_slice::<SearchOutOfCoreManifestEnvelope>(bytes);
         task.map_or(Ok(()), crate::build_control::checkpoint)?;
         let envelope = envelope.map_err(|error| {
-            HawDBError::Storage(format!("invalid search out-of-core manifest: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!("invalid search out-of-core manifest: {error}"))
+            })
         })?;
         if crate::build_control::json::checksum_with_context(&envelope.body, task)?
             != envelope.checksum
@@ -1312,18 +1318,22 @@ impl<S: AsRef<str>> SearchOutOfCoreSegmentManifest<S> {
 impl SearchOutOfCoreLayoutBody {
     fn encode(&self) -> Result<Vec<u8>> {
         let body = serde_json::to_vec(self).map_err(|error| {
-            HawDBError::Storage(format!(
-                "failed to encode search out-of-core layout: {error}"
-            ))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!(
+                    "failed to encode search out-of-core layout: {error}"
+                ))
+            })
         })?;
         serde_json::to_vec(&SearchOutOfCoreLayoutEnvelope {
             body: self.clone(),
             checksum: checksum_bytes(&body),
         })
         .map_err(|error| {
-            HawDBError::Storage(format!(
-                "failed to encode search out-of-core layout envelope: {error}"
-            ))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!(
+                    "failed to encode search out-of-core layout envelope: {error}"
+                ))
+            })
         })
     }
 
@@ -1339,7 +1349,9 @@ impl SearchOutOfCoreLayoutBody {
         let envelope = serde_json::from_slice::<SearchOutOfCoreLayoutEnvelope>(bytes);
         task.map_or(Ok(()), crate::build_control::checkpoint)?;
         let envelope = envelope.map_err(|error| {
-            HawDBError::Storage(format!("invalid search out-of-core layout: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!("invalid search out-of-core layout: {error}"))
+            })
         })?;
         let checksum = crate::build_control::json::checksum_with_context(&envelope.body, task);
         // CheckedWriter reports cancellation through serde's I/O error. Keep
@@ -1639,7 +1651,9 @@ impl SearchOutOfCoreSegmentReader {
             )?),
         };
         let descriptor_text = std::str::from_utf8(&descriptor_bytes).map_err(|error| {
-            HawDBError::Storage(format!("search segment descriptor is not UTF-8: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!("search segment descriptor is not UTF-8: {error}"))
+            })
         })?;
         let descriptor =
             crate::document_encoding::DecodedDescriptor::decode(descriptor_text, admission)?;
@@ -3222,9 +3236,9 @@ impl SearchOutOfCoreReader {
             .get_or_insert(self.config.default_navigation_beam);
         let task_context = vector_execution_options.task_context;
         if let Some(task_context) = task_context {
-            task_context.checkpoint().map_err(|reason| {
-                HawDBError::Execution(format!("search out-of-core task {reason}"))
-            })?;
+            task_context
+                .checkpoint()
+                .map_err(HawDBError::RuntimeTaskStopped)?;
         }
         if access_control.is_some() {
             self.runtime_capabilities
@@ -4557,7 +4571,9 @@ fn load_artifact_closure_with_context(
         segments
             .try_reserve_exact(manifest.segments.len())
             .map_err(|error| {
-                HawDBError::Execution(format!("reader segment list allocation failed: {error}"))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!("reader segment list allocation failed: {error}"))
+                })
             })?;
         if segments.capacity() > manifest.segments.len() {
             return Err(HawDBError::Execution(
@@ -5015,7 +5031,7 @@ pub(super) fn captured_artifact_generations(
             }
             let _io = task
                 .acquire_io_wave(std::num::NonZeroUsize::MIN)
-                .map_err(|error| HawDBError::Execution(error.to_string()))?;
+                .map_err(HawDBError::from_execution_error)?;
             let Some(bytes) = source.head()? else {
                 source.prove_no_projection_files(root_label, None)?;
                 return Ok(CapturedGenerations {
@@ -6154,8 +6170,11 @@ fn read_marker_lines_bounded(path: &Path, max_bytes: u64) -> Result<Vec<String>>
         Err(error) => return Err(error.into()),
     }
     let bytes = read_bounded_file(path, max_bytes)?;
-    let content = std::str::from_utf8(&bytes)
-        .map_err(|error| HawDBError::Storage(format!("search marker is not UTF-8: {error}")))?;
+    let content = std::str::from_utf8(&bytes).map_err(|error| {
+        HawDBError::or_stop(&error, || {
+            HawDBError::Storage(format!("search marker is not UTF-8: {error}"))
+        })
+    })?;
     Ok(content
         .lines()
         .map(str::trim)

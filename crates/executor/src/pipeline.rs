@@ -299,12 +299,10 @@ impl AccountedBindingBatch {
         }
         source
             .transfer_to(source_bytes, &mut self.tracker, target_bytes)
-            .map_err(|error| {
-                HawDBError::Execution(format!(
+            .map_err(|error| HawDBError::or_stop(&error, || HawDBError::Execution(format!(
                     "{} output batch could not take ownership of a {target_bytes}-byte binding: {error}",
                     self.operator
-                ))
-            })?;
+                ))))?;
         reserve_binding_slot(&mut self.bindings);
         self.bindings.push(binding);
         Ok(BatchControl::Continue)

@@ -541,8 +541,7 @@ impl<'a> RelationalValueRef<'a> {
         self,
         context: &crate::background::CheckpointDecodeContext,
     ) -> Result<RelationalValue, RelationalError> {
-        let admission =
-            |error: hawdb_core::HawDBError| RelationalError::Admission(error.to_string());
+        let admission = RelationalError::from_admission;
         let value = match self {
             Self::Text(value) => RelationalValue::Text(context.string(value).map_err(admission)?),
             Self::Bytea(_) | Self::Vector(_) => {
@@ -3183,8 +3182,7 @@ impl RelationalState {
         &self,
         work: &crate::background::CheckpointWorkContext,
     ) -> Result<Self, RelationalError> {
-        let admission =
-            |error: hawdb_core::HawDBError| RelationalError::Admission(error.to_string());
+        let admission = RelationalError::from_admission;
         let allocations = crate::background::CheckpointDecodeContext {
             work: work.clone(),
             memory: Default::default(),
@@ -4868,8 +4866,7 @@ impl RelationalState {
             )));
         }
 
-        let admission =
-            |error: hawdb_core::HawDBError| RelationalError::Admission(error.to_string());
+        let admission = RelationalError::from_admission;
         let workspace_allocations =
             allocations.map(|context| crate::background::CheckpointDecodeContext {
                 work: context.work.clone(),
@@ -6525,6 +6522,8 @@ impl Default for RelationalStore {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelationalError {
     Admission(String),
+    /// The caller's runtime task was cancelled or passed its deadline.
+    Stopped(hawdb_core::RuntimeCancellationReason),
     Schema(String),
     Constraint(String),
     Durability(String),
@@ -6537,6 +6536,7 @@ impl fmt::Display for RelationalError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Admission(message) => write!(formatter, "relational admission failed: {message}"),
+            Self::Stopped(reason) => write!(formatter, "runtime task stopped: {reason}"),
             Self::Schema(message) => write!(formatter, "relational schema error: {message}"),
             Self::Constraint(message) => {
                 write!(formatter, "relational constraint violation: {message}")
@@ -6560,6 +6560,8 @@ impl std::error::Error for RelationalError {
         match self {
             Self::FileDescriptors(error) => Some(error),
             Self::UnsupportedFormat(error) => Some(error),
+            // Lets `HawDBError::from_storage_error` report the typed stop.
+            Self::Stopped(reason) => Some(reason),
             Self::Constraint(_) => Some(&hawdb_core::RelationalErrorKind::Constraint),
             Self::Schema(_) => Some(&hawdb_core::RelationalErrorKind::Schema),
             _ => None,
@@ -6568,6 +6570,15 @@ impl std::error::Error for RelationalError {
 }
 
 impl RelationalError {
+    /// Wraps an engine error raised while admitting relational work; a
+    /// stopped runtime task stays a typed `Stopped`.
+    pub(crate) fn from_admission(error: hawdb_core::HawDBError) -> Self {
+        match error {
+            hawdb_core::HawDBError::RuntimeTaskStopped(reason) => Self::Stopped(reason),
+            error => Self::Admission(error.to_string()),
+        }
+    }
+
     /// The typed kind of a constraint or schema refusal.
     pub const fn kind(&self) -> Option<hawdb_core::RelationalErrorKind> {
         match self {

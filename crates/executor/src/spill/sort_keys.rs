@@ -139,8 +139,11 @@ impl SpillBindingRecord {
 fn string_ref<'a>(input: &mut Cursor<&'a [u8]>) -> Result<&'a str> {
     let start = input.position() as usize + 8;
     let len = skip_string(input)?;
-    std::str::from_utf8(&input.get_ref()[start..start + len])
-        .map_err(|error| HawDBError::Execution(format!("invalid spill string: {error}")))
+    std::str::from_utf8(&input.get_ref()[start..start + len]).map_err(|error| {
+        HawDBError::or_stop(&error, || {
+            HawDBError::Execution(format!("invalid spill string: {error}"))
+        })
+    })
 }
 
 fn select_map<'a>(input: &mut Cursor<&'a [u8]>, wanted: Option<&str>) -> Result<Option<&'a [u8]>> {

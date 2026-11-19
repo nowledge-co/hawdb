@@ -553,7 +553,11 @@ pub fn blackbox_report(options: &BlackboxReportOptions) -> Result<BlackboxReport
     }
     let generated_unix_seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|error| HawDBError::Execution(format!("system clock before unix epoch: {error}")))?
+        .map_err(|error| {
+            HawDBError::or_stop(&error, || {
+                HawDBError::Execution(format!("system clock before unix epoch: {error}"))
+            })
+        })?
         .as_secs();
     let run_id = options
         .run_id

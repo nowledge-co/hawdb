@@ -534,7 +534,11 @@ impl GraphStore {
         })?;
         let report = builder
             .seal_private_with_recovery_source(self.commit_epoch, recovery_source, work)
-            .map_err(|error| HawDBError::Storage(format!("private index recovery: {error}")))?;
+            .map_err(|error| {
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Storage(format!("private index recovery: {error}"))
+                })
+            })?;
         let root = self
             .durable
             .as_ref()
@@ -552,12 +556,20 @@ impl GraphStore {
                 Some(&immutable),
                 Some(work),
             )
-            .map_err(|error| HawDBError::Storage(format!("pin private index recovery: {error}")))?;
+            .map_err(|error| {
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Storage(format!("pin private index recovery: {error}"))
+                })
+            })?;
         let selector = crate::relational::PreparedRelationalRecoverySelector::prepare(
             &immutable,
             root.join(crate::relational::RELATIONAL_INDEX_RECOVERY_MANIFEST_FILE),
         )
-        .map_err(|error| HawDBError::Storage(format!("prepare private index selector: {error}")))?
+        .map_err(|error| {
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!("prepare private index selector: {error}"))
+            })
+        })?
         .with_generation_alias(
             immutable.clone(),
             root.join(

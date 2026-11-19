@@ -129,7 +129,10 @@ fn target_validation_uses_one_admission_for_probe_hydration_and_stored_terms() {
     assert!(matches!(error, HawDBError::Execution(_)), "{error:?}");
     task.cancellation().cancel();
     let error = fixture.validate(&run, &admission).unwrap_err();
-    assert!(matches!(error, HawDBError::Execution(_)), "{error:?}");
+    assert!(
+        matches!(error, HawDBError::RuntimeTaskStopped(_)),
+        "{error:?}"
+    );
     assert_eq!(memory.ledger.snapshot().used_bytes, baseline);
     drop(run);
     drop(memory);
@@ -230,7 +233,7 @@ fn target_hydration_cancellation_during_selected_physical_read_refunds_io_and_me
         &admission,
         32 << 20,
     );
-    assert!(matches!(result, Err(HawDBError::Execution(_))));
+    assert!(matches!(result, Err(HawDBError::RuntimeTaskStopped(_))));
     let (_, read) = observation::take();
     assert!(read > 0);
     assert!(observation::take_max_request() <= 8192);

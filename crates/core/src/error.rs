@@ -531,6 +531,11 @@ impl HawDBError {
         if let Some(error) = (&error as &dyn std::error::Error).downcast_ref::<Self>() {
             return error.clone();
         }
+        // A cancelled or expired runtime task anywhere in the cause chain is
+        // a stop, not a storage failure.
+        if let Some(reason) = find_runtime_task_stop(&error) {
+            return Self::RuntimeTaskStopped(reason);
+        }
         if let Some(resource) = file_descriptor_error(&error) {
             Self::FileDescriptors(resource)
         } else if let Some(resource) = resource::find_resource_budget_error(&error) {
@@ -582,6 +587,66 @@ impl HawDBError {
 }
 
 pub type Result<T> = std::result::Result<T, HawDBError>;
+
+/// An I/O-wave stop is the typed task stop; exceeding the wave reservation is
+/// a caller error and stays an execution error.
+impl From<crate::RuntimeIoWaveError> for HawDBError {
+    fn from(error: crate::RuntimeIoWaveError) -> Self {
+        match error {
+            crate::RuntimeIoWaveError::Stopped(reason) => Self::RuntimeTaskStopped(reason),
+            error => Self::Execution(error.to_string()),
+        }
+    }
+}
+
+impl HawDBError {
+    /// An execution error carrying `error`'s message, or the typed
+    /// `RuntimeTaskStopped` when `error` is (or is caused by) a cancelled or
+    /// expired runtime task. Use it instead of `Execution(error.to_string())`.
+    /// The typed `RuntimeTaskStopped` when `error` is (or is caused by) a
+    /// cancelled or expired runtime task, otherwise `otherwise()`. Wrap any
+    /// contextual message built from an error that may carry a stop.
+    pub fn or_stop(
+        error: &(dyn std::error::Error + 'static),
+        otherwise: impl FnOnce() -> Self,
+    ) -> Self {
+        match find_runtime_task_stop(error) {
+            Some(reason) => Self::RuntimeTaskStopped(reason),
+            None => otherwise(),
+        }
+    }
+
+    pub fn from_execution_error(error: impl std::error::Error + 'static) -> Self {
+        match find_runtime_task_stop(&error) {
+            Some(reason) => Self::RuntimeTaskStopped(reason),
+            None => Self::Execution(error.to_string()),
+        }
+    }
+}
+
+/// The cancellation reason of a stopped runtime task in `error`'s cause chain.
+fn find_runtime_task_stop(
+    error: &(dyn std::error::Error + 'static),
+) -> Option<crate::RuntimeCancellationReason> {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        if let Some(reason) = error.downcast_ref::<crate::RuntimeCancellationReason>() {
+            return Some(*reason);
+        }
+        if let Some(HawDBError::RuntimeTaskStopped(reason)) = error.downcast_ref::<HawDBError>() {
+            return Some(*reason);
+        }
+        // io::Error hides its boxed cause from Error::source.
+        if let Some(error) = error.downcast_ref::<std::io::Error>()
+            && let Some(inner) = error.get_ref()
+            && let Some(reason) = find_runtime_task_stop(inner)
+        {
+            return Some(reason);
+        }
+        current = error.source();
+    }
+    None
+}
 
 /// A stopped runtime task is the typed `HawDBError::RuntimeTaskStopped`.
 impl From<crate::RuntimeCancellationReason> for HawDBError {

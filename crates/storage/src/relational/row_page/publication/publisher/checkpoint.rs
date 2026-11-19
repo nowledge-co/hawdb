@@ -197,3 +197,55 @@ pub(super) fn select(
             .map_err(durability("publish latest row-page manifest"))
     })
 }
+
+#[cfg(test)]
+mod post_rename_stop_tests {
+    use super::*;
+    use crate::background::CheckpointWorkProbe;
+    use hawdb_core::HawDBError;
+    use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+
+    /// A stop observed after the publication rename completed must keep
+    /// poisoning hosts that treat `Storage` as fatal: it is reported as
+    /// `Storage` text, never as the non-poisoning `RuntimeTaskStopped`, even
+    /// through the cause-chain conversions (#1850).
+    #[test]
+    fn a_stop_after_the_rename_stays_storage() {
+        let directory = std::env::temp_dir().join(format!(
+            "hawdb-post-rename-stop-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let source = directory.join("candidate");
+        let destination = directory.join("published");
+        std::fs::write(&source, b"row pages").unwrap();
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        // The first completed unit is the rename itself; cancel right after it.
+        probe.cancel_after.store(1, Ordering::SeqCst);
+        let work = probe.context(LocalQosScheduler::new(LocalQosPolicy {
+            max_background_operations: Some(1),
+            max_total_background_operations: Some(1),
+            ..Default::default()
+        }));
+        let error = publish(&source, &destination, Some(&work)).unwrap_err();
+        assert_eq!(std::fs::read(&destination).unwrap(), b"row pages");
+        assert!(
+            matches!(error, RelationalRowPagePublicationError::Admission(_)),
+            "{error:?}"
+        );
+        let contextual = HawDBError::or_stop(&error, || HawDBError::Storage(error.to_string()));
+        assert!(
+            matches!(contextual, HawDBError::Storage(_)),
+            "{contextual:?}"
+        );
+        let storage = HawDBError::from_storage_error(error);
+        assert!(matches!(storage, HawDBError::Storage(_)), "{storage:?}");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+}

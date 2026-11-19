@@ -153,9 +153,11 @@ impl Database {
             .map(|permit| permit.reserve_retained_memory(request.max_staged_bytes.get() as u64))
             .transpose()
             .map_err(|admission| {
-                HawDBError::Execution(format!(
-                    "analytics staging memory not admitted: {admission}"
-                ))
+                HawDBError::or_stop(&admission, || {
+                    HawDBError::Execution(format!(
+                        "analytics staging memory not admitted: {admission}"
+                    ))
+                })
             })?;
         if let Some(permit) = &runtime_permit {
             query_context = Some(permit.bind_task_context(query_context.unwrap_or_default()));
@@ -453,9 +455,11 @@ impl Database {
             })
             .transpose()
             .map_err(|admission| {
-                HawDBError::Execution(format!(
-                    "background graph analytics runtime not admitted: {admission}"
-                ))
+                HawDBError::or_stop(&admission, || {
+                    HawDBError::Execution(format!(
+                        "background graph analytics runtime not admitted: {admission}"
+                    ))
+                })
             })
     }
 

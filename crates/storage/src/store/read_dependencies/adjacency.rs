@@ -120,7 +120,7 @@ fn charge(remaining: &mut usize) -> Result<()> {
 fn record(captured: &mut GraphReadDependencies, key: VersionKey) -> Result<()> {
     captured
         .record(key)
-        .map_err(|error| HawDBError::Execution(error.to_string()))
+        .map_err(HawDBError::from_execution_error)
 }
 fn identity(
     captured: &mut GraphReadDependencies,

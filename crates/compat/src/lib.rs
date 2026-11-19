@@ -641,10 +641,12 @@ fn run_primary_setup(
     for statement in &fixture.setup {
         db.query_with_params(&statement.cypher, &statement.parameters)
             .map_err(|error| {
-                HawDBError::Execution(format!(
-                    "fixture '{}' setup failed for '{}': {error}",
-                    fixture.name, statement.cypher
-                ))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!(
+                        "fixture '{}' setup failed for '{}': {error}",
+                        fixture.name, statement.cypher
+                    ))
+                })
             })?;
     }
     Ok(())
@@ -666,12 +668,14 @@ fn run_shadow_setup(
                 },
             )
             .map_err(|error| {
-                HawDBError::Execution(format!(
-                    "fixture '{}' shadow engine '{}' setup failed for '{}': {error}",
-                    fixture.name,
-                    shadow.name(),
-                    statement.cypher
-                ))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!(
+                        "fixture '{}' shadow engine '{}' setup failed for '{}': {error}",
+                        fixture.name,
+                        shadow.name(),
+                        statement.cypher
+                    ))
+                })
             })?;
     }
     Ok(())
@@ -740,13 +744,15 @@ fn run_shadow_cypher_check(
                 },
             )
             .map_err(|error| {
-                HawDBError::Execution(format!(
-                    "fixture '{}' check '{}' shadow engine '{}' setup failed for '{}': {error}",
-                    fixture.name,
-                    check.name,
-                    shadow.name(),
-                    setup_query.cypher
-                ))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!(
+                        "fixture '{}' check '{}' shadow engine '{}' setup failed for '{}': {error}",
+                        fixture.name,
+                        check.name,
+                        shadow.name(),
+                        setup_query.cypher
+                    ))
+                })
             })?;
     }
     let shadow_output = shadow.execute_with_context(
@@ -791,13 +797,15 @@ fn run_shadow_cypher_check(
             None,
         ) => {
             let shadow_output = shadow_output.map_err(|error| {
-                HawDBError::Execution(format!(
-                    "fixture '{}' check '{}' shadow engine '{}' failed for '{}': {error}",
-                    fixture.name,
-                    check.name,
-                    shadow.name(),
-                    check.statement.cypher
-                ))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!(
+                        "fixture '{}' check '{}' shadow engine '{}' failed for '{}': {error}",
+                        fixture.name,
+                        check.name,
+                        shadow.name(),
+                        check.statement.cypher
+                    ))
+                })
             })?;
             check
                 .expected_rows
@@ -809,12 +817,14 @@ fn run_shadow_cypher_check(
                     check.tolerance,
                 )
                 .map_err(|error| {
-                    HawDBError::Execution(format!(
+                    HawDBError::or_stop(&error, || {
+                        HawDBError::Execution(format!(
                         "fixture '{}' check '{}' shadow engine '{}' row validation failed: {error}",
                         fixture.name,
                         check.name,
                         shadow.name()
                     ))
+                    })
                 })?;
             check.expected_rows.assert_shadow_matches_primary(
                 &fixture.name,
@@ -841,15 +851,13 @@ fn run_shadow_cypher_check(
                             statement_index: None,
                         },
                     )
-                    .map_err(|error| {
-                    HawDBError::Execution(format!(
+                    .map_err(|error| HawDBError::or_stop(&error, || HawDBError::Execution(format!(
                         "fixture '{}' check '{}' shadow engine '{}' failed effect query '{}': {error}",
                         fixture.name,
                         check.name,
                         shadow.name(),
                         effect_query.cypher
-                    ))
-                })?;
+                    ))))?;
                 let expected = check.effect_expected_rows.as_ref().ok_or_else(|| {
                     HawDBError::Execution(format!(
                         "fixture '{}' check '{}' effect query is missing expected rows",
@@ -905,12 +913,14 @@ fn run_shadow_cypher_session_check(
             },
         )
         .map_err(|error| {
-            HawDBError::Execution(format!(
-                "fixture '{}' check '{}' shadow engine '{}' session failed: {error}",
-                fixture.name,
-                check.name,
-                shadow.name()
-            ))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Execution(format!(
+                    "fixture '{}' check '{}' shadow engine '{}' session failed: {error}",
+                    fixture.name,
+                    check.name,
+                    shadow.name()
+                ))
+            })
         })?;
     let statement_index = check.setup_queries.len();
     let shadow_output = outputs.get(statement_index).ok_or_else(|| {
@@ -1002,10 +1012,12 @@ fn run_cypher_check(
     for setup_query in &check.setup_queries {
         db.query_with_params(&setup_query.cypher, &setup_query.parameters)
             .map_err(|error| {
-                HawDBError::Execution(format!(
-                    "fixture '{}' check '{}' setup failed for '{}': {error}",
-                    fixture.name, check.name, setup_query.cypher
-                ))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!(
+                        "fixture '{}' check '{}' setup failed for '{}': {error}",
+                        fixture.name, check.name, setup_query.cypher
+                    ))
+                })
             })?;
     }
     let output = db.query_with_params(&check.statement.cypher, &check.statement.parameters);
@@ -1084,10 +1096,12 @@ fn run_cypher_session_check(
         session
             .query_with_params(&setup_query.cypher, &setup_query.parameters)
             .map_err(|error| {
-                HawDBError::Execution(format!(
-                    "fixture '{}' check '{}' session setup failed for '{}': {error}",
-                    fixture.name, check.name, setup_query.cypher
-                ))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!(
+                        "fixture '{}' check '{}' session setup failed for '{}': {error}",
+                        fixture.name, check.name, setup_query.cypher
+                    ))
+                })
             })?;
     }
 
@@ -1288,10 +1302,12 @@ fn compare_projected_graph_shadow(
     shadow: &ProjectedGraphShadowOutput,
 ) -> Result<()> {
     assert_projected_graph_matches_fixture(fixture, check, shadow).map_err(|error| {
-        HawDBError::Execution(format!(
+        HawDBError::or_stop(&error, || {
+            HawDBError::Execution(format!(
             "fixture '{}' check '{}' shadow engine '{}' projected graph validation failed: {error}",
             fixture.name, check.name, shadow_engine
         ))
+        })
     })?;
     if !projected_graph_outputs_match(primary, shadow, check.tolerance) {
         return Err(HawDBError::Execution(format!(

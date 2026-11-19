@@ -1434,7 +1434,7 @@ fn checkpoint_vector_task(task_context: Option<&crate::RuntimeTaskContext>) -> R
     task_context.map_or(Ok(()), |task_context| {
         task_context
             .checkpoint()
-            .map_err(|reason| HawDBError::Execution(format!("search vector task {reason}")))
+            .map_err(HawDBError::RuntimeTaskStopped)
     })
 }
 

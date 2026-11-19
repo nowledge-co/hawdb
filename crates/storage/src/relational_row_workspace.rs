@@ -652,6 +652,7 @@ fn map_sparse_live_state_to_demand_error(
         RelationalError::FileDescriptors(error) => {
             RelationalRowPageDemandReadError::FileDescriptors(error)
         }
+        RelationalError::Stopped(reason) => RelationalRowPageDemandReadError::Stopped(reason),
         RelationalError::Admission(message) => RelationalRowPageDemandReadError::Admission(message),
         RelationalError::Durability(message) => {
             RelationalRowPageDemandReadError::Durability(message)
@@ -675,9 +676,7 @@ fn map_sparse_live_snapshot_error(error: RelationalRowPageSnapshotReadError) -> 
         RelationalRowPageSnapshotReadError::Admission(message) => {
             RelationalError::Admission(message)
         }
-        RelationalRowPageSnapshotReadError::Stopped(reason) => {
-            RelationalError::Admission(reason.to_string())
-        }
+        RelationalRowPageSnapshotReadError::Stopped(reason) => RelationalError::Stopped(reason),
         RelationalRowPageSnapshotReadError::MissingTable(table) => RelationalError::Corruption(
             format!("sparse relational live snapshot is missing table {table}"),
         ),

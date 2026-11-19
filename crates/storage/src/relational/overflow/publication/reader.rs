@@ -461,6 +461,7 @@ fn publication_error(error: RelationalError) -> RelationalOverflowPublicationErr
         RelationalError::FileDescriptors(error) => {
             RelationalOverflowPublicationError::FileDescriptors(error)
         }
+        RelationalError::Stopped(reason) => RelationalOverflowPublicationError::Stopped(reason),
         RelationalError::Admission(message) => {
             RelationalOverflowPublicationError::Admission(message)
         }

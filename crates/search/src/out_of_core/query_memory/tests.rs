@@ -173,7 +173,7 @@ fn metadata_construction_refuses_before_large_copy_preserves_existing_owner_and_
     task.cancellation().cancel();
     assert!(matches!(
         Predicates::new(&filters, query),
-        Err(HawDBError::Execution(_))
+        Err(HawDBError::RuntimeTaskStopped(_))
     ));
     assert_eq!(ledger.snapshot().used_bytes, before);
     drop(kept);
@@ -221,7 +221,7 @@ fn metadata_construction_mid_allocation_cancellation_releases_payload_before_adm
         };
         CANCELLATION.with(|slot| *slot.borrow_mut() = None);
         assert!(task.cancellation().is_cancelled());
-        assert!(matches!(result, Err(HawDBError::Execution(_))));
+        assert!(matches!(result, Err(HawDBError::RuntimeTaskStopped(_))));
         drop(result);
         assert_eq!(ledger.snapshot().used_bytes, 0);
         assert_eq!(crate::test_allocation::live(), baseline);

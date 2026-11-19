@@ -1499,6 +1499,7 @@ fn map_state_to_demand_error(error: RelationalError) -> RelationalRowPageDemandR
             RelationalRowPageDemandReadError::FileDescriptors(error)
         }
         RelationalError::Admission(message) => RelationalRowPageDemandReadError::Admission(message),
+        RelationalError::Stopped(reason) => RelationalRowPageDemandReadError::Stopped(reason),
         RelationalError::Durability(message) => {
             RelationalRowPageDemandReadError::Durability(message)
         }
@@ -1515,6 +1516,7 @@ fn map_state_error(error: RelationalError) -> HawDBError {
         RelationalError::UnsupportedFormat(error) => HawDBError::UnsupportedStorageFormat(error),
         RelationalError::FileDescriptors(error) => HawDBError::FileDescriptors(error),
         RelationalError::Admission(message) => HawDBError::Execution(message),
+        RelationalError::Stopped(reason) => HawDBError::RuntimeTaskStopped(reason),
         RelationalError::Durability(message)
         | RelationalError::Schema(message)
         | RelationalError::Constraint(message)

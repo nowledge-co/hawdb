@@ -51,7 +51,7 @@ pub(super) fn record_ids(
         if !covered {
             dependencies
                 .record(VersionKey::GraphNode(NodeId(value)))
-                .map_err(|error| HawDBError::Execution(error.to_string()))?;
+                .map_err(HawDBError::from_execution_error)?;
         }
     }
     Ok(())

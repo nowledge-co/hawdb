@@ -54,7 +54,14 @@ impl std::fmt::Display for ProjectionFeedError {
         }
     }
 }
-impl std::error::Error for ProjectionFeedError {}
+impl std::error::Error for ProjectionFeedError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Source(error) | Self::Callback(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 /// Input is borrowed only for the callback. End identifies the immutable source
 /// boundary; it does not authorize any output or visible watermark.

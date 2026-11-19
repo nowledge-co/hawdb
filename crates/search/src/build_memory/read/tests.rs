@@ -192,7 +192,7 @@ fn cancellation_after_native_open_precedes_large_buffer_allocation() {
             permit: crate::build_memory::read::ReadPermit::Governed(&permit),
         }
         .read_bound(&path, bytes.len() as u64, 0, 4 << 20);
-        assert!(matches!(result, Err(HawDBError::Execution(_))));
+        assert!(matches!(result, Err(HawDBError::RuntimeTaskStopped(_))));
     });
     assert!(
         peak < 16 << 10,
@@ -279,7 +279,7 @@ fn streamed_artifact_uses_bounded_scratch_and_cancellation_refunds_it() {
             },
         )
         .unwrap_err();
-    assert!(matches!(error, HawDBError::Execution(_)));
+    assert!(matches!(error, HawDBError::RuntimeTaskStopped(_)));
     assert!(cancelled_bytes > 0 && cancelled_bytes <= 8192);
     assert_eq!(memory.ledger.snapshot().used_bytes, baseline);
     assert_eq!(governor.snapshot().admitted_memory_bytes, host);
@@ -420,7 +420,14 @@ fn unknown_length_head_limit_and_open_cancellation_precede_large_buffer_allocati
                 .err()
                 .expect("must refuse before buffer allocation")
         });
-        assert!(matches!(&error, HawDBError::Execution(_)), "{error:?}");
+        assert!(
+            if cancelled {
+                matches!(&error, HawDBError::RuntimeTaskStopped(_))
+            } else {
+                matches!(&error, HawDBError::Execution(_))
+            },
+            "{error:?}"
+        );
         assert!(
             error
                 .to_string()

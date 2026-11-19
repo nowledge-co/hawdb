@@ -172,9 +172,11 @@ impl<T: Serialize> PreparedEnvelope<'_, T> {
             .map(|memory| memory.retained.reserve(length))
             .transpose()?;
         let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(length)
-            .map_err(|error| HawDBError::Storage(format!("{name} allocation failed: {error}")))?;
+        bytes.try_reserve_exact(length).map_err(|error| {
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!("{name} allocation failed: {error}"))
+            })
+        })?;
         // Both passes borrow the same immutable body. The fixed output boundary
         // also rejects serializers that change their length after preparation.
         if bytes.capacity() > length {
@@ -390,7 +392,10 @@ mod tests {
         }
         let task = RuntimeTaskContext::default();
         let error = checksum_with_context(&CancelOnSerialize(&task), Some(&task)).unwrap_err();
-        assert!(matches!(error, HawDBError::Execution(_)), "{error:?}");
+        assert!(
+            matches!(error, HawDBError::RuntimeTaskStopped(_)),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -428,7 +433,7 @@ mod tests {
             let error =
                 encode_with_context(&body, 1 << 20, &memory, &task, "test manifest").unwrap_err();
             assert!(
-                matches!(error, HawDBError::Execution(_)),
+                matches!(error, HawDBError::RuntimeTaskStopped(_)),
                 "pass {cancel_at}: {error:?}"
             );
             assert_eq!(body.pass.get(), cancel_at);
@@ -443,7 +448,10 @@ mod tests {
         };
         let prepared = prepare(&body, 1 << 20, Some(&task), "test manifest").unwrap();
         let error = prepared.write_to(&mut Vec::new(), &task).unwrap_err();
-        assert!(matches!(error, HawDBError::Execution(_)), "{error:?}");
+        assert!(
+            matches!(error, HawDBError::RuntimeTaskStopped(_)),
+            "{error:?}"
+        );
         assert_eq!(body.pass.get(), 3);
     }
 

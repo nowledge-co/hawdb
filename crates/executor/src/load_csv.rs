@@ -89,10 +89,12 @@ impl CsvImportPolicy {
     /// import root or source that cannot be accessed.
     pub fn resolve(&self, location: &str) -> Result<PathBuf> {
         let root = std::fs::canonicalize(&self.root).map_err(|error| {
-            HawDBError::Execution(format!(
-                "LOAD CSV import root '{}' cannot be resolved: {error}",
-                self.root.display()
-            ))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Execution(format!(
+                    "LOAD CSV import root '{}' cannot be resolved: {error}",
+                    self.root.display()
+                ))
+            })
         })?;
         if !root.is_dir() {
             return Err(HawDBError::Execution(format!(
@@ -133,7 +135,9 @@ impl CsvImportPolicy {
         let path = self.resolve(location)?;
         let inspect = |metadata: std::io::Result<std::fs::Metadata>| {
             let metadata = metadata.map_err(|error| {
-                HawDBError::Execution(format!("LOAD CSV cannot inspect '{location}': {error}"))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!("LOAD CSV cannot inspect '{location}': {error}"))
+                })
             })?;
             if !metadata.is_file() {
                 return Err(HawDBError::Execution(format!(
@@ -151,7 +155,9 @@ impl CsvImportPolicy {
         };
         inspect(std::fs::metadata(&path))?;
         let file = File::open(&path).map_err(|error| {
-            HawDBError::Execution(format!("LOAD CSV cannot open '{location}': {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Execution(format!("LOAD CSV cannot open '{location}': {error}"))
+            })
         })?;
         inspect(file.metadata())?;
         CsvRows::new(file, source, self.limits)

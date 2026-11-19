@@ -933,6 +933,9 @@ pub(super) fn relational_read_error(error: RelationalError) -> RelationalIndexSh
         RelationalError::FileDescriptors(error) => {
             RelationalIndexShadowError::FileDescriptors(error)
         }
+        RelationalError::Stopped(reason) => {
+            RelationalIndexShadowError::Admission(format!("runtime task stopped: {reason}"))
+        }
         RelationalError::Admission(message) => RelationalIndexShadowError::Admission(message),
         RelationalError::Durability(message) => RelationalIndexShadowError::Durability(message),
         RelationalError::Corruption(message)

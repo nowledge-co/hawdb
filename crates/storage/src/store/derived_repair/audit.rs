@@ -516,7 +516,9 @@ fn write_audit_record(path: &Path, record: &DerivedRepairAuditRecord) -> Result<
     fs::create_dir_all(parent)?;
     sync_parent_dir(parent)?;
     let encoded = serde_json::to_vec_pretty(record).map_err(|error| {
-        HawDBError::Storage(format!("failed to encode derived repair audit: {error}"))
+        HawDBError::or_stop(&error, || {
+            HawDBError::Storage(format!("failed to encode derived repair audit: {error}"))
+        })
     })?;
     let temporary = path.with_extension("json.tmp");
     {
@@ -540,7 +542,9 @@ fn load_audit_record(path: &Path) -> Result<DerivedRepairAuditRecord> {
     }
     let record =
         serde_json::from_slice::<DerivedRepairAuditRecord>(&fs::read(path)?).map_err(|error| {
-            HawDBError::Storage(format!("invalid derived repair audit record: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!("invalid derived repair audit record: {error}"))
+            })
         })?;
     if record.protocol != DERIVED_ARTIFACT_REPAIR_PROTOCOL
         || record.plan.protocol != DERIVED_ARTIFACT_REPAIR_PROTOCOL

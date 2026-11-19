@@ -1497,10 +1497,11 @@ fn parse_optional_sha256(input: &str, name: &str) -> Result<Option<Sha256Digest>
     if input == "none" {
         Ok(None)
     } else {
-        input
-            .parse()
-            .map(Some)
-            .map_err(|error| HawDBError::Storage(format!("invalid {name}: {error}")))
+        input.parse().map(Some).map_err(|error| {
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!("invalid {name}: {error}"))
+            })
+        })
     }
 }
 

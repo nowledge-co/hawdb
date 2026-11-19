@@ -466,18 +466,27 @@ impl StatsRecord {
 }
 
 fn parse_u32_field(raw: &str, name: &str) -> Result<u32> {
-    raw.parse::<u32>()
-        .map_err(|error| HawDBError::Storage(format!("invalid statistics {name}: {error}")))
+    raw.parse::<u32>().map_err(|error| {
+        HawDBError::or_stop(&error, || {
+            HawDBError::Storage(format!("invalid statistics {name}: {error}"))
+        })
+    })
 }
 
 fn parse_u64_field(raw: &str, name: &str) -> Result<u64> {
-    raw.parse::<u64>()
-        .map_err(|error| HawDBError::Storage(format!("invalid statistics {name}: {error}")))
+    raw.parse::<u64>().map_err(|error| {
+        HawDBError::or_stop(&error, || {
+            HawDBError::Storage(format!("invalid statistics {name}: {error}"))
+        })
+    })
 }
 
 fn parse_usize_field(raw: &str, name: &str) -> Result<usize> {
-    raw.parse::<usize>()
-        .map_err(|error| HawDBError::Storage(format!("invalid statistics {name}: {error}")))
+    raw.parse::<usize>().map_err(|error| {
+        HawDBError::or_stop(&error, || {
+            HawDBError::Storage(format!("invalid statistics {name}: {error}"))
+        })
+    })
 }
 
 // Refresh keys are transient and outer spill framing already escapes them. A
@@ -904,9 +913,11 @@ impl<'a> StatsRunWriter<'a> {
             .write(true)
             .open(&path)
             .map_err(|error| {
-                HawDBError::Storage(format!(
-                    "failed to create optimizer statistics spill run: {error}"
-                ))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Storage(format!(
+                        "failed to create optimizer statistics spill run: {error}"
+                    ))
+                })
             })?;
         let mut output = BufWriter::new(file);
         let mut run_bytes = 0u64;
@@ -921,20 +932,26 @@ impl<'a> StatsRunWriter<'a> {
                 )));
             }
             output.write_all(encoded.as_bytes()).map_err(|error| {
-                HawDBError::Storage(format!(
-                    "failed to write optimizer statistics spill run: {error}"
-                ))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Storage(format!(
+                        "failed to write optimizer statistics spill run: {error}"
+                    ))
+                })
             })?;
             output.write_all(b"\n").map_err(|error| {
-                HawDBError::Storage(format!(
-                    "failed to write optimizer statistics spill run: {error}"
-                ))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Storage(format!(
+                        "failed to write optimizer statistics spill run: {error}"
+                    ))
+                })
             })?;
         }
         output.flush().map_err(|error| {
-            HawDBError::Storage(format!(
-                "failed to flush optimizer statistics spill run: {error}"
-            ))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!(
+                    "failed to flush optimizer statistics spill run: {error}"
+                ))
+            })
         })?;
         self.spilled_bytes = self.spilled_bytes.saturating_add(run_bytes);
         self.runs.push(path);
@@ -951,9 +968,11 @@ impl<'a> StatsRunWriter<'a> {
         let mut readers = Vec::with_capacity(self.runs.len());
         for path in &self.runs {
             let file = File::open(path).map_err(|error| {
-                HawDBError::Storage(format!(
-                    "failed to open optimizer statistics spill run: {error}"
-                ))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Storage(format!(
+                        "failed to open optimizer statistics spill run: {error}"
+                    ))
+                })
             })?;
             readers.push(BufReader::new(file).lines());
         }
@@ -1026,9 +1045,11 @@ fn read_next_record(lines: &mut Lines<BufReader<File>>) -> Result<Option<StatsRe
         return Ok(None);
     };
     let line = line.map_err(|error| {
-        HawDBError::Storage(format!(
-            "failed to read optimizer statistics spill run: {error}"
-        ))
+        HawDBError::or_stop(&error, || {
+            HawDBError::Storage(format!(
+                "failed to read optimizer statistics spill run: {error}"
+            ))
+        })
     })?;
     StatsRecord::decode(&line).map(Some)
 }
@@ -1521,9 +1542,11 @@ pub struct RefreshSpillDirectory {
 impl RefreshSpillDirectory {
     pub fn create(root: &Path) -> Result<Self> {
         fs::create_dir_all(root).map_err(|error| {
-            HawDBError::Storage(format!(
-                "failed to create optimizer statistics spill root: {error}"
-            ))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!(
+                    "failed to create optimizer statistics spill root: {error}"
+                ))
+            })
         })?;
         let id = NEXT_REFRESH_ID.fetch_add(1, AtomicOrdering::Relaxed);
         let path = root.join(format!(
@@ -1531,9 +1554,11 @@ impl RefreshSpillDirectory {
             std::process::id()
         ));
         fs::create_dir(&path).map_err(|error| {
-            HawDBError::Storage(format!(
-                "failed to create optimizer statistics spill directory: {error}"
-            ))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!(
+                    "failed to create optimizer statistics spill directory: {error}"
+                ))
+            })
         })?;
         Ok(Self { path })
     }
