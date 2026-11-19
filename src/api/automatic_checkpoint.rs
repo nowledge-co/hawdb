@@ -484,19 +484,7 @@ impl Control {
         let mut notified_owner = false;
         let mut preparation_deadline = None;
         let mut capacity_deadline = None;
-        let mut capacity_checkpoint_count = state.report.completed_checkpoints;
-        let mut capacity_work_progress = self.work_progress.load(Ordering::Relaxed);
         loop {
-            let work_progress = self.work_progress.load(Ordering::Relaxed);
-            if state.report.completed_checkpoints != capacity_checkpoint_count
-                || work_progress != capacity_work_progress
-            {
-                // Completed builder work or publication is actual progress.
-                // Retries and notifications alone cannot renew the deadline.
-                capacity_checkpoint_count = state.report.completed_checkpoints;
-                capacity_work_progress = work_progress;
-                capacity_deadline = None;
-            }
             // Releasing old COW owners and discarding abandoned preparations
             // run off the writer gate while still retaining admission. Only
             // writers with room may bypass that resource cleanup.
@@ -514,6 +502,12 @@ impl Control {
                 && (preparation_needs_capacity(&state)
                     || (state.operation_rearm_at.is_some() && needs_headroom(&state)));
             let capacity_remaining = if waits_for_capacity {
+                // This is a total frontend wait bound, not a liveness timer.
+                // A large preparation can advance its progress counter for
+                // minutes without freeing any serving capacity. Renewing the
+                // deadline on that progress would fence the caller for the
+                // whole preparation (#1637). Publication that actually frees
+                // capacity changes the predicate and lets the loop continue.
                 let deadline = capacity_deadline
                     .get_or_insert_with(|| self.frontend_now() + PREPARATION_CAPACITY_WAIT_LIMIT);
                 let remaining = deadline.saturating_duration_since(self.frontend_now());
