@@ -1691,8 +1691,10 @@ only the private test clock for frontend capacity/backoff policy, so compiler
 contention cannot consume a deliberately paused owner's production deadline.
 Synthetic Preparing/Discarding/Releasing capacity and preparation-backoff cases
 advance to one nanosecond before and exactly at the original deadlines, with
-repeated notifications proving that wakes do not renew a deadline. Production
-uses `Instant::now()` and keeps the 10 ms backoff and 5 s capacity policy.
+repeated notifications and synthetic builder/checkpoint progress proving that
+neither wakes nor progress renew a caller's total deadline while capacity stays
+critical. Production uses `Instant::now()` and keeps the 10 ms backoff and 5 s
+capacity policy.
 Replay with `cargo test --locked -p hawdb --lib
 api::automatic_checkpoint::tests::headroom`; also check
 `--no-default-features --features background-maintenance`. The ordinary minimal
