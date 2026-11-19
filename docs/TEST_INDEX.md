@@ -3087,7 +3087,7 @@ owner runs `embedded_store::tests::write_task_context_tests`. It checks:
 Every stop is the typed `HawDBError::RuntimeTaskStopped`. The binding owners pin
 the mapping:
 - `bindings/ffi` `error_tests::runtime_task_stop_is_delivered_as_its_own_kind`;
-- `bindings/python` `errors::tests::runtime_task_stop_is_an_execution_error_with_its_reason`.
+- `bindings/python` `errors::tests::runtime_task_stop_is_a_task_stopped_error_with_its_reason`.
 
 No lane, feature matrix or timeout changes. Local replay:
 `cargo test --locked -p hawdb --lib write_task_context`.

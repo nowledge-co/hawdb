@@ -186,7 +186,8 @@ resource budget stops the work with the typed
 `HawDBError::RuntimeTaskStopped(RuntimeCancellationReason)`. It displays as
 `execution error: runtime task stopped: <reason>`, where the reason is
 `cancelled`, `deadline_exceeded` or `resource_exhausted`. Python raises
-`ExecutionError` with `kind="runtime_task_stopped"` and `reason`. The C ABI kind
+`hawdb.exceptions.TaskStoppedError` (the same class as other stopped tasks) with
+`kind="runtime_task_stopped"` and `reason`. The C ABI kind
 is `runtime_task_stopped`. The error is not a storage failure, and it never
 poisons the handle.
 

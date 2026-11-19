@@ -304,7 +304,8 @@ pub fn format_hawdb_error(error: &HawDBError) -> PyErr {
         HawDBError::RuntimeTaskStopped(reason) => Python::attach(|py| {
             // The caller's deadline or cancellation stopped the work before
             // it committed: nothing was written and the handle stays usable.
-            let exception = ExecutionError::new_err(message);
+            // A stop is a stop whichever layer raised it.
+            let exception = TaskStoppedError::new_err(message);
             let value = exception.value(py);
             let attributes = (|| -> PyResult<()> {
                 value.setattr("kind", "runtime_task_stopped")?;
@@ -848,13 +849,14 @@ mod tests {
     }
 
     #[test]
-    fn runtime_task_stop_is_an_execution_error_with_its_reason() {
+    fn runtime_task_stop_is_a_task_stopped_error_with_its_reason() {
         Python::initialize();
         Python::attach(|py| {
             let error =
                 HawDBError::RuntimeTaskStopped(hawdb::RuntimeCancellationReason::DeadlineExceeded);
             let exception = format_hawdb_error(&error);
-            assert!(exception.is_instance_of::<ExecutionError>(py));
+            assert!(exception.is_instance_of::<TaskStoppedError>(py));
+            assert!(!exception.is_instance_of::<ExecutionError>(py));
             assert!(!exception.is_instance_of::<StorageError>(py));
             let value = exception.value(py);
             let text = |name: &str| value.getattr(name).unwrap().extract::<String>().unwrap();
