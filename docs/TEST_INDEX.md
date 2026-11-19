@@ -3061,6 +3061,12 @@ root general owner, which runs `api::tests::graph_change_epoch`. It checks:
   `TransactionConflict` that writes nothing, and a retry succeeds;
 - an unguarded transaction is unaffected, and a transaction's own graph writes
   do not count;
+- append-only commits and an initial import without graph rows (import marker
+  and relational rows only) leave it unchanged, and a reopen after that import
+  never lowers it;
+- after a forced group-commit durability barrier failure, the database and
+  transaction accessors return the storage error, and a reopen reports it
+  again;
 - `EmbeddedStoreHandle` reports it in `runtime_status` and production status,
   supports compare-and-publish in `with_transaction`, and never regresses it
   across a reopen.

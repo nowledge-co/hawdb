@@ -176,7 +176,7 @@ fn a_transaction_reads_it_and_commits_only_while_it_is_current() {
 
     // A concurrent relational-only commit does not disturb compare-and-publish.
     let mut transaction = concurrent.begin_transaction(options).unwrap();
-    assert_eq!(transaction.graph_change_commit_epoch(), graph);
+    assert_eq!(transaction.graph_change_commit_epoch().unwrap(), graph);
     concurrent
         .query_sql("INSERT INTO control (id, note) VALUES (100, 'other')")
         .unwrap();
@@ -187,7 +187,7 @@ fn a_transaction_reads_it_and_commits_only_while_it_is_current() {
     // A concurrent graph commit refuses it, typed and retryable, and nothing
     // the transaction staged is written.
     let mut transaction = concurrent.begin_transaction(options).unwrap();
-    assert_eq!(transaction.graph_change_commit_epoch(), graph);
+    assert_eq!(transaction.graph_change_commit_epoch().unwrap(), graph);
     concurrent
         .query("MATCH (m:Memory {id: 'a'}) SET m.title = 'changed'")
         .unwrap();
@@ -210,7 +210,10 @@ fn a_transaction_reads_it_and_commits_only_while_it_is_current() {
 
     // A retry sees the new epoch and publishes.
     let mut transaction = concurrent.begin_transaction(options).unwrap();
-    assert_eq!(transaction.graph_change_commit_epoch(), *committed_epoch);
+    assert_eq!(
+        transaction.graph_change_commit_epoch().unwrap(),
+        *committed_epoch
+    );
     publish(&mut transaction, 2);
     transaction.commit().unwrap();
     assert_eq!(published(), Value::Int(2));
@@ -232,7 +235,7 @@ fn a_database_transaction_guard_ignores_its_own_graph_writes() {
     let mut db = Database::new();
     let (_, graph) = seeded(&mut db);
     let mut transaction = db.begin_transaction().unwrap();
-    assert_eq!(transaction.graph_change_commit_epoch(), graph);
+    assert_eq!(transaction.graph_change_commit_epoch().unwrap(), graph);
     transaction
         .query_sql("INSERT INTO control (id, note) VALUES (1, 'published')")
         .unwrap();
@@ -275,7 +278,7 @@ fn embedded_status_reports_it_and_with_transaction_can_compare_and_publish() {
         // control row commits only if the graph is still at `graph`.
         handle
             .with_transaction(|transaction| {
-                assert_eq!(transaction.graph_change_commit_epoch(), graph);
+                assert_eq!(transaction.graph_change_commit_epoch().unwrap(), graph);
                 transaction.query_sql("INSERT INTO control (id, note) VALUES (1, 'published')")
             })
             .unwrap();
@@ -292,5 +295,118 @@ fn embedded_status_reports_it_and_with_transaction_can_compare_and_publish() {
         "{reopened} {graph} {commit}"
     );
     drop(handle);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn append_and_initial_import_marker_commits_do_not_advance_it() {
+    let path = unique_test_dir("graph_change_epoch_marker");
+    // An append-only commit.
+    let mut db = Database::new();
+    let (_, graph) = seeded(&mut db);
+    db.query_sql(
+        "CREATE TABLE events (\
+           stream_id TEXT NOT NULL, \
+           sequence BIGINT NOT NULL, \
+           payload TEXT NOT NULL\
+         ) WITH (\
+           storage_mode = 'strict_append', \
+           partition_key = 'stream_id', \
+           order_key = 'sequence', \
+           generated_order = 'commit_sequence'\
+         )",
+    )
+    .unwrap();
+    let before = db.commit_epoch().unwrap();
+    db.append_transaction(crate::AppendTransaction {
+        writes: vec![crate::AppendWrite::AppendGenerated {
+            table: "events".to_string(),
+            rows: vec![crate::AppendGeneratedRow::new(vec![
+                crate::RelationalValue::Text("thread-1".to_string()),
+                crate::RelationalValue::Text("appended".to_string()),
+            ])],
+        }],
+    })
+    .unwrap();
+    assert!(db.commit_epoch().unwrap() > before);
+    assert_eq!(db.graph_change_commit_epoch().unwrap(), graph);
+
+    // An initial import without graph rows commits only the import marker
+    // and relational rows. The live value must match what WAL replay
+    // derives, so a clean reopen never moves it backwards.
+    let mut source = Database::new();
+    source
+        .query_sql("CREATE TABLE control (id BIGINT PRIMARY KEY, note TEXT NOT NULL)")
+        .unwrap();
+    relational_write(&mut source, 1);
+    let export = source.prepare_hawdb_lightning_bootstrap_export().unwrap();
+    let imported = {
+        let mut target = Database::open(&path).unwrap();
+        let (before_commit, before_graph) = epochs(&target);
+        let report = target
+            .hawdb_lightning_initial_import_apply(
+                &export.graph_stream.encoded,
+                &export.relational_stream.encoded,
+                &export.manifest,
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(report.applied);
+        let (commit, graph) = epochs(&target);
+        assert!(commit > before_commit);
+        assert_eq!(
+            graph, before_graph,
+            "an import without graph rows changes no graph"
+        );
+        graph
+    };
+    let target = Database::open(&path).unwrap();
+    assert!(target.graph_change_commit_epoch().unwrap() >= imported);
+    drop(target);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn a_poisoned_database_refuses_to_report_it() {
+    use std::num::{NonZeroU64, NonZeroUsize};
+    let path = unique_test_dir("graph_change_epoch_poisoned");
+    let mut database = Database::open(&path).unwrap();
+    seeded(&mut database);
+    let group_commit = crate::WalGroupCommitConfig::benchmark_candidate(
+        NonZeroUsize::new(1).unwrap(),
+        NonZeroU64::new(1024 * 1024).unwrap(),
+        std::time::Duration::ZERO,
+    )
+    .unwrap();
+    let db = ConcurrentDatabase::new_with_wal_group_commit(database, group_commit);
+    let mut transaction = db
+        .begin_transaction(ConcurrentTransactionOptions::default())
+        .unwrap();
+    transaction
+        .query("MATCH (m:Memory {id: 'a'}) SET m.title = 'uncertain'")
+        .unwrap();
+    crate::store::set_wal_group_sync_failpoint(true);
+    let error = transaction.commit().unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("WAL group durability barrier failed"),
+        "{error}"
+    );
+    // The epoch of the uncertain commit cannot be relied on: every accessor
+    // reports the storage error instead.
+    let refused = db.graph_change_commit_epoch().unwrap_err();
+    assert!(
+        refused.to_string().contains("close and reopen"),
+        "{refused}"
+    );
+    if let Ok(mut transaction) = db.begin_transaction(ConcurrentTransactionOptions::default()) {
+        assert!(transaction.graph_change_commit_epoch().is_err());
+    }
+    drop(db);
+    let reopened = Database::open(&path).unwrap();
+    assert!(reopened.graph_change_commit_epoch().is_ok());
+    drop(reopened);
     std::fs::remove_dir_all(path).unwrap();
 }

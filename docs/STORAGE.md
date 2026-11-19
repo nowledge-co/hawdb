@@ -1741,6 +1741,18 @@ graph change. WAL replay then advances it exactly for each graph-changing
 commit. It therefore never regresses, but a reopen may advance it once. A
 compare-and-publish that spans a restart retries once.
 
+Never carry a baseline across a reopen. Under relaxed durability
+(`SyncOnCheckpoint`), a crash can lose acknowledged commits. The next commits
+then reuse their epochs, so one epoch value can describe different graph
+content before and after the crash. A host must discard any baseline or
+comparison value captured before a reopen and capture it again.
+
+A poisoned handle refuses to report the value and returns the storage error
+instead. For example, a failed group-commit durability barrier poisons it:
+the epoch of an uncertain commit cannot be relied on. This applies to every
+accessor, including the transaction accessors and `runtime_status`. Reopen
+the database to read it again.
+
 `EmbeddedRuntimeStatus` reports it as `graph_change_commit_epoch`. The
 production status and operations readiness reports show it as
 `graph.change_commit_epoch`.

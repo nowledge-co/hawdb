@@ -756,9 +756,12 @@ impl ConcurrentDatabaseTransaction {
     /// transaction's commit fails with the retryable
     /// `HawDBError::TransactionConflict` (key `graph_change_commit_epoch`) and
     /// writes nothing. Relational-only commits never cause that refusal. The
-    /// transaction's own graph writes do not count.
-    pub fn graph_change_commit_epoch(&mut self) -> u64 {
-        self.state.guard_graph_change_commit_epoch()
+    /// transaction's own graph writes do not count. Refused with the storage
+    /// error if the database is poisoned, for example after a failed group
+    /// commit durability barrier.
+    pub fn graph_change_commit_epoch(&mut self) -> Result<u64> {
+        self.inner.commits.lock()?.graph_change_commit_epoch()?;
+        Ok(self.state.guard_graph_change_commit_epoch())
     }
 
     pub fn mode(&self) -> ConcurrentTransactionMode {

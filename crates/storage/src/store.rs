@@ -984,6 +984,10 @@ pub struct GraphStore {
     /// Commit epoch of the newest commit that changed graph data or graph
     /// schema; relational-only and append-only commits leave it unchanged.
     graph_change_commit_epoch: u64,
+    /// Whether the WAL record most recently appended for a pending commit
+    /// changes the graph. `finish_non_relational_commit` consumes it so live
+    /// commits classify exactly like WAL replay.
+    pending_commit_changes_graph: bool,
     // A maintenance capture's monotonic floor for any post-snapshot debt.
     // Live writers normally have no capture clock; handoff restores that fact.
     checkpoint_capture_started: Option<std::time::Instant>,
@@ -2014,6 +2018,7 @@ impl GraphStore {
             next_rel_id: 0,
             commit_epoch: 0,
             graph_change_commit_epoch: 0,
+            pending_commit_changes_graph: false,
             checkpoint_capture_started: None,
             version_index: hawdb_storage::version::VersionIndex::default(),
             version_snapshot_pins: Default::default(),
@@ -2223,7 +2228,19 @@ impl GraphStore {
     /// advance it. It is independent of the search projection change log, so
     /// pruning never regresses it. It is not persisted: recovery starts it at
     /// the checkpoint's commit epoch and WAL replay advances it exactly.
-    pub fn graph_change_commit_epoch(&self) -> u64 {
+    ///
+    /// Refused with the storage error once this store is poisoned (for
+    /// example after a failed durability barrier), because the epoch of an
+    /// uncertain commit cannot be relied on.
+    pub fn graph_change_commit_epoch(&self) -> Result<u64> {
+        ensure_graph_read_flags_usable(&self.integrity_poisoned, &self.post_wal_apply_poisoned)?;
+        Ok(self.graph_change_commit_epoch)
+    }
+
+    /// The raw value, for capturing a transaction's base snapshot; readers
+    /// that report it use [`Self::graph_change_commit_epoch`].
+    #[doc(hidden)]
+    pub fn graph_change_commit_epoch_unchecked(&self) -> u64 {
         self.graph_change_commit_epoch
     }
 
@@ -2519,6 +2536,7 @@ impl GraphStore {
             next_rel_id: self.next_rel_id,
             commit_epoch: self.commit_epoch,
             graph_change_commit_epoch: self.graph_change_commit_epoch,
+            pending_commit_changes_graph: self.pending_commit_changes_graph,
             checkpoint_capture_started: self.checkpoint_capture_started,
             version_index: self.version_index.clone(),
             version_snapshot_pins: self.version_snapshot_pins.clone(),

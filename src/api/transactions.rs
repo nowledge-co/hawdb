@@ -111,7 +111,7 @@ impl DatabaseTransactionState {
                 .begin_authoritative_relational_transaction_rows()
                 .map_err(|error| error.to_string()),
             sql_clock: hawdb_core::temporal::statement_now(),
-            base_graph_change_commit_epoch: runtime.store.graph_change_commit_epoch(),
+            base_graph_change_commit_epoch: runtime.store.graph_change_commit_epoch_unchecked(),
             graph_change_guard: None,
         })
     }
@@ -1670,8 +1670,10 @@ impl DatabaseTransaction<'_> {
     /// is published after the base snapshot, this transaction's commit fails
     /// with `HawDBError::TransactionConflict` (key `graph_change_commit_epoch`)
     /// and writes nothing. The transaction's own graph writes do not count.
-    pub fn graph_change_commit_epoch(&mut self) -> u64 {
-        self.state.guard_graph_change_commit_epoch()
+    /// Refused with the storage error if the database is poisoned.
+    pub fn graph_change_commit_epoch(&mut self) -> Result<u64> {
+        self.db.graph_change_commit_epoch()?;
+        Ok(self.state.guard_graph_change_commit_epoch())
     }
 
     pub(crate) fn apply_session_config(&mut self, config: SessionConfig) {

@@ -2655,6 +2655,7 @@ impl GraphStore {
     }
 
     pub(super) fn append_durable_wal_single(&mut self, op: WalOp) -> Result<()> {
+        self.pending_commit_changes_graph = op.changes_graph();
         let rebuild =
             search_projection_capture::projection_wal_requires_rebuild(std::slice::from_ref(&op));
         let result = (|| {
@@ -2688,6 +2689,7 @@ impl GraphStore {
         ops: &[WalOp],
         prepared: Option<crate::wal::binary::PreparedWalBatch>,
     ) -> Result<()> {
+        self.pending_commit_changes_graph = ops.iter().any(WalOp::changes_graph);
         let rebuild = search_projection_capture::projection_wal_requires_rebuild(ops);
         let result = (|| {
             if self.durable.is_none() {

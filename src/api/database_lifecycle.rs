@@ -91,8 +91,14 @@ impl Database {
     /// projection change log. It is not persisted: on open it starts at the
     /// checkpoint's commit epoch (an upper bound of the last graph change) and
     /// WAL replay advances it exactly, so a reopen may advance it once.
+    ///
+    /// Discard any baseline taken before a reopen: under relaxed durability
+    /// (`SyncOnCheckpoint`) a crash can drop acknowledged commits, so later
+    /// commits reuse those epochs for different graph content. A poisoned
+    /// database (for example after a failed durability barrier) returns the
+    /// storage error instead of a value.
     pub fn graph_change_commit_epoch(&self) -> Result<u64> {
-        Ok(self.runtime.get()?.store.graph_change_commit_epoch())
+        self.runtime.get()?.store.graph_change_commit_epoch()
     }
 
     pub fn published_read_view(&self) -> Result<PublishedReadView> {
