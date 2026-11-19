@@ -2220,8 +2220,9 @@ impl GraphStore {
     /// relationships, their properties, or graph schema (tables, labels,
     /// relationship types, property definitions, indexes, constraints and
     /// projected graphs). Relational-only and append-only commits do not
-    /// advance it. It survives checkpoints and reopen, and it is independent
-    /// of the search projection change log, so pruning never regresses it.
+    /// advance it. It is independent of the search projection change log, so
+    /// pruning never regresses it. It is not persisted: recovery starts it at
+    /// the checkpoint's commit epoch and WAL replay advances it exactly.
     pub fn graph_change_commit_epoch(&self) -> u64 {
         self.graph_change_commit_epoch
     }

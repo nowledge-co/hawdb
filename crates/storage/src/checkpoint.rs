@@ -48,11 +48,6 @@ pub const CHECKPOINT_HEADER_V1: &str = "HAWDB_CHECKPOINT_V1";
 pub struct CheckpointImage<'a> {
     pub catalog: &'a Catalog,
     pub commit_epoch: u64,
-    /// Newest commit epoch that changed graph data or schema. Encoded only
-    /// when older than `commit_epoch`; an absent line means "equal to
-    /// `commit_epoch`", which is also the conservative reading of checkpoints
-    /// written before this field existed.
-    pub graph_change_commit_epoch: u64,
     pub next_node_id: u64,
     pub next_rel_id: u64,
     pub search_projection_change_log_start_epoch: u64,
@@ -209,12 +204,6 @@ pub(crate) fn encode_checkpoint_body_with_changes<'a>(
     body.push_str(&format!("version\t{STORAGE_VERSION}\n"));
     body.push_str(&format!("generation\t{generation}\n"));
     body.push_str(&format!("commit_epoch\t{}\n", image.commit_epoch));
-    if image.graph_change_commit_epoch != image.commit_epoch {
-        body.push_str(&format!(
-            "graph_change_commit_epoch\t{}\n",
-            image.graph_change_commit_epoch
-        ));
-    }
     if let Some(relational) = image.relational_checkpoint {
         body.push_str(&format!(
             "relational_checkpoint_encoded_len\t{}\n",
@@ -721,7 +710,6 @@ pub fn decode_search_projection_relational_primary_key_changes(
 pub struct DecodedCheckpoint {
     pub generation: Option<u64>,
     pub commit_epoch: Option<u64>,
-    pub graph_change_commit_epoch: Option<u64>,
     pub next_node_id: u64,
     pub next_rel_id: u64,
     pub search_projection_change_log_start_epoch: Option<u64>,
@@ -807,15 +795,6 @@ pub fn parse_checkpoint(
             }
             ["commit_epoch", raw] => {
                 state.commit_epoch = Some(parse_u64(raw, "commit_epoch")?);
-            }
-            ["graph_change_commit_epoch", raw] => {
-                if state.graph_change_commit_epoch.is_some() {
-                    return Err(HawDBError::Storage(
-                        "checkpoint contains duplicate graph change commit epoch".to_string(),
-                    ));
-                }
-                state.graph_change_commit_epoch =
-                    Some(parse_u64(raw, "graph change commit epoch")?);
             }
             ["relational_checkpoint_encoded_len", _]
             | ["relational_checkpoint_encoded_checksum", _]
@@ -1335,48 +1314,6 @@ mod shared_change_tests {
     use std::sync::Arc;
 
     #[test]
-    fn graph_change_commit_epoch_is_encoded_only_when_older_than_the_commit_epoch() {
-        let catalog = Catalog::default();
-        let statistics = GraphStatistics::default();
-        let projected_graphs = BTreeMap::new();
-        let encode = |graph_change_commit_epoch| {
-            encode_checkpoint_body(
-                &CheckpointImage {
-                    catalog: &catalog,
-                    commit_epoch: 9,
-                    graph_change_commit_epoch,
-                    next_node_id: 0,
-                    next_rel_id: 0,
-                    search_projection_change_log_start_epoch: 0,
-                    search_projection_graph_changes: &[],
-                    statistics: &statistics,
-                    projected_graphs: &projected_graphs,
-                    initial_import_source_fingerprint: None,
-                    search_projection_database_identity: None,
-                    relational_checkpoint: None,
-                },
-                0,
-            )
-            .unwrap()
-        };
-        let decode = |body: &str| {
-            let mut decoded = DecodedCheckpoint::default();
-            parse_checkpoint(body, &mut Catalog::default(), &mut decoded).map(|()| decoded)
-        };
-        // Equal to the commit epoch: no line, so the checkpoint is unchanged
-        // for readers that predate the field.
-        let current = encode(9);
-        assert!(!current.contains("graph_change_commit_epoch"));
-        assert_eq!(decode(&current).unwrap().graph_change_commit_epoch, None);
-        // Older: recorded and decoded exactly.
-        let older = encode(4);
-        assert!(older.contains("graph_change_commit_epoch\t4\n"));
-        assert_eq!(decode(&older).unwrap().graph_change_commit_epoch, Some(4));
-        let duplicate = format!("{older}graph_change_commit_epoch\t4\n");
-        assert!(decode(&duplicate).is_err());
-    }
-
-    #[test]
     fn bounded_path_coverage_roundtrips_and_legacy_absence_remains_unknown() {
         let statistics = GraphStatistics {
             advanced_statistics_complete: true,
@@ -1389,7 +1326,6 @@ mod shared_change_tests {
         let image = CheckpointImage {
             catalog: &catalog,
             commit_epoch: 0,
-            graph_change_commit_epoch: 0,
             next_node_id: 0,
             next_rel_id: 0,
             search_projection_change_log_start_epoch: 0,
@@ -1467,7 +1403,6 @@ mod shared_change_tests {
         let image = CheckpointImage {
             catalog: &catalog,
             commit_epoch: 2,
-            graph_change_commit_epoch: 2,
             next_node_id: 3,
             next_rel_id: 0,
             search_projection_change_log_start_epoch: 0,

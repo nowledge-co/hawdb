@@ -32,8 +32,8 @@ pub struct EmbeddedRuntimeStatus {
     pub protocol: String,
     pub graph_commit_epoch: u64,
     /// Commit epoch of the newest commit that changed graph data or schema;
-    /// relational-only commits do not advance it (#1840). Monotonic across
-    /// reopen and change-log pruning, and present without a search projection.
+    /// relational-only commits do not advance it (#1840). Never regresses
+    /// (a reopen may advance it once), and present without a search projection.
     pub graph_change_commit_epoch: u64,
     pub changefeed: SearchProjectionChangefeedStatus,
     pub projection_freshness: Option<SearchProjectionFreshness>,

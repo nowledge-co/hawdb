@@ -87,10 +87,10 @@ impl Database {
     /// and graph DDL (node/relationship tables, labels, relationship types,
     /// property definitions, indexes, constraints and projected graphs)
     /// advance it to their commit epoch. Relational-only and append-only
-    /// commits do not. It never decreases: it is restored on reopen and does
-    /// not depend on the search projection change log. After reopening a
-    /// checkpoint written by an older release, which did not record it, it
-    /// starts at that checkpoint's commit epoch.
+    /// commits do not. It never decreases and does not depend on the search
+    /// projection change log. It is not persisted: on open it starts at the
+    /// checkpoint's commit epoch (an upper bound of the last graph change) and
+    /// WAL replay advances it exactly, so a reopen may advance it once.
     pub fn graph_change_commit_epoch(&self) -> Result<u64> {
         Ok(self.runtime.get()?.store.graph_change_commit_epoch())
     }

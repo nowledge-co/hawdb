@@ -3051,8 +3051,9 @@ root general owner, which runs `api::tests::graph_change_epoch`. It checks:
 - relational DDL, rows and transactions leave the epoch unchanged;
 - node, relationship-only, property, schema (node table, index) and delete
   commits advance it to their commit epoch;
-- reopen preserves it, both from a checkpoint taken after relational-only
-  commits and through WAL replay;
+- a reopen from a checkpoint taken after relational-only commits starts it at
+  the checkpoint's commit epoch, so it never regresses, and WAL replay restores
+  it exactly;
 - pruning the search projection change log does not regress it;
 - a guarded `ConcurrentDatabase` transaction commits despite a concurrent
   relational commit;
@@ -3061,13 +3062,10 @@ root general owner, which runs `api::tests::graph_change_epoch`. It checks:
 - an unguarded transaction is unaffected, and a transaction's own graph writes
   do not count;
 - `EmbeddedStoreHandle` reports it in `runtime_status` and production status,
-  supports compare-and-publish in `with_transaction`, and keeps it across a
-  reopen.
+  supports compare-and-publish in `with_transaction`, and never regresses it
+  across a reopen.
 
-The storage owner's checkpoint tests check that the line is encoded only when
-it is older than the commit epoch, that it decodes exactly and that a duplicate
-is refused. They also run both checkpoint encoders over a fixture that carries
-the line. The readiness owner checks the JSON field.
+The readiness owner checks the JSON field. The checkpoint format is unchanged.
 
 No lane, feature matrix or timeout changes. Local replay:
 `cargo test --locked -p hawdb --lib graph_change_epoch`.

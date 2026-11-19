@@ -418,19 +418,11 @@ impl GraphStore {
         if let Some(commit_epoch) = decoded.commit_epoch {
             self.commit_epoch = commit_epoch;
         }
-        // Absent means the checkpoint's own commit epoch: exact for current
-        // checkpoints, and a conservative (never regressing) bound for ones
-        // written before the field existed.
-        self.graph_change_commit_epoch = match decoded.graph_change_commit_epoch {
-            Some(epoch) if epoch > self.commit_epoch => {
-                return Err(HawDBError::Storage(format!(
-                    "checkpoint graph change commit epoch {epoch} exceeds its commit epoch {}",
-                    self.commit_epoch
-                )));
-            }
-            Some(epoch) => epoch,
-            None => self.commit_epoch,
-        };
+        // The checkpoint does not record the graph change epoch (no format
+        // change). Its commit epoch is a conservative upper bound of the last
+        // graph change, so the value never regresses; WAL replay then
+        // advances it exactly. It may advance once across a reopen.
+        self.graph_change_commit_epoch = self.commit_epoch;
         if let Some(start_epoch) = decoded.search_projection_change_log_start_epoch {
             self.search_projection_change_log_start_epoch = start_epoch;
         }

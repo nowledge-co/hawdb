@@ -3,9 +3,10 @@
 
 //! The graph change commit epoch (#1840): the commit epoch of the newest
 //! commit that changed graph data or graph schema. Relational-only commits do
-//! not advance it; node, relationship and schema commits do. It survives
-//! checkpoints and reopen, never regresses when the change log is pruned, and
-//! a transaction can read it and commit only if it is still current.
+//! not advance it; node, relationship and schema commits do. It never
+//! regresses, across reopen or change-log pruning (a reopen may advance it
+//! once, to the checkpoint's commit epoch), and a transaction can read it and
+//! commit only if it is still current.
 
 use super::*;
 use crate::{ConcurrentDatabase, ConcurrentTransactionOptions};
@@ -91,33 +92,42 @@ fn relational_commits_leave_it_and_graph_commits_advance_it() {
 }
 
 #[test]
-fn reopen_preserves_it_from_the_checkpoint_and_from_wal_replay() {
+fn reopen_never_regresses_it_and_wal_replay_restores_it_exactly() {
     let path = unique_test_dir("graph_change_epoch_reopen");
-    let expected = {
+    let (checkpoint, graph) = {
         let mut db = Database::open(&path).unwrap();
         let (_, graph) = seeded(&mut db);
         relational_write(&mut db, 1);
         relational_write(&mut db, 2);
-        // The checkpoint is taken after relational-only commits, so it must
-        // record the older graph change epoch explicitly.
+        // The checkpoint is taken after relational-only commits.
         db.checkpoint().unwrap();
-        let after_checkpoint = epochs(&db);
-        assert_eq!(after_checkpoint.1, graph);
-        assert!(after_checkpoint.0 > graph);
-        after_checkpoint
+        let (checkpoint, after) = epochs(&db);
+        assert_eq!(after, graph);
+        assert!(checkpoint > graph);
+        (checkpoint, graph)
     };
     let replayed = {
         let mut db = Database::open(&path).unwrap();
-        assert_eq!(epochs(&db), expected, "reopen from the checkpoint");
-        // WAL replay after the checkpoint: a graph write, then relational ones.
+        // Checkpoints do not record it (no format change): a reopen starts
+        // from the checkpoint's commit epoch, an upper bound of the last graph
+        // change, so it never regresses and advances at most once.
+        let (commit, reopened) = epochs(&db);
+        assert_eq!(commit, checkpoint);
+        assert_eq!(reopened, checkpoint);
+        assert!(reopened >= graph);
+        // Relational commits after the reopen still leave it unchanged.
+        relational_write(&mut db, 3);
+        assert_eq!(epochs(&db), (checkpoint + 1, checkpoint));
+        // WAL after the checkpoint: a graph write, then a relational one.
         db.query("MATCH (m:Memory {id: 'a'}) SET m.title = 'A'")
             .unwrap();
         let graph = db.commit_epoch().unwrap();
-        relational_write(&mut db, 3);
+        relational_write(&mut db, 4);
         assert_eq!(epochs(&db), (graph + 1, graph));
         epochs(&db)
     };
     {
+        // Replaying that WAL restores the exact value.
         let db = Database::open(&path).unwrap();
         assert_eq!(epochs(&db), replayed, "reopen with WAL replay");
     }
@@ -275,7 +285,12 @@ fn embedded_status_reports_it_and_with_transaction_can_compare_and_publish() {
         graph
     };
     let (handle, _) = EmbeddedStoreHandle::open_with_options(options()).unwrap();
-    assert_eq!(status(&handle).1, graph);
+    // Never regresses across a reopen, and never passes the commit epoch.
+    let (commit, reopened) = status(&handle);
+    assert!(
+        reopened >= graph && reopened <= commit,
+        "{reopened} {graph} {commit}"
+    );
     drop(handle);
     std::fs::remove_dir_all(path).unwrap();
 }

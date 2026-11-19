@@ -1735,13 +1735,11 @@ Relational rows and DDL, append records and the initial-import marker do not.
 
 It is part of the graph state, not the search projection change log. It is
 present without a search projection and never regresses when that log is
-pruned. WAL replay recomputes it. A checkpoint records it with a
-`graph_change_commit_epoch` line only when it is older than the checkpoint's
-commit epoch. An absent line means it equals the commit epoch, so checkpoints
-taken right after a graph change are unchanged for older readers.
-A checkpoint written by a release that predates the field reopens with the
-value set to its commit epoch. That bound is conservative: the value can only
-move forward, once.
+pruned. It is not persisted, so the on-disk format is unchanged. On open it
+starts at the checkpoint's commit epoch, which is an upper bound of the last
+graph change. WAL replay then advances it exactly for each graph-changing
+commit. It therefore never regresses, but a reopen may advance it once. A
+compare-and-publish that spans a restart retries once.
 
 `EmbeddedRuntimeStatus` reports it as `graph_change_commit_epoch`. The
 production status and operations readiness reports show it as

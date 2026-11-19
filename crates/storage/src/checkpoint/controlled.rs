@@ -43,12 +43,6 @@ pub(crate) fn encode_checkpoint_body_with_work_context<'a>(
     body.write(format_args!("version\t{STORAGE_VERSION}\n"))?;
     body.write(format_args!("generation\t{generation}\n"))?;
     body.write(format_args!("commit_epoch\t{}\n", image.commit_epoch))?;
-    if image.graph_change_commit_epoch != image.commit_epoch {
-        body.write(format_args!(
-            "graph_change_commit_epoch\t{}\n",
-            image.graph_change_commit_epoch
-        ))?;
-    }
     if let Some(relational) = image.relational_checkpoint {
         body.write(format_args!(
             "relational_checkpoint_encoded_len\t{}\n",

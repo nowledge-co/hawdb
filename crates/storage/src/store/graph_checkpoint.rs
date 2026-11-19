@@ -1352,7 +1352,6 @@ impl GraphStore {
                 CheckpointImage {
                     catalog,
                     commit_epoch,
-                    graph_change_commit_epoch: self.graph_change_commit_epoch,
                     next_node_id: self.next_node_id,
                     next_rel_id: self.next_rel_id,
                     search_projection_change_log_start_epoch: self
