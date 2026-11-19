@@ -130,6 +130,7 @@ fn error_class(error: &HawDBError) -> &'static str {
         | HawDBError::BranchEvidenceBudgetExceeded { .. }
         | HawDBError::ReadBudgetExceeded(_)
         | HawDBError::WalRecordLimitExceeded(_)
+        | HawDBError::RuntimeAdmissionRefused(_)
         | HawDBError::ReadOnly { .. }
         | HawDBError::ResourceBudgetExceeded(_)
         | HawDBError::GraphExpansionCandidateLimitExceeded { .. }

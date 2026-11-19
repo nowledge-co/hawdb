@@ -301,6 +301,21 @@ pub fn format_hawdb_error(error: &HawDBError) -> PyErr {
             })();
             attributes.err().unwrap_or(exception)
         }),
+        HawDBError::RuntimeAdmissionRefused(refusal) => Python::attach(|py| {
+            // The runtime governor had no capacity for this read: nothing
+            // was written, the handle stays usable, and a transient refusal
+            // can be retried once capacity frees up.
+            let exception = ExecutionError::new_err(message);
+            let value = exception.value(py);
+            let attributes = (|| -> PyResult<()> {
+                value.setattr("kind", "runtime_admission_refused")?;
+                value.setattr("code", refusal.code)?;
+                value.setattr("requested", refusal.requested)?;
+                value.setattr("available", refusal.available)?;
+                value.setattr("retryable", refusal.retryable)
+            })();
+            attributes.err().unwrap_or(exception)
+        }),
         HawDBError::Execution(_) => Python::attach(|py| {
             let exception = ExecutionError::new_err(message);
             let attributes = exception
@@ -813,6 +828,33 @@ mod tests {
             assert_eq!(text("config_option"), "DatabaseConfig.max_wal_record_bytes");
             assert_eq!((number("requested"), number("maximum")), (20, 16));
             assert!(!value
+                .getattr("retryable")
+                .unwrap()
+                .extract::<bool>()
+                .unwrap());
+        });
+    }
+
+    #[test]
+    fn runtime_admission_refusal_is_a_retryable_execution_error_with_its_code() {
+        Python::initialize();
+        Python::attach(|py| {
+            let error = HawDBError::RuntimeAdmissionRefused(hawdb::RuntimeAdmissionRefusal {
+                code: "memory_saturated",
+                requested: 4096,
+                available: 0,
+                retryable: true,
+            });
+            let exception = format_hawdb_error(&error);
+            assert!(exception.is_instance_of::<ExecutionError>(py));
+            assert!(!exception.is_instance_of::<StorageError>(py));
+            let value = exception.value(py);
+            let text = |name: &str| value.getattr(name).unwrap().extract::<String>().unwrap();
+            let number = |name: &str| value.getattr(name).unwrap().extract::<u64>().unwrap();
+            assert_eq!(text("kind"), "runtime_admission_refused");
+            assert_eq!(text("code"), "memory_saturated");
+            assert_eq!((number("requested"), number("available")), (4096, 0));
+            assert!(value
                 .getattr("retryable")
                 .unwrap()
                 .extract::<bool>()

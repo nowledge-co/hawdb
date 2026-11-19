@@ -395,6 +395,18 @@ impl Display for RuntimeAdmissionError {
 
 impl Error for RuntimeAdmissionError {}
 
+/// Admission refusals reach `HawDBError` callers typed, never as a string.
+impl From<RuntimeAdmissionError> for hawdb_core::HawDBError {
+    fn from(error: RuntimeAdmissionError) -> Self {
+        Self::RuntimeAdmissionRefused(hawdb_core::RuntimeAdmissionRefusal {
+            code: error.code.as_str(),
+            requested: error.requested,
+            available: error.available,
+            retryable: error.retryable,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeTelemetryEventKind {
     Admitted,

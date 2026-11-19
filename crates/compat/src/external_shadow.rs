@@ -568,6 +568,17 @@ fn json_error_from_hawdb(error: HawDBError) -> serde_json::Value {
             });
             response
         }
+        HawDBError::RuntimeAdmissionRefused(cause) => {
+            let mut response = json_error("execution", cause);
+            response["error"]["details"] = serde_json::json!({
+                "kind": "runtime_admission_refused",
+                "code": cause.code,
+                "requested": cause.requested,
+                "available": cause.available,
+                "retryable": cause.retryable,
+            });
+            response
+        }
         error @ (HawDBError::GraphExpansionCandidateLimitExceeded { .. }
         | HawDBError::GraphExpansionPayloadLimitExceeded { .. }) => json_error("execution", error),
         error @ (HawDBError::TransactionConflict { .. }

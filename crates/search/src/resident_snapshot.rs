@@ -206,6 +206,17 @@ impl SearchIndexReadSnapshot {
     /// source before waiting or retrying admission. Concurrent readers of this
     /// generation and current host governor share one charge. Switching hosts
     /// replaces the weak cache; existing leases keep their original funding.
+    ///
+    /// A refusal is the typed `HawDBError::RuntimeAdmissionRefused` (usually
+    /// `memory_saturated`, retryable while other work holds the memory). It
+    /// leaves the permit, the generation and the caller's handle usable.
+    ///
+    /// The embedded handle calls this for every read that pins the resident
+    /// search projection: typed search (`search_candidates*`,
+    /// `retrieve_knowledge*`, `search_projection_documents*`, shadow evidence),
+    /// `with_bounded_read_snapshot*`, and Cypher reads seeded by
+    /// `text_search`/`vector_search`. Other graph and relational reads, and
+    /// out-of-core projections, do not retain a resident generation.
     pub fn retain_with_permit(&self, permit: &RuntimePermit) -> Result<SearchIndexReadLease> {
         let existing = || {
             self.generation
@@ -240,8 +251,8 @@ impl SearchIndexReadSnapshot {
                 _funding: funding,
             });
         }
-        let funding =
-            Arc::new(reservation.map_err(|error| HawDBError::Execution(error.to_string()))?);
+        // A refusal stays the typed, non-poisoning admission error.
+        let funding = Arc::new(reservation.map_err(HawDBError::from)?);
         *entries = Arc::downgrade(&funding);
         Ok(SearchIndexReadLease {
             snapshot: self.clone(),
@@ -466,7 +477,14 @@ mod tests {
         drop(snapshot);
         index.upsert(document("a", "replacement", "space")).unwrap();
         let current = index.read_snapshot();
-        assert!(current.retain_with_permit(&permit).is_err());
+        // A refusal is the typed, retryable admission error rather than an
+        // opaque execution string, so callers can back off and retry.
+        let Err(HawDBError::RuntimeAdmissionRefused(refusal)) = current.retain_with_permit(&permit)
+        else {
+            panic!("retaining over budget must be a typed admission refusal");
+        };
+        assert_eq!(refusal.code, "memory_saturated");
+        assert!(refusal.retryable);
         assert_eq!(governor.snapshot().admitted_memory_bytes, capacity);
         assert_eq!(
             first.snapshot().document("a").unwrap().content.len(),
@@ -608,7 +626,7 @@ mod tests {
                 .unwrap();
             let lease = snapshot.retain_with_permit(&permit);
             if !fits {
-                assert!(lease.is_err());
+                assert!(matches!(lease, Err(HawDBError::RuntimeAdmissionRefused(_))));
                 assert!(snapshot.generation.index.rabitq_projection().is_none());
                 continue;
             }

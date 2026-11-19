@@ -26,8 +26,10 @@ pub use storage_format::{
     RELATIONAL_ROW_PAGE_FORMAT, RELATIONAL_SCHEMA_FORMAT, SEARCH_PROJECTION_MANIFEST_FORMAT,
     STORAGE_MANIFEST_FORMAT,
 };
+mod admission;
 mod relational;
 mod wal_record;
+pub use admission::RuntimeAdmissionRefusal;
 pub use relational::{find_relational_error_kind, RelationalErrorKind, RelationalErrorSurface};
 pub use wal_record::{WalRecordLimit, WalRecordLimitError};
 
@@ -277,6 +279,10 @@ pub enum HawDBError {
     /// is refused before anything is written and leaves the handle usable;
     /// see [`WalRecordLimitError`]. Not a storage failure.
     WalRecordLimitExceeded(Box<WalRecordLimitError>),
+    /// The runtime governor refused admission or retained-memory funding;
+    /// nothing ran. Not a storage failure and never poisoning. See
+    /// [`RuntimeAdmissionRefusal::retryable`].
+    RuntimeAdmissionRefused(RuntimeAdmissionRefusal),
     GraphExpansionCandidateLimitExceeded {
         requested: usize,
         limit: usize,
@@ -400,6 +406,7 @@ impl Display for HawDBError {
                 "graph expansion candidate_limit exceeded: requested {requested} rows, limit {limit} rows; configure ExecutionMemoryConfig.graph_expansion_budget.candidate_limit"
             ),
             HawDBError::WalRecordLimitExceeded(error) => write!(f, "execution error: {error}"),
+            HawDBError::RuntimeAdmissionRefused(error) => write!(f, "execution error: {error}"),
             HawDBError::GraphExpansionPayloadLimitExceeded { requested, limit } => write!(
                 f,
                 "graph expansion payload_byte_limit exceeded: requested {requested} bytes, limit {limit} bytes; configure ExecutionMemoryConfig.graph_expansion_budget.payload_byte_limit"
@@ -458,6 +465,7 @@ impl std::error::Error for HawDBError {
             Self::ResourceBudgetExceeded(error) => Some(error.as_ref()),
             Self::ReadBudgetExceeded(error) => Some(error),
             Self::WalRecordLimitExceeded(error) => Some(error.as_ref()),
+            Self::RuntimeAdmissionRefused(error) => Some(error),
             Self::TransactionRetryRequired(error) => Some(error.as_ref()),
             Self::UnsupportedStorageFormat(error) => Some(error),
             Self::BranchReclamationBlocked { cause, .. } => Some(cause.as_ref()),

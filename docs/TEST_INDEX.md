@@ -3043,6 +3043,32 @@ message checks. The binding owners pin the mapping:
 - `bindings/python` `errors::tests::wal_record_limit_is_a_non_retryable_execution_error_with_its_limit`.
 No lane, feature matrix or timeout changes. Local replay:
 `cargo test --locked -p hawdb --lib wal_record_limit`.
+### Runtime admission refusals
+
+Runtime governor refusals are the typed, non-poisoning
+`HawDBError::RuntimeAdmissionRefused`
+([#1815](https://github.com/nowledge-co/hawdb/issues/1815)). The root
+general owner runs
+`embedded_store::tests::resident_snapshot_admission_tests`. For each read that
+pins the resident search projection, another owner holds all but part of the
+governor memory. The test checks:
+- the read request is admitted;
+- funding the retained generation is refused with `memory_saturated`, the
+  generation size and `retryable`;
+- the refused read releases its admission;
+- once the memory is free, the same read succeeds and ordinary reads and
+  writes continue.
+
+The reads are typed search, document hydration, bounded read snapshots and a
+`text_search`-seeded Cypher read. The search crate owner keeps the
+`resident_snapshot` unit tests asserting the typed variant. The binding owners
+pin the mapping:
+- `bindings/ffi` `error_tests::runtime_admission_refusal_is_delivered_as_its_own_kind`;
+- `bindings/python` `errors::tests::runtime_admission_refusal_is_a_retryable_execution_error_with_its_code`.
+
+No lane, feature matrix or timeout changes. Local replay:
+`cargo test --locked -p hawdb --lib resident_snapshot_admission`.
+
 ### Search projection staleness markers
 
 Host-requested search projection markers
