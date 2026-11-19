@@ -1974,8 +1974,7 @@ fn prepare(
     report.admission_denial = None;
     report.memory_denial = None;
     report.operation_failed = false;
-    task.checkpoint()
-        .map_err(|reason| HawDBError::Storage(reason.to_string()))?;
+    task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
     if !scheduler.policy().background_enabled {
         return Err(HawDBError::Storage(
             "automatic checkpoint QoS deferred: background disabled".into(),

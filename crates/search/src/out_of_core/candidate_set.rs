@@ -629,9 +629,9 @@ impl SpilledCandidateSet<'_> {
         }
         for block in self.blocks.iter().filter(|block| block.layer == layer) {
             if let Some(task_context) = task_context {
-                task_context.checkpoint().map_err(|reason| {
-                    HawDBError::Execution(format!("search vector task {reason}"))
-                })?;
+                task_context
+                    .checkpoint()
+                    .map_err(HawDBError::RuntimeTaskStopped)?;
             }
             if block.cardinality == 0 {
                 continue;

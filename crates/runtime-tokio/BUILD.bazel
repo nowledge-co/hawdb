@@ -3,6 +3,12 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
 
+filegroup(
+    name = "typed_task_stop_sources",
+    srcs = glob(["src/**/*.rs"]),
+    visibility = ["//:__pkg__"],
+)
+
 test_suite(
     name = "presubmit_tests",
 )

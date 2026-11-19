@@ -195,9 +195,7 @@ struct RelationalRowCompactionCheckpoint<'a> {
 }
 
 fn row_compaction_checkpoint(task: &RuntimeTaskContext) -> Result<()> {
-    task.checkpoint().map_err(|reason| {
-        HawDBError::Execution(format!("relational row-page compaction stopped: {reason}"))
-    })
+    task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)
 }
 
 fn row_compaction_publication_error(
@@ -508,9 +506,7 @@ impl GraphStore {
         task: &RuntimeTaskContext,
     ) -> Result<RelationalOverflowCompactionReport> {
         self.ensure_usable()?;
-        task.checkpoint().map_err(|reason| {
-            HawDBError::Execution(format!("relational overflow compaction stopped: {reason}"))
-        })?;
+        task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
         let durable = self.durable.as_ref().ok_or_else(|| {
             HawDBError::Storage(
                 "relational overflow compaction requires durable storage".to_string(),
@@ -541,9 +537,7 @@ impl GraphStore {
         let generation = durable.next_checkpoint_generation()?;
         let (references, scan) =
             self.collect_exact_relational_overflow_closure(generation, config, task)?;
-        task.checkpoint().map_err(|reason| {
-            HawDBError::Execution(format!("relational overflow compaction stopped: {reason}"))
-        })?;
+        task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
         let prepared = self
             .prepare_checkpoint_with_maintenance(
                 catalog,

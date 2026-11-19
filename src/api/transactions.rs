@@ -1476,6 +1476,9 @@ pub(super) fn map_transaction_relational_error(
             ),
             None => HawDBError::Execution(error.to_string()),
         },
+        hawdb_storage::relational::RelationalError::Stopped(reason) => {
+            HawDBError::RuntimeTaskStopped(reason)
+        }
         error @ hawdb_storage::relational::RelationalError::Admission(_) => {
             HawDBError::Execution(error.to_string())
         }

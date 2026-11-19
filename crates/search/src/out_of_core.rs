@@ -3222,9 +3222,9 @@ impl SearchOutOfCoreReader {
             .get_or_insert(self.config.default_navigation_beam);
         let task_context = vector_execution_options.task_context;
         if let Some(task_context) = task_context {
-            task_context.checkpoint().map_err(|reason| {
-                HawDBError::Execution(format!("search out-of-core task {reason}"))
-            })?;
+            task_context
+                .checkpoint()
+                .map_err(HawDBError::RuntimeTaskStopped)?;
         }
         if access_control.is_some() {
             self.runtime_capabilities

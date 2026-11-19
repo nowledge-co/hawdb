@@ -422,7 +422,7 @@ impl<'a> SearchVectorSource<'a, '_> {
         match self.vector_execution_options.task_context {
             Some(task_context) => task_context
                 .checkpoint()
-                .map_err(|reason| HawDBError::Execution(format!("vector search task {reason}"))),
+                .map_err(HawDBError::RuntimeTaskStopped),
             None => Ok(()),
         }
     }

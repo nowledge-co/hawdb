@@ -57,7 +57,7 @@ impl RootRef {
     ) -> Result<PendingCapture<'a, 'execution>> {
         admission
             .checkpoint()
-            .map_err(|e| HawDBError::Execution(e.to_string()))?;
+            .map_err(HawDBError::RuntimeTaskStopped)?;
         if self.state().identity != publication.source_identity() {
             return Err(HawDBError::StorageIntegrity(
                 "capture source authority does not match its root".into(),
@@ -210,7 +210,7 @@ impl PendingCapture<'_, '_> {
     pub(in crate::out_of_core) fn pin(&self, key: ArtifactKey) -> Result<ArtifactPin> {
         self.admission
             .checkpoint()
-            .map_err(|e| HawDBError::Execution(e.to_string()))?;
+            .map_err(HawDBError::RuntimeTaskStopped)?;
         let entry_memory = self.admission.retained(NODE_BYTES)?;
         let memory = self
             .admission
@@ -224,7 +224,7 @@ impl PendingCapture<'_, '_> {
         });
         self.admission
             .checkpoint()
-            .map_err(|e| HawDBError::Execution(e.to_string()))?;
+            .map_err(HawDBError::RuntimeTaskStopped)?;
         let mut unused_memory = Some(entry_memory);
         {
             let mut roots = registry();

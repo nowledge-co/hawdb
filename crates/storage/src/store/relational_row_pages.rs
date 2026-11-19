@@ -1622,11 +1622,8 @@ impl GraphStore {
                     .to_string(),
             ));
         }
-        task.checkpoint().map_err(|reason| {
-            crate::error::HawDBError::Execution(format!(
-                "relational overflow compaction stopped: {reason}"
-            ))
-        })?;
+        task.checkpoint()
+            .map_err(crate::error::HawDBError::RuntimeTaskStopped)?;
         let durable = self.durable.as_ref().ok_or_else(|| {
             crate::error::HawDBError::Storage(
                 "exact overflow compaction requires durable storage".to_string(),
@@ -1698,11 +1695,8 @@ impl GraphStore {
         let mut remaining_overlay_entries = config.max_overlay_entries.get();
         let mut remaining_overlay_bytes = config.max_overlay_bytes.get();
         for schema in self.relational_state.table_schemas() {
-            task.checkpoint().map_err(|reason| {
-                crate::error::HawDBError::Execution(format!(
-                    "relational overflow compaction stopped: {reason}"
-                ))
-            })?;
+            task.checkpoint()
+                .map_err(crate::error::HawDBError::RuntimeTaskStopped)?;
             let requested_fields = (0..schema.columns.len()).collect::<Vec<_>>();
             let table_root = view
                 .base()
@@ -1975,9 +1969,7 @@ fn map_sparse_snapshot_read_error(error: RelationalRowPageSnapshotReadError) -> 
         RelationalRowPageSnapshotReadError::Admission(message) => {
             RelationalError::Admission(message)
         }
-        RelationalRowPageSnapshotReadError::Stopped(reason) => {
-            RelationalError::Admission(reason.to_string())
-        }
+        RelationalRowPageSnapshotReadError::Stopped(reason) => RelationalError::Stopped(reason),
         RelationalRowPageSnapshotReadError::MissingTable(table) => RelationalError::Corruption(
             format!("sparse WAL snapshot is missing authenticated table {table}"),
         ),

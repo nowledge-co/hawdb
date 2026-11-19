@@ -735,7 +735,7 @@ fn out_of_core_text_seed_shared_budget_scope_failure_and_cancellation_release_an
             error.to_string().contains(if mode == 2 {
                 "text scope refused"
             } else {
-                "lexical query cancelled"
+                "runtime task stopped: cancelled"
             }),
             "{error}"
         );

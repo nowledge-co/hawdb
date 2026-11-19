@@ -3131,8 +3131,7 @@ impl SearchIndex {
         let Some(path) = &self.path else {
             return Ok(SearchCheckpointReport::in_memory(self.documents.len()));
         };
-        task.checkpoint()
-            .map_err(|reason| HawDBError::Execution(format!("checkpoint {reason}")))?;
+        task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
         let _io = task
             .acquire_io_wave(NonZeroUsize::MIN)
             .map_err(|error| HawDBError::Execution(error.to_string()))?;
@@ -3565,7 +3564,7 @@ impl SearchIndex {
         if let Some(task_context) = vector_execution_options.task_context {
             task_context
                 .checkpoint()
-                .map_err(|reason| HawDBError::Execution(format!("vector search task {reason}")))?;
+                .map_err(HawDBError::RuntimeTaskStopped)?;
         }
         let result = self.try_search_with_options_compressed_vector_projection_mode_internal(
             query_text,
@@ -3578,7 +3577,7 @@ impl SearchIndex {
         if let Some(task_context) = vector_execution_options.task_context {
             task_context
                 .checkpoint()
-                .map_err(|reason| HawDBError::Execution(format!("vector search task {reason}")))?;
+                .map_err(HawDBError::RuntimeTaskStopped)?;
         }
         Ok(result)
     }

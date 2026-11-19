@@ -223,7 +223,7 @@ fn checkpoint_units_projection_encoded_every_actual_unit_cancels_and_retries_ide
         .unwrap_err();
         assert_eq!(
             error.to_string(),
-            "storage error: checkpoint build stopped: cancelled"
+            "execution error: runtime task stopped: cancelled"
         );
         assert_eq!(cancelled.completed.load(Ordering::SeqCst), cut);
         assert_eq!(used(&task, ceiling), 0);

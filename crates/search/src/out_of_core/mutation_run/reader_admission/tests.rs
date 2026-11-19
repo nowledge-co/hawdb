@@ -196,7 +196,10 @@ fn admitted_mutation_terms_keep_capacity_and_require_fresh_execution_after_produ
         let mut cursor = terms.cursor_with_query_context(Some(context)).unwrap();
         assert!(cursor.next().unwrap().is_some());
         task.cancellation().cancel();
-        assert!(matches!(cursor.next(), Err(HawDBError::Execution(_))));
+        assert!(matches!(
+            cursor.next(),
+            Err(HawDBError::RuntimeTaskStopped(_))
+        ));
     }
     assert_eq!(memory.ledger.snapshot().used_bytes, baseline);
     assert_eq!(governor.snapshot().active_background_io_slots, 0);
@@ -275,7 +278,10 @@ fn synchronous_mutation_terms_use_original_context_without_governor_execution() 
             let mut cursor = terms.cursor_with_query_context(Some(context)).unwrap();
             assert!(cursor.next().unwrap().is_some());
             task.cancellation().cancel();
-            assert!(matches!(cursor.next(), Err(HawDBError::Execution(_))));
+            assert!(matches!(
+                cursor.next(),
+                Err(HawDBError::RuntimeTaskStopped(_))
+            ));
         }
         assert_eq!(memory.ledger.snapshot().used_bytes, retained);
         drop(run);

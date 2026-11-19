@@ -1377,8 +1377,7 @@ impl DatabaseReadTransaction {
 }
 
 fn rebuild_scan_checkpoint(task: &hawdb_core::RuntimeTaskContext) -> Result<()> {
-    task.checkpoint()
-        .map_err(|reason| HawDBError::Execution(format!("search projection rebuild scan {reason}")))
+    task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)
 }
 
 impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {

@@ -958,9 +958,7 @@ fn send_async_query_batch_with_retry(
     let ready = std::mem::replace(batch, Vec::with_capacity(capacity));
     let mut event = TokioQueryStreamEvent::Batch(ready);
     loop {
-        checkpoint().map_err(|reason| {
-            HawDBError::Execution(format!("asynchronous row producer stopped: {reason}"))
-        })?;
+        checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
         match sender.try_send(event) {
             Ok(()) => return Ok(()),
             Err(TokioBoundedTrySendError::Full(returned)) => {
@@ -1709,8 +1707,8 @@ mod tests {
                 .unwrap_err();
                 assert_eq!(retries.get(), retry_limit);
                 assert_eq!(checks.get(), retry_limit + 1);
-                assert!(matches!(error, HawDBError::Execution(message)
-                    if message == format!("asynchronous row producer stopped: {reason}")));
+                assert!(matches!(error, HawDBError::RuntimeTaskStopped(stopped)
+                    if stopped == reason));
                 assert!(pending.is_empty());
                 drop(sender);
                 assert!(matches!(runtime.block_on(receiver.recv()),

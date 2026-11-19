@@ -6525,6 +6525,8 @@ impl Default for RelationalStore {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelationalError {
     Admission(String),
+    /// The caller's runtime task was cancelled or passed its deadline.
+    Stopped(hawdb_core::RuntimeCancellationReason),
     Schema(String),
     Constraint(String),
     Durability(String),
@@ -6537,6 +6539,7 @@ impl fmt::Display for RelationalError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Admission(message) => write!(formatter, "relational admission failed: {message}"),
+            Self::Stopped(reason) => write!(formatter, "runtime task stopped: {reason}"),
             Self::Schema(message) => write!(formatter, "relational schema error: {message}"),
             Self::Constraint(message) => {
                 write!(formatter, "relational constraint violation: {message}")
@@ -6560,6 +6563,8 @@ impl std::error::Error for RelationalError {
         match self {
             Self::FileDescriptors(error) => Some(error),
             Self::UnsupportedFormat(error) => Some(error),
+            // Lets `HawDBError::from_storage_error` report the typed stop.
+            Self::Stopped(reason) => Some(reason),
             Self::Constraint(_) => Some(&hawdb_core::RelationalErrorKind::Constraint),
             Self::Schema(_) => Some(&hawdb_core::RelationalErrorKind::Schema),
             _ => None,

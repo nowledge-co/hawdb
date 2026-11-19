@@ -549,8 +549,9 @@ fn checkpoint_capture_observes_cancellation_within_one_work_group() {
         }
         assert!(matches!(
             budget.work(),
-            Err(CaptureError::Storage(HawDBError::Storage(message)))
-                if message == "checkpoint build stopped: cancelled"
+            Err(CaptureError::Storage(HawDBError::RuntimeTaskStopped(
+                hawdb_core::RuntimeCancellationReason::Cancelled
+            )))
         ));
         assert_eq!(probe.completed.load(Ordering::SeqCst), 1);
         probe.assert_released(&scheduler);

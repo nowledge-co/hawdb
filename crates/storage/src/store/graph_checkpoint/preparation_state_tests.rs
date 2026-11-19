@@ -233,7 +233,7 @@ fn cancelled_bootstrap_keeps_completed_base_and_recovers_with_a_fresh_context() 
     let error = frame
         .prepare_candidate_with_work_context(&work)
         .unwrap_err();
-    assert!(matches!(error, HawDBError::Storage(message) if message.contains("cancelled")));
+    assert!(matches!(error, HawDBError::RuntimeTaskStopped(_)));
     assert!(frame.finished);
     assert!(frame.bootstrap.is_some());
     probe.assert_released(&local);

@@ -306,8 +306,7 @@ impl Database {
             )
             .into());
         }
-        task.checkpoint()
-            .map_err(|reason| HawDBError::Execution(reason.to_string()))?;
+        task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
         let _descriptor_operation = self.internal_descriptor_operation()?;
         self.consumer_writable_root()?;
         self.ensure_runtime_capability(hawdb_core::RuntimeCapability::SearchProjectionPublication)?;
@@ -609,8 +608,7 @@ impl Database {
                 HawDBError::Semantic("Consumer open requires an unbound task".into()).into(),
             );
         }
-        task.checkpoint()
-            .map_err(|reason| HawDBError::Execution(reason.to_string()))?;
+        task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
         let working_bytes = task
             .memory_reservation()
             .map_or(64 << 20, |reservation| reservation.memory_bytes());
@@ -894,8 +892,7 @@ impl Database {
             )
             .into());
         }
-        task.checkpoint()
-            .map_err(|reason| HawDBError::Execution(reason.to_string()))?;
+        task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
         let _descriptor_operation = self.internal_descriptor_operation()?;
         let root = self.consumer_writable_root()?;
         self.reload_consumer_registry_if_unavailable()?;

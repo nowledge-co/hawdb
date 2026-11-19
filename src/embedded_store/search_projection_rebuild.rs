@@ -629,9 +629,7 @@ fn stream_documents(
     }
     let mut host_documents = 0u64;
     source.visit_host_rows(host, &mut |row| {
-        task.checkpoint().map_err(|reason| {
-            HawDBError::Execution(format!("search projection rebuild {reason}"))
-        })?;
+        task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
         if pass == Pass::Verify && ownership.owns(row.kind) {
             return Ok(());
         }
@@ -725,9 +723,7 @@ impl RebuildStage {
     }
 
     fn install(mut self, task: &RuntimeTaskContext) -> Result<()> {
-        task.checkpoint().map_err(|reason| {
-            HawDBError::Execution(format!("search projection rebuild {reason}"))
-        })?;
+        task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
         crate::sync_bootstrap_directory(&self.path)?;
         #[cfg(test)]
         hooks::before_install(&self.path, &self.target);

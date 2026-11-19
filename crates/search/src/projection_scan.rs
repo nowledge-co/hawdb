@@ -64,8 +64,7 @@ impl SearchProjectionScanBudget {
 }
 
 pub(crate) fn checkpoint(task: &RuntimeTaskContext) -> Result<()> {
-    task.checkpoint()
-        .map_err(|reason| HawDBError::Execution(format!("projection scan stopped: {reason}")))
+    task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)
 }
 
 pub(crate) fn add(left: usize, right: usize) -> Result<usize> {

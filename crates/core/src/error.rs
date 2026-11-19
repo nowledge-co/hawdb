@@ -531,6 +531,11 @@ impl HawDBError {
         if let Some(error) = (&error as &dyn std::error::Error).downcast_ref::<Self>() {
             return error.clone();
         }
+        // A cancelled or expired runtime task anywhere in the cause chain is
+        // a stop, not a storage failure.
+        if let Some(reason) = find_runtime_task_stop(&error) {
+            return Self::RuntimeTaskStopped(reason);
+        }
         if let Some(resource) = file_descriptor_error(&error) {
             Self::FileDescriptors(resource)
         } else if let Some(resource) = resource::find_resource_budget_error(&error) {
@@ -582,6 +587,23 @@ impl HawDBError {
 }
 
 pub type Result<T> = std::result::Result<T, HawDBError>;
+
+/// The cancellation reason of a stopped runtime task in `error`'s cause chain.
+fn find_runtime_task_stop(
+    error: &(dyn std::error::Error + 'static),
+) -> Option<crate::RuntimeCancellationReason> {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        if let Some(reason) = error.downcast_ref::<crate::RuntimeCancellationReason>() {
+            return Some(*reason);
+        }
+        if let Some(HawDBError::RuntimeTaskStopped(reason)) = error.downcast_ref::<HawDBError>() {
+            return Some(*reason);
+        }
+        current = error.source();
+    }
+    None
+}
 
 /// A stopped runtime task is the typed `HawDBError::RuntimeTaskStopped`.
 impl From<crate::RuntimeCancellationReason> for HawDBError {

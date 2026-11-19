@@ -191,6 +191,18 @@ resource budget stops the work with the typed
 is `runtime_task_stopped`. The error is not a storage failure, and it never
 poisons the handle.
 
+Every layer reports a stop this way
+([#1850](https://github.com/nowledge-co/hawdb/issues/1850)). That includes
+search (lexical, vector, out-of-core and projection scans), external reads, SQL
+sessions, asynchronous row producers, relational reads, consumer maintenance
+and checkpoint, compaction and WAL replay work. A storage error whose cause
+chain carries a cancellation reason (`HawDBError::from_storage_error`) is
+reported as `RuntimeTaskStopped` too. Hosts must not match message text such
+as `lexical query cancelled` or `SQL session stopped before commit: …`.
+`scripts/check-typed-task-stops.py` refuses production code that formats a
+cancellation reason into `HawDBError::Execution`. It runs in prek and as the
+`//:typed_task_stops_test` Bazel target.
+
 Write transactions accept a caller context
 ([#1821](https://github.com/nowledge-co/hawdb/issues/1821)):
 `EmbeddedStoreHandle::with_transaction_context` and `transaction_context`. The

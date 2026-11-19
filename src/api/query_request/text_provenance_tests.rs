@@ -553,7 +553,16 @@ fn cypher_text_refuses_foreign_or_failed_result_owners_and_post_read_cancellatio
                 },
             )
             .unwrap_err();
-        assert!(matches!(error, HawDBError::Execution(_)), "{error}");
+        // A cancelled read is the typed task stop; the owner refusals stay
+        // execution errors.
+        assert!(
+            if matches!(mode, OutputMode::CancelAfterRead) {
+                matches!(error, HawDBError::RuntimeTaskStopped(_))
+            } else {
+                matches!(error, HawDBError::Execution(_))
+            },
+            "{error}"
+        );
         assert_eq!(delivered, 0);
         assert_eq!(seeds.calls, 1);
         seeds.mode = OutputMode::Healthy;

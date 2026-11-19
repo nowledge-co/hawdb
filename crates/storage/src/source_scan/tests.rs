@@ -31,9 +31,10 @@ fn assert_checkpoint_unit_cancellation(error: &HawDBError) {
     // The sidecar API converts the typed work error to its existing facade
     // storage error, which must remain nonfatal and distinguish cancellation.
     assert!(
-        matches!(error, HawDBError::Storage(message) if
-        message == "checkpoint build stopped: cancelled" ||
-        message == "checkpoint build I/O stopped: runtime I/O wave stopped: cancelled"),
+        matches!(
+            error,
+            HawDBError::RuntimeTaskStopped(hawdb_core::RuntimeCancellationReason::Cancelled)
+        ),
         "expected checkpoint cancellation: {error}"
     );
 }

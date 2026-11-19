@@ -1414,7 +1414,7 @@ fn wal_op_changes_relational_state(
 fn replay_checkpoint(work: &crate::background::CheckpointWorkContext) -> Result<()> {
     work.checkpoint().map_err(|error| match error {
         crate::background::CheckpointWorkError::Stopped(reason) => {
-            HawDBError::Execution(format!("checkpoint WAL replay stopped: {reason}"))
+            HawDBError::RuntimeTaskStopped(reason)
         }
         error => HawDBError::from_storage_error(error),
     })
@@ -1424,6 +1424,9 @@ fn replay_io_wave(
     work: &crate::background::CheckpointWorkContext,
 ) -> Result<Option<Box<dyn hawdb_core::RuntimeIoWavePermit>>> {
     work.io_wave().map_err(|error| match error {
+        crate::background::CheckpointWorkError::Io(hawdb_core::RuntimeIoWaveError::Stopped(
+            reason,
+        )) => HawDBError::RuntimeTaskStopped(reason),
         crate::background::CheckpointWorkError::Io(reason) => {
             HawDBError::Execution(format!("checkpoint WAL replay I/O stopped: {reason}"))
         }

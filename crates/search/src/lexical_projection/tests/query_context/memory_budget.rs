@@ -226,9 +226,10 @@ fn lexical_private_memory_refusals_keep_cancellation_precedence() {
             .unwrap(),
     ];
     for error in errors {
-        assert!(
-            matches!(error, HawDBError::Execution(message) if message == "lexical query cancelled")
-        );
+        assert!(matches!(
+            error,
+            HawDBError::RuntimeTaskStopped(hawdb_core::RuntimeCancellationReason::Cancelled)
+        ));
     }
     assert_eq!(ledger.snapshot().used_bytes, 0);
 }

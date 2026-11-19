@@ -442,7 +442,7 @@ fn chunked_analyzer_identity_matches_legacy_bytes_and_checks_long_inputs() {
     task.cancellation().cancel();
     assert!(matches!(
         crate::lexical_projection::analyzer_digest_with_context(&analyzer, &task),
-        Err(HawDBError::Execution(_))
+        Err(HawDBError::RuntimeTaskStopped(_))
     ));
 }
 

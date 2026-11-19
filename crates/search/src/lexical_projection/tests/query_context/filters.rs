@@ -64,7 +64,7 @@ fn stable_filters_reuse_results_without_changing_scores_or_ownership() {
             Ok(true)
         },
     );
-    assert!(matches!(result, Err(HawDBError::Execution(_))));
+    assert!(matches!(result, Err(HawDBError::RuntimeTaskStopped(_))));
     assert_eq!(ledger.snapshot().used_bytes, 0);
 }
 

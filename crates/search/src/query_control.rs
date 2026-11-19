@@ -15,6 +15,5 @@
 use crate::{HawDBError, Result, RuntimeTaskContext};
 
 pub(crate) fn checkpoint(task: &RuntimeTaskContext) -> Result<()> {
-    task.checkpoint()
-        .map_err(|reason| HawDBError::Execution(format!("lexical query {reason}")))
+    task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)
 }

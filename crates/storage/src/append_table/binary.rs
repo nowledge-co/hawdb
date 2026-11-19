@@ -215,6 +215,9 @@ pub(super) fn map_relational(error: RelationalError) -> AppendTableError {
     match error {
         RelationalError::UnsupportedFormat(error) => AppendTableError::UnsupportedFormat(error),
         RelationalError::FileDescriptors(error) => AppendTableError::FileDescriptors(error),
+        RelationalError::Stopped(reason) => {
+            AppendTableError::Admission(format!("runtime task stopped: {reason}"))
+        }
         RelationalError::Admission(message) => AppendTableError::Admission(message),
         RelationalError::Schema(message) => AppendTableError::Schema(message),
         RelationalError::Constraint(message) => AppendTableError::Constraint(message),

@@ -390,7 +390,10 @@ mod tests {
         }
         let task = RuntimeTaskContext::default();
         let error = checksum_with_context(&CancelOnSerialize(&task), Some(&task)).unwrap_err();
-        assert!(matches!(error, HawDBError::Execution(_)), "{error:?}");
+        assert!(
+            matches!(error, HawDBError::RuntimeTaskStopped(_)),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -428,7 +431,7 @@ mod tests {
             let error =
                 encode_with_context(&body, 1 << 20, &memory, &task, "test manifest").unwrap_err();
             assert!(
-                matches!(error, HawDBError::Execution(_)),
+                matches!(error, HawDBError::RuntimeTaskStopped(_)),
                 "pass {cancel_at}: {error:?}"
             );
             assert_eq!(body.pass.get(), cancel_at);
@@ -443,7 +446,10 @@ mod tests {
         };
         let prepared = prepare(&body, 1 << 20, Some(&task), "test manifest").unwrap();
         let error = prepared.write_to(&mut Vec::new(), &task).unwrap_err();
-        assert!(matches!(error, HawDBError::Execution(_)), "{error:?}");
+        assert!(
+            matches!(error, HawDBError::RuntimeTaskStopped(_)),
+            "{error:?}"
+        );
         assert_eq!(body.pass.get(), 3);
     }
 

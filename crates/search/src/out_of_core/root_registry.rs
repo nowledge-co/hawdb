@@ -230,7 +230,7 @@ impl PublicationRegistration {
     ) -> Result<RootRef> {
         admission
             .checkpoint()
-            .map_err(|e| HawDBError::Execution(e.to_string()))?;
+            .map_err(HawDBError::RuntimeTaskStopped)?;
         if !self.with_directory(|directory| directory.shares_project_context(context)) {
             return Err(HawDBError::Storage(
                 "publication root belongs to another project descriptor domain".into(),
@@ -259,7 +259,7 @@ impl PublicationRegistration {
         });
         admission
             .checkpoint()
-            .map_err(|e| HawDBError::Execution(e.to_string()))?;
+            .map_err(HawDBError::RuntimeTaskStopped)?;
         // Only this exclusive publisher can promote its marker. A concurrent
         // RootRef acquisition refuses while its native-only marker is present.
         // Prepare the empty candidate's native guard before entering ROOTS.
@@ -582,7 +582,7 @@ impl RootRef {
         }
         admission
             .checkpoint()
-            .map_err(|e| HawDBError::Execution(e.to_string()))?;
+            .map_err(HawDBError::RuntimeTaskStopped)?;
         {
             let mut roots = registry();
             let entry = roots

@@ -299,7 +299,7 @@ fn cancelled_candidate_spill_retains_funded_debt_until_fresh_original_cleanup() 
     task.cancellation().cancel();
     assert!(matches!(
         file.write_all(b"refused"),
-        Err(HawDBError::Execution(_))
+        Err(HawDBError::RuntimeTaskStopped(_))
     ));
     drop(file);
     drop(scope);
