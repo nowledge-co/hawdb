@@ -540,7 +540,12 @@ fn json_string_preserves_strict_document_path_and_cancellation_errors() {
         )
         .unwrap_err();
     assert!(
-        matches!(&error, hawdb::HawDBError::Execution(message) if message.contains("runtime task stopped: deadline_exceeded")),
+        matches!(
+            &error,
+            hawdb::HawDBError::RuntimeTaskStopped(
+                hawdb::RuntimeCancellationReason::DeadlineExceeded
+            )
+        ),
         "{error}"
     );
 }
@@ -692,7 +697,12 @@ fn json_value_null_on_nonscalar_preserves_other_errors() {
         )
         .unwrap_err();
     assert!(
-        matches!(&cancellation, hawdb::HawDBError::Execution(message) if message.contains("runtime task stopped: deadline_exceeded")),
+        matches!(
+            &cancellation,
+            hawdb::HawDBError::RuntimeTaskStopped(
+                hawdb::RuntimeCancellationReason::DeadlineExceeded
+            )
+        ),
         "{cancellation}"
     );
 }
