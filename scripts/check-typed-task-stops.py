@@ -91,12 +91,32 @@ STRINGIFIED_EXECUTION = re.compile(
 )
 # Point-free conversions of a task check that keep the stop typed (or keep it
 # in the cause chain, which `HawDBError::from_storage_error`,
-# `from_execution_error` and `or_stop` read).
+# `from_execution_error` and `or_stop` read). Constructors of a typed stop
+# variant and the typed helpers are recognised by name; anything else must be
+# listed in `KNOWN_POINT_FREE` with its precondition.
 TYPED_POINT_FREE = re.compile(
-    r"(?:^|::)(?:Stopped|Cancelled|RuntimeTaskStopped|from_storage_error"
-    r"|from_execution_error|from|into|other|Failed|Runtime|Io)$"
-    r"|^(?:map_runtime_io_error|canonical_segment_error)$"
+    r"(?:^|::)(?:Stopped|Cancelled|RuntimeTaskStopped|from_storage_error|from_execution_error)$"
 )
+KNOWN_POINT_FREE = {
+    # Every `From<_> for HawDBError` maps a stop to `RuntimeTaskStopped` or has
+    # no stop to carry: RuntimeIoWaveError, RuntimeCancellationReason,
+    # ResourceBudgetError, io::Error (via from_storage_error),
+    # RuntimeAdmissionError, BranchLifecycleError, LockAcquireError.
+    "HawDBError::from": "every From<_> for HawDBError keeps a stop typed",
+    "crate::HawDBError::from": "every From<_> for HawDBError keeps a stop typed",
+    "hawdb_core::HawDBError::from": "every From<_> for HawDBError keeps a stop typed",
+    # The stop stays in the io::Error payload, which the chain walk reads.
+    "io::Error::other": "payload read through io::Error::get_ref",
+    "std::io::Error::other": "payload read through io::Error::get_ref",
+    # `CheckpointWorkError -> CanonicalSegmentError::Work` keeps the work error.
+    "Into::into": "canonical decoder: CheckpointWorkError -> CanonicalSegmentError::Work",
+    # Wrappers that hold the original typed error and expose it as source.
+    "IndexReadPreflightError::Failed": "holds the HawDBError",
+    "BranchLifecycleError::Runtime": "holds the HawDBError",
+    "CheckpointWorkError::Io": "holds the RuntimeIoWaveError, exposed as source",
+    "map_runtime_io_error": "maps RuntimeIoWaveError::Stopped to its Stopped variant",
+    "canonical_segment_error": "routes through HawDBError::from_storage_error",
+}
 # Point-free conversions that flatten a stop into internal text on purpose.
 POINT_FREE_ALLOWLIST = {
     # Checkpoint encoders and relational publishers report work failures as
@@ -321,7 +341,7 @@ def violations_in(relative, source):
     for match in TASK_POINT_FREE.finditer(text):
         name = match.group(1)
         short = name.rsplit("::", 1)[-1]
-        if TYPED_POINT_FREE.search(name) or short in POINT_FREE_ALLOWLIST:
+        if TYPED_POINT_FREE.search(name) or name in KNOWN_POINT_FREE or short in POINT_FREE_ALLOWLIST:
             continue
         line = text.count("\n", 0, match.start()) + 1
         found.append(

@@ -313,6 +313,40 @@ class TypedTaskStopsTest(unittest.TestCase):
         self.assertIn("crates/storage/src/statement.rs:7", lines)
         self.assertIn("crates/storage/src/arm.rs:7", lines)
 
+    def test_cfg_test_field_does_not_hide_the_following_impl(self):
+        self.write(
+            "src/api/coordinator.rs",
+            "pub struct Coordinator {\n"
+            "    #[cfg(test)]\n"
+            "    hook: Hook,\n"
+            "    state: State,\n"
+            "}\n"
+            "impl Coordinator {\n"
+            "    fn run(&self, task: &Task) -> Result<()> {\n"
+            "        task.checkpoint().map_err(|r| HawDBError::Execution(r.to_string()))\n"
+            "    }\n"
+            "}\n",
+        )
+        self.assertEqual(
+            sorted({v.split(": ", 1)[0] for v in CHECK.scan(self.root)}),
+            ["src/api/coordinator.rs:8"],
+        )
+
+    def test_generic_from_and_into_are_not_assumed_typed(self):
+        self.write(
+            "crates/storage/src/convert.rs",
+            "fn read(task: &Task) -> Result<()> {\n"
+            "    task.checkpoint().map_err(HawDBError::from)?;\n"
+            "    task.checkpoint().map_err(ReaderError::from)?;\n"
+            "    task.checkpoint().map_err(SomeError::into)?;\n"
+            "    Ok(())\n"
+            "}\n",
+        )
+        self.assertEqual(
+            [v.split(": ", 1)[0] for v in CHECK.scan(self.root)],
+            ["crates/storage/src/convert.rs:3", "crates/storage/src/convert.rs:4"],
+        )
+
     def test_cfg_test_items_are_blanked_to_their_extent(self):
         bad = "task.checkpoint().map_err(|r| HawDBError::Execution(r.to_string()))"
         self.write(
