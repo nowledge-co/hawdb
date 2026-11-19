@@ -22,7 +22,9 @@ pub(super) struct PublishedCanonicalRead {
     pub(super) view: Arc<crate::api::PublishedConcurrentRead>,
     pub(super) governor: RuntimeGovernor,
     pub(super) mode: GraphMode,
-    pub(super) resident_projection: Option<crate::search::SearchIndexReadSnapshot>,
+    // The publication funds the generation it holds: pinning it reserves
+    // nothing new; leases that outlive it are charged when it is retired.
+    pub(super) resident_projection: Option<crate::search::SearchIndexPublishedSnapshot>,
     pub(super) external_seed_io_slots: usize,
     pub(super) retrieval_projection_advisor: RetrievalProjectionAdvisor,
     pub(super) out_of_core_projection: Option<OutOfCoreSearchProjection>,
@@ -40,7 +42,7 @@ impl PublishedCanonicalRead {
             resident_projection: store
                 .search_projection
                 .as_ref()
-                .map(|projection| projection.index().read_snapshot()),
+                .map(|projection| projection.index().read_snapshot().publish()),
             external_seed_io_slots: store.external_seed_io_slots(),
             retrieval_projection_advisor: store.retrieval_projection_advisor.clone(),
             out_of_core_projection: store
@@ -1030,7 +1032,10 @@ impl EmbeddedStoreHandle {
             (
                 Arc::clone(&current.view),
                 current.instance_identity.clone(),
-                current.resident_projection.clone(),
+                current
+                    .resident_projection
+                    .as_ref()
+                    .map(|published| published.snapshot().clone()),
                 current
                     .out_of_core_projection
                     .as_ref()

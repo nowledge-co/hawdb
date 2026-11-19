@@ -3052,18 +3052,22 @@ Runtime governor refusals are the typed, non-poisoning
 ([#1815](https://github.com/nowledge-co/hawdb/issues/1815)). The root
 general owner runs
 `embedded_store::tests::resident_snapshot_admission_tests`. For each read that
-pins the resident search projection, another owner holds all but part of the
-governor memory. The test checks:
-- the read request is admitted;
-- funding the retained generation is refused with `memory_saturated`, the
-  generation size and `retryable`;
-- the refused read releases its admission;
-- once the memory is free, the same read succeeds and ordinary reads and
-  writes continue.
+pins the resident search projection, another owner holds the governor memory.
+The tests check:
+- with no memory left for the read's own request, the read is refused with
+  `memory_saturated` and `retryable`, releases its admission, and succeeds
+  once the memory is free, after which ordinary reads and writes continue;
+- with memory left for the read's own request plus only half the published
+  generation, the read is admitted without reserving the generation
+  ([#1852](https://github.com/nowledge-co/hawdb/issues/1852));
+- a bounded read held across a publication that replaces the generation
+  charges the superseded generation, and the charge is released when the read
+  ends.
 
 The reads are typed search, document hydration, bounded read snapshots and a
 `text_search`-seeded Cypher read. The search crate owner keeps the
-`resident_snapshot` unit tests asserting the typed variant. The binding owners
+`resident_snapshot` unit tests asserting the typed variant for a superseded
+generation and the publication funding rules. The binding owners
 pin the mapping:
 - `bindings/ffi` `error_tests::runtime_admission_refusal_is_delivered_as_its_own_kind`;
 - `bindings/python` `errors::tests::runtime_admission_refusal_is_a_retryable_execution_error_with_its_code`.

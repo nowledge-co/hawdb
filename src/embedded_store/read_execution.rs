@@ -207,7 +207,12 @@ impl EmbeddedStoreHandle {
                             Arc::clone(&publication.view),
                             publication.mode,
                             uses_external_seed
-                                .then(|| publication.resident_projection.clone())
+                                .then(|| {
+                                    publication
+                                        .resident_projection
+                                        .as_ref()
+                                        .map(|published| published.snapshot().clone())
+                                })
                                 .flatten(),
                             publication
                                 .out_of_core_projection
