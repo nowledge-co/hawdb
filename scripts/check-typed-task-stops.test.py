@@ -73,7 +73,11 @@ class TypedTaskStopsTest(unittest.TestCase):
         )
         self.assertEqual(
             CHECK.scan(self.root),
-            ["crates/search/src/query.rs:2: task check maps its stop to Execution"],
+            [
+                "crates/search/src/query.rs:2: task check maps its stop to Execution",
+                "crates/search/src/query.rs:3: Execution(format!(..{reason}..)) can hide a stop; "
+                "wrap it in HawDBError::or_stop",
+            ],
         )
 
     def test_multiline_closure_and_to_string_are_refused(self):
@@ -238,6 +242,105 @@ class TypedTaskStopsTest(unittest.TestCase):
                 "crates/executor/src/spill.rs:2: Execution(error.to_string()) can hide a stop; "
                 "use HawDBError::from_execution_error"
             ],
+        )
+
+    def test_cfg_test_items_anywhere_and_declared_test_files_are_skipped(self):
+        bad = "fn t(task: &Task) { task.checkpoint().map_err(|r| HawDBError::Execution(r.to_string())); }\n"
+        self.write(
+            "crates/search/src/reader.rs",
+            "fn ok() {}\n"
+            "#[cfg(test)]\n"
+            "mod inline {\n    " + bad + "}\n"
+            "#[cfg(test)]\n"
+            "mod reader_checks;\n"
+            "#[cfg(test)]\n"
+            '#[path = "reader/oracle.rs"]\n'
+            "mod oracle;\n"
+            "fn production(task: &Task) -> Result<()> {\n"
+            "    task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)\n"
+            "}\n",
+        )
+        self.write("crates/search/src/reader/reader_checks.rs", bad)
+        self.write("crates/search/src/reader/reader_checks/nested.rs", bad)
+        self.write("crates/search/src/reader/oracle.rs", bad)
+        self.assertEqual(CHECK.scan(self.root), [])
+        # The same code outside a test item is still found, at its real line.
+        self.write("crates/search/src/later.rs", "fn ok() {}\n#[cfg(test)]\nfn helper() {}\n" + bad)
+        self.assertEqual(len(CHECK.scan(self.root)), 2)
+        self.assertTrue(all(v.startswith("crates/search/src/later.rs:4:") for v in CHECK.scan(self.root)))
+
+    def test_point_free_conversions_must_keep_the_stop_typed(self):
+        self.write(
+            "crates/storage/src/writer.rs",
+            "fn write(task: &Task, work: &Work, admission: &A) -> Result<()> {\n"
+            "    task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;\n"
+            "    task.checkpoint().map_err(io::Error::other)?;\n"
+            "    work.checkpoint().map_err(HawDBError::from_storage_error)?;\n"
+            "    work.checkpoint().map_err(work_error)?;\n"
+            "    admission.io().map_err(flatten_to_text)?;\n"
+            "    checkpoint(task).map_err(describe)?;\n"
+            "    Ok(())\n"
+            "}\n",
+        )
+        found = CHECK.scan(self.root)
+        self.assertEqual(
+            [v.split(": ", 1)[0] for v in found],
+            ["crates/storage/src/writer.rs:6", "crates/storage/src/writer.rs:7"],
+        )
+        self.assertIn("point-free `flatten_to_text`", found[0])
+
+    def test_formatted_closure_needs_or_stop_unless_the_error_cannot_stop(self):
+        self.write(
+            "crates/search/src/encoding.rs",
+            "fn encode(result: io::Result<()>, other: Result<(), String>) -> Result<()> {\n"
+            "    result.map_err(|error: io::Error| {\n"
+            "        HawDBError::Storage(format!(\"encoding failed: {error}\"))\n"
+            "    })?;\n"
+            "    result.map_err(|error| {\n"
+            "        HawDBError::or_stop(&error, || HawDBError::Storage(format!(\"failed: {error}\")))\n"
+            "    })?;\n"
+            "    other.map_err(|error: String| HawDBError::Execution(format!(\"bad: {error}\")))?;\n"
+            "    Ok(())\n"
+            "}\n",
+        )
+        self.assertEqual(
+            CHECK.scan(self.root),
+            [
+                "crates/search/src/encoding.rs:2: Storage(format!(..{error}..)) can hide a stop; "
+                "wrap it in HawDBError::or_stop"
+            ],
+        )
+        allowlist = CHECK.FORMAT_ALLOWLIST
+        CHECK.FORMAT_ALLOWLIST = {("crates/search/src/encoding.rs", "encoding failed"): "test"}
+        try:
+            self.assertEqual(CHECK.scan(self.root), [])
+        finally:
+            CHECK.FORMAT_ALLOWLIST = allowlist
+
+    def test_work_arm_needs_or_stop(self):
+        self.write(
+            "crates/storage/src/decode.rs",
+            "fn decode(result: R) -> Result<()> {\n"
+            "    match result {\n"
+            "        Err(CheckpointOperationError::Work(error)) => Err(HawDBError::Execution(format!(\n"
+            "            \"decoding stopped: {error}\"\n"
+            "        ))),\n"
+            "        Err(CheckpointOperationError::Operation(error)) => Err(error),\n"
+            "        Ok(value) => Ok(value),\n"
+            "    }\n"
+            "}\n"
+            "fn typed(result: R) -> Result<()> {\n"
+            "    match result {\n"
+            "        Err(CheckpointOperationError::Work(error)) => Err(HawDBError::or_stop(&error, || {\n"
+            "            HawDBError::Execution(format!(\"refused: {error}\"))\n"
+            "        })),\n"
+            "        _ => Ok(()),\n"
+            "    }\n"
+            "}\n",
+        )
+        self.assertEqual(
+            CHECK.scan(self.root),
+            ["crates/storage/src/decode.rs:3: stop arm reports Execution text"],
         )
 
     def test_test_sources_and_trailing_test_modules_are_skipped(self):

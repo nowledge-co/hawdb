@@ -3089,6 +3089,17 @@ analytics, runtime-tokio and vector-projection crates. It fails on:
   message.
 
 `Storage` is allowed only through an explicit allowlist, which is empty today.
+Since [#1857](https://github.com/nowledge-co/hawdb/issues/1857) the scan also
+fails on:
+- a point-free conversion of a task check that is not known to keep the stop
+  typed;
+- a `map_err` closure, typed or not, that formats its error into
+  `Execution`/`Storage` without `HawDBError::or_stop`;
+- a `Work(..)` arm that builds text.
+
+Each exception sits in a commented allowlist with its reason. The scan blanks
+`#[cfg(test)]` items anywhere in a file and skips files declared as
+`#[cfg(test)] mod name;` (with or without `#[path]`).
 `//:typed_task_stops_script_test` holds the scan's 10 negative and positive
 controls. They cover:
 - multi-line closures and `to_string`;
