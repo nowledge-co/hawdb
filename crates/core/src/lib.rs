@@ -53,7 +53,7 @@ pub use conversion_function::ConversionFunction;
 pub use decimal::{Decimal, DecimalError, DecimalType};
 pub use error::{
     HawDBError, ReadBudgetError, ReadBudgetResource, RelationalErrorKind, RelationalErrorSurface,
-    ResourceBudgetError, ResourceBudgetKind, ResourceBudgetScope, Result,
+    ResourceBudgetError, ResourceBudgetKind, ResourceBudgetScope, Result, RuntimeAdmissionRefusal,
     SearchProjectionEpochAdvanceRefusal, SearchProjectionRebuildRefusal, StorageFormatError,
     TransactionRetryError, TransactionRetryReason, WalRecordLimit, WalRecordLimitError,
     APPEND_WAL_FORMAT, LOGICAL_DUMP_FORMAT, RELATIONAL_CHECKPOINT_LAYOUT_FORMAT,

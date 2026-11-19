@@ -1684,6 +1684,37 @@ In-memory databases have no WAL and no such limit. Replay keeps its own limits
 (`WalReplayConfig`) and still reports an oversized or damaged record as a
 storage error.
 
+## Runtime Admission Refusals
+
+The runtime governor can turn away work on an `EmbeddedStoreHandle`, or refuse
+to fund the resident search generation a read pins. Either refusal is the typed
+`HawDBError::RuntimeAdmissionRefused(RuntimeAdmissionRefusal { code,
+requested, available, retryable })`. It displays as an `execution error`
+followed by `runtime admission <code>: requested N, available M`. `code` is the
+governor's stable code, such as `memory_saturated`, `io_saturated` or
+`memory_pressure`. Python raises `ExecutionError` with
+`kind="runtime_admission_refused"` and the same fields. The C ABI kind is
+`runtime_admission_refused`.
+
+Nothing ran and nothing was written, so this is not a storage failure. Hosts
+must not poison or reopen the handle because of it. When `retryable` is true,
+other work holds the capacity or the host is short of memory: drop the request
+and retry it later unchanged. When it is false, the request can never fit the
+configured limits.
+
+Reads that pin the resident search projection need a second admission step.
+After the read itself is admitted, the read funds the retained search generation
+it pins from the same governor memory. Concurrent readers of one generation
+share that charge. This step is refused with the same typed error. The reads
+that pin the resident projection are:
+- typed search: `search_candidates*`, `retrieve_knowledge*`,
+  `search_projection_documents*` and `search_candidate_shadow_evidence_json`;
+- `with_bounded_read_snapshot*`;
+- Cypher reads seeded by `text_search` or `vector_search`.
+
+Other graph and relational reads do not pin it. Neither do out-of-core
+projections, whose buffers are part of the read's own admission.
+
 ## Relationship Locality
 
 The current in-memory adjacency key is:

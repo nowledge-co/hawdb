@@ -1889,7 +1889,7 @@ impl EmbeddedStoreHandle {
             if error.is_retryable() {
                 governor.record_admission_wait(request, error.code, 0);
             }
-            HawDBError::Execution(error.to_string())
+            HawDBError::from(error)
         })?;
         // Capture after admission so a write completed during admission is visible.
         // Snapshot construction and observation refresh run after unlocking.
@@ -2030,7 +2030,7 @@ pub(super) fn try_admit_runtime(
         if error.is_retryable() {
             governor.record_admission_wait(request, error.code, 0);
         }
-        HawDBError::Execution(error.to_string())
+        HawDBError::from(error)
     })
 }
 

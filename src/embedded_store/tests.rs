@@ -7779,6 +7779,7 @@ mod catch_up_admission_tests;
 mod externally_owned_search_kinds_tests;
 mod initial_import_checkpoint_tests;
 mod object_reclamation_tests;
+mod resident_snapshot_admission_tests;
 mod schema_change_log_gap_tests;
 mod schema_maintenance_tests;
 mod search_cleanup_ceiling_tests;

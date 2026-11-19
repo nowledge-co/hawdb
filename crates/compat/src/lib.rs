@@ -453,6 +453,7 @@ impl ExpectedErrorClass {
             | HawDBError::BranchEvidenceBudgetExceeded { .. }
             | HawDBError::ReadBudgetExceeded(_)
             | HawDBError::WalRecordLimitExceeded(_)
+            | HawDBError::RuntimeAdmissionRefused(_)
             | HawDBError::ReadOnly { .. }
             | HawDBError::ResourceBudgetExceeded(_)
             | HawDBError::GraphExpansionCandidateLimitExceeded { .. }
