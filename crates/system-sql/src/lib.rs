@@ -326,7 +326,9 @@ pub fn slow_query_log_jsonl(
     for record in records {
         let line = serde_json::to_string(&slow_query_record_json(record, include_query_text))
             .map_err(|error| {
-                HawDBError::Execution(format!("slow query log JSON error: {error}"))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!("slow query log JSON error: {error}"))
+                })
             })?;
         jsonl.push_str(&line);
         jsonl.push('\n');

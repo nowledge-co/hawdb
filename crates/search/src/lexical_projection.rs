@@ -507,8 +507,11 @@ impl ManifestBody {
         task.map_or(Ok(()), checkpoint)?;
         let envelope = serde_json::from_slice::<ManifestEnvelope>(bytes);
         task.map_or(Ok(()), checkpoint)?;
-        let envelope = envelope
-            .map_err(|error| HawDBError::Storage(format!("invalid lexical manifest: {error}")))?;
+        let envelope = envelope.map_err(|error| {
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!("invalid lexical manifest: {error}"))
+            })
+        })?;
         if manifest_encoding::checksum_with_context(&envelope.body, task)? != envelope.checksum {
             return Err(HawDBError::Storage(
                 "lexical projection manifest checksum mismatch".to_string(),
@@ -3605,9 +3608,11 @@ fn decode_posting_block(
         let mut previous = None;
         while let Some((term_bytes, value)) = stream.next() {
             let term = std::str::from_utf8(term_bytes).map_err(|error| {
-                HawDBError::Storage(format!(
-                    "lexical term dictionary has invalid UTF-8: {error}"
-                ))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Storage(format!(
+                        "lexical term dictionary has invalid UTF-8: {error}"
+                    ))
+                })
             })?;
             admit_term_bytes(
                 term.len() as u64,
@@ -3742,12 +3747,16 @@ thread_local! {
 
 fn verified_dictionary<D: AsRef<[u8]>>(bytes: D) -> Result<fst::Map<D>> {
     let dictionary = fst::Map::new(bytes).map_err(|error| {
-        HawDBError::Storage(format!("invalid lexical term dictionary: {error}"))
+        HawDBError::or_stop(&error, || {
+            HawDBError::Storage(format!("invalid lexical term dictionary: {error}"))
+        })
     })?;
     #[cfg(test)]
     DICTIONARY_VERIFICATIONS.with(|count| count.set(count.get() + 1));
     dictionary.as_fst().verify().map_err(|error| {
-        HawDBError::Storage(format!("invalid lexical term dictionary checksum: {error}"))
+        HawDBError::or_stop(&error, || {
+            HawDBError::Storage(format!("invalid lexical term dictionary checksum: {error}"))
+        })
     })?;
     Ok(dictionary)
 }
@@ -3909,8 +3918,11 @@ impl<'a> SliceCursor<'a> {
                 "lexical string uses {length} bytes, exceeding {max}"
             )));
         }
-        std::str::from_utf8(self.bytes(length)?)
-            .map_err(|error| HawDBError::Storage(format!("invalid lexical UTF-8: {error}")))
+        std::str::from_utf8(self.bytes(length)?).map_err(|error| {
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!("invalid lexical UTF-8: {error}"))
+            })
+        })
     }
 
     fn is_empty(&self) -> bool {

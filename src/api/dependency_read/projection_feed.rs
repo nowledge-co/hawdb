@@ -130,7 +130,7 @@ impl PreparedProjectionFeed {
                 .dependencies
                 .graph
                 .record(key)
-                .map_err(|error| HawDBError::Execution(error.to_string()))?;
+                .map_err(HawDBError::from_execution_error)?;
         }
         Ok(())
     }

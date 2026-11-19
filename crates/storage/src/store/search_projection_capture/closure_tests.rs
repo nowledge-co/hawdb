@@ -569,6 +569,8 @@ fn canonical_preimage_refusals_do_not_poison_the_store() {
             HawDBError::Storage(_)
                 | HawDBError::FileDescriptors(_)
                 | HawDBError::ResourceBudgetExceeded(_)
+                // A refusal wrapping a cancellation is the typed task stop.
+                | HawDBError::RuntimeTaskStopped(_)
         ));
         store.poison_on_storage_error::<()>(&Err(error));
         store.ensure_usable().unwrap();

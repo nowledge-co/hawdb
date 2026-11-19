@@ -183,17 +183,23 @@ where
     {
         for line in reader.lines() {
             let line = line.map_err(|error| {
-                HawDBError::Execution(format!("failed to read shadow request: {error}"))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!("failed to read shadow request: {error}"))
+                })
             })?;
             let response = match serde_json::from_str::<serde_json::Value>(&line) {
                 Ok(request) => self.handle_request(&request),
                 Err(error) => json_error("parse", format!("invalid JSON: {error}")),
             };
             writeln!(writer, "{response}").map_err(|error| {
-                HawDBError::Execution(format!("failed to write shadow response: {error}"))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!("failed to write shadow response: {error}"))
+                })
             })?;
             writer.flush().map_err(|error| {
-                HawDBError::Execution(format!("failed to flush shadow response: {error}"))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!("failed to flush shadow response: {error}"))
+                })
             })?;
         }
         Ok(())
@@ -722,7 +728,9 @@ impl ExternalShadowCommand {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let mut child = command.spawn().map_err(|error| {
-            HawDBError::Execution(format!("failed to spawn external shadow engine: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Execution(format!("failed to spawn external shadow engine: {error}"))
+            })
         })?;
         let stdin = child.stdin.take().ok_or_else(|| {
             HawDBError::Execution("external shadow engine did not expose stdin".to_string())
@@ -741,9 +749,11 @@ impl ExternalShadowCommand {
                     .write(true)
                     .open(path)
                     .map_err(|error| {
-                        HawDBError::Execution(format!(
-                            "failed to open external shadow trace: {error}"
-                        ))
+                        HawDBError::or_stop(&error, || {
+                            HawDBError::Execution(format!(
+                                "failed to open external shadow trace: {error}"
+                            ))
+                        })
                     })
             })
             .transpose()?;
@@ -790,7 +800,9 @@ impl ExternalShadowCommand {
         }
         self.trace_event(trace_sequence, "request", &request);
         let line = serde_json::to_string(&request).map_err(|error| {
-            HawDBError::Execution(format!("failed to encode shadow request: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Execution(format!("failed to encode shadow request: {error}"))
+            })
         })?;
         writeln!(self.stdin, "{line}").map_err(|error| {
             let message = format!(
@@ -1000,7 +1012,9 @@ pub fn external_shadow_ready_missing_capabilities(
 
 fn summarize_external_shadow_trace(trace_path: &str) -> Result<ExternalShadowTraceSummary> {
     let file = File::open(trace_path).map_err(|error| {
-        HawDBError::Execution(format!("failed to open external shadow trace: {error}"))
+        HawDBError::or_stop(&error, || {
+            HawDBError::Execution(format!("failed to open external shadow trace: {error}"))
+        })
     })?;
     let mut summary = ExternalShadowTraceSummary::default();
     let mut request_sequences = std::collections::BTreeSet::new();
@@ -1631,11 +1645,9 @@ pub(super) fn decode_external_session_response(
             })?;
             Ok(QueryOutput {
                 rows: rows_from_json(engine_name, rows)
-                    .map_err(|error| {
-                    HawDBError::Execution(format!(
+                    .map_err(|error| HawDBError::or_stop(&error, || HawDBError::Execution(format!(
                         "shadow engine '{engine_name}' session output {index} row decoding failed: {error}"
-                    ))
-                })?
+                    ))))?
                     .into(),
             })
         })

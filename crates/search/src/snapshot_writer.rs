@@ -180,9 +180,12 @@ pub(crate) fn write_search_snapshot_with_context<'a>(
         .truncate(true)
         .open(&compressed_path)?;
     let counted = CountingChecksumWriter::new(compressed_file);
-    let mut encoder =
-        hawdb_storage::compression::Encoder::new(counted, SEARCH_COMPRESSION_LEVEL)
-            .map_err(|error| HawDBError::Storage(format!("zstd compression failed: {error}")))?;
+    let mut encoder = hawdb_storage::compression::Encoder::new(counted, SEARCH_COMPRESSION_LEVEL)
+        .map_err(|error| {
+        HawDBError::or_stop(&error, || {
+            HawDBError::Storage(format!("zstd compression failed: {error}"))
+        })
+    })?;
     let mut body_checksum = Crc32cHasher::new();
     let mut uncompressed_checksum = Crc32cHasher::new();
     let mut uncompressed_bytes = 0u64;
@@ -341,9 +344,11 @@ pub(crate) fn write_search_snapshot_with_context<'a>(
         &mut uncompressed_bytes,
         footer.as_bytes(),
     )?;
-    let counted = encoder
-        .finish()
-        .map_err(|error| HawDBError::Storage(format!("zstd compression failed: {error}")))?;
+    let counted = encoder.finish().map_err(|error| {
+        HawDBError::or_stop(&error, || {
+            HawDBError::Storage(format!("zstd compression failed: {error}"))
+        })
+    })?;
     let (mut compressed_file, compressed_bytes, compressed_checksum) = counted.finish()?;
     compressed_file.sync_all()?;
     compressed_file.seek(SeekFrom::Start(0))?;

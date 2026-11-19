@@ -611,7 +611,7 @@ pub fn try_projected_graph_with_filters(
         layout,
         budget,
     )
-    .map_err(|error| HawDBError::Execution(error.to_string()))
+    .map_err(HawDBError::from_execution_error)
 }
 
 fn try_projected_graph_with_filters_admitted(

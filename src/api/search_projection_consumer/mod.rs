@@ -418,7 +418,7 @@ impl Database {
             .reserve_retained_memory(
                 hawdb_storage::consumer_allocation::CONSUMER_SELECTION_MEMORY_BOUND,
             )
-            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+            .map_err(HawDBError::from_execution_error)?;
         let allocation = self
             .runtime
             .get()?
@@ -801,7 +801,7 @@ impl Database {
                 .reserve_retained_memory(
                     hawdb_storage::consumer_allocation::CONSUMER_SELECTION_MEMORY_BOUND,
                 )
-                .map_err(|error| HawDBError::Execution(error.to_string()))?;
+                .map_err(HawDBError::from_execution_error)?;
             let allocation = self
                 .runtime
                 .get()?
@@ -907,14 +907,14 @@ impl Database {
                         HawDBError::Execution(error.to_string())
                     }
                     crate::VectorIndexBuildError::Query(error) => error,
-                    error => HawDBError::Execution(error.to_string()),
+                    error => HawDBError::from_execution_error(error),
                 })?;
         let mut snapshot = self.begin_read_transaction_with_context(&task)?;
         let recovery_memory = permit
             .reserve_retained_memory(
                 hawdb_storage::consumer_allocation::CONSUMER_SELECTION_MEMORY_BOUND,
             )
-            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+            .map_err(HawDBError::from_execution_error)?;
         publication_failpoint(PublicationStage::BeforeCheckpoint)?;
         let allocation = self
             .runtime
@@ -1261,14 +1261,14 @@ impl Database {
     ) -> Result<hawdb_qos::RuntimePermit> {
         self.consumer_governor()?
             .try_admit(request)
-            .map_err(|error| HawDBError::Execution(error.to_string()))
+            .map_err(HawDBError::from_execution_error)
     }
 
     fn consumer_governor(&mut self) -> Result<hawdb_qos::RuntimeGovernor> {
         let governor = self
             .retained_runtime
             .governor(2)
-            .map_err(|error| HawDBError::Execution(error.to_string()))?
+            .map_err(HawDBError::from_execution_error)?
             .clone();
         if self.runtime_governor.is_none() {
             self.set_runtime_governor(governor.clone());
@@ -1294,7 +1294,7 @@ impl Database {
         self.admit_vector_consumer_publication(task)
             .map_err(|error| match error {
                 crate::VectorIndexBuildError::Query(error) => error,
-                error => HawDBError::Execution(error.to_string()),
+                error => HawDBError::from_execution_error(error),
             })
     }
 
@@ -1326,7 +1326,7 @@ impl Database {
                     .with_io_wave_slots(1),
             )
             .map(Arc::new)
-            .map_err(|error| HawDBError::Execution(error.to_string()))
+            .map_err(HawDBError::from_execution_error)
     }
 
     fn reload_consumer_registry_if_unavailable(&mut self) -> SearchProjectionConsumerResult<()> {

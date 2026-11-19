@@ -22,10 +22,15 @@ a deadline or a cancellation. This scans production Rust sources (test files
 and trailing `#[cfg(test)]` modules are skipped) for two shapes:
 
 - a task check (`checkpoint()`, `check_cancellation()`,
-  `check_deadline_at(..)`) whose `map_err` closure builds `Execution` or
+  `check_deadline_at(..)`) or I/O admission (`acquire_io_wave(..)`,
+  `io_wave()`, `io()`) whose `map_err` closure builds `Execution` or
   `Storage`;
-- a `Stopped(..)` / `Cancelled(..)` match arm (a bound name, `_` or `..`) whose
-  body builds `Execution` or `Storage`, whatever message it carries.
+- a `Stopped(..)` / `Cancelled(..)` match arm (a bound name, `_` or `..`,
+  including rustfmt-wrapped forms) whose body builds `Execution` or `Storage`,
+  whatever message it carries;
+- a `map_err(|error| HawDBError::Execution(error.to_string()))` closure, which
+  would hide a stop carried by `error`; use
+  `HawDBError::from_execution_error`.
 
 `Storage` is allowed only at the reviewed sites in `STORAGE_ALLOWLIST`, where
 a stop can follow a durable rename and must keep poisoning hosts that treat
@@ -56,11 +61,15 @@ SOURCE_ROOTS = (
 # they reach a `HawDBError`.
 STORAGE_ALLOWLIST = frozenset()
 TASK_CHECK = re.compile(
-    r"(?:checkpoint\(\)|check_cancellation\(\)|check_deadline_at\([^()]*\))"
+    r"(?:checkpoint\(\)|check_cancellation\(\)|check_deadline_at\([^()]*\)"
+    r"|acquire_io_wave\([^()]*\)|\bio_wave\(\)|\.io\(\))"
     r"\s*\.map_err\(\s*\|(\w+)\|"
 )
+STRINGIFIED_EXECUTION = re.compile(
+    r"\.map_err\(\s*\|(\w+)\|\s*\{?\s*(?:[\w:]+::)?HawDBError::Execution\(\s*\1\.to_string\(\)\s*\)"
+)
 STOP_ARM = re.compile(
-    r"\b(?:Stopped|Cancelled)\s*(?:\(\s*(?:\w+|\.\.)\s*\)|\{[^{}]*\})\s*=>"
+    r"\b(?:Stopped|Cancelled)\s*(?:\(\s*(?:\w+|\.\.)\s*,?\s*\)|\{[^{}]*\})\s*=>"
 )
 TEXT_VARIANT = re.compile(r"\b(Execution|Storage)\(")
 
@@ -147,6 +156,12 @@ def violations_in(relative, source):
         if variant and not allowed(relative, text, match.start(), variant):
             line = text.count("\n", 0, match.start()) + 1
             found.append(f"{relative}:{line}: task check maps its stop to {variant}")
+    for match in STRINGIFIED_EXECUTION.finditer(text):
+        line = text.count("\n", 0, match.start()) + 1
+        found.append(
+            f"{relative}:{line}: Execution(error.to_string()) can hide a stop; "
+            "use HawDBError::from_execution_error"
+        )
     for match in STOP_ARM.finditer(text):
         variant = text_variant(arm_body(text, match.end()))
         if variant and not allowed(relative, text, match.start(), variant):

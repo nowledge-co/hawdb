@@ -2783,9 +2783,11 @@ fn validate_property_default(
         }
         PropertyDefault::Value(value) => {
             crate::canonical::validate_property_value(value).map_err(|error| {
-                HawDBError::Storage(format!(
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Storage(format!(
                     "property schema {table}.{property} default violates storage limits: {error}"
                 ))
+                })
             })?;
             value.clone()
         }

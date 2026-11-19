@@ -654,7 +654,7 @@ impl<'a> NumericFragment<'a> {
                 Some(worker_limit) => SharedExecutorPool::shared_bounded(worker_limit),
                 None => SharedExecutorPool::shared_default(),
             }
-            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+            .map_err(HawDBError::from_execution_error)?;
             Some(pool)
         };
         let pool_parallelism = pool

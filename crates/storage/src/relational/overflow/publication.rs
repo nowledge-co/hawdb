@@ -293,6 +293,8 @@ impl std::error::Error for RelationalOverflowPublicationError {
         match self {
             Self::FileDescriptors(error) => Some(error),
             Self::UnsupportedFormat(error) => Some(error),
+            // Every publisher stop is before its rename.
+            Self::Stopped(reason) => Some(reason),
             _ => None,
         }
     }

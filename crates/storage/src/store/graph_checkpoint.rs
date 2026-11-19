@@ -417,6 +417,7 @@ impl GraphStore {
                         memory_bytes: admitted_memory_bytes,
                         io_slots: 1,
                     })
+                    // A string admission refusal carries no task stop.
                     .map_err(|error| {
                         HawDBError::Storage(format!(
                             "row-page compaction admission denied: {error}"
@@ -527,6 +528,7 @@ impl GraphStore {
                         memory_bytes: admitted_memory_bytes,
                         io_slots: 1,
                     })
+                    // A string admission refusal carries no task stop.
                     .map_err(|error| {
                         HawDBError::Storage(format!(
                             "relational overflow compaction admission denied: {error}"

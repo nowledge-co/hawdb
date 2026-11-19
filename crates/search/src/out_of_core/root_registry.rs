@@ -407,9 +407,7 @@ impl RootRef {
         name: &str,
         admission: &ReadAdmission<'_>,
     ) -> Result<()> {
-        let _io = admission
-            .io()
-            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+        let _io = admission.io().map_err(HawDBError::from_execution_error)?;
         let file = {
             let native = self
                 .state()
@@ -453,9 +451,7 @@ impl RootRef {
         admission: &ReadAdmission<'_>,
     ) -> Result<File> {
         let file = {
-            let _io = admission
-                .io()
-                .map_err(|error| HawDBError::Execution(error.to_string()))?;
+            let _io = admission.io().map_err(HawDBError::from_execution_error)?;
             let native = self
                 .state()
                 .native
@@ -480,9 +476,7 @@ impl RootRef {
         let entry_memory =
             admission.retained(size_of::<Entry>() + 2 * size_of::<usize>() + pins::BASE_BYTES)?;
         let directory = {
-            let _io = admission
-                .io()
-                .map_err(|e| HawDBError::Execution(e.to_string()))?;
+            let _io = admission.io().map_err(HawDBError::from_execution_error)?;
             SourceDirectory::capture(root, context)?
         };
         let identity = directory.identity();
@@ -555,9 +549,7 @@ impl RootRef {
         #[cfg(test)]
         tests::hook(&tests::AFTER_INITIALIZING);
         {
-            let _io = admission
-                .io()
-                .map_err(|e| HawDBError::Execution(e.to_string()))?;
+            let _io = admission.io().map_err(HawDBError::from_execution_error)?;
             let mut native = owner
                 .state()
                 .native

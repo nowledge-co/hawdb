@@ -476,9 +476,11 @@ impl GraphStore {
             delta_config,
         )
         .map_err(|error| {
-            crate::error::HawDBError::Storage(format!(
-                "canonical relational row root could not be pinned: {error}"
-            ))
+            crate::error::HawDBError::or_stop(&error, || {
+                crate::error::HawDBError::Storage(format!(
+                    "canonical relational row root could not be pinned: {error}"
+                ))
+            })
         })?;
         let expected_previous =
             match RelationalRowDeltaReader::latest_generation(&root, delta_config) {
@@ -1398,7 +1400,9 @@ impl GraphStore {
                 work,
             )
             .map_err(|error| {
-                super::HawDBError::Storage(format!("private row recovery: {error}"))
+                super::HawDBError::or_stop(&error, || {
+                    super::HawDBError::Storage(format!("private row recovery: {error}"))
+                })
             })?;
         let root = self
             .durable
@@ -1420,14 +1424,18 @@ impl GraphStore {
                 Some(report.recorded_resident_bytes),
             )
             .map_err(|error| {
-                super::HawDBError::Storage(format!("pin private row recovery: {error}"))
+                super::HawDBError::or_stop(&error, || {
+                    super::HawDBError::Storage(format!("pin private row recovery: {error}"))
+                })
             })?;
         let selector = crate::relational::PreparedRelationalRecoverySelector::prepare(
             &immutable,
             root.join(crate::relational::RELATIONAL_ROW_DELTA_MANIFEST_FILE),
         )
         .map_err(|error| {
-            super::HawDBError::Storage(format!("prepare private row selector: {error}"))
+            super::HawDBError::or_stop(&error, || {
+                super::HawDBError::Storage(format!("prepare private row selector: {error}"))
+            })
         })?
         .with_generation_alias(
             immutable.clone(),

@@ -172,9 +172,11 @@ impl<T: Serialize> PreparedEnvelope<'_, T> {
             .map(|memory| memory.retained.reserve(length))
             .transpose()?;
         let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(length)
-            .map_err(|error| HawDBError::Storage(format!("{name} allocation failed: {error}")))?;
+        bytes.try_reserve_exact(length).map_err(|error| {
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!("{name} allocation failed: {error}"))
+            })
+        })?;
         // Both passes borrow the same immutable body. The fixed output boundary
         // also rejects serializers that change their length after preparation.
         if bytes.capacity() > length {

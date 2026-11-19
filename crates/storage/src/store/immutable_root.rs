@@ -375,7 +375,11 @@ impl GraphStore {
             branch.metadata_revision,
             publication.metadata(),
         )
-        .map_err(|error| HawDBError::Storage(format!("checkpoint branch validation: {error}")))?;
+        .map_err(|error| {
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!("checkpoint branch validation: {error}"))
+            })
+        })?;
         branch_head::validate_active_wal_prefix_from_file(
             &durable.wal_path,
             prepared.head.active_wal,
@@ -2507,7 +2511,9 @@ fn publish_sealed_root(
     let manifest_bytes = fs::read(durable.manifest_path())?;
     let manifest =
         DurableManifest::decode(std::str::from_utf8(&manifest_bytes).map_err(|error| {
-            HawDBError::Storage(format!("decode durable manifest bytes: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!("decode durable manifest bytes: {error}"))
+            })
         })?)?;
     let durable_manifest = ObjectReference::for_bytes(
         ObjectKind::DurableManifest,

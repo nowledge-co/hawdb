@@ -44,18 +44,26 @@ pub(crate) fn encode_owned_durable_text_with_work_context(
                 DEFAULT_COMPRESSION_LEVEL,
                 work,
             )
-            .map_err(|error| HawDBError::Storage(format!("zstd compression failed: {error}")))?;
+            .map_err(|error| {
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Storage(format!("zstd compression failed: {error}"))
+                })
+            })?;
             unit.finish();
             for block in text.as_bytes().chunks(64 * 1024) {
                 let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
                 encoder.write_all(block).map_err(|error| {
-                    HawDBError::Storage(format!("zstd compression failed: {error}"))
+                    HawDBError::or_stop(&error, || {
+                        HawDBError::Storage(format!("zstd compression failed: {error}"))
+                    })
                 })?;
                 unit.finish();
             }
             let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
             let output = encoder.finish().map_err(|error| {
-                HawDBError::Storage(format!("zstd compression failed: {error}"))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Storage(format!("zstd compression failed: {error}"))
+                })
             })?;
             let output = output.into_bytes();
             unit.finish();
@@ -124,13 +132,17 @@ pub fn encode_durable_text_with_work_context(
             for block in text.as_bytes().chunks(64 * 1024) {
                 let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
                 encoder.write_all(block).map_err(|error| {
-                    HawDBError::Storage(format!("zstd compression failed: {error}"))
+                    HawDBError::or_stop(&error, || {
+                        HawDBError::Storage(format!("zstd compression failed: {error}"))
+                    })
                 })?;
                 unit.finish();
             }
             let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
             let compressed = encoder.finish().map_err(|error| {
-                HawDBError::Storage(format!("zstd compression failed: {error}"))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Storage(format!("zstd compression failed: {error}"))
+                })
             })?;
             unit.finish();
             let compressed_checksum = work
@@ -157,7 +169,11 @@ pub fn encode_durable_text_with_work_context(
 
 fn encode_zstd_durable_text(text: &str) -> Result<Vec<u8>> {
     let compressed = crate::compression::encode_all(text.as_bytes(), DEFAULT_COMPRESSION_LEVEL)
-        .map_err(|error| HawDBError::Storage(format!("zstd compression failed: {error}")))?;
+        .map_err(|error| {
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!("zstd compression failed: {error}"))
+            })
+        })?;
     let compressed_checksum = checksum_bytes(&compressed);
     let uncompressed_checksum = checksum_bytes(text.as_bytes());
     let header = format!(
@@ -198,9 +214,11 @@ fn decode_compressed_durable_text(
         )));
     };
     let header = std::str::from_utf8(&bytes[..header_end]).map_err(|error| {
-        HawDBError::Storage(format!(
-            "{name} compressed envelope header is invalid: {error}"
-        ))
+        HawDBError::or_stop(&error, || {
+            HawDBError::Storage(format!(
+                "{name} compressed envelope header is invalid: {error}"
+            ))
+        })
     })?;
     let payload = &bytes[header_end + 2..];
     let mut codec = None;
@@ -281,7 +299,9 @@ fn decode_compressed_durable_text(
         .unwrap_or(expected_uncompressed_len as u64)
         .min(usize::MAX as u64);
     let mut decoder = crate::compression::Decoder::new(Cursor::new(payload)).map_err(|error| {
-        HawDBError::Storage(format!("{name} zstd decompression failed: {error}"))
+        HawDBError::or_stop(&error, || {
+            HawDBError::Storage(format!("{name} zstd decompression failed: {error}"))
+        })
     })?;
     let initial_capacity = expected_uncompressed_len.min(8 * 1024 * 1024);
     let mut decoded = Vec::with_capacity(initial_capacity);
@@ -290,7 +310,9 @@ fn decode_compressed_durable_text(
         .take(decode_limit.saturating_add(1))
         .read_to_end(&mut decoded)
         .map_err(|error| {
-            HawDBError::Storage(format!("{name} zstd decompression failed: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!("{name} zstd decompression failed: {error}"))
+            })
         })?;
     if decoded.len() as u64 > decode_limit {
         return Err(HawDBError::Storage(format!(
@@ -315,9 +337,11 @@ fn decode_compressed_durable_text(
         )));
     }
     String::from_utf8(decoded).map_err(|error| {
-        HawDBError::Storage(format!(
-            "{name} decompressed payload is not valid UTF-8: {error}"
-        ))
+        HawDBError::or_stop(&error, || {
+            HawDBError::Storage(format!(
+                "{name} decompressed payload is not valid UTF-8: {error}"
+            ))
+        })
     })
 }
 

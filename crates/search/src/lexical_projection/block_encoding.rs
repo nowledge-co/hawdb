@@ -109,14 +109,18 @@ fn encode_postings(entries: &[Posting], writer: &mut impl Write) -> Result<()> {
                 (u64::from(offset) << 32) | u64::from(document_frequency),
             )
             .map_err(|error| {
-                HawDBError::Storage(format!("invalid lexical term dictionary: {error}"))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Storage(format!("invalid lexical term dictionary: {error}"))
+                })
             })?;
         frames.extend_from_slice(&frame);
         previous_term = Some(term);
         start = end;
     }
     let dictionary = dictionary.into_inner().map_err(|error| {
-        HawDBError::Storage(format!("invalid lexical term dictionary: {error}"))
+        HawDBError::or_stop(&error, || {
+            HawDBError::Storage(format!("invalid lexical term dictionary: {error}"))
+        })
     })?;
     writer.write_all(
         &u32::try_from(dictionary.len())

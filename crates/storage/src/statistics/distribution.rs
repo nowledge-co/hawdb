@@ -106,7 +106,11 @@ pub fn encode(histogram: &CompressedHistogram) -> crate::Result<String> {
             .collect(),
     };
     serde_json::to_string(&image).map_err(|error| {
-        hawdb_core::HawDBError::Storage(format!("cannot encode optimizer distribution: {error}"))
+        hawdb_core::HawDBError::or_stop(&error, || {
+            hawdb_core::HawDBError::Storage(format!(
+                "cannot encode optimizer distribution: {error}"
+            ))
+        })
     })
 }
 

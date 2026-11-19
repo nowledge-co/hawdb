@@ -958,9 +958,11 @@ impl SearchAccessControlContext {
                         .collect::<Vec<_>>(),
                 )
                 .map_err(|error| {
-                    HawDBError::Storage(format!(
-                        "failed to encode access control visibility predicate: {error}"
-                    ))
+                    HawDBError::or_stop(&error, || {
+                        HawDBError::Storage(format!(
+                            "failed to encode access control visibility predicate: {error}"
+                        ))
+                    })
                 })?,
             );
         }
@@ -3134,7 +3136,7 @@ impl SearchIndex {
         task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
         let _io = task
             .acquire_io_wave(NonZeroUsize::MIN)
-            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+            .map_err(HawDBError::from_execution_error)?;
         let memory = build_memory::BuildMemory::new(task)?;
         let started = hawdb_core::time::Instant::now();
         let result = (|| {
@@ -9094,8 +9096,13 @@ fn split_checksum(text: &str) -> Result<(&str, u64)> {
 
 fn encode_search_snapshot_text(text: &str) -> Result<Vec<u8>> {
     let compressed =
-        hawdb_storage::compression::encode_all(text.as_bytes(), SEARCH_COMPRESSION_LEVEL)
-            .map_err(|error| HawDBError::Storage(format!("zstd compression failed: {error}")))?;
+        hawdb_storage::compression::encode_all(text.as_bytes(), SEARCH_COMPRESSION_LEVEL).map_err(
+            |error| {
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Storage(format!("zstd compression failed: {error}"))
+                })
+            },
+        )?;
     let compressed_checksum = checksum_bytes(&compressed);
     let uncompressed_checksum = checksum_bytes(text.as_bytes());
     let header = search_snapshot_compression_header(
@@ -9206,9 +9213,11 @@ fn decode_search_snapshot_text_bounded(
     decode_search_snapshot_text_bounded_with(bytes, max_uncompressed_bytes, |payload, expected| {
         let decoder =
             hawdb_storage::compression::Decoder::new(Cursor::new(payload)).map_err(|error| {
-                HawDBError::Storage(format!(
-                    "search projection zstd decompression failed: {error}"
-                ))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Storage(format!(
+                        "search projection zstd decompression failed: {error}"
+                    ))
+                })
             })?;
         read_search_snapshot_decoder(decoder, expected)
     })
@@ -9238,9 +9247,11 @@ fn decode_search_snapshot_text_bounded_with(
         ));
     };
     let header = std::str::from_utf8(&bytes[..header_end]).map_err(|error| {
-        HawDBError::Storage(format!(
-            "search projection compressed envelope header is invalid: {error}"
-        ))
+        HawDBError::or_stop(&error, || {
+            HawDBError::Storage(format!(
+                "search projection compressed envelope header is invalid: {error}"
+            ))
+        })
     })?;
     let payload = &bytes[header_end + 2..];
     let SnapshotHeader {
@@ -9307,9 +9318,11 @@ fn decode_search_snapshot_text_bounded_with(
         )));
     }
     String::from_utf8(decoded).map_err(|error| {
-        HawDBError::Storage(format!(
-            "search projection decompressed payload is not valid UTF-8: {error}"
-        ))
+        HawDBError::or_stop(&error, || {
+            HawDBError::Storage(format!(
+                "search projection decompressed payload is not valid UTF-8: {error}"
+            ))
+        })
     })
 }
 
@@ -9320,9 +9333,11 @@ fn read_search_snapshot_decoder(decoder: impl Read, expected_len: usize) -> Resu
         .take((expected_len as u64).saturating_add(1))
         .read_to_end(&mut decoded)
         .map_err(|error| {
-            HawDBError::Storage(format!(
-                "search projection zstd decompression failed: {error}"
-            ))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!(
+                    "search projection zstd decompression failed: {error}"
+                ))
+            })
         })?;
     Ok(decoded)
 }

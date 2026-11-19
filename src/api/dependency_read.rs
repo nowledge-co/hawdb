@@ -285,7 +285,7 @@ pub(super) fn collect_node_dependencies(
     };
     dependencies
         .record(key)
-        .map_err(|error| HawDBError::Execution(error.to_string()))
+        .map_err(HawDBError::from_execution_error)
 }
 
 // Bounds may move through local filters, but never through projections,
@@ -388,7 +388,7 @@ fn collect_scalar_read_keys(
             {
                 dependencies
                     .record(key)
-                    .map_err(|error| HawDBError::Execution(error.to_string()))?;
+                    .map_err(HawDBError::from_execution_error)?;
             } else {
                 // The writer uses the same representability bound, retaining
                 // its label-domain summary for unsupported/oversized values.
@@ -406,7 +406,7 @@ fn record_node_domain(label: &str, dependencies: &mut GraphReadDependencies) -> 
         .record(VersionKey::ReadNodeDomain(
             (!label.is_empty()).then(|| label.into()),
         ))
-        .map_err(|error| HawDBError::Execution(error.to_string()))
+        .map_err(HawDBError::from_execution_error)
 }
 
 fn predicate_reads_relationships(predicate: &crate::planner::Predicate) -> bool {

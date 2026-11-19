@@ -85,7 +85,8 @@ class TypedTaskStopsTest(unittest.TestCase):
             "    })\n"
             "}\n",
         )
-        self.assertEqual(len(CHECK.scan(self.root)), 1)
+        # Both the task-check rule and the stringified-error rule apply.
+        self.assertEqual(len(CHECK.scan(self.root)), 2)
 
     def test_stop_arm_formatted_into_execution_is_refused(self):
         self.write(
@@ -179,6 +180,65 @@ class TypedTaskStopsTest(unittest.TestCase):
             "}\n",
         )
         self.assertEqual(CHECK.scan(self.root), [])
+
+    def test_io_admission_mapped_to_execution_is_refused(self):
+        self.write(
+            "crates/search/src/consumer.rs",
+            "fn read(task: &Task, admission: &Admission, work: &Work) -> Result<()> {\n"
+            "    let _io = task\n"
+            "        .acquire_io_wave(NonZeroUsize::MIN)\n"
+            "        .map_err(|error| HawDBError::Execution(format!(\"io {error}\")))?;\n"
+            "    let _io = admission.io().map_err(|error| HawDBError::Storage(error.to_string()))?;\n"
+            "    let _io = work.io_wave().map_err(|error| HawDBError::Execution(error.to_string()))?;\n"
+            "    let _io = admission.io().map_err(HawDBError::from)?;\n"
+            "    Ok(())\n"
+            "}\n",
+        )
+        found = CHECK.scan(self.root)
+        self.assertIn(
+            "crates/search/src/consumer.rs:3: task check maps its stop to Execution", found
+        )
+        self.assertIn(
+            "crates/search/src/consumer.rs:5: task check maps its stop to Storage", found
+        )
+        self.assertIn(
+            "crates/search/src/consumer.rs:6: task check maps its stop to Execution", found
+        )
+        self.assertFalse(any(":7:" in violation for violation in found), found)
+
+    def test_rustfmt_wrapped_stop_arm_is_refused(self):
+        self.write(
+            "crates/storage/src/rows.rs",
+            "fn map(error: E) -> HawDBError {\n"
+            "    match error {\n"
+            "        hawdb_storage::relational::RelationalRowPageSnapshotReadError::Stopped(\n"
+            "            reason,\n"
+            "        ) => crate::error::HawDBError::Execution(format!(\"{reason}\")),\n"
+            "        _ => crate::error::HawDBError::Storage(error.to_string()),\n"
+            "    }\n"
+            "}\n",
+        )
+        self.assertEqual(
+            CHECK.scan(self.root),
+            ["crates/storage/src/rows.rs:3: stop arm reports Execution text"],
+        )
+
+    def test_stringified_execution_closure_is_refused(self):
+        self.write(
+            "crates/executor/src/spill.rs",
+            "fn read(reader: &mut R) -> Result<()> {\n"
+            "    reader.read(&mut []).map_err(|error| HawDBError::Execution(error.to_string()))?;\n"
+            "    reader.read(&mut []).map_err(HawDBError::from_execution_error)?;\n"
+            "    Ok(())\n"
+            "}\n",
+        )
+        self.assertEqual(
+            CHECK.scan(self.root),
+            [
+                "crates/executor/src/spill.rs:2: Execution(error.to_string()) can hide a stop; "
+                "use HawDBError::from_execution_error"
+            ],
+        )
 
     def test_test_sources_and_trailing_test_modules_are_skipped(self):
         bad = "fn t(task: &Task) { task.checkpoint().map_err(|r| HawDBError::Execution(r.to_string())); }\n"

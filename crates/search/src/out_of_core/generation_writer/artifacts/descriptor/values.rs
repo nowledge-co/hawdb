@@ -99,7 +99,9 @@ pub(super) fn visit_with_context(
         return Err(error);
     }
     result.map_err(|error| {
-        HawDBError::Storage(format!("search descriptor label traversal failed: {error}"))
+        HawDBError::or_stop(&error, || {
+            HawDBError::Storage(format!("search descriptor label traversal failed: {error}"))
+        })
     })
 }
 

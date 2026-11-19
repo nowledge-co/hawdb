@@ -710,10 +710,12 @@ impl RebuildStage {
         ));
         // `create_dir` refuses an existing name, so the stage is always ours.
         hawdb_storage::file_io::create_dir(&path).map_err(|error| {
-            HawDBError::Storage(format!(
-                "create search projection rebuild stage {}: {error}",
-                path.display()
-            ))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!(
+                    "create search projection rebuild stage {}: {error}",
+                    path.display()
+                ))
+            })
         })?;
         Ok(Self {
             path,

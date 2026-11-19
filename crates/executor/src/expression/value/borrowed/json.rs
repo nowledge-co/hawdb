@@ -42,7 +42,9 @@ pub(super) fn select<'a>(
         .map(|account| account.reserve(json.len().saturating_mul(64)))
         .transpose()?;
     let document: serde_json::Value = serde_json::from_str(json).map_err(|error| {
-        HawDBError::Execution(format!("{function} document is invalid JSON: {error}"))
+        HawDBError::or_stop(&error, || {
+            HawDBError::Execution(format!("{function} document is invalid JSON: {error}"))
+        })
     })?;
     let selected = path
         .trim_start_matches("$.")

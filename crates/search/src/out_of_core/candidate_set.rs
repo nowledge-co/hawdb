@@ -723,7 +723,9 @@ fn decode_candidate_entries(bytes: &[u8], expected: usize) -> Result<Vec<Candida
             HawDBError::Storage("search candidate block has a truncated id".to_string())
         })?;
         let id = String::from_utf8(raw.to_vec()).map_err(|error| {
-            HawDBError::Storage(format!("search candidate id is not UTF-8: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!("search candidate id is not UTF-8: {error}"))
+            })
         })?;
         offset = end;
         let end = offset.saturating_add(std::mem::size_of::<u64>());
@@ -770,7 +772,9 @@ fn decode_candidate_ordinals_into(
             HawDBError::Storage("search candidate block has a truncated id".to_string())
         })?)
         .map_err(|error| {
-            HawDBError::Storage(format!("search candidate id is not UTF-8: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!("search candidate id is not UTF-8: {error}"))
+            })
         })?;
         if previous_id.is_some_and(|previous| previous >= id) {
             return Err(HawDBError::Storage(

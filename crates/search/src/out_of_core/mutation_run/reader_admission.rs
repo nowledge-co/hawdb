@@ -72,7 +72,7 @@ impl SearchMutationRun {
         let working = streaming::working_bytes(manifest.entry_count, scalar)?;
         budget
             .check(working)
-            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+            .map_err(HawDBError::from_execution_error)?;
         let working = usize::try_from(working).map_err(|_| size_overflow())?;
         // Exact entry Vec, one owned document ID per record, body format, and
         // the run's inline storage. Terms keep shared file ranges, not strings.
@@ -123,7 +123,7 @@ impl SearchMutationRun {
                     crate::build_memory::SET_ENTRY_BYTES,
                 )?,
             )?)
-            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+            .map_err(HawDBError::from_execution_error)?;
         Ok(Self {
             body: envelope.body,
             vector_retraction_count: OnceLock::new(),
