@@ -161,6 +161,79 @@ PATH_ATTRIBUTE = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
 MOD_DECLARATION = re.compile(r"\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;")
 
 
+def mask(source):
+    """`source` with comments and the contents of string, raw-string, byte and
+    char literals replaced by spaces, keeping every offset and line break.
+
+    Brace and paren counting runs on this text so `b'{'`, `"}"`, `r#"{"#`,
+    `// {` or `/* } */` can never unbalance an extent."""
+    out = list(source)
+    length = len(source)
+
+    def blank(begin, end):
+        for index in range(begin, min(end, length)):
+            if out[index] != "\n":
+                out[index] = " "
+
+    index = 0
+    while index < length:
+        character = source[index]
+        following = source[index + 1] if index + 1 < length else ""
+        if character == "/" and following == "/":
+            end = source.find("\n", index)
+            end = length if end == -1 else end
+            blank(index, end)
+            index = end
+        elif character == "/" and following == "*":
+            depth, end = 1, index + 2
+            while end < length and depth:
+                if source.startswith("/*", end):
+                    depth, end = depth + 1, end + 2
+                elif source.startswith("*/", end):
+                    depth, end = depth - 1, end + 2
+                else:
+                    end += 1
+            blank(index, end)
+            index = end
+        elif (
+            character in "rb"
+            and (index == 0 or not (source[index - 1].isalnum() or source[index - 1] == "_"))
+            and re.match(r'(?:br|r)#*"', source[index:])
+        ):
+            opening = re.match(r'(?:br|r)(#*)"', source[index:])
+            closing = '"' + opening.group(1)
+            end = source.find(closing, index + opening.end())
+            end = length if end == -1 else end + len(closing)
+            blank(index, end)
+            index = end
+        elif character == '"' or (
+            character == "b"
+            and following == '"'
+            and (index == 0 or not (source[index - 1].isalnum() or source[index - 1] == "_"))
+        ):
+            end = index + (2 if character == "b" else 1)
+            while end < length and source[end] != '"':
+                end += 2 if source[end] == "\\" else 1
+            blank(index, end + 1)
+            index = end + 1
+        elif character == "'" or (
+            character == "b"
+            and following == "'"
+            and (index == 0 or not (source[index - 1].isalnum() or source[index - 1] == "_"))
+        ):
+            start = index + (2 if character == "b" else 1)
+            literal = re.match(r"(?:\\(?:u\{[0-9a-fA-F]{1,6}\}|x[0-9a-fA-F]{2}|.)|[^\\\n])'", source[start:])
+            if literal:
+                blank(index, start + literal.end())
+                index = start + literal.end()
+            else:
+                # A lifetime or label: leave it.
+                index += 1
+        else:
+            index += 1
+    return "".join(out)
+
+
 def balanced_end(source, open_index):
     """Index just past the `}` closing the `{` at `open_index`."""
     depth = 0
@@ -212,27 +285,30 @@ def production_text(source):
     Only whole items are blanked: modules, functions, impls, types, traits,
     `use`, `const`, `static` and `type`. An attribute on a field, statement,
     expression or match arm blanks nothing, so the scan never hides the
-    production code that follows it. Line breaks are kept so reported line
+    production code that follows it. Extents are measured on the masked text
+    (comments and literals blanked). Line breaks are kept so reported line
     numbers stay accurate."""
     text = source
+    structure = mask(source)
     position = 0
     while True:
-        match = CFG_TEST.search(text, position)
+        match = CFG_TEST.search(structure, position)
         if not match:
             return text
         index = match.end()
         while True:
-            attribute = ATTRIBUTE.match(text, index)
+            attribute = ATTRIBUTE.match(structure, index)
             if not attribute:
                 break
             index = attribute.end()
-        item = ITEM_START.match(text, index)
-        end = item_end(text, item.start(1), item.group(1)) if item else None
+        item = ITEM_START.match(structure, index)
+        end = item_end(structure, item.start(1), item.group(1)) if item else None
         if end is None:
             position = match.end()
             continue
         blank = re.sub(r"[^\n]", " ", text[match.start() : end])
         text = text[: match.start()] + blank + text[end:]
+        structure = structure[: match.start()] + blank + structure[end:]
         position = match.start() + len(blank)
 
 
@@ -266,38 +342,40 @@ def test_module_paths(root, relative, source):
     return found
 
 
-def closure_body(source, start):
+def closure_body(source, start, structure=None):
     """Text of the `map_err(` call opened just before `start`."""
+    structure = source if structure is None else structure
     depth = 1
     index = start
-    while index < len(source) and depth:
-        if source[index] == "(":
+    while index < len(structure) and depth:
+        if structure[index] == "(":
             depth += 1
-        elif source[index] == ")":
+        elif structure[index] == ")":
             depth -= 1
         index += 1
     return source[start:index]
 
 
-def arm_body(source, start):
+def arm_body(source, start, structure=None):
     """The match arm expression after `=>`: its block, or up to the comma."""
+    structure = source if structure is None else structure
     index = start
-    while index < len(source) and source[index].isspace():
+    while index < len(structure) and structure[index].isspace():
         index += 1
-    if index < len(source) and source[index] == "{":
+    if index < len(structure) and structure[index] == "{":
         depth = 0
-        for end in range(index, len(source)):
-            if source[end] == "{":
+        for end in range(index, len(structure)):
+            if structure[end] == "{":
                 depth += 1
-            elif source[end] == "}":
+            elif structure[end] == "}":
                 depth -= 1
                 if depth == 0:
                     return source[index : end + 1]
         return source[index:]
     depth = 0
     index = start
-    while index < len(source):
-        character = source[index]
+    while index < len(structure):
+        character = structure[index]
         if character in "({[":
             depth += 1
         elif character in ")}]":
@@ -326,19 +404,31 @@ def allowed(relative, text, start, variant):
 
 def violations_in(relative, source):
     text = production_text(source)
+    structure = mask(text)
+
+    def code(match):
+        # Ignore matches that start inside a comment or a literal.
+        return structure[match.start()] == text[match.start()]
+
     found = []
     for match in TASK_CHECK.finditer(text):
-        variant = text_variant(closure_body(text, match.end()))
+        if not code(match):
+            continue
+        variant = text_variant(closure_body(text, match.end(), structure))
         if variant and not allowed(relative, text, match.start(), variant):
             line = text.count("\n", 0, match.start()) + 1
             found.append(f"{relative}:{line}: task check maps its stop to {variant}")
     for match in STRINGIFIED_EXECUTION.finditer(text):
+        if not code(match):
+            continue
         line = text.count("\n", 0, match.start()) + 1
         found.append(
             f"{relative}:{line}: Execution(error.to_string()) can hide a stop; "
             "use HawDBError::from_execution_error"
         )
     for match in TASK_POINT_FREE.finditer(text):
+        if not code(match):
+            continue
         name = match.group(1)
         short = name.rsplit("::", 1)[-1]
         if TYPED_POINT_FREE.search(name) or name in KNOWN_POINT_FREE or short in POINT_FREE_ALLOWLIST:
@@ -349,8 +439,10 @@ def violations_in(relative, source):
             "map it to RuntimeTaskStopped or allowlist it with a reason"
         )
     for match in FORMAT_CLOSURE.finditer(text):
+        if not code(match):
+            continue
         name, annotation = match.group(1), (match.group(2) or "").strip()
-        body = closure_body(text, text.rfind("(", 0, match.end()) + 1)
+        body = closure_body(text, text.rfind("(", 0, match.end()) + 1, structure)
         if "or_stop(" in body or annotation in FORMAT_SAFE_TYPES:
             continue
         formatted = re.search(
@@ -372,7 +464,9 @@ def violations_in(relative, source):
             "wrap it in HawDBError::or_stop"
         )
     for match in STOP_ARM.finditer(text):
-        body = arm_body(text, match.end())
+        if not code(match):
+            continue
+        body = arm_body(text, match.end(), structure)
         if "or_stop(" in body:
             continue
         variant = text_variant(body)

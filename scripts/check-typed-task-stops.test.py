@@ -347,6 +347,68 @@ class TypedTaskStopsTest(unittest.TestCase):
             ["crates/storage/src/convert.rs:3", "crates/storage/src/convert.rs:4"],
         )
 
+    def test_braces_in_literals_and_comments_do_not_unbalance_test_items(self):
+        bad = "task.checkpoint().map_err(|r| HawDBError::Execution(r.to_string()))"
+        for index, noise in enumerate(
+            [
+                "let _ = b'{';",
+                "let _ = '}';",
+                'let _ = "{";',
+                'let _ = r#"}"#;',
+                'let _ = br"{";',
+                "let _ = '\\u{7b}';",
+                "let _ = '\\'';",
+                "// {",
+                "/* } /* nested { */ */",
+            ]
+        ):
+            path = f"crates/search/src/literal_{index}.rs"
+            self.write(
+                path,
+                "#[cfg(test)]\n"
+                "fn helper() {\n"
+                f"    {noise}\n"
+                "}\n"
+                "fn production(task: &Task) -> Result<()> {\n"
+                f"    {bad}\n"
+                "}\n",
+            )
+            self.assertEqual(
+                sorted({v.split(": ", 1)[0] for v in CHECK.scan(self.root)}),
+                [f"{path}:6"],
+                noise,
+            )
+            (self.root / path).unlink()
+
+    def test_lifetimes_and_loop_labels_are_not_char_literals(self):
+        bad = "task.checkpoint().map_err(|r| HawDBError::Execution(r.to_string()))"
+        self.write(
+            "crates/storage/src/lifetimes.rs",
+            "#[cfg(test)]\n"
+            "fn helper<'a>(value: &'a str) -> Cow<'_, str> { value.into() }\n"
+            "fn scan<'a, T: 'static>(rows: &'a mut Vec<T>, task: &Task) -> Result<()> {\n"
+            "    'outer: for row in rows.iter() {\n"
+            "        loop { break 'outer; }\n"
+            "    }\n"
+            "    let c = 'x';\n"
+            "    " + bad + "\n"
+            "}\n",
+        )
+        self.assertEqual(
+            sorted({v.split(": ", 1)[0] for v in CHECK.scan(self.root)}),
+            ["crates/storage/src/lifetimes.rs:8"],
+        )
+
+    def test_matches_inside_comments_and_strings_are_ignored(self):
+        bad = "task.checkpoint().map_err(|r| HawDBError::Execution(r.to_string()))"
+        self.write(
+            "crates/search/src/docs.rs",
+            "/// Never write `" + bad + "`.\n"
+            "const EXAMPLE: &str = \"" + bad.replace('"', '\\"') + "\";\n"
+            "fn ok() {}\n",
+        )
+        self.assertEqual(CHECK.scan(self.root), [])
+
     def test_cfg_test_items_are_blanked_to_their_extent(self):
         bad = "task.checkpoint().map_err(|r| HawDBError::Execution(r.to_string()))"
         self.write(
