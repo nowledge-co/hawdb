@@ -20,7 +20,65 @@ pub(super) struct ReadGeneration {
     index: SearchIndex,
     freshness: Arc<SearchProjectionFreshness>,
     capacity: OnceLock<usize>,
-    funding: Mutex<Weak<RuntimeRetainedMemory>>,
+    leases: Mutex<GenerationLeases>,
+}
+
+/// Who pays for a generation's resident memory.
+///
+/// A published generation is already resident: its publication holds it
+/// whether or not anyone reads it, so the host's memory sample already counts
+/// it. Readers of a published generation therefore share an unfunded owner.
+/// Once the last publication drops, every owner still held by a reader is
+/// charged the generation's capacity, because those readers alone keep the
+/// superseded generation alive. A reader that pins an already superseded
+/// generation must reserve that capacity before it is admitted.
+#[derive(Debug, Default)]
+struct GenerationLeases {
+    publications: usize,
+    // One owner per governor; existing leases keep the owner they started with.
+    funding: Vec<Weak<LeaseFunding>>,
+}
+
+impl GenerationLeases {
+    fn shared_with(&mut self, permit: &RuntimePermit) -> Option<Arc<LeaseFunding>> {
+        self.funding.retain(|owner| owner.strong_count() > 0);
+        self.funding
+            .iter()
+            .filter_map(Weak::upgrade)
+            .find(|owner| owner.shares_governor_with(permit))
+    }
+
+    fn insert(&mut self, memory: RuntimeRetainedMemory) -> Arc<LeaseFunding> {
+        let funding = Arc::new(LeaseFunding {
+            memory: Mutex::new(memory),
+        });
+        self.funding.push(Arc::downgrade(&funding));
+        funding
+    }
+}
+
+#[derive(Debug)]
+struct LeaseFunding {
+    memory: Mutex<RuntimeRetainedMemory>,
+}
+
+impl LeaseFunding {
+    fn shares_governor_with(&self, permit: &RuntimePermit) -> bool {
+        self.memory
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .shares_governor_with(permit)
+    }
+
+    /// Charge the rest of the generation's capacity; idempotent.
+    fn fund_superseded(&self, capacity: u64) {
+        let mut memory = self
+            .memory
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let missing = capacity.saturating_sub(memory.bytes());
+        memory.charge_resident(missing);
+    }
 }
 
 /// A captured source plus retained memory, without CPU, task or I/O admission.
@@ -28,12 +86,73 @@ pub(super) struct ReadGeneration {
 pub struct SearchIndexReadLease {
     // Release this reader's source ownership before refunding capacity.
     snapshot: SearchIndexReadSnapshot,
-    _funding: Arc<RuntimeRetainedMemory>,
+    funding: Arc<LeaseFunding>,
 }
 
 impl SearchIndexReadLease {
     pub fn snapshot(&self) -> &SearchIndexReadSnapshot {
         &self.snapshot
+    }
+
+    /// Bytes currently charged to the readers sharing this lease's owner:
+    /// zero while the generation is published, its retained capacity once it
+    /// is superseded.
+    pub fn funded_bytes(&self) -> u64 {
+        self.funding
+            .memory
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .bytes()
+    }
+}
+
+/// The resident generation a host publication holds.
+///
+/// While at least one publication of a generation is alive, the generation is
+/// resident regardless of readers, so [`SearchIndexReadSnapshot::retain_with_permit`]
+/// admits its readers without a new reservation. Dropping the last
+/// publication charges the generation's capacity to the readers that still
+/// hold it, and that charge is refunded when the last of them drops.
+#[derive(Debug)]
+pub struct SearchIndexPublishedSnapshot {
+    snapshot: SearchIndexReadSnapshot,
+}
+
+impl SearchIndexPublishedSnapshot {
+    pub fn snapshot(&self) -> &SearchIndexReadSnapshot {
+        &self.snapshot
+    }
+}
+
+impl Drop for SearchIndexPublishedSnapshot {
+    fn drop(&mut self) {
+        let readers = {
+            let mut leases = self
+                .snapshot
+                .generation
+                .leases
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            leases.publications -= 1;
+            if leases.publications > 0 {
+                return;
+            }
+            leases
+                .funding
+                .iter()
+                .filter_map(Weak::upgrade)
+                .collect::<Vec<_>>()
+        };
+        if readers.is_empty() {
+            return;
+        }
+        // Capacity may be computed here for the first time; keep it outside
+        // the generation lock. A reader that joins meanwhile shares an owner
+        // collected above, so it is charged too.
+        let capacity = u64::try_from(self.snapshot.retained_capacity_bytes()).unwrap_or(u64::MAX);
+        for funding in readers {
+            funding.fund_superseded(capacity);
+        }
     }
 }
 
@@ -126,7 +245,7 @@ impl SearchIndex {
             index,
             freshness,
             capacity: OnceLock::new(),
-            funding: Mutex::new(Weak::new()),
+            leases: Mutex::default(),
         });
         *cached = Arc::downgrade(&generation);
         SearchIndexReadSnapshot { generation }
@@ -201,11 +320,29 @@ impl ReadGeneration {
 }
 
 impl SearchIndexReadSnapshot {
+    /// Mark this generation as held by a host publication. See
+    /// [`SearchIndexPublishedSnapshot`] for how its memory is accounted.
+    pub fn publish(self) -> SearchIndexPublishedSnapshot {
+        self.generation
+            .leases
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .publications += 1;
+        SearchIndexPublishedSnapshot { snapshot: self }
+    }
+
     /// Run after execution admission and after releasing the publication lock.
     /// This is a nonqueueing capacity attempt; callers must drop a refused
-    /// source before waiting or retrying admission. Concurrent readers of this
-    /// generation and current host governor share one charge. Switching hosts
-    /// replaces the weak cache; existing leases keep their original funding.
+    /// source before waiting or retrying admission.
+    ///
+    /// A generation that a [`SearchIndexPublishedSnapshot`] still holds is
+    /// already resident, so pinning it reserves nothing beyond the caller's
+    /// own admission. Pinning a superseded generation reserves its retained
+    /// capacity, because the lease alone keeps it alive. Concurrent readers of
+    /// a generation and one host governor share one owner; if the generation
+    /// is superseded while they hold it, that owner is charged its capacity
+    /// until the last of them drops. Switching hosts adds a new owner; existing
+    /// leases keep their original one.
     ///
     /// A refusal is the typed `HawDBError::RuntimeAdmissionRefused` (usually
     /// `memory_saturated`, retryable while other work holds the memory). It
@@ -218,46 +355,42 @@ impl SearchIndexReadSnapshot {
     /// `text_search`/`vector_search`. Other graph and relational reads, and
     /// out-of-core projections, do not retain a resident generation.
     pub fn retain_with_permit(&self, permit: &RuntimePermit) -> Result<SearchIndexReadLease> {
-        let existing = || {
-            self.generation
-                .funding
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .upgrade()
-                .filter(|owner| owner.shares_governor_with(permit))
+        let lease = |funding| SearchIndexReadLease {
+            snapshot: self.clone(),
+            funding,
         };
-        if let Some(funding) = existing() {
-            return Ok(SearchIndexReadLease {
-                snapshot: self.clone(),
-                _funding: funding,
-            });
+        {
+            let mut leases = self
+                .generation
+                .leases
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if let Some(funding) = leases.shared_with(permit) {
+                return Ok(lease(funding));
+            }
+            if leases.publications > 0 {
+                let funding = leases.insert(permit.resident_memory_owner());
+                return Ok(lease(funding));
+            }
         }
         let bytes = u64::try_from(self.retained_capacity_bytes()).unwrap_or(u64::MAX);
         // Admission may sample process memory; invoke it without cache locks.
         let reservation = permit.reserve_retained_memory(bytes);
-        let mut entries = self
+        let mut leases = self
             .generation
-            .funding
+            .leases
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if let Some(funding) = entries
-            .upgrade()
-            .filter(|owner| owner.shares_governor_with(permit))
-        {
-            drop(entries);
+        if let Some(funding) = leases.shared_with(permit) {
+            drop(leases);
             drop(reservation);
-            return Ok(SearchIndexReadLease {
-                snapshot: self.clone(),
-                _funding: funding,
-            });
+            return Ok(lease(funding));
         }
-        // A refusal stays the typed, non-poisoning admission error.
-        let funding = Arc::new(reservation.map_err(HawDBError::from)?);
-        *entries = Arc::downgrade(&funding);
-        Ok(SearchIndexReadLease {
-            snapshot: self.clone(),
-            _funding: funding,
-        })
+        // A refusal stays the typed, non-poisoning admission error. If the
+        // generation was republished meanwhile, the reservation is kept until
+        // these readers drop, which only overstates the charge.
+        let funding = leases.insert(reservation.map_err(HawDBError::from)?);
+        Ok(lease(funding))
     }
 
     /// Conservative generation capacity, computed once outside publication.
@@ -508,6 +641,125 @@ mod tests {
             next.snapshot().document("a").unwrap().content,
             "replacement"
         );
+        drop(next);
+        assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+    }
+
+    fn small_governor(memory_budget_bytes: u64) -> hawdb_qos::RuntimeGovernor {
+        use hawdb_qos::{
+            IoConcurrencyBudget, RuntimeGovernor, RuntimeGovernorConfig, RuntimeMemorySnapshot,
+            RuntimeResourceBudget, RuntimeResourceSnapshot,
+        };
+        RuntimeGovernor::new(
+            RuntimeGovernorConfig {
+                memory_budget_bytes: Some(memory_budget_bytes),
+                ..RuntimeGovernorConfig::shared_host()
+            },
+            RuntimeResourceSnapshot::from_parts(
+                RuntimeResourceBudget::from_limits(std::num::NonZeroUsize::MIN, None, None),
+                RuntimeMemorySnapshot::from_limits(Some(1 << 30), Some(1 << 30), None, None, None),
+            ),
+            IoConcurrencyBudget::new(2, 1),
+        )
+    }
+
+    fn control_permit(governor: &hawdb_qos::RuntimeGovernor) -> RuntimePermit {
+        governor
+            .try_admit(hawdb_qos::RuntimeWorkRequest::new(
+                hawdb_qos::RuntimeWorkPriority::Foreground,
+                hawdb_qos::RuntimeWorkKind::Control,
+            ))
+            .unwrap()
+    }
+
+    #[test]
+    fn published_generation_is_pinned_without_a_new_reservation() {
+        let mut index = SearchIndex::in_memory();
+        index
+            .upsert(document("a", &"payload".repeat(4096), "space"))
+            .unwrap();
+        let published = index.read_snapshot().publish();
+        let capacity = published.snapshot().retained_capacity_bytes() as u64;
+        // Far less than the generation: reserving it again would be refused.
+        let governor = small_governor(capacity / 4);
+        let permit = control_permit(&governor);
+        for _ in 0..3 {
+            // Every idle-to-read transition is admitted without a charge.
+            let lease = published.snapshot().retain_with_permit(&permit).unwrap();
+            let shared = index.read_snapshot().retain_with_permit(&permit).unwrap();
+            assert_eq!(lease.funded_bytes(), 0);
+            assert_eq!(shared.funded_bytes(), 0);
+            assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+            assert_eq!(
+                shared.snapshot().document("a").unwrap().content.len(),
+                7 * 4096
+            );
+        }
+        // Publishing the same generation again keeps it publication-funded.
+        let republished = index.read_snapshot().publish();
+        drop(published);
+        let lease = republished.snapshot().retain_with_permit(&permit).unwrap();
+        assert_eq!(lease.funded_bytes(), 0);
+        assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+    }
+
+    #[test]
+    fn lease_held_across_publication_charges_the_superseded_generation() {
+        let mut index = SearchIndex::in_memory();
+        index
+            .upsert(document("a", &"payload".repeat(4096), "space"))
+            .unwrap();
+        let published = index.read_snapshot().publish();
+        let old = published.snapshot().clone();
+        let capacity = old.retained_capacity_bytes() as u64;
+        let governor = small_governor(capacity * 4);
+        let permit = control_permit(&governor);
+        let first = old.retain_with_permit(&permit).unwrap();
+        let second = old.retain_with_permit(&permit).unwrap();
+        assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+
+        // A writer publishes a new generation and retires the old one.
+        index.upsert(document("a", "replacement", "space")).unwrap();
+        let next = index.read_snapshot().publish();
+        assert!(!Arc::ptr_eq(&old.generation, &next.snapshot().generation));
+        drop(published);
+        // Only the readers keep the old generation alive now: charged once.
+        assert_eq!(governor.snapshot().admitted_memory_bytes, capacity);
+        assert_eq!(first.funded_bytes(), capacity);
+        assert_eq!(second.funded_bytes(), capacity);
+        // A later reader of the superseded generation shares that charge.
+        let third = old.retain_with_permit(&permit).unwrap();
+        assert_eq!(governor.snapshot().admitted_memory_bytes, capacity);
+        // Pinning the current generation still reserves nothing.
+        let current = next.snapshot().retain_with_permit(&permit).unwrap();
+        assert_eq!(current.funded_bytes(), 0);
+        assert_eq!(governor.snapshot().admitted_memory_bytes, capacity);
+        assert_eq!(
+            first.snapshot().document("a").unwrap().content.len(),
+            7 * 4096
+        );
+        drop((first, second));
+        assert_eq!(governor.snapshot().admitted_memory_bytes, capacity);
+        drop(third);
+        assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+        assert_eq!(
+            current.snapshot().document("a").unwrap().content,
+            "replacement"
+        );
+        drop(current);
+
+        // With no reader left, pinning the superseded generation must reserve
+        // it again, and a small budget refuses that with the typed error.
+        let small = small_governor(capacity / 4);
+        let small_permit = control_permit(&small);
+        let Err(HawDBError::RuntimeAdmissionRefused(refusal)) =
+            old.retain_with_permit(&small_permit)
+        else {
+            panic!("pinning a superseded generation over budget must be refused");
+        };
+        assert_eq!(refusal.code, "memory_saturated");
+        assert_eq!(refusal.requested, capacity);
+        assert_eq!(small.snapshot().admitted_memory_bytes, 0);
         drop(next);
         assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
     }

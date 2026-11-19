@@ -118,7 +118,9 @@ mod range_io;
 mod resident_documents;
 mod resident_snapshot;
 use resident_documents::{DocumentView, ResidentDocuments};
-pub use resident_snapshot::{SearchIndexReadLease, SearchIndexReadSnapshot};
+pub use resident_snapshot::{
+    SearchIndexPublishedSnapshot, SearchIndexReadLease, SearchIndexReadSnapshot,
+};
 mod recall_validation;
 mod snapshot_writer;
 #[cfg(test)]
