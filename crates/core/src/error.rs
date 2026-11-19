@@ -283,6 +283,11 @@ pub enum HawDBError {
     /// nothing ran. Not a storage failure and never poisoning. See
     /// [`RuntimeAdmissionRefusal::retryable`].
     RuntimeAdmissionRefused(RuntimeAdmissionRefusal),
+    /// The caller's `RuntimeTaskContext` was cancelled or passed its deadline
+    /// (or its resource budget was exhausted) before the work completed.
+    /// Nothing from the stopped work was committed. Not a storage failure and
+    /// never poisoning; the caller decides whether to retry.
+    RuntimeTaskStopped(crate::RuntimeCancellationReason),
     GraphExpansionCandidateLimitExceeded {
         requested: usize,
         limit: usize,
@@ -407,6 +412,9 @@ impl Display for HawDBError {
             ),
             HawDBError::WalRecordLimitExceeded(error) => write!(f, "execution error: {error}"),
             HawDBError::RuntimeAdmissionRefused(error) => write!(f, "execution error: {error}"),
+            HawDBError::RuntimeTaskStopped(reason) => {
+                write!(f, "execution error: runtime task stopped: {reason}")
+            }
             HawDBError::GraphExpansionPayloadLimitExceeded { requested, limit } => write!(
                 f,
                 "graph expansion payload_byte_limit exceeded: requested {requested} bytes, limit {limit} bytes; configure ExecutionMemoryConfig.graph_expansion_budget.payload_byte_limit"
@@ -466,6 +474,7 @@ impl std::error::Error for HawDBError {
             Self::ReadBudgetExceeded(error) => Some(error),
             Self::WalRecordLimitExceeded(error) => Some(error.as_ref()),
             Self::RuntimeAdmissionRefused(error) => Some(error),
+            Self::RuntimeTaskStopped(reason) => Some(reason),
             Self::TransactionRetryRequired(error) => Some(error.as_ref()),
             Self::UnsupportedStorageFormat(error) => Some(error),
             Self::BranchReclamationBlocked { cause, .. } => Some(cause.as_ref()),
@@ -573,6 +582,13 @@ impl HawDBError {
 }
 
 pub type Result<T> = std::result::Result<T, HawDBError>;
+
+/// A stopped runtime task is the typed `HawDBError::RuntimeTaskStopped`.
+impl From<crate::RuntimeCancellationReason> for HawDBError {
+    fn from(reason: crate::RuntimeCancellationReason) -> Self {
+        Self::RuntimeTaskStopped(reason)
+    }
+}
 
 impl From<ResourceBudgetError> for HawDBError {
     fn from(error: ResourceBudgetError) -> Self {

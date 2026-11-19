@@ -4613,9 +4613,13 @@ fn grouped_evidence_checks_final_callback_cancellation_and_preserves_consumer_er
             },
         );
         assert_eq!(delivered, 1);
-        assert!(
-            matches!(result, Err(HawDBError::Execution(message)) if if consumer_error { message == "consumer sentinel" } else { message.contains("cancel") })
-        );
+        assert!(match result {
+            Err(HawDBError::Execution(message)) => {
+                consumer_error && message == "consumer sentinel"
+            }
+            Err(HawDBError::RuntimeTaskStopped(_)) => !consumer_error,
+            _ => false,
+        });
         assert_eq!(ledger.snapshot().used_bytes, 0);
     }
 }

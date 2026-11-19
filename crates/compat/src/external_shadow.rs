@@ -568,6 +568,14 @@ fn json_error_from_hawdb(error: HawDBError) -> serde_json::Value {
             });
             response
         }
+        HawDBError::RuntimeTaskStopped(reason) => {
+            let mut response = json_error("execution", format!("runtime task stopped: {reason}"));
+            response["error"]["details"] = serde_json::json!({
+                "kind": "runtime_task_stopped",
+                "reason": reason.as_str(),
+            });
+            response
+        }
         HawDBError::RuntimeAdmissionRefused(cause) => {
             let mut response = json_error("execution", cause);
             response["error"]["details"] = serde_json::json!({

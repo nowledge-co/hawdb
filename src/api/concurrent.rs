@@ -90,6 +90,18 @@ fn set_graph_commit_preparation_hook(hook: Box<dyn FnOnce()>) {
     GRAPH_COMMIT_PREPARATION_HOOK.with(|slot| *slot.borrow_mut() = Some(hook));
 }
 
+#[cfg(test)]
+thread_local! {
+    static COMMIT_BOUNDARY_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Runs `hook` on this thread once a transaction commit has passed its last
+/// task check, just before the commit is applied.
+#[cfg(test)]
+pub(crate) fn set_commit_boundary_hook(hook: Box<dyn FnOnce()>) {
+    COMMIT_BOUNDARY_HOOK.with(|slot| *slot.borrow_mut() = Some(hook));
+}
+
 pub const DEFAULT_PESSIMISTIC_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -966,11 +978,12 @@ impl ConcurrentDatabaseTransaction {
         }
         let started = Instant::now();
         if self.options.mode == ConcurrentTransactionMode::Optimistic
-            && let Err(error) = self.inner.locks.acquire(
+            && let Err(error) = self.inner.locks.acquire_with_task(
                 self.transaction_id,
                 &[LockRequest::database(LockMode::OptimisticCommit)],
                 started,
                 self.options.lock_timeout,
+                self.task_context.as_ref(),
             )
         {
             self.finished = true;
@@ -1016,6 +1029,12 @@ impl ConcurrentDatabaseTransaction {
                     // Cancellation before the commit boundary rejects without WAL.
                     // Never turn a durable success into cancellation afterward.
                     super::query_runtime::query_runtime_checkpoint(task_context.as_ref())?;
+                    #[cfg(test)]
+                    COMMIT_BOUNDARY_HOOK.with(|hook| {
+                        if let Some(hook) = hook.borrow_mut().take() {
+                            hook();
+                        }
+                    });
                     let result = commit_prepared_database_transaction_state(
                         database,
                         &mut state,
@@ -1056,11 +1075,12 @@ impl ConcurrentDatabaseTransaction {
         let started = Instant::now();
         let inner = Arc::clone(&self.inner);
         let requests_already_covered = inner.locks.covers_all(self.transaction_id, requests)?;
-        if let Err(error) = inner.locks.acquire(
+        if let Err(error) = inner.locks.acquire_with_task(
             self.transaction_id,
             requests,
             started,
             self.options.lock_timeout,
+            self.task_context.as_ref(),
         ) {
             let error: HawDBError = error.into();
             self.abort_after_lock_failure(&error);
@@ -1135,11 +1155,12 @@ impl ConcurrentDatabaseTransaction {
         let started = Instant::now();
         let inner = Arc::clone(&self.inner);
         let requests_already_covered = inner.locks.covers_all(self.transaction_id, requests)?;
-        if let Err(error) = inner.locks.acquire(
+        if let Err(error) = inner.locks.acquire_with_task(
             self.transaction_id,
             requests,
             started,
             self.options.lock_timeout,
+            self.task_context.as_ref(),
         ) {
             let abort_transaction = error.aborts_transaction();
             let error: HawDBError = error.into();

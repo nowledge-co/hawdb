@@ -79,7 +79,7 @@ impl RuntimeQueryInput {
     ) -> Result<crate::api::PreparedRuntimeQuery, HawDBError> {
         context
             .checkpoint()
-            .map_err(|reason| HawDBError::Execution(format!("runtime task stopped: {reason}")))?;
+            .map_err(HawDBError::RuntimeTaskStopped)?;
         let prepared = match prepared {
             Some(prepared) if planning.accepts_prepared(&prepared) => prepared,
             stale => {
@@ -449,9 +449,9 @@ impl HawDBTokioEmbedded {
                 planning_request.memory_bytes,
                 context.clone(),
                 move |context| {
-                    context.checkpoint().map_err(|reason| {
-                        HawDBError::Execution(format!("runtime task stopped: {reason}"))
-                    })?;
+                    context
+                        .checkpoint()
+                        .map_err(HawDBError::RuntimeTaskStopped)?;
                     let planning = {
                         let embedded = embedded.autocommit()?;
                         embedded.database().runtime_sql_planning_snapshot()
@@ -478,9 +478,9 @@ impl HawDBTokioEmbedded {
                 },
                 context,
                 move |prepared, context| {
-                    context.checkpoint().map_err(|reason| {
-                        HawDBError::Execution(format!("runtime task stopped: {reason}"))
-                    })?;
+                    context
+                        .checkpoint()
+                        .map_err(HawDBError::RuntimeTaskStopped)?;
                     // The original schema-neutral cache and context survive waiting;
                     // rebuilding after a refusal cannot silently select another branch.
                     let prepared = match prepared {
@@ -757,9 +757,9 @@ impl HawDBTokioEmbedded {
                         input.capture_source(embedded.database())?;
                         embedded.database().runtime_planning_snapshot()?
                     };
-                    context.checkpoint().map_err(|reason| {
-                        HawDBError::Execution(format!("runtime task stopped: {reason}"))
-                    })?;
+                    context
+                        .checkpoint()
+                        .map_err(HawDBError::RuntimeTaskStopped)?;
                     planning.prepare_request(input.request.as_request().with_task_context(context))
                 },
             )

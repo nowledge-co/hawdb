@@ -216,3 +216,11 @@ fn runtime_admission_refusal_is_delivered_as_its_own_kind() {
     );
     assert_eq!(delivered["message"], error.to_string());
 }
+
+#[test]
+fn runtime_task_stop_is_delivered_as_its_own_kind() {
+    let error = HawDBError::RuntimeTaskStopped(hawdb::RuntimeCancellationReason::Cancelled);
+    let delivered = delivered(FfiError::open(&error));
+    assert_eq!(delivered["kind"], "runtime_task_stopped", "{delivered}");
+    assert_eq!(delivered["message"], error.to_string());
+}

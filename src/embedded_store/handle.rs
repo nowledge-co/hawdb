@@ -305,7 +305,7 @@ impl<'a> EmbeddedReadSnapshot<'a> {
     ) -> Result<SearchProjectionDocumentLookup> {
         self.task_context
             .checkpoint()
-            .map_err(|reason| HawDBError::Execution(format!("runtime task {reason}")))?;
+            .map_err(HawDBError::RuntimeTaskStopped)?;
         if document_ids.iter().collect::<BTreeSet<_>>().len() != document_ids.len() {
             return Err(HawDBError::Semantic(
                 "search projection document lookup ids must be unique".to_string(),
@@ -397,7 +397,7 @@ impl<'a> EmbeddedReadSnapshot<'a> {
     ) -> Result<SearchCandidateOutput> {
         self.task_context
             .checkpoint()
-            .map_err(|reason| HawDBError::Execution(format!("runtime task {reason}")))?;
+            .map_err(HawDBError::RuntimeTaskStopped)?;
         let _ = self.statement_row_budget(request.limit.max(1))?;
         let _ = self.remaining_payload_bytes()?;
         let max_working_bytes = self.admitted_working_bytes()?;
@@ -838,17 +838,34 @@ impl EmbeddedStoreHandle {
         &self,
         statements: &[NowledgeGraphStatement],
     ) -> Result<crate::NowledgeGraphTransactionOutput> {
+        self.transaction_context(&RuntimeTaskContext::default(), statements)
+    }
+
+    /// Runs [`Self::transaction`] under the caller's deadline and
+    /// cancellation; see [`Self::with_transaction_context`] for where they
+    /// are honored and the commit boundary.
+    pub fn transaction_context(
+        &self,
+        task_context: &RuntimeTaskContext,
+        statements: &[NowledgeGraphStatement],
+    ) -> Result<crate::NowledgeGraphTransactionOutput> {
+        task_context.checkpoint()?;
         let permit = self.admit_transaction(statements)?;
         let _unwind = concurrent_owner::PublicationUnwindGuard(&self.read_publication_failed);
         let mut transaction = self.concurrent.begin_admitted_transaction(
             crate::ConcurrentTransactionOptions::default(),
             permit,
-            RuntimeTaskContext::default(),
+            task_context.clone(),
         )?;
         let mut statement_outputs = Vec::with_capacity(statements.len());
         for statement in statements {
-            statement_outputs
-                .push(transaction.query_with_params(&statement.cypher, &statement.parameters)?);
+            match transaction.query_with_params(&statement.cypher, &statement.parameters) {
+                Ok(output) => statement_outputs.push(output),
+                Err(error) => {
+                    transaction.rollback();
+                    return Err(error);
+                }
+            }
         }
         let commit_output = transaction.commit()?;
         Ok(crate::NowledgeGraphTransactionOutput {
@@ -867,12 +884,32 @@ impl EmbeddedStoreHandle {
         &self,
         operation: impl FnOnce(&mut crate::ConcurrentDatabaseTransaction) -> Result<T>,
     ) -> Result<T> {
+        self.with_transaction_context(&RuntimeTaskContext::default(), operation)
+    }
+
+    /// Runs [`Self::with_transaction`] under the caller's deadline and
+    /// cancellation.
+    ///
+    /// They are honored up to the commit boundary: before runtime admission,
+    /// while waiting for another writer's locks, during each statement, when
+    /// the commit is about to run, and while a commit waits for live-overlay
+    /// headroom before retrying. A stop there returns the typed, non-poisoning
+    /// `HawDBError::RuntimeTaskStopped`, rolls back every staged statement and
+    /// leaves the handle usable. Once the commit has started its WAL append it
+    /// is never interrupted: a deadline that passes then does not fail or undo
+    /// it. A lock wait also still ends at the transaction's own lock timeout.
+    pub fn with_transaction_context<T>(
+        &self,
+        task_context: &RuntimeTaskContext,
+        operation: impl FnOnce(&mut crate::ConcurrentDatabaseTransaction) -> Result<T>,
+    ) -> Result<T> {
+        task_context.checkpoint()?;
         let permit = self.admit_typed_transaction()?;
         let _unwind = concurrent_owner::PublicationUnwindGuard(&self.read_publication_failed);
         let mut transaction = self.concurrent.begin_admitted_transaction(
             crate::ConcurrentTransactionOptions::default(),
             permit,
-            RuntimeTaskContext::default(),
+            task_context.clone(),
         )?;
         match operation(&mut transaction) {
             Ok(output) => transaction.commit().map(|_| output),

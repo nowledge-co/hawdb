@@ -1739,7 +1739,12 @@ fn vector_index_sql_observes_cancellation_from_last_result_callback() {
         assert_eq!(delivered, 1);
         if cancel {
             assert!(
-                matches!(&result, Err(VectorIndexReadError::Query(HawDBError::Execution(message))) if message.contains("cancel")),
+                matches!(
+                    &result,
+                    Err(VectorIndexReadError::Query(HawDBError::RuntimeTaskStopped(
+                        crate::RuntimeCancellationReason::Cancelled
+                    )))
+                ),
                 "{result:?}"
             );
         } else {
@@ -1817,13 +1822,16 @@ fn vector_index_sql_checks_callback_cancellation_and_preserves_consumer_errors()
         });
         let expected = [Value::Int(1), Value::Int(2)];
         assert_eq!(delivered, expected[..cancel_after]);
-        let expected_error = if consumer_error {
-            "host consumer failed"
-        } else {
-            "runtime task stopped: cancelled"
-        };
         assert!(
-            matches!(&rejected, Err(VectorIndexReadError::Query(HawDBError::Execution(message))) if message == expected_error),
+            match &rejected {
+                Err(VectorIndexReadError::Query(HawDBError::Execution(message))) => {
+                    consumer_error && message == "host consumer failed"
+                }
+                Err(VectorIndexReadError::Query(HawDBError::RuntimeTaskStopped(reason))) => {
+                    !consumer_error && *reason == crate::RuntimeCancellationReason::Cancelled
+                }
+                _ => false,
+            },
             "top_k={top_k}, cancel_after={cancel_after}, consumer_error={consumer_error}: {rejected:?}"
         );
 
