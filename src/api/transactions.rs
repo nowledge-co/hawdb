@@ -319,9 +319,18 @@ pub(super) fn execute_graph_transaction_plan(
                     .expect("usize::MAX is non-zero"),
                 ..runtime.config.mutation_limits
             },
-            PhysicalPlan::MutationReturn { returns, .. } => {
+            // The returned rows, not the internal summary, carry the result
+            // limits; they are projected and checked as typed refusals.
+            PhysicalPlan::MutationReturn { .. } => {
                 hawdb_executor::mutation::mutation_return_staging_limits(
-                    returns,
+                    runtime.config.mutation_limits,
+                )
+            }
+            PhysicalPlan::UnwindMutation {
+                operation: hawdb_plan_cypher::BatchMutationOperation::MergeRelationship(merge),
+                ..
+            } if merge.returns.is_some() => {
+                hawdb_executor::mutation::mutation_return_staging_limits(
                     runtime.config.mutation_limits,
                 )
             }
@@ -374,9 +383,13 @@ pub(super) fn execute_graph_transaction_plan(
                 )?;
                 if !outcome.mutations.is_empty() {
                     if is_mutation_return {
+                        let staging_limits =
+                            hawdb_executor::mutation::mutation_return_staging_limits(
+                                mutation_limits,
+                            );
                         transaction.stage_mutations_without_commit_rows(
                             outcome.mutations,
-                            mutation_limits,
+                            staging_limits,
                         )?;
                     } else {
                         transaction
@@ -1395,10 +1408,10 @@ pub(super) fn relational_value_to_query_value(
             Ok(Value::Vector(value.clone()))
         }
         hawdb_storage::relational::RelationalValue::Timestamp(value) => {
-            hawdb_core::sql_timestamp::local_value(*value)
+            hawdb_core::sql_timestamp::local_value(value.get())
         }
         hawdb_storage::relational::RelationalValue::TimestampTz(value) => {
-            hawdb_core::sql_timestamp::zoned_value(*value)
+            hawdb_core::sql_timestamp::zoned_value(value.get())
         }
         hawdb_storage::relational::RelationalValue::Overflow(_) => {
             Err(HawDBError::StorageIntegrity(

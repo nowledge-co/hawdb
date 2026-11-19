@@ -218,7 +218,7 @@ fn py_to_value(object: &Bound<'_, PyAny>, path: &ParamPath<'_>, depth: usize) ->
 
 /// Converts the standard library's `datetime` types (exact classes only).
 fn py_to_temporal(object: &Bound<'_, PyAny>, path: &ParamPath<'_>) -> PyResult<Option<Value>> {
-    use hawdb::temporal::{FixedOffset, NaiveDate, NaiveTime, TimeDelta};
+    use hawdb::temporal::{Date, Month, Time, UtcOffset};
     let ty = object.get_type();
     if !ty.module().is_ok_and(|module| module == "datetime") {
         return Ok(None);
@@ -226,24 +226,24 @@ fn py_to_temporal(object: &Bound<'_, PyAny>, path: &ParamPath<'_>) -> PyResult<O
     let name = ty.name()?;
     let int = |field: &str| object.getattr(field)?.extract::<i64>();
     let invalid = |kind: &str| PyValueError::new_err(format!("{path}: invalid {kind} value"));
-    let date = || -> PyResult<NaiveDate> {
-        NaiveDate::from_ymd_opt(
+    let date = || -> PyResult<Date> {
+        Date::from_calendar_date(
             int("year")? as i32,
-            int("month")? as u32,
-            int("day")? as u32,
+            Month::try_from(int("month")? as u8).map_err(|_| invalid("date"))?,
+            int("day")? as u8,
         )
-        .ok_or_else(|| invalid("date"))
+        .map_err(|_| invalid("date"))
     };
-    let time = || -> PyResult<NaiveTime> {
-        NaiveTime::from_hms_micro_opt(
-            int("hour")? as u32,
-            int("minute")? as u32,
-            int("second")? as u32,
+    let time = || -> PyResult<Time> {
+        Time::from_hms_micro(
+            int("hour")? as u8,
+            int("minute")? as u8,
+            int("second")? as u8,
             int("microsecond")? as u32,
         )
-        .ok_or_else(|| invalid("time"))
+        .map_err(|_| invalid("time"))
     };
-    let offset = || -> PyResult<Option<FixedOffset>> {
+    let offset = || -> PyResult<Option<UtcOffset>> {
         let offset = object.call_method0("utcoffset")?;
         if offset.is_none() {
             return Ok(None);
@@ -255,7 +255,7 @@ fn py_to_temporal(object: &Bound<'_, PyAny>, path: &ParamPath<'_>) -> PyResult<O
         }
         i32::try_from(seconds)
             .ok()
-            .and_then(FixedOffset::east_opt)
+            .and_then(|seconds| UtcOffset::from_whole_seconds(seconds).ok())
             .map(Some)
             .ok_or_else(|| invalid("time zone offset"))
     };
@@ -270,23 +270,25 @@ fn py_to_temporal(object: &Bound<'_, PyAny>, path: &ParamPath<'_>) -> PyResult<O
             Value::LocalTime(time()?)
         }
         "datetime" => {
-            let local = date()?.and_time(time()?);
+            let local = date()?.with_time(time()?);
             match offset()? {
                 None => Value::LocalDateTime(local),
                 Some(offset) => Value::DateTime(
                     local
-                        .and_local_timezone(offset)
-                        .single()
+                        .assume_offset(offset)
+                        .checked_to_offset(UtcOffset::UTC)
+                        .map(|_| local.assume_offset(offset))
                         .ok_or_else(|| invalid("datetime"))?,
                 ),
             }
         }
         "timedelta" => {
-            let time = TimeDelta::try_seconds(int("seconds")?)
-                .zip(Some(TimeDelta::microseconds(int("microseconds")?)))
-                .and_then(|(seconds, micros)| seconds.checked_add(&micros))
-                .ok_or_else(|| invalid("timedelta"))?;
-            Value::duration(hawdb::TemporalDuration::new(0, int("days")?, time))
+            let nanos = i128::from(int("seconds")?) * 1_000_000_000
+                + i128::from(int("microseconds")?) * 1_000;
+            Value::duration(
+                hawdb::TemporalDuration::from_parts(0, int("days")?, nanos)
+                    .ok_or_else(|| invalid("timedelta"))?,
+            )
         }
         _ => return Ok(None),
     }))

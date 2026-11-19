@@ -203,11 +203,21 @@ fn hash_relational_value(hasher: &mut IntegrityHasher, value: &RelationalValue) 
         }
         RelationalValue::Timestamp(value) => {
             hasher.update(&[10]);
-            hasher.update(&value.to_le_bytes());
+            if let Ok(encoded) = hawdb_core::sql_timestamp::encode_micros(value.get()) {
+                hasher.update(encoded.as_bytes());
+            } else {
+                // Invalid inputs remain distinguishable; publication validates the domain.
+                hasher.update(&value.get().to_le_bytes());
+            }
         }
         RelationalValue::TimestampTz(value) => {
             hasher.update(&[11]);
-            hasher.update(&value.to_le_bytes());
+            if let Ok(encoded) = hawdb_core::sql_timestamp::encode_micros(value.get()) {
+                hasher.update(encoded.as_bytes());
+            } else {
+                // Invalid inputs remain distinguishable; publication validates the domain.
+                hasher.update(&value.get().to_le_bytes());
+            }
         }
         RelationalValue::Overflow(reference) => {
             hasher.update(&[6, relational_scalar_type_tag(reference.scalar_type)]);

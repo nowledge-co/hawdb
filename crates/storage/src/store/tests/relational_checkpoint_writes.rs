@@ -159,6 +159,60 @@ fn seed(path: &std::path::Path, rows: i64) -> (GraphStore, Catalog) {
 }
 
 #[test]
+fn row_root_decode_enforces_checkpoint_value_limits() {
+    let path = unique_test_dir("checkpoint-writes-row-root-decode-limits");
+    let (mut store, mut catalog) = open_with(&path, WalReplayConfig::default());
+    store
+        .commit_relational_transaction(
+            &mut catalog,
+            RelationalTransaction {
+                writes: vec![RelationalWrite::CreateTable(schema())],
+            },
+        )
+        .unwrap();
+    store
+        .commit_relational_transaction(
+            &mut catalog,
+            RelationalTransaction {
+                writes: vec![RelationalWrite::Insert {
+                    table: "documents".to_string(),
+                    rows: vec![row(1, "short"), row(2, &"x".repeat(128))],
+                    mode: RelationalInsertMode::Error,
+                }],
+            },
+        )
+        .unwrap();
+    store.checkpoint(&catalog).unwrap();
+
+    let durable = store.durable.as_ref().unwrap();
+    let overflow = durable.open_bound_relational_overflow().unwrap();
+    let rows = durable.open_bound_relational_row_pages(&overflow).unwrap();
+    let decode = |limits| {
+        hawdb_storage::relational::decode_relational_checkpoint_from_row_root(
+            durable.root_path(),
+            &rows,
+            &overflow,
+            limits,
+            hawdb_storage::relational::RelationalCheckpointIndexLoad::MaterializedPostings,
+        )
+    };
+
+    let mut limits = hawdb_storage::relational::RelationalDecodeLimits::checkpoint();
+    limits.max_values = 2;
+    assert!(matches!(decode(limits), Err(RelationalError::Admission(_))));
+
+    limits.max_values = 4;
+    decode(limits).expect("four row values fit the exact limit");
+
+    limits.max_value_bytes = 64;
+    assert!(matches!(
+        decode(limits),
+        Err(RelationalError::Admission(message)) if message.contains("bytes")
+    ));
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn small_change_checkpoint_writes_relational_bytes_proportional_to_the_change() {
     let path = unique_test_dir("checkpoint-writes-small-change");
     let (mut store, mut catalog) = seed(&path, 4_000);

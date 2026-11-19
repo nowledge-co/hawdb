@@ -60,6 +60,119 @@ impl Drop for ReleaseIdleHandles<'_> {
 /// relational checkpoint identifier and keep the physical generation.
 const OVERFLOW_EXTENT_ARTIFACT_BASE: u64 = 1 << 62;
 
+struct RowRootDecodeAdmission {
+    limits: RelationalDecodeLimits,
+    values: usize,
+}
+
+impl RowRootDecodeAdmission {
+    fn new(limits: RelationalDecodeLimits) -> Self {
+        Self { limits, values: 0 }
+    }
+
+    /// Applies the same schema string and literal-value limits as the legacy
+    /// full-row checkpoint decoder. Row-root manifests have already decoded
+    /// their schemas under the publication limits, which are intentionally
+    /// independent from the caller's checkpoint decode limits.
+    fn schema(&mut self, schema: &super::RelationalTableSchema) -> Result<(), RelationalError> {
+        let encoded = super::encode_relational_table_schema(schema)?;
+        let schema_limits = RelationalDecodeLimits {
+            max_record_bytes: encoded.len(),
+            max_tables: 1,
+            max_writes: 0,
+            max_rows: 0,
+            max_values: self.limits.max_values,
+            max_value_bytes: self.limits.max_value_bytes,
+            max_overflow_segments: 0,
+            max_overflow_bytes: 0,
+        };
+        let mut decoder = super::Decoder::from_slice(&encoded, schema_limits, false);
+        drop(decoder.table_schema()?);
+        let schema_values = decoder.values;
+        decoder.finish()?;
+        self.charge_values(schema_values)
+    }
+
+    fn string(&self, value: &str, context: &str) -> Result<(), RelationalError> {
+        self.bytes(value.len(), context)
+    }
+
+    fn key(&mut self, key: &super::RelationalKey) -> Result<(), RelationalError> {
+        self.charge_values(key.0.len())?;
+        for value in &key.0 {
+            self.value_bytes(value)?;
+        }
+        Ok(())
+    }
+
+    fn row(&mut self, row: &super::RelationalRow) -> Result<(), RelationalError> {
+        self.charge_values(row.values().len())?;
+        for value in row.values() {
+            self.value_bytes(value)?;
+        }
+        Ok(())
+    }
+
+    fn charge_values(&mut self, count: usize) -> Result<(), RelationalError> {
+        self.values = self.values.checked_add(count).ok_or_else(|| {
+            RelationalError::Admission("decoded value count overflow".to_string())
+        })?;
+        if self.values > self.limits.max_values {
+            return Err(RelationalError::Admission(format!(
+                "decoded value count exceeds limit {}",
+                self.limits.max_values
+            )));
+        }
+        Ok(())
+    }
+
+    fn value_bytes(&self, value: &RelationalValue) -> Result<(), RelationalError> {
+        match value {
+            RelationalValue::Text(value) => self.bytes(value.len(), "TEXT value"),
+            RelationalValue::Bytea(value) => self.bytes(value.len(), "BYTEA value"),
+            RelationalValue::Vector(value) => self.bytes(value.encoded().len(), "VECTOR value"),
+            RelationalValue::Overflow(reference) => {
+                let max = u64::try_from(self.limits.max_value_bytes).map_err(|_| {
+                    RelationalError::Admission(
+                        "relational value limit does not fit u64".to_string(),
+                    )
+                })?;
+                if reference.compressed_bytes == 0
+                    || reference.uncompressed_bytes == 0
+                    || reference.compressed_bytes > max
+                    || reference.uncompressed_bytes > max
+                {
+                    return Err(RelationalError::Admission(format!(
+                        "overflow reference contains {} compressed and {} decoded bytes, outside limit {}",
+                        reference.compressed_bytes,
+                        reference.uncompressed_bytes,
+                        self.limits.max_value_bytes
+                    )));
+                }
+                Ok(())
+            }
+            RelationalValue::Null
+            | RelationalValue::Boolean(_)
+            | RelationalValue::BigInt(_)
+            | RelationalValue::DoublePrecision(_)
+            | RelationalValue::Decimal(_)
+            | RelationalValue::Uuid(_)
+            | RelationalValue::Timestamp(_)
+            | RelationalValue::TimestampTz(_) => Ok(()),
+        }
+    }
+
+    fn bytes(&self, len: usize, context: &str) -> Result<(), RelationalError> {
+        if len > self.limits.max_value_bytes {
+            return Err(RelationalError::Admission(format!(
+                "decoded {context} contains {len} bytes, exceeding limit {}",
+                self.limits.max_value_bytes
+            )));
+        }
+        Ok(())
+    }
+}
+
 fn overflow_artifact_id(physical_generation: u64) -> Result<u64, RelationalError> {
     if physical_generation >= OVERFLOW_EXTENT_ARTIFACT_BASE {
         return Err(RelationalError::Corruption(format!(
@@ -235,6 +348,13 @@ fn file_segment(
 
 /// Rebuilds the complete relational checkpoint state from a canonical
 /// row-page root and its bound overflow root.
+///
+/// The row root applies `max_tables`, `max_rows`, `max_values`,
+/// `max_value_bytes`, and `max_overflow_segments`. `max_writes` is a WAL-only
+/// limit. `max_record_bytes` does not apply because this layout has no
+/// monolithic relational record, and `max_overflow_bytes` does not apply
+/// because overflow envelopes stay file-backed instead of being decoded into
+/// memory; their bound root enforces its own artifact and extent limits.
 pub fn decode_relational_checkpoint_from_row_root(
     directory: &Path,
     rows: &RelationalRowPageRootReader,
@@ -262,8 +382,13 @@ pub fn decode_relational_checkpoint_from_row_root(
     let _release = ReleaseIdleHandles(&scanned_paths);
     let mut total_rows = 0usize;
     let mut reachable = BTreeMap::new();
+    let mut admission = RowRootDecodeAdmission::new(limits);
     for table in &manifest.tables {
         let schema = &table.schema;
+        // A legacy checkpoint carries the table name once outside the schema
+        // and once inside it. Preserve both admission checks.
+        admission.string(&table.table, "table name")?;
+        admission.schema(schema)?;
         validate_table_schema(schema)?;
         if table.table != schema.name || state.schemas.contains_key(&table.table) {
             return Err(RelationalError::Corruption(format!(
@@ -316,6 +441,13 @@ pub fn decode_relational_checkpoint_from_row_root(
                 )));
             }
             for entry in page.rows {
+                if schema.primary_key.is_empty() {
+                    // Legacy checkpoints encode hidden row handles separately
+                    // from their rows. Declared primary keys are derived from
+                    // row values and must not be charged twice.
+                    admission.key(&entry.primary_key)?;
+                }
+                admission.row(&entry.row)?;
                 if table_rows.insert(entry.primary_key, entry.row).is_some() {
                     return Err(RelationalError::Corruption(format!(
                         "relational row root table {} repeats a primary key",

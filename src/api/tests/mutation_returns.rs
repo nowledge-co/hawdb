@@ -1185,6 +1185,105 @@ mod budgets {
         assert_eq!(counted.rows[0]["total"], Value::Int(2));
     }
 
+    /// `SET ... RETURN` (single-pattern and row-evaluated with `ORDER BY`) and
+    /// `UNWIND` relationship `MERGE ... RETURN` refuse result limits with the
+    /// same typed error, and write nothing (#1800).
+    fn assert_set_and_merge_refusals(
+        rows_limited: &mut dyn for<'a> FnMut(QueryRequest<'a>) -> crate::Result<QueryOutput>,
+        payload_limited: &mut dyn for<'a> FnMut(QueryRequest<'a>) -> crate::Result<QueryOutput>,
+    ) {
+        let total =
+            |execute: &mut dyn for<'a> FnMut(QueryRequest<'a>) -> crate::Result<QueryOutput>,
+             query: &str| {
+                execute(QueryRequest::new(query)).unwrap().rows[0]["total"].clone()
+            };
+        const SEEN: &str = "MATCH (e:Entity) WHERE e.seen = true RETURN count(e) AS total";
+        for query in [
+            "MATCH (e:Entity) SET e.seen = true RETURN e.id AS id",
+            "MATCH (e:Entity) WITH e SET e.seen = true RETURN e.id AS id ORDER BY id",
+        ] {
+            assert_budget(
+                rows_limited(QueryRequest::new(query)).unwrap_err(),
+                "MutationLimits.max_result_rows",
+            );
+            assert_eq!(total(rows_limited, SEEN), Value::Int(0), "{query}");
+        }
+        assert_budget(
+            rows_limited(QueryRequest::new(
+                "MATCH (s:Entity {id: 'a'}) UNWIND ['a', 'b'] AS key MATCH (m:Entity {id: key}) MERGE (s)-[:LINK]->(m) RETURN m.id AS id",
+            ))
+            .unwrap_err(),
+            "MutationLimits.max_result_rows",
+        );
+        assert_eq!(
+            total(
+                rows_limited,
+                "MATCH ()-[r:LINK]->() RETURN count(r) AS total"
+            ),
+            Value::Int(0)
+        );
+        // A count is one row within the one-row limit.
+        assert_eq!(
+            total(
+                rows_limited,
+                "MATCH (e:Entity) SET e.counted = true RETURN count(e) AS total"
+            ),
+            Value::Int(2)
+        );
+        assert_budget(
+            payload_limited(QueryRequest::new(
+                "MATCH (e:Entity {id: 'a'}) SET e.body = 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' RETURN e.body AS body",
+            ))
+            .unwrap_err(),
+            "MutationLimits.max_result_payload_bytes",
+        );
+        assert_eq!(
+            total(
+                payload_limited,
+                "MATCH (e:Entity) WHERE e.body IS NOT NULL RETURN count(e) AS total"
+            ),
+            Value::Int(0)
+        );
+    }
+
+    #[test]
+    fn set_and_unwind_merge_return_limits_are_typed_on_every_execution_surface() {
+        let (mut rows, mut payload) = (limited(1, 1 << 20), limited(16, 64));
+        assert_set_and_merge_refusals(&mut |request| rows.query_request(request), &mut |request| {
+            payload.query_request(request)
+        });
+
+        let (mut rows, mut payload) = (limited(1, 1 << 20), limited(16, 64));
+        let mut rows_transaction = rows.begin_transaction().unwrap();
+        let mut payload_transaction = payload.begin_transaction().unwrap();
+        assert_set_and_merge_refusals(
+            &mut |request| rows_transaction.query_request(request),
+            &mut |request| payload_transaction.query_request(request),
+        );
+        rows_transaction.rollback();
+        payload_transaction.rollback();
+
+        let rows = ConcurrentDatabase::new(limited(1, 1 << 20));
+        let payload = ConcurrentDatabase::new(limited(16, 64));
+        assert_set_and_merge_refusals(&mut |request| rows.query_request(request), &mut |request| {
+            payload.query_request(request)
+        });
+        let rows = ConcurrentDatabase::new(limited(1, 1 << 20));
+        let payload = ConcurrentDatabase::new(limited(16, 64));
+        let mut rows_transaction = rows
+            .begin_transaction(ConcurrentTransactionOptions::default())
+            .unwrap();
+        let mut payload_transaction = payload
+            .begin_transaction(ConcurrentTransactionOptions::default())
+            .unwrap();
+        assert_set_and_merge_refusals(
+            &mut |request| rows_transaction.query_request(request),
+            &mut |request| payload_transaction.query_request(request),
+        );
+        rows_transaction.commit().unwrap();
+        payload_transaction.commit().unwrap();
+    }
+
     #[test]
     fn mutation_return_result_limits_are_typed_on_every_execution_surface() {
         let (mut rows, mut payload) = (limited(1, 1 << 20), limited(16, 64));

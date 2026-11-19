@@ -95,12 +95,19 @@ impl QueryBridge {
                     | HawDBError::TransactionReadDependencyRefused { .. }
                     | HawDBError::ReadBudgetExceeded(_)
                     | HawDBError::WalRecordLimitExceeded(_)
+                    | HawDBError::ReadOnly { .. }
                     | HawDBError::ResourceBudgetExceeded(_)
                     | HawDBError::GraphExpansionCandidateLimitExceeded { .. }
                     | HawDBError::GraphExpansionPayloadLimitExceeded { .. } => "execution",
                     HawDBError::BranchCommandUnsupported { .. } => "branch_command_unsupported",
                     HawDBError::SearchProjectionRebuildRefused { .. } => {
                         "search_projection_rebuild_refused"
+                    }
+                    HawDBError::SearchProjectionOwnershipMarkerCorrupt { .. } => {
+                        "search_projection_ownership_marker_corrupt"
+                    }
+                    HawDBError::SearchProjectionOwnershipMismatch { .. } => {
+                        "search_projection_ownership_mismatch"
                     }
                     HawDBError::SearchProjectionEpochAdvanceRefused { .. } => {
                         "search_projection_epoch_advance_refused"

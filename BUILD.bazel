@@ -176,7 +176,6 @@ _HAWDB_COMPILE_DATA = [
 ]
 
 _HAWDB_COMMON_BASE_DEPS = [
-    "@crate_index//:chrono",
     "@crate_index//:getrandom",
     "@crate_index//:serde",
     "@crate_index//:serde_json",

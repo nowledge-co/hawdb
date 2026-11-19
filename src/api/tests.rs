@@ -181,6 +181,7 @@ mod relational_projection_expressions;
 mod relational_range;
 mod relational_row_dirty_budget;
 mod relational_update_delete_outcomes;
+mod relationship_or_predicates;
 mod relationship_patterns;
 mod relationship_property_mutations;
 mod relationship_property_seeds;

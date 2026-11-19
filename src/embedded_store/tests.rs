@@ -7776,12 +7776,14 @@ fn grouped_evidence_complete_text_preserves_graph_eligibility_and_retained_reads
 }
 
 mod catch_up_admission_tests;
+mod externally_owned_search_kinds_tests;
 mod initial_import_checkpoint_tests;
 mod object_reclamation_tests;
 mod schema_change_log_gap_tests;
 mod schema_maintenance_tests;
 mod search_cleanup_ceiling_tests;
 mod search_epoch_advance_tests;
+mod search_marker_tests;
 mod search_projection_document_lookup_tests;
 mod search_projection_rebuild_tests;
 mod storage_pressure_tests;

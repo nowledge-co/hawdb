@@ -38,8 +38,8 @@ use crate::search::{
     MetadataRepairSummary, SearchCandidateSetReport, SearchDerivedArtifactReport,
     SearchEmptyReasonCode, SearchFusionWeights, SearchIndex, SearchMatchedSpan,
     SearchPredicatePushdownReport, SearchProjectionDelta, SearchProjectionDeltaReport,
-    SearchProjectionFreshness, SearchQueryOptions, SearchRebuildOptions, SearchRebuildSummary,
-    SearchResultSet, SearchRetrieverCandidateSetReport,
+    SearchProjectionFreshness, SearchProjectionKind, SearchQueryOptions, SearchRebuildOptions,
+    SearchRebuildSummary, SearchResultSet, SearchRetrieverCandidateSetReport,
 };
 use crate::store::{
     restore_storage_backup, AdjacencyConsistencyReport, AdjacencyConsolidationPlan,
@@ -611,7 +611,7 @@ pub(super) struct DatabaseTransactionState {
     /// The transaction-start instant. Every SQL statement of the transaction
     /// pins the statement clock to it, so `CURRENT_TIMESTAMP`, `now()`,
     /// `LOCALTIMESTAMP` and clock defaults agree across the transaction.
-    sql_clock: hawdb_core::temporal::DateTime<hawdb_core::temporal::Utc>,
+    sql_clock: hawdb_core::temporal::OffsetDateTime,
 }
 
 struct SparseRelationalStatementStage {
@@ -674,7 +674,7 @@ pub struct DatabaseReadTransaction<S: crate::executor::ExecutionStore = GraphSto
     _pin: Arc<ReaderPin>,
     retained_runtime: Arc<retained_query::RetainedRuntime>,
     /// The read transaction's start instant, pinned for its SQL statements.
-    sql_clock: hawdb_core::temporal::DateTime<hawdb_core::temporal::Utc>,
+    sql_clock: hawdb_core::temporal::OffsetDateTime,
 }
 
 /// An immutable canonical view that can create independent query contexts.
@@ -896,10 +896,13 @@ fn require_search_projection_source_epoch(expected: Option<u64>, actual: u64) ->
     Ok(())
 }
 
+/// `externally_owned` kinds derive no rows: the host is their only writer
+/// (#1814). Their documents are still removed through `delete_document_ids`.
 fn search_projection_graph_delta_for(
     catalog: &Catalog,
     store: &GraphStore,
     request: &SearchProjectionGraphDeltaRequest,
+    externally_owned: &BTreeSet<SearchProjectionKind>,
 ) -> Result<SearchProjectionDelta> {
     let operation_count = request.operation_count();
     if let Some(limit) = request.max_operations
@@ -921,7 +924,9 @@ fn search_projection_graph_delta_for(
         let Some(node) = store.node_owned(NodeId(*node_id))? else {
             continue;
         };
-        if let Some(row) = projection_row_from_node_with_graph_metadata(catalog, store, &node)? {
+        if let Some(row) = projection_row_from_node_with_graph_metadata(catalog, store, &node)?
+            && !externally_owned.contains(&row.kind)
+        {
             upserts.push(row);
         }
     }

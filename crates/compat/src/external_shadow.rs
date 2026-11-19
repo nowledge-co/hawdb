@@ -556,6 +556,7 @@ fn json_error_from_hawdb(error: HawDBError) -> serde_json::Value {
             });
             response
         }
+        error @ HawDBError::ReadOnly { .. } => json_error("execution", error),
         HawDBError::WalRecordLimitExceeded(cause) => {
             let mut response = json_error("execution", cause.as_ref());
             response["error"]["details"] = serde_json::json!({
@@ -618,6 +619,12 @@ fn json_error_from_hawdb(error: HawDBError) -> serde_json::Value {
         }
         error @ HawDBError::BranchCommandUnsupported { .. } => json_error("execution", error),
         error @ HawDBError::SearchProjectionRebuildRefused { .. } => json_error("execution", error),
+        error @ HawDBError::SearchProjectionOwnershipMarkerCorrupt { .. } => {
+            json_error("execution", error)
+        }
+        error @ HawDBError::SearchProjectionOwnershipMismatch { .. } => {
+            json_error("execution", error)
+        }
         error @ HawDBError::SearchProjectionEpochAdvanceRefused { .. } => {
             json_error("execution", error)
         }

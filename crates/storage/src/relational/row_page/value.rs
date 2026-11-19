@@ -124,11 +124,15 @@ pub(super) fn encode_value_with_work<W: super::encoding::EncodeWork, O: ValueOut
         }
         RelationalValue::Timestamp(value) => {
             encoded.push(10)?;
-            encoded.extend_from_slice(&value.to_le_bytes())?;
+            let payload = hawdb_core::sql_timestamp::encode_micros(value.get())
+                .map_err(|error| RelationalRowPageError::Corrupt(error.to_string()))?;
+            encoded.extend_from_slice(payload.as_bytes())?;
         }
         RelationalValue::TimestampTz(value) => {
             encoded.push(11)?;
-            encoded.extend_from_slice(&value.to_le_bytes())?;
+            let payload = hawdb_core::sql_timestamp::encode_micros(value.get())
+                .map_err(|error| RelationalRowPageError::Corrupt(error.to_string()))?;
+            encoded.extend_from_slice(payload.as_bytes())?;
         }
         RelationalValue::DoublePrecision(value) => {
             encoded.push(3)?;
@@ -418,7 +422,9 @@ fn validate_value(
         9 if encoded.len() == 1 + hawdb_core::Decimal::ENCODED_LEN => {
             decode_decimal(&encoded[1..]).map(|_| ())
         }
-        10 | 11 if encoded.len() == 9 => decode_timestamp(encoded).map(|_| ()),
+        10 | 11 if encoded.len() == 9 || encoded.len() == 17 => {
+            decode_timestamp(encoded).map(|_| ())
+        }
         1 => Err(RelationalRowPageError::Corrupt(
             "invalid BOOLEAN value encoding".to_string(),
         )),
@@ -690,6 +696,17 @@ fn decode_timestamp(encoded: &[u8]) -> Result<RelationalValueRef<'static>, Relat
         i64::from_le_bytes(encoded[1..9].try_into().map_err(|_| {
             RelationalRowPageError::Corrupt("invalid TIMESTAMP value width".into())
         })?);
+    let excess = if encoded.len() == 17 {
+        Some(u64::from_le_bytes(
+            encoded[9..17]
+                .try_into()
+                .expect("validated timestamp width"),
+        ))
+    } else {
+        None
+    };
+    let micros = hawdb_core::sql_timestamp::join_micros(micros, excess)
+        .map_err(|error| RelationalRowPageError::Corrupt(error.to_string()))?;
     match crate::relational::decode_timestamp_value(encoded[0], micros)
         .map_err(|error| RelationalRowPageError::Corrupt(error.to_string()))?
     {

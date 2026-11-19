@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use chrono::DateTime;
 use hawdb_core::Value;
 use roaring::RoaringTreemap;
 use std::collections::{BTreeMap, BTreeSet};
@@ -49,9 +48,7 @@ impl DateTimeMinMax {
     }
 
     pub fn parse_rfc3339(value: &str) -> Option<i64> {
-        DateTime::parse_from_rfc3339(value)
-            .ok()
-            .map(|value| value.timestamp_millis())
+        hawdb_core::temporal::parse_rfc3339_millis(value)
     }
 }
 

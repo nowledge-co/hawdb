@@ -470,6 +470,10 @@ impl<S: AsRef<str>> CleanupCandidate<S> {
 
     fn parse(name: S) -> Option<Self> {
         use crate::out_of_core::artifact_key::ArtifactKey;
+        // Projection policy, not a generation artifact: never a candidate.
+        if crate::projection_ownership::is_record_name(name.as_ref()) {
+            return None;
+        }
         let (artifact_name, quarantined) = match quarantined_artifact_name(name.as_ref()) {
             Some(artifact_name) => (artifact_name, true),
             None => (name.as_ref(), false),

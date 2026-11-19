@@ -520,12 +520,12 @@ fn synthetic_value(
                 .unwrap_or(i64::MAX)
                 .saturating_mul(1_000_000);
             let micros = hawdb_core::sql_timestamp::checked(
-                hawdb_core::sql_timestamp::min_micros().saturating_add(offset),
+                hawdb_core::sql_timestamp::min_micros().saturating_add(i128::from(offset)),
             )?;
             if matches!(kind, RelationalScalarType::Timestamp(_)) {
-                RelationalValue::Timestamp(micros)
+                RelationalValue::Timestamp(micros.into())
             } else {
-                RelationalValue::TimestampTz(micros)
+                RelationalValue::TimestampTz(micros.into())
             }
         }
         RelationalScalarType::Vector(_) => {

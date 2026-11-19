@@ -1,23 +1,33 @@
 # Cypher temporal types
 
 HawDB implements the openCypher temporal types as native `Value` variants
-built on [chrono](https://docs.rs/chrono) 0.4 (issue #1361).
+built on [time](https://docs.rs/time) 0.3 with `large-dates` (issues #1361 and #1831).
 
 ## Types
 
-| Cypher type | `Value` variant | chrono type | Notes |
+| Cypher type | `Value` variant | Rust type | Notes |
 | --- | --- | --- | --- |
-| `DATE` | `Value::Date` | `NaiveDate` | proleptic Gregorian, years ±262143 |
-| `LOCAL TIME` | `Value::LocalTime` | `NaiveTime` | nanosecond precision, no leap seconds |
-| `LOCAL DATETIME` | `Value::LocalDateTime` | `NaiveDateTime` | |
-| `ZONED DATETIME` | `Value::DateTime` | `DateTime<FixedOffset>` | fixed UTC offset only |
-| `DURATION` | `Value::Duration` | `hawdb_core::temporal::Duration` (`TemporalDuration`) | `months`, `days`, exact `time: TimeDelta` |
+| `DATE` | `Value::Date` | `Date` | proleptic Gregorian, years -999999 through 999999 |
+| `LOCAL TIME` | `Value::LocalTime` | `Time` | nanosecond precision, no leap seconds |
+| `LOCAL DATETIME` | `Value::LocalDateTime` | `PlainDateTime` | |
+| `ZONED DATETIME` | `Value::DateTime` | `OffsetDateTime` | fixed UTC offset only |
+| `DURATION` | `Value::Duration` | `hawdb_core::temporal::Duration` (`TemporalDuration`) | `months`, `days`, exact `time(): SignedDuration` |
 
 A duration keeps calendar months and days separate from its exact time part:
 one month or one day has no fixed length. `ZONED TIME` (time with an offset)
 and named time-zone regions are not supported. The host API exposes the module
 as `hawdb::temporal` (parsers, formatters, the statement clock and the binary
 payload codec).
+
+The public Rust temporal types and statement clock now use native `time` types.
+The exact duration component retains the previous symmetric i64-millisecond
+limit; `Duration::new` and `from_parts` return `Option` and decoders reject overflow.
+The exact time field is read through `time()`. Fixed-offset host datetimes follow
+`time`'s local-calendar and offset range; Cypher text constructors still limit
+offsets to 18 hours and require a representable UTC calendar value. Existing
+representable graph payloads keep their CE-day, nanosecond and offset encodings.
+SQL timestamps have their own PostgreSQL range; see
+[SQL timestamps](specs/POSTGRES_SQL_PGQ_SPEC.md#sql-timestamps).
 
 ## Ordering, equality and comparison
 

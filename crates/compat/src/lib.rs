@@ -453,6 +453,7 @@ impl ExpectedErrorClass {
             | HawDBError::BranchEvidenceBudgetExceeded { .. }
             | HawDBError::ReadBudgetExceeded(_)
             | HawDBError::WalRecordLimitExceeded(_)
+            | HawDBError::ReadOnly { .. }
             | HawDBError::ResourceBudgetExceeded(_)
             | HawDBError::GraphExpansionCandidateLimitExceeded { .. }
             | HawDBError::GraphExpansionPayloadLimitExceeded { .. }
@@ -461,6 +462,8 @@ impl ExpectedErrorClass {
             | HawDBError::TransactionReadDependencyRefused { .. }
             | HawDBError::BranchCommandUnsupported { .. }
             | HawDBError::SearchProjectionRebuildRefused { .. }
+            | HawDBError::SearchProjectionOwnershipMarkerCorrupt { .. }
+            | HawDBError::SearchProjectionOwnershipMismatch { .. }
             | HawDBError::SearchProjectionEpochAdvanceRefused { .. } => Self::Execution,
             HawDBError::CapabilityUnavailable { .. } => Self::CapabilityUnavailable,
         }

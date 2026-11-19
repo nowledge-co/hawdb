@@ -1264,7 +1264,12 @@ Open selects the relational state by the checkpoint's own content:
   resolves every reachable overflow reference to a file-backed segment of its
   physical extent (checking the descriptor's reference metadata), validates
   materialized views and foreign keys, and rebuilds materialized index
-  postings unless the index mode omits them. A missing extent or any mismatch
+  postings unless the index mode omits them. Reconstruction preserves the
+  checkpoint decoder's table, row, logical-value, per-value byte and overflow
+  segment admission limits. Record bytes, WAL writes and decoded overflow-body
+  bytes have no row-root analogue: there is no monolithic relational record,
+  no WAL transaction, and overflow envelopes remain file-backed under the
+  bound root's artifact and extent limits. A missing extent or any mismatch
   rejects open.
 
 A writable handle with resident rows keeps them across the checkpoint. Once

@@ -151,7 +151,7 @@ The checkpoint-bound relational row-page and overflow roots, which every
 version 2 checkpoint already published, carry the relational state, and a
 checkpoint writes only their changed generations. No codec, magic or version
 constant changes. Version 3 opens version 2 databases, including their
-full-row files and WAL tails. A version 2 release (0.31 through 0.33) opens a
+full-row files and WAL tails. A version 2 release (0.31 through 0.34) opens a
 version 3 database only with `OutOfCore` residency and `Authoritative`
 relational indexes; in every other configuration it refuses the open with
 "checkpoint stores canonical metadata-only relational rows; reopen requires
@@ -351,6 +351,37 @@ projection capture. A range with projected changes, a change-log gap or an
 unavailable range is refused with the typed, non-storage
 `HawDBError::SearchProjectionEpochAdvanceRefused`. See
 [`SEARCH_PROJECTION_EPOCH_ADVANCE.md`](SEARCH_PROJECTION_EPOCH_ADVANCE.md).
+
+A host can flag the search projection as stale from outside, for example
+after an external vector store rebuilt every embedding. Two methods do this:
+- `EmbeddedStoreHandle::mark_search_projection_full_reindex_needed(reason)`
+  writes the projection's `.reindex_needed` marker;
+- `mark_search_projection_metadata_repair_needed(reason)` writes
+  `.projection_metadata_repair_needed`.
+
+These are the markers HawDB itself sets after a failed full rebuild or a
+missing-row repair. `SearchProjectionFreshness` reports them as
+`full_reindex_needed`/`full_reindex_reasons` and
+`metadata_repair_needed`/`metadata_repair_reasons`, in `runtime_status()`,
+search candidate reports and readiness.
+
+Marking works on the resident projection and on incremental out-of-core
+maintenance. The out-of-core marker is written through a temporary file and a
+durable rename. It needs write admission and a writable graph. Recording a
+reason twice changes nothing; a full-reindex marker collects distinct reasons,
+and the metadata-repair marker keeps the latest one.
+
+Refusals happen before anything is written:
+- a read-only handle (`GraphMode::ShadowReadOnly`): the typed `HawDBError::ReadOnly { operation }`, a caller error that displays as an `execution error` (Python `ExecutionError` with `kind="read_only"`, C ABI kind `read_only`);
+- a handle without a search projection: `Semantic`;
+- an empty, multi-line, whitespace-padded or longer than
+  `MAX_SEARCH_PROJECTION_MARKER_REASON_BYTES` (1 KiB) reason: `Semantic`.
+
+None of these refusals is a storage error. Graph writes continue while a
+projection is marked. HawDB never clears a marker on request. A full reindex
+clears it: a resident rebuild, or an out-of-core rebuild into a new directory
+followed by a reopen on that directory. The host's own preparation flow may
+also clear it.
 
 The search projection selector carries `min_reader_version` when it holds a
 field that version-1 readers do not know. A reader refuses a selector that

@@ -777,7 +777,7 @@ struct MutationCommitOptions<'a> {
     retain_on_live_headroom: Option<&'a mut Option<RetainedLiveHeadroomCommit>>,
     /// The writing transaction's `current_timestamp()` default instant.
     /// `None` reads the clock at most once for this commit.
-    creation_clock: Option<chrono::NaiveDateTime>,
+    creation_clock: Option<hawdb_core::temporal::PlainDateTime>,
 }
 
 /// Inputs of a commit rejected before WAL append only for live-overlay
@@ -833,7 +833,7 @@ pub struct GraphMutationTransaction {
     persistent_commit: bool,
     /// One `current_timestamp()` default instant for every record this
     /// transaction creates (Kùzu evaluates such defaults per transaction).
-    creation_clock: chrono::NaiveDateTime,
+    creation_clock: hawdb_core::temporal::PlainDateTime,
 }
 
 /// A sealed transaction preparation. No statement can mutate its compacted
@@ -2958,7 +2958,7 @@ fn property_backfill_ops(
 pub(crate) fn fill_creation_defaults(
     catalog: &Catalog,
     ops: &mut [WalOp],
-    clock: &mut impl FnMut() -> chrono::NaiveDateTime,
+    clock: &mut impl FnMut() -> hawdb_core::temporal::PlainDateTime,
 ) {
     if !catalog.has_property_defaults() {
         return;
@@ -2983,8 +2983,8 @@ pub(crate) fn fill_creation_defaults(
 
 /// A lazily read, then fixed, creation clock.
 pub(crate) fn lazy_creation_clock(
-    fixed: Option<chrono::NaiveDateTime>,
-) -> impl FnMut() -> chrono::NaiveDateTime {
+    fixed: Option<hawdb_core::temporal::PlainDateTime>,
+) -> impl FnMut() -> hawdb_core::temporal::PlainDateTime {
     let mut instant = fixed;
     move || *instant.get_or_insert_with(PropertyDefault::creation_clock)
 }
