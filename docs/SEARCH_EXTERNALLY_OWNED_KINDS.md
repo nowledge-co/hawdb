@@ -41,8 +41,13 @@ Projection consumers keep their own catch-up and are unaffected. A host
 that drives `Database` directly can set the policy on its index with
 `SearchIndex::set_externally_owned_kinds`.
 
-`runtime_status()` reports the active set as `externally_owned_search_kinds`
-and in JSON as `projection.externally_owned_kinds`.
+`runtime_status()` reports the effective set as `externally_owned_search_kinds`
+and in JSON as `projection.externally_owned_kinds`: the set recorded for the
+projection, read on every call. It equals the requested set once recorded, and
+is empty when nothing was requested or when an open that may not record finds
+no record yet (see the open rules below). The policy installed on the index,
+and `EmbeddedStore::externally_owned_search_kinds()`, stay the requested set
+in every case, so catch-up never derives documents of a declared kind.
 
 ## Rebuilds, metadata repair and the rows-required fence
 
@@ -97,7 +102,9 @@ durable rows-required fence. The fence is an
 `runtime_status().externally_owned_rows_required` (JSON
 `projection.externally_owned_rows_required`, with `incarnation` and `epoch`
 fields) is `Some(token)` while rows are required. It is read from the
-directory on every call, so read-only opens report it too.
+directory on every call, together with the set record, so read-only opens
+report it too, including a fence recorded by a writable open after they
+opened.
 
 After re-pushing its rows, the host calls
 `EmbeddedStoreHandle::acknowledge_externally_owned_rows_restored(token)` with
@@ -138,8 +145,9 @@ Read-only and qualified out-of-core opens refuse a reset as `Semantic`.
 
 Qualified out-of-core opens never record the set; only maintenance opens
 do. A preparation flow that opens in qualified mode must therefore still
-declare the set, and the projection must have been recorded by a maintenance
-open.
+declare the set, and the projection must be recorded by a maintenance open
+before its rows-required fence applies; until then the qualified open reports
+no fence and an empty effective set.
 
 ## Durable records
 
@@ -188,6 +196,24 @@ Open rules (`EmbeddedStoreOpenOptions` with a search projection):
 | equal | non-empty, missing or unreadable rows state | typed `SearchProjectionOwnershipMarkerCorrupt`; explicit reset required |
 | different, including empty against non-empty | any | `HawDBError::SearchProjectionOwnershipMismatch`, nothing changed |
 
+Read-only (`ShadowReadOnly`) and qualified out-of-core opens may not record.
+For them the absent/non-empty row differs: the open writes nothing and the
+projection counts as not opted in yet (#1845). This happens, for example,
+for a host that opts in after its projections were already prepared.
+
+After open, `externally_owned_rows_required()` and `runtime_status()` re-read
+the set record on every call when the requested set is non-empty:
+
+| Record now | Open that recorded or verified the set | Open that may not record |
+| --- | --- | --- |
+| absent | typed `SearchProjectionOwnershipMarkerCorrupt` (record removed out of band) | `None`, effective set empty |
+| equal | rows state as recorded (`None` or `Some(token)`); missing or unreadable state is `SearchProjectionOwnershipMarkerCorrupt` | same |
+| different | `SearchProjectionOwnershipMismatch` | same |
+
+So a read-only opener observes the fence on its next call once a writable
+open records the set, without reopening. An empty requested set reports
+`None` and an empty set without reading the record, as before.
+
 Every opener (for example a preparation flow and the runtime) must pass the
 same set; a difference is refused rather than diverging silently. A missing
 record, for example removed by an operator, is restored by the next
@@ -224,7 +250,12 @@ into a new directory.
   - unreadable set and rows records: typed refusals; a read-only reset is
     refused; a reset reopen rewrites both records with a fresh incarnation and
     rejects acknowledgements from the previous incarnation.
+  - read-only and qualified out-of-core opens of an unrecorded projection
+    with a non-empty set: no rows required and an empty effective set; a
+    later writable record becomes visible on the same handle; a later record
+    that differs is a mismatch; a recording open whose record disappears
+    fails closed (#1845).
 - `projection_ownership::tests` (hawdb-search) covers the record formats, the
   refusal, acknowledgement of only the current token, missing/malformed
-  records, and the reset.
+  records, the reset, and observing a record written after open.
 - `generation_cleanup::tests::cleanup_preserves_the_externally_owned_records`.
