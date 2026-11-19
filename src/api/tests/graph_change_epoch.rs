@@ -368,7 +368,7 @@ fn append_and_initial_import_marker_commits_do_not_advance_it() {
 }
 
 #[test]
-fn a_poisoned_database_refuses_to_report_it() {
+fn a_poisoned_concurrent_database_refuses_to_report_it() {
     use std::num::{NonZeroU64, NonZeroUsize};
     let path = unique_test_dir("graph_change_epoch_poisoned");
     let mut database = Database::open(&path).unwrap();
@@ -380,6 +380,11 @@ fn a_poisoned_database_refuses_to_report_it() {
     )
     .unwrap();
     let db = ConcurrentDatabase::new_with_wal_group_commit(database, group_commit);
+    // Opened before the failure, so the transaction accessor is exercised
+    // on a poisoned store.
+    let mut held = db
+        .begin_transaction(ConcurrentTransactionOptions::default())
+        .unwrap();
     let mut transaction = db
         .begin_transaction(ConcurrentTransactionOptions::default())
         .unwrap();
@@ -401,12 +406,58 @@ fn a_poisoned_database_refuses_to_report_it() {
         refused.to_string().contains("close and reopen"),
         "{refused}"
     );
-    if let Ok(mut transaction) = db.begin_transaction(ConcurrentTransactionOptions::default()) {
-        assert!(transaction.graph_change_commit_epoch().is_err());
-    }
+    let refused = held.graph_change_commit_epoch().unwrap_err();
+    assert!(
+        refused.to_string().contains("close and reopen"),
+        "{refused}"
+    );
+    held.rollback();
     drop(db);
     let reopened = Database::open(&path).unwrap();
     assert!(reopened.graph_change_commit_epoch().is_ok());
     drop(reopened);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn a_poisoned_database_refuses_to_report_it_in_transactions_and_status() {
+    let path = unique_test_dir("graph_change_epoch_poisoned_apply");
+    let mut db = Database::open(&path).unwrap();
+    seeded(&mut db);
+    let mut transaction = db.begin_transaction().unwrap();
+    transaction.query("CREATE (:Memory {id: 'c'})").unwrap();
+    transaction.query("CREATE (:Memory {id: 'd'})").unwrap();
+    crate::store::set_wal_apply_failpoint(Some(1));
+    let commit_error = transaction.commit().unwrap_err();
+    crate::store::set_wal_apply_failpoint(None);
+    assert!(
+        commit_error
+            .to_string()
+            .contains("injected failure while applying a durable WAL batch"),
+        "{commit_error}"
+    );
+    assert!(db.storage_handle_poisoned().unwrap());
+
+    let refused = db.graph_change_commit_epoch().unwrap_err();
+    assert!(
+        refused.to_string().contains("close and reopen"),
+        "{refused}"
+    );
+    // A `DatabaseTransaction` borrows the database exclusively, so it cannot
+    // be open while another commit poisons the store; a new one is refused
+    // with the same storage error before its accessor can be reached.
+    let refused = db.begin_transaction().map(drop).unwrap_err();
+    assert!(
+        refused.to_string().contains("close and reopen"),
+        "{refused}"
+    );
+    let graph = crate::EmbeddedGraph::from_database(db, crate::GraphMode::WritableCutover);
+    let store = crate::EmbeddedStore::new(graph, None);
+    let refused = store.runtime_status().unwrap_err();
+    assert!(
+        refused.to_string().contains("close and reopen"),
+        "{refused}"
+    );
+    drop(store);
     std::fs::remove_dir_all(path).unwrap();
 }
