@@ -1767,7 +1767,9 @@ fn dirty_backing_cow_preserves_sorted_snapshot_and_denies_unfunded_copy() {
     key.encoded_primary_key = std::sync::Arc::new(Vec::new());
     assert!(matches!(
         entries.insert(key, value, &cancelled),
-        Err(RelationalRowDeltaError::Admission(_))
+        Err(RelationalRowDeltaError::Stopped(
+            hawdb_core::RuntimeCancellationReason::Cancelled
+        ))
     ));
     assert_eq!(
         entries

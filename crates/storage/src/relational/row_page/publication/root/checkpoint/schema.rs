@@ -36,7 +36,7 @@ fn fixed<T>(work: &CheckpointWorkContext, operation: impl FnOnce() -> T) -> Resu
 
 fn text(value: &str, work: &CheckpointWorkContext) -> Result<String> {
     clone_string_with_work_context(value, work)
-        .map_err(|error| RelationalRowPagePublicationError::Admission(error.to_string()))
+        .map_err(RelationalRowPagePublicationError::from_relational)
 }
 
 fn same_text(left: &str, right: &str, work: &CheckpointWorkContext) -> Result<bool> {
@@ -265,7 +265,7 @@ fn clone_default(
         }
         Some(Literal(RelationalValue::Vector(value))) => Some(Literal(RelationalValue::Vector(
             crate::background::decode_vector(clone_bytes(value.encoded(), work)?, Some(work))
-                .map_err(|error| RelationalRowPagePublicationError::Admission(error.to_string()))?,
+                .map_err(RelationalRowPagePublicationError::from_admission)?,
         ))),
         _ => return fixed(work, || value.clone()),
     };
@@ -322,7 +322,7 @@ pub(in crate::relational::row_page::publication) fn clone_schema(
         .as_deref()
         .map(|view| crate::relational::materialized_view::clone_definition(view, &context))
         .transpose()
-        .map_err(|error| RelationalRowPagePublicationError::Admission(error.to_string()))?;
+        .map_err(RelationalRowPagePublicationError::from_relational)?;
     fixed(work, || RelationalTableSchema {
         materialized_view,
         name,

@@ -202,7 +202,7 @@ fn append_zero_with_allocations(
     })?;
     let mut next = context
         .vector_capacity(capacity)
-        .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        .map_err(RelationalError::from_admission)?;
     next.extend_from_slice(value);
     next.push(0);
     Ok(next)

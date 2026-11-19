@@ -1425,6 +1425,10 @@ pub(super) fn map_transaction_append_error(
     error: hawdb_storage::append_table::AppendTableError,
 ) -> HawDBError {
     match error {
+        hawdb_storage::append_table::AppendTableError::Stopped(reason) => {
+            HawDBError::RuntimeTaskStopped(reason)
+        }
+        hawdb_storage::append_table::AppendTableError::PublishOutcomeUnknown(error) => *error,
         hawdb_storage::append_table::AppendTableError::UnsupportedFormat(error) => {
             HawDBError::UnsupportedStorageFormat(error)
         }

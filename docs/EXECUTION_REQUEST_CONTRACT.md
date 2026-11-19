@@ -200,11 +200,22 @@ chain carries a cancellation reason (`HawDBError::from_storage_error`) is
 reported as `RuntimeTaskStopped` too. Hosts must not match message text such
 as `lexical query cancelled` or `SQL session stopped before commit: …`.
 `scripts/check-typed-task-stops.py` refuses production code that reports a
-stop as `HawDBError::Execution` or `Storage` text. That covers task checks
-whose `map_err` builds either variant, and `Stopped(..)` or `Cancelled(..)`
-arms (including `_`, `..` and struct patterns) whose body builds one. Only an
-explicit, commented allowlist may keep `Storage`, and it is empty today. The
-scan runs in prek and as the `//:typed_task_stops_test` Bazel target.
+stop as `Admission`, `HawDBError::Execution` or `Storage` text. That covers
+task checks and admitted work/allocation operations whose `map_err` builds a
+text variant, every `CheckpointWorkError` helper that fails to inspect
+`stop_reason()`, and `Stopped(..)` or `Cancelled(..)` arms (including `_`, `..`
+and struct patterns) whose body builds text. Only an explicit, commented
+allowlist may keep `Storage`, and it is empty today. The scan runs in prek and
+as the `//:typed_task_stops_test` Bazel target.
+
+Checkpoint publishers distinguish a rollback-safe stop from a lost reply.
+Before the first durable artifact rename, cancellation or deadline remains
+`RuntimeTaskStopped`. Once any immutable artifact or canonical selector rename
+has completed, a later stop is `HawDBError::PublishOutcomeUnknown` and names
+the durable destination. The caller must inspect or reopen the generation; it
+must not infer rollback from the stopped request. Append, relational overflow
+and relational row-page publication retain this state across all later
+artifacts and selection work.
 
 Write transactions accept a caller context
 ([#1821](https://github.com/nowledge-co/hawdb/issues/1821)):

@@ -3083,9 +3083,12 @@ Every producer reports a stopped runtime task as
 `//:typed_task_stops_test` runs `scripts/check-typed-task-stops.py` over the
 production sources of the root, core, executor, search, relational, storage,
 analytics, runtime-tokio and vector-projection crates. It fails on:
-- a task check whose `map_err` builds `Execution` or `Storage`;
+- a task check, started work unit or admitted allocation/processing operation
+  whose `map_err` builds `Admission`, `Execution` or `Storage`;
+- a named `CheckpointWorkError` conversion helper that does not preserve
+  `stop_reason()`;
 - a `Stopped(..)` or `Cancelled(..)` arm (bound name, `_`, `..` or struct
-  pattern) whose body builds `Execution` or `Storage`, even from a prebuilt
+  pattern) whose body builds `Admission`, `Execution` or `Storage`, even from a prebuilt
   message.
 
 `Storage` is allowed only through an explicit allowlist, which is empty today.
@@ -3106,9 +3109,11 @@ string, raw-string, byte and char literals masked out (lifetimes and loop
 labels are not literals). Matches inside comments or literals are ignored.
 Files declared as `#[cfg(test)] mod name;` (with or without `#[path]`) are
 skipped.
-`//:typed_task_stops_script_test` holds the scan's 10 negative and positive
+`//:typed_task_stops_script_test` holds the scan's negative and positive
 controls. They cover:
 - multi-line closures and `to_string`;
+- qualified and specially named work-error helpers, started work units and
+  admitted allocation contexts;
 - wildcard, rest and struct arms;
 - a block arm that must not leak into the next arm;
 - the `Storage` allowlist;
@@ -3117,6 +3122,19 @@ existing cancellation tests in search, executor, relational, storage and the
 embedded runtime assert the typed variant. Local replay:
 `python3 scripts/check-typed-task-stops.py` and
 `python3 scripts/check-typed-task-stops.test.py`.
+
+Storage cancellation sweeps for append tables, relational codecs, index
+shadows, overflow roots and row-page roots cancel every observed CPU and I/O
+unit and assert the internal `Stopped(reason)` variant before the public
+`RuntimeTaskStopped` conversion. Publication sweeps additionally assert that a
+pre-rename stop leaves authority unchanged, while a stop after the first
+durable rename reports `PublishOutcomeUnknown`, retains an immutable artifact
+prefix and can be resolved by reopen/retry. The focused row-page helper test
+`publisher::checkpoint::post_rename_stop_tests::a_stop_after_the_rename_reports_publish_outcome_unknown`
+guards the lost-reply conversion itself; the exhaustive publisher tests guard
+state retention across later artifacts. These remain in the existing
+`//crates/storage:hawdb_storage_tests` owner and lane. Ref
+[#1856](https://github.com/nowledge-co/hawdb/issues/1856).
 
 ### Write transaction deadlines and cancellation
 

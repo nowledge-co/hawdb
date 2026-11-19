@@ -129,7 +129,7 @@ fn shared_vector_value_codec_round_trip_and_malformed_payloads() {
 }
 
 #[test]
-fn shared_vector_codec_validation_cancellation_is_admission_and_retryable() {
+fn shared_vector_codec_validation_cancellation_is_typed_and_retryable() {
     use crate::background::CheckpointWorkProbe;
     use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
     use std::sync::{atomic::Ordering, Arc};
@@ -147,7 +147,12 @@ fn shared_vector_codec_validation_cancellation_is_admission_and_retryable() {
             Some(&probe.context(local.clone())),
         );
         assert!(
-            matches!(result, Err(RelationalError::Admission(ref reason)) if reason.contains("cancelled")),
+            matches!(
+                result,
+                Err(RelationalError::Stopped(
+                    hawdb_core::RuntimeCancellationReason::Cancelled
+                ))
+            ),
             "{result:?}"
         );
         probe.assert_released(&local);

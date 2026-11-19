@@ -191,7 +191,10 @@ impl<'a> Decoder<'a> {
 }
 
 pub(super) fn allocation_error(error: hawdb_core::HawDBError) -> AppendTableError {
-    AppendTableError::Admission(error.to_string())
+    match error {
+        hawdb_core::HawDBError::RuntimeTaskStopped(reason) => AppendTableError::Stopped(reason),
+        error => AppendTableError::Admission(error.to_string()),
+    }
 }
 
 pub(super) fn read_u16_at(bytes: &[u8], offset: usize) -> u16 {
@@ -215,9 +218,7 @@ pub(super) fn map_relational(error: RelationalError) -> AppendTableError {
     match error {
         RelationalError::UnsupportedFormat(error) => AppendTableError::UnsupportedFormat(error),
         RelationalError::FileDescriptors(error) => AppendTableError::FileDescriptors(error),
-        RelationalError::Stopped(reason) => {
-            AppendTableError::Admission(format!("runtime task stopped: {reason}"))
-        }
+        RelationalError::Stopped(reason) => AppendTableError::Stopped(reason),
         RelationalError::Admission(message) => AppendTableError::Admission(message),
         RelationalError::Schema(message) => AppendTableError::Schema(message),
         RelationalError::Constraint(message) => AppendTableError::Constraint(message),

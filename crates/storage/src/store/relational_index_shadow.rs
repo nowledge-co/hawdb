@@ -108,6 +108,7 @@ fn qualification_probe_error(
             HawDBError::UnsupportedStorageFormat(error)
         }
         RelationalIndexShadowError::FileDescriptors(error) => HawDBError::FileDescriptors(error),
+        RelationalIndexShadowError::Stopped(reason) => HawDBError::RuntimeTaskStopped(reason),
         RelationalIndexShadowError::Corrupt(_) => HawDBError::StorageIntegrity(context),
         RelationalIndexShadowError::Admission(_)
         | RelationalIndexShadowError::Durability(_)
@@ -1491,9 +1492,7 @@ impl GraphStore {
                         expected_epoch,
                         error.to_string(),
                     );
-                    return Err(hawdb_storage::relational::RelationalError::Admission(
-                        error.to_string(),
-                    ));
+                    return Err(hawdb_storage::relational::RelationalError::from_work(error));
                 }
             }
         }

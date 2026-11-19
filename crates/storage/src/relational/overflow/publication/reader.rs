@@ -348,9 +348,9 @@ impl RelationalOverflowRootReader {
             })
         })?;
         let mut encoded = match allocations {
-            Some(context) => context.vector_capacity(envelope_bytes).map_err(|error| {
-                RelationalOverflowPublicationError::Admission(error.to_string())
-            })?,
+            Some(context) => context
+                .vector_capacity(envelope_bytes)
+                .map_err(RelationalOverflowPublicationError::from_admission)?,
             None => checkpoint::cpu(Some(work), || Ok(Vec::with_capacity(envelope_bytes)))?,
         };
         let mut artifact = checkpoint::io(Some(work), || {

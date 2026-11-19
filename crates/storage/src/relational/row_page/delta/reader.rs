@@ -194,7 +194,7 @@ impl RelationalRowDeltaReader {
             owned
                 .1
                 .reserve(bytes, work)
-                .map_err(|error| RelationalRowDeltaError::Admission(error.to_string()))?;
+                .map_err(RelationalRowDeltaError::from_work)?;
         }
         let mut reader =
             Self::from_manifest(directory, owned.0, expected_base, expected_recovery, config)?;
@@ -883,6 +883,11 @@ pub(super) fn validate_candidate_overflow_closure(
                         crate::relational::RelationalOverflowPublicationError::Admission(
                             message,
                         ) => RelationalRowDeltaError::Admission(message),
+                        crate::relational::RelationalOverflowPublicationError::PublishOutcomeUnknown(
+                            error,
+                        ) => RelationalRowDeltaError::Publication(
+                            crate::relational::RelationalRowPagePublicationError::PublishOutcomeUnknown(error),
+                        ),
                         crate::relational::RelationalOverflowPublicationError::Corrupt(message) => {
                             RelationalRowDeltaError::Corrupt(message)
                         }
@@ -895,9 +900,7 @@ pub(super) fn validate_candidate_overflow_closure(
                             "row delta references missing overflow extent {digest}"
                         )),
                         crate::relational::RelationalOverflowPublicationError::Stopped(reason) => {
-                            RelationalRowDeltaError::Invalidated(format!(
-                                "overflow validation stopped: {reason}"
-                            ))
+                            RelationalRowDeltaError::Stopped(reason)
                         }
                         crate::relational::RelationalOverflowPublicationError::StaleGeneration {
                             expected_previous,
@@ -1263,10 +1266,10 @@ impl<'a> RowDeltaRunCursor<'a> {
             Some(context) => {
                 let mut key = context
                     .vector_capacity(decoded.key_len as usize)
-                    .map_err(|error| RelationalRowDeltaError::Admission(error.to_string()))?;
+                    .map_err(RelationalRowDeltaError::from_admission)?;
                 let mut row = context
                     .vector_capacity(decoded.row_len as usize)
-                    .map_err(|error| RelationalRowDeltaError::Admission(error.to_string()))?;
+                    .map_err(RelationalRowDeltaError::from_admission)?;
                 key.resize(decoded.key_len as usize, 0);
                 row.resize(decoded.row_len as usize, 0);
                 (key, row)
@@ -1364,7 +1367,7 @@ impl<'a> RowDeltaRunCursor<'a> {
             Some(context) => {
                 let mut copied = context
                     .vector_capacity(encoded_key.len())
-                    .map_err(|error| RelationalRowDeltaError::Admission(error.to_string()))?;
+                    .map_err(RelationalRowDeltaError::from_admission)?;
                 copied.extend_from_slice(&encoded_key);
                 copied
             }
@@ -1682,7 +1685,7 @@ fn decode_value_with_allocations(
     )?;
     let mut values = allocations
         .vector_capacity(fields.len())
-        .map_err(|error| RelationalRowDeltaError::Admission(error.to_string()))?;
+        .map_err(RelationalRowDeltaError::from_admission)?;
     for field in fields {
         allocations
             .checkpoint()
@@ -1691,7 +1694,7 @@ fn decode_value_with_allocations(
     }
     allocations
         .reserve(std::mem::size_of::<Vec<RelationalValue>>() + 2 * std::mem::size_of::<usize>())
-        .map_err(|error| RelationalRowDeltaError::Admission(error.to_string()))?;
+        .map_err(RelationalRowDeltaError::from_admission)?;
     Ok(RelationalRowPageRecoveredValue::Present(
         RelationalRow::new(values),
     ))
@@ -1702,6 +1705,9 @@ pub(super) fn lookup_key_encoding_error(
 ) -> RelationalRowDeltaError {
     match error {
         CheckpointKeyEncodeError::Work(error) => super::super::checkpoint::work_error(error).into(),
+        CheckpointKeyEncodeError::Key(crate::relational::RelationalError::Stopped(reason)) => {
+            RelationalRowDeltaError::Stopped(reason)
+        }
         CheckpointKeyEncodeError::Key(error) => RelationalRowDeltaError::Admission(format!(
             "row delta lookup key cannot be encoded: {error}"
         )),
@@ -1712,6 +1718,7 @@ fn delta_primary_key_error(error: OrderedRelationalKeyError) -> RelationalRowDel
     let message = format!("row delta primary key cannot be decoded: {error}");
     match error {
         OrderedRelationalKeyError::Admission(_) => RelationalRowDeltaError::Admission(message),
+        OrderedRelationalKeyError::Stopped(reason) => RelationalRowDeltaError::Stopped(reason),
         _ => RelationalRowDeltaError::Corrupt(message),
     }
 }

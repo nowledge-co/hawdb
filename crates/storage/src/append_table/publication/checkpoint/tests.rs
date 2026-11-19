@@ -18,6 +18,7 @@ use crate::background::CheckpointWorkProbe;
 use crate::relational::{
     RelationalColumnSchema, RelationalRow, RelationalScalarType, RelationalValue,
 };
+use hawdb_core::RuntimeCancellationReason;
 use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -201,7 +202,12 @@ fn checkpoint_state_preserves_multigeneration_watermarks_defaults_and_cancellati
 
 fn assert_stopped<T: std::fmt::Debug>(result: Result<T, AppendTableError>) {
     assert!(
-        matches!(&result, Err(AppendTableError::Admission(message)) if message.contains("checkpoint build") && message.contains("cancelled")),
+        matches!(
+            &result,
+            Err(AppendTableError::Stopped(
+                RuntimeCancellationReason::Cancelled
+            ))
+        ),
         "{result:?}"
     );
 }
@@ -254,16 +260,29 @@ fn checkpoint_units_append_artifact_cancels_every_wave_and_preserves_published_e
     let directory = Directory::new();
     let probe = Arc::new(CheckpointWorkProbe::default());
     probe.cancel_after.store(8, Ordering::SeqCst);
-    assert_stopped(write_artifact(
+    let error = write_artifact(
         &directory.0,
         "candidate",
         &bytes,
         Some(&probe.context(scheduler.clone())),
-    ));
+    )
+    .unwrap_err();
     // Cancellation after durable rename is a lost reply, not a rollback of
     // the complete private artifact; retain it as evidence for its owner.
     assert_eq!(fs::read(directory.0.join("candidate")).unwrap(), bytes);
     assert!(!directory.0.join("candidate.tmp").exists());
+    let public = hawdb_core::HawDBError::from_storage_error(error.clone());
+    assert!(
+        matches!(
+            public,
+            hawdb_core::HawDBError::PublishOutcomeUnknown {
+                ref destination,
+                ..
+            } if destination == &directory.0.join("candidate")
+        ),
+        "{public:?}"
+    );
+    assert!(matches!(error, AppendTableError::PublishOutcomeUnknown(_)));
     probe.assert_released(&scheduler);
 }
 

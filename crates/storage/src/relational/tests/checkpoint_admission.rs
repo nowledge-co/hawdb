@@ -2832,7 +2832,9 @@ fn controlled_posting_cancellation_preserves_shared_snapshot_and_retries() {
     let key = RelationalKey(vec![RelationalValue::BigInt(1)]);
     assert!(matches!(
         target.insert_with_allocations(key.clone(), Some(&context)),
-        Err(RelationalError::Admission(_))
+        Err(RelationalError::Stopped(
+            hawdb_core::RuntimeCancellationReason::Cancelled
+        ))
     ));
     probe.assert_released(&scheduler);
     assert!(target.pages.shares_storage_with(&source.pages));
@@ -2993,7 +2995,9 @@ fn controlled_index_page_cancellation_keeps_original_directory_and_retries() {
     let added = RelationalKey(vec![RelationalValue::BigInt(1)]);
     assert!(matches!(
         target.insert_posting_with_allocations(added.clone(), added.clone(), Some(&context)),
-        Err(RelationalError::Admission(_))
+        Err(RelationalError::Stopped(
+            hawdb_core::RuntimeCancellationReason::Cancelled
+        ))
     ));
     probe.assert_released(&scheduler);
     assert!(target.pages.shares_storage_with(&source.pages));
@@ -3556,7 +3560,9 @@ fn controlled_index_rebuild_cancellation_preserves_segment_and_retries() {
     };
     assert!(matches!(
         rebuild_indexes_with_allocations(&mut target, "documents", &context),
-        Err(RelationalError::Admission(_))
+        Err(RelationalError::Stopped(
+            hawdb_core::RuntimeCancellationReason::Cancelled
+        ))
     ));
     probe.assert_released(&scheduler);
     assert!(Arc::ptr_eq(&target.segments["documents"], &original));

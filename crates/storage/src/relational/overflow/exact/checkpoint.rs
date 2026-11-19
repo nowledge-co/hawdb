@@ -24,7 +24,10 @@ type Visitor<'a> =
     dyn FnMut(RelationalOverflowRef) -> Result<bool, RelationalOverflowPublicationError> + 'a;
 
 fn work_error(error: crate::background::CheckpointWorkError) -> RelationalOverflowPublicationError {
-    RelationalOverflowPublicationError::Admission(error.to_string())
+    match error.stop_reason() {
+        Some(reason) => RelationalOverflowPublicationError::Stopped(reason),
+        None => RelationalOverflowPublicationError::Admission(error.to_string()),
+    }
 }
 
 fn cpu<T>(

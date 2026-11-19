@@ -143,7 +143,7 @@ impl Sink for Admitted<'_> {
     fn raw(&mut self, bytes: &[u8]) -> Result<(), RelationalError> {
         self.bytes
             .append(bytes, self.work)
-            .map_err(|error| RelationalError::Admission(error.to_string()))
+            .map_err(RelationalError::from_work)
     }
 }
 

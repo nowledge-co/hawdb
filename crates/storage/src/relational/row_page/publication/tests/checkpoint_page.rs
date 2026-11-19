@@ -270,10 +270,6 @@ fn checkpoint_units_row_page_publisher_cancel_every_actual_cpu_and_io_unit_retai
                     probe.cancel_after.store(limit, Ordering::SeqCst);
                 }
                 let result = publish(&directory, &base, mode, Some(&probe.context(local.clone())));
-                assert!(
-                    matches!(result, Err(RelationalRowPagePublicationError::Admission(_))),
-                    "{result:?}"
-                );
                 probe.assert_released(&local);
                 let after = authority(&directory);
                 assert_eq!(&after[..4], &before[..4]);
@@ -299,6 +295,25 @@ fn checkpoint_units_row_page_publisher_cancel_every_actual_cpu_and_io_unit_retai
                     } else {
                         missing = true;
                     }
+                }
+                if published == 0 {
+                    assert!(
+                        matches!(
+                            result,
+                            Err(RelationalRowPagePublicationError::Stopped(
+                                hawdb_core::RuntimeCancellationReason::Cancelled
+                            ))
+                        ),
+                        "{result:?}"
+                    );
+                } else {
+                    assert!(
+                        matches!(
+                            result,
+                            Err(RelationalRowPagePublicationError::PublishOutcomeUnknown(_))
+                        ),
+                        "{result:?}"
+                    );
                 }
                 if published == 4 {
                     verify(&directory, mode);

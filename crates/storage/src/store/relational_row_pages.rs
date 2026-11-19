@@ -646,15 +646,13 @@ impl GraphStore {
         let mut hydrated = match allocations {
             Some(context) => context
                 .vector_capacity(replay_access.entries().len())
-                .map_err(|error| RelationalError::Admission(error.to_string()))?,
+                .map_err(RelationalError::from_admission)?,
             None => Vec::with_capacity(replay_access.entries().len()),
         };
         let mut read_bytes = 0usize;
         for access in replay_access.entries() {
             if let Some(context) = allocations {
-                context
-                    .checkpoint()
-                    .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                context.checkpoint().map_err(RelationalError::from_work)?;
             }
             let schema = self
                 .relational_state
@@ -670,7 +668,7 @@ impl GraphStore {
                 Some(context) => std::borrow::Cow::Owned(
                     context
                         .string(&access.table)
-                        .map_err(|error| RelationalError::Admission(error.to_string()))?,
+                        .map_err(RelationalError::from_admission)?,
                 ),
                 None => std::borrow::Cow::Borrowed(access.table.as_str()),
             };
@@ -685,10 +683,10 @@ impl GraphStore {
                     Some(context) => {
                         fields_memory
                             .before_insert(requested_fields.len(), context)
-                            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                            .map_err(RelationalError::from_admission)?;
                         let mut fields = context
                             .vector_capacity(column_count)
-                            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                            .map_err(RelationalError::from_admission)?;
                         fields.extend(0..column_count);
                         fields
                     }
@@ -957,7 +955,7 @@ impl GraphStore {
                 ),
             Err(crate::background::CheckpointOperationError::Work(error)) => {
                 self.mark_relational_row_page_recovery_unavailable(epoch, error.to_string());
-                return Err(RelationalError::Admission(error.to_string()));
+                return Err(RelationalError::from_work(error));
             }
         }
         Ok(())
@@ -1912,6 +1910,7 @@ fn map_sparse_row_delta_error(error: RelationalRowDeltaError) -> RelationalError
             RelationalError::UnsupportedFormat(error)
         }
         RelationalRowDeltaError::FileDescriptors(error) => RelationalError::FileDescriptors(error),
+        RelationalRowDeltaError::Stopped(reason) => RelationalError::Stopped(reason),
         RelationalRowDeltaError::Admission(message)
         | RelationalRowDeltaError::Invalidated(message) => RelationalError::Admission(message),
         RelationalRowDeltaError::RequiresCheckpoint { tables } => {

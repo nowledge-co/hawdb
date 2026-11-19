@@ -22,9 +22,9 @@ a deadline or a cancellation. This scans production Rust sources (test files
 and trailing `#[cfg(test)]` modules are skipped) for two shapes:
 
 - a task check (`checkpoint()`, `check_cancellation()`,
-  `check_deadline_at(..)`) or I/O admission (`acquire_io_wave(..)`,
-  `io_wave()`, `io()`) whose `map_err` closure builds `Execution` or
-  `Storage`;
+  `check_deadline_at(..)`), admitted work/allocation operation, or I/O
+  admission (`acquire_io_wave(..)`, `io_wave()`, `io()`) whose `map_err`
+  closure builds `Admission`, `Execution` or `Storage`;
 - a `Stopped(..)` / `Cancelled(..)` match arm (a bound name, `_` or `..`,
   including rustfmt-wrapped forms) whose body builds `Execution` or `Storage`,
   whatever message it carries;
@@ -32,9 +32,9 @@ and trailing `#[cfg(test)]` modules are skipped) for two shapes:
   would hide a stop carried by `error`; use
   `HawDBError::from_execution_error`.
 
-`Storage` is allowed only at the reviewed sites in `STORAGE_ALLOWLIST`, where
-a stop can follow a durable rename and must keep poisoning hosts that treat
-`Storage` as fatal.
+Stops observed after a durable rename must become the typed
+`PublishOutcomeUnknown` error instead of either a rollback-safe task stop or
+unstructured `Storage` text. `STORAGE_ALLOWLIST` therefore remains empty.
 """
 
 import argparse
@@ -82,10 +82,15 @@ FORMAT_ALLOWLIST = {
     ("crates/storage/src/text/envelope.rs", "zstd compression failed"): "zstd encoder construction io::Error: no task context",
 }
 TASK_CHECK = re.compile(
-    r"(?:checkpoint\(\)|check_cancellation\(\)|check_deadline_at\([^()]*\)"
+    r"(?:checkpoint\(\)|start_unit\(\)|check_cancellation\(\)|check_deadline_at\([^()]*\)"
     r"|acquire_io_wave\([^()]*\)|\bio_wave\(\)|\.io\(\))"
     r"\s*\.map_err\(\s*\|(\w+)\|"
 )
+TASK_RESULT_CALL = re.compile(
+    r"\.(?:reserve|vector_capacity|string|string_capacity|push|before_insert|"
+    r"to_owned_value_with_allocations|append|append_retained|integrity)\("
+)
+MAP_ERR_CLOSURE = re.compile(r"\s*\.map_err\(\s*\|(\w+)\|")
 STRINGIFIED_EXECUTION = re.compile(
     r"\.map_err\(\s*\|(\w+)\|\s*\{?\s*(?:[\w:]+::)?HawDBError::Execution\(\s*\1\.to_string\(\)\s*\)"
 )
@@ -114,23 +119,28 @@ KNOWN_POINT_FREE = {
     "IndexReadPreflightError::Failed": "holds the HawDBError",
     "BranchLifecycleError::Runtime": "holds the HawDBError",
     "CheckpointWorkError::Io": "holds the RuntimeIoWaveError, exposed as source",
+    "CheckpointOperationError::Work": "holds the CheckpointWorkError without flattening it",
     "map_runtime_io_error": "maps RuntimeIoWaveError::Stopped to its Stopped variant",
     "canonical_segment_error": "routes through HawDBError::from_storage_error",
+    # Every CheckpointWorkError work_error helper now calls stop_reason() and
+    # constructs its internal typed Stopped variant before handling admission.
+    "work_error": "all checkpoint work-error mappings preserve the typed stop",
+    "RelationalRowDeltaError::from_work": "maps stop_reason() to RelationalRowDeltaError::Stopped",
+    "RelationalError::from_work": "maps stop_reason() to RelationalError::Stopped",
+    "super::RelationalError::from_work": "maps stop_reason() to RelationalError::Stopped",
+    "crate::relational::RelationalError::from_work": "maps stop_reason() to RelationalError::Stopped",
+    "OrderedRelationalKeyError::from_work": "maps stop_reason() to OrderedRelationalKeyError::Stopped",
 }
 # Point-free conversions that flatten a stop into internal text on purpose.
 POINT_FREE_ALLOWLIST = {
-    # Checkpoint encoders and relational publishers report work failures as
-    # internal admission text. Some of these checks follow a durable rename,
-    # so the stop must keep poisoning hosts that treat `Storage` as fatal
-    # (#1850 "remaining text stops").
-    "work_error": "internal checkpoint/publication text (#1850)",
-    # `relational::overflow::admission(impl ToString)`: same internal text.
-    "admission": "internal checkpoint/publication text (#1850)",
+    # Every production `work_error(CheckpointWorkError)` definition is scanned
+    # below and must inspect stop_reason() before building admission text.
+    "work_error": "definition is checked for typed stop preservation",
     # `CheckpointBuffer` takes the caller's own work-error conversion.
     "map_work": "generic caller-supplied conversion",
 }
 TASK_POINT_FREE = re.compile(
-    r"(?:checkpoint\(\)|check_cancellation\(\)|check_deadline_at\([^()]*\)"
+    r"(?:checkpoint\(\)|start_unit\(\)|check_cancellation\(\)|check_deadline_at\([^()]*\)"
     r"|acquire_io_wave\([^()]*\)|\bio_wave\(\)|\.io\(\)|\bcheckpoint\(\w+\))"
     r"\s*\.map_err\(\s*([A-Za-z_][\w:]*)\s*\)"
 )
@@ -142,7 +152,18 @@ FORMAT_SAFE_TYPES = frozenset({"String", "&str", "str", "&String"})
 STOP_ARM = re.compile(
     r"\b(?:Stopped|Cancelled|Work)\s*(?:\(\s*(?:\w+|\.\.)\s*,?\s*\)|\{[^{}]*\})\s*\)?\s*=>"
 )
-TEXT_VARIANT = re.compile(r"\b(Execution|Storage)\(")
+TYPED_STOP_ARM = re.compile(
+    r"\b(?:Stopped|Cancelled)\s*\(\s*\w+\s*\)\s*=>\s*"
+    r"(?:[\w:]+::)?(?:Stopped|Cancelled|RuntimeTaskStopped)\s*\("
+)
+# Internal storage `Admission(String)` wrappers also become public `Storage`
+# errors. Scan them alongside the public text variants so a typed stop cannot
+# disappear one layer before the HawDBError boundary.
+TEXT_VARIANT = re.compile(r"\b(Admission|Execution|Storage)\(")
+WORK_ERROR_DEFINITION = re.compile(
+    r"fn\s+(?:[A-Za-z_]\w*_)?work_error\s*\(\s*error\s*:\s*"
+    r"(?:[A-Za-z_]\w*::)*CheckpointWorkError\s*,?\s*\)[^{]*\{"
+)
 
 
 def is_test_source(relative):
@@ -241,6 +262,19 @@ def balanced_end(source, open_index):
         if source[index] == "{":
             depth += 1
         elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+    return len(source)
+
+
+def balanced_paren_end(source, open_index):
+    """Index just past the `)` closing the `(` at `open_index`."""
+    depth = 0
+    for index in range(open_index, len(source)):
+        if source[index] == "(":
+            depth += 1
+        elif source[index] == ")":
             depth -= 1
             if depth == 0:
                 return index + 1
@@ -411,13 +445,46 @@ def violations_in(relative, source):
         return structure[match.start()] == text[match.start()]
 
     found = []
+    for match in WORK_ERROR_DEFINITION.finditer(text):
+        if not code(match):
+            continue
+        body = closure_body(text, match.end() - 1, structure)
+        if "stop_reason()" not in body:
+            line = text.count("\n", 0, match.start()) + 1
+            found.append(
+                f"{relative}:{line}: work_error flattens CheckpointWorkError without preserving stop_reason()"
+            )
     for match in TASK_CHECK.finditer(text):
         if not code(match):
             continue
-        variant = text_variant(closure_body(text, match.end(), structure))
+        body = closure_body(text, match.end(), structure)
+        # A fallible I/O admission may have both a typed stop arm and a
+        # capacity-refusal Admission arm. The latter does not flatten the stop.
+        if TYPED_STOP_ARM.search(body):
+            continue
+        variant = text_variant(body)
         if variant and not allowed(relative, text, match.start(), variant):
             line = text.count("\n", 0, match.start()) + 1
             found.append(f"{relative}:{line}: task check maps its stop to {variant}")
+    for match in TASK_RESULT_CALL.finditer(text):
+        if not code(match):
+            continue
+        call_end = balanced_paren_end(structure, match.end() - 1)
+        mapping = MAP_ERR_CLOSURE.match(structure, call_end)
+        if not mapping:
+            continue
+        body = closure_body(text, mapping.end(), structure)
+        if TYPED_STOP_ARM.search(body) or "or_stop(" in body:
+            continue
+        variant = text_variant(body)
+        format_allowed = any(
+            path == relative and fragment in body for path, fragment in FORMAT_ALLOWLIST
+        )
+        if variant and not format_allowed and not allowed(relative, text, match.start(), variant):
+            line = text.count("\n", 0, match.start()) + 1
+            found.append(
+                f"{relative}:{line}: admitted operation maps a possible stop to {variant}"
+            )
     for match in STRINGIFIED_EXECUTION.finditer(text):
         if not code(match):
             continue
@@ -511,8 +578,8 @@ def main():
         print(violation, file=sys.stderr)
     if found:
         print(
-            "report a stopped runtime task as HawDBError::RuntimeTaskStopped(reason), "
-            "not as an Execution or Storage message (#1850)",
+            "report a stopped runtime task as a typed Stopped/RuntimeTaskStopped reason, "
+            "not as Admission, Execution or Storage text (#1850, #1856)",
             file=sys.stderr,
         )
         return 1

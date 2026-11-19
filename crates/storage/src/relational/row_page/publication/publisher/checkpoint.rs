@@ -117,6 +117,56 @@ pub(in crate::relational::row_page::publication) fn io<T>(
     Ok(result)
 }
 
+fn publication_io<T>(
+    work: Option<&CheckpointWorkContext>,
+    destination: &Path,
+    operation_name: &'static str,
+    operation: impl FnOnce() -> Result<T, RelationalRowPagePublicationError>,
+) -> Result<T, RelationalRowPagePublicationError> {
+    let Some(work) = work else {
+        return operation();
+    };
+    let unit = work.start_unit().map_err(root::checkpoint::work_error)?;
+    let wave = work.io_wave().map_err(root::checkpoint::work_error)?;
+    work.checkpoint().map_err(root::checkpoint::work_error)?;
+    let result = operation()?;
+    drop(wave);
+    unit.finish();
+    work.checkpoint()
+        .map_err(|error| match error.stop_reason() {
+            Some(reason) => RelationalRowPagePublicationError::PublishOutcomeUnknown(Box::new(
+                hawdb_core::HawDBError::PublishOutcomeUnknown {
+                    destination: destination.to_path_buf(),
+                    message: format!(
+                        "{operation_name} completed before the runtime task stopped: {reason}"
+                    ),
+                },
+            )),
+            None => root::checkpoint::work_error(error),
+        })?;
+    Ok(result)
+}
+
+pub(super) fn after_publication<T>(
+    result: Result<T, RelationalRowPagePublicationError>,
+    destination: &Path,
+    operation_name: &'static str,
+) -> Result<T, RelationalRowPagePublicationError> {
+    result.map_err(|error| match error {
+        RelationalRowPagePublicationError::Stopped(reason) => {
+            RelationalRowPagePublicationError::PublishOutcomeUnknown(Box::new(
+                hawdb_core::HawDBError::PublishOutcomeUnknown {
+                    destination: destination.to_path_buf(),
+                    message: format!(
+                        "{operation_name} completed before the runtime task stopped: {reason}"
+                    ),
+                },
+            ))
+        }
+        error => error,
+    })
+}
+
 pub(super) fn lock(
     directory: &Path,
     work: Option<&CheckpointWorkContext>,
@@ -184,7 +234,9 @@ pub(super) fn publish(
 ) -> Result<(), RelationalRowPagePublicationError> {
     // Once publication starts, complete its existing synchronization barrier.
     // Cancellation afterward can lose a reply but cannot undo its rename.
-    io(work, || durable_publish_immutable(source, destination))
+    publication_io(work, destination, "row-page artifact publication", || {
+        durable_publish_immutable(source, destination)
+    })
 }
 
 pub(super) fn select(
@@ -192,7 +244,7 @@ pub(super) fn select(
     destination: &Path,
     work: Option<&CheckpointWorkContext>,
 ) -> Result<(), RelationalRowPagePublicationError> {
-    io(work, || {
+    publication_io(work, destination, "row-page manifest selection", || {
         durable_replace_file(source, destination)
             .map_err(durability("publish latest row-page manifest"))
     })
@@ -207,12 +259,10 @@ mod post_rename_stop_tests {
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
 
-    /// A stop observed after the publication rename completed must keep
-    /// poisoning hosts that treat `Storage` as fatal: it is reported as
-    /// `Storage` text, never as the non-poisoning `RuntimeTaskStopped`, even
-    /// through the cause-chain conversions (#1850).
+    /// A stop observed after the publication rename completed has an unknown
+    /// public outcome, never the rollback-safe `RuntimeTaskStopped`.
     #[test]
-    fn a_stop_after_the_rename_stays_storage() {
+    fn a_stop_after_the_rename_reports_publish_outcome_unknown() {
         let directory = std::env::temp_dir().join(format!(
             "hawdb-post-rename-stop-{}-{}",
             std::process::id(),
@@ -235,17 +285,22 @@ mod post_rename_stop_tests {
         }));
         let error = publish(&source, &destination, Some(&work)).unwrap_err();
         assert_eq!(std::fs::read(&destination).unwrap(), b"row pages");
-        assert!(
-            matches!(error, RelationalRowPagePublicationError::Admission(_)),
-            "{error:?}"
-        );
-        let contextual = HawDBError::or_stop(&error, || HawDBError::Storage(error.to_string()));
-        assert!(
-            matches!(contextual, HawDBError::Storage(_)),
-            "{contextual:?}"
-        );
+        assert!(matches!(
+            &error,
+            RelationalRowPagePublicationError::PublishOutcomeUnknown(_)
+        ));
+        let contextual =
+            HawDBError::or_stop(&error, || HawDBError::from_storage_error(error.clone()));
+        assert!(matches!(
+            contextual,
+            HawDBError::PublishOutcomeUnknown { ref destination, .. }
+                if destination == &directory.join("published")
+        ));
         let storage = HawDBError::from_storage_error(error);
-        assert!(matches!(storage, HawDBError::Storage(_)), "{storage:?}");
+        assert!(
+            matches!(storage, HawDBError::PublishOutcomeUnknown { .. }),
+            "{storage:?}"
+        );
         std::fs::remove_dir_all(directory).unwrap();
     }
 }

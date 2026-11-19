@@ -979,7 +979,7 @@ fn map_schema_encode_error(
             RelationalRowPagePublicationError::FileDescriptors(error)
         }
         crate::relational::RelationalError::Stopped(reason) => {
-            RelationalRowPagePublicationError::Admission(format!("runtime task stopped: {reason}"))
+            RelationalRowPagePublicationError::Stopped(reason)
         }
         crate::relational::RelationalError::Admission(message)
         | crate::relational::RelationalError::Schema(message)
@@ -1006,7 +1006,7 @@ fn map_schema_decode_error(
             RelationalRowPagePublicationError::FileDescriptors(error)
         }
         crate::relational::RelationalError::Stopped(reason) => {
-            RelationalRowPagePublicationError::Admission(format!("runtime task stopped: {reason}"))
+            RelationalRowPagePublicationError::Stopped(reason)
         }
         crate::relational::RelationalError::Admission(message) => {
             RelationalRowPagePublicationError::Admission(message)

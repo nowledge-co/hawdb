@@ -298,9 +298,7 @@ impl<'a> CheckpointKeyEncoding<'a> {
         let bytes = allocations
             .vector_capacity(self.encoded_len)
             .map_err(|error| {
-                CheckpointKeyEncodeError::Key(super::super::RelationalError::Admission(
-                    error.to_string(),
-                ))
+                CheckpointKeyEncodeError::Key(super::super::RelationalError::from_admission(error))
             })?;
         let mut output = InventoryOutput { bytes, allocations };
         for chunk in self.prefix.chunks(64 * 1024) {
