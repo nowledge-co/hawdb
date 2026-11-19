@@ -22,9 +22,14 @@ a deadline or a cancellation. This scans production Rust sources (test files
 and trailing `#[cfg(test)]` modules are skipped) for two shapes:
 
 - a task check (`checkpoint()`, `check_cancellation()`,
-  `check_deadline_at(..)`) whose `map_err` closure builds `Execution`;
-- a `Stopped(reason)` / `Cancelled(reason)` match arm that formats the reason
-  into `Execution`.
+  `check_deadline_at(..)`) whose `map_err` closure builds `Execution` or
+  `Storage`;
+- a `Stopped(..)` / `Cancelled(..)` match arm (a bound name, `_` or `..`) whose
+  body builds `Execution` or `Storage`, whatever message it carries.
+
+`Storage` is allowed only at the reviewed sites in `STORAGE_ALLOWLIST`, where
+a stop can follow a durable rename and must keep poisoning hosts that treat
+`Storage` as fatal.
 """
 
 import argparse
@@ -43,13 +48,21 @@ SOURCE_ROOTS = (
     "crates/storage/src",
     "crates/analytics/src",
     "crates/runtime-tokio/src",
+    "crates/vector-projection/src",
 )
+# (path, stripped source line of the flagged arm or check) for stops that intentionally
+# stay `Storage`. Each entry needs a reason; none are needed today because
+# post-rename stops are flattened into internal publication error text before
+# they reach a `HawDBError`.
+STORAGE_ALLOWLIST = frozenset()
 TASK_CHECK = re.compile(
     r"(?:checkpoint\(\)|check_cancellation\(\)|check_deadline_at\([^()]*\))"
     r"\s*\.map_err\(\s*\|(\w+)\|"
 )
-STOP_ARM = re.compile(r"\b(?:Stopped|Cancelled)\((\w+)\)\s*=>")
-EXECUTION = "Execution("
+STOP_ARM = re.compile(
+    r"\b(?:Stopped|Cancelled)\s*(?:\(\s*(?:\w+|\.\.)\s*\)|\{[^{}]*\})\s*=>"
+)
+TEXT_VARIANT = re.compile(r"\b(Execution|Storage)\(")
 
 
 def is_test_source(relative):
@@ -82,7 +95,20 @@ def closure_body(source, start):
 
 
 def arm_body(source, start):
-    """The match arm expression after `=>`, up to its top-level comma."""
+    """The match arm expression after `=>`: its block, or up to the comma."""
+    index = start
+    while index < len(source) and source[index].isspace():
+        index += 1
+    if index < len(source) and source[index] == "{":
+        depth = 0
+        for end in range(index, len(source)):
+            if source[end] == "{":
+                depth += 1
+            elif source[end] == "}":
+                depth -= 1
+                if depth == 0:
+                    return source[index : end + 1]
+        return source[index:]
     depth = 0
     index = start
     while index < len(source):
@@ -99,25 +125,33 @@ def arm_body(source, start):
     return source[start:index]
 
 
-def formats(body, name):
-    return re.search(r"\{" + re.escape(name) + r"(?::[^}]*)?\}", body) or re.search(
-        r"\b" + re.escape(name) + r"\.to_string\(\)", body
-    )
+def text_variant(body):
+    match = TEXT_VARIANT.search(body)
+    return match.group(1) if match else None
+
+
+def allowed(relative, text, start, variant):
+    if variant != "Storage":
+        return False
+    begin = text.rfind("\n", 0, start) + 1
+    end = text.find("\n", start)
+    line = text[begin : end if end >= 0 else len(text)].strip()
+    return (relative, line) in STORAGE_ALLOWLIST
 
 
 def violations_in(relative, source):
     text = production_text(source)
     found = []
     for match in TASK_CHECK.finditer(text):
-        body = closure_body(text, match.end())
-        if EXECUTION in body:
+        variant = text_variant(closure_body(text, match.end()))
+        if variant and not allowed(relative, text, match.start(), variant):
             line = text.count("\n", 0, match.start()) + 1
-            found.append(f"{relative}:{line}: task check maps its stop to Execution")
+            found.append(f"{relative}:{line}: task check maps its stop to {variant}")
     for match in STOP_ARM.finditer(text):
-        body = arm_body(text, match.end())
-        if EXECUTION in body and formats(body, match.group(1)):
+        variant = text_variant(arm_body(text, match.end()))
+        if variant and not allowed(relative, text, match.start(), variant):
             line = text.count("\n", 0, match.start()) + 1
-            found.append(f"{relative}:{line}: stop reason formatted into Execution")
+            found.append(f"{relative}:{line}: stop arm reports {variant} text")
     return found
 
 
@@ -148,7 +182,7 @@ def main():
     if found:
         print(
             "report a stopped runtime task as HawDBError::RuntimeTaskStopped(reason), "
-            "not as an Execution message (#1850)",
+            "not as an Execution or Storage message (#1850)",
             file=sys.stderr,
         )
         return 1

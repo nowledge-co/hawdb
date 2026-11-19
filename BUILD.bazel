@@ -149,6 +149,7 @@ sh_test(
         "//crates/storage:typed_task_stop_sources",
         "//crates/analytics:typed_task_stop_sources",
         "//crates/runtime-tokio:typed_task_stop_sources",
+        "//crates/vector-projection:query_limit_inventory_sources",
     ],
 )
 

@@ -101,8 +101,84 @@ class TypedTaskStopsTest(unittest.TestCase):
         )
         self.assertEqual(
             CHECK.scan(self.root),
-            ["crates/storage/src/replay.rs:3: stop reason formatted into Execution"],
+            ["crates/storage/src/replay.rs:3: stop arm reports Execution text"],
         )
+
+    def test_wildcard_stop_arm_with_prebuilt_message_is_refused(self):
+        self.write(
+            "crates/storage/src/overflow.rs",
+            "fn map(error: E) -> HawDBError {\n"
+            "    let message = error.to_string();\n"
+            "    match error {\n"
+            "        E::Corrupt(_) => HawDBError::StorageIntegrity(message),\n"
+            "        E::Stopped(_) => {\n"
+            "            HawDBError::Execution(message)\n"
+            "        }\n"
+            "        E::Stale { .. } => HawDBError::Storage(message),\n"
+            "    }\n"
+            "}\n",
+        )
+        self.assertEqual(
+            CHECK.scan(self.root),
+            ["crates/storage/src/overflow.rs:5: stop arm reports Execution text"],
+        )
+
+    def test_struct_and_rest_stop_arms_are_refused(self):
+        self.write(
+            "crates/search/src/vector.rs",
+            "fn map(error: E) -> HawDBError {\n"
+            "    match error {\n"
+            "        E::Cancelled { .. } => HawDBError::Execution(\"stopped\".into()),\n"
+            "        E::Stopped(..) => HawDBError::Storage(error.to_string()),\n"
+            "    }\n"
+            "}\n",
+        )
+        self.assertEqual(
+            CHECK.scan(self.root),
+            [
+                "crates/search/src/vector.rs:3: stop arm reports Execution text",
+                "crates/search/src/vector.rs:4: stop arm reports Storage text",
+            ],
+        )
+
+    def test_task_check_mapped_to_storage_is_refused_unless_allowlisted(self):
+        source = (
+            "fn check(task: &Task) -> Result<()> {\n"
+            "    task.checkpoint().map_err(|reason| HawDBError::Storage(reason.to_string()))\n"
+            "}\n"
+        )
+        self.write("crates/storage/src/maintenance.rs", source)
+        self.assertEqual(
+            CHECK.scan(self.root),
+            ["crates/storage/src/maintenance.rs:2: task check maps its stop to Storage"],
+        )
+        allowlist = CHECK.STORAGE_ALLOWLIST
+        CHECK.STORAGE_ALLOWLIST = frozenset(
+            {
+                (
+                    "crates/storage/src/maintenance.rs",
+                    "task.checkpoint().map_err(|reason| HawDBError::Storage(reason.to_string()))",
+                )
+            }
+        )
+        try:
+            self.assertEqual(CHECK.scan(self.root), [])
+        finally:
+            CHECK.STORAGE_ALLOWLIST = allowlist
+
+    def test_block_arm_does_not_leak_into_the_next_arm(self):
+        self.write(
+            "src/transactions.rs",
+            "fn map(error: E) -> HawDBError {\n"
+            "    match error {\n"
+            "        E::Stopped(reason) => {\n"
+            "            HawDBError::RuntimeTaskStopped(reason)\n"
+            "        }\n"
+            "        error @ E::Admission(_) => HawDBError::Execution(error.to_string()),\n"
+            "    }\n"
+            "}\n",
+        )
+        self.assertEqual(CHECK.scan(self.root), [])
 
     def test_test_sources_and_trailing_test_modules_are_skipped(self):
         bad = "fn t(task: &Task) { task.checkpoint().map_err(|r| HawDBError::Execution(r.to_string())); }\n"

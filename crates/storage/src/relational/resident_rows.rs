@@ -140,8 +140,7 @@ impl RelationalRowPages {
         context: &crate::background::CheckpointDecodeContext,
         directory_capacity: usize,
     ) -> Result<Option<RelationalRow>, RelationalError> {
-        let admission =
-            |error: hawdb_core::HawDBError| RelationalError::Admission(error.to_string());
+        let admission = RelationalError::from_admission;
         let entry_bytes = relational_row_entry_bytes(&key, &row);
         let new_page = self.pages.last().is_none_or(|page| {
             page.len() >= RELATIONAL_ROW_PAGE_MAX_ENTRIES
@@ -217,8 +216,7 @@ impl RelationalRowPages {
         if !copy_page {
             return Ok(());
         }
-        let admission =
-            |error: hawdb_core::HawDBError| RelationalError::Admission(error.to_string());
+        let admission = RelationalError::from_admission;
         // Inventories precede temporary buffers, so denied copies destroy data first.
         let directory_allocations = crate::background::CheckpointDecodeContext {
             work: work.clone(),
@@ -293,8 +291,7 @@ impl RelationalRowPages {
             return Ok(self.insert(key, row));
         };
         let work = &context.work;
-        let admission =
-            |error: hawdb_core::HawDBError| RelationalError::Admission(error.to_string());
+        let admission = RelationalError::from_admission;
         let directory_context = crate::background::CheckpointDecodeContext {
             work: work.clone(),
             memory: Default::default(),

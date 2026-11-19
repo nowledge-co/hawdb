@@ -3082,14 +3082,20 @@ Every producer reports a stopped runtime task as
 ([#1850](https://github.com/nowledge-co/hawdb/issues/1850)).
 `//:typed_task_stops_test` runs `scripts/check-typed-task-stops.py` over the
 production sources of the root, core, executor, search, relational, storage,
-analytics and runtime-tokio crates. It fails on:
-- a task check whose `map_err` builds `Execution`;
-- a `Stopped(reason)` or `Cancelled(reason)` arm that formats the reason into
-  `Execution`.
+analytics, runtime-tokio and vector-projection crates. It fails on:
+- a task check whose `map_err` builds `Execution` or `Storage`;
+- a `Stopped(..)` or `Cancelled(..)` arm (bound name, `_`, `..` or struct
+  pattern) whose body builds `Execution` or `Storage`, even from a prebuilt
+  message.
 
-`//:typed_task_stops_script_test` holds its negative and positive controls,
-covering multi-line closures, `to_string`, and skipped test files and trailing
-test modules. The checker also runs as the `typed-task-stops` prek hook. The
+`Storage` is allowed only through an explicit allowlist, which is empty today.
+`//:typed_task_stops_script_test` holds the scan's 10 negative and positive
+controls. They cover:
+- multi-line closures and `to_string`;
+- wildcard, rest and struct arms;
+- a block arm that must not leak into the next arm;
+- the `Storage` allowlist;
+- skipped test files and trailing test modules. The checker also runs as the `typed-task-stops` prek hook. The
 existing cancellation tests in search, executor, relational, storage and the
 embedded runtime assert the typed variant. Local replay:
 `python3 scripts/check-typed-task-stops.py` and

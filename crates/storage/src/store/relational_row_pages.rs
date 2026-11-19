@@ -1757,9 +1757,9 @@ impl GraphStore {
                     | hawdb_storage::relational::RelationalRowPageSnapshotReadError::MissingTable(
                         _,
                     ) => crate::error::HawDBError::StorageIntegrity(message),
-                    hawdb_storage::relational::RelationalRowPageSnapshotReadError::Stopped(_) => {
-                        crate::error::HawDBError::Execution(message)
-                    }
+                    hawdb_storage::relational::RelationalRowPageSnapshotReadError::Stopped(
+                        reason,
+                    ) => crate::error::HawDBError::RuntimeTaskStopped(reason),
                     hawdb_storage::relational::RelationalRowPageSnapshotReadError::Admission(_)
                     | hawdb_storage::relational::RelationalRowPageSnapshotReadError::Durability(
                         _,

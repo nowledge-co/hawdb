@@ -603,7 +603,7 @@ fn controlled_metadata_clone_cancellation_keeps_source_and_refunds_inventory() {
     ));
     let work = CheckpointWorkContext::new(task).with_scheduler(scheduler.clone());
     let result = source.clone_metadata_with_work_context(&work);
-    assert!(matches!(result, Err(RelationalError::Admission(_))));
+    assert!(matches!(result, Err(RelationalError::Stopped(_))));
     probe.assert_released(&scheduler);
     assert!(source.table_schema("documents").is_some());
     drop(work);
@@ -896,7 +896,7 @@ fn controlled_row_page_copy_cancellation_keeps_directory_and_retries() {
     let work = probe.context(scheduler.clone());
     assert!(matches!(
         target.prepare_checkpoint_copy_for_key(&key, &work),
-        Err(RelationalError::Admission(_))
+        Err(RelationalError::Stopped(_))
     ));
     probe.assert_released(&scheduler);
     assert!(target.pages().shares_storage_with(source.pages()));
@@ -1052,7 +1052,7 @@ fn controlled_row_insert_cancellation_keeps_source_and_retries() {
             upsert_row("id-2", "owner", "body"),
             Some(&context)
         ),
-        Err(RelationalError::Admission(_))
+        Err(RelationalError::Stopped(_))
     ));
     probe.assert_released(&scheduler);
     assert!(target.pages().shares_storage_with(source.pages()));

@@ -199,9 +199,12 @@ and checkpoint, compaction and WAL replay work. A storage error whose cause
 chain carries a cancellation reason (`HawDBError::from_storage_error`) is
 reported as `RuntimeTaskStopped` too. Hosts must not match message text such
 as `lexical query cancelled` or `SQL session stopped before commit: …`.
-`scripts/check-typed-task-stops.py` refuses production code that formats a
-cancellation reason into `HawDBError::Execution`. It runs in prek and as the
-`//:typed_task_stops_test` Bazel target.
+`scripts/check-typed-task-stops.py` refuses production code that reports a
+stop as `HawDBError::Execution` or `Storage` text. That covers task checks
+whose `map_err` builds either variant, and `Stopped(..)` or `Cancelled(..)`
+arms (including `_`, `..` and struct patterns) whose body builds one. Only an
+explicit, commented allowlist may keep `Storage`, and it is empty today. The
+scan runs in prek and as the `//:typed_task_stops_test` Bazel target.
 
 Write transactions accept a caller context
 ([#1821](https://github.com/nowledge-co/hawdb/issues/1821)):

@@ -253,8 +253,7 @@ impl RelationalProjectedRow {
                 self.fields.into_iter().map(|field| field.value).collect(),
             ));
         };
-        let admission =
-            |error: hawdb_core::HawDBError| super::RelationalError::Admission(error.to_string());
+        let admission = super::RelationalError::from_admission;
         let mut values = context
             .vector_capacity(self.fields.len())
             .map_err(admission)?;
@@ -352,8 +351,7 @@ impl<'a> RelationalProjectedRowView<'a> {
         self,
         context: &crate::background::CheckpointDecodeContext,
     ) -> Result<RelationalProjectedRow, super::RelationalError> {
-        let admission =
-            |error: hawdb_core::HawDBError| super::RelationalError::Admission(error.to_string());
+        let admission = super::RelationalError::from_admission;
         let mut key_values = context
             .vector_capacity(self.primary_key().0.len())
             .map_err(admission)?;

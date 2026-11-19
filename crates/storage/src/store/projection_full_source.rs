@@ -365,8 +365,8 @@ impl ProjectionFullSourceCursor {
                 | RelationalRowPageSnapshotReadError::MissingTable(_) => {
                     HawDBError::StorageIntegrity(e.to_string())
                 }
-                RelationalRowPageSnapshotReadError::Stopped(_) => {
-                    HawDBError::Execution(e.to_string())
+                RelationalRowPageSnapshotReadError::Stopped(reason) => {
+                    HawDBError::RuntimeTaskStopped(reason)
                 }
                 RelationalRowPageSnapshotReadError::FileDescriptors(e) => {
                     HawDBError::FileDescriptors(e)
