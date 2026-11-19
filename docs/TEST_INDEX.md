@@ -3098,8 +3098,11 @@ fails on:
 - a `Work(..)` arm that builds text.
 
 Each exception sits in a commented allowlist with its reason. The scan blanks
-`#[cfg(test)]` items anywhere in a file and skips files declared as
-`#[cfg(test)] mod name;` (with or without `#[path]`).
+whole `#[cfg(test)]` items (modules, functions, impls, types, `use`, `const`,
+`static`) to their exact extent anywhere in a file. A `#[cfg(test)]` on a
+field, statement or match arm blanks nothing, so it cannot hide the production
+code that follows. Files declared as `#[cfg(test)] mod name;` (with or without
+`#[path]`) are skipped.
 `//:typed_task_stops_script_test` holds the scan's 10 negative and positive
 controls. They cover:
 - multi-line closures and `to_string`;

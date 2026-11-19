@@ -269,6 +269,73 @@ class TypedTaskStopsTest(unittest.TestCase):
         self.assertEqual(len(CHECK.scan(self.root)), 2)
         self.assertTrue(all(v.startswith("crates/search/src/later.rs:4:") for v in CHECK.scan(self.root)))
 
+    def test_cfg_test_on_fields_statements_and_arms_hides_nothing(self):
+        bad = "task.checkpoint().map_err(|r| HawDBError::Execution(r.to_string()))"
+        self.write(
+            "crates/storage/src/field.rs",
+            "struct Reader {\n"
+            "    #[cfg(test)]\n"
+            "    probe: Probe,\n"
+            "    task: Task,\n"
+            "}\n"
+            "fn read(task: &Task) -> Result<()> {\n"
+            "    " + bad + "?;\n"
+            "    Ok(())\n"
+            "}\n",
+        )
+        self.write(
+            "crates/storage/src/statement.rs",
+            "fn read(task: &Task) -> Result<()> {\n"
+            "    #[cfg(test)]\n"
+            "    hooks::before_read();\n"
+            "    " + bad + "?;\n"
+            "    #[cfg(test)]\n"
+            "    let observed = 1;\n"
+            "    " + bad + "?;\n"
+            "    Ok(())\n"
+            "}\n",
+        )
+        self.write(
+            "crates/storage/src/arm.rs",
+            "fn map(task: &Task, error: E) -> Result<()> {\n"
+            "    match error {\n"
+            "        #[cfg(test)]\n"
+            "        E::Injected => {}\n"
+            "        _ => {}\n"
+            "    }\n"
+            "    " + bad + "?;\n"
+            "    Ok(())\n"
+            "}\n",
+        )
+        lines = sorted(v.split(": ", 1)[0] for v in CHECK.scan(self.root))
+        self.assertIn("crates/storage/src/field.rs:7", lines)
+        self.assertIn("crates/storage/src/statement.rs:4", lines)
+        self.assertIn("crates/storage/src/statement.rs:7", lines)
+        self.assertIn("crates/storage/src/arm.rs:7", lines)
+
+    def test_cfg_test_items_are_blanked_to_their_extent(self):
+        bad = "task.checkpoint().map_err(|r| HawDBError::Execution(r.to_string()))"
+        self.write(
+            "crates/search/src/items.rs",
+            "#[cfg(test)]\n"
+            "use crate::hooks;\n"
+            "#[cfg(test)]\n"
+            "const LIMIT: Limits = Limits { rows: 1 };\n"
+            "#[cfg(test)]\n"
+            "impl Reader {\n"
+            "    fn t(task: &Task) { " + bad + "; }\n"
+            "}\n"
+            "#[cfg(test)]\n"
+            "pub(crate) fn helper(task: &Task) { " + bad + "; }\n"
+            "fn production(task: &Task) -> Result<()> {\n"
+            "    " + bad + "\n"
+            "}\n",
+        )
+        self.assertEqual(
+            sorted({v.split(": ", 1)[0] for v in CHECK.scan(self.root)}),
+            ["crates/search/src/items.rs:12"],
+        )
+
     def test_point_free_conversions_must_keep_the_stop_typed(self):
         self.write(
             "crates/storage/src/writer.rs",

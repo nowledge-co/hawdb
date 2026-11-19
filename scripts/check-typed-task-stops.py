@@ -154,10 +154,46 @@ def balanced_end(source, open_index):
     return len(source)
 
 
-def production_text(source):
-    """Blank out every `#[cfg(test)]` item, wherever it sits in the file.
+ITEM_START = re.compile(
+    r"\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:(?:unsafe|async|const|extern(?:\s+\"[^\"]*\")?)\s+)*"
+    r"(mod|fn|impl|struct|enum|union|trait|use|const|static|type|macro_rules!)\b"
+)
+BLOCK_ITEMS = frozenset({"mod", "fn", "impl", "struct", "enum", "union", "trait", "macro_rules!"})
 
-    Line breaks are kept so reported line numbers stay accurate."""
+
+def item_end(source, start, keyword):
+    """End of the item starting at `start`, or None if it cannot be bounded.
+
+    Block items end at their first top-level `{...}` block or at a top-level
+    `;` (`mod x;`, `struct S(u8);`). Other items end at a top-level `;`."""
+    depth = 0
+    for index in range(start, len(source)):
+        character = source[index]
+        if character in "([":
+            depth += 1
+        elif character in ")]":
+            depth -= 1
+        elif depth == 0 and character == ";":
+            return index + 1
+        elif character == "{":
+            if keyword in BLOCK_ITEMS and depth == 0:
+                return balanced_end(source, index)
+            depth += 1
+        elif character == "}":
+            if depth == 0:
+                return None
+            depth -= 1
+    return None
+
+
+def production_text(source):
+    """Blank out `#[cfg(test)]` items wherever they sit in the file.
+
+    Only whole items are blanked: modules, functions, impls, types, traits,
+    `use`, `const`, `static` and `type`. An attribute on a field, statement,
+    expression or match arm blanks nothing, so the scan never hides the
+    production code that follows it. Line breaks are kept so reported line
+    numbers stay accurate."""
     text = source
     position = 0
     while True:
@@ -170,14 +206,11 @@ def production_text(source):
             if not attribute:
                 break
             index = attribute.end()
-        brace = text.find("{", index)
-        semicolon = text.find(";", index)
-        if semicolon != -1 and (brace == -1 or semicolon < brace):
-            end = semicolon + 1
-        elif brace != -1:
-            end = balanced_end(text, brace)
-        else:
-            return text
+        item = ITEM_START.match(text, index)
+        end = item_end(text, item.start(1), item.group(1)) if item else None
+        if end is None:
+            position = match.end()
+            continue
         blank = re.sub(r"[^\n]", " ", text[match.start() : end])
         text = text[: match.start()] + blank + text[end:]
         position = match.start() + len(blank)
