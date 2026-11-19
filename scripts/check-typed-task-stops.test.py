@@ -73,7 +73,11 @@ class TypedTaskStopsTest(unittest.TestCase):
         )
         self.assertEqual(
             CHECK.scan(self.root),
-            ["crates/search/src/query.rs:2: task check maps its stop to Execution"],
+            [
+                "crates/search/src/query.rs:2: task check maps its stop to Execution",
+                "crates/search/src/query.rs:3: Execution(format!(..{reason}..)) can hide a stop; "
+                "wrap it in HawDBError::or_stop",
+            ],
         )
 
     def test_multiline_closure_and_to_string_are_refused(self):
@@ -238,6 +242,268 @@ class TypedTaskStopsTest(unittest.TestCase):
                 "crates/executor/src/spill.rs:2: Execution(error.to_string()) can hide a stop; "
                 "use HawDBError::from_execution_error"
             ],
+        )
+
+    def test_cfg_test_items_anywhere_and_declared_test_files_are_skipped(self):
+        bad = "fn t(task: &Task) { task.checkpoint().map_err(|r| HawDBError::Execution(r.to_string())); }\n"
+        self.write(
+            "crates/search/src/reader.rs",
+            "fn ok() {}\n"
+            "#[cfg(test)]\n"
+            "mod inline {\n    " + bad + "}\n"
+            "#[cfg(test)]\n"
+            "mod reader_checks;\n"
+            "#[cfg(test)]\n"
+            '#[path = "reader/oracle.rs"]\n'
+            "mod oracle;\n"
+            "fn production(task: &Task) -> Result<()> {\n"
+            "    task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)\n"
+            "}\n",
+        )
+        self.write("crates/search/src/reader/reader_checks.rs", bad)
+        self.write("crates/search/src/reader/reader_checks/nested.rs", bad)
+        self.write("crates/search/src/reader/oracle.rs", bad)
+        self.assertEqual(CHECK.scan(self.root), [])
+        # The same code outside a test item is still found, at its real line.
+        self.write("crates/search/src/later.rs", "fn ok() {}\n#[cfg(test)]\nfn helper() {}\n" + bad)
+        self.assertEqual(len(CHECK.scan(self.root)), 2)
+        self.assertTrue(all(v.startswith("crates/search/src/later.rs:4:") for v in CHECK.scan(self.root)))
+
+    def test_cfg_test_on_fields_statements_and_arms_hides_nothing(self):
+        bad = "task.checkpoint().map_err(|r| HawDBError::Execution(r.to_string()))"
+        self.write(
+            "crates/storage/src/field.rs",
+            "struct Reader {\n"
+            "    #[cfg(test)]\n"
+            "    probe: Probe,\n"
+            "    task: Task,\n"
+            "}\n"
+            "fn read(task: &Task) -> Result<()> {\n"
+            "    " + bad + "?;\n"
+            "    Ok(())\n"
+            "}\n",
+        )
+        self.write(
+            "crates/storage/src/statement.rs",
+            "fn read(task: &Task) -> Result<()> {\n"
+            "    #[cfg(test)]\n"
+            "    hooks::before_read();\n"
+            "    " + bad + "?;\n"
+            "    #[cfg(test)]\n"
+            "    let observed = 1;\n"
+            "    " + bad + "?;\n"
+            "    Ok(())\n"
+            "}\n",
+        )
+        self.write(
+            "crates/storage/src/arm.rs",
+            "fn map(task: &Task, error: E) -> Result<()> {\n"
+            "    match error {\n"
+            "        #[cfg(test)]\n"
+            "        E::Injected => {}\n"
+            "        _ => {}\n"
+            "    }\n"
+            "    " + bad + "?;\n"
+            "    Ok(())\n"
+            "}\n",
+        )
+        lines = sorted(v.split(": ", 1)[0] for v in CHECK.scan(self.root))
+        self.assertIn("crates/storage/src/field.rs:7", lines)
+        self.assertIn("crates/storage/src/statement.rs:4", lines)
+        self.assertIn("crates/storage/src/statement.rs:7", lines)
+        self.assertIn("crates/storage/src/arm.rs:7", lines)
+
+    def test_cfg_test_field_does_not_hide_the_following_impl(self):
+        self.write(
+            "src/api/coordinator.rs",
+            "pub struct Coordinator {\n"
+            "    #[cfg(test)]\n"
+            "    hook: Hook,\n"
+            "    state: State,\n"
+            "}\n"
+            "impl Coordinator {\n"
+            "    fn run(&self, task: &Task) -> Result<()> {\n"
+            "        task.checkpoint().map_err(|r| HawDBError::Execution(r.to_string()))\n"
+            "    }\n"
+            "}\n",
+        )
+        self.assertEqual(
+            sorted({v.split(": ", 1)[0] for v in CHECK.scan(self.root)}),
+            ["src/api/coordinator.rs:8"],
+        )
+
+    def test_generic_from_and_into_are_not_assumed_typed(self):
+        self.write(
+            "crates/storage/src/convert.rs",
+            "fn read(task: &Task) -> Result<()> {\n"
+            "    task.checkpoint().map_err(HawDBError::from)?;\n"
+            "    task.checkpoint().map_err(ReaderError::from)?;\n"
+            "    task.checkpoint().map_err(SomeError::into)?;\n"
+            "    Ok(())\n"
+            "}\n",
+        )
+        self.assertEqual(
+            [v.split(": ", 1)[0] for v in CHECK.scan(self.root)],
+            ["crates/storage/src/convert.rs:3", "crates/storage/src/convert.rs:4"],
+        )
+
+    def test_braces_in_literals_and_comments_do_not_unbalance_test_items(self):
+        bad = "task.checkpoint().map_err(|r| HawDBError::Execution(r.to_string()))"
+        for index, noise in enumerate(
+            [
+                "let _ = b'{';",
+                "let _ = '}';",
+                'let _ = "{";',
+                'let _ = r#"}"#;',
+                'let _ = br"{";',
+                "let _ = '\\u{7b}';",
+                "let _ = '\\'';",
+                "// {",
+                "/* } /* nested { */ */",
+            ]
+        ):
+            path = f"crates/search/src/literal_{index}.rs"
+            self.write(
+                path,
+                "#[cfg(test)]\n"
+                "fn helper() {\n"
+                f"    {noise}\n"
+                "}\n"
+                "fn production(task: &Task) -> Result<()> {\n"
+                f"    {bad}\n"
+                "}\n",
+            )
+            self.assertEqual(
+                sorted({v.split(": ", 1)[0] for v in CHECK.scan(self.root)}),
+                [f"{path}:6"],
+                noise,
+            )
+            (self.root / path).unlink()
+
+    def test_lifetimes_and_loop_labels_are_not_char_literals(self):
+        bad = "task.checkpoint().map_err(|r| HawDBError::Execution(r.to_string()))"
+        self.write(
+            "crates/storage/src/lifetimes.rs",
+            "#[cfg(test)]\n"
+            "fn helper<'a>(value: &'a str) -> Cow<'_, str> { value.into() }\n"
+            "fn scan<'a, T: 'static>(rows: &'a mut Vec<T>, task: &Task) -> Result<()> {\n"
+            "    'outer: for row in rows.iter() {\n"
+            "        loop { break 'outer; }\n"
+            "    }\n"
+            "    let c = 'x';\n"
+            "    " + bad + "\n"
+            "}\n",
+        )
+        self.assertEqual(
+            sorted({v.split(": ", 1)[0] for v in CHECK.scan(self.root)}),
+            ["crates/storage/src/lifetimes.rs:8"],
+        )
+
+    def test_matches_inside_comments_and_strings_are_ignored(self):
+        bad = "task.checkpoint().map_err(|r| HawDBError::Execution(r.to_string()))"
+        self.write(
+            "crates/search/src/docs.rs",
+            "/// Never write `" + bad + "`.\n"
+            "const EXAMPLE: &str = \"" + bad.replace('"', '\\"') + "\";\n"
+            "fn ok() {}\n",
+        )
+        self.assertEqual(CHECK.scan(self.root), [])
+
+    def test_cfg_test_items_are_blanked_to_their_extent(self):
+        bad = "task.checkpoint().map_err(|r| HawDBError::Execution(r.to_string()))"
+        self.write(
+            "crates/search/src/items.rs",
+            "#[cfg(test)]\n"
+            "use crate::hooks;\n"
+            "#[cfg(test)]\n"
+            "const LIMIT: Limits = Limits { rows: 1 };\n"
+            "#[cfg(test)]\n"
+            "impl Reader {\n"
+            "    fn t(task: &Task) { " + bad + "; }\n"
+            "}\n"
+            "#[cfg(test)]\n"
+            "pub(crate) fn helper(task: &Task) { " + bad + "; }\n"
+            "fn production(task: &Task) -> Result<()> {\n"
+            "    " + bad + "\n"
+            "}\n",
+        )
+        self.assertEqual(
+            sorted({v.split(": ", 1)[0] for v in CHECK.scan(self.root)}),
+            ["crates/search/src/items.rs:12"],
+        )
+
+    def test_point_free_conversions_must_keep_the_stop_typed(self):
+        self.write(
+            "crates/storage/src/writer.rs",
+            "fn write(task: &Task, work: &Work, admission: &A) -> Result<()> {\n"
+            "    task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;\n"
+            "    task.checkpoint().map_err(io::Error::other)?;\n"
+            "    work.checkpoint().map_err(HawDBError::from_storage_error)?;\n"
+            "    work.checkpoint().map_err(work_error)?;\n"
+            "    admission.io().map_err(flatten_to_text)?;\n"
+            "    checkpoint(task).map_err(describe)?;\n"
+            "    Ok(())\n"
+            "}\n",
+        )
+        found = CHECK.scan(self.root)
+        self.assertEqual(
+            [v.split(": ", 1)[0] for v in found],
+            ["crates/storage/src/writer.rs:6", "crates/storage/src/writer.rs:7"],
+        )
+        self.assertIn("point-free `flatten_to_text`", found[0])
+
+    def test_formatted_closure_needs_or_stop_unless_the_error_cannot_stop(self):
+        self.write(
+            "crates/search/src/encoding.rs",
+            "fn encode(result: io::Result<()>, other: Result<(), String>) -> Result<()> {\n"
+            "    result.map_err(|error: io::Error| {\n"
+            "        HawDBError::Storage(format!(\"encoding failed: {error}\"))\n"
+            "    })?;\n"
+            "    result.map_err(|error| {\n"
+            "        HawDBError::or_stop(&error, || HawDBError::Storage(format!(\"failed: {error}\")))\n"
+            "    })?;\n"
+            "    other.map_err(|error: String| HawDBError::Execution(format!(\"bad: {error}\")))?;\n"
+            "    Ok(())\n"
+            "}\n",
+        )
+        self.assertEqual(
+            CHECK.scan(self.root),
+            [
+                "crates/search/src/encoding.rs:2: Storage(format!(..{error}..)) can hide a stop; "
+                "wrap it in HawDBError::or_stop"
+            ],
+        )
+        allowlist = CHECK.FORMAT_ALLOWLIST
+        CHECK.FORMAT_ALLOWLIST = {("crates/search/src/encoding.rs", "encoding failed"): "test"}
+        try:
+            self.assertEqual(CHECK.scan(self.root), [])
+        finally:
+            CHECK.FORMAT_ALLOWLIST = allowlist
+
+    def test_work_arm_needs_or_stop(self):
+        self.write(
+            "crates/storage/src/decode.rs",
+            "fn decode(result: R) -> Result<()> {\n"
+            "    match result {\n"
+            "        Err(CheckpointOperationError::Work(error)) => Err(HawDBError::Execution(format!(\n"
+            "            \"decoding stopped: {error}\"\n"
+            "        ))),\n"
+            "        Err(CheckpointOperationError::Operation(error)) => Err(error),\n"
+            "        Ok(value) => Ok(value),\n"
+            "    }\n"
+            "}\n"
+            "fn typed(result: R) -> Result<()> {\n"
+            "    match result {\n"
+            "        Err(CheckpointOperationError::Work(error)) => Err(HawDBError::or_stop(&error, || {\n"
+            "            HawDBError::Execution(format!(\"refused: {error}\"))\n"
+            "        })),\n"
+            "        _ => Ok(()),\n"
+            "    }\n"
+            "}\n",
+        )
+        self.assertEqual(
+            CHECK.scan(self.root),
+            ["crates/storage/src/decode.rs:3: stop arm reports Execution text"],
         )
 
     def test_test_sources_and_trailing_test_modules_are_skipped(self):
