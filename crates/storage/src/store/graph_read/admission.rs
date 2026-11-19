@@ -597,9 +597,10 @@ mod work_tests {
             let mut allocator = GraphReadAllocator::new(&mut allocate, Some(&task));
             let admission = ProjectionAdmission::new(&mut allocator);
             assert!(admission.scratch(64).is_err());
-            assert!(
-                matches!(admission.finish(Ok(GraphScanControl::Continue)), Err(HawDBError::Execution(message)) if message.contains("runtime task stopped"))
-            );
+            assert!(matches!(
+                admission.finish(Ok(GraphScanControl::Continue)),
+                Err(HawDBError::RuntimeTaskStopped(_))
+            ));
             assert_eq!(calls.get(), 0);
             assert_eq!(task.work_units(), 0);
         }

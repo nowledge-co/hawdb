@@ -1234,7 +1234,7 @@ impl EmbeddedGraph {
     fn check_runtime_context(&self, task_context: &RuntimeTaskContext) -> Result<()> {
         task_context.checkpoint().map_err(|reason| {
             self.runtime_governor.record_cancellation(reason);
-            HawDBError::Execution(format!("runtime task {reason}"))
+            HawDBError::RuntimeTaskStopped(reason)
         })
     }
 

@@ -3071,6 +3071,29 @@ pin the mapping:
 No lane, feature matrix or timeout changes. Local replay:
 `cargo test --locked -p hawdb --lib resident_snapshot_admission`.
 
+### Write transaction deadlines and cancellation
+
+Write transactions under a caller `RuntimeTaskContext`
+([#1821](https://github.com/nowledge-co/hawdb/issues/1821)). The root general
+owner runs `embedded_store::tests::write_task_context_tests`. It checks:
+- an already-cancelled or expired context is refused before admission, and the
+  callback never runs;
+- a deadline, and separately a cancellation, ends a wait for another writer's
+  lock long before the lock timeout, while the lock holder commits undisturbed;
+- a stop between statements, or after the last statement before commit, rolls
+  everything back;
+- a cancellation raised inside the commit, after its last task check (a test
+  hook), does not interrupt it;
+- after each stop the handle accepts writes and holds no admitted memory.
+
+Every stop is the typed `HawDBError::RuntimeTaskStopped`. The binding owners pin
+the mapping:
+- `bindings/ffi` `error_tests::runtime_task_stop_is_delivered_as_its_own_kind`;
+- `bindings/python` `errors::tests::runtime_task_stop_is_a_task_stopped_error_with_its_reason`.
+
+No lane, feature matrix or timeout changes. Local replay:
+`cargo test --locked -p hawdb --lib write_task_context`.
+
 ### Search projection staleness markers
 
 Host-requested search projection markers

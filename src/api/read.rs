@@ -1430,7 +1430,7 @@ impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
         if let Some(context) = &self.task_context {
             context
                 .checkpoint()
-                .map_err(|reason| HawDBError::Execution(format!("runtime task {reason}")))?;
+                .map_err(HawDBError::RuntimeTaskStopped)?;
         }
         let configured_memory = self.config.execution_memory.query_memory_bytes.get();
         let configured_result = self

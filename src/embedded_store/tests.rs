@@ -1469,7 +1469,9 @@ fn graph_streaming_query_reports_pre_execution_cancellation() {
         )
         .unwrap_err();
 
-    assert!(error.to_string().contains("runtime task cancelled"));
+    assert!(error
+        .to_string()
+        .contains("runtime task stopped: cancelled"));
     let snapshot = graph.runtime_governor_snapshot();
     assert_eq!(snapshot.admissions, 0);
     assert_eq!(snapshot.cancellations, 1);
@@ -7789,6 +7791,7 @@ mod search_projection_document_lookup_tests;
 mod search_projection_rebuild_tests;
 mod storage_pressure_tests;
 mod wal_generation_reclamation_tests;
+mod write_task_context_tests;
 
 #[cfg(feature = "vector-search")]
 #[test]

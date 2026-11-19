@@ -454,6 +454,7 @@ impl ExpectedErrorClass {
             | HawDBError::ReadBudgetExceeded(_)
             | HawDBError::WalRecordLimitExceeded(_)
             | HawDBError::RuntimeAdmissionRefused(_)
+            | HawDBError::RuntimeTaskStopped(_)
             | HawDBError::ReadOnly { .. }
             | HawDBError::ResourceBudgetExceeded(_)
             | HawDBError::GraphExpansionCandidateLimitExceeded { .. }

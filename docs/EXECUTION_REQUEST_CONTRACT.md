@@ -179,6 +179,36 @@ per-item scope; the message identifies this per-row ceiling explicitly. Releasin
 other account ownership or retrying the unchanged row cannot satisfy it. Raising
 `batch_payload_bytes` still does not widen a smaller query or runtime grant.
 
+## Task stops and write transactions
+
+A `RuntimeTaskContext` that is cancelled, passes its deadline or exhausts its
+resource budget stops the work with the typed
+`HawDBError::RuntimeTaskStopped(RuntimeCancellationReason)`. It displays as
+`execution error: runtime task stopped: <reason>`, where the reason is
+`cancelled`, `deadline_exceeded` or `resource_exhausted`. Python raises
+`hawdb.exceptions.TaskStoppedError` (the same class as other stopped tasks) with
+`kind="runtime_task_stopped"` and `reason`. The C ABI kind
+is `runtime_task_stopped`. The error is not a storage failure, and it never
+poisons the handle.
+
+Write transactions accept a caller context
+([#1821](https://github.com/nowledge-co/hawdb/issues/1821)):
+`EmbeddedStoreHandle::with_transaction_context` and `transaction_context`. The
+plain `with_transaction` and `transaction` use the default context, as before.
+
+The context is honored up to the commit boundary:
+- before runtime admission;
+- while the transaction waits for another writer's locks (a lock wait still
+  also ends at the transaction's lock timeout);
+- during each statement;
+- when the commit is about to run;
+- while a commit waits for live-overlay headroom before retrying.
+
+A stop at any of these points rolls back every staged statement, releases the
+admission and locks, and leaves the handle usable. Once the commit has started
+its WAL append it is never interrupted: a deadline or cancellation after that
+point neither fails nor undoes the commit.
+
 ## Model and evidence boundaries
 
 `HawDBValidatedResultDelivery.tla` models collection, whole-input validation,
