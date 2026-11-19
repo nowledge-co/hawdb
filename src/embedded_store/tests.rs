@@ -351,6 +351,9 @@ fn graph_query_with_report_keeps_ordered_scan_on_optimized_path() {
     assert_eq!(query.report.optimizer_decision_count, 0);
     assert_eq!(query.report.optimizer_rule_event_count, 0);
     assert!(!query.report.physical_plan_captured);
+    assert_eq!(query.report.selected_plan_fingerprint, None);
+    assert!(query.report.optimizer_cardinality_estimates.is_empty());
+    assert!(!query.report.operator_cardinality_profiles.is_empty());
     assert!(query.report.physical_operator_counts.is_empty());
     assert!(query.report.plan_cache_cacheable);
     assert!(query.report.plan_cache_miss);
@@ -402,12 +405,42 @@ fn graph_query_with_report_can_capture_physical_plan_on_demand() {
     assert!(query.report.optimizer_rule_event_count > 0);
     assert!(query
         .report
+        .selected_plan_fingerprint
+        .as_deref()
+        .is_some_and(|fingerprint| !fingerprint.is_empty()));
+    assert!(!query.report.optimizer_cardinality_estimates.is_empty());
+    assert!(!query.report.operator_cardinality_profiles.is_empty());
+    assert!(query
+        .report
+        .optimizer_cardinality_estimates
+        .iter()
+        .any(|estimate| {
+            query
+                .report
+                .operator_cardinality_profiles
+                .iter()
+                .any(|profile| {
+                    profile.operator_id.ordinal() == estimate.operator_id
+                        && profile.operator.as_str() == estimate.operator
+                })
+        }));
+    assert!(query
+        .report
         .physical_operator_counts
         .contains_key("TopNExec"));
     assert_eq!(query.report.plan_cache_lookup.as_deref(), Some("miss"));
     assert_eq!(query.report.plan_cache_bypass_reason, None);
     assert!(query.report.slow_log_candidate);
     assert_eq!(query.report.json()["physical_plan_captured"], true);
+    assert!(query.report.json()["selected_plan_fingerprint"]
+        .as_str()
+        .is_some_and(|fingerprint| !fingerprint.is_empty()));
+    assert!(query.report.json()["optimizer_cardinality_estimate_count"]
+        .as_u64()
+        .is_some_and(|count| count > 0));
+    assert!(query.report.json()["operator_cardinality_profile_count"]
+        .as_u64()
+        .is_some_and(|count| count > 0));
     assert!(query.report.json()["optimizer_rule_event_count"]
         .as_u64()
         .is_some_and(|count| count > 0));

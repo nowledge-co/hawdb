@@ -88,9 +88,9 @@ pub use hawdb_readiness::bounded_read_evidence::{
 };
 use hawdb_readiness::embedded_query_report::plan_cache_report;
 pub use hawdb_readiness::embedded_query_report::{
-    fast_path_classification, EmbeddedQueryApiBehavior, EmbeddedQueryExecutionPath,
-    EmbeddedQueryOutput, EmbeddedQueryOutputRowShape, EmbeddedQueryReport,
-    EmbeddedQueryReportOptions, FastPathClassification, QUERY_REPORT_PROTOCOL,
+    fast_path_classification, EmbeddedOptimizerCardinalityEstimate, EmbeddedQueryApiBehavior,
+    EmbeddedQueryExecutionPath, EmbeddedQueryOutput, EmbeddedQueryOutputRowShape,
+    EmbeddedQueryReport, EmbeddedQueryReportOptions, FastPathClassification, QUERY_REPORT_PROTOCOL,
 };
 pub use hawdb_readiness::embedded_store_reports::{
     BackgroundMaintenanceReport, LibraryProductionPathSummary, LibraryReadinessReport,
@@ -3653,6 +3653,23 @@ fn embedded_query_report(input: EmbeddedQueryReportInput<'_>) -> EmbeddedQueryRe
                 .map(|trace| trace.rule_events.len())
                 .unwrap_or_default(),
             plan_cache_lookup: input.plan_cache_lookup,
+            selected_plan_fingerprint: input
+                .trace
+                .map(|trace| trace.selected_plan_fingerprint.as_str()),
+            optimizer_cardinality_estimates: input
+                .trace
+                .map(|trace| {
+                    trace
+                        .selected_plan_cardinality_estimates
+                        .iter()
+                        .map(|estimate| EmbeddedOptimizerCardinalityEstimate {
+                            operator_id: estimate.operator_id.ordinal(),
+                            operator: estimate.operator.as_str().to_string(),
+                            estimated_rows: estimate.estimated_rows,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             execution_profile: input.execution_profile,
             output: input.output,
             options: input.options,

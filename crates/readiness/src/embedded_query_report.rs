@@ -20,8 +20,9 @@
 use crate::bounded_read_evidence::GraphMode;
 use hawdb_cypher::Statement;
 use hawdb_executor::{
-    GraphExpansionExecutionReport, GroupedEvidenceExecutionReport, PipelineMemoryReport,
-    QueryOutput, ReadExecutionProfile, TextSeedExecutionReport, VectorExecutionReport,
+    GraphExpansionExecutionReport, GroupedEvidenceExecutionReport, OperatorCardinalityProfile,
+    PipelineMemoryReport, QueryOutput, ReadExecutionProfile, TextSeedExecutionReport,
+    VectorExecutionReport,
 };
 use hawdb_plan_cache::PlanCacheLookup;
 use hawdb_storage::scan::{ScanPruningReport, ScanPruningStrategy};
@@ -104,6 +105,13 @@ pub struct EmbeddedQueryReport {
     pub plan_cache_hit: bool,
     pub plan_cache_miss: bool,
     pub plan_cache_bypassed: bool,
+    /// Stable physical-plan identity without bound values. Present only when
+    /// the caller requested physical-plan capture.
+    pub selected_plan_fingerprint: Option<String>,
+    /// Optimizer estimates keyed by stable, plan-local operator identities.
+    pub optimizer_cardinality_estimates: Vec<EmbeddedOptimizerCardinalityEstimate>,
+    /// Executor observations keyed by the same plan-local identities.
+    pub operator_cardinality_profiles: Vec<OperatorCardinalityProfile>,
     pub physical_operator_counts: BTreeMap<String, usize>,
     pub optimizer_decision_count: usize,
     pub optimizer_rule_event_count: usize,
@@ -144,6 +152,11 @@ impl EmbeddedQueryReport {
                 "miss": self.plan_cache_miss,
                 "bypassed": self.plan_cache_bypassed,
             },
+            "selected_plan_fingerprint": self.selected_plan_fingerprint,
+            "optimizer_cardinality_estimate_count": self.optimizer_cardinality_estimates.len(),
+            "optimizer_cardinality_estimates": self.optimizer_cardinality_estimates.iter().map(optimizer_cardinality_estimate_json).collect::<Vec<_>>(),
+            "operator_cardinality_profile_count": self.operator_cardinality_profiles.len(),
+            "operator_cardinality_profiles": self.operator_cardinality_profiles.iter().map(operator_cardinality_profile_json).collect::<Vec<_>>(),
             "physical_operator_counts": self.physical_operator_counts,
             "optimizer_decision_count": self.optimizer_decision_count,
             "optimizer_rule_event_count": self.optimizer_rule_event_count,
@@ -160,6 +173,34 @@ impl EmbeddedQueryReport {
             "api_behavior": self.api_behavior.json(),
         })
     }
+}
+
+/// Optimizer output cardinality for one physical operator. This report-owned
+/// shape keeps the readiness crate independent of the optimizer crate while
+/// preserving the operator identity shared with execution profiles.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbeddedOptimizerCardinalityEstimate {
+    pub operator_id: usize,
+    pub operator: String,
+    pub estimated_rows: u64,
+}
+
+fn optimizer_cardinality_estimate_json(
+    estimate: &EmbeddedOptimizerCardinalityEstimate,
+) -> serde_json::Value {
+    serde_json::json!({
+        "operator_id": estimate.operator_id,
+        "operator": estimate.operator,
+        "estimated_rows": estimate.estimated_rows,
+    })
+}
+
+fn operator_cardinality_profile_json(profile: &OperatorCardinalityProfile) -> serde_json::Value {
+    serde_json::json!({
+        "operator_id": profile.operator_id.ordinal(),
+        "operator": profile.operator.as_str(),
+        "actual_rows": profile.actual_rows,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -254,6 +295,8 @@ pub struct EmbeddedQueryReportInput<'a> {
     pub optimizer_decision_count: usize,
     pub optimizer_rule_event_count: usize,
     pub plan_cache_lookup: Option<PlanCacheLookup>,
+    pub selected_plan_fingerprint: Option<&'a str>,
+    pub optimizer_cardinality_estimates: Vec<EmbeddedOptimizerCardinalityEstimate>,
     pub execution_profile: Option<&'a ReadExecutionProfile<ScanPruningReport>>,
     pub output: &'a QueryOutput,
     pub options: EmbeddedQueryReportOptions,
@@ -288,6 +331,12 @@ pub fn embedded_query_report(input: EmbeddedQueryReportInput<'_>) -> EmbeddedQue
         plan_cache_hit: plan_cache.hit,
         plan_cache_miss: plan_cache.miss,
         plan_cache_bypassed: plan_cache.bypassed,
+        selected_plan_fingerprint: input.selected_plan_fingerprint.map(str::to_string),
+        optimizer_cardinality_estimates: input.optimizer_cardinality_estimates,
+        operator_cardinality_profiles: input
+            .execution_profile
+            .map(|profile| profile.operator_cardinality_profiles.clone())
+            .unwrap_or_default(),
         physical_operator_counts: input.physical_operator_counts,
         optimizer_decision_count: input.optimizer_decision_count,
         optimizer_rule_event_count: input.optimizer_rule_event_count,
@@ -528,6 +577,9 @@ mod tests {
             plan_cache_hit: false,
             plan_cache_miss: false,
             plan_cache_bypassed: false,
+            selected_plan_fingerprint: None,
+            optimizer_cardinality_estimates: Vec::new(),
+            operator_cardinality_profiles: Vec::new(),
             physical_operator_counts: BTreeMap::new(),
             optimizer_decision_count: 0,
             optimizer_rule_event_count: 0,
@@ -552,49 +604,70 @@ mod tests {
             },
         };
 
-        assert_eq!(
-            report.json(),
-            serde_json::json!({
-                "protocol": QUERY_REPORT_PROTOCOL,
-                "mode": "shadow_read_only",
-                "statement_kind": "match_return",
-                "execution_path": "fast_path",
-                "fast_path_reason": "simple_read",
-                "fast_path_selected": true,
-                "elapsed_micros": 7,
-                "slow_log_threshold_micros": 10,
-                "slow_log_candidate": false,
-                "physical_plan_captured": false,
-                "plan_cache_lookup": null,
-                "plan_cache_bypass_reason": null,
-                "plan_cache_cacheable": false,
-                "plan_cache_hit": false,
-                "plan_cache_miss": false,
-                "plan_cache_bypassed": false,
-                "plan_cache": {"lookup": null, "bypass_reason": null, "cacheable": false, "hit": false, "miss": false, "bypassed": false},
-                "physical_operator_counts": {},
-                "optimizer_decision_count": 0,
-                "optimizer_rule_event_count": 0,
-                "scan_pruning_report_count": 0,
-                "scan_pruning_reports": [],
-                "vector_execution_report_count": 0,
-                "vector_execution_reports": [],
-                "graph_expansion_report_count": 0,
-                "graph_expansion_reports": [],
-                "text_seed_execution_reports": [],
-                "grouped_evidence_reports": [],
-                "pipeline_memory_report": null,
-                "output_row_shape": {"row_count": 1, "column_count": 1, "columns": ["memory"]},
-                "api_behavior": {
-                    "include_metadata_false_strips_metadata": true,
-                    "ordering_contract_recorded": true,
-                    "pagination_contract_recorded": true,
-                    "error_class_stable": true,
-                    "statement_has_ordering": true,
-                    "statement_has_pagination": false,
-                },
-            })
-        );
+        let mut expected = serde_json::json!({
+            "protocol": QUERY_REPORT_PROTOCOL,
+            "mode": "shadow_read_only",
+            "statement_kind": "match_return",
+            "execution_path": "fast_path",
+            "fast_path_reason": "simple_read",
+            "fast_path_selected": true,
+            "elapsed_micros": 7,
+            "slow_log_threshold_micros": 10,
+            "slow_log_candidate": false,
+            "physical_plan_captured": false,
+            "plan_cache_lookup": null,
+            "plan_cache_bypass_reason": null,
+            "plan_cache_cacheable": false,
+            "plan_cache_hit": false,
+            "plan_cache_miss": false,
+            "plan_cache_bypassed": false,
+            "plan_cache": {"lookup": null, "bypass_reason": null, "cacheable": false, "hit": false, "miss": false, "bypassed": false},
+            "physical_operator_counts": {},
+            "optimizer_decision_count": 0,
+            "optimizer_rule_event_count": 0,
+            "scan_pruning_report_count": 0,
+            "scan_pruning_reports": [],
+            "vector_execution_report_count": 0,
+            "vector_execution_reports": [],
+            "graph_expansion_report_count": 0,
+            "graph_expansion_reports": [],
+            "text_seed_execution_reports": [],
+            "grouped_evidence_reports": [],
+            "pipeline_memory_report": null,
+            "output_row_shape": {"row_count": 1, "column_count": 1, "columns": ["memory"]},
+            "api_behavior": {
+                "include_metadata_false_strips_metadata": true,
+                "ordering_contract_recorded": true,
+                "pagination_contract_recorded": true,
+                "error_class_stable": true,
+                "statement_has_ordering": true,
+                "statement_has_pagination": false,
+            },
+        });
+        expected.as_object_mut().expect("JSON object").extend([
+            (
+                "selected_plan_fingerprint".to_string(),
+                serde_json::Value::Null,
+            ),
+            (
+                "optimizer_cardinality_estimate_count".to_string(),
+                serde_json::json!(0),
+            ),
+            (
+                "optimizer_cardinality_estimates".to_string(),
+                serde_json::json!([]),
+            ),
+            (
+                "operator_cardinality_profile_count".to_string(),
+                serde_json::json!(0),
+            ),
+            (
+                "operator_cardinality_profiles".to_string(),
+                serde_json::json!([]),
+            ),
+        ]);
+
+        assert_eq!(report.json(), expected);
     }
 
     #[test]
