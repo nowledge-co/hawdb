@@ -94,6 +94,7 @@ fn schema_and_index_compilation_need_no_database_runtime() {
                 name: "counter_idx".into(),
                 columns: vec!["counter".into(), "id".into()],
                 unique: false,
+                predicate: None,
             },
         }],
     );
@@ -107,6 +108,60 @@ fn schema_and_index_compilation_need_no_database_runtime() {
         matches!(&alter.writes[..], [RelationalWrite::AddColumn { table, column }]
         if table == "items" && column.name == "label" && column.scalar_type == RelationalScalarType::Text)
     );
+}
+
+#[test]
+fn partial_index_compilation_binds_a_deterministic_row_predicate() {
+    let state = state();
+    let transaction = compile_relational_statement_sql(
+        "CREATE UNIQUE INDEX active_counter_idx ON items (counter) WHERE counter >= 0 AND owner_id IS NOT NULL",
+        &[],
+        &state,
+    )
+    .expect("compile partial index");
+    let [RelationalWrite::CreateIndex { index, .. }] = transaction.writes.as_slice() else {
+        panic!("expected CREATE INDEX write");
+    };
+    assert!(index.unique);
+    assert!(matches!(
+        index.predicate,
+        Some(RelationalPredicate::And(_, _))
+    ));
+
+    let ordered = compile_relational_statement_sql(
+        "CREATE INDEX ordered_counter_idx ON items (counter DESC)",
+        &[],
+        &state,
+    )
+    .expect_err("unsupported index ordering must not be discarded");
+    assert!(ordered.to_string().contains("ordering and NULLS"));
+
+    let expression = compile_relational_statement_sql(
+        "CREATE INDEX expression_counter_idx ON items (counter) WHERE counter + 1 > 2",
+        &[],
+        &state,
+    )
+    .expect_err("partial-index arithmetic is outside the deterministic subset");
+    assert!(expression.to_string().contains("partial-index predicates"));
+
+    let binary = compile_relational_statement_sql(
+        "CREATE INDEX binary_body_idx ON items (counter) WHERE body = 'raw'",
+        &[],
+        &state,
+    )
+    .expect_err("BYTEA comparison literals are outside the durable subset");
+    let binary = binary.to_string();
+    assert!(binary.contains("partial-index predicates"), "{binary}");
+
+    for sql in [
+        "CREATE INDEX parameterized_idx ON items (counter) WHERE counter > $1",
+        "CREATE INDEX cross_column_idx ON items (counter) WHERE counter > id",
+    ] {
+        assert!(
+            compile_relational_statement_sql(sql, &[], &state).is_err(),
+            "unsupported predicate must be rejected: {sql}"
+        );
+    }
 }
 
 #[test]

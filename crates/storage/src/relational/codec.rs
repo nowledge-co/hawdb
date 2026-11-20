@@ -56,7 +56,8 @@ mod compatibility_tests;
 mod checkpoint;
 mod numeric;
 pub(crate) use checkpoint::{
-    clone_string_with_work_context, decode_relational_checkpoint_file_with_work_context,
+    clone_string_with_work_context, decode_legacy_relational_table_schema_with_work_context,
+    decode_relational_checkpoint_file_with_work_context,
     decode_relational_table_schema_with_work_context, decode_row_owned, decode_schema_owned,
     encode_relational_checkpoint_with_work_context,
     encode_relational_row_payload_with_work_context,
@@ -66,7 +67,7 @@ pub(crate) use checkpoint::{
 
 const WAL_MAGIC: &[u8; 8] = b"SKRLWAL1";
 const CHECKPOINT_MAGIC: &[u8; 8] = b"SKRLCKP1";
-const CODEC_VERSION: u16 = 3;
+const CODEC_VERSION: u16 = 4;
 const HEADER_BYTES: usize = 64;
 const RELATIONAL_CHECKPOINT_ARTIFACT_ID: u64 = 1;
 
@@ -83,6 +84,23 @@ pub(crate) fn decode_relational_table_schema(
     encoded: &[u8],
     max_encoded_bytes: usize,
     max_schema_items: usize,
+) -> Result<RelationalTableSchema, RelationalError> {
+    decode_relational_table_schema_inner(encoded, max_encoded_bytes, max_schema_items, true)
+}
+
+pub(crate) fn decode_legacy_relational_table_schema(
+    encoded: &[u8],
+    max_encoded_bytes: usize,
+    max_schema_items: usize,
+) -> Result<RelationalTableSchema, RelationalError> {
+    decode_relational_table_schema_inner(encoded, max_encoded_bytes, max_schema_items, false)
+}
+
+fn decode_relational_table_schema_inner(
+    encoded: &[u8],
+    max_encoded_bytes: usize,
+    max_schema_items: usize,
+    index_predicates: bool,
 ) -> Result<RelationalTableSchema, RelationalError> {
     if encoded.len() > max_encoded_bytes {
         return Err(RelationalError::Admission(format!(
@@ -101,7 +119,7 @@ pub(crate) fn decode_relational_table_schema(
         max_overflow_bytes: 0,
     };
     let mut decoder = Decoder::from_slice(encoded, limits, true);
-    let schema = decoder.table_schema()?;
+    let schema = decoder.table_schema_with_index_predicates(index_predicates)?;
     decoder.finish()?;
     validate_table_schema(&schema)?;
     Ok(schema)
@@ -1389,6 +1407,10 @@ impl Encoder {
         self.string(&index.name)?;
         self.string_list(&index.columns)?;
         self.u8(u8::from(index.unique));
+        self.u8(u8::from(index.predicate.is_some()));
+        if let Some(predicate) = &index.predicate {
+            self.predicate(predicate)?;
+        }
         Ok(())
     }
 
@@ -2221,6 +2243,13 @@ impl<I: DecodeInput> Decoder<I> {
     }
 
     fn table_schema(&mut self) -> Result<RelationalTableSchema, RelationalError> {
+        self.table_schema_with_index_predicates(true)
+    }
+
+    fn table_schema_with_index_predicates(
+        &mut self,
+        index_predicates: bool,
+    ) -> Result<RelationalTableSchema, RelationalError> {
         let name = self.string()?;
         let column_count = self.count(self.limits.max_values, "table columns")?;
         let columns = if self.input.checkpoint_work_context().is_some() {
@@ -2258,7 +2287,11 @@ impl<I: DecodeInput> Decoder<I> {
         let foreign_key_count = self.count(self.limits.max_values, "foreign keys")?;
         let foreign_keys = self.repeated(foreign_key_count, Self::foreign_key)?;
         let index_count = self.count(self.limits.max_values, "indexes")?;
-        let indexes = self.repeated(index_count, Self::index)?;
+        let indexes = if index_predicates {
+            self.repeated(index_count, Self::index)?
+        } else {
+            self.repeated(index_count, Self::legacy_index)?
+        };
         let derived_relation = self.u8()?;
         let materialized_view = if derived_relation == 2 {
             let source = self.string()?;
@@ -2424,6 +2457,20 @@ impl<I: DecodeInput> Decoder<I> {
             name: self.string()?,
             columns: self.string_list()?,
             unique: self.boolean("index unique")?,
+            predicate: if self.boolean("partial index predicate")? {
+                Some(self.predicate()?)
+            } else {
+                None
+            },
+        })
+    }
+
+    fn legacy_index(&mut self) -> Result<RelationalIndexSchema, RelationalError> {
+        Ok(RelationalIndexSchema {
+            name: self.string()?,
+            columns: self.string_list()?,
+            unique: self.boolean("index unique")?,
+            predicate: None,
         })
     }
 

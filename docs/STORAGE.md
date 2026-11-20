@@ -67,7 +67,7 @@ Files:
 
 ### Reader compatibility refusals
 
-Relational WAL and full-checkpoint envelopes currently use codec version 3;
+Relational WAL and full-checkpoint envelopes currently use codec version 4;
 embedded append WAL records (including checkpoint schema records) use version 3.
 A reader accepts its supported version exactly. An intact envelope requiring a
 different version returns `HawDBError::UnsupportedStorageFormat` with
@@ -82,7 +82,16 @@ is always one of the constants exported from `hawdb` and `hawdb_core`:
 against these constants instead of matching message text. They are recorded in
 `docs/persistent-format.lock`. Current relational schema tags
 0 through 5 represent column, COUNT(*), COUNT(column), SUM, MIN, and MAX.
-This change does not add a feature bitmap or change any encoded bytes.
+Partial-index predicates are part of relational index schema records in WAL,
+full checkpoints, row-page schema roots, and relational index-shadow schema
+digests. That incompatible schema addition advances
+the relational codec to 4, the row-page format to 3, and
+`PERSISTENT_FORMAT_VERSION` to 3. The v3 row-page reader explicitly accepts v2
+row-page roots by decoding every legacy declared index as a full index with no
+predicate; v1 still receives a typed refusal. Older relational WAL and full
+checkpoints are rejected by codec version, so development databases whose
+sealed head depends on those artifacts must be exported with the old library
+or recreated.
 
 `RELATIONAL_CHECKPOINT_LAYOUT_FORMAT` refuses intact checkpoints this reader
 cannot serve in the requested configuration, with `UnsupportedFeature` whose
@@ -144,6 +153,39 @@ Format` workflow fails while they disagree and states in each release's notes
 whether it changed. Development formats still break without migrations;
 embedding hosts carry data across a change with a logical dump (export with
 the old release, import with the new one). See [LOGICAL_DUMP.md](LOGICAL_DUMP.md).
+
+### PostgreSQL partial indexes
+
+HawDB accepts `CREATE [UNIQUE] INDEX name ON table (columns) WHERE predicate`
+for deterministic, single-row predicates composed from column-to-literal
+comparisons, `IS [NOT] NULL`, `AND`, `OR`, and `NOT`. Parameters, column-to-column
+comparisons, arithmetic expressions, functions, subqueries, volatile values,
+index expressions, ordering/`NULLS` clauses, operator classes, `INCLUDE`,
+storage parameters, and `CONCURRENTLY` are rejected instead of being discarded.
+Comparison literals cover NULL, BOOLEAN, BIGINT, finite DOUBLE PRECISION,
+NUMERIC, TEXT, UUID, TIMESTAMP, and TIMESTAMPTZ; BYTEA and VECTOR comparisons
+are outside this first durable/logical-dump-safe subset. `IS [NOT] NULL` remains
+available for every column type.
+TEXT columns used in comparisons remain inline because index membership must be
+decidable during mutation, recovery, and detached index builds without a hidden
+hydration budget. `IS [NOT] NULL` does not require that protection. Hosts should
+prefer compact status/tenant columns for partial predicates. Creating a TEXT
+comparison predicate over rows whose values are already externalized refuses
+the DDL atomically instead of performing an unbudgeted backfill hydration.
+
+Only rows for which the predicate evaluates SQL `TRUE` are members; `FALSE`
+and `UNKNOWN` rows are absent. Insert, update, delete, WAL replay, checkpoint
+rebuild, authoritative live deltas, index-shadow builds, and partial-unique
+checks use that same rule. A partial unique index is not a general conflict
+target or foreign-key target because rows outside its predicate are not unique.
+
+The SQL planner considers a partial index only when every top-level conjunct
+of its normalized predicate appears as an equivalent conjunct in the bound
+query predicate. This proof is deliberately conservative: a stronger but
+non-identical inequality, an `OR`, a join-only condition, or any unrecognized
+shape falls back to another index or a scan. It may miss an optimization, but
+it cannot return rows from an incomplete index as though it covered the whole
+query.
 
 Recovery:
 

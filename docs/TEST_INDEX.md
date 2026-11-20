@@ -1,5 +1,24 @@
 # Test ownership and known slow paths
 
+PostgreSQL partial indexes ([#1872](https://github.com/nowledge-co/hawdb/issues/1872))
+use the existing SQL, relational, storage, row-page checkpoint, and index-shadow
+unit owners. SQL compatibility tests own `WHERE` preservation and explicit
+refusal of unsupported CREATE INDEX tails. Relational statement/access tests
+own deterministic predicate lowering and the conservative implication proof.
+Storage tests own `TRUE`/`FALSE`/`UNKNOWN` membership, partial-unique conflicts,
+update transitions, shared schema/WAL/checkpoint encoding, rebuild, and captured
+index changes. Root `api::tests::partial_indexes` owns WAL-only reopen,
+checkpoint/reopen, planner fallback and `pg_indexes`; the logical-dump
+round-trip fixture preserves a structured partial predicate. Existing recovery
+and checkpoint suites exercise the extended schema codec. Replay the focused
+cases with `cargo test --locked -p hawdb-sql
+create_index`, `cargo test --locked -p hawdb-relational partial_index`, and
+`cargo test --locked -p hawdb-storage partial_unique_index`, plus
+`cargo test --locked -p hawdb --lib partial_index_survives_wal_checkpoint_and_reopen`.
+No new CI lane, profile, fixture amplification, or timeout is introduced. The relational codec
+advances to 4, the row-page format advances to 3, and
+`PERSISTENT_FORMAT_VERSION` advances to 3.
+
 `OCTET_LENGTH` scalar compatibility (https://github.com/nowledge-co/hawdb/issues/1835)
 uses the existing SQL crate, relational crate and root general unit CI owners.
 `sql::tests::parses_octet_length_in_predicate_scalar_positions` protects lowering

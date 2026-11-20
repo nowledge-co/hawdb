@@ -136,6 +136,7 @@ pub(super) fn schema() -> RelationalTableSchema {
             name: format!("index-{ordinal:04}"),
             columns: vec!["id".into()],
             unique: ordinal % 2 == 0,
+            predicate: None,
         });
     }
     schema

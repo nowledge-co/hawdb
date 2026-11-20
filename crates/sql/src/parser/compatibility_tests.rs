@@ -104,6 +104,30 @@ fn unsupported_alias_mutation_and_ordering_syntax_is_never_executed() {
 }
 
 #[test]
+fn create_index_preserves_where_and_rejects_other_tail_clauses() {
+    let statement = parse_postgres_sql(
+        "CREATE UNIQUE INDEX active_items_idx ON items (tenant_id, id) WHERE deleted_at IS NULL",
+    )
+    .expect("PostgreSQL partial-index syntax");
+    let SqlStatement::CreateIndex(index) = statement else {
+        panic!("expected CREATE INDEX");
+    };
+    assert!(index.unique);
+    assert!(index.predicate.is_some());
+
+    for sql in [
+        "CREATE INDEX items_idx ON items (id) INCLUDE (payload)",
+        "CREATE INDEX items_idx ON items USING btree (id)",
+        "CREATE INDEX items_idx ON items (id) WITH (fillfactor = 70)",
+    ] {
+        assert!(
+            parse_postgres_sql(sql).is_err(),
+            "unsupported clause: {sql}"
+        );
+    }
+}
+
+#[test]
 fn postgres_type_aliases_keep_main_storage_types_and_precision_bounds() {
     for (declaration, expected) in [
         ("INT", SqlDataType::BigInt),

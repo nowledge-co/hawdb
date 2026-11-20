@@ -230,6 +230,10 @@ pub(crate) fn schema(sink: &mut impl Sink, schema: Schema<'_>) -> Result<(), Rel
         bytes(sink, index.name.as_bytes())?;
         strings(sink, &index.columns)?;
         sink.raw(&[u8::from(index.unique)])?;
+        sink.raw(&[u8::from(index.predicate.is_some())])?;
+        if let Some(index_predicate) = &index.predicate {
+            predicate(sink, index_predicate)?;
+        }
     }
     materialized_view(sink, schema.materialized_view)
 }

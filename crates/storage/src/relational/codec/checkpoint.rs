@@ -31,6 +31,7 @@ pub(crate) use mount::decode_relational_checkpoint_file_with_work_context;
 pub(super) mod schema;
 pub(crate) use schema::{decode_row_owned, decode_schema_owned};
 mod validation;
+pub(crate) use schema::decode_legacy_schema as decode_legacy_relational_table_schema_with_work_context;
 pub(crate) use schema::decode_schema as decode_relational_table_schema_with_work_context;
 pub(super) use validation::{
     primary_key_positions_with_work_context, validate_row_with_work_context,

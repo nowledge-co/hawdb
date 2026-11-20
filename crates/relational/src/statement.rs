@@ -575,7 +575,7 @@ fn compile_schema_statement(
             bind_foreign_keys(&mut schema, state)?;
             Ok(vec![RelationalWrite::CreateTable(schema)])
         }
-        SqlStatement::CreateIndex(create) => Ok(vec![compile_create_index(create)?]),
+        SqlStatement::CreateIndex(create) => Ok(vec![compile_create_index(create, state)?]),
         SqlStatement::AlterTableAddColumn(alter) => compile_add_column(alter),
         _ => Err(HawDBError::Semantic(
             "content-store schema corpus contains a non-schema statement".to_string(),
@@ -795,12 +795,36 @@ fn compile_update_referential_action(
     }
 }
 
-fn compile_create_index(create: &CreateIndexStatement) -> Result<RelationalWrite> {
+fn compile_create_index(
+    create: &CreateIndexStatement,
+    state: &RelationalState,
+) -> Result<RelationalWrite> {
     reject_non_public_schema(create.table.schema.as_deref())?;
     if create.if_not_exists {
         return Err(HawDBError::Semantic(
             "content-store indexes must not hide drift with IF NOT EXISTS".to_string(),
         ));
+    }
+    if create.columns.iter().any(|column| {
+        column.direction != hawdb_sql::SqlOrderDirection::Asc
+            || column.nulls != hawdb_sql::SqlNullOrder::DialectDefault
+    }) {
+        return Err(HawDBError::Semantic(
+            "CREATE INDEX ordering and NULLS clauses are not supported".to_string(),
+        ));
+    }
+    let schema = state.table_schema(&create.table.name).ok_or_else(|| {
+        HawDBError::Semantic(format!("unknown relational table {}", create.table.name))
+    })?;
+    let predicate = create
+        .predicate
+        .as_ref()
+        .map(|predicate| {
+            compile_mutation_predicate(predicate, &[], schema, None, &create.table.name)
+        })
+        .transpose()?;
+    if let Some(predicate) = &predicate {
+        validate_compiled_index_predicate(predicate, schema)?;
     }
     Ok(RelationalWrite::CreateIndex {
         table: create.table.name.clone(),
@@ -812,8 +836,46 @@ fn compile_create_index(create: &CreateIndexStatement) -> Result<RelationalWrite
                 .map(|column| column.column.name.clone())
                 .collect(),
             unique: create.unique,
+            predicate,
         },
     })
+}
+
+fn validate_compiled_index_predicate(
+    predicate: &RelationalPredicate,
+    schema: &RelationalTableSchema,
+) -> Result<()> {
+    match predicate {
+        RelationalPredicate::And(left, right) | RelationalPredicate::Or(left, right) => {
+            validate_compiled_index_predicate(left, schema)?;
+            validate_compiled_index_predicate(right, schema)
+        }
+        RelationalPredicate::Not(predicate) => {
+            validate_compiled_index_predicate(predicate, schema)
+        }
+        RelationalPredicate::NumericCompare { .. } | RelationalPredicate::NumericIsNull { .. } => {
+            Err(HawDBError::Semantic(
+                "partial-index predicates support column-to-literal comparisons, IS NULL, AND, OR, and NOT only"
+                    .into(),
+            ))
+        }
+        RelationalPredicate::Compare { column, value, .. } => {
+            let position = schema
+                .column_position(column)
+                .expect("compiled partial-index column was validated");
+            if matches!(
+                schema.columns[position].scalar_type,
+                RelationalScalarType::Bytea | RelationalScalarType::Vector(_)
+            ) || matches!(value, RelationalValue::DoublePrecision(value) if !value.is_finite())
+            {
+                return Err(HawDBError::Semantic(format!(
+                    "partial-index comparison on column {column} uses an unsupported literal type"
+                )));
+            }
+            Ok(())
+        }
+        RelationalPredicate::IsNull { .. } => Ok(()),
+    }
 }
 
 fn compile_add_column(alter: &AlterTableAddColumnStatement) -> Result<Vec<RelationalWrite>> {

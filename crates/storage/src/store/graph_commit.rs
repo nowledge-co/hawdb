@@ -3771,6 +3771,7 @@ mod tests {
                             name: "declared_unique".into(),
                             columns: vec!["body".into()],
                             unique: true,
+                            predicate: None,
                         }],
                     })],
                 },
@@ -3912,6 +3913,7 @@ mod tests {
             name: "i".repeat(4096),
             columns: vec!["body".into()],
             unique: true,
+            predicate: None,
         });
         store
             .commit_relational_transaction(

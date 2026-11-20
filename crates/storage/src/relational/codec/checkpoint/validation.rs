@@ -135,6 +135,10 @@ pub(crate) fn validate_table_schema_with_work_context<'a>(
         }
         unit.finish();
         validate_columns(schema, &positions, &index.columns, "index", work)?;
+        if let Some(predicate) = &index.predicate {
+            crate::relational::validate_index_predicate(schema, predicate)?;
+            work.checkpoint().map_err(work_error)?;
+        }
     }
     work.checkpoint().map_err(work_error)?;
     Ok(positions)

@@ -86,11 +86,11 @@ fn verify_checkpoint(encoded: &[u8], expected: &StorageFormatError) {
 
 #[test]
 fn intact_unsupported_versions_are_distinct_from_integrity_failures() {
-    for version in [1_u16, 2, u16::MAX] {
+    for version in [1_u16, 2, 3, u16::MAX] {
         let expected = StorageFormatError::UnsupportedVersion {
             format: "relational durable codec",
             found: version,
-            supported: 3,
+            supported: 4,
         };
         let mut wal = encode_relational_wal_batch(1, &RelationalTransaction::default()).unwrap();
         wal[8..10].copy_from_slice(&version.to_le_bytes());
@@ -114,6 +114,47 @@ fn intact_unsupported_versions_are_distinct_from_integrity_failures() {
         decode_relational_wal_batch(&wal, RelationalDecodeLimits::wal()),
         Err(RelationalError::Corruption(_))
     ));
+}
+
+#[test]
+fn legacy_standalone_schema_decodes_declared_indexes_as_full_indexes() {
+    let schema = RelationalTableSchema {
+        name: "documents".into(),
+        columns: vec![RelationalColumnSchema {
+            name: "id".into(),
+            scalar_type: RelationalScalarType::BigInt,
+            nullable: false,
+            default: None,
+        }],
+        primary_key: vec!["id".into()],
+        unique_constraints: Vec::new(),
+        foreign_keys: Vec::new(),
+        indexes: vec![RelationalIndexSchema {
+            name: "documents_id".into(),
+            columns: vec!["id".into()],
+            unique: false,
+            predicate: None,
+        }],
+        materialized_view: None,
+    };
+    let mut legacy = encode_relational_table_schema(&schema).unwrap();
+    assert_eq!(&legacy[legacy.len() - 3..], &[0, 0, 0]);
+    let predicate_tag = legacy.len() - 2;
+    legacy.remove(predicate_tag);
+
+    assert_eq!(
+        decode_legacy_relational_table_schema(&legacy, legacy.len(), 64).unwrap(),
+        schema
+    );
+    assert!(decode_relational_table_schema(&legacy, legacy.len(), 64).is_err());
+
+    let work =
+        crate::background::CheckpointWorkContext::new(hawdb_core::RuntimeTaskContext::default());
+    assert_eq!(
+        decode_legacy_relational_table_schema_with_work_context(&legacy, legacy.len(), 64, &work,)
+            .unwrap(),
+        schema
+    );
 }
 
 #[test]

@@ -54,6 +54,7 @@ fn fixture_with_group_type(group_type: RelationalScalarType) -> (GraphStore, Cat
                         name: "by_group".into(),
                         columns: vec!["group".into(), "id".into()],
                         unique: false,
+                        predicate: None,
                     }],
                 })],
             },

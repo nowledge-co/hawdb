@@ -24,8 +24,8 @@ use hawdb_core::{
 };
 use hawdb_executor::QueryStreamOptions;
 use hawdb_storage::relational::{
-    RelationalColumnDefault, RelationalReferentialAction, RelationalScalarType,
-    RelationalTableSchema,
+    RelationalColumnDefault, RelationalComparisonOp, RelationalPredicate,
+    RelationalReferentialAction, RelationalScalarType, RelationalTableSchema,
 };
 use serde_json::{json, Value as Json};
 
@@ -33,8 +33,9 @@ use super::files::{io_error, HashedWriter, Stage};
 use super::model::{
     Column, ColumnDefault, Counts, CreatedBy, FileEntry, FileKind, ForeignKey, GraphConstraint,
     GraphConstraintKind, GraphIndex, GraphIndexKind, GraphProperty, GraphPropertyDefault,
-    GraphSchema, GraphTable, GraphTableKind, Index, Manifest, ReferentialAction, SchemaState,
-    SearchIndex, Source, Table, DATA_DIR, FORMAT_NAME, MANIFEST_FILE, SCHEMA_FILE,
+    GraphSchema, GraphTable, GraphTableKind, Index, IndexComparison, IndexPredicate, Manifest,
+    ReferentialAction, SchemaState, SearchIndex, Source, Table, DATA_DIR, FORMAT_NAME,
+    MANIFEST_FILE, SCHEMA_FILE,
 };
 use super::{value, LogicalDumpExportReport, LogicalDumpOptions, LOGICAL_DUMP_FORMAT_VERSION};
 use crate::api::DatabaseReadTransaction;
@@ -263,13 +264,82 @@ fn table_model(schema: &RelationalTableSchema) -> Result<Table> {
         indexes: schema
             .indexes
             .iter()
-            .map(|index| Index {
-                name: index.name.clone(),
-                columns: index.columns.clone(),
-                unique: index.unique,
+            .map(|index| {
+                Ok(Index {
+                    name: index.name.clone(),
+                    columns: index.columns.clone(),
+                    unique: index.unique,
+                    predicate: index
+                        .predicate
+                        .as_ref()
+                        .map(index_predicate_model)
+                        .transpose()?,
+                })
             })
-            .collect(),
+            .collect::<Result<Vec<_>>>()?,
         search_indexes: Vec::new(),
+    })
+}
+
+fn index_predicate_model(predicate: &RelationalPredicate) -> Result<IndexPredicate> {
+    Ok(match predicate {
+        RelationalPredicate::And(left, right) => IndexPredicate::And {
+            left: Box::new(index_predicate_model(left)?),
+            right: Box::new(index_predicate_model(right)?),
+        },
+        RelationalPredicate::Or(left, right) => IndexPredicate::Or {
+            left: Box::new(index_predicate_model(left)?),
+            right: Box::new(index_predicate_model(right)?),
+        },
+        RelationalPredicate::Not(predicate) => IndexPredicate::Not {
+            predicate: Box::new(index_predicate_model(predicate)?),
+        },
+        RelationalPredicate::Compare {
+            column,
+            op,
+            value: relational,
+        } => {
+            let literal = hawdb_relational::query_value::relational_to_value(relational)?;
+            if !matches!(
+                &literal,
+                Value::Null
+                    | Value::Bool(_)
+                    | Value::Int(_)
+                    | Value::Decimal(_)
+                    | Value::String(_)
+                    | Value::Uuid(_)
+                    | Value::LocalDateTime(_)
+                    | Value::DateTime(_)
+            ) && !matches!(&literal, Value::Float(item) if item.is_finite())
+            {
+                return Err(unsupported(
+                    "this partial-index predicate literal",
+                    format!("{column} {op:?} {literal:?}"),
+                ));
+            }
+            IndexPredicate::Compare {
+                column: column.clone(),
+                operator: match op {
+                    RelationalComparisonOp::Eq => IndexComparison::Eq,
+                    RelationalComparisonOp::NotEq => IndexComparison::NotEq,
+                    RelationalComparisonOp::Lt => IndexComparison::Lt,
+                    RelationalComparisonOp::Lte => IndexComparison::Lte,
+                    RelationalComparisonOp::Gt => IndexComparison::Gt,
+                    RelationalComparisonOp::Gte => IndexComparison::Gte,
+                },
+                value: value::encode(&literal),
+            }
+        }
+        RelationalPredicate::IsNull { column, negated } => IndexPredicate::IsNull {
+            column: column.clone(),
+            negated: *negated,
+        },
+        RelationalPredicate::NumericCompare { .. } | RelationalPredicate::NumericIsNull { .. } => {
+            return Err(unsupported(
+                "this partial-index predicate",
+                "numeric expressions are not in the admitted partial-index subset",
+            ))
+        }
     })
 }
 

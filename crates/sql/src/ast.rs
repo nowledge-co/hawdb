@@ -442,6 +442,7 @@ pub struct CreateIndexStatement {
     pub columns: Vec<SqlIndexColumn>,
     pub unique: bool,
     pub if_not_exists: bool,
+    pub predicate: Option<SqlPredicate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

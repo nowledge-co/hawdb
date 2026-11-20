@@ -70,6 +70,7 @@ impl Fixture {
                                 name: INDEX.into(),
                                 columns: vec!["bucket".into(), "rank".into()],
                                 unique: false,
+                                predicate: None,
                             }],
                         }),
                         RelationalWrite::Insert {

@@ -26,11 +26,13 @@ use std::path::Path;
 mod checkpoint;
 pub(super) use checkpoint::{encode_manifest_with_work_context, root_set_digest_with_work_context};
 
-/// Row-page format v2: exact-length pages packed back to back, addressed by
-/// byte offset and length (#1521). v1 (`SKRPGM01`) used fixed 1 MiB slots.
-const MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM02";
+/// Row-page format v3 adds partial-index predicates to table schema records.
+/// v2 used the same exact-length pages but had no predicate field; v1 used
+/// fixed 1 MiB slots.
+const MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM03";
+const LEGACY_V2_MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM02";
 const LEGACY_V1_MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM01";
-const ROW_PAGE_FORMAT_VERSION: u16 = 2;
+const ROW_PAGE_FORMAT_VERSION: u16 = 3;
 const MANIFEST_VERSION: u16 = 1;
 /// generation, allocated pages, allocated bytes, live pages, live bytes.
 pub(super) const PHYSICAL_GENERATION_BYTES: usize = 40;
@@ -310,8 +312,8 @@ fn decode_manifest_inner(
     work: Option<&crate::background::CheckpointWorkContext>,
 ) -> Result<RelationalRowPageRootManifest, RelationalRowPagePublicationError> {
     let unit = start_unit(work)?;
-    // A fixed-slot v1 database is an unsupported format, not corruption:
-    // hosts map `UnsupportedStorageFormat` to "recreate the database".
+    // Fixed-slot v1 is unsupported rather than corrupt. Exact-length v2 is
+    // decoded below with its legacy full-index schema shape.
     if encoded.len() >= 8 && &encoded[..8] == LEGACY_V1_MANIFEST_MAGIC {
         return Err(RelationalRowPagePublicationError::UnsupportedFormat(
             hawdb_core::error::StorageFormatError::UnsupportedVersion {
@@ -321,7 +323,8 @@ fn decode_manifest_inner(
             },
         ));
     }
-    if encoded.len() < MANIFEST_HEADER_BYTES || &encoded[..8] != MANIFEST_MAGIC {
+    let legacy_v2 = encoded.len() >= 8 && &encoded[..8] == LEGACY_V2_MANIFEST_MAGIC;
+    if encoded.len() < MANIFEST_HEADER_BYTES || (!legacy_v2 && &encoded[..8] != MANIFEST_MAGIC) {
         return Err(RelationalRowPagePublicationError::Corrupt(
             "invalid row-page manifest header".to_string(),
         ));
@@ -435,7 +438,13 @@ fn decode_manifest_inner(
             )
         })?;
     finish_unit(unit);
-    let tables = decode_tables(&payload[..generations_offset], table_count, config, work)?;
+    let tables = decode_tables(
+        &payload[..generations_offset],
+        table_count,
+        config,
+        work,
+        legacy_v2,
+    )?;
     let mut physical_generations = Vec::with_capacity(generation_count);
     for entry in payload[generations_offset..trailer_offset]
         .as_chunks::<PHYSICAL_GENERATION_BYTES>()
@@ -853,6 +862,7 @@ fn decode_tables(
     table_count: usize,
     config: RelationalRowPagePublicationConfig,
     work: Option<&crate::background::CheckpointWorkContext>,
+    legacy_v2: bool,
 ) -> Result<Vec<RelationalRowPageTableRoot>, RelationalRowPagePublicationError> {
     let unit = start_unit(work)?;
     let mut tables = Vec::with_capacity(table_count);
@@ -873,8 +883,16 @@ fn decode_tables(
             "table schema",
             work,
         )?;
-        let schema = match work {
-            Some(work) => {
+        let schema = match (work, legacy_v2) {
+            (Some(work), true) => {
+                crate::relational::codec::decode_legacy_relational_table_schema_with_work_context(
+                    &schema_bytes,
+                    config.max_manifest_bytes.get(),
+                    config.page_limits.max_columns.get(),
+                    work,
+                )
+            }
+            (Some(work), false) => {
                 crate::relational::codec::decode_relational_table_schema_with_work_context(
                     &schema_bytes,
                     config.max_manifest_bytes.get(),
@@ -882,7 +900,12 @@ fn decode_tables(
                     work,
                 )
             }
-            None => crate::relational::codec::decode_relational_table_schema(
+            (None, true) => crate::relational::codec::decode_legacy_relational_table_schema(
+                &schema_bytes,
+                config.max_manifest_bytes.get(),
+                config.page_limits.max_columns.get(),
+            ),
+            (None, false) => crate::relational::codec::decode_relational_table_schema(
                 &schema_bytes,
                 config.max_manifest_bytes.get(),
                 config.page_limits.max_columns.get(),

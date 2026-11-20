@@ -852,7 +852,7 @@ fn v1_row_page_manifest_requires_recreation() {
         .unwrap();
     let path = directory.join(RELATIONAL_ROW_PAGE_MANIFEST_FILE);
     // A fixed-slot v1 database is refused explicitly, whatever follows its
-    // magic, rather than being read as a corrupt v2 manifest.
+    // magic, rather than being read as a corrupt v3 manifest.
     let mut encoded = fs::read(&path).unwrap();
     encoded[..8].copy_from_slice(b"SKRPGM01");
     fs::write(&path, &encoded).unwrap();
@@ -863,7 +863,7 @@ fn v1_row_page_manifest_requires_recreation() {
             RelationalRowPagePublicationError::UnsupportedFormat(
                 hawdb_core::error::StorageFormatError::UnsupportedVersion {
                     found: 1,
-                    supported: 2,
+                    supported: 3,
                     ..
                 }
             )
@@ -878,8 +878,8 @@ fn v1_row_page_manifest_requires_recreation() {
         hawdb_core::HawDBError::from_storage_error(error),
         hawdb_core::HawDBError::UnsupportedStorageFormat(_)
     ));
-    // Any other version of the v2 manifest is unsupported, not v1.
-    encoded[..8].copy_from_slice(b"SKRPGM02");
+    // An unknown internal version under the current v3 magic is corruption.
+    encoded[..8].copy_from_slice(b"SKRPGM03");
     encoded[8..10].copy_from_slice(&2u16.to_le_bytes());
     fs::write(&path, &encoded).unwrap();
     assert!(
@@ -1541,16 +1541,19 @@ fn schema_collection_limits_are_enforced_before_artifact_creation() {
             name: "documents_value_1_idx".to_string(),
             columns: vec!["value_1".to_string()],
             unique: false,
+            predicate: None,
         },
         crate::relational::RelationalIndexSchema {
             name: "documents_id_idx".to_string(),
             columns: vec!["id".to_string()],
             unique: false,
+            predicate: None,
         },
         crate::relational::RelationalIndexSchema {
             name: "documents_value_1_id_idx".to_string(),
             columns: vec!["value_1".to_string(), "id".to_string()],
             unique: false,
+            predicate: None,
         },
     ];
     delta.schema_digest =

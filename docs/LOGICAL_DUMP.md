@@ -170,6 +170,12 @@ take file names from the manifest, never by listing the directory.
 - Index and constraint *definitions* are dumped, never their physical state.
   Import rebuilds them over the imported data, which also re-validates every
   constraint.
+- A partial SQL index adds a structured `predicate` to its index definition.
+  Predicate nodes are `and`, `or`, `not`, `compare`, and `is_null`; comparison
+  literals use the ordinary dump value encoding. Older format-1 dumps omit the
+  field and continue to import as full indexes. Import renders the structured
+  predicate through the SQL parser before loading rows, then rebuilds only its
+  `TRUE` members.
 - A graph property may carry a `default`, the creation-time default declared
   by `CREATE PROPERTY ... DEFAULT ...`: `{"literal": <value>}` (a non-null
   value in the encoding below that the property `type` accepts) or
@@ -338,7 +344,8 @@ Format version 1 covers the selected branch's:
 
 - relational tables: every column type, nullability, defaults, primary keys,
   unique constraints, foreign keys including self-references, secondary
-  indexes, SQL search index definitions (rebuilt from the rows on import),
+  indexes including deterministic partial-index predicates, SQL search index
+  definitions (rebuilt from the rows on import),
   and rows;
 - the property graph: labels, relationship types, typed node and
   relationship tables and properties with their schema states and

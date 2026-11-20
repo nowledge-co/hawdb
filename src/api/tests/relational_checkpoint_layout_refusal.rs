@@ -23,12 +23,14 @@ use hawdb_storage::config::{RelationalIndexMode, StorageResidencyMode};
 
 /// Written by the #1737 change (nowledge-co/hawdb#1778, head `17499379f`)
 /// with the default configuration: one `docs` table with 20 rows and one
-/// checkpoint, so no full-row file and no relational index generation.
+/// checkpoint, so no full-row file and no relational index generation. This
+/// v2 row-page fixture also exercises legacy schema decoding after v3 added
+/// partial-index predicates.
 /// Packed in `property_defaults::unpack_fixture`'s bundle format.
 const ROW_ROOT_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/row_root_relational_checkpoint.bundle");
 
-/// The same layout written with `Shadow` relational indexes (#1778, head
+/// The same v2 layout written with `Shadow` relational indexes (#1778, head
 /// `17499379f`, 20 `docs` rows, one checkpoint), so it binds a persistent
 /// relational index generation. Its index pages are mostly zero padding, so
 /// the bundle is zstd-compressed.
