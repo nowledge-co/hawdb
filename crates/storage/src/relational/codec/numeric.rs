@@ -85,7 +85,7 @@ impl<I: DecodeInput> Decoder<I> {
         if let Some(context) = self.input.checkpoint_allocation_context() {
             context
                 .reserve(std::mem::size_of::<RelationalNumericExpression>())
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                .map_err(RelationalError::from_admission)?;
         }
         Ok(Box::new(self.numeric_node(depth, nodes)?))
     }

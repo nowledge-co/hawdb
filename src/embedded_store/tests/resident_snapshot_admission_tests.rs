@@ -1,12 +1,15 @@
 // Copyright 2026 Nowledge
 // SPDX-License-Identifier: Apache-2.0
 
-//! Resident search snapshot admission refusals (#1815). Every read that pins
-//! the resident search projection funds its retained generation through
-//! `SearchIndexReadSnapshot::retain_with_permit`. With too little governor
-//! memory left, that refusal must surface as the typed, retryable
-//! `HawDBError::RuntimeAdmissionRefused`, leave the handle usable, and succeed
-//! on retry once capacity is free.
+//! Resident search snapshot admission (#1815, #1852). Every read that pins the
+//! resident search projection goes through
+//! `SearchIndexReadSnapshot::retain_with_permit`. The published generation is
+//! already resident and funded by its publication, so pinning it reserves only
+//! the read's own working memory (#1852). A lease held across a new
+//! publication charges the superseded generation until it drops. With too
+//! little governor memory left for the read itself, the refusal must surface
+//! as the typed, retryable `HawDBError::RuntimeAdmissionRefused`, leave the
+//! handle usable, and succeed on retry once capacity is free.
 
 use super::*;
 use crate::executor::ExecutionMemoryConfig;
@@ -82,7 +85,7 @@ fn handle(governor: RuntimeGovernor) -> EmbeddedStoreHandle {
 fn retained_capacity(handle: &EmbeddedStoreHandle) -> u64 {
     let published = handle.lock_published_read().unwrap();
     let resident = published.as_ref().unwrap().resident_projection.as_ref();
-    resident.unwrap().retained_capacity_bytes() as u64
+    resident.unwrap().snapshot().retained_capacity_bytes() as u64
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -151,53 +154,67 @@ fn typed_refusal(read: PinningRead, handle: &EmbeddedStoreHandle) -> RuntimeAdmi
 }
 
 #[test]
-fn every_pinning_read_reports_a_typed_retryable_refusal_and_recovers() {
+fn every_pinning_read_of_the_published_generation_fits_a_budget_below_the_generation() {
     let governor = governor();
     let handle = handle(governor.clone());
     let capacity = retained_capacity(&handle);
     for read in PinningRead::ALL {
-        // First leave less than the generation needs. If the read's own
-        // request does not fit either, that admission refusal is typed too;
-        // then leave room for the request but not also for the generation.
-        let mut headroom = capacity / 2;
-        let (blocker, held) = hold_all_but(&governor, headroom);
-        let mut refusal = typed_refusal(read, &handle);
-        let (blocker, held) = if refusal.requested == capacity {
-            (blocker, held)
-        } else {
-            assert_eq!(
-                governor.snapshot().admitted_memory_bytes,
-                MEMORY_BUDGET - headroom
-            );
+        // Leave the read's own working memory (learned from its refusals)
+        // plus half the generation. Before #1852 every one of these reads was
+        // refused with `memory_saturated: requested <generation size>`.
+        let mut own = 0;
+        for attempt in 0.. {
+            assert!(attempt < 4, "{read:?}: read keeps growing its request");
+            let headroom = own + capacity / 2;
+            let (blocker, held) = hold_all_but(&governor, headroom);
+            match read.run(&handle) {
+                Ok(()) => {
+                    read.run(&handle).unwrap_or_else(|error| {
+                        panic!("{read:?}: second pinned read refused: {error}")
+                    });
+                    assert_eq!(
+                        governor.snapshot().admitted_memory_bytes,
+                        MEMORY_BUDGET - headroom,
+                        "{read:?}"
+                    );
+                    break;
+                }
+                Err(HawDBError::RuntimeAdmissionRefused(refusal)) => {
+                    // Only the read's own memory may be refused, never a
+                    // reservation of the published generation.
+                    assert_ne!(refusal.requested, capacity, "{read:?}: {refusal:?}");
+                    own += refusal.requested;
+                }
+                Err(error) => panic!("{read:?}: unexpected error {error}"),
+            }
             drop((held, blocker));
-            headroom = refusal.requested + capacity / 2;
-            let blocked = hold_all_but(&governor, headroom);
-            refusal = typed_refusal(read, &handle);
-            blocked
-        };
-        // The read request was admitted; only funding the resident
-        // generation it pins was refused, with what the request left over.
-        assert_eq!(
-            refusal,
-            RuntimeAdmissionRefusal {
-                code: "memory_saturated",
-                requested: capacity,
-                available: refusal.available,
-                retryable: true,
-            },
-            "{read:?}"
-        );
-        assert!(refusal.available < headroom, "{read:?}: {refusal:?}");
+        }
+    }
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+}
+
+#[test]
+fn every_pinning_read_reports_a_typed_retryable_refusal_and_recovers() {
+    let governor = governor();
+    let handle = handle(governor.clone());
+    for read in PinningRead::ALL {
+        // No memory left even for the read's own request: the refusal is the
+        // typed admission error, and nothing stays admitted.
+        let (blocker, held) = hold_all_but(&governor, 0);
+        let refusal = typed_refusal(read, &handle);
+        assert_eq!(refusal.code, "memory_saturated", "{read:?}");
+        assert!(refusal.retryable, "{read:?}: {refusal:?}");
+        assert!(refusal.requested > 0, "{read:?}: {refusal:?}");
+        assert_eq!(refusal.available, 0, "{read:?}: {refusal:?}");
         assert!(
             HawDBError::RuntimeAdmissionRefused(refusal)
                 .to_string()
                 .starts_with("execution error: runtime admission memory_saturated"),
             "{read:?}"
         );
-        // The refused read released everything it was admitted with.
         assert_eq!(
             governor.snapshot().admitted_memory_bytes,
-            MEMORY_BUDGET - headroom,
+            MEMORY_BUDGET,
             "{read:?}"
         );
 
@@ -216,4 +233,38 @@ fn every_pinning_read_reports_a_typed_retryable_refusal_and_recovers() {
             .query_with_report("MATCH (m:Memory {id: 'pinned'}) SET m.reads = 1")
             .unwrap();
     }
+}
+
+#[test]
+fn pinned_read_across_a_publication_charges_the_superseded_generation() {
+    let governor = governor();
+    let handle = handle(governor.clone());
+    let capacity = retained_capacity(&handle);
+    let budget = EmbeddedReadSnapshotBudget {
+        max_rows: 1,
+        max_payload_bytes: 4096,
+    };
+    handle
+        .with_bounded_read_snapshot(budget, |_| {
+            let pinned = governor.snapshot().admitted_memory_bytes;
+            assert!(pinned < capacity, "{pinned} >= {capacity}");
+            // A marker write publishes a new resident generation while this
+            // read still holds the old one.
+            handle
+                .mark_search_projection_full_reindex_needed("superseded generation")
+                .unwrap();
+            assert_ne!(retained_capacity(&handle), 0);
+            assert_eq!(governor.snapshot().admitted_memory_bytes, pinned + capacity);
+            Ok(())
+        })
+        .unwrap();
+    // The charge is released with the last lease on the old generation.
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+    // The new published generation is pinned without a reservation again.
+    let (blocker, held) = hold_all_but(&governor, capacity / 2);
+    handle
+        .with_bounded_read_snapshot(budget, |_| Ok(()))
+        .unwrap();
+    drop((held, blocker));
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
 }

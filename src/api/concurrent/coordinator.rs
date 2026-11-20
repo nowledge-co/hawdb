@@ -1168,6 +1168,10 @@ impl From<LockAcquireError> for HawDBError {
     }
 }
 
+/// Longest uninterrupted lock wait for a transaction bound to a caller task,
+/// so cancellation is observed promptly without a dedicated wakeup.
+const TASK_BOUND_LOCK_WAIT_SLICE: Duration = Duration::from_millis(10);
+
 impl LockManager {
     pub(super) fn savepoint(&self, transaction_id: u64) -> Result<LockSavepoint> {
         Ok(LockSavepoint {
@@ -1211,7 +1215,21 @@ impl LockManager {
         started: Instant,
         timeout: Duration,
     ) -> std::result::Result<(), LockAcquireError> {
-        let result = self.acquire_inner(transaction_id, requests, started, timeout);
+        self.acquire_with_task(transaction_id, requests, started, timeout, None)
+    }
+
+    /// Like [`Self::acquire`], but a waiting acquisition also stops when
+    /// `task` is cancelled or passes its deadline, with the typed
+    /// `HawDBError::RuntimeTaskStopped`. The transaction then aborts.
+    pub(super) fn acquire_with_task(
+        &self,
+        transaction_id: u64,
+        requests: &[LockRequest],
+        started: Instant,
+        timeout: Duration,
+        task: Option<&hawdb_core::RuntimeTaskContext>,
+    ) -> std::result::Result<(), LockAcquireError> {
+        let result = self.acquire_inner(transaction_id, requests, started, timeout, task);
         if result.is_err() {
             // acquire_inner retires queue priority under the state mutex on
             // every fallible exit. Wake successors after publishing removal.
@@ -1226,6 +1244,7 @@ impl LockManager {
         requests: &[LockRequest],
         started: Instant,
         timeout: Duration,
+        task: Option<&hawdb_core::RuntimeTaskContext>,
     ) -> std::result::Result<(), LockAcquireError> {
         let mut state = self
             .lock_state()
@@ -1273,7 +1292,22 @@ impl LockManager {
                     state.waiters.remove(transaction_id);
                     return Err(LockAcquireError::Retryable(lock_timeout_error(timeout)));
                 }
-                let waited = self.available.wait_timeout(state, remaining);
+                // A caller's deadline or cancellation also ends the wait.
+                // Cancellation has no wakeup here, so a task-bound wait is
+                // sliced and the task is checked again after each slice.
+                let wait_for = match task {
+                    Some(task) => {
+                        if let Err(reason) = task.checkpoint() {
+                            state.waiters.remove(transaction_id);
+                            return Err(LockAcquireError::AbortTransaction(reason.into()));
+                        }
+                        remaining
+                            .min(task.remaining().unwrap_or(remaining))
+                            .min(TASK_BOUND_LOCK_WAIT_SLICE)
+                    }
+                    None => remaining,
+                };
+                let waited = self.available.wait_timeout(state, wait_for);
                 let (next, wait) = match waited {
                     Ok(waited) => waited,
                     Err(poisoned) => {
@@ -1285,7 +1319,7 @@ impl LockManager {
                     }
                 };
                 state = next;
-                if wait.timed_out() {
+                if wait.timed_out() && started.elapsed() >= timeout {
                     state.waiters.remove(transaction_id);
                     return Err(LockAcquireError::Retryable(lock_timeout_error(timeout)));
                 }

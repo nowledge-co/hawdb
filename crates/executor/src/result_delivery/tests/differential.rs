@@ -39,6 +39,12 @@ fn failure(error: HawDBError) -> Failure {
             _ => panic!("unexpected resource scope: {cause:?}"),
         };
     }
+    if matches!(
+        error,
+        HawDBError::RuntimeTaskStopped(hawdb_core::RuntimeCancellationReason::Cancelled)
+    ) {
+        return Failure::Cancelled;
+    }
     let HawDBError::Execution(message) = error else {
         panic!("unexpected error class: {error:?}");
     };
@@ -48,8 +54,6 @@ fn failure(error: HawDBError) -> Failure {
         Failure::Root
     } else if message == "consumer rejected row" {
         Failure::Consumer
-    } else if message == "runtime task stopped: cancelled" {
-        Failure::Cancelled
     } else {
         panic!("unexpected error: {message}");
     }

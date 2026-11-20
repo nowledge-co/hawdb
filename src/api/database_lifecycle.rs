@@ -87,14 +87,17 @@ impl Database {
     /// and graph DDL (node/relationship tables, labels, relationship types,
     /// property definitions, indexes, constraints and projected graphs)
     /// advance it to their commit epoch. Relational-only and append-only
-    /// commits do not. It never decreases and does not depend on the search
-    /// projection change log. It is not persisted: on open it starts at the
-    /// checkpoint's commit epoch (an upper bound of the last graph change) and
-    /// WAL replay advances it exactly, so a reopen may advance it once.
+    /// commits do not. It does not depend on the search projection change
+    /// log. It is not persisted: on open it starts at the checkpoint's commit
+    /// epoch (an upper bound of the last graph change) and WAL replay advances
+    /// it exactly, so a reopen may advance it once.
     ///
-    /// Discard any baseline taken before a reopen: under relaxed durability
-    /// (`SyncOnCheckpoint`) a crash can drop acknowledged commits, so later
-    /// commits reuse those epochs for different graph content. A poisoned
+    /// Monotonic only over surviving history: it never decreases within one
+    /// open handle, nor across a reopen while every acknowledged commit
+    /// survives. Under relaxed durability (`SyncOnCheckpoint`) a crash can drop
+    /// acknowledged commits, so the value can move back and later commits can
+    /// reuse those epochs for different graph content. Discard any baseline
+    /// taken before a reopen and capture it again. A poisoned
     /// database (for example after a failed durability barrier) returns the
     /// storage error instead of a value.
     pub fn graph_change_commit_epoch(&self) -> Result<u64> {

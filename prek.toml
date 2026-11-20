@@ -23,6 +23,15 @@ pass_filenames = false
 always_run = true
 priority = 2
 
+[[repos.hooks]]
+id = "typed-task-stops"
+name = "Stopped runtime tasks stay typed (#1850)"
+entry = "python3 scripts/check-typed-task-stops.py"
+language = "system"
+pass_filenames = false
+always_run = true
+priority = 3
+
 [[repos]]
 repo = "https://github.com/fast/hawkeye"
 rev = "12072370b89c4472ff8074e9e99582de1bfb696e" # v7.2.0

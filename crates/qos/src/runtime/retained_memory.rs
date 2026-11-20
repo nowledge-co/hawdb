@@ -36,6 +36,24 @@ impl RuntimeRetainedMemory {
         Arc::ptr_eq(&self.governor, &permit.governor)
     }
 
+    /// Charges memory that is already allocated and that this owner keeps
+    /// alive, without admission.
+    ///
+    /// Use this only for bytes that stay resident whatever admission decides,
+    /// for example a superseded generation that a live reader still holds, so a
+    /// refusal could not free them. The charge counts toward admitted memory
+    /// and can exceed the current budget; new admissions then wait until it is
+    /// released. No process-memory reservation is taken because the host's
+    /// resident sample already includes these bytes.
+    pub fn charge_resident(&mut self, bytes: u64) {
+        if bytes == 0 {
+            return;
+        }
+        let mut state = mutex_lock(&self.governor.state);
+        state.admitted_memory_bytes = state.admitted_memory_bytes.saturating_add(bytes);
+        self.bytes = self.bytes.saturating_add(bytes);
+    }
+
     pub(super) fn merge(&mut self, incoming: &mut Self) -> bool {
         if !Arc::ptr_eq(&self.governor, &incoming.governor) {
             return false;
@@ -92,6 +110,19 @@ impl RuntimePermit {
         self.request.result_bytes = 0;
         self.release_inner();
         Some(retained)
+    }
+
+    /// An empty retained-memory owner charged to this permit's governor.
+    ///
+    /// It holds no bytes and never refuses. Grow it only with
+    /// [`RuntimeRetainedMemory::charge_resident`] for memory that is already
+    /// resident; use [`Self::reserve_retained_memory`] for new allocations.
+    pub fn resident_memory_owner(&self) -> RuntimeRetainedMemory {
+        RuntimeRetainedMemory {
+            governor: Arc::clone(&self.governor),
+            bytes: 0,
+            process_memory: None,
+        }
     }
 
     /// Admits extra memory for state that can survive this operation.

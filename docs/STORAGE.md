@@ -1715,6 +1715,25 @@ that pin the resident projection are:
 Other graph and relational reads do not pin it. Neither do out-of-core
 projections, whose buffers are part of the read's own admission.
 
+Out-of-core construction has two different typed refusals:
+
+- `RuntimeIoWaveReservationExceeded { requested_slots, reserved_slots }`
+  means the task requested more concurrent I/O than its successful admission
+  reserved. This is a permanent request/permit mismatch, not a busy governor:
+  admitted callers wait when another wave temporarily holds their slots.
+  Retrying the same task unchanged cannot succeed. Python reports an
+  `ExecutionError` with `kind="runtime_io_wave_reservation_exceeded"`, both
+  slot counts and `retryable=false`; the C ABI uses the same kind.
+- A mutation-run closure that cannot fit
+  `SearchOutOfCoreConfig.max_mutation_working_bytes` returns
+  `ResourceBudgetExceeded` with resource `memory_bytes`, scope `operator`,
+  owner `search mutation-run reader`, and that option as `budget_option`.
+  Reduce the closure or raise the configured bound; retrying it unchanged
+  cannot fit. The diagnostic text remains unchanged.
+
+Both refusals happen before publication, are non-poisoning, and must not be
+classified as storage corruption or transient runtime saturation.
+
 ## Graph Change Commit Epoch
 
 `graph_commit_epoch` (`Database::commit_epoch`) advances on every commit,
@@ -1738,8 +1757,14 @@ present without a search projection and never regresses when that log is
 pruned. It is not persisted, so the on-disk format is unchanged. On open it
 starts at the checkpoint's commit epoch, which is an upper bound of the last
 graph change. WAL replay then advances it exactly for each graph-changing
-commit. It therefore never regresses, but a reopen may advance it once. A
-compare-and-publish that spans a restart retries once.
+commit.
+
+Monotonicity holds only over surviving history. Within one open handle the
+value never decreases. Across a reopen it may advance once, and it never
+decreases while every acknowledged commit survives. Under relaxed durability
+(`SyncOnCheckpoint`) a crash can lose acknowledged graph commits: the value can
+move back (for example from 11 to 10) and a later commit can reuse 11 for
+different graph content.
 
 Never carry a baseline across a reopen. Under relaxed durability
 (`SyncOnCheckpoint`), a crash can lose acknowledged commits. The next commits

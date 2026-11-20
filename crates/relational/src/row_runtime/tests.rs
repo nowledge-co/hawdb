@@ -307,11 +307,11 @@ fn cancelled_scans_do_not_invoke_callbacks() {
         let runtime = fixture.runtime(mode, "SELECT * FROM docs", &task);
         assert!(matches!(
             runtime.visit_all_ref("docs", |_| panic!("cancelled callback")),
-            Err(HawDBError::Execution(_))
+            Err(HawDBError::RuntimeTaskStopped(_))
         ));
         assert!(matches!(
             runtime.visit_all("docs", |_| panic!("cancelled callback")),
-            Err(HawDBError::Execution(_))
+            Err(HawDBError::RuntimeTaskStopped(_))
         ));
         assert_eq!(runtime.evidence().rows_visited, 0);
     }

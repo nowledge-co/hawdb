@@ -110,7 +110,8 @@ fn reopen_never_regresses_it_and_wal_replay_restores_it_exactly() {
         let mut db = Database::open(&path).unwrap();
         // Checkpoints do not record it (no format change): a reopen starts
         // from the checkpoint's commit epoch, an upper bound of the last graph
-        // change, so it never regresses and advances at most once.
+        // change, so with no lost commits it never regresses and advances at
+        // most once.
         let (commit, reopened) = epochs(&db);
         assert_eq!(commit, checkpoint);
         assert_eq!(reopened, checkpoint);

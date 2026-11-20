@@ -62,9 +62,8 @@ impl<'a, T> GraphReadAllocator<'a, T> {
 
     pub(crate) fn checkpoint(&self) -> hawdb_core::Result<()> {
         self.control.map_or(Ok(()), |task| {
-            task.checkpoint().map_err(|reason| {
-                hawdb_core::HawDBError::Execution(format!("runtime task stopped: {reason}"))
-            })
+            task.checkpoint()
+                .map_err(hawdb_core::HawDBError::RuntimeTaskStopped)
         })
     }
 

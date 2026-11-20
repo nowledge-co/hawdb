@@ -290,12 +290,22 @@ is computed once per captured generation outside the publication lock; this is
 a conservative capacity bound, not an allocator or RSS measurement.
 
 Mem bounded snapshots and read reports capture the graph/resident pair after
-execution admission, release the publication mutex, and then use
-`retain_with_permit` for a nonqueueing retained-memory reservation. A refused
-source is dropped before the caller can wait or retry. The generation's bounded
-weak cache shares funding for its current host governor; changing governors
-preserves existing leases and replaces only that cache. A lease drops its source
-before its memory token, and retains no execution slots. Generation reuse checks
+execution admission, release the publication mutex, and then call
+`retain_with_permit`. The publication funds the resident generation it holds
+(`SearchIndexPublishedSnapshot`): that generation is resident whether or not
+anyone reads it, and the host's memory sample already counts it, so pinning it
+reserves nothing beyond the read's own admission. Only a superseded generation
+is charged on top. A reader that pins a generation no publication holds any
+more makes a nonqueueing reservation of its retained capacity; a refused source
+is dropped before the caller can wait or retry. When the last publication of a
+generation drops while readers still hold it, their owner is charged the
+generation's capacity without admission (the memory stays allocated either
+way), and that charge is refunded when the last of those readers drops. This
+charge can exceed the current budget; new admissions then wait. It takes no
+process-memory reservation because the resident sample includes the bytes.
+Readers of one generation share one owner per host governor; changing governors
+adds an owner and preserves existing leases. A lease drops its source before
+its memory token, and retains no execution slots. Generation reuse checks
 document pages, configuration, analyzer/index owners, local marker state and
 checkpoint freshness. Capture performs no filesystem reads. External edits to
 marker files are observed by the live diagnostic API or after reopening; a read

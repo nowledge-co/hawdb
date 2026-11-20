@@ -42,7 +42,7 @@ impl Funding {
             .map(|permit| {
                 permit
                     .reserve_retained_memory(host_bytes as u64)
-                    .map_err(|error| HawDBError::Execution(error.to_string()))
+                    .map_err(HawDBError::from_execution_error)
             })
             .transpose()?;
         Ok(Self { query, host })
@@ -108,7 +108,7 @@ pub(super) fn io_scope(
 ) -> Result<Option<Box<dyn RuntimeIoWavePermit>>> {
     let permit = task
         .acquire_io_wave(std::num::NonZeroUsize::MIN)
-        .map_err(|error| HawDBError::Execution(error.to_string()))?;
+        .map_err(HawDBError::from_execution_error)?;
     if governed && permit.is_none() {
         return Err(HawDBError::Execution(
             "governed scratch requires fresh I/O admission".into(),

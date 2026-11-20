@@ -602,10 +602,12 @@ impl SpawnPerRequestFixtureCommand {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|error| {
-                HawDBError::Execution(format!(
-                    "failed to spawn fixture contract command '{}': {error}",
-                    self.program
-                ))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!(
+                        "failed to spawn fixture contract command '{}': {error}",
+                        self.program
+                    ))
+                })
             })?;
         {
             let mut stdin = child.stdin.take().ok_or_else(|| {
@@ -613,9 +615,11 @@ impl SpawnPerRequestFixtureCommand {
             })?;
             use std::io::Write;
             writeln!(stdin, "{request}").map_err(|error| {
-                HawDBError::Execution(format!(
-                    "failed to write fixture contract command request: {error}"
-                ))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!(
+                        "failed to write fixture contract command request: {error}"
+                    ))
+                })
             })?;
         }
         let output = self.wait_for_output(child)?;
@@ -640,19 +644,19 @@ impl SpawnPerRequestFixtureCommand {
             match child.try_wait() {
                 Ok(Some(_status)) => {
                     return child.wait_with_output().map_err(|error| {
-                        HawDBError::Execution(format!(
-                            "failed to collect fixture contract command output: {error}"
-                        ))
+                        HawDBError::or_stop(&error, || {
+                            HawDBError::Execution(format!(
+                                "failed to collect fixture contract command output: {error}"
+                            ))
+                        })
                     });
                 }
                 Ok(None) if started_at.elapsed() >= self.timeout => {
                     let _ = child.kill();
-                    let output = child.wait_with_output().map_err(|error| {
-                        HawDBError::Execution(format!(
+                    let output = child.wait_with_output().map_err(|error| HawDBError::or_stop(&error, || HawDBError::Execution(format!(
                             "fixture contract command timed out after {} ms and failed to collect output: {error}",
                             self.timeout.as_millis()
-                        ))
-                    })?;
+                        ))))?;
                     return Err(HawDBError::Execution(format!(
                         "fixture contract command timed out after {} ms; stderr: {}",
                         self.timeout.as_millis(),
@@ -687,9 +691,11 @@ impl PersistentFixtureCommand {
             .stderr(Stdio::inherit())
             .spawn()
             .map_err(|error| {
-                HawDBError::Execution(format!(
-                    "failed to spawn persistent fixture contract command '{program}': {error}"
-                ))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!(
+                        "failed to spawn persistent fixture contract command '{program}': {error}"
+                    ))
+                })
             })?;
         let stdin = child.stdin.take().ok_or_else(|| {
             let _ = child.kill();
@@ -713,14 +719,18 @@ impl PersistentFixtureCommand {
 
     fn invoke(&mut self, request: serde_json::Value) -> Result<serde_json::Value> {
         writeln!(self.stdin, "{request}").map_err(|error| {
-            HawDBError::Execution(format!(
-                "failed to write persistent fixture contract command request: {error}"
-            ))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Execution(format!(
+                    "failed to write persistent fixture contract command request: {error}"
+                ))
+            })
         })?;
         self.stdin.flush().map_err(|error| {
-            HawDBError::Execution(format!(
-                "failed to flush persistent fixture contract command request: {error}"
-            ))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Execution(format!(
+                    "failed to flush persistent fixture contract command request: {error}"
+                ))
+            })
         })?;
         let mut line = String::new();
         let bytes = self.stdout.read_line(&mut line).map_err(|_| {

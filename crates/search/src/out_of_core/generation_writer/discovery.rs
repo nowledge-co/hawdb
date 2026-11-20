@@ -62,7 +62,9 @@ pub(super) fn active_identity(
     manifest_version::check_reader_version(&bytes.bytes, manifest_version::READER_VERSION)?;
     let envelope: SearchOutOfCoreManifestEnvelope =
         serde_json::from_slice(&bytes.bytes).map_err(|error| {
-            HawDBError::Storage(format!("invalid search out-of-core manifest: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!("invalid search out-of-core manifest: {error}"))
+            })
         })?;
     checkpoint(task)?;
     if json::checksum_with_context(&envelope.body, Some(task))? != envelope.checksum {

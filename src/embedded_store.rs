@@ -516,6 +516,16 @@ impl EmbeddedStoreOpenOptions {
         self
     }
 
+    /// Whether an open with these options may record the externally owned
+    /// set. Read-only and qualified out-of-core opens only compare (#1845).
+    fn may_record_externally_owned_search_kinds(&self) -> bool {
+        !matches!(self.mode, GraphMode::ShadowReadOnly)
+            && !matches!(
+                self.search_projection_open_mode,
+                SearchProjectionOpenMode::QualifiedOutOfCore(_)
+            )
+    }
+
     /// Registers application-owned system schemas that must be current before
     /// the embedded store is returned to its host.
     pub fn with_system_schema_registry(mut self, registry: crate::SystemSchemaRegistry) -> Self {
@@ -1234,7 +1244,7 @@ impl EmbeddedGraph {
     fn check_runtime_context(&self, task_context: &RuntimeTaskContext) -> Result<()> {
         task_context.checkpoint().map_err(|reason| {
             self.runtime_governor.record_cancellation(reason);
-            HawDBError::Execution(format!("runtime task {reason}"))
+            HawDBError::RuntimeTaskStopped(reason)
         })
     }
 
@@ -2159,6 +2169,10 @@ pub struct EmbeddedStore {
     non_projection_relational_tables: Arc<BTreeSet<String>>,
     /// Fixed at open by `with_externally_owned_search_kinds` (#1814).
     externally_owned_search_kinds: Arc<BTreeSet<SearchProjectionKind>>,
+    /// Whether this open recorded or verified the ownership record of a
+    /// non-empty requested set. Opens that may not record (read-only and
+    /// qualified out-of-core) re-read the record on demand instead (#1845).
+    externally_owned_search_kinds_recorded: bool,
     /// The projection directory this store was opened with, when known. Its
     /// ownership sidecar files are read on demand (#1814).
     search_projection_path: Option<PathBuf>,
@@ -2222,6 +2236,7 @@ impl EmbeddedStore {
             retrieval_projection_advisor: RetrievalProjectionAdvisor::default(),
             non_projection_relational_tables: Arc::default(),
             externally_owned_search_kinds: Arc::default(),
+            externally_owned_search_kinds_recorded: false,
             search_projection_path: None,
         }
     }
@@ -2238,6 +2253,7 @@ impl EmbeddedStore {
             retrieval_projection_advisor,
             non_projection_relational_tables: Arc::default(),
             externally_owned_search_kinds: Arc::default(),
+            externally_owned_search_kinds_recorded: false,
             search_projection_path: None,
         }
     }
@@ -2264,11 +2280,7 @@ impl EmbeddedStore {
                 "externally owned search kinds require a search projection".into(),
             ));
         }
-        let may_record_ownership = !matches!(options.mode, GraphMode::ShadowReadOnly)
-            && !matches!(
-                options.search_projection_open_mode,
-                SearchProjectionOpenMode::QualifiedOutOfCore(_)
-            );
+        let may_record_ownership = options.may_record_externally_owned_search_kinds();
         let search_projection_path = options.search_projection_path.clone();
         let reset_ownership = options.externally_owned_search_kinds_reset;
         if reset_ownership && (!may_record_ownership || search_projection_path.is_none()) {
@@ -2278,21 +2290,46 @@ impl EmbeddedStore {
         }
         let (mut store, report) = Self::open_with_validated_options(options, runtime_governor)?;
         store.non_projection_relational_tables = tables;
-        if let Some(path) = search_projection_path.as_deref() {
-            if reset_ownership {
+        store.attach_externally_owned_search_kinds(
+            search_projection_path,
+            owned,
+            may_record_ownership,
+            reset_ownership,
+        )?;
+        Ok((store, report))
+    }
+
+    /// Reconciles (or resets) the ownership record of `path` with `owned`
+    /// and installs the requested set on this store.
+    fn attach_externally_owned_search_kinds(
+        &mut self,
+        path: Option<PathBuf>,
+        owned: BTreeSet<SearchProjectionKind>,
+        may_record: bool,
+        reset: bool,
+    ) -> Result<()> {
+        let mut recorded = false;
+        if let Some(path) = path.as_deref() {
+            if reset {
                 crate::search::projection_ownership::reset(path, &owned)?;
+                recorded = true;
             } else {
-                crate::search::projection_ownership::reconcile(path, &owned, may_record_ownership)?;
+                crate::search::projection_ownership::reconcile(path, &owned, may_record)?;
+                recorded = may_record;
             }
         }
-        if let Some(projection) = store.search_projection.as_mut() {
+        // The index keeps the requested set even while nothing is recorded:
+        // catch-up must never derive documents of kinds the host declares as
+        // its own, and opens that may not record never write the projection.
+        if let Some(projection) = self.search_projection.as_mut() {
             projection
                 .index_mut()
                 .set_externally_owned_kinds(owned.clone());
         }
-        store.externally_owned_search_kinds = Arc::new(owned);
-        store.search_projection_path = search_projection_path;
-        Ok((store, report))
+        self.externally_owned_search_kinds = Arc::new(owned);
+        self.externally_owned_search_kinds_recorded = recorded;
+        self.search_projection_path = path;
+        Ok(())
     }
 
     /// The fencing token for which the host must (re)supply the documents of
@@ -2302,14 +2339,42 @@ impl EmbeddedStore {
     /// openers observe it too. The epoch grows within one projection
     /// incarnation; rebuilds and explicit recovery resets create a new
     /// incarnation so retained acknowledgements cannot cross that boundary.
+    ///
+    /// An open that may not record the set (read-only or qualified
+    /// out-of-core) of a projection without a record reports `None` until a
+    /// writable open records it; the next call then reports its fence. A
+    /// record that differs from the requested set is
+    /// [`HawDBError::SearchProjectionOwnershipMismatch`] (#1845).
     pub fn externally_owned_rows_required(&self) -> Result<Option<ExternallyOwnedRowsToken>> {
+        Ok(self.externally_owned_search_state()?.1)
+    }
+
+    /// The externally owned set recorded for this store's projection, as
+    /// observed now, and its rows-required token.
+    ///
+    /// The set is empty when nothing was requested, or when an open that may
+    /// not record finds no record yet.
+    fn externally_owned_search_state(
+        &self,
+    ) -> Result<(
+        BTreeSet<SearchProjectionKind>,
+        Option<ExternallyOwnedRowsToken>,
+    )> {
         let Some(path) = &self.search_projection_path else {
-            return Ok(None);
+            return Ok((BTreeSet::new(), None));
         };
-        if self.externally_owned_search_kinds.is_empty() {
-            return Ok(None);
+        let requested = &*self.externally_owned_search_kinds;
+        if requested.is_empty() {
+            return Ok((BTreeSet::new(), None));
         }
-        Ok(crate::search::projection_ownership::require_rows_state(path)?.required_token())
+        match crate::search::projection_ownership::observe(
+            path,
+            requested,
+            self.externally_owned_search_kinds_recorded,
+        )? {
+            Some(state) => Ok((requested.clone(), state.required_token())),
+            None => Ok((BTreeSet::new(), None)),
+        }
     }
 
     /// Clears the rows-required state after the host re-pushed its rows,
@@ -2336,6 +2401,9 @@ impl EmbeddedStore {
 
     /// Kinds whose search documents only the host writes (#1814), fixed at
     /// open by [`EmbeddedStoreOpenOptions::with_externally_owned_search_kinds`].
+    ///
+    /// This is the requested set, which catch-up never derives. The runtime
+    /// status reports the set recorded for the projection instead (#1845).
     pub fn externally_owned_search_kinds(&self) -> &BTreeSet<SearchProjectionKind> {
         &self.externally_owned_search_kinds
     }
@@ -2675,6 +2743,8 @@ impl EmbeddedStore {
     pub fn runtime_status(&self) -> Result<EmbeddedRuntimeStatus> {
         Ok({
             let graph_commit_epoch = self.graph.database().commit_epoch()?;
+            let (externally_owned_kinds, externally_owned_rows_required) =
+                self.externally_owned_search_state()?;
             EmbeddedRuntimeStatus {
                 protocol: RUNTIME_STATUS_PROTOCOL.to_string(),
                 graph_commit_epoch,
@@ -2685,12 +2755,8 @@ impl EmbeddedStore {
                     .search_projection_changefeed_status()?,
                 projection_freshness: self.search_projection_freshness(),
                 file_descriptors: self.graph.database().file_descriptor_metrics(),
-                externally_owned_search_kinds: self
-                    .externally_owned_search_kinds
-                    .iter()
-                    .copied()
-                    .collect(),
-                externally_owned_rows_required: self.externally_owned_rows_required()?,
+                externally_owned_search_kinds: externally_owned_kinds.into_iter().collect(),
+                externally_owned_rows_required,
             }
         })
     }

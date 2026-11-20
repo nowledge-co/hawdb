@@ -130,8 +130,9 @@ impl Database {
         source: ProjectionFullSourceLimits,
         task: hawdb_core::RuntimeTaskContext,
     ) -> std::result::Result<PreparedProjectionFullSource, ProjectionFeedError> {
-        task.checkpoint()
-            .map_err(|e| ProjectionFeedError::Source(HawDBError::Execution(e.to_string())))?;
+        task.checkpoint().map_err(|reason| {
+            ProjectionFeedError::Source(HawDBError::RuntimeTaskStopped(reason))
+        })?;
         let mut prepared = self
             .begin_prepared_read(reads)
             .map_err(ProjectionFeedError::Source)?;

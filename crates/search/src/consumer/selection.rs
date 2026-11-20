@@ -50,7 +50,7 @@ impl ConsumerPreparedCandidate {
         let task = self.selection_task(permit, task)?;
         let _io = task
             .acquire_io_wave(std::num::NonZeroUsize::MIN)
-            .map_err(|error| HawDBError::Execution(error.to_string()))?
+            .map_err(HawDBError::from_execution_error)?
             .ok_or_else(|| {
                 HawDBError::Execution("consumer selection requires I/O admission".into())
             })?;
@@ -58,7 +58,7 @@ impl ConsumerPreparedCandidate {
             .reserve_retained_memory(
                 hawdb_storage::consumer_allocation::CONSUMER_SELECTION_MEMORY_BOUND,
             )
-            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+            .map_err(HawDBError::from_execution_error)?;
         let selection = self.birth.prepare_selection()?;
         self.selection = Some(ConsumerCandidateSelection {
             selection,
@@ -119,7 +119,7 @@ impl ConsumerPreparedCandidate {
             .reserve_attempt_descriptors()?;
         let io = task
             .acquire_io_wave(std::num::NonZeroUsize::MIN)
-            .map_err(|error| HawDBError::Execution(error.to_string()))?
+            .map_err(HawDBError::from_execution_error)?
             .ok_or_else(|| {
                 HawDBError::Execution("consumer selection requires I/O admission".into())
             })?;

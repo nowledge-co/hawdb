@@ -261,17 +261,32 @@ fn checkpoint_units_overflow_publication_validation_cancellation_and_denial_pres
                     .unwrap()
             });
             let error = candidate(&directory, &fixture, mode, Some(&work)).unwrap_err();
-            assert!(
-                error.to_string().contains(if stop == 0 {
-                    "admission deferred"
-                } else {
-                    "checkpoint build stopped"
-                }),
-                "{error:?}"
-            );
+            if stop == 0 {
+                assert!(matches!(
+                    &error,
+                    RelationalOverflowPublicationError::Admission(_)
+                ));
+            } else {
+                assert!(
+                    matches!(
+                        &error,
+                        RelationalOverflowPublicationError::Stopped(
+                            hawdb_core::RuntimeCancellationReason::Cancelled
+                        ) | RelationalOverflowPublicationError::PublishOutcomeUnknown(_)
+                    ),
+                    "stop {stop}/{units}: {error:?}"
+                );
+            }
             drop(held);
             probe.assert_released(&local);
-            assert_eq!(authority(&directory), before);
+            if matches!(
+                &error,
+                RelationalOverflowPublicationError::PublishOutcomeUnknown(_)
+            ) {
+                verify(&directory, &fixture, mode);
+            } else {
+                assert_eq!(authority(&directory), before);
+            }
             if directory
                 .join(relational_overflow_manifest_generation_file(2))
                 .exists()

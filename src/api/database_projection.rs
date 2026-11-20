@@ -38,7 +38,7 @@ impl Database {
                 hawdb_storage::projection_generation::ProjectionGenerationError::Corruption(
                     message,
                 ) => HawDBError::StorageIntegrity(message),
-                error => HawDBError::Execution(error.to_string()),
+                error => HawDBError::from_execution_error(error),
             })
     }
 

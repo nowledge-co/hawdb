@@ -353,7 +353,7 @@ fn admit_manifest_allocation(
     memory
         .reserve(bytes, work)
         .map(|_| ())
-        .map_err(|error| RelationalRowDeltaError::Admission(error.to_string()))
+        .map_err(RelationalRowDeltaError::from_work)
 }
 
 fn admit_manifest_vector<T>(
@@ -414,7 +414,7 @@ fn decode_manifest(
         for block in bytes.chunks(64 * 1024) {
             let unit = work
                 .start_unit()
-                .map_err(|error| RelationalRowDeltaError::Admission(error.to_string()))?;
+                .map_err(RelationalRowDeltaError::from_work)?;
             hasher.update(block);
             unit.finish();
         }

@@ -2227,7 +2227,10 @@ impl GraphStore {
     /// projected graphs). Relational-only and append-only commits do not
     /// advance it. It is independent of the search projection change log, so
     /// pruning never regresses it. It is not persisted: recovery starts it at
-    /// the checkpoint's commit epoch and WAL replay advances it exactly.
+    /// the checkpoint's commit epoch and WAL replay advances it exactly. It is
+    /// monotonic only over surviving history: a crash under
+    /// `SyncOnCheckpoint` can drop acknowledged commits, so hosts must discard
+    /// any baseline captured before a reopen.
     ///
     /// Refused with the storage error once this store is poisoned (for
     /// example after a failed durability barrier), because the epoch of an
@@ -2817,9 +2820,11 @@ fn validate_property_default(
         }
         PropertyDefault::Value(value) => {
             crate::canonical::validate_property_value(value).map_err(|error| {
-                HawDBError::Storage(format!(
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Storage(format!(
                     "property schema {table}.{property} default violates storage limits: {error}"
                 ))
+                })
             })?;
             value.clone()
         }
@@ -10320,7 +10325,7 @@ mod tests {
         let task = RuntimeTaskContext::without_deadline(cancellation)
             .with_io_wave_controller(controller.clone());
         let result = candidate.catch_up_with_task_context(&captured, &task);
-        assert!(matches!(result, Err(HawDBError::Execution(_))));
+        assert!(matches!(result, Err(HawDBError::RuntimeTaskStopped(_))));
         assert_eq!(candidate.commit_epoch(), 2);
         assert_eq!(controller.acquisitions.load(AtomicOrdering::SeqCst), 6);
         assert_eq!(controller.in_flight.load(AtomicOrdering::SeqCst), 0);
@@ -10619,7 +10624,7 @@ mod tests {
                     &cancelled.context(local.clone()),
                 )
                 .unwrap_err();
-                assert!(error.to_string().contains("checkpoint build stopped"));
+                assert!(error.to_string().contains("runtime task stopped"));
                 assert_eq!(cancelled.completed.load(Ordering::SeqCst), cut);
                 cancelled.assert_released(&local);
                 assert_eq!(store.checkpoint_source_identity(), identity);
@@ -10677,7 +10682,7 @@ mod tests {
             )
             .unwrap_err();
             assert!(
-                error.to_string().contains("checkpoint build stopped"),
+                error.to_string().contains("runtime task stopped"),
                 "cancel_after={cancel_after}: {error}"
             );
             assert_eq!(probe.completed.load(Ordering::SeqCst), cancel_after);
@@ -10806,7 +10811,7 @@ mod tests {
                 &probe.context(scheduler.clone()),
             )
             .unwrap_err();
-        assert!(error.to_string().contains("checkpoint build stopped"));
+        assert!(error.to_string().contains("runtime task stopped"));
         assert_eq!(probe.completed.load(Ordering::SeqCst), 17);
         assert_eq!(probe.io_waves.load(Ordering::SeqCst), 0);
         probe.assert_released(&scheduler);
@@ -10819,7 +10824,7 @@ mod tests {
             .checkpoint_relationship_records_owned(&probe.context(scheduler.clone()))
             .err()
             .expect("relationship capture must also stop before collecting its delta");
-        assert!(error.to_string().contains("checkpoint build stopped"));
+        assert!(error.to_string().contains("runtime task stopped"));
         assert_eq!(probe.completed.load(Ordering::SeqCst), 17);
         assert_eq!(probe.io_waves.load(Ordering::SeqCst), 0);
         probe.assert_released(&scheduler);
@@ -10963,7 +10968,7 @@ mod tests {
                         &probe.context(scheduler.clone()),
                     )
                     .unwrap_err();
-                assert!(error.to_string().contains("checkpoint build stopped"));
+                assert!(error.to_string().contains("runtime task stopped"));
                 assert_eq!(probe.completed.load(Ordering::SeqCst), 17);
                 probe.assert_released(&scheduler);
             }
@@ -10976,7 +10981,7 @@ mod tests {
                     &probe.context(scheduler.clone()),
                 )
                 .unwrap_err();
-            assert!(error.to_string().contains("checkpoint build stopped"));
+            assert!(error.to_string().contains("runtime task stopped"));
             assert_eq!(probe.completed.load(Ordering::SeqCst), 17);
             assert_eq!(probe.io_waves.load(Ordering::SeqCst), 0);
             probe.assert_released(&scheduler);
@@ -11146,7 +11151,7 @@ mod tests {
         let error = source
             .prepare_checkpoint_candidate_with_work_context(&catalog, &work)
             .unwrap_err();
-        assert!(error.to_string().contains("checkpoint build stopped"));
+        assert!(error.to_string().contains("runtime task stopped"));
         assert!(observer.observed_file.load(Ordering::SeqCst));
         assert_eq!(observer.completed_after_file.load(Ordering::SeqCst), 10);
         probe.assert_released(&scheduler);
@@ -11293,7 +11298,7 @@ mod tests {
         let error = source
             .prepare_checkpoint_candidate_with_work_context(&catalog, &work)
             .unwrap_err();
-        assert!(error.to_string().contains("checkpoint build stopped"));
+        assert!(error.to_string().contains("runtime task stopped"));
         assert!(observer.observed_file.load(Ordering::SeqCst));
         assert_eq!(observer.completed_after_file.load(Ordering::SeqCst), 17);
         assert_eq!(probe.io_waves.load(Ordering::SeqCst), 0);
@@ -11417,7 +11422,7 @@ mod tests {
         let error = source
             .prepare_checkpoint_candidate_with_work_context(&catalog, &work)
             .unwrap_err();
-        assert!(error.to_string().contains("checkpoint build stopped"));
+        assert!(error.to_string().contains("runtime task stopped"));
         assert!(observer.observed_file.load(Ordering::SeqCst));
         assert_eq!(observer.completed_after_file.load(Ordering::SeqCst), 17);
         // No surviving record has been encoded: only the immutable 16-byte
@@ -11583,7 +11588,7 @@ mod tests {
             .prepare_checkpoint_candidate_with_work_context(&catalog, &work)
             .unwrap_err();
         assert!(observer.observed_file.load(Ordering::SeqCst));
-        assert!(error.to_string().contains("checkpoint build stopped"));
+        assert!(error.to_string().contains("runtime task stopped"));
         probe.assert_released(&scheduler);
         assert_eq!(store.checkpoint_source_identity(), identity);
         assert_eq!(std::fs::read(&wal_path).unwrap(), wal);

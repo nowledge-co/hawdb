@@ -306,8 +306,7 @@ impl Database {
             )
             .into());
         }
-        task.checkpoint()
-            .map_err(|reason| HawDBError::Execution(reason.to_string()))?;
+        task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
         let _descriptor_operation = self.internal_descriptor_operation()?;
         self.consumer_writable_root()?;
         self.ensure_runtime_capability(hawdb_core::RuntimeCapability::SearchProjectionPublication)?;
@@ -419,7 +418,7 @@ impl Database {
             .reserve_retained_memory(
                 hawdb_storage::consumer_allocation::CONSUMER_SELECTION_MEMORY_BOUND,
             )
-            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+            .map_err(HawDBError::from_execution_error)?;
         let allocation = self
             .runtime
             .get()?
@@ -609,8 +608,7 @@ impl Database {
                 HawDBError::Semantic("Consumer open requires an unbound task".into()).into(),
             );
         }
-        task.checkpoint()
-            .map_err(|reason| HawDBError::Execution(reason.to_string()))?;
+        task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
         let working_bytes = task
             .memory_reservation()
             .map_or(64 << 20, |reservation| reservation.memory_bytes());
@@ -803,7 +801,7 @@ impl Database {
                 .reserve_retained_memory(
                     hawdb_storage::consumer_allocation::CONSUMER_SELECTION_MEMORY_BOUND,
                 )
-                .map_err(|error| HawDBError::Execution(error.to_string()))?;
+                .map_err(HawDBError::from_execution_error)?;
             let allocation = self
                 .runtime
                 .get()?
@@ -894,8 +892,7 @@ impl Database {
             )
             .into());
         }
-        task.checkpoint()
-            .map_err(|reason| HawDBError::Execution(reason.to_string()))?;
+        task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
         let _descriptor_operation = self.internal_descriptor_operation()?;
         let root = self.consumer_writable_root()?;
         self.reload_consumer_registry_if_unavailable()?;
@@ -910,14 +907,14 @@ impl Database {
                         HawDBError::Execution(error.to_string())
                     }
                     crate::VectorIndexBuildError::Query(error) => error,
-                    error => HawDBError::Execution(error.to_string()),
+                    error => HawDBError::from_execution_error(error),
                 })?;
         let mut snapshot = self.begin_read_transaction_with_context(&task)?;
         let recovery_memory = permit
             .reserve_retained_memory(
                 hawdb_storage::consumer_allocation::CONSUMER_SELECTION_MEMORY_BOUND,
             )
-            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+            .map_err(HawDBError::from_execution_error)?;
         publication_failpoint(PublicationStage::BeforeCheckpoint)?;
         let allocation = self
             .runtime
@@ -1264,14 +1261,14 @@ impl Database {
     ) -> Result<hawdb_qos::RuntimePermit> {
         self.consumer_governor()?
             .try_admit(request)
-            .map_err(|error| HawDBError::Execution(error.to_string()))
+            .map_err(HawDBError::from_execution_error)
     }
 
     fn consumer_governor(&mut self) -> Result<hawdb_qos::RuntimeGovernor> {
         let governor = self
             .retained_runtime
             .governor(2)
-            .map_err(|error| HawDBError::Execution(error.to_string()))?
+            .map_err(HawDBError::from_execution_error)?
             .clone();
         if self.runtime_governor.is_none() {
             self.set_runtime_governor(governor.clone());
@@ -1297,7 +1294,7 @@ impl Database {
         self.admit_vector_consumer_publication(task)
             .map_err(|error| match error {
                 crate::VectorIndexBuildError::Query(error) => error,
-                error => HawDBError::Execution(error.to_string()),
+                error => HawDBError::from_execution_error(error),
             })
     }
 
@@ -1329,7 +1326,7 @@ impl Database {
                     .with_io_wave_slots(1),
             )
             .map(Arc::new)
-            .map_err(|error| HawDBError::Execution(error.to_string()))
+            .map_err(HawDBError::from_execution_error)
     }
 
     fn reload_consumer_registry_if_unavailable(&mut self) -> SearchProjectionConsumerResult<()> {

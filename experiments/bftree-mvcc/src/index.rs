@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub type Rows = Vec<(Vec<u8>, Vec<u8>)>;
+const SCAN_WINDOW: usize = 32;
 mod batch;
 pub use batch::BatchRead;
 
@@ -118,8 +119,8 @@ fn version_key(key: &[u8], epoch: u64) -> EncodedKey {
     encoded.len += 8;
     encoded
 }
-fn key_parts(bytes: &[u8], versioned: bool) -> Result<(&[u8], u64)> {
-    if bytes.first() != Some(&if versioned { 1 } else { 2 }) {
+fn version_key_parts(bytes: &[u8]) -> Result<(&[u8], u64)> {
+    if bytes.first() != Some(&1) {
         return Err(Error::Invalid("invalid key namespace"));
     }
     let mut offset = 1;
@@ -139,20 +140,13 @@ fn key_parts(bytes: &[u8], versioned: bool) -> Result<(&[u8], u64)> {
             _ => return Err(Error::Invalid("invalid key encoding")),
         }
     }
-    let epoch = if versioned {
-        !u64::from_be_bytes(
-            bytes
-                .get(offset..)
-                .ok_or(Error::Invalid("short version"))?
-                .try_into()
-                .map_err(|_| Error::Invalid("invalid version"))?,
-        )
-    } else {
-        if bytes.len() != offset {
-            return Err(Error::Invalid("invalid head key"));
-        }
-        0
-    };
+    let epoch = !u64::from_be_bytes(
+        bytes
+            .get(offset..)
+            .ok_or(Error::Invalid("short version"))?
+            .try_into()
+            .map_err(|_| Error::Invalid("invalid version"))?,
+    );
     Ok((&bytes[..offset], epoch))
 }
 fn decode_key(prefix: &[u8]) -> Vec<u8> {
@@ -221,6 +215,98 @@ fn history_get(tree: &BfTree, key: &[u8], epoch: u64) -> Result<Option<Vec<u8>>>
         return Ok(None);
     }
     decode_value(&buffer[k..k + v])
+}
+
+fn push_scan_row(rows: &mut Rows, key: Vec<u8>, value: Vec<u8>) -> Result<()> {
+    if rows.last().is_some_and(|(previous, _)| *previous >= key) {
+        return Err(Error::Invalid("non-monotonic scan"));
+    }
+    if rows.len() == MAX_SCAN_ROWS {
+        return Err(Error::Budget("scan rows"));
+    }
+    rows.push((key, value));
+    Ok(())
+}
+
+fn head_key_pairs(encoded: &[u8]) -> Result<&[[u8; 2]]> {
+    let [2, encoded @ .., 0] = encoded else {
+        return Err(Error::Invalid("invalid head key"));
+    };
+    let (pairs, remainder) = encoded.as_chunks::<2>();
+    if !remainder.is_empty() || pairs.len() > MAX_KEY || pairs.iter().any(|pair| pair[0] != 1) {
+        return Err(Error::Invalid("invalid head key"));
+    }
+    Ok(pairs)
+}
+
+fn scan_hybrid(tree: &BfTree, epoch: u64, start: &[u8], end: &[u8]) -> Result<Rows> {
+    let mut resume = prefix(start, 2);
+    let upper = prefix(end, 2);
+    let mut rows = Vec::new();
+    let mut deferred = Vec::new();
+    let mut work = 0;
+    loop {
+        let mut resume_needed = false;
+        {
+            let mut scan = tree
+                .scan_with_end_key(&resume, &upper, ScanReturnField::KeyAndValue)
+                .map_err(|e| Error::Index(format!("{e:?}")))?;
+            let mut buffer = [0; MAX_KEY * 2 + MAX_VALUE + 64];
+            for visited in 1..=SCAN_WINDOW {
+                let Some((key_len, value_len)) = scan.next(&mut buffer) else {
+                    break;
+                };
+                work += 1;
+                if work > MAX_SCAN_RECORDS {
+                    return Err(Error::Budget("scan physical records"));
+                }
+                let key = &buffer[..key_len];
+                let pairs = head_key_pairs(key)?;
+                if key >= &*upper {
+                    break;
+                }
+                if visited == SCAN_WINDOW {
+                    resume.copy_from(key)?;
+                    // The terminator sorts before every extension of this
+                    // key, including an extension by a zero byte.
+                    resume.bytes[key_len - 1] = 1;
+                    resume_needed = true;
+                }
+
+                let (version, value) = buffer[key_len..key_len + value_len]
+                    .split_at_checked(8)
+                    .ok_or(Error::Invalid("short head"))?;
+                let version = u64::from_be_bytes(version.try_into().expect("epoch bytes"));
+                if version > epoch {
+                    deferred.push((pairs.iter().map(|pair| pair[1]).collect(), None));
+                } else if let Some(value) = decode_value(value)? {
+                    let key = pairs.iter().map(|pair| pair[1]).collect();
+                    if deferred.is_empty() {
+                        push_scan_row(&mut rows, key, value)?;
+                    } else {
+                        // Preserve order after the first head that needs a
+                        // historical seek in this window.
+                        deferred.push((key, Some(value)));
+                    }
+                }
+            }
+        }
+
+        // A reader may race a commit even when captured at the latest epoch.
+        // Resolve those heads after releasing the native scan guard.
+        for (key, value) in deferred.drain(..) {
+            let visible = match value {
+                Some(value) => Some(value),
+                None => history_get(tree, &key, epoch)?,
+            };
+            if let Some(value) = visible {
+                push_scan_row(&mut rows, key, value)?;
+            }
+        }
+        if !resume_needed {
+            return Ok(rows);
+        }
+    }
 }
 
 impl Index {
@@ -502,15 +588,17 @@ impl View {
         else {
             unreachable!()
         };
-        let hybrid = *layout == Layout::Hybrid;
-        let namespace = if hybrid { 2 } else { 1 };
+        if *layout == Layout::Hybrid {
+            return scan_hybrid(tree, *epoch, start, end);
+        }
+        let namespace = 1;
         let mut resume = prefix(start, namespace);
         let upper = prefix(end, namespace);
         let mut result: Rows = Vec::new();
         let mut seen: Option<EncodedKey> = None;
         let mut work = 0;
         let mut skip_resume = false;
-        let mut batch = Vec::with_capacity(32);
+        let mut batch = Vec::with_capacity(SCAN_WINDOW);
         loop {
             // Visibility and duplicate-version checks borrow the scan buffer.
             // Only result rows or keys needing a history seek become owned.
@@ -535,36 +623,22 @@ impl View {
                         return Err(Error::Budget("scan physical records"));
                     }
                     next_resume.copy_from(physical)?;
-                    let (encoded, version) = key_parts(physical, !hybrid)?;
+                    let (encoded, version) = version_key_parts(physical)?;
                     if encoded >= &*upper {
                         finished = true;
                         break;
                     }
-                    if hybrid {
-                        let value = &buffer[k..k + v];
-                        let version = u64::from_be_bytes(
-                            value
-                                .get(..8)
-                                .ok_or(Error::Invalid("short head"))?
-                                .try_into()
-                                .map_err(|_| Error::Invalid("short head"))?,
-                        );
-                        if version > *epoch {
-                            batch.push((decode_key(encoded), None));
-                        } else if let Some(value) = decode_value(&value[8..])? {
-                            batch.push((decode_key(encoded), Some(value)));
-                        }
-                    } else if version <= *epoch && seen.as_deref() != Some(encoded) {
+                    if version <= *epoch && seen.as_deref() != Some(encoded) {
                         // Mark tombstones too: their older values must not
                         // reappear, even across native scan chunks.
                         let mut selected = prefix(start, namespace);
                         selected.copy_from(encoded)?;
                         seen = Some(selected);
                         if let Some(value) = decode_value(&buffer[k..k + v])? {
-                            batch.push((decode_key(encoded), Some(value)));
+                            batch.push((decode_key(encoded), value));
                         }
                     }
-                    if visited == 32 {
+                    if visited == SCAN_WINDOW {
                         break;
                     }
                 }
@@ -575,8 +649,8 @@ impl View {
                 break;
             }
             let mut skip_next_resume = true;
-            if !hybrid && visited == 32 && !finished {
-                let (encoded, version) = key_parts(&next_resume, true)?;
+            if visited == SCAN_WINDOW && !finished {
+                let (encoded, version) = version_key_parts(&next_resume)?;
                 let prefix_len = encoded.len();
                 if seen.as_deref() == Some(encoded) {
                     // The visible value or tombstone is already selected.
@@ -597,19 +671,7 @@ impl View {
             resume = next_resume;
             skip_resume = skip_next_resume;
             for (key, value) in batch.drain(..) {
-                let visible = match value {
-                    Some(value) => Some(value),
-                    None => history_get(tree, &key, *epoch)?,
-                };
-                if let Some(value) = visible {
-                    if result.last().is_some_and(|(previous, _)| *previous >= key) {
-                        return Err(Error::Invalid("non-monotonic scan"));
-                    }
-                    result.push((key, value));
-                    if result.len() > MAX_SCAN_ROWS {
-                        return Err(Error::Budget("scan rows"));
-                    }
-                }
+                push_scan_row(&mut result, key, value)?;
             }
             if finished {
                 break;

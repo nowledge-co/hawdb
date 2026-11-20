@@ -89,8 +89,13 @@ pub(super) fn decode_value<D: ValueDecoder>(
                 let kind = temporal_value_kind(field).expect("checked temporal field");
                 let encoded = decode_len_body(bytes, &mut pos)?;
                 value = Some(
-                    hawdb_core::temporal::codec::decode_payload(kind, encoded)
-                        .map_err(|error| HawDBError::Storage(format!("WAL {error}")))?,
+                    hawdb_core::temporal::codec::decode_payload(kind, encoded).map_err(
+                        |error| {
+                            HawDBError::or_stop(&error, || {
+                                HawDBError::Storage(format!("WAL {error}"))
+                            })
+                        },
+                    )?,
                 );
             }
             (VALUE_FIELD_ELEMENT, WIRE_TYPE_LEN) => {

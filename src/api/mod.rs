@@ -114,6 +114,8 @@ mod branch_lifecycle;
 mod canonical_snapshot;
 mod concurrent;
 #[cfg(test)]
+pub(crate) use concurrent::set_commit_boundary_hook;
+#[cfg(test)]
 pub(crate) use concurrent::AutocommitMutationPhase;
 pub(crate) use concurrent::{
     ExclusiveDatabaseLease, PublishedConcurrentRead, SharedDatabaseGuard, SharedDatabaseOwner,

@@ -1098,9 +1098,11 @@ fn optimized_query_plan_for_pinned<S: crate::executor::ExecutionStore>(
             context.optimizer_search,
         )
         .map_err(|error| {
-            HawDBError::Execution(format!(
-                "optimizer search directive could not be honored: {error}"
-            ))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Execution(format!(
+                    "optimizer search directive could not be honored: {error}"
+                ))
+            })
         })?;
     let (physical_template, mut trace) = physical_root.into_parts();
     if binding_template_hit {

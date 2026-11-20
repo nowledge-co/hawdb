@@ -492,8 +492,11 @@ fn rebuild_cancellation_and_interruption_keep_the_old_projection_and_publish_not
     )
     .unwrap_err();
     assert!(error.to_string().contains("cancel"), "{error}");
-    // Cancellation keeps the existing execution-error kind, not a storage one.
-    assert!(matches!(error, HawDBError::Execution(_)), "{error:?}");
+    // Cancellation is the typed task stop, not a storage error.
+    assert!(
+        matches!(error, HawDBError::RuntimeTaskStopped(_)),
+        "{error:?}"
+    );
     assert!(!target.exists());
     assert!(stage_names(&root).is_empty());
 

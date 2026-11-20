@@ -133,13 +133,13 @@ impl ReadAdmission<'_> {
             ReadPermit::Governed(permit) => ReadMemoryFunding::Retained(
                 permit
                     .reserve_retained_memory(host_bytes)
-                    .map_err(|error| HawDBError::Execution(error.to_string()))?,
+                    .map_err(HawDBError::from_execution_error)?,
             ),
             ReadPermit::Synchronous(_) => ReadMemoryFunding::Scoped {
                 _working: self
                     .task
                     .reserve_working_memory(host_bytes)
-                    .map_err(|error| HawDBError::Execution(error.to_string()))?,
+                    .map_err(HawDBError::from_execution_error)?,
             },
         };
         Ok(ReaderMemory {
@@ -265,7 +265,9 @@ impl<'execution> ReadAdmission<'execution> {
         };
         self.with_read_scope(file, full_length, maximum, |reader| {
             output.value.try_reserve_exact(length).map_err(|error| {
-                HawDBError::Execution(format!("reader range allocation failed: {error}"))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!("reader range allocation failed: {error}"))
+                })
             })?;
             if output.value.capacity() > length {
                 return Err(HawDBError::Execution(
@@ -329,7 +331,9 @@ impl<'execution> ReadAdmission<'execution> {
         let file = self.visit_bound(path, expected_len, expected_checksum, maximum, |chunk| {
             if output.value.capacity() == 0 {
                 output.value.try_reserve_exact(length).map_err(|error| {
-                    HawDBError::Execution(format!("reader artifact allocation failed: {error}"))
+                    HawDBError::or_stop(&error, || {
+                        HawDBError::Execution(format!("reader artifact allocation failed: {error}"))
+                    })
                 })?;
                 if output.value.capacity() > length {
                     return Err(HawDBError::Execution(
@@ -436,9 +440,7 @@ impl<'execution> ReadAdmission<'execution> {
         maximum: u64,
     ) -> Result<hawdb_storage::file_io::File> {
         self.require_read_limit(expected_len, maximum)?;
-        let _io = self
-            .io()
-            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+        let _io = self.io().map_err(HawDBError::from_execution_error)?;
         let mut control = FileReadControl {
             admission: self,
             expected_len,
@@ -471,9 +473,7 @@ impl<'execution> ReadAdmission<'execution> {
         self.require_read_limit(expected_len, maximum)?;
         let _native = self.scratch(checked_add(native_path::bytes(path)?, 4096)?)?;
         let file = {
-            let _io = self
-                .io()
-                .map_err(|e| HawDBError::Execution(e.to_string()))?;
+            let _io = self.io().map_err(HawDBError::from_execution_error)?;
             File::open(path)?
         };
         #[cfg(test)]
@@ -493,9 +493,7 @@ impl<'execution> ReadAdmission<'execution> {
         operation: impl FnOnce(&mut hawdb_storage::file_io::AdmittedFileRead<'_>) -> Result<T>,
     ) -> Result<T> {
         self.require_read_limit(expected_len, maximum)?;
-        let _io = self
-            .io()
-            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+        let _io = self.io().map_err(HawDBError::from_execution_error)?;
         let mut control = FileReadControl {
             admission: self,
             expected_len,

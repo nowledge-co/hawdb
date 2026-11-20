@@ -68,7 +68,34 @@ pub(super) fn write_artifact(
     cleanup.0 = None;
     drop(wave);
     unit.finish();
-    work.checkpoint().map_err(work_error)
+    work.checkpoint().map_err(|error| match error.stop_reason() {
+        Some(reason) => AppendTableError::PublishOutcomeUnknown(Box::new(
+            hawdb_core::HawDBError::PublishOutcomeUnknown {
+                destination,
+                message: format!(
+                    "append candidate publication completed before the runtime task stopped: {reason}"
+                ),
+            },
+        )),
+        None => work_error(error),
+    })
+}
+
+pub(super) fn after_publication<T>(
+    result: Result<T, AppendTableError>,
+    destination: &Path,
+) -> Result<T, AppendTableError> {
+    result.map_err(|error| match error {
+        AppendTableError::Stopped(reason) => AppendTableError::PublishOutcomeUnknown(Box::new(
+            hawdb_core::HawDBError::PublishOutcomeUnknown {
+                destination: destination.to_path_buf(),
+                message: format!(
+                    "append candidate publication completed before the runtime task stopped: {reason}"
+                ),
+            },
+        )),
+        error => error,
+    })
 }
 
 struct TemporaryArtifact(Option<PathBuf>);

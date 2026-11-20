@@ -230,7 +230,7 @@ impl PublicationRegistration {
     ) -> Result<RootRef> {
         admission
             .checkpoint()
-            .map_err(|e| HawDBError::Execution(e.to_string()))?;
+            .map_err(HawDBError::RuntimeTaskStopped)?;
         if !self.with_directory(|directory| directory.shares_project_context(context)) {
             return Err(HawDBError::Storage(
                 "publication root belongs to another project descriptor domain".into(),
@@ -259,7 +259,7 @@ impl PublicationRegistration {
         });
         admission
             .checkpoint()
-            .map_err(|e| HawDBError::Execution(e.to_string()))?;
+            .map_err(HawDBError::RuntimeTaskStopped)?;
         // Only this exclusive publisher can promote its marker. A concurrent
         // RootRef acquisition refuses while its native-only marker is present.
         // Prepare the empty candidate's native guard before entering ROOTS.
@@ -407,9 +407,7 @@ impl RootRef {
         name: &str,
         admission: &ReadAdmission<'_>,
     ) -> Result<()> {
-        let _io = admission
-            .io()
-            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+        let _io = admission.io().map_err(HawDBError::from_execution_error)?;
         let file = {
             let native = self
                 .state()
@@ -453,9 +451,7 @@ impl RootRef {
         admission: &ReadAdmission<'_>,
     ) -> Result<File> {
         let file = {
-            let _io = admission
-                .io()
-                .map_err(|error| HawDBError::Execution(error.to_string()))?;
+            let _io = admission.io().map_err(HawDBError::from_execution_error)?;
             let native = self
                 .state()
                 .native
@@ -480,9 +476,7 @@ impl RootRef {
         let entry_memory =
             admission.retained(size_of::<Entry>() + 2 * size_of::<usize>() + pins::BASE_BYTES)?;
         let directory = {
-            let _io = admission
-                .io()
-                .map_err(|e| HawDBError::Execution(e.to_string()))?;
+            let _io = admission.io().map_err(HawDBError::from_execution_error)?;
             SourceDirectory::capture(root, context)?
         };
         let identity = directory.identity();
@@ -555,9 +549,7 @@ impl RootRef {
         #[cfg(test)]
         tests::hook(&tests::AFTER_INITIALIZING);
         {
-            let _io = admission
-                .io()
-                .map_err(|e| HawDBError::Execution(e.to_string()))?;
+            let _io = admission.io().map_err(HawDBError::from_execution_error)?;
             let mut native = owner
                 .state()
                 .native
@@ -582,7 +574,7 @@ impl RootRef {
         }
         admission
             .checkpoint()
-            .map_err(|e| HawDBError::Execution(e.to_string()))?;
+            .map_err(HawDBError::RuntimeTaskStopped)?;
         {
             let mut roots = registry();
             let entry = roots

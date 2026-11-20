@@ -3524,13 +3524,13 @@ fn collect_append_version_writes(
 fn record_live_version(writes: &mut VersionWriteSet, key: VersionKey) -> Result<()> {
     writes
         .record_live(key)
-        .map_err(|error| HawDBError::Execution(error.to_string()))
+        .map_err(HawDBError::from_execution_error)
 }
 
 fn record_tombstone_version(writes: &mut VersionWriteSet, key: VersionKey) -> Result<()> {
     writes
         .record_tombstone(key)
-        .map_err(|error| HawDBError::Execution(error.to_string()))
+        .map_err(HawDBError::from_execution_error)
 }
 
 fn map_relational_staging_error(error: RelationalError) -> HawDBError {
@@ -3538,6 +3538,7 @@ fn map_relational_staging_error(error: RelationalError) -> HawDBError {
         RelationalError::UnsupportedFormat(error) => HawDBError::UnsupportedStorageFormat(error),
         RelationalError::FileDescriptors(error) => HawDBError::FileDescriptors(error),
         RelationalError::Corruption(_) => HawDBError::StorageIntegrity(error.to_string()),
+        RelationalError::Stopped(reason) => HawDBError::RuntimeTaskStopped(reason),
         RelationalError::Admission(_)
         | RelationalError::Schema(_)
         | RelationalError::Constraint(_)
@@ -3547,6 +3548,10 @@ fn map_relational_staging_error(error: RelationalError) -> HawDBError {
 
 fn map_append_staging_error(error: hawdb_storage::append_table::AppendTableError) -> HawDBError {
     match error {
+        hawdb_storage::append_table::AppendTableError::Stopped(reason) => {
+            HawDBError::RuntimeTaskStopped(reason)
+        }
+        hawdb_storage::append_table::AppendTableError::PublishOutcomeUnknown(error) => *error,
         hawdb_storage::append_table::AppendTableError::SequenceExhausted {
             table,
             watermark,

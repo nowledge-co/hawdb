@@ -626,9 +626,11 @@ pub fn validate_wal_op_values(ops: &[WalOp]) -> Result<()> {
 
 fn validate_wal_value(value: &Value) -> Result<()> {
     crate::canonical::validate_property_value(value).map_err(|error| {
-        HawDBError::Storage(format!(
-            "WAL value violates canonical storage limits: {error}"
-        ))
+        HawDBError::or_stop(&error, || {
+            HawDBError::Storage(format!(
+                "WAL value violates canonical storage limits: {error}"
+            ))
+        })
     })
 }
 

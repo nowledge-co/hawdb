@@ -81,7 +81,7 @@ impl ConsumerReadSlot {
             .reserve(CONSUMER_REOPEN_MEMORY_BOUND as usize)?;
         let io = task
             .acquire_io_wave(std::num::NonZeroUsize::MIN)
-            .map_err(|error| HawDBError::Execution(error.to_string()))?
+            .map_err(HawDBError::from_execution_error)?
             .ok_or_else(|| invalid("Consumer reopen requires I/O admission"))?;
         let native = request.open(original_parent, &task)?;
         let directory = native.directory(&task)?;
@@ -106,9 +106,11 @@ impl ConsumerReadSlot {
             let _bytes_memory = memory.spool.reserve(length)?;
             let mut bytes = Vec::new();
             bytes.try_reserve_exact(length).map_err(|error| {
-                HawDBError::Execution(format!(
-                    "Consumer reopen metadata allocation failed: {error}"
-                ))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!(
+                        "Consumer reopen metadata allocation failed: {error}"
+                    ))
+                })
             })?;
             if bytes.capacity() > length {
                 return Err(invalid("Consumer reopen metadata exceeded admission"));
@@ -205,7 +207,7 @@ impl ConsumerReadSlot {
         }
         let io = task
             .acquire_io_wave(std::num::NonZeroUsize::MIN)
-            .map_err(|error| HawDBError::Execution(error.to_string()))?
+            .map_err(HawDBError::from_execution_error)?
             .ok_or_else(|| invalid("Consumer reopen requires final I/O admission"))?;
         native.require_current(&task)?;
         let slot = Self::restored(view, native.receipt(), &permit)?;
@@ -237,7 +239,9 @@ pub(super) fn verify_generation_contents(
     let _manifest_memory = memory.spool.reserve(length)?;
     let mut manifest = Vec::new();
     manifest.try_reserve_exact(length).map_err(|error| {
-        HawDBError::Execution(format!("Consumer manifest allocation failed: {error}"))
+        HawDBError::or_stop(&error, || {
+            HawDBError::Execution(format!("Consumer manifest allocation failed: {error}"))
+        })
     })?;
     if manifest.capacity() > length {
         return Err(invalid("Consumer manifest exceeds admission"));

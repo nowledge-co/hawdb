@@ -161,9 +161,9 @@ pub(super) fn primary_key_range_candidate(
             bound_value(&bounds.lower, prefix_len),
             bound_value(&bounds.upper, prefix_len),
         )
-        .map_err(|error| HawDBError::Execution(error.to_string()))?,
+        .map_err(HawDBError::from_execution_error)?,
         None => RelationalPrimaryKeyRange::from_prefix_bounds(prefix.clone(), None, None)
-            .map_err(|error| HawDBError::Execution(error.to_string()))?,
+            .map_err(HawDBError::from_execution_error)?,
     };
     let range_column = bounds.as_ref().map(|_| columns[prefix_len].as_str());
     // Row-page snapshots stream intervals forward only; a descending order

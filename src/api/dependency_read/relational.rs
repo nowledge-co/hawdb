@@ -53,7 +53,7 @@ pub(in crate::api) fn collect_transaction(
     let record = |dependencies: &mut GraphReadDependencies, key| {
         dependencies
             .record(key)
-            .map_err(|error| HawDBError::Execution(error.to_string()))
+            .map_err(HawDBError::from_execution_error)
     };
     match statement {
         SqlStatement::Select(select) if let Some(search) = select.text_search() => {
@@ -256,7 +256,7 @@ impl PreparedRead {
                 self.dependencies
                     .graph
                     .record(key)
-                    .map_err(|error| HawDBError::Execution(error.to_string()))?;
+                    .map_err(HawDBError::from_execution_error)?;
             }
             return self
                 .read
@@ -278,7 +278,7 @@ impl PreparedRead {
         self.dependencies
             .graph
             .record(key)
-            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+            .map_err(HawDBError::from_execution_error)?;
         self.read
             .query_sql_with_prepared_params(sql, parameters, prepared)
     }

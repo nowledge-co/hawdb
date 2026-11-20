@@ -442,7 +442,10 @@ fn checkpoint_units_relational_runtime_cancels_reconstruction_then_retries_compl
             probe.cancel_after.store(cancel_at, Ordering::SeqCst);
             let error = phase(&mut source.clone(), id, &probe.context(local.clone())).unwrap_err();
             assert!(
-                matches!(error,RelationalError::Admission(ref text) if text.contains("stopped")),
+                matches!(
+                    error,
+                    RelationalError::Stopped(hawdb_core::RuntimeCancellationReason::Cancelled)
+                ),
                 "{error:?}"
             );
             probe.assert_released(&local);

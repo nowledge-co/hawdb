@@ -277,9 +277,11 @@ pub struct RelationalRowPagePublicationReport {
     pub events: [RelationalRowPagePublicationPhase; 6],
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum RelationalRowPagePublicationError {
     Admission(String),
+    Stopped(hawdb_core::RuntimeCancellationReason),
+    PublishOutcomeUnknown(Box<hawdb_core::HawDBError>),
     Corrupt(String),
     Durability(String),
     FileDescriptors(hawdb_core::error::FileDescriptorError),
@@ -291,12 +293,39 @@ pub enum RelationalRowPagePublicationError {
     },
 }
 
+impl RelationalRowPagePublicationError {
+    fn from_admission(error: hawdb_core::HawDBError) -> Self {
+        match error {
+            hawdb_core::HawDBError::RuntimeTaskStopped(reason) => Self::Stopped(reason),
+            error => Self::Admission(error.to_string()),
+        }
+    }
+
+    fn from_relational(error: crate::relational::RelationalError) -> Self {
+        match error {
+            crate::relational::RelationalError::Stopped(reason) => Self::Stopped(reason),
+            error => Self::Admission(error.to_string()),
+        }
+    }
+
+    fn from_index_shadow(error: crate::relational::RelationalIndexShadowError) -> Self {
+        match error {
+            crate::relational::RelationalIndexShadowError::Stopped(reason) => Self::Stopped(reason),
+            error => Self::Admission(error.to_string()),
+        }
+    }
+}
+
 impl fmt::Display for RelationalRowPagePublicationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Admission(message) => {
                 write!(formatter, "relational row-page publication admission failed: {message}")
             }
+            Self::Stopped(reason) => {
+                write!(formatter, "relational row-page publication stopped: {reason}")
+            }
+            Self::PublishOutcomeUnknown(error) => fmt::Display::fmt(error, formatter),
             Self::Corrupt(message) => {
                 write!(formatter, "corrupt relational row-page publication: {message}")
             }
@@ -322,6 +351,8 @@ impl fmt::Display for RelationalRowPagePublicationError {
 impl std::error::Error for RelationalRowPagePublicationError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Stopped(reason) => Some(reason),
+            Self::PublishOutcomeUnknown(error) => Some(error.as_ref()),
             Self::FileDescriptors(error) => Some(error),
             Self::UnsupportedFormat(error) => Some(error),
             _ => None,
@@ -333,6 +364,7 @@ impl From<RelationalRowPageError> for RelationalRowPagePublicationError {
     fn from(error: RelationalRowPageError) -> Self {
         match error {
             RelationalRowPageError::Admission(message) => Self::Admission(message),
+            RelationalRowPageError::Stopped(reason) => Self::Stopped(reason),
             RelationalRowPageError::Corrupt(message) => Self::Corrupt(message),
         }
     }

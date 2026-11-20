@@ -336,7 +336,7 @@ fn graph_handler_cancellation_from_consumer_releases_memory() {
         assert_eq!(calls, 1);
         assert_eq!(
             result.unwrap_err(),
-            HawDBError::Execution("runtime task stopped: cancelled".to_string())
+            HawDBError::RuntimeTaskStopped(hawdb_core::RuntimeCancellationReason::Cancelled)
         );
     }
 }
