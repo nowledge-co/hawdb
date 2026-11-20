@@ -1715,6 +1715,25 @@ that pin the resident projection are:
 Other graph and relational reads do not pin it. Neither do out-of-core
 projections, whose buffers are part of the read's own admission.
 
+Out-of-core construction has two different typed refusals:
+
+- `RuntimeIoWaveReservationExceeded { requested_slots, reserved_slots }`
+  means the task requested more concurrent I/O than its successful admission
+  reserved. This is a permanent request/permit mismatch, not a busy governor:
+  admitted callers wait when another wave temporarily holds their slots.
+  Retrying the same task unchanged cannot succeed. Python reports an
+  `ExecutionError` with `kind="runtime_io_wave_reservation_exceeded"`, both
+  slot counts and `retryable=false`; the C ABI uses the same kind.
+- A mutation-run closure that cannot fit
+  `SearchOutOfCoreConfig.max_mutation_working_bytes` returns
+  `ResourceBudgetExceeded` with resource `memory_bytes`, scope `operator`,
+  owner `search mutation-run reader`, and that option as `budget_option`.
+  Reduce the closure or raise the configured bound; retrying it unchanged
+  cannot fit. The diagnostic text remains unchanged.
+
+Both refusals happen before publication, are non-poisoning, and must not be
+classified as storage corruption or transient runtime saturation.
+
 ## Relationship Locality
 
 The current in-memory adjacency key is:

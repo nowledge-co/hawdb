@@ -703,6 +703,7 @@ fn error_class(error: &crate::HawDBError) -> String {
         | crate::HawDBError::ReadBudgetExceeded(_)
         | crate::HawDBError::WalRecordLimitExceeded(_)
         | crate::HawDBError::RuntimeAdmissionRefused(_)
+        | crate::HawDBError::RuntimeIoWaveReservationExceeded { .. }
         | crate::HawDBError::RuntimeTaskStopped(_)
         | crate::HawDBError::ReadOnly { .. }
         | crate::HawDBError::ResourceBudgetExceeded(_)

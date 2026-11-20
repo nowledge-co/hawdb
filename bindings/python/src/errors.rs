@@ -329,6 +329,20 @@ pub fn format_hawdb_error(error: &HawDBError) -> PyErr {
             })();
             attributes.err().unwrap_or(exception)
         }),
+        HawDBError::RuntimeIoWaveReservationExceeded {
+            requested_slots,
+            reserved_slots,
+        } => Python::attach(|py| {
+            let exception = ExecutionError::new_err(message);
+            let value = exception.value(py);
+            let attributes = (|| -> PyResult<()> {
+                value.setattr("kind", "runtime_io_wave_reservation_exceeded")?;
+                value.setattr("requested_slots", *requested_slots)?;
+                value.setattr("reserved_slots", *reserved_slots)?;
+                value.setattr("retryable", false)
+            })();
+            attributes.err().unwrap_or(exception)
+        }),
         HawDBError::Execution(_) => Python::attach(|py| {
             let exception = ExecutionError::new_err(message);
             let attributes = exception
@@ -885,6 +899,33 @@ mod tests {
             assert_eq!(text("code"), "memory_saturated");
             assert_eq!((number("requested"), number("available")), (4096, 0));
             assert!(value
+                .getattr("retryable")
+                .unwrap()
+                .extract::<bool>()
+                .unwrap());
+        });
+    }
+
+    #[test]
+    fn io_wave_reservation_refusal_is_a_non_retryable_execution_error() {
+        Python::initialize();
+        Python::attach(|py| {
+            let error = HawDBError::RuntimeIoWaveReservationExceeded {
+                requested_slots: 2,
+                reserved_slots: 1,
+            };
+            let exception = format_hawdb_error(&error);
+            assert!(exception.is_instance_of::<ExecutionError>(py));
+            assert!(!exception.is_instance_of::<StorageError>(py));
+            let value = exception.value(py);
+            let text = |name: &str| value.getattr(name).unwrap().extract::<String>().unwrap();
+            let number = |name: &str| value.getattr(name).unwrap().extract::<usize>().unwrap();
+            assert_eq!(text("kind"), "runtime_io_wave_reservation_exceeded");
+            assert_eq!(
+                (number("requested_slots"), number("reserved_slots")),
+                (2, 1)
+            );
+            assert!(!value
                 .getattr("retryable")
                 .unwrap()
                 .extract::<bool>()

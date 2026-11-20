@@ -394,6 +394,7 @@ pub struct SearchOutOfCoreConfig {
     /// Caller-selected encoded size bound for one mutation-run artifact.
     pub max_mutation_run_bytes: NonZeroU64,
     /// Aggregate mutation-run buffers, decoded ownership and validation indexes.
+    /// A refusal is typed `ResourceBudgetExceeded` and names this option.
     /// Content artifacts and one-target hydration/analysis use their own limits.
     pub max_mutation_working_bytes: NonZeroU64,
     /// Total transient memory available for exact old-version reanalysis.
@@ -8994,7 +8995,12 @@ mod tests {
         install_delete_mutation_run(&path, &document, 0, 2);
         let error = SearchOutOfCoreReader::open_with_config(&path, config).unwrap_err();
         assert!(
-            error.to_string().contains("mutation-run working set"),
+            matches!(&error, HawDBError::ResourceBudgetExceeded(cause)
+                if cause.resource == hawdb_core::ResourceBudgetKind::MemoryBytes
+                    && cause.scope == hawdb_core::ResourceBudgetScope::Operator
+                    && cause.owner == "search mutation-run reader"
+                    && cause.budget == 1
+                    && cause.budget_option == "SearchOutOfCoreConfig.max_mutation_working_bytes"),
             "{error}"
         );
         fs::remove_dir_all(path).unwrap();

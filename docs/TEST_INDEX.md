@@ -175,6 +175,23 @@ Replay with `cargo test --locked -p hawdb --lib out_of_core_working_memory`
 and `cargo test --locked -p hawdb-search --lib admitted_working`. No new lane,
 profile or timeout.
 
+Out-of-core reader refusal typing (`nowledge-co/hawdb#1842`) stays in the
+existing core, search and binding owners. `runtime_io_wave_tests` in
+`//crates/core:hawdb_core_tests` proves direct and `io::Error`-wrapped I/O-wave
+reservation refusals remain typed while stops remain `RuntimeTaskStopped`.
+`build_memory::read::tests::borrowed_reader_refuses_an_unbound_task_before_range_allocation_or_io`,
+its vector-reader companion, and
+`out_of_core::admitted_root::tests::admitted_root_preserves_io_wave_reservation_refusal`
+in `//crates/search:hawdb_search_tests` force the 1/0-slot mismatch before
+native work. `mutation_working_budget_rejects_combined_runs_before_second_decode`
+and `out_of_core_mutation_working_budget_is_enforced_only_for_mutation_closures`
+assert the complete `ResourceBudgetExceeded` identity for
+`max_mutation_working_bytes`. The existing Python/FFI error-test targets check
+their public kinds and fields. Replay with `cargo test --locked -p hawdb-core
+runtime_io_wave_tests`, `cargo test --locked -p hawdb-search --all-features
+io_wave_reservation`, and the binding error-test commands; no fixture, lane,
+profile, timeout or retry changes.
+
 The same Mem query owner also covers PR 1504 review optimizations: invariant
 regexp_replace validation on empty scans, cache rebinding across pattern and
 replacement values (including an invalid-pattern failure), row-dependent patterns,
