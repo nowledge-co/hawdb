@@ -52,6 +52,17 @@ pub(crate) fn encode_relational_table_schema_with_work_context(
     Ok(encoder.finish())
 }
 
+pub(crate) fn encode_legacy_relational_table_schema_with_work_context(
+    schema: &RelationalTableSchema,
+    work: &CheckpointWorkContext,
+) -> Result<Vec<u8>, RelationalError> {
+    validate_table_schema_with_work_context(schema, work)?;
+    let mut encoder = Encoder::default();
+    table_schema_with_work_context_inner(&mut encoder, schema, work, false)?;
+    work.checkpoint().map_err(work_error)?;
+    Ok(encoder.finish())
+}
+
 pub(crate) fn validate_relational_table_schema_codec_shape_with_work_context(
     schema: &RelationalTableSchema,
     max_schema_items: usize,
@@ -201,6 +212,15 @@ fn table_schema_with_work_context(
     schema: &RelationalTableSchema,
     work: &CheckpointWorkContext,
 ) -> Result<(), RelationalError> {
+    table_schema_with_work_context_inner(encoder, schema, work, true)
+}
+
+fn table_schema_with_work_context_inner(
+    encoder: &mut Encoder,
+    schema: &RelationalTableSchema,
+    work: &CheckpointWorkContext,
+    index_predicates: bool,
+) -> Result<(), RelationalError> {
     struct Controlled<'a> {
         encoder: &'a mut Encoder,
         work: &'a CheckpointWorkContext,
@@ -218,7 +238,12 @@ fn table_schema_with_work_context(
             encode_value_with_work_context(self.encoder, value, self.work)
         }
     }
-    schema_encoding::schema(&mut Controlled { encoder, work }, schema.into())
+    let mut controlled = Controlled { encoder, work };
+    if index_predicates {
+        schema_encoding::schema(&mut controlled, schema.into())
+    } else {
+        schema_encoding::legacy_schema(&mut controlled, schema.into())
+    }
 }
 
 /// Values examined by one reachability unit; each is a constant-time tag test.

@@ -87,8 +87,10 @@ pub(in crate::relational) fn relational_schema_digest_with_work_context(
         output.bytes(index.name.as_bytes())?;
         output.strings(&index.columns)?;
         output.update(&[u8::from(index.unique)])?;
-        output.update(&[u8::from(index.predicate.is_some())])?;
         if let Some(predicate) = &index.predicate {
+            // Full-index schemas retain their legacy durable digest. Partial
+            // indexes append an explicit marker and their predicate identity.
+            output.update(&[1])?;
             output.predicate(predicate)?;
         }
     }

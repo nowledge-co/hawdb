@@ -2541,8 +2541,11 @@ pub(super) fn relational_schema_digest(
         encode_bytes(&mut encoded, index.name.as_bytes())?;
         encode_string_list(&mut encoded, &index.columns)?;
         encoded.push(u8::from(index.unique));
-        encoded.push(u8::from(index.predicate.is_some()));
         if let Some(predicate) = &index.predicate {
+            // Preserve the pre-partial-index digest byte-for-byte for schemas
+            // containing only full indexes. This lets legacy row-page and
+            // bound index generations verify against the same schema identity.
+            encoded.push(1);
             encode_index_predicate(&mut encoded, predicate)?;
         }
     }

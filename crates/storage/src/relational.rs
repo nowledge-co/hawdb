@@ -8853,7 +8853,7 @@ fn predicate_truth(
     }
 }
 
-fn index_includes_row(
+pub(crate) fn index_includes_row(
     schema: &RelationalTableSchema,
     index: &RelationalIndexDefinition,
     row: &RelationalRow,

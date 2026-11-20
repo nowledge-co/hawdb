@@ -173,6 +173,21 @@ fn action(value: RelationalReferentialAction) -> u8 {
 }
 
 pub(crate) fn schema(sink: &mut impl Sink, schema: Schema<'_>) -> Result<(), RelationalError> {
+    schema_with_index_predicates(sink, schema, true)
+}
+
+pub(crate) fn legacy_schema(
+    sink: &mut impl Sink,
+    schema: Schema<'_>,
+) -> Result<(), RelationalError> {
+    schema_with_index_predicates(sink, schema, false)
+}
+
+fn schema_with_index_predicates(
+    sink: &mut impl Sink,
+    schema: Schema<'_>,
+    index_predicates: bool,
+) -> Result<(), RelationalError> {
     bytes(sink, schema.name.as_bytes())?;
     count(sink, schema.columns.len(), "table columns")?;
     for column in schema.columns {
@@ -230,9 +245,15 @@ pub(crate) fn schema(sink: &mut impl Sink, schema: Schema<'_>) -> Result<(), Rel
         bytes(sink, index.name.as_bytes())?;
         strings(sink, &index.columns)?;
         sink.raw(&[u8::from(index.unique)])?;
-        sink.raw(&[u8::from(index.predicate.is_some())])?;
-        if let Some(index_predicate) = &index.predicate {
-            predicate(sink, index_predicate)?;
+        if index_predicates {
+            sink.raw(&[u8::from(index.predicate.is_some())])?;
+            if let Some(index_predicate) = &index.predicate {
+                predicate(sink, index_predicate)?;
+            }
+        } else if index.predicate.is_some() {
+            return Err(RelationalError::Schema(
+                "legacy relational schema cannot encode a partial index".into(),
+            ));
         }
     }
     materialized_view(sink, schema.materialized_view)

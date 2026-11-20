@@ -614,7 +614,7 @@ fn bind_foreign_keys(schema: &mut RelationalTableSchema, state: &RelationalState
                 parent
                     .indexes
                     .iter()
-                    .filter(|index| index.unique)
+                    .filter(|index| index.unique && index.predicate.is_none())
                     .map(|index| &index.columns),
             )
             .find(|columns| {

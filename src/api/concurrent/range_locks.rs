@@ -134,11 +134,16 @@ fn inequality_on(predicate: &RelationalPredicate, column: &str) -> bool {
 
 fn key_columns(schema: &RelationalTableSchema) -> Vec<Vec<String>> {
     let mut columns = vec![schema.primary_key.clone()];
-    for key in schema
-        .unique_constraints
-        .iter()
-        .chain(schema.indexes.iter().map(|index| &index.columns))
-    {
+    for key in schema.unique_constraints.iter().chain(
+        schema
+            .indexes
+            .iter()
+            // Partial indexes do not cover excluded rows. A key range on
+            // them would therefore fail to protect the full mutation
+            // domain selected by a query that does not prove membership.
+            .filter(|index| index.predicate.is_none())
+            .map(|index| &index.columns),
+    ) {
         if !columns.contains(key) {
             columns.push(key.clone());
         }

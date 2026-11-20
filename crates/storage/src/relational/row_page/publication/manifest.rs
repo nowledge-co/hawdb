@@ -44,7 +44,14 @@ const ARTIFACT_METADATA_BYTES: usize = 44;
 pub(super) fn root_set_digest(
     tables: &[RelationalRowPageTableRoot],
 ) -> Result<Sha256Digest, RelationalRowPagePublicationError> {
-    let payload = encode_tables(tables, None)?;
+    root_set_digest_inner(tables, false)
+}
+
+fn root_set_digest_inner(
+    tables: &[RelationalRowPageTableRoot],
+    legacy_schema: bool,
+) -> Result<Sha256Digest, RelationalRowPagePublicationError> {
+    let payload = encode_tables(tables, None, legacy_schema)?;
     let mut hasher = IntegrityHasher::new();
     hasher.update(&payload);
     Ok(hasher.finish().sha256)
@@ -62,8 +69,8 @@ fn encode_manifest_inner(
     config: RelationalRowPagePublicationConfig,
     work: Option<&crate::background::CheckpointWorkContext>,
 ) -> Result<Vec<u8>, RelationalRowPagePublicationError> {
-    validate_manifest_inner(manifest, config, ErrorClass::Admission, work)?;
-    let mut payload = encode_tables(&manifest.tables, work)?;
+    validate_manifest_inner(manifest, config, ErrorClass::Admission, work, false)?;
+    let mut payload = encode_tables(&manifest.tables, work, false)?;
     let unit = start_unit(work)?;
     let occupancy_bytes = manifest
         .physical_generations
@@ -478,7 +485,7 @@ fn decode_manifest_inner(
         tables,
         physical_generations,
     };
-    validate_manifest_inner(&manifest, config, ErrorClass::Corrupt, work)?;
+    validate_manifest_inner(&manifest, config, ErrorClass::Corrupt, work, legacy_v2)?;
     if let Some(work) = work {
         work.checkpoint()
             .map_err(super::root::checkpoint::work_error)?;
@@ -511,6 +518,7 @@ fn validate_manifest_inner(
     config: RelationalRowPagePublicationConfig,
     class: ErrorClass,
     work: Option<&crate::background::CheckpointWorkContext>,
+    legacy_schema: bool,
 ) -> Result<(), RelationalRowPagePublicationError> {
     let unit = start_unit(work)?;
     let fail = |message| class.error(message);
@@ -741,9 +749,13 @@ fn validate_manifest_inner(
             manifest.root_page_count
         )));
     }
-    let digest = match work {
-        Some(work) => root_set_digest_with_work_context(&manifest.tables, work)?,
-        None => root_set_digest(&manifest.tables)?,
+    let digest = match (work, legacy_schema) {
+        (Some(work), true) => {
+            checkpoint::legacy_root_set_digest_with_work_context(&manifest.tables, work)?
+        }
+        (Some(work), false) => root_set_digest_with_work_context(&manifest.tables, work)?,
+        (None, true) => root_set_digest_inner(&manifest.tables, true)?,
+        (None, false) => root_set_digest(&manifest.tables)?,
     };
     if digest != manifest.root_set_digest {
         return Err(fail("row-page root-set digest mismatch".to_string()));
@@ -826,18 +838,30 @@ fn validate_occupancy(
 fn encode_tables(
     tables: &[RelationalRowPageTableRoot],
     work: Option<&crate::background::CheckpointWorkContext>,
+    legacy_schema: bool,
 ) -> Result<Vec<u8>, RelationalRowPagePublicationError> {
     let mut encoded = Vec::new();
     for table in tables {
         encode_raw_bytes(table.table.as_bytes(), &mut encoded, work)?;
-        let schema = match work {
-            Some(work) => {
+        let schema = match (work, legacy_schema) {
+            (Some(work), true) => {
+                crate::relational::codec::encode_legacy_relational_table_schema_with_work_context(
+                    &table.schema,
+                    work,
+                )
+            }
+            (Some(work), false) => {
                 crate::relational::codec::encode_relational_table_schema_with_work_context(
                     &table.schema,
                     work,
                 )
             }
-            None => crate::relational::codec::encode_relational_table_schema(&table.schema),
+            (None, true) => {
+                crate::relational::codec::encode_legacy_relational_table_schema(&table.schema)
+            }
+            (None, false) => {
+                crate::relational::codec::encode_relational_table_schema(&table.schema)
+            }
         }
         .map_err(map_schema_encode_error)?;
         encode_raw_bytes(&schema, &mut encoded, work)?;

@@ -21,6 +21,13 @@ pub(super) fn prefix_key(
         if descriptors > 1024 || metadata > MAX_INPUT_BYTES {
             return Ok(None);
         }
+        // A key prefix does not describe the whole logical key domain of a
+        // partial index. Until dependency extraction proves that the query
+        // predicate implies the index predicate, retain the table-level read
+        // stamp so changes to excluded rows cannot escape validation.
+        if index.predicate.is_some() {
+            continue;
+        }
         if index.columns.is_empty() || index.columns.len() > MAX_KEY_COLUMNS {
             continue;
         }

@@ -411,6 +411,14 @@ flat arithmetic and cast chains cannot bypass the height limit.
 These compatibility results do not resolve the throughput, heap, rendered-error,
 or end-to-end performance gates described above.
 
+`frontend_main_1872_partial_index_peg_baseline_v1.jsonl` records 15
+source-bound SQL transitions from main
+`058085fa2d67cad32cdb47116226e7a0bf5a545d`: 14 previously accepted
+`CREATE INDEX` statements acquire the distinct empty `predicate` AST field,
+and one statement changes from semantic rejection to an accepted PostgreSQL
+partial-index `WHERE` clause. Earlier frontend fixtures remain immutable, and
+each replacement asserts the prior outcome before accepting the new one.
+
 `frontend_main_1514_numeric_alias_peg_baseline_v1.jsonl` adds 1,005 independent
 main outcomes across SELECT, INSERT, UPDATE, DELETE, and column defaults. It
 covers integer aliases, FLOAT precision, signed scale modifiers with comments,

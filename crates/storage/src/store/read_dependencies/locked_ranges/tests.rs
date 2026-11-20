@@ -4,8 +4,9 @@
 use super::*;
 use crate::mutation::MutationLimits;
 use crate::relational::{
-    RelationalColumnSchema, RelationalIndexSchema, RelationalInsertMode, RelationalRow,
-    RelationalTableSchema, RelationalTransaction, RelationalWrite,
+    RelationalColumnSchema, RelationalComparisonOp, RelationalIndexSchema, RelationalInsertMode,
+    RelationalPredicate, RelationalRow, RelationalTableSchema, RelationalTransaction,
+    RelationalWrite,
 };
 use crate::transaction_locks::LockMode;
 use std::ops::RangeBounds;
@@ -129,6 +130,78 @@ fn bounded_primary_and_secondary_versions_match_an_interval_oracle() {
             }
         }
     }
+}
+
+#[test]
+fn secondary_range_validation_ignores_a_partial_index_declared_first() {
+    let mut store = GraphStore::default();
+    let mut catalog = Catalog::default();
+    store
+        .commit_relational_transaction(
+            &mut catalog,
+            RelationalTransaction {
+                writes: vec![RelationalWrite::CreateTable(RelationalTableSchema {
+                    materialized_view: None,
+                    name: "rows".into(),
+                    columns: ["id", "group", "value"]
+                        .into_iter()
+                        .map(|name| RelationalColumnSchema {
+                            name: name.into(),
+                            scalar_type: RelationalScalarType::BigInt,
+                            nullable: false,
+                            default: None,
+                        })
+                        .collect(),
+                    primary_key: vec!["id".into()],
+                    unique_constraints: vec![],
+                    foreign_keys: vec![],
+                    indexes: vec![
+                        RelationalIndexSchema {
+                            name: "active_by_group".into(),
+                            columns: vec!["group".into(), "id".into()],
+                            unique: false,
+                            predicate: Some(RelationalPredicate::Compare {
+                                column: "value".into(),
+                                op: RelationalComparisonOp::Gt,
+                                value: RelationalValue::BigInt(0),
+                            }),
+                        },
+                        RelationalIndexSchema {
+                            name: "all_by_group".into(),
+                            columns: vec!["group".into(), "id".into()],
+                            unique: false,
+                            predicate: None,
+                        },
+                    ],
+                })],
+            },
+        )
+        .unwrap();
+    insert(&mut store, &mut catalog, 1, 4);
+    let captured = store.capture_read_dependencies(0, 0).unwrap();
+    store
+        .commit_relational_transaction(
+            &mut catalog,
+            RelationalTransaction {
+                writes: vec![RelationalWrite::DeleteByPrimaryKey {
+                    table: "rows".into(),
+                    keys: vec![key(&[1])],
+                }],
+            },
+        )
+        .unwrap();
+
+    assert!(matches!(
+        store.validate_locked_snapshot(
+            &captured,
+            &[range(
+                true,
+                Bound::Included(key(&[4, 1])),
+                Bound::Included(key(&[4, 1])),
+            )],
+        ),
+        Err(GraphReadDependencyError::Conflict(_))
+    ));
 }
 
 #[test]

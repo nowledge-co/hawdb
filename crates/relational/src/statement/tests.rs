@@ -165,6 +165,75 @@ fn partial_index_compilation_binds_a_deterministic_row_predicate() {
 }
 
 #[test]
+fn foreign_key_binding_ignores_partial_unique_indexes() {
+    let state = RelationalState::default()
+        .stage_transaction(
+            RelationalTransaction {
+                writes: vec![RelationalWrite::CreateTable(RelationalTableSchema {
+                    materialized_view: None,
+                    name: "parents".into(),
+                    columns: vec![
+                        RelationalColumnSchema {
+                            name: "id".into(),
+                            scalar_type: RelationalScalarType::BigInt,
+                            nullable: false,
+                            default: None,
+                        },
+                        RelationalColumnSchema {
+                            name: "a".into(),
+                            scalar_type: RelationalScalarType::BigInt,
+                            nullable: false,
+                            default: None,
+                        },
+                        RelationalColumnSchema {
+                            name: "b".into(),
+                            scalar_type: RelationalScalarType::BigInt,
+                            nullable: false,
+                            default: None,
+                        },
+                    ],
+                    primary_key: vec!["id".into()],
+                    unique_constraints: Vec::new(),
+                    foreign_keys: Vec::new(),
+                    indexes: vec![
+                        RelationalIndexSchema {
+                            name: "partial_b_a".into(),
+                            columns: vec!["b".into(), "a".into()],
+                            unique: true,
+                            predicate: Some(RelationalPredicate::Compare {
+                                column: "id".into(),
+                                op: RelationalComparisonOp::Gt,
+                                value: RelationalValue::BigInt(0),
+                            }),
+                        },
+                        RelationalIndexSchema {
+                            name: "full_a_b".into(),
+                            columns: vec!["a".into(), "b".into()],
+                            unique: true,
+                            predicate: None,
+                        },
+                    ],
+                })],
+            },
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap();
+
+    let transaction = compile_relational_statement_sql(
+        "CREATE TABLE children (id BIGINT PRIMARY KEY, x BIGINT NOT NULL, y BIGINT NOT NULL, FOREIGN KEY (x, y) REFERENCES parents (a, b))",
+        &[],
+        &state,
+    )
+    .unwrap();
+    let [RelationalWrite::CreateTable(schema)] = transaction.writes.as_slice() else {
+        panic!("expected child table")
+    };
+    assert_eq!(schema.foreign_keys[0].columns, ["x", "y"]);
+    assert_eq!(schema.foreign_keys[0].referenced_columns, ["a", "b"]);
+}
+
+#[test]
 fn returning_and_scalar_binding_stay_compilation_only() {
     let state = state();
     let id = hawdb_core::Uuid::parse_str("018f4e6a-7c1b-7cc8-8f4d-1234567890ab").unwrap();

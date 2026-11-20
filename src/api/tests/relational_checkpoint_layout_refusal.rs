@@ -37,6 +37,12 @@ const ROW_ROOT_FIXTURE: &[u8] =
 const SHADOW_INDEX_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/row_root_shadow_index_checkpoint.bundle.zst");
 
+/// Written by the same v2 writer at `17499379f`, but with the declared
+/// secondary index `docs_body_idx`. This pins the legacy full-index schema
+/// digest shared by the row root and its bound index generation.
+const NAMED_SHADOW_INDEX_FIXTURE: &[u8] =
+    include_bytes!("../../../tests/fixtures/row_root_shadow_named_index_v2.bundle.zst");
+
 /// Every durable file below `root`. Lock files and each branch's disposable
 /// `runtime/` mount, which writable admission rebuilds from the sealed head
 /// before it loads the checkpoint, are not database content.
@@ -191,4 +197,56 @@ fn newer_row_root_layout_with_index_generation_opens_out_of_core_authoritative()
         "{error:?}"
     );
     std::fs::remove_dir_all(&path).unwrap();
+}
+
+#[test]
+fn v2_row_root_with_named_index_reopens_read_only_and_writable() {
+    let bundle = zstd::decode_all(NAMED_SHADOW_INDEX_FIXTURE).unwrap();
+    let config = |read_only: bool| DatabaseConfig {
+        storage_residency_mode: StorageResidencyMode::OutOfCore,
+        relational_index_mode: RelationalIndexMode::Authoritative,
+        read_only,
+        recovery_mode: if read_only {
+            crate::RecoveryMode::Strict
+        } else {
+            crate::RecoveryMode::default()
+        },
+        ..DatabaseConfig::default()
+    };
+    let path = unique_test_dir("relational_checkpoint_v2_named_index");
+    super::property_defaults::unpack_fixture(&bundle, &path);
+
+    {
+        let mut db = Database::open_with_config(&path, config(true)).unwrap();
+        let schema = db
+            .runtime
+            .get()
+            .unwrap()
+            .store
+            .relational_state()
+            .table_schema("docs")
+            .unwrap()
+            .clone();
+        assert!(schema.indexes.iter().any(|index| {
+            index.name == "docs_body_idx" && index.columns == ["body"] && index.predicate.is_none()
+        }));
+        let rows = db
+            .query_sql("SELECT id FROM docs WHERE body = 'body 7'")
+            .unwrap();
+        assert_eq!(rows.rows[0]["id"], Value::Int(7));
+    }
+    {
+        let mut db = Database::open_with_config(&path, config(false)).unwrap();
+        db.query_sql("INSERT INTO docs (id, body) VALUES (20, 'body 20')")
+            .unwrap();
+        db.checkpoint().unwrap();
+    }
+    {
+        let mut db = Database::open_with_config(&path, config(false)).unwrap();
+        let rows = db
+            .query_sql("SELECT id FROM docs WHERE body = 'body 20'")
+            .unwrap();
+        assert_eq!(rows.rows[0]["id"], Value::Int(20));
+    }
+    std::fs::remove_dir_all(path).unwrap();
 }
