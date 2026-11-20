@@ -207,6 +207,8 @@ mod candidate_facade_tests;
 mod exact_candidate_tests;
 #[cfg(test)]
 mod out_of_core_working_memory_tests;
+#[cfg(test)]
+mod projection_id_page_tests;
 
 #[cfg(test)]
 mod runtime_status_facade_tests {

@@ -14,6 +14,10 @@
 
 mod projection_scan;
 pub use projection_scan::{SearchProjectionScanBudget, SearchProjectionScanReport};
+mod projection_id_page;
+pub use projection_id_page::{
+    SearchProjectionIdBatch, SearchProjectionIdPage, SearchProjectionPageGeneration,
+};
 #[doc(hidden)]
 pub mod candidate_evidence;
 #[doc(hidden)]

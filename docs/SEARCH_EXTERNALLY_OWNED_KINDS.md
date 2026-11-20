@@ -121,6 +121,67 @@ Epochs only grow within an incarnation. Incarnations are immutable and never
 copied to a rebuilt directory, so an old acknowledgement cannot match a new
 projection even when both epochs are 1.
 
+## Re-push and extra-document reconciliation
+
+After observing a rows-required token, the host first re-pushes the current
+rows from its authoritative source. It can then enumerate only the kinds it
+owns through the ID-only page API:
+
+```rust
+let mut possible_extras = Vec::new();
+
+'restart: loop {
+    let mut after = None;
+    let mut generation = None;
+    possible_extras.clear();
+    loop {
+        let page = handle.list_search_projection_ids(
+            &owned_kinds,
+            after.as_deref(),
+            1_024,
+            &task_context,
+        )?;
+        if generation.is_some_and(|expected| expected != page.generation()) {
+            continue 'restart;
+        }
+        generation.get_or_insert(page.generation());
+
+        for document_id in page.ids() {
+            if !authoritative_source_contains(document_id)? {
+                possible_extras.push(document_id.clone());
+            }
+        }
+        let Some(next) = page.next() else { break };
+        after = Some(next.to_string());
+    }
+    break;
+}
+```
+
+`after` is exclusive and IDs are ordered. Each page retains only its own ID
+and cursor bytes; it does not retain a resident generation or an out-of-core
+reader after the page call. The generation token is process-local and must be
+compared on every page, not persisted. If it changes, the host discards all
+candidate extras from that round and restarts from the beginning. Out-of-core
+listing decodes the lexical ID mapping and never reads document, metadata or
+embedding payloads.
+
+Absence from the rows pushed in this round is **not** deletion evidence. A host
+write may occur during the round, and deleting every ID that was merely “not
+pushed” would remove that concurrent write. `possible_extras` above are only
+candidates: after one complete, single-generation enumeration, the host must
+check each candidate against its authoritative source again at the deletion
+boundary (serialized with source writes, or in the same host transaction) and
+delete only IDs whose source row is still absent. Deletion happens after the
+enumeration, because deleting while paging would itself change the generation.
+For a very large candidate set the host may spool IDs to its own bounded
+temporary storage; HawDB pages remain bounded.
+
+Only after re-push, stable enumeration, authoritative rechecks and deletion
+does the host acknowledge the rows-required token. A concurrent rebuild may
+raise a newer token; the typed acknowledgement then returns `false`, and the
+host repeats the entire procedure for the new token.
+
 ## Unreadable records
 
 A record that cannot be parsed returns the typed
