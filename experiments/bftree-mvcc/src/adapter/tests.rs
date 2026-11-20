@@ -662,6 +662,36 @@ fn read_and_write_snapshot_leases_are_registered_until_drop() {
 }
 
 #[test]
+fn hybrid_scan_resumes_after_a_head_before_its_binary_extensions() {
+    let dir = tempdir().unwrap();
+    let store = Store::open(&dir.path().join("journal")).unwrap();
+    let mut seed = store.begin_write().unwrap();
+    let mut expected: Rows = (0..32).map(|key| (vec![key], vec![key])).collect();
+    expected.extend([(vec![31, 0], Vec::new()), (vec![31, 0, 0], vec![1])]);
+    for (key, value) in &expected {
+        seed.put(key, value).unwrap();
+    }
+    seed.put(&[32], b"exclusive").unwrap();
+    seed.commit(1).unwrap();
+    let old = store.begin_read().unwrap();
+
+    let mut update = store.begin_write().unwrap();
+    update.put(&[0], b"new").unwrap();
+    // The tombstone is still the 32nd physical head. Its zero-byte
+    // extensions must be visible in the next cursor window.
+    update.delete(&[31]).unwrap();
+    update.put(&[31, 1], b"inserted").unwrap();
+    update.commit(2).unwrap();
+
+    assert_eq!(old.scan(&[], &[32]).unwrap(), expected);
+    let current = store.begin_read().unwrap();
+    expected[0].1 = b"new".to_vec();
+    expected.remove(31);
+    expected.push((vec![31, 1], b"inserted".to_vec()));
+    assert_eq!(current.scan(&[], &[32]).unwrap(), expected);
+}
+
+#[test]
 fn filtered_scan_chunks_preserve_deep_versions_tombstones_and_binary_bounds() {
     let keys = [
         vec![],
