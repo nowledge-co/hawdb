@@ -4250,10 +4250,12 @@ during `BACKFILL`, a reopen between bounded batches, a torn final backfill
 batch that reopens resumable, one backfill instant for a `current_timestamp()`
 default across bounded runs, `Database::property_schemas` across reopen, and
 `tests/fixtures/pre_1683_property_descriptors` (written by main `d5ebd79b8`,
-descriptors in a checkpoint and the WAL tail) reopening with no defaults and
-accepting a defaulted declaration. The binary WAL codec sample set adds
-defaulted `CreateProperty` ops (op code 29). No new lane, feature or fixture
-format; replay with `cargo test --locked -p hawdb --lib property_defaults`.
+descriptors in a checkpoint and the WAL tail) receiving a typed durable-codec
+v3 or row-page v2 recreate refusal after the covering-index format change,
+depending on which old envelope admission reaches first, without interpreting
+legacy schema bytes. The binary WAL codec sample set adds defaulted
+`CreateProperty` ops (op code 29). No new lane, feature or fixture format;
+replay with `cargo test --locked -p hawdb --lib property_defaults`.
 
 ## Logical dump and persistent format version (#1655)
 
