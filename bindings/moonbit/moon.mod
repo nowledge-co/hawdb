@@ -13,7 +13,7 @@
 // limitations under the License.
 
 name = "nowledge-co/hawdb"
-version = "0.35.1"
+version = "0.36.0"
 preferred_target = "native"
 supported_targets = "native"
 license = "Apache-2.0"
