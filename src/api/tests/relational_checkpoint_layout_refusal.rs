@@ -21,19 +21,42 @@ use super::*;
 use crate::{StorageFormatError, RELATIONAL_CHECKPOINT_LAYOUT_FORMAT};
 use hawdb_storage::config::{RelationalIndexMode, StorageResidencyMode};
 
-/// Written by the #1737 change (nowledge-co/hawdb#1778, head `17499379f`)
-/// with the default configuration: one `docs` table with 20 rows and one
-/// checkpoint, so no full-row file and no relational index generation.
-/// Packed in `property_defaults::unpack_fixture`'s bundle format.
-const ROW_ROOT_FIXTURE: &[u8] =
-    include_bytes!("../../../tests/fixtures/row_root_relational_checkpoint.bundle");
-
-/// The same layout written with `Shadow` relational indexes (#1778, head
-/// `17499379f`, 20 `docs` rows, one checkpoint), so it binds a persistent
-/// relational index generation. Its index pages are mostly zero padding, so
-/// the bundle is zstd-compressed.
-const SHADOW_INDEX_FIXTURE: &[u8] =
-    include_bytes!("../../../tests/fixtures/row_root_shadow_index_checkpoint.bundle.zst");
+/// Writes the current row-page format while preserving this test's original
+/// layout distinction: the initial Shadow checkpoint carries the full-row
+/// artifact, while an optional successor Authoritative checkpoint publishes
+/// only canonical row pages plus its persistent index generation.
+fn write_current_row_root(path: &std::path::Path, canonical_only: bool) {
+    let config = DatabaseConfig {
+        storage_residency_mode: StorageResidencyMode::OutOfCore,
+        relational_index_mode: RelationalIndexMode::Shadow,
+        ..DatabaseConfig::default()
+    };
+    {
+        let mut db = Database::open_with_config(path, config).unwrap();
+        db.query_sql("CREATE TABLE docs (id BIGINT PRIMARY KEY, body TEXT NOT NULL)")
+            .unwrap();
+        for id in 0..20i64 {
+            db.query_sql_with_params(
+                "INSERT INTO docs (id, body) VALUES ($1, $2)",
+                &[Value::Int(id), Value::String(format!("body {id}"))],
+            )
+            .unwrap();
+        }
+        db.checkpoint().unwrap();
+    }
+    if canonical_only {
+        let mut db = Database::open_with_config(
+            path,
+            DatabaseConfig {
+                storage_residency_mode: StorageResidencyMode::OutOfCore,
+                relational_index_mode: RelationalIndexMode::Authoritative,
+                ..DatabaseConfig::default()
+            },
+        )
+        .unwrap();
+        db.checkpoint().unwrap();
+    }
+}
 
 /// Every durable file below `root`. Lock files and each branch's disposable
 /// `runtime/` mount, which writable admission rebuilds from the sealed head
@@ -57,10 +80,22 @@ fn database_bytes(root: &std::path::Path) -> BTreeMap<std::path::PathBuf, Vec<u8
     files
 }
 
+fn restore_database_bytes(root: &std::path::Path, files: &BTreeMap<std::path::PathBuf, Vec<u8>>) {
+    for (relative, bytes) in files {
+        let path = root.join(relative);
+        std::fs::create_dir_all(path.parent().expect("database file has a parent")).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+}
+
 #[test]
-fn newer_row_root_layout_is_a_typed_refusal_in_every_configuration() {
+fn newer_row_root_layout_is_typed_or_served_by_authoritative_out_of_core() {
     use RelationalIndexMode as Index;
     use StorageResidencyMode as Residency;
+    let fixture_path = unique_test_dir("relational_checkpoint_layout_source");
+    write_current_row_root(&fixture_path, true);
+    let fixture = database_bytes(&fixture_path);
+    std::fs::remove_dir_all(fixture_path).unwrap();
     let mut checked = 0;
     for residency in [
         Residency::Auto,
@@ -75,7 +110,7 @@ fn newer_row_root_layout_is_a_typed_refusal_in_every_configuration() {
         ] {
             for read_only in [false, true] {
                 let path = unique_test_dir("relational_checkpoint_layout_refusal");
-                super::property_defaults::unpack_fixture(ROW_ROOT_FIXTURE, &path);
+                restore_database_bytes(&path, &fixture);
                 let before = database_bytes(&path);
                 let config = DatabaseConfig {
                     storage_residency_mode: residency,
@@ -88,9 +123,16 @@ fn newer_row_root_layout_is_a_typed_refusal_in_every_configuration() {
                     },
                     ..DatabaseConfig::default()
                 };
-                let error = Database::open_with_config(&path, config)
-                    .and_then(|mut db| db.query_sql("SELECT COUNT(*) AS n FROM docs"))
-                    .unwrap_err();
+                let result = Database::open_with_config(&path, config)
+                    .and_then(|mut db| db.query_sql("SELECT COUNT(*) AS n FROM docs"));
+                if residency == Residency::OutOfCore && index == Index::Authoritative {
+                    assert_eq!(result.unwrap().rows[0]["n"], Value::Int(20));
+                    assert_eq!(database_bytes(&path), before);
+                    std::fs::remove_dir_all(&path).unwrap();
+                    checked += 1;
+                    continue;
+                }
+                let error = result.unwrap_err();
                 let context = format!("{residency:?}/{index:?}/read_only={read_only}: {error:?}");
                 let HawDBError::UnsupportedStorageFormat(format) = &error else {
                     panic!("expected a typed refusal: {context}");
@@ -103,12 +145,7 @@ fn newer_row_root_layout_is_a_typed_refusal_in_every_configuration() {
                 let StorageFormatError::UnsupportedFeature { feature, .. } = format else {
                     panic!("expected an unsupported feature: {context}");
                 };
-                let expected = if residency == Residency::OutOfCore && index == Index::Authoritative
-                {
-                    "without a persistent relational index generation"
-                } else {
-                    "without a full-row relational checkpoint file"
-                };
+                let expected = "without a full-row relational checkpoint file";
                 assert!(feature.contains(expected), "{context}");
                 let after = database_bytes(&path);
                 let changed = before
@@ -133,7 +170,6 @@ fn newer_row_root_layout_is_a_typed_refusal_in_every_configuration() {
 /// database that published a relational index generation.
 #[test]
 fn newer_row_root_layout_with_index_generation_opens_out_of_core_authoritative() {
-    let bundle = zstd::decode_all(SHADOW_INDEX_FIXTURE).unwrap();
     let config = |read_only: bool| DatabaseConfig {
         storage_residency_mode: StorageResidencyMode::OutOfCore,
         relational_index_mode: RelationalIndexMode::Authoritative,
@@ -158,7 +194,7 @@ fn newer_row_root_layout_with_index_generation_opens_out_of_core_authoritative()
         .collect::<Vec<_>>();
 
     let path = unique_test_dir("relational_checkpoint_layout_shadow_index");
-    super::property_defaults::unpack_fixture(&bundle, &path);
+    write_current_row_root(&path, true);
     {
         let mut db = Database::open_with_config(&path, config(true)).unwrap();
         assert_eq!(rows(&mut db), expected);

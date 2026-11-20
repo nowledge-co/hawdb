@@ -104,6 +104,42 @@ pub(crate) fn row_key(
     Ok(RelationalKey(values))
 }
 
+fn index_storage_key(
+    row: &RelationalRow,
+    logical_key: RelationalKey,
+    key_positions: &[usize],
+    included_positions: &[usize],
+    work: &CheckpointWorkContext,
+) -> Result<RelationalKey, RelationalError> {
+    if included_positions.is_empty() {
+        return Ok(logical_key);
+    }
+    crate::relational::validate_covering_index_value_size_preflight(
+        row,
+        key_positions,
+        included_positions,
+    )?;
+    let mut values = logical_key.0;
+    for position in included_positions {
+        let value = clone_value(&row.values()[*position], work)?;
+        let encoded = crate::relational::codec::encode_relational_row_payload_with_work_context(
+            &RelationalRow::new(vec![value]),
+            work,
+        )?;
+        let mut payload = Vec::new();
+        for block in encoded.chunks(64 * 1024) {
+            let unit = work.start_unit().map_err(work_error)?;
+            payload.extend_from_slice(block);
+            unit.finish();
+        }
+        values.push(RelationalValue::Bytea(payload));
+    }
+    let key = RelationalKey(values);
+    crate::relational::validate_covering_index_key_size(&key)?;
+    work.checkpoint().map_err(work_error)?;
+    Ok(key)
+}
+
 pub(crate) fn row_pages(
     rows: BTreeMap<RelationalKey, RelationalRow>,
     work: &CheckpointWorkContext,
@@ -274,6 +310,7 @@ pub(crate) fn rebuild_indexes(
             (
                 std::borrow::Cow::Owned(crate::relational::relational_unique_index_name(ordinal)),
                 columns.as_slice(),
+                &[] as &[String],
                 RelationalIndexRole::UniqueConstraint,
             )
         })
@@ -281,6 +318,7 @@ pub(crate) fn rebuild_indexes(
             (
                 std::borrow::Cow::Borrowed(index.name.as_str()),
                 index.columns.as_slice(),
+                index.included_columns.as_slice(),
                 if index.unique {
                     RelationalIndexRole::DeclaredUnique
                 } else {
@@ -299,26 +337,31 @@ pub(crate) fn rebuild_indexes(
                             crate::relational::relational_foreign_key_index_name(ordinal),
                         ),
                         foreign.columns.as_slice(),
+                        &[] as &[String],
                         RelationalIndexRole::ForeignKeySupport,
                     )
                 }),
         );
     let mut indexes = BTreeMap::new();
-    for (name, names, role) in definitions {
-        let positions = positions(schema, names, &columns, work)?;
+    for (name, names, included_names, role) in definitions {
+        let key_positions = positions(schema, names, &columns, work)?;
+        let included_positions = positions(schema, included_names, &columns, work)?;
         let mut entries: BTreeMap<RelationalKey, BTreeSet<RelationalKey>> = BTreeMap::new();
+        let mut unique_keys = BTreeSet::new();
         for (primary_key, row) in segment.rows.iter() {
-            let key = row_key(row, &positions, work)?;
-            if role.is_unique() && has_null(&key, work)? {
+            let logical_key = row_key(row, &key_positions, work)?;
+            if role.is_unique() && has_null(&logical_key, work)? {
                 continue;
             }
-            let primary_key = clone_key(primary_key, work)?;
-            let unit = work.start_unit().map_err(work_error)?;
-            if role.is_unique() && entries.get(&key).is_some_and(|keys| !keys.is_empty()) {
+            if role.is_unique() && !unique_keys.insert(clone_key(&logical_key, work)?) {
                 return Err(RelationalError::Constraint(format!(
                     "unique index {name} on table {table} has a duplicate key"
                 )));
             }
+            let key =
+                index_storage_key(row, logical_key, &key_positions, &included_positions, work)?;
+            let primary_key = clone_key(primary_key, work)?;
+            let unit = work.start_unit().map_err(work_error)?;
             entries.entry(key).or_default().insert(primary_key);
             unit.finish();
         }

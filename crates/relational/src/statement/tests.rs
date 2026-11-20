@@ -93,7 +93,26 @@ fn schema_and_index_compilation_need_no_database_runtime() {
             index: RelationalIndexSchema {
                 name: "counter_idx".into(),
                 columns: vec!["counter".into(), "id".into()],
+                included_columns: Vec::new(),
                 unique: false,
+            },
+        }],
+    );
+    assert_eq!(
+        compile_relational_statement_sql(
+            "CREATE UNIQUE INDEX owner_idx ON items (owner_id) INCLUDE (counter, body)",
+            &[],
+            &state
+        )
+        .unwrap()
+        .writes,
+        [RelationalWrite::CreateIndex {
+            table: "items".into(),
+            index: RelationalIndexSchema {
+                name: "owner_idx".into(),
+                columns: vec!["owner_id".into()],
+                included_columns: vec!["counter".into(), "body".into()],
+                unique: true,
             },
         }],
     );

@@ -26,11 +26,12 @@ use std::path::Path;
 mod checkpoint;
 pub(super) use checkpoint::{encode_manifest_with_work_context, root_set_digest_with_work_context};
 
-/// Row-page format v2: exact-length pages packed back to back, addressed by
-/// byte offset and length (#1521). v1 (`SKRPGM01`) used fixed 1 MiB slots.
-const MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM02";
+/// Row-page format v3 adds covering-index INCLUDE metadata. v2 introduced
+/// exact-length packed pages; v1 (`SKRPGM01`) used fixed 1 MiB slots.
+const MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM03";
+const LEGACY_V2_MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM02";
 const LEGACY_V1_MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM01";
-const ROW_PAGE_FORMAT_VERSION: u16 = 2;
+const ROW_PAGE_FORMAT_VERSION: u16 = 3;
 const MANIFEST_VERSION: u16 = 1;
 /// generation, allocated pages, allocated bytes, live pages, live bytes.
 pub(super) const PHYSICAL_GENERATION_BYTES: usize = 40;
@@ -312,11 +313,18 @@ fn decode_manifest_inner(
     let unit = start_unit(work)?;
     // A fixed-slot v1 database is an unsupported format, not corruption:
     // hosts map `UnsupportedStorageFormat` to "recreate the database".
-    if encoded.len() >= 8 && &encoded[..8] == LEGACY_V1_MANIFEST_MAGIC {
+    if encoded.len() >= 8
+        && (&encoded[..8] == LEGACY_V1_MANIFEST_MAGIC || &encoded[..8] == LEGACY_V2_MANIFEST_MAGIC)
+    {
+        let found = if &encoded[..8] == LEGACY_V1_MANIFEST_MAGIC {
+            1
+        } else {
+            2
+        };
         return Err(RelationalRowPagePublicationError::UnsupportedFormat(
             hawdb_core::error::StorageFormatError::UnsupportedVersion {
                 format: hawdb_core::RELATIONAL_ROW_PAGE_FORMAT,
-                found: 1,
+                found,
                 supported: ROW_PAGE_FORMAT_VERSION,
             },
         ));

@@ -104,6 +104,38 @@ fn unsupported_alias_mutation_and_ordering_syntax_is_never_executed() {
 }
 
 #[test]
+fn create_index_include_preserves_payload_columns_and_rejects_other_tails() {
+    let SqlStatement::CreateIndex(index) = parse_postgres_sql(
+        r#"CREATE UNIQUE INDEX events_tenant ON events (tenant, sequence) INCLUDE ("Payload", checksum)"#,
+    )
+    .unwrap()
+    else {
+        panic!("expected CREATE INDEX")
+    };
+    assert!(index.unique);
+    assert_eq!(
+        index
+            .columns
+            .iter()
+            .map(|column| column.column.name.as_str())
+            .collect::<Vec<_>>(),
+        ["tenant", "sequence"]
+    );
+    assert_eq!(index.included_columns, ["Payload", "checksum"]);
+
+    for sql in [
+        "CREATE INDEX ix ON events (tenant) INCLUDE (payload) INCLUDE (checksum)",
+        "CREATE INDEX ix ON events (tenant) INCLUDE (events.payload)",
+        "CREATE INDEX ix ON events (tenant) WHERE tenant IS NOT NULL",
+        "CREATE INDEX ix ON events USING btree (tenant)",
+        "CREATE INDEX CONCURRENTLY ix ON events (tenant)",
+    ] {
+        assert!(parse_postgres_sql(sql).is_err(), "{sql}");
+        assert!(crate::prepare_postgres_sql(sql).is_err(), "{sql}");
+    }
+}
+
+#[test]
 fn postgres_type_aliases_keep_main_storage_types_and_precision_bounds() {
     for (declaration, expected) in [
         ("INT", SqlDataType::BigInt),

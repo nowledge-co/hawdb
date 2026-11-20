@@ -86,6 +86,7 @@ pub(in crate::relational) fn relational_schema_digest_with_work_context(
     for index in &schema.indexes {
         output.bytes(index.name.as_bytes())?;
         output.strings(&index.columns)?;
+        output.strings(&index.included_columns)?;
         output.update(&[u8::from(index.unique)])?;
     }
     work.checkpoint().map_err(work_error)?;

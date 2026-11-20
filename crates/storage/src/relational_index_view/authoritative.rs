@@ -427,7 +427,7 @@ impl RelationalConstraintIndex for AuthoritativeRelationalConstraintIndex {
         let attempt = self.ledger.begin_native_read()?;
         let result = self
             .view
-            .visit_exact_postings_admitted(
+            .visit_prefix_postings_admitted(
                 table,
                 index,
                 key,

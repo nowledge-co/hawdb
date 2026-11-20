@@ -88,8 +88,9 @@ The scoped grammar includes:
   `UPDATE`, and `DELETE`;
 - `SELECT ... FOR SHARE` and `SELECT ... FOR UPDATE` in pessimistic concurrent
   transactions;
-- `CREATE TABLE`, primary/unique/foreign-key constraints, `CREATE INDEX`, and
-  append-only `ALTER TABLE ... ADD COLUMN` parsing.
+- `CREATE TABLE`, primary/unique/foreign-key constraints, `CREATE INDEX`
+  including PostgreSQL `INCLUDE` covering payloads, and append-only `ALTER
+  TABLE ... ADD COLUMN` parsing.
 
 Unsupported syntax MUST fail during parse or binding. It MUST NOT silently use
 different semantics.

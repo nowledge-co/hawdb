@@ -802,6 +802,14 @@ fn compile_create_index(create: &CreateIndexStatement) -> Result<RelationalWrite
             "content-store indexes must not hide drift with IF NOT EXISTS".to_string(),
         ));
     }
+    if create.columns.iter().any(|column| {
+        column.direction != hawdb_sql::SqlOrderDirection::Asc
+            || column.nulls != hawdb_sql::SqlNullOrder::DialectDefault
+    }) {
+        return Err(HawDBError::Semantic(
+            "content-store indexes do not support key direction or NULL ordering".to_string(),
+        ));
+    }
     Ok(RelationalWrite::CreateIndex {
         table: create.table.name.clone(),
         index: RelationalIndexSchema {
@@ -811,6 +819,7 @@ fn compile_create_index(create: &CreateIndexStatement) -> Result<RelationalWrite
                 .iter()
                 .map(|column| column.column.name.clone())
                 .collect(),
+            included_columns: create.included_columns.clone(),
             unique: create.unique,
         },
     })

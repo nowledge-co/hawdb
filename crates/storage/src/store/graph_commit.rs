@@ -3784,6 +3784,7 @@ mod tests {
                         indexes: vec![RelationalIndexSchema {
                             name: "declared_unique".into(),
                             columns: vec!["body".into()],
+                            included_columns: Vec::new(),
                             unique: true,
                         }],
                     })],
@@ -3925,6 +3926,7 @@ mod tests {
         schema.indexes.push(RelationalIndexSchema {
             name: "i".repeat(4096),
             columns: vec!["body".into()],
+            included_columns: Vec::new(),
             unique: true,
         });
         store

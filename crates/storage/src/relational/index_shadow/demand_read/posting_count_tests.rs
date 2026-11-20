@@ -59,11 +59,13 @@ fn fixture() -> (
                             RelationalIndexSchema {
                                 name: "bucket_idx".into(),
                                 columns: vec!["bucket".into()],
+                                included_columns: Vec::new(),
                                 unique: false,
                             },
                             RelationalIndexSchema {
                                 name: "bucket_id_idx".into(),
                                 columns: vec!["bucket".into(), "id".into()],
+                                included_columns: Vec::new(),
                                 unique: false,
                             },
                         ],

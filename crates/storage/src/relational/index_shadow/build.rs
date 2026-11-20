@@ -18,8 +18,8 @@ use super::{
 };
 use crate::file_io::{self as fs, File};
 use crate::relational::{
-    column_positions, index_includes_key, row_key, RelationalIndexDefinition, RelationalIndexRole,
-    RelationalIndexRowSource, RelationalTableSchema,
+    column_positions, index_includes_key, index_storage_key, RelationalIndexDefinition,
+    RelationalIndexRole, RelationalIndexRowSource, RelationalTableSchema,
 };
 use hawdb_integrity::Crc32cHasher;
 use std::cmp::Reverse;
@@ -103,6 +103,13 @@ pub(super) fn write_index_from_rows(
             definition.name
         ))
     })?;
+    let included_positions =
+        column_positions(schema, &definition.included_columns).map_err(|error| {
+            RelationalIndexShadowError::Corrupt(format!(
+                "cannot resolve INCLUDE columns for relational index {table}.{}: {error}",
+                definition.name
+            ))
+        })?;
     let mut sorter = IndexEntrySorter::new(
         spill_prefix,
         generation,
@@ -111,7 +118,13 @@ pub(super) fn write_index_from_rows(
         max_spill_bytes,
     );
     source.visit_rows(table, &mut |primary_key, row| {
-        let index_key = row_key(row, &positions);
+        let index_key =
+            index_storage_key(row, &positions, &included_positions).map_err(|error| {
+                RelationalIndexShadowError::Admission(format!(
+                    "cannot encode covering payload for relational index {table}.{}: {error}",
+                    definition.name
+                ))
+            })?;
         if !index_includes_key(definition, &index_key) {
             return Ok(());
         }
@@ -120,7 +133,9 @@ pub(super) fn write_index_from_rows(
             row_id: encode_relational_key(primary_key)?,
         })
     })?;
-    sorter.finish()?.write(tree, definition.role)
+    sorter
+        .finish()?
+        .write(tree, definition.role, definition.columns.len())
 }
 
 struct IndexEntrySorter {
@@ -231,20 +246,21 @@ impl IndexEntrySource {
         self,
         tree: &mut TreeWriter<'_>,
         role: RelationalIndexRole,
+        key_column_count: usize,
     ) -> Result<IndexSortReport, RelationalIndexShadowError> {
         match self {
             Self::Memory { entries, report } => {
                 let mut cursor = MemoryCursor {
                     entries: entries.into_iter(),
                 };
-                write_sorted_entries(tree, role, &mut cursor)?;
+                write_sorted_entries(tree, role, key_column_count, &mut cursor)?;
                 Ok(report)
             }
             Self::Spilled { runs, report } => {
                 let path = runs.single_path()?;
                 let mut cursor =
                     RunReader::open(path, runs.config, final_reader_buffer_bytes(runs.config))?;
-                write_sorted_entries(tree, role, &mut cursor)?;
+                write_sorted_entries(tree, role, key_column_count, &mut cursor)?;
                 Ok(report)
             }
         }
@@ -268,11 +284,38 @@ impl SortedEntryCursor for MemoryCursor {
 fn write_sorted_entries(
     tree: &mut TreeWriter<'_>,
     role: RelationalIndexRole,
+    key_column_count: usize,
     cursor: &mut dyn SortedEntryCursor,
 ) -> Result<(), RelationalIndexShadowError> {
     let mut pending = cursor.next_entry()?;
+    let mut previous_unique_prefix = None;
+    let mut prefix_ends = Vec::new();
     while let Some(first) = pending.take() {
         let index_key = first.index_key;
+        if role.is_unique() {
+            crate::relational::ordered_key::ordered_relational_key_prefix_ends(
+                &index_key,
+                &mut prefix_ends,
+            )
+            .map_err(|error| RelationalIndexShadowError::Corrupt(error.to_string()))?;
+            let end = prefix_ends
+                .get(key_column_count.saturating_sub(1))
+                .copied()
+                .ok_or_else(|| {
+                    RelationalIndexShadowError::Corrupt(
+                        "unique relational index key omits a declared key column".to_string(),
+                    )
+                })?;
+            if previous_unique_prefix
+                .as_ref()
+                .is_some_and(|previous: &Vec<u8>| previous.as_slice() == &index_key[..end])
+            {
+                return Err(RelationalIndexShadowError::Corrupt(
+                    "unique relational covering index contains duplicate logical keys".to_string(),
+                ));
+            }
+            previous_unique_prefix = Some(index_key[..end].to_vec());
+        }
         let mut first_row_id = Some(first.row_id);
         let mut cursor_failed = false;
         let posting = tree.write_encoded_postings(

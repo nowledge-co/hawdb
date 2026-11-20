@@ -266,6 +266,7 @@ fn table_model(schema: &RelationalTableSchema) -> Result<Table> {
             .map(|index| Index {
                 name: index.name.clone(),
                 columns: index.columns.clone(),
+                included_columns: index.included_columns.clone(),
                 unique: index.unique,
             })
             .collect(),
