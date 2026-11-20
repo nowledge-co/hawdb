@@ -108,7 +108,13 @@ pub struct EmbeddedQueryReport {
     /// Stable physical-plan identity without bound values. Present only when
     /// the caller requested physical-plan capture.
     pub selected_plan_fingerprint: Option<String>,
+    /// The plan scope that produced [`Self::optimizer_cardinality_estimates`].
+    /// `None` means physical-plan capture was not requested.
+    pub optimizer_cardinality_estimate_scope: Option<EmbeddedOptimizerCardinalityEstimateScope>,
     /// Optimizer estimates keyed by stable, plan-local operator identities.
+    /// These are the template-shaped estimates used to select the executable
+    /// physical plan; parameter-bound executor observations remain in
+    /// [`Self::operator_cardinality_profiles`].
     pub optimizer_cardinality_estimates: Vec<EmbeddedOptimizerCardinalityEstimate>,
     /// Executor observations keyed by the same plan-local identities.
     pub operator_cardinality_profiles: Vec<OperatorCardinalityProfile>,
@@ -153,6 +159,7 @@ impl EmbeddedQueryReport {
                 "bypassed": self.plan_cache_bypassed,
             },
             "selected_plan_fingerprint": self.selected_plan_fingerprint,
+            "optimizer_cardinality_estimate_scope": self.optimizer_cardinality_estimate_scope.map(EmbeddedOptimizerCardinalityEstimateScope::as_str),
             "optimizer_cardinality_estimate_count": self.optimizer_cardinality_estimates.len(),
             "optimizer_cardinality_estimates": self.optimizer_cardinality_estimates.iter().map(optimizer_cardinality_estimate_json).collect::<Vec<_>>(),
             "operator_cardinality_profile_count": self.operator_cardinality_profiles.len(),
@@ -172,6 +179,23 @@ impl EmbeddedQueryReport {
             "output_row_shape": self.output_row_shape.json(),
             "api_behavior": self.api_behavior.json(),
         })
+    }
+}
+
+/// Provenance for optimizer cardinality estimates in an embedded query report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbeddedOptimizerCardinalityEstimateScope {
+    /// Estimates retained on the parameterized physical-plan template. Bound
+    /// executions can observe different row counts without changing this
+    /// template-level planning evidence, whether or not the plan is cached.
+    TemplatePlan,
+}
+
+impl EmbeddedOptimizerCardinalityEstimateScope {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::TemplatePlan => "template_plan",
+        }
     }
 }
 
@@ -296,6 +320,7 @@ pub struct EmbeddedQueryReportInput<'a> {
     pub optimizer_rule_event_count: usize,
     pub plan_cache_lookup: Option<PlanCacheLookup>,
     pub selected_plan_fingerprint: Option<&'a str>,
+    pub optimizer_cardinality_estimate_scope: Option<EmbeddedOptimizerCardinalityEstimateScope>,
     pub optimizer_cardinality_estimates: Vec<EmbeddedOptimizerCardinalityEstimate>,
     pub execution_profile: Option<&'a ReadExecutionProfile<ScanPruningReport>>,
     pub output: &'a QueryOutput,
@@ -332,6 +357,7 @@ pub fn embedded_query_report(input: EmbeddedQueryReportInput<'_>) -> EmbeddedQue
         plan_cache_miss: plan_cache.miss,
         plan_cache_bypassed: plan_cache.bypassed,
         selected_plan_fingerprint: input.selected_plan_fingerprint.map(str::to_string),
+        optimizer_cardinality_estimate_scope: input.optimizer_cardinality_estimate_scope,
         optimizer_cardinality_estimates: input.optimizer_cardinality_estimates,
         operator_cardinality_profiles: input
             .execution_profile
@@ -578,6 +604,7 @@ mod tests {
             plan_cache_miss: false,
             plan_cache_bypassed: false,
             selected_plan_fingerprint: None,
+            optimizer_cardinality_estimate_scope: None,
             optimizer_cardinality_estimates: Vec::new(),
             operator_cardinality_profiles: Vec::new(),
             physical_operator_counts: BTreeMap::new(),
@@ -647,6 +674,10 @@ mod tests {
         expected.as_object_mut().expect("JSON object").extend([
             (
                 "selected_plan_fingerprint".to_string(),
+                serde_json::Value::Null,
+            ),
+            (
+                "optimizer_cardinality_estimate_scope".to_string(),
                 serde_json::Value::Null,
             ),
             (
