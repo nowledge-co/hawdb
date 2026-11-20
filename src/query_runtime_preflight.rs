@@ -131,6 +131,7 @@ fn error_class(error: &HawDBError) -> &'static str {
         | HawDBError::ReadBudgetExceeded(_)
         | HawDBError::WalRecordLimitExceeded(_)
         | HawDBError::RuntimeAdmissionRefused(_)
+        | HawDBError::RuntimeIoWaveReservationExceeded { .. }
         | HawDBError::RuntimeTaskStopped(_)
         | HawDBError::ReadOnly { .. }
         | HawDBError::ResourceBudgetExceeded(_)

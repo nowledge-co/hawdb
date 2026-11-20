@@ -218,6 +218,20 @@ fn runtime_admission_refusal_is_delivered_as_its_own_kind() {
 }
 
 #[test]
+fn io_wave_reservation_refusal_is_delivered_as_its_own_kind() {
+    let error = HawDBError::RuntimeIoWaveReservationExceeded {
+        requested_slots: 2,
+        reserved_slots: 1,
+    };
+    let delivered = delivered(FfiError::open(&error));
+    assert_eq!(
+        delivered["kind"], "runtime_io_wave_reservation_exceeded",
+        "{delivered}"
+    );
+    assert_eq!(delivered["message"], error.to_string());
+}
+
+#[test]
 fn runtime_task_stop_is_delivered_as_its_own_kind() {
     let error = HawDBError::RuntimeTaskStopped(hawdb::RuntimeCancellationReason::Cancelled);
     let delivered = delivered(FfiError::open(&error));

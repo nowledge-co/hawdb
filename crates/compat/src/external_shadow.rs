@@ -593,6 +593,19 @@ fn json_error_from_hawdb(error: HawDBError) -> serde_json::Value {
             });
             response
         }
+        error @ HawDBError::RuntimeIoWaveReservationExceeded {
+            requested_slots,
+            reserved_slots,
+        } => {
+            let mut response = json_error("execution", error);
+            response["error"]["details"] = serde_json::json!({
+                "kind": "runtime_io_wave_reservation_exceeded",
+                "requested_slots": requested_slots,
+                "reserved_slots": reserved_slots,
+                "retryable": false,
+            });
+            response
+        }
         error @ (HawDBError::GraphExpansionCandidateLimitExceeded { .. }
         | HawDBError::GraphExpansionPayloadLimitExceeded { .. }) => json_error("execution", error),
         error @ (HawDBError::TransactionConflict { .. }
@@ -2171,6 +2184,25 @@ mod protocol_server_tests {
                 HawDBError::Execution(_)
             ));
         }
+    }
+
+    #[test]
+    fn io_wave_reservation_refusal_has_machine_readable_external_details() {
+        let response = json_error_from_hawdb(HawDBError::RuntimeIoWaveReservationExceeded {
+            requested_slots: 3,
+            reserved_slots: 2,
+        });
+
+        assert_eq!(response["error"]["class"], "execution");
+        assert_eq!(
+            response["error"]["details"],
+            serde_json::json!({
+                "kind": "runtime_io_wave_reservation_exceeded",
+                "requested_slots": 3,
+                "reserved_slots": 2,
+                "retryable": false,
+            })
+        );
     }
 
     #[derive(Default)]
