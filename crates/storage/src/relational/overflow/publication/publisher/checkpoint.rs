@@ -23,7 +23,10 @@ use crate::file_io::PublicationLockGuard;
 pub(in crate::relational::overflow::publication) const BLOCK_BYTES: usize = 64 * 1024;
 
 fn work_error(error: CheckpointWorkError) -> RelationalOverflowPublicationError {
-    RelationalOverflowPublicationError::Admission(error.to_string())
+    match error.stop_reason() {
+        Some(reason) => RelationalOverflowPublicationError::Stopped(reason),
+        None => RelationalOverflowPublicationError::Admission(error.to_string()),
+    }
 }
 
 pub(in crate::relational::overflow::publication) fn check(
@@ -63,6 +66,53 @@ pub(in crate::relational::overflow::publication) fn io<T>(
     unit.finish();
     work.checkpoint().map_err(work_error)?;
     Ok(result)
+}
+
+fn publication_io<T>(
+    work: Option<&CheckpointWorkContext>,
+    destination: &Path,
+    operation: impl FnOnce() -> Result<T, RelationalOverflowPublicationError>,
+) -> Result<T, RelationalOverflowPublicationError> {
+    let Some(work) = work else {
+        return operation();
+    };
+    let unit = work.start_unit().map_err(work_error)?;
+    let wave = work.io_wave().map_err(work_error)?;
+    work.checkpoint().map_err(work_error)?;
+    let result = operation()?;
+    drop(wave);
+    unit.finish();
+    work.checkpoint().map_err(|error| match error.stop_reason() {
+        Some(reason) => RelationalOverflowPublicationError::PublishOutcomeUnknown(Box::new(
+            hawdb_core::HawDBError::PublishOutcomeUnknown {
+                destination: destination.to_path_buf(),
+                message: format!(
+                    "overflow artifact publication completed before the runtime task stopped: {reason}"
+                ),
+            },
+        )),
+        None => work_error(error),
+    })?;
+    Ok(result)
+}
+
+pub(super) fn after_publication<T>(
+    result: Result<T, RelationalOverflowPublicationError>,
+    destination: &Path,
+) -> Result<T, RelationalOverflowPublicationError> {
+    result.map_err(|error| match error {
+        RelationalOverflowPublicationError::Stopped(reason) => {
+            RelationalOverflowPublicationError::PublishOutcomeUnknown(Box::new(
+                hawdb_core::HawDBError::PublishOutcomeUnknown {
+                    destination: destination.to_path_buf(),
+                    message: format!(
+                        "overflow artifact publication completed before the runtime task stopped: {reason}"
+                    ),
+                },
+            ))
+        }
+        error => error,
+    })
 }
 
 pub(in crate::relational::overflow::publication) fn integrity(
@@ -177,7 +227,20 @@ pub(in crate::relational::overflow::publication) fn publish(
     destination: &Path,
     work: Option<&CheckpointWorkContext>,
 ) -> Result<(), RelationalOverflowPublicationError> {
-    io(work, || durable_publish_immutable(source, destination))
+    publication_io(work, destination, || {
+        durable_publish_immutable(source, destination)
+    })
+}
+
+pub(in crate::relational::overflow::publication) fn select(
+    source: &Path,
+    destination: &Path,
+    work: Option<&CheckpointWorkContext>,
+) -> Result<(), RelationalOverflowPublicationError> {
+    publication_io(work, destination, || {
+        durable_replace_file(source, destination)
+            .map_err(durability("publish latest overflow manifest"))
+    })
 }
 
 pub(in crate::relational::overflow::publication) fn lock(
@@ -218,11 +281,10 @@ mod post_rename_stop_tests {
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
 
-    /// A stop observed after the overflow publication rename stays `Storage`
-    /// text, never the non-poisoning `RuntimeTaskStopped` (#1850). Only the
-    /// pre-rename `Stopped` variant is typed.
+    /// A stop observed after the overflow publication rename has an unknown
+    /// public outcome, never the rollback-safe `RuntimeTaskStopped`.
     #[test]
-    fn a_stop_after_the_rename_stays_storage() {
+    fn a_stop_after_the_rename_reports_publish_outcome_unknown() {
         let directory = std::env::temp_dir().join(format!(
             "hawdb-overflow-post-rename-stop-{}-{}",
             std::process::id(),
@@ -244,17 +306,22 @@ mod post_rename_stop_tests {
         }));
         let error = publish(&source, &destination, Some(&work)).unwrap_err();
         assert_eq!(std::fs::read(&destination).unwrap(), b"overflow");
-        assert!(
-            matches!(error, RelationalOverflowPublicationError::Admission(_)),
-            "{error:?}"
-        );
-        let contextual = HawDBError::or_stop(&error, || HawDBError::Storage(error.to_string()));
-        assert!(
-            matches!(contextual, HawDBError::Storage(_)),
-            "{contextual:?}"
-        );
+        assert!(matches!(
+            &error,
+            RelationalOverflowPublicationError::PublishOutcomeUnknown(_)
+        ));
+        let contextual =
+            HawDBError::or_stop(&error, || HawDBError::from_storage_error(error.clone()));
+        assert!(matches!(
+            contextual,
+            HawDBError::PublishOutcomeUnknown { ref destination, .. }
+                if destination == &directory.join("published")
+        ));
         let storage = HawDBError::from_storage_error(error);
-        assert!(matches!(storage, HawDBError::Storage(_)), "{storage:?}");
+        assert!(
+            matches!(storage, HawDBError::PublishOutcomeUnknown { .. }),
+            "{storage:?}"
+        );
         std::fs::remove_dir_all(directory).unwrap();
     }
 }

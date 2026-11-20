@@ -218,7 +218,7 @@ pub(super) fn clone_definition(
 ) -> Result<Box<MaterializedViewDefinition>, RelationalError> {
     context
         .reserve(std::mem::size_of::<MaterializedViewDefinition>())
-        .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        .map_err(RelationalError::from_admission)?;
     let name = |value: &str| clone_string_with_allocations(value, Some(context));
     let columns = collect_results_with_allocations(
         view.columns.iter().map(|column| {
@@ -276,7 +276,7 @@ fn clone_filter(
     let boxed = |filter: &RelationalPredicate| {
         context
             .reserve(std::mem::size_of::<RelationalPredicate>())
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            .map_err(RelationalError::from_admission)?;
         Ok::<_, RelationalError>(Box::new(clone_filter(filter, context)?))
     };
     Ok(match filter {
@@ -487,10 +487,8 @@ impl<'a> MaintenanceBudget<'a> {
                 .reserve(
                     bytes.saturating_add(rows.saturating_mul(std::mem::size_of::<RelationalRow>())),
                 )
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
-            context
-                .checkpoint()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                .map_err(RelationalError::from_admission)?;
+            context.checkpoint().map_err(RelationalError::from_work)?;
         }
         Ok(())
     }

@@ -531,6 +531,12 @@ impl HawDBError {
         if let Some(error) = (&error as &dyn std::error::Error).downcast_ref::<Self>() {
             return error.clone();
         }
+        // Storage publishers wrap this public error after their durable
+        // rename. Preserve it before looking for an inner task-stop reason:
+        // a lost response after publication is not a rollback-safe stop.
+        if let Some(error) = find_publish_outcome_unknown(&error) {
+            return error;
+        }
         // A cancelled or expired runtime task anywhere in the cause chain is
         // a stop, not a storage failure.
         if let Some(reason) = find_runtime_task_stop(&error) {
@@ -622,6 +628,25 @@ impl HawDBError {
             None => Self::Execution(error.to_string()),
         }
     }
+}
+
+fn find_publish_outcome_unknown(error: &(dyn std::error::Error + 'static)) -> Option<HawDBError> {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        if let Some(error @ HawDBError::PublishOutcomeUnknown { .. }) =
+            error.downcast_ref::<HawDBError>()
+        {
+            return Some(error.clone());
+        }
+        if let Some(error) = error.downcast_ref::<std::io::Error>()
+            && let Some(inner) = error.get_ref()
+            && let Some(error) = find_publish_outcome_unknown(inner)
+        {
+            return Some(error);
+        }
+        current = error.source();
+    }
+    None
 }
 
 /// The cancellation reason of a stopped runtime task in `error`'s cause chain.

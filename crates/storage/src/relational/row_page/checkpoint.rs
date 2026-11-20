@@ -22,7 +22,10 @@ use crate::relational::ordered_key::{
 };
 
 pub(super) fn work_error(error: CheckpointWorkError) -> RelationalRowPageError {
-    RelationalRowPageError::Admission(error.to_string())
+    match error.stop_reason() {
+        Some(reason) => RelationalRowPageError::Stopped(reason),
+        None => RelationalRowPageError::Admission(error.to_string()),
+    }
 }
 
 pub(super) fn ordered_key(
@@ -32,6 +35,9 @@ pub(super) fn ordered_key(
     encode_ordered_relational_key_with_work_context(key, work).map_err(|error| match error {
         CheckpointKeyEncodeError::Key(crate::relational::RelationalError::Corruption(message)) => {
             RelationalRowPageError::Admission(message)
+        }
+        CheckpointKeyEncodeError::Key(crate::relational::RelationalError::Stopped(reason)) => {
+            RelationalRowPageError::Stopped(reason)
         }
         CheckpointKeyEncodeError::Key(error) => {
             RelationalRowPageError::Admission(error.to_string())

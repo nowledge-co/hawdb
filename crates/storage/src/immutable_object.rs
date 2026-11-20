@@ -74,12 +74,13 @@ impl BlockWork<'_> {
     }
 }
 
-/// The work context records the typed error for its classifier; the object
-/// layer reports it as an ordinary I/O failure of the block.
 fn block_work_error(error: crate::background::CheckpointWorkError) -> ImmutableObjectError {
-    ImmutableObjectError::Io {
-        operation: "admit checkpoint object work",
-        source: io::Error::other(error.to_string()),
+    match error.stop_reason() {
+        Some(reason) => ImmutableObjectError::Stopped(reason),
+        None => ImmutableObjectError::Io {
+            operation: "admit checkpoint object work",
+            source: io::Error::other(error),
+        },
     }
 }
 
@@ -208,6 +209,7 @@ pub enum PublishOutcome {
 
 #[derive(Debug)]
 pub enum ImmutableObjectError {
+    Stopped(hawdb_core::RuntimeCancellationReason),
     InvalidFormatVersion,
     ObjectTooLarge {
         length: u64,
@@ -238,6 +240,9 @@ pub enum ImmutableObjectError {
 impl Display for ImmutableObjectError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Stopped(reason) => {
+                write!(formatter, "immutable object operation stopped: {reason}")
+            }
             Self::InvalidFormatVersion => {
                 formatter.write_str("immutable object format version is zero")
             }
@@ -291,6 +296,7 @@ impl Display for ImmutableObjectError {
 impl std::error::Error for ImmutableObjectError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Stopped(reason) => Some(reason),
             Self::Io { source, .. } | Self::PublicationUncertain { source } => Some(source),
             Self::InvalidSealedRoot { source } => Some(source),
             Self::ReclamationRoot { source, .. } => Some(source.as_ref()),

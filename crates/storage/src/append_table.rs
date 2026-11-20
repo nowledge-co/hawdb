@@ -67,6 +67,8 @@ impl Default for AppendMutationLimits {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppendTableError {
     Admission(String),
+    Stopped(hawdb_core::RuntimeCancellationReason),
+    PublishOutcomeUnknown(Box<hawdb_core::HawDBError>),
     Schema(String),
     Constraint(String),
     SequenceExhausted {
@@ -84,6 +86,8 @@ impl fmt::Display for AppendTableError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Admission(message) => write!(formatter, "append admission failed: {message}"),
+            Self::Stopped(reason) => write!(formatter, "append work stopped: {reason}"),
+            Self::PublishOutcomeUnknown(error) => fmt::Display::fmt(error, formatter),
             Self::Schema(message) => write!(formatter, "append schema error: {message}"),
             Self::Constraint(message) => {
                 write!(formatter, "append constraint violation: {message}")
@@ -109,6 +113,8 @@ impl fmt::Display for AppendTableError {
 impl std::error::Error for AppendTableError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Stopped(reason) => Some(reason),
+            Self::PublishOutcomeUnknown(error) => Some(error.as_ref()),
             Self::FileDescriptors(error) => Some(error),
             Self::UnsupportedFormat(error) => Some(error),
             _ => None,

@@ -171,18 +171,14 @@ impl RelationalRowPages {
             context
                 .reserve(RelationalRowPage::checkpoint_ownership_bytes())
                 .map_err(admission)?;
-            let unit = context
-                .start_unit()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            let unit = context.start_unit().map_err(RelationalError::from_work)?;
             self.pages
                 .get_unique_mut()
                 .expect("private sparse directory")
                 .push(BTreeMap::new().into());
             unit.finish();
         }
-        let unit = context
-            .start_unit()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        let unit = context.start_unit().map_err(RelationalError::from_work)?;
         let page = self
             .pages
             .get_unique_mut()
@@ -234,9 +230,7 @@ impl RelationalRowPages {
                 .reserve(RelationalRowDirectory::checkpoint_ownership_bytes())
                 .map_err(admission)?;
             for page in self.pages.iter() {
-                let unit = work
-                    .start_unit()
-                    .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                let unit = work.start_unit().map_err(RelationalError::from_work)?;
                 pages.push(page.clone());
                 unit.finish();
             }
@@ -257,14 +251,11 @@ impl RelationalRowPages {
         let mut rows = BTreeMap::new();
         for (key, row) in self.pages[index].iter() {
             let key = key.clone_with_allocations(&page_allocations)?;
-            let unit = work
-                .start_unit()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            let unit = work.start_unit().map_err(RelationalError::from_work)?;
             rows.insert(key, row.clone());
             unit.finish();
         }
-        work.checkpoint()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        work.checkpoint().map_err(RelationalError::from_work)?;
         let replacement = crate::cow::CowSegment::from_checkpoint_value(
             rows,
             page_allocations.memory.into_inner(),
@@ -317,9 +308,7 @@ impl RelationalRowPages {
             .reserve(RelationalRowDirectory::checkpoint_ownership_bytes())
             .map_err(admission)?;
         for page in self.pages.iter() {
-            let unit = work
-                .start_unit()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            let unit = work.start_unit().map_err(RelationalError::from_work)?;
             directory.push(page.clone());
             unit.finish();
         }
@@ -340,25 +329,19 @@ impl RelationalRowPages {
         if let Some(page) = self.pages.get(index) {
             for (key, row) in page.iter() {
                 let key = key.clone_with_allocations(&page_context)?;
-                let unit = work
-                    .start_unit()
-                    .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                let unit = work.start_unit().map_err(RelationalError::from_work)?;
                 rows.insert(key, row.clone());
                 unit.finish();
             }
         }
         let key = key.clone_with_allocations(&page_context)?;
         let (removed_bytes, added_bytes) = Self::insert_entry_bytes(&rows, &key, &row);
-        let unit = work
-            .start_unit()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        let unit = work.start_unit().map_err(RelationalError::from_work)?;
         let previous = rows.insert(key, row);
         unit.finish();
         let mut page_bytes = 0usize;
         for (key, row) in &rows {
-            let unit = work
-                .start_unit()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            let unit = work.start_unit().map_err(RelationalError::from_work)?;
             page_bytes = page_bytes.saturating_add(relational_row_entry_bytes(key, row));
             unit.finish();
         }
@@ -371,17 +354,14 @@ impl RelationalRowPages {
                 .nth(rows.len() / 2)
                 .expect("nonempty split page")
                 .clone_with_allocations(&split_context)?;
-            let unit = work
-                .start_unit()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            let unit = work.start_unit().map_err(RelationalError::from_work)?;
             let right = rows.split_off(&split_key);
             unit.finish();
             Some(right)
         } else {
             None
         };
-        work.checkpoint()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        work.checkpoint().map_err(RelationalError::from_work)?;
         let memory = page_context.memory.into_inner();
         let left = crate::cow::CowSegment::from_checkpoint_value(rows, memory.clone());
         if directory.is_empty() {
@@ -527,10 +507,10 @@ impl RelationalRowPages {
         };
         let mut pages = directory_context
             .vector_capacity(self.pages.len())
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            .map_err(RelationalError::from_admission)?;
         directory_context
             .reserve(RelationalRowDirectory::checkpoint_ownership_bytes())
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            .map_err(RelationalError::from_admission)?;
         // Every row gains a value, so the total is rebuilt alongside the pages.
         let mut entry_bytes = 0u128;
         for source in self.pages.iter() {
@@ -551,7 +531,7 @@ impl RelationalRowPages {
                 })?;
             page_context
                 .reserve(bytes)
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                .map_err(RelationalError::from_admission)?;
             let mut rows = BTreeMap::new();
             for (key, row) in source.iter() {
                 let key = key.clone_with_allocations(&page_context)?;
@@ -570,31 +550,24 @@ impl RelationalRowPages {
                     },
                 )?;
                 entry_bytes += relational_row_entry_bytes(&key, &row) as u128;
-                let unit = work
-                    .start_unit()
-                    .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                let unit = work.start_unit().map_err(RelationalError::from_work)?;
                 rows.insert(key, row);
                 unit.finish();
             }
-            let unit = work
-                .start_unit()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            let unit = work.start_unit().map_err(RelationalError::from_work)?;
             pages.push(RelationalRowPage::from_checkpoint_value(
                 rows,
                 page_context.memory.into_inner(),
             ));
             unit.finish();
         }
-        let unit = work
-            .start_unit()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        let unit = work.start_unit().map_err(RelationalError::from_work)?;
         let replacement = RelationalRowDirectory::from_checkpoint_value(
             pages,
             directory_context.memory.into_inner(),
         );
         unit.finish();
-        work.checkpoint()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        work.checkpoint().map_err(RelationalError::from_work)?;
         self.pages = replacement;
         self.entry_bytes = entry_bytes;
         Ok(())

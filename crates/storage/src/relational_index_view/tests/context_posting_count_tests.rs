@@ -14,7 +14,7 @@
 
 use super::posting_count_tests::corrupt_base_root;
 use super::*;
-use hawdb_core::{RuntimeCancellationToken, RuntimeTaskContext};
+use hawdb_core::{RuntimeCancellationReason, RuntimeCancellationToken, RuntimeTaskContext};
 
 fn uncached_view(fixture: &Fixture) -> Arc<RelationalIndexReadView> {
     Arc::new(RelationalIndexReadView::from_base(
@@ -88,10 +88,12 @@ fn cancellation_before_metadata_admits_no_read_of_unknown_damage() {
         Default::default(),
         RuntimeTaskContext::without_deadline(cancellation),
     );
-    assert!(
-        matches!(count(&context, RelationalIndexReadTarget::View(&base)),
-        Err(RelationalIndexShadowError::Admission(message)) if message.contains("cancelled"))
-    );
+    assert!(matches!(
+        count(&context, RelationalIndexReadTarget::View(&base)),
+        Err(RelationalIndexShadowError::Stopped(
+            RuntimeCancellationReason::Cancelled
+        ))
+    ));
     assert!(!base.is_poisoned());
     assert_eq!(
         context.remaining_limits().unwrap(),
@@ -116,8 +118,12 @@ fn cached_metadata_rechecks_cancellation_and_known_poison() {
     assert_eq!(count(&context, target).unwrap().0, 1);
     let remaining = context.remaining_limits().unwrap();
     cancellation.cancel();
-    assert!(matches!(count(&context, target),
-        Err(RelationalIndexShadowError::Admission(message)) if message.contains("cancelled")));
+    assert!(matches!(
+        count(&context, target),
+        Err(RelationalIndexShadowError::Stopped(
+            RuntimeCancellationReason::Cancelled
+        ))
+    ));
     assert_eq!(context.remaining_limits().unwrap(), remaining);
     assert!(!base.is_poisoned());
     let healthy_task = RelationalIndexReadContext::new(Default::default());
@@ -322,8 +328,12 @@ fn cached_metadata_survives_exactly_exhausted_page_and_byte_allowances() {
         );
         assert!(!base.is_poisoned());
         cancellation.cancel();
-        assert!(matches!(count(&context, target),
-            Err(RelationalIndexShadowError::Admission(message)) if message.contains("cancelled")));
+        assert!(matches!(
+            count(&context, target),
+            Err(RelationalIndexShadowError::Stopped(
+                RuntimeCancellationReason::Cancelled
+            ))
+        ));
     }
 }
 

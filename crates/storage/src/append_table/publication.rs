@@ -346,6 +346,7 @@ fn publish_checkpoint_request(
     };
     let mut tail = None;
     let mut segment_bytes_written = 0;
+    let mut published_segment = None;
     if !rows_to_write.is_empty() {
         enum Output {
             Ordinary(super::AppendSegmentWriteOutput),
@@ -371,7 +372,9 @@ fn publish_checkpoint_request(
             Output::Ordinary(output) => (&output.encoded, output.artifact),
             Output::Admitted(output) => (&output.encoded, output.artifact),
         };
-        checkpoint::write_artifact(directory, &append_segment_file(generation), encoded, work)?;
+        let segment_file = append_segment_file(generation);
+        checkpoint::write_artifact(directory, &segment_file, encoded, work)?;
+        published_segment = Some(directory.join(segment_file));
         segment_bytes_written = artifact.encoded_len;
         tail = Some(AppendSegmentBinding {
             generation,
@@ -379,83 +382,89 @@ fn publish_checkpoint_request(
             artifact,
         });
     }
-    let mut manifest = manifest_encoding::Manifest {
-        generation,
-        source_commit_epoch,
-        previous_generation: previous.map(|reader| reader.manifest.generation),
-        root_set_digest: integrity_digest(&[]).sha256,
-        schemas: state.schemas,
-        generated_order_watermarks: state.generated_order_watermarks,
-        segments,
-        tail: tail.as_slice(),
-    };
-    let segment_count = manifest.segment_count()?;
-    if segment_count > config.max_segments {
-        return Err(AppendTableError::Admission(format!(
-            "append generation contains {segment_count} segments, exceeding limit {}",
-            config.max_segments
-        )));
-    }
-    enum ManifestBytes {
-        Ordinary(Vec<u8>),
-        Admitted(crate::background::CheckpointBytes),
-    }
-    impl std::ops::Deref for ManifestBytes {
-        type Target = [u8];
-        fn deref(&self) -> &Self::Target {
-            match self {
-                Self::Ordinary(bytes) => bytes,
-                Self::Admitted(bytes) => bytes,
+    let publication = (|| {
+        let mut manifest = manifest_encoding::Manifest {
+            generation,
+            source_commit_epoch,
+            previous_generation: previous.map(|reader| reader.manifest.generation),
+            root_set_digest: integrity_digest(&[]).sha256,
+            schemas: state.schemas,
+            generated_order_watermarks: state.generated_order_watermarks,
+            segments,
+            tail: tail.as_slice(),
+        };
+        let segment_count = manifest.segment_count()?;
+        if segment_count > config.max_segments {
+            return Err(AppendTableError::Admission(format!(
+                "append generation contains {segment_count} segments, exceeding limit {}",
+                config.max_segments
+            )));
+        }
+        enum ManifestBytes {
+            Ordinary(Vec<u8>),
+            Admitted(crate::background::CheckpointBytes),
+        }
+        impl std::ops::Deref for ManifestBytes {
+            type Target = [u8];
+            fn deref(&self) -> &Self::Target {
+                match self {
+                    Self::Ordinary(bytes) => bytes,
+                    Self::Admitted(bytes) => bytes,
+                }
             }
         }
+        let (encoded_manifest, manifest_digest) = if let Some(work) = work {
+            let encoded = manifest_encoding::encode(&mut manifest, config, work)?;
+            let digest = work
+                .integrity(&encoded)
+                .map_err(super::checkpoint::work_error)?;
+            (ManifestBytes::Admitted(encoded), digest)
+        } else {
+            let payload = encode_manifest_payload(manifest, config)?;
+            manifest.root_set_digest = integrity_digest(&payload).sha256;
+            let encoded = encode_manifest_with_payload(manifest, payload, config)?;
+            let digest = integrity_digest(&encoded);
+            (ManifestBytes::Ordinary(encoded), digest)
+        };
+        let manifest_artifact = AppendSegmentArtifactMetadata {
+            encoded_len: encoded_manifest.len() as u64,
+            encoded_crc32c: manifest_digest.crc32c.get(),
+            encoded_sha256: manifest_digest.sha256,
+        };
+        checkpoint::write_artifact(
+            directory,
+            &append_generation_manifest_file(generation),
+            &encoded_manifest,
+            work,
+        )?;
+        let generation_artifacts = AppendGenerationArtifacts {
+            generation,
+            source_commit_epoch,
+            root_set_digest: manifest.root_set_digest,
+            manifest_artifact,
+        };
+        Ok(AppendPublicationReport {
+            generation,
+            source_commit_epoch,
+            rows_written: rows.len(),
+            segment_bytes_written,
+            manifest_bytes_written: manifest_artifact.encoded_len,
+            compacted_segments: if compact { prior_segment_count } else { 0 },
+            rows_rewritten: if compact { rows_to_write.len() } else { 0 },
+            compaction_deferred: compaction.due && !compact,
+            generation_artifacts,
+            events: [
+                AppendPublicationPhase::CandidateStarted,
+                AppendPublicationPhase::CandidateSegmentDurable,
+                AppendPublicationPhase::CandidateManifestDurable,
+                AppendPublicationPhase::CanonicalSelectionDeferred,
+            ],
+        })
+    })();
+    match published_segment {
+        Some(destination) => checkpoint::after_publication(publication, &destination),
+        None => publication,
     }
-    let (encoded_manifest, manifest_digest) = if let Some(work) = work {
-        let encoded = manifest_encoding::encode(&mut manifest, config, work)?;
-        let digest = work
-            .integrity(&encoded)
-            .map_err(super::checkpoint::work_error)?;
-        (ManifestBytes::Admitted(encoded), digest)
-    } else {
-        let payload = encode_manifest_payload(manifest, config)?;
-        manifest.root_set_digest = integrity_digest(&payload).sha256;
-        let encoded = encode_manifest_with_payload(manifest, payload, config)?;
-        let digest = integrity_digest(&encoded);
-        (ManifestBytes::Ordinary(encoded), digest)
-    };
-    let manifest_artifact = AppendSegmentArtifactMetadata {
-        encoded_len: encoded_manifest.len() as u64,
-        encoded_crc32c: manifest_digest.crc32c.get(),
-        encoded_sha256: manifest_digest.sha256,
-    };
-    checkpoint::write_artifact(
-        directory,
-        &append_generation_manifest_file(generation),
-        &encoded_manifest,
-        work,
-    )?;
-    let generation_artifacts = AppendGenerationArtifacts {
-        generation,
-        source_commit_epoch,
-        root_set_digest: manifest.root_set_digest,
-        manifest_artifact,
-    };
-    Ok(AppendPublicationReport {
-        generation,
-        source_commit_epoch,
-        rows_written: rows.len(),
-        segment_bytes_written,
-        manifest_bytes_written: manifest_artifact.encoded_len,
-        compacted_segments: if compact { prior_segment_count } else { 0 },
-        rows_rewritten: if compact { rows_to_write.len() } else { 0 },
-        compaction_deferred: compaction.due && !compact,
-        generation_artifacts,
-        events: [
-            AppendPublicationPhase::CandidateStarted,
-            AppendPublicationPhase::CandidateSegmentDurable,
-            AppendPublicationPhase::CandidateManifestDurable,
-            AppendPublicationPhase::CanonicalSelectionDeferred,
-        ],
-    })
 }
 
 #[derive(Debug, Clone)]

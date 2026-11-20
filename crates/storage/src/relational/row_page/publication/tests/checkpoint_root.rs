@@ -160,7 +160,12 @@ fn checkpoint_units_row_root_visit_cancel_every_actual_cpu_io_denial_and_callbac
             }
             let error = visit(&reader, &probe.context(local.clone())).unwrap_err();
             assert!(
-                matches!(error, RelationalRowPagePublicationError::Admission(_)),
+                matches!(
+                    error,
+                    RelationalRowPagePublicationError::Stopped(
+                        hawdb_core::RuntimeCancellationReason::Cancelled
+                    )
+                ),
                 "{error:?}"
             );
             probe.assert_released(&local);
@@ -193,7 +198,12 @@ fn checkpoint_units_row_root_visit_cancel_every_actual_cpu_io_denial_and_callbac
         })
         .unwrap_err();
     assert_eq!(count, 1);
-    assert!(error.to_string().contains("stopped"));
+    assert!(matches!(
+        error,
+        RelationalRowPagePublicationError::Stopped(
+            hawdb_core::RuntimeCancellationReason::Cancelled
+        )
+    ));
     probe.assert_released(&local);
     let retry = Arc::new(CheckpointWorkProbe::default());
     assert_eq!(
@@ -525,7 +535,12 @@ fn checkpoint_units_row_root_wide_key_reads_hashes_and_comparisons_match_and_can
             }
             let error = visit(&reader, &probe.context(local.clone())).unwrap_err();
             assert!(
-                matches!(error, RelationalRowPagePublicationError::Admission(_)),
+                matches!(
+                    error,
+                    RelationalRowPagePublicationError::Stopped(
+                        hawdb_core::RuntimeCancellationReason::Cancelled
+                    )
+                ),
                 "{error:?}"
             );
             probe.assert_released(&local);

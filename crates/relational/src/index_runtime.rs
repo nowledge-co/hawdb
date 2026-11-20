@@ -367,6 +367,9 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
             Some(Err(RelationalIndexShadowError::FileDescriptors(error))) => {
                 Err(HawDBError::FileDescriptors(error))
             }
+            Some(Err(RelationalIndexShadowError::Stopped(reason))) => {
+                Err(HawDBError::RuntimeTaskStopped(reason))
+            }
             Some(Err(RelationalIndexShadowError::Admission(_)))
                 if matches!(self.mode, RelationalIndexReadMode::DemandPaged(_)) =>
             {
@@ -550,6 +553,9 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
             }
             Some(Err(RelationalIndexShadowError::FileDescriptors(error))) => {
                 Err(HawDBError::FileDescriptors(error))
+            }
+            Some(Err(RelationalIndexShadowError::Stopped(reason))) => {
+                Err(HawDBError::RuntimeTaskStopped(reason))
             }
             Some(Ok(report)) => {
                 self.record_admitted_success(
@@ -751,6 +757,9 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
             }
             Some(Err(RelationalIndexShadowError::FileDescriptors(error))) => {
                 Err(HawDBError::FileDescriptors(error))
+            }
+            Some(Err(RelationalIndexShadowError::Stopped(reason))) => {
+                Err(HawDBError::RuntimeTaskStopped(reason))
             }
             Some(Ok(report)) => {
                 self.record_admitted_success(

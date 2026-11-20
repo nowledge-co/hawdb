@@ -3534,6 +3534,10 @@ fn map_relational_staging_error(error: RelationalError) -> HawDBError {
 
 fn map_append_staging_error(error: hawdb_storage::append_table::AppendTableError) -> HawDBError {
     match error {
+        hawdb_storage::append_table::AppendTableError::Stopped(reason) => {
+            HawDBError::RuntimeTaskStopped(reason)
+        }
+        hawdb_storage::append_table::AppendTableError::PublishOutcomeUnknown(error) => *error,
         hawdb_storage::append_table::AppendTableError::SequenceExhausted {
             table,
             watermark,
