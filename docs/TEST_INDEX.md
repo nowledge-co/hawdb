@@ -1674,6 +1674,7 @@ owns the restricted-token descriptor case.
 | --- | --- | --- |
 | `//:hawdb_manual_checkpoint_tests`, `//:hawdb_manual_checkpoint_minimal_tests` | Explicit ordinary/concurrent/embedded checkpoints preserve durable publication independently of background support/admission. Embedded controls retain one same-governor background or foreground I/O permit, distinguish allowed foreground work from legitimate refusal, and check reopen and refunds. | Compatibility labels for the unpublished `hawdb-test-contracts` crate; default merges these five cases with six WAL recovery cases, and minimal retains those five plus all six WAL cases already available under Cargo without default features. Both required root carriers retain the original 300s deadline and use exclusive/single-thread execution. Replay `cargo test --locked -p hawdb-test-contracts --test checkpoint_contracts`, adding `--no-default-features` for minimal. The existing root automatic-checkpoint `publication_io` family also pauses the actual owner with its acquired wave, observes manual suspension, and checks durable completion/refunds under [#1219](https://github.com/nowledge-co/hawdb/issues/1219). |
 | `//:hawdb_unit_general_tests` | Embedded API, schema/query and general facade regressions | Shared unit executable; partition script assigns each discovered case an owner. |
+| Embedded query-report optimizer feedback | `embedded_store::tests::graph_query_with_report_can_capture_physical_plan_on_demand` keeps plan capture opt-in and correlates the selected fingerprint, optimizer estimates and executor actual rows through stable plan-local operator IDs. `graph_query_report_keeps_template_estimates_distinct_from_bound_observations` distinguishes reusable-template estimates on cache miss/hit from bound estimates on forced `memo` and `direct_fallback` bypasses, using 95/5 bindings and complete operator identity maps. The ordinary report path retains executor actuals while proving plan identity and optimizer estimates stay absent without capture. | Existing `//:hawdb_unit_general_tests` owner, profile and timeout; focused replay: `cargo test --locked -p hawdb --lib graph_query_with_report_`. Ref [#1596](https://github.com/nowledge-co/hawdb/issues/1596). |
 | Automatic checkpoint `read_handoff` | Read callbacks, concurrent and SQL reads adopt ready generations; invalid identities fail closed; typed EXPLAIN ANALYZE progresses without the owner mutex | Five existing cases in `//:hawdb_unit_checkpoint_lifecycle_tests`. The seal-pause fixture waits for the owner's handoff-pause acknowledgement before adoption or guard release; observing `Phase::Handoff` alone races probe entry. The invalid-identity case prepares its foreign persistent database before entering the bounded owner pause, keeping unrelated setup I/O outside the 15-second assertion window. Existing query, admission refund, snapshot and reopen assertions and deadlines remain. Replay: `bazel test //:hawdb_unit_checkpoint_lifecycle_tests --test_arg=api::automatic_checkpoint::tests::read_handoff`. Ref [#1116](https://github.com/nowledge-co/hawdb/issues/1116); this fixture race is distinct from other checkpoint/branch-open stalls. |
 | `//:hawdb_unit_concurrent_tests` | Transaction locks, read observation, commit admission and concurrent publication races | Known long target: [#972](https://github.com/nowledge-co/hawdb/issues/972). Preserve barriers and observations; a deadline is not a substitute for a deterministic schedule. |
 | Covered pessimistic graph mutations (`covered_graph`) and concurrent metrics (`api::concurrent::metrics::tests`) | Retained staged results under existing locks, new-target/upgrade replay, stale-epoch refusal, lock timeout/retry, rollback, failed-statement atomicity, durable reopen, disabled-by-default instrumentation and explicit metrics inspection during writer ownership | Owned by `//:hawdb_unit_concurrent_tests`; local replay with `--test_arg=covered_graph` or `--test_arg=api::concurrent::metrics::tests`. Assertions use work counts and final rows rather than timing thresholds. |
@@ -3111,6 +3112,41 @@ message checks. The binding owners pin the mapping:
 - `bindings/python` `errors::tests::wal_record_limit_is_a_non_retryable_execution_error_with_its_limit`.
 No lane, feature matrix or timeout changes. Local replay:
 `cargo test --locked -p hawdb --lib wal_record_limit`.
+### Graph change commit epoch
+
+The graph change commit epoch
+([#1840](https://github.com/nowledge-co/hawdb/issues/1840)) is covered by the
+root general owner, which runs `api::tests::graph_change_epoch`. It checks:
+- relational DDL, rows and transactions leave the epoch unchanged;
+- node, relationship-only, property, schema (node table, index) and delete
+  commits advance it to their commit epoch;
+- a reopen from a checkpoint taken after relational-only commits starts it at
+  the checkpoint's commit epoch, so with no lost commits it never regresses,
+  and WAL replay restores it exactly;
+- pruning the search projection change log does not regress it;
+- a guarded `ConcurrentDatabase` transaction commits despite a concurrent
+  relational commit;
+- a concurrent graph commit refuses that transaction with a typed, retryable
+  `TransactionConflict` that writes nothing, and a retry succeeds;
+- an unguarded transaction is unaffected, and a transaction's own graph writes
+  do not count;
+- append-only commits and an initial import without graph rows (import marker
+  and relational rows only) leave it unchanged, and a clean reopen after that
+  import never lowers it;
+- after a forced group-commit durability barrier failure, the
+  `ConcurrentDatabase` accessor and a transaction opened before the failure
+  return the storage error, and a reopen reports it again;
+- after a forced WAL apply failure, `Database` and `runtime_status` return the
+  storage error, and a new `DatabaseTransaction` is refused;
+- `EmbeddedStoreHandle` reports it in `runtime_status` and production status,
+  supports compare-and-publish in `with_transaction`, and does not regress it
+  across a clean reopen (no lost commits).
+
+The readiness owner checks the JSON field. The checkpoint format is unchanged.
+
+No lane, feature matrix or timeout changes. Local replay:
+`cargo test --locked -p hawdb --lib graph_change_epoch`.
+
 ### Runtime admission refusals
 
 Runtime governor refusals are the typed, non-poisoning

@@ -1,6 +1,6 @@
 module(
     name = "hawdb",
-    version = "0.35.1",
+    version = "0.36.0",
 )
 
 bazel_dep(name = "rules_rust", version = "0.75.0")

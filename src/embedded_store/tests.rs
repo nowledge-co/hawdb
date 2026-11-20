@@ -6,16 +6,16 @@ use super::{
     bounded_read_evidence_json_with_route_readiness, fast_path_classification, graph_config,
     graph_config_with_search_mode, source_mutation_dual_write_evidence_all_ready,
     source_mutation_dual_write_readiness, CutoverControls, EmbeddedGraph,
-    EmbeddedQueryExecutionPath, EmbeddedQueryReportOptions, EmbeddedReadOptions,
-    EmbeddedServingEntrypoint, EmbeddedServingPathReadiness, EmbeddedStorageRecoveryReport,
-    EmbeddedStore, EmbeddedStoreHandle, EmbeddedStoreOpenDiagnosticOptions,
-    EmbeddedStoreOpenOptions, GraphMode, NowledgeQueryRuntimePreflightProbe,
-    OutOfCoreSearchProjection, QualifiedOutOfCoreSearchOptions, ReadinessAreaSummary,
-    ReadinessDashboard, ReadinessOptions, RetrievalProjectionAdvisor, RouteReadinessSummary,
-    SearchCandidateReadinessOptions, SearchCandidateRequest, SearchCandidateShadowAccumulator,
-    SearchProjection, SourceMutationDualWriteEvidence, StorageLifecycleActionKind,
-    StorageLifecycleDecision, WorkControl, BOUNDED_READ_EVIDENCE_PROTOCOL,
-    CUTOVER_CONTROLS_PROTOCOL, LIBRARY_READINESS_PROTOCOL,
+    EmbeddedOptimizerCardinalityEstimateScope, EmbeddedQueryExecutionPath,
+    EmbeddedQueryReportOptions, EmbeddedReadOptions, EmbeddedServingEntrypoint,
+    EmbeddedServingPathReadiness, EmbeddedStorageRecoveryReport, EmbeddedStore,
+    EmbeddedStoreHandle, EmbeddedStoreOpenDiagnosticOptions, EmbeddedStoreOpenOptions, GraphMode,
+    NowledgeQueryRuntimePreflightProbe, OutOfCoreSearchProjection, QualifiedOutOfCoreSearchOptions,
+    ReadinessAreaSummary, ReadinessDashboard, ReadinessOptions, RetrievalProjectionAdvisor,
+    RouteReadinessSummary, SearchCandidateReadinessOptions, SearchCandidateRequest,
+    SearchCandidateShadowAccumulator, SearchProjection, SourceMutationDualWriteEvidence,
+    StorageLifecycleActionKind, StorageLifecycleDecision, WorkControl,
+    BOUNDED_READ_EVIDENCE_PROTOCOL, CUTOVER_CONTROLS_PROTOCOL, LIBRARY_READINESS_PROTOCOL,
     NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL, NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS,
     OPEN_REPORT_PROTOCOL, OPERATIONS_READINESS_PROTOCOL, PRODUCTION_STATUS_PROTOCOL,
     QUERY_REPORT_PROTOCOL, READINESS_DASHBOARD_PROTOCOL, READ_REPORT_PROTOCOL,
@@ -351,6 +351,10 @@ fn graph_query_with_report_keeps_ordered_scan_on_optimized_path() {
     assert_eq!(query.report.optimizer_decision_count, 0);
     assert_eq!(query.report.optimizer_rule_event_count, 0);
     assert!(!query.report.physical_plan_captured);
+    assert_eq!(query.report.selected_plan_fingerprint, None);
+    assert_eq!(query.report.optimizer_cardinality_estimate_scope, None);
+    assert!(query.report.optimizer_cardinality_estimates.is_empty());
+    assert!(!query.report.operator_cardinality_profiles.is_empty());
     assert!(query.report.physical_operator_counts.is_empty());
     assert!(query.report.plan_cache_cacheable);
     assert!(query.report.plan_cache_miss);
@@ -397,9 +401,34 @@ fn graph_query_with_report_can_capture_physical_plan_on_demand() {
 
     assert_eq!(query.output.rows.len(), 1);
     assert!(query.report.physical_plan_captured);
+    assert_eq!(
+        query.report.optimizer_cardinality_estimate_scope,
+        Some(EmbeddedOptimizerCardinalityEstimateScope::TemplatePlan)
+    );
     assert_eq!(query.report.statement_kind, "match_return");
     assert!(query.report.optimizer_decision_count > 0);
     assert!(query.report.optimizer_rule_event_count > 0);
+    assert!(query
+        .report
+        .selected_plan_fingerprint
+        .as_deref()
+        .is_some_and(|fingerprint| !fingerprint.is_empty()));
+    assert!(!query.report.optimizer_cardinality_estimates.is_empty());
+    assert!(!query.report.operator_cardinality_profiles.is_empty());
+    assert!(query
+        .report
+        .optimizer_cardinality_estimates
+        .iter()
+        .any(|estimate| {
+            query
+                .report
+                .operator_cardinality_profiles
+                .iter()
+                .any(|profile| {
+                    profile.operator_id.ordinal() == estimate.operator_id
+                        && profile.operator.as_str() == estimate.operator
+                })
+        }));
     assert!(query
         .report
         .physical_operator_counts
@@ -408,6 +437,19 @@ fn graph_query_with_report_can_capture_physical_plan_on_demand() {
     assert_eq!(query.report.plan_cache_bypass_reason, None);
     assert!(query.report.slow_log_candidate);
     assert_eq!(query.report.json()["physical_plan_captured"], true);
+    assert!(query.report.json()["selected_plan_fingerprint"]
+        .as_str()
+        .is_some_and(|fingerprint| !fingerprint.is_empty()));
+    assert_eq!(
+        query.report.json()["optimizer_cardinality_estimate_scope"],
+        "template_plan"
+    );
+    assert!(query.report.json()["optimizer_cardinality_estimate_count"]
+        .as_u64()
+        .is_some_and(|count| count > 0));
+    assert!(query.report.json()["operator_cardinality_profile_count"]
+        .as_u64()
+        .is_some_and(|count| count > 0));
     assert!(query.report.json()["optimizer_rule_event_count"]
         .as_u64()
         .is_some_and(|count| count > 0));
@@ -456,6 +498,231 @@ fn graph_query_with_report_captures_plan_without_extra_cache_lookup() {
     assert_eq!(after.entries, before.entries + 1);
     assert_eq!(after.misses, before.misses + 1);
     assert_eq!(after.hits, before.hits);
+}
+
+#[test]
+fn graph_query_report_keeps_template_estimates_distinct_from_bound_observations() {
+    let db = Database::new_with_config(DatabaseConfig {
+        max_plan_cache_entries: Some(256),
+        ..DatabaseConfig::default()
+    });
+    let mut graph = EmbeddedGraph::from_database(db, GraphMode::WritableCutover);
+    let mut expected_hot_ids = Vec::new();
+    let mut expected_cold_ids = Vec::new();
+    for index in 0..100 {
+        let (space, expected) = if index < 95 {
+            ("hot", &mut expected_hot_ids)
+        } else {
+            ("cold", &mut expected_cold_ids)
+        };
+        let id = format!("memory-{index:03}");
+        expected.push(id.clone());
+        graph
+            .query(&format!(
+                "CREATE (:Memory {{id: '{id}', space: '{space}'}})"
+            ))
+            .unwrap();
+    }
+
+    let statement = "MATCH (m:Memory) WHERE m.space = $space RETURN m.id AS id ORDER BY id";
+    let options = EmbeddedQueryReportOptions {
+        capture_physical_plan: true,
+        slow_log_threshold_micros: None,
+    };
+    let hot = graph
+        .query_with_params_with_report_options(
+            statement,
+            &BTreeMap::from([("space".to_string(), Value::String("hot".to_string()))]),
+            options,
+        )
+        .unwrap();
+    let cold = graph
+        .query_with_params_with_report_options(
+            statement,
+            &BTreeMap::from([("space".to_string(), Value::String("cold".to_string()))]),
+            options,
+        )
+        .unwrap();
+    let forced = ["memo", "direct_fallback"].map(|mode| {
+        let forced_statement = format!("CYPHER system.optimizer_search = '{mode}' {statement}");
+        let hot = graph
+            .query_with_params_with_report_options(
+                &forced_statement,
+                &BTreeMap::from([("space".to_string(), Value::String("hot".to_string()))]),
+                options,
+            )
+            .unwrap();
+        let cold = graph
+            .query_with_params_with_report_options(
+                &forced_statement,
+                &BTreeMap::from([("space".to_string(), Value::String("cold".to_string()))]),
+                options,
+            )
+            .unwrap();
+        (mode, hot, cold)
+    });
+
+    let output_ids = |query: &super::EmbeddedQueryOutput| {
+        query
+            .output
+            .rows
+            .iter()
+            .map(|row| match row.get("id") {
+                Some(Value::String(id)) => id.clone(),
+                value => panic!("expected string id, got {value:?}"),
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(output_ids(&hot), expected_hot_ids);
+    assert_eq!(output_ids(&cold), expected_cold_ids);
+    for (mode, forced_hot, forced_cold) in &forced {
+        assert_eq!(output_ids(forced_hot), expected_hot_ids, "{mode}");
+        assert_eq!(output_ids(forced_cold), expected_cold_ids, "{mode}");
+    }
+    assert_eq!(hot.report.plan_cache_lookup.as_deref(), Some("miss"));
+    assert_eq!(cold.report.plan_cache_lookup.as_deref(), Some("hit"));
+    assert_eq!(
+        hot.report.selected_plan_fingerprint,
+        cold.report.selected_plan_fingerprint
+    );
+    assert_eq!(
+        hot.report.optimizer_cardinality_estimate_scope,
+        Some(EmbeddedOptimizerCardinalityEstimateScope::TemplatePlan)
+    );
+    assert_eq!(
+        cold.report.optimizer_cardinality_estimate_scope,
+        Some(EmbeddedOptimizerCardinalityEstimateScope::TemplatePlan)
+    );
+    for (mode, forced_hot, forced_cold) in &forced {
+        assert_eq!(
+            forced_hot.report.plan_cache_lookup.as_deref(),
+            Some("bypass"),
+            "{mode}"
+        );
+        assert_eq!(
+            forced_cold.report.plan_cache_lookup.as_deref(),
+            Some("bypass"),
+            "{mode}"
+        );
+        assert_eq!(
+            forced_hot.report.selected_plan_fingerprint,
+            forced_cold.report.selected_plan_fingerprint,
+            "{mode}"
+        );
+        assert_eq!(
+            forced_hot.report.optimizer_cardinality_estimate_scope,
+            Some(EmbeddedOptimizerCardinalityEstimateScope::BoundPlan),
+            "{mode}"
+        );
+        assert_eq!(
+            forced_cold.report.optimizer_cardinality_estimate_scope,
+            Some(EmbeddedOptimizerCardinalityEstimateScope::BoundPlan),
+            "{mode}"
+        );
+        assert_eq!(
+            forced_hot.report.json()["optimizer_cardinality_estimate_scope"],
+            "bound_plan",
+            "{mode}"
+        );
+        assert_eq!(
+            forced_cold.report.json()["optimizer_cardinality_estimate_scope"],
+            "bound_plan",
+            "{mode}"
+        );
+    }
+
+    let estimates = |query: &super::EmbeddedQueryOutput| {
+        query
+            .report
+            .optimizer_cardinality_estimates
+            .iter()
+            .map(|estimate| {
+                (
+                    (estimate.operator_id, estimate.operator.clone()),
+                    estimate.estimated_rows,
+                )
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
+    let actuals = |query: &super::EmbeddedQueryOutput| {
+        query
+            .report
+            .operator_cardinality_profiles
+            .iter()
+            .map(|profile| {
+                (
+                    (
+                        profile.operator_id.ordinal(),
+                        profile.operator.as_str().to_string(),
+                    ),
+                    profile.actual_rows,
+                )
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
+    let hot_estimates = estimates(&hot);
+    let cold_estimates = estimates(&cold);
+    let hot_actuals = actuals(&hot);
+    let cold_actuals = actuals(&cold);
+    assert_eq!(hot_estimates, cold_estimates);
+    assert_eq!(
+        hot_estimates.keys().collect::<Vec<_>>(),
+        hot_actuals.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        hot_actuals.keys().collect::<Vec<_>>(),
+        cold_actuals.keys().collect::<Vec<_>>()
+    );
+    assert!(hot_estimates.iter().any(|(operator, estimate)| {
+        *estimate == 50
+            && hot_actuals.get(operator) == Some(&Some(95))
+            && cold_actuals.get(operator) == Some(&Some(5))
+    }));
+    for (mode, forced_hot, forced_cold) in &forced {
+        let forced_hot_estimates = estimates(forced_hot);
+        let forced_cold_estimates = estimates(forced_cold);
+        let forced_hot_actuals = actuals(forced_hot);
+        let forced_cold_actuals = actuals(forced_cold);
+        assert_eq!(
+            forced_hot_estimates.keys().collect::<Vec<_>>(),
+            forced_cold_estimates.keys().collect::<Vec<_>>(),
+            "{mode}"
+        );
+        assert_eq!(
+            forced_hot_estimates.keys().collect::<Vec<_>>(),
+            forced_hot_actuals.keys().collect::<Vec<_>>(),
+            "{mode}"
+        );
+        assert_eq!(
+            forced_cold_estimates.keys().collect::<Vec<_>>(),
+            forced_cold_actuals.keys().collect::<Vec<_>>(),
+            "{mode}"
+        );
+        assert!(
+            forced_hot_estimates
+                .values()
+                .all(|estimate| *estimate == 95),
+            "{mode}: {forced_hot_estimates:?}"
+        );
+        assert!(
+            forced_cold_estimates
+                .values()
+                .all(|estimate| *estimate == 5),
+            "{mode}: {forced_cold_estimates:?}"
+        );
+        assert!(
+            forced_hot_actuals
+                .values()
+                .all(|actual| *actual == Some(95)),
+            "{mode}: {forced_hot_actuals:?}"
+        );
+        assert!(
+            forced_cold_actuals
+                .values()
+                .all(|actual| *actual == Some(5)),
+            "{mode}: {forced_cold_actuals:?}"
+        );
+    }
 }
 
 #[test]

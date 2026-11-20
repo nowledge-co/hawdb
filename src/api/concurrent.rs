@@ -266,6 +266,12 @@ impl ConcurrentDatabase {
         Ok(self.published_read_view()?.visible_commit_epoch())
     }
 
+    /// Returns the newest commit epoch that changed graph data or schema; see
+    /// [`Database::graph_change_commit_epoch`]. Waits for an active writer.
+    pub fn graph_change_commit_epoch(&self) -> Result<u64> {
+        self.inner.commits.lock()?.graph_change_commit_epoch()
+    }
+
     /// Includes the physical generation refreshed by completed checkpoints.
     pub fn published_read_view(&self) -> Result<crate::store::PublishedReadView> {
         Ok(self
@@ -755,6 +761,21 @@ impl ConcurrentDatabaseTransaction {
         self.base_commit_epoch
     }
 
+    /// Returns the graph change commit epoch of this transaction's base
+    /// snapshot (see [`Database::graph_change_commit_epoch`]) and makes the
+    /// commit conditional on it, for compare-and-publish. If a commit that
+    /// changed graph data or schema is published after the base snapshot, this
+    /// transaction's commit fails with the retryable
+    /// `HawDBError::TransactionConflict` (key `graph_change_commit_epoch`) and
+    /// writes nothing. Relational-only commits never cause that refusal. The
+    /// transaction's own graph writes do not count. Refused with the storage
+    /// error if the database is poisoned, for example after a failed group
+    /// commit durability barrier.
+    pub fn graph_change_commit_epoch(&mut self) -> Result<u64> {
+        self.inner.commits.lock()?.graph_change_commit_epoch()?;
+        Ok(self.state.guard_graph_change_commit_epoch())
+    }
+
     pub fn mode(&self) -> ConcurrentTransactionMode {
         self.options.mode
     }
@@ -1107,7 +1128,10 @@ impl ConcurrentDatabaseTransaction {
                 // history lease or changing any part of the transaction view.
                 let dependencies = capture_lock_dependencies(&database, self.options)?;
                 let runtime = DatabaseTransactionRuntime::from_database(&database)?;
-                let state = DatabaseTransactionState::from_database(&database)?;
+                let mut state = DatabaseTransactionState::from_database(&database)?;
+                // A graph change epoch the caller already read stays the
+                // commit condition; the refreshed snapshot must not reset it.
+                state.keep_graph_change_guard(&self.state);
                 self.base_commit_epoch = current_epoch;
                 self.runtime = runtime;
                 self.state = state;

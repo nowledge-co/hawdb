@@ -80,6 +80,30 @@ impl Database {
         Ok(self.runtime.get()?.store.commit_epoch())
     }
 
+    /// Returns the commit epoch of the newest commit that changed graph data
+    /// or graph schema on the selected branch.
+    ///
+    /// Node and relationship writes (including property changes and deletes)
+    /// and graph DDL (node/relationship tables, labels, relationship types,
+    /// property definitions, indexes, constraints and projected graphs)
+    /// advance it to their commit epoch. Relational-only and append-only
+    /// commits do not. It does not depend on the search projection change
+    /// log. It is not persisted: on open it starts at the checkpoint's commit
+    /// epoch (an upper bound of the last graph change) and WAL replay advances
+    /// it exactly, so a reopen may advance it once.
+    ///
+    /// Monotonic only over surviving history: it never decreases within one
+    /// open handle, nor across a reopen while every acknowledged commit
+    /// survives. Under relaxed durability (`SyncOnCheckpoint`) a crash can drop
+    /// acknowledged commits, so the value can move back and later commits can
+    /// reuse those epochs for different graph content. Discard any baseline
+    /// taken before a reopen and capture it again. A poisoned
+    /// database (for example after a failed durability barrier) returns the
+    /// storage error instead of a value.
+    pub fn graph_change_commit_epoch(&self) -> Result<u64> {
+        self.runtime.get()?.store.graph_change_commit_epoch()
+    }
+
     pub fn published_read_view(&self) -> Result<PublishedReadView> {
         Ok(self.runtime.get()?.store.published_read_view())
     }

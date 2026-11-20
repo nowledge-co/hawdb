@@ -300,6 +300,7 @@ impl EmbeddedStoreHandle {
                 mode,
                 statement: &trace.statement,
                 trace: trace.optimizer_trace.as_ref(),
+                optimizer_cardinality_estimate_scope: trace.optimizer_cardinality_estimate_scope,
                 plan_cache_lookup: trace.plan_cache_lookup,
                 execution_profile: trace.execution_profile.as_ref(),
                 output: &output,
