@@ -1062,6 +1062,8 @@ impl Database {
                 QueryOutput { rows },
                 QueryExecutionTrace {
                     statement,
+                    optimizer_cardinality_estimate_scope: capture_trace
+                        .then_some(optimized.cardinality_estimate_scope),
                     optimizer_trace: capture_trace.then_some(optimized.trace),
                     plan_cache_lookup: Some(optimized.plan_cache_lookup),
                     execution_profile,

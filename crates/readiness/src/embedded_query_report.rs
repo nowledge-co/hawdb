@@ -189,12 +189,17 @@ pub enum EmbeddedOptimizerCardinalityEstimateScope {
     /// executions can observe different row counts without changing this
     /// template-level planning evidence, whether or not the plan is cached.
     TemplatePlan,
+    /// Estimates produced while planning or refreshing the selected physical
+    /// plan with the current parameter bindings. A different binding may
+    /// therefore retain the plan shape while changing these estimates.
+    BoundPlan,
 }
 
 impl EmbeddedOptimizerCardinalityEstimateScope {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::TemplatePlan => "template_plan",
+            Self::BoundPlan => "bound_plan",
         }
     }
 }

@@ -1136,6 +1136,9 @@ impl EmbeddedGraph {
             mode: self.mode,
             statement: &execution.trace.statement,
             trace: execution.trace.optimizer_trace.as_ref(),
+            optimizer_cardinality_estimate_scope: execution
+                .trace
+                .optimizer_cardinality_estimate_scope,
             plan_cache_lookup: execution.trace.plan_cache_lookup,
             execution_profile: execution.trace.execution_profile.as_ref(),
             output: &execution.output,
@@ -3646,6 +3649,7 @@ struct EmbeddedQueryReportInput<'a> {
     mode: GraphMode,
     statement: &'a cypher::Statement,
     trace: Option<&'a crate::optimizer::OptimizerTrace>,
+    optimizer_cardinality_estimate_scope: Option<crate::api::PlanCardinalityEstimateScope>,
     plan_cache_lookup: Option<PlanCacheLookup>,
     execution_profile: Option<&'a ReadExecutionProfile>,
     output: &'a QueryOutput,
@@ -3688,9 +3692,16 @@ fn embedded_query_report(input: EmbeddedQueryReportInput<'_>) -> EmbeddedQueryRe
             selected_plan_fingerprint: input
                 .trace
                 .map(|trace| trace.selected_plan_fingerprint.as_str()),
-            optimizer_cardinality_estimate_scope: input
-                .trace
-                .map(|_| EmbeddedOptimizerCardinalityEstimateScope::TemplatePlan),
+            optimizer_cardinality_estimate_scope: input.optimizer_cardinality_estimate_scope.map(
+                |scope| match scope {
+                    crate::api::PlanCardinalityEstimateScope::TemplatePlan => {
+                        EmbeddedOptimizerCardinalityEstimateScope::TemplatePlan
+                    }
+                    crate::api::PlanCardinalityEstimateScope::BoundPlan => {
+                        EmbeddedOptimizerCardinalityEstimateScope::BoundPlan
+                    }
+                },
+            ),
             optimizer_cardinality_estimates: input
                 .trace
                 .map(|trace| {

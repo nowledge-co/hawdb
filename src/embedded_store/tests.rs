@@ -543,6 +543,24 @@ fn graph_query_report_keeps_template_estimates_distinct_from_bound_observations(
             options,
         )
         .unwrap();
+    let forced = ["memo", "direct_fallback"].map(|mode| {
+        let forced_statement = format!("CYPHER system.optimizer_search = '{mode}' {statement}");
+        let hot = graph
+            .query_with_params_with_report_options(
+                &forced_statement,
+                &BTreeMap::from([("space".to_string(), Value::String("hot".to_string()))]),
+                options,
+            )
+            .unwrap();
+        let cold = graph
+            .query_with_params_with_report_options(
+                &forced_statement,
+                &BTreeMap::from([("space".to_string(), Value::String("cold".to_string()))]),
+                options,
+            )
+            .unwrap();
+        (mode, hot, cold)
+    });
 
     let output_ids = |query: &super::EmbeddedQueryOutput| {
         query
@@ -557,6 +575,10 @@ fn graph_query_report_keeps_template_estimates_distinct_from_bound_observations(
     };
     assert_eq!(output_ids(&hot), expected_hot_ids);
     assert_eq!(output_ids(&cold), expected_cold_ids);
+    for (mode, forced_hot, forced_cold) in &forced {
+        assert_eq!(output_ids(forced_hot), expected_hot_ids, "{mode}");
+        assert_eq!(output_ids(forced_cold), expected_cold_ids, "{mode}");
+    }
     assert_eq!(hot.report.plan_cache_lookup.as_deref(), Some("miss"));
     assert_eq!(cold.report.plan_cache_lookup.as_deref(), Some("hit"));
     assert_eq!(
@@ -571,6 +593,43 @@ fn graph_query_report_keeps_template_estimates_distinct_from_bound_observations(
         cold.report.optimizer_cardinality_estimate_scope,
         Some(EmbeddedOptimizerCardinalityEstimateScope::TemplatePlan)
     );
+    for (mode, forced_hot, forced_cold) in &forced {
+        assert_eq!(
+            forced_hot.report.plan_cache_lookup.as_deref(),
+            Some("bypass"),
+            "{mode}"
+        );
+        assert_eq!(
+            forced_cold.report.plan_cache_lookup.as_deref(),
+            Some("bypass"),
+            "{mode}"
+        );
+        assert_eq!(
+            forced_hot.report.selected_plan_fingerprint,
+            forced_cold.report.selected_plan_fingerprint,
+            "{mode}"
+        );
+        assert_eq!(
+            forced_hot.report.optimizer_cardinality_estimate_scope,
+            Some(EmbeddedOptimizerCardinalityEstimateScope::BoundPlan),
+            "{mode}"
+        );
+        assert_eq!(
+            forced_cold.report.optimizer_cardinality_estimate_scope,
+            Some(EmbeddedOptimizerCardinalityEstimateScope::BoundPlan),
+            "{mode}"
+        );
+        assert_eq!(
+            forced_hot.report.json()["optimizer_cardinality_estimate_scope"],
+            "bound_plan",
+            "{mode}"
+        );
+        assert_eq!(
+            forced_cold.report.json()["optimizer_cardinality_estimate_scope"],
+            "bound_plan",
+            "{mode}"
+        );
+    }
 
     let estimates = |query: &super::EmbeddedQueryOutput| {
         query
@@ -619,6 +678,51 @@ fn graph_query_report_keeps_template_estimates_distinct_from_bound_observations(
             && hot_actuals.get(operator) == Some(&Some(95))
             && cold_actuals.get(operator) == Some(&Some(5))
     }));
+    for (mode, forced_hot, forced_cold) in &forced {
+        let forced_hot_estimates = estimates(forced_hot);
+        let forced_cold_estimates = estimates(forced_cold);
+        let forced_hot_actuals = actuals(forced_hot);
+        let forced_cold_actuals = actuals(forced_cold);
+        assert_eq!(
+            forced_hot_estimates.keys().collect::<Vec<_>>(),
+            forced_cold_estimates.keys().collect::<Vec<_>>(),
+            "{mode}"
+        );
+        assert_eq!(
+            forced_hot_estimates.keys().collect::<Vec<_>>(),
+            forced_hot_actuals.keys().collect::<Vec<_>>(),
+            "{mode}"
+        );
+        assert_eq!(
+            forced_cold_estimates.keys().collect::<Vec<_>>(),
+            forced_cold_actuals.keys().collect::<Vec<_>>(),
+            "{mode}"
+        );
+        assert!(
+            forced_hot_estimates
+                .values()
+                .all(|estimate| *estimate == 95),
+            "{mode}: {forced_hot_estimates:?}"
+        );
+        assert!(
+            forced_cold_estimates
+                .values()
+                .all(|estimate| *estimate == 5),
+            "{mode}: {forced_cold_estimates:?}"
+        );
+        assert!(
+            forced_hot_actuals
+                .values()
+                .all(|actual| *actual == Some(95)),
+            "{mode}: {forced_hot_actuals:?}"
+        );
+        assert!(
+            forced_cold_actuals
+                .values()
+                .all(|actual| *actual == Some(5)),
+            "{mode}: {forced_cold_actuals:?}"
+        );
+    }
 }
 
 #[test]
