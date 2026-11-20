@@ -591,6 +591,20 @@ profile or timeout is added. Local replay:
 and `cargo test --locked -p hawdb-search --lib projection_ownership`. See
 [the contract](SEARCH_EXTERNALLY_OWNED_KINDS.md).
 
+`embedded_store::projection_id_page_tests` (`nowledge-co/hawdb#1851`) stays in
+the existing root `//:hawdb_unit_general_tests` owner. Resident and out-of-core
+fixtures page the same mixed Memory/Source corpus, assert document-ID ordering,
+exclusive cursors, kind filtering and path-specific generation tokens. The
+resident mutation case proves a generation change is visible between pages
+without the first page pinning its source. A live page raises governor retained
+memory on both paths by exactly its UTF-8 ID and copied-cursor bytes and refunds
+the charge on drop; both paths serve a page under a 64-byte payload cap that
+cannot hold the complete projection. A 1 KiB governor refuses an oversized
+page with typed `RuntimeAdmissionRefused(memory_saturated)`, and pre-cancelled
+work returns typed `RuntimeTaskStopped`. The fixtures are small and add no lane,
+profile or timeout. Local replay:
+`cargo test --locked -p hawdb --all-features projection_id_page_tests`.
+
 Search-crate owner `out_of_core::manifest_version::tests` (`nowledge-co/hawdb#1763`),
 in the same `hawdb-search` unit lane, covers the selector version gate. A newer
 selector is refused as the typed `UnsupportedStorageFormat`, never `Storage`,
