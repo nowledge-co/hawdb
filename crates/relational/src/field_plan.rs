@@ -627,6 +627,14 @@ fn collect_expression_hydration_columns(
             collect_expression_hydration_columns(right, metadata_columns, value_columns);
         }
         Expr {
+            kind: ExprKind::RowCompare { left, right, .. },
+            ..
+        } => {
+            for expression in left.iter().chain(right) {
+                collect_expression_hydration_columns(expression, metadata_columns, value_columns);
+            }
+        }
+        Expr {
             kind:
                 ExprKind::Not(inner)
                 | ExprKind::Negate(inner)

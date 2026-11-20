@@ -81,6 +81,8 @@ The scoped grammar includes:
 
 - table and column aliases, `INNER JOIN`, and `LEFT JOIN`;
 - boolean predicates with SQL three-valued null behavior;
+- PostgreSQL row constructors in comparison predicates, using either
+  `(expression, ...)` or `ROW(expression, ...)` syntax;
 - `DISTINCT`, `GROUP BY`, `COUNT`, `SUM`, `MIN`, `MAX`, `COALESCE`, and
   `OCTET_LENGTH`;
 - deterministic PostgreSQL null ordering, `LIMIT`, and `OFFSET`;
@@ -432,16 +434,20 @@ accepted. Each locator batch is bounded by both `batch_rows` and
 payload values enter neither the locator column nor an intermediate `Binding`;
 only the selected locator batch may perform final projection hydration.
 
-A canonical two-column keyset predicate MAY continue that ordered index path
-from an exclusive cursor. The accepted shape is one leading equality prefix
-followed by `(sort > cursor OR (sort = cursor AND id > cursor_id))` for uniform
-ascending order, or the corresponding `<` predicate for uniform descending
-order. The cursor values must complete the composite index key, and both order
-columns must be non-null. Mixed directions, nullable order columns, incomplete
-index suffixes, and non-canonical predicates MUST retain the blocking fallback.
-Descending pages traverse the same ascending index in reverse; neither
-direction may hydrate rows beyond the bounded locator page. Planned and runtime
-explain evidence must distinguish exclusive seek, direction, and early stop.
+A strict row-constructor keyset predicate MAY continue that ordered index path
+from an exclusive cursor. Its left fields must exactly match the uniformly
+ordered suffix, its right fields must be values, and those values together with
+the leading equality prefix must complete the composite index key. `>` is the
+native ascending shape and `<` is the native descending shape. The legacy
+expanded two-column shape `(sort > cursor OR (sort = cursor AND id >
+cursor_id))`, and its descending counterpart, remains equivalent and supported.
+Cursor fields must be non-null at runtime; a NULL comparison produces unknown
+and therefore no matching row. Mixed directions, nullable order columns,
+incomplete index suffixes, inclusive row predicates, and non-canonical
+predicates MUST retain the blocking fallback. Descending pages traverse the
+same ascending index in reverse; neither direction may hydrate rows beyond the
+bounded locator page. Planned and runtime explain evidence must distinguish
+exclusive seek, direction, full order-prefix arity, and early stop.
 
 Blocking relational rows MUST carry a typed `sort_keys + locator + stable
 ordinal` record and MUST NOT materialize an executor `Binding`, public `Value`,

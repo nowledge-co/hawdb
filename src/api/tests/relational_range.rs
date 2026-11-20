@@ -283,3 +283,199 @@ fn sql_composite_range_seeks_a_late_page_under_a_four_row_read_budget() {
     drop(db);
     std::fs::remove_dir_all(path).unwrap();
 }
+
+fn query_ids(database: &mut Database, sql: &str, parameters: &[Value]) -> Vec<Value> {
+    database
+        .query_sql_with_params(sql, parameters)
+        .unwrap()
+        .rows
+        .into_iter()
+        .map(|row| row["id"].clone())
+        .collect()
+}
+
+#[test]
+fn sql_row_comparisons_preserve_postgresql_null_and_lexicographic_semantics() {
+    let mut db = Database::new();
+    db.query_sql(
+        "CREATE TABLE row_cmp (id BIGINT PRIMARY KEY, a BIGINT, b BIGINT, body TEXT NOT NULL)",
+    )
+    .unwrap();
+    db.query_sql("INSERT INTO row_cmp (id, a, b, body) VALUES (1, 1, 1, 'one'), (2, 1, 2, 'two'), (3, 2, 0, 'three'), (4, NULL, 0, 'null-a'), (5, 1, NULL, 'null-b')")
+        .unwrap();
+
+    for (predicate, expected) in [
+        ("(a, b) > (1, 1)", vec![2, 3]),
+        ("(a, b) >= (1, 1)", vec![1, 2, 3]),
+        ("(a, b) < (1, 1)", vec![]),
+        ("(a, b) <= (1, 1)", vec![1]),
+        ("(a, b) = (1, 1)", vec![1]),
+        ("(a, b) <> (1, 1)", vec![2, 3, 4]),
+        ("ROW(a, b) <= ROW(1, 2)", vec![1, 2]),
+        ("(a + 1, b) > (2, 1)", vec![2, 3]),
+        ("(1, 1) < (a, b)", vec![2, 3]),
+        // The first field decides these rows, so a later NULL is not read.
+        ("(a, b) < (2, NULL)", vec![1, 2, 5]),
+        // The first fields tie, so the NULL second field makes the result unknown.
+        ("(a, b) < (1, NULL)", vec![]),
+    ] {
+        let sql = format!("SELECT id FROM row_cmp WHERE {predicate} ORDER BY id");
+        assert_eq!(
+            query_ids(&mut db, &sql, &[]),
+            expected.into_iter().map(Value::Int).collect::<Vec<_>>(),
+            "{predicate}"
+        );
+    }
+    assert_eq!(
+        query_ids(
+            &mut db,
+            "SELECT id FROM row_cmp WHERE (a, b) > ($1, $2) ORDER BY id",
+            &[Value::Int(1), Value::Int(1)],
+        ),
+        vec![Value::Int(2), Value::Int(3)]
+    );
+    assert!(query_ids(
+        &mut db,
+        "SELECT id FROM row_cmp WHERE (a, b) > ($1, $2) ORDER BY id",
+        &[Value::Null, Value::Int(0)],
+    )
+    .is_empty());
+    let type_error = db
+        .query_sql("SELECT id FROM row_cmp WHERE (a, b) > (1, 'not-a-number')")
+        .unwrap_err();
+    assert!(
+        matches!(
+            type_error,
+            HawDBError::Semantic(_) | HawDBError::Execution(_)
+        ),
+        "{type_error}"
+    );
+
+    let joined = db
+        .query_sql("SELECT r.id FROM row_cmp AS l JOIN row_cmp AS r ON (l.a, l.b) = (r.a, r.b) WHERE l.id = 2 ORDER BY r.id")
+        .unwrap();
+    assert_eq!(joined.rows.len(), 1);
+    assert_eq!(joined.rows[0]["id"], Value::Int(2));
+
+    let grouped = db
+        .query_sql("SELECT a, COUNT(*) AS n FROM row_cmp GROUP BY a HAVING (a, COUNT(*)) = (1, 3)")
+        .unwrap();
+    assert_eq!(grouped.rows.len(), 1);
+    assert_eq!(grouped.rows[0]["a"], Value::Int(1));
+    assert_eq!(grouped.rows[0]["n"], Value::Int(3));
+
+    db.query_sql("UPDATE row_cmp SET body = 'hit' WHERE (a, b) >= (2, 0)")
+        .unwrap();
+    assert_eq!(
+        query_ids(
+            &mut db,
+            "SELECT id FROM row_cmp WHERE body = 'hit' ORDER BY id",
+            &[]
+        ),
+        vec![Value::Int(3)]
+    );
+    db.query_sql("DELETE FROM row_cmp WHERE (a, b) <> (1, 1)")
+        .unwrap();
+    assert_eq!(
+        query_ids(&mut db, "SELECT id FROM row_cmp ORDER BY id", &[]),
+        vec![Value::Int(1), Value::Int(5)]
+    );
+}
+
+fn seed_row_keyset(database: &mut Database, indexed: bool) {
+    database
+        .query_sql("CREATE TABLE row_keyset (id BIGINT PRIMARY KEY, tenant TEXT NOT NULL, bucket BIGINT NOT NULL, rank BIGINT NOT NULL)")
+        .unwrap();
+    let rows = (0..120)
+        .map(|id| {
+            format!(
+                "({id}, '{}', {}, {})",
+                if id < 100 { "a" } else { "b" },
+                id / 20,
+                id % 5
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    database
+        .query_sql(&format!(
+            "INSERT INTO row_keyset (id, tenant, bucket, rank) VALUES {rows}"
+        ))
+        .unwrap();
+    if indexed {
+        database
+            .query_sql("CREATE INDEX row_keyset_cursor ON row_keyset (tenant, bucket, rank, id)")
+            .unwrap();
+    }
+}
+
+#[test]
+fn sql_arbitrary_row_keyset_uses_complete_index_bound_after_reopen() {
+    use hawdb_storage::config::RelationalIndexMode;
+
+    let path = unique_test_dir("sql-row-keyset");
+    let config = DatabaseConfig {
+        max_read_result_rows: Some(8),
+        relational_index_mode: RelationalIndexMode::DemandPaged,
+        ..Default::default()
+    };
+    let mut reference = Database::new();
+    seed_row_keyset(&mut reference, false);
+    let mut db = Database::open_with_config(&path, config.clone()).unwrap();
+    seed_row_keyset(&mut db, true);
+    db.checkpoint().unwrap();
+    drop(db);
+    let mut db = Database::open_with_config(&path, config).unwrap();
+
+    for (operator, direction, parameters) in [
+        (
+            ">",
+            "ASC",
+            vec![Value::Int(3), Value::Int(1), Value::Int(61)],
+        ),
+        (
+            "<",
+            "DESC",
+            vec![Value::Int(3), Value::Int(1), Value::Int(61)],
+        ),
+    ] {
+        let sql = format!(
+            "SELECT id, bucket, rank FROM row_keyset WHERE tenant = 'a' AND (bucket, rank, id) {operator} ($1, $2, $3) ORDER BY bucket {direction}, rank {direction}, id {direction} LIMIT 5"
+        );
+        assert_same(&mut db, &mut reference, &sql, &parameters);
+        let plan = db
+            .query_sql_with_params(&format!("EXPLAIN {sql}"), &parameters)
+            .unwrap();
+        assert!(plan.rows.iter().any(|row| matches!(row.get("operator info"), Some(Value::String(info)) if info.contains("exclusive_seek=true") && info.contains("order_prefix=3"))), "{plan:?}");
+        assert!(plan.rows.iter().all(|row| !matches!(row.get("id"), Some(Value::String(id)) if id.contains("SortExec") || id.contains("SelectionExec"))), "{plan:?}");
+    }
+
+    for (operator, direction) in [(">", "ASC"), ("<", "DESC")] {
+        let parameters = [
+            Value::String("a".to_string()),
+            Value::Int(3),
+            Value::Int(1),
+            Value::Int(61),
+        ];
+        let sql = format!(
+            "SELECT id, bucket, rank FROM row_keyset WHERE (tenant, bucket, rank, id) {operator} ($1, $2, $3, $4) ORDER BY tenant {direction}, bucket {direction}, rank {direction}, id {direction} LIMIT 5"
+        );
+        assert_same(&mut db, &mut reference, &sql, &parameters);
+        let plan = db
+            .query_sql_with_params(&format!("EXPLAIN {sql}"), &parameters)
+            .unwrap();
+        assert!(plan.rows.iter().any(|row| matches!(row.get("operator info"), Some(Value::String(info)) if info.contains("exclusive_seek=true") && info.contains("order_prefix=4"))), "{plan:?}");
+        assert!(plan.rows.iter().all(|row| !matches!(row.get("id"), Some(Value::String(id)) if id.contains("SortExec") || id.contains("SelectionExec"))), "{plan:?}");
+    }
+
+    let null_plan = db
+        .query_sql_with_params(
+            "EXPLAIN SELECT id FROM row_keyset WHERE (tenant, bucket, rank, id) > ($1, $2, $3, $4) ORDER BY tenant, bucket, rank, id LIMIT 5",
+            &[Value::Null, Value::Int(3), Value::Int(1), Value::Int(61)],
+        )
+        .unwrap();
+    assert!(null_plan.rows.iter().all(|row| !matches!(row.get("operator info"), Some(Value::String(info)) if info.contains("exclusive_seek=true"))), "{null_plan:?}");
+
+    drop(db);
+    std::fs::remove_dir_all(path).unwrap();
+}

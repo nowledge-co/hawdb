@@ -19,7 +19,7 @@ use crate::{
 };
 use hawdb_core::{HawDBError, Result, Value};
 use hawdb_sql::{
-    AlterTableAddColumnStatement, CreateIndexStatement, CreateTableStatement, ExprKind,
+    AlterTableAddColumnStatement, CreateIndexStatement, CreateTableStatement, Expr, ExprKind,
     PreparedPostgresStatement, SqlArithmeticOperand, SqlAssignmentValue, SqlComparisonOp,
     SqlConflictAction, SqlPredicate, SqlReferentialAction, SqlStatement, SqlTableConstraint,
     SqlTableStorage, SqlValue,
@@ -462,6 +462,9 @@ pub(super) fn compile_mutation_predicate(
         ExprKind::Compare { left, op, right } => {
             numeric::compile_comparison(left, *op, right, parameters, schema, alias, table)?
         }
+        ExprKind::RowCompare { left, op, right } => {
+            compile_mutation_row_comparison(left, *op, right, parameters, schema, alias, table)?
+        }
         ExprKind::Like { .. } => {
             return Err(HawDBError::Semantic(
                 "single-table mutation predicates do not support LIKE or ILIKE".to_string(),
@@ -527,6 +530,71 @@ pub(super) fn compile_mutation_predicate(
             ));
         }
     })
+}
+
+fn compile_mutation_row_comparison(
+    left: &[Expr],
+    op: SqlComparisonOp,
+    right: &[Expr],
+    parameters: &[Value],
+    schema: &RelationalTableSchema,
+    alias: Option<&str>,
+    table: &str,
+) -> Result<RelationalPredicate> {
+    if left.len() != right.len() || left.is_empty() {
+        return Err(HawDBError::Semantic(
+            "row comparison requires the same non-zero number of fields on both sides".to_string(),
+        ));
+    }
+    let compare = |index: usize, field_op| {
+        numeric::compile_comparison(
+            &left[index],
+            field_op,
+            &right[index],
+            parameters,
+            schema,
+            alias,
+            table,
+        )
+    };
+    let and_all = |mut predicates: Vec<RelationalPredicate>| {
+        let first = predicates.remove(0);
+        predicates.into_iter().fold(first, |left, right| {
+            RelationalPredicate::And(Box::new(left), Box::new(right))
+        })
+    };
+    let equality = || {
+        (0..left.len())
+            .map(|index| compare(index, SqlComparisonOp::Eq))
+            .collect::<Result<Vec<_>>>()
+            .map(and_all)
+    };
+    if op == SqlComparisonOp::Eq {
+        return equality();
+    }
+    if op == SqlComparisonOp::NotEq {
+        return equality().map(|predicate| RelationalPredicate::Not(Box::new(predicate)));
+    }
+    let strict = if matches!(op, SqlComparisonOp::Lt | SqlComparisonOp::Lte) {
+        SqlComparisonOp::Lt
+    } else {
+        SqlComparisonOp::Gt
+    };
+    let mut branches = Vec::with_capacity(left.len() + usize::from(op != strict));
+    for index in 0..left.len() {
+        let mut branch = (0..index)
+            .map(|prefix| compare(prefix, SqlComparisonOp::Eq))
+            .collect::<Result<Vec<_>>>()?;
+        branch.push(compare(index, strict)?);
+        branches.push(and_all(branch));
+    }
+    if op != strict {
+        branches.push(equality()?);
+    }
+    let first = branches.remove(0);
+    Ok(branches.into_iter().fold(first, |left, right| {
+        RelationalPredicate::Or(Box::new(left), Box::new(right))
+    }))
 }
 
 pub(super) fn validate_mutation_column(

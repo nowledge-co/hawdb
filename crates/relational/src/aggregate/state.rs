@@ -563,6 +563,10 @@ pub(super) fn sql_expression_memory_bytes(expression: &SqlExpression) -> usize {
         | ExprKind::Arithmetic { left, right, .. } => {
             sql_expression_memory_bytes(left).saturating_add(sql_expression_memory_bytes(right))
         }
+        ExprKind::RowCompare { left, right, .. } => left.iter().chain(right).fold(
+            std::mem::size_of::<Vec<Expr>>().saturating_mul(2),
+            |total, expression| total.saturating_add(sql_expression_memory_bytes(expression)),
+        ),
         ExprKind::Not(expression)
         | ExprKind::IsNull { expression, .. }
         | ExprKind::Negate(expression)
