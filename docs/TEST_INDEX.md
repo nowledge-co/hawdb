@@ -3077,6 +3077,41 @@ message checks. The binding owners pin the mapping:
 - `bindings/python` `errors::tests::wal_record_limit_is_a_non_retryable_execution_error_with_its_limit`.
 No lane, feature matrix or timeout changes. Local replay:
 `cargo test --locked -p hawdb --lib wal_record_limit`.
+### Graph change commit epoch
+
+The graph change commit epoch
+([#1840](https://github.com/nowledge-co/hawdb/issues/1840)) is covered by the
+root general owner, which runs `api::tests::graph_change_epoch`. It checks:
+- relational DDL, rows and transactions leave the epoch unchanged;
+- node, relationship-only, property, schema (node table, index) and delete
+  commits advance it to their commit epoch;
+- a reopen from a checkpoint taken after relational-only commits starts it at
+  the checkpoint's commit epoch, so with no lost commits it never regresses,
+  and WAL replay restores it exactly;
+- pruning the search projection change log does not regress it;
+- a guarded `ConcurrentDatabase` transaction commits despite a concurrent
+  relational commit;
+- a concurrent graph commit refuses that transaction with a typed, retryable
+  `TransactionConflict` that writes nothing, and a retry succeeds;
+- an unguarded transaction is unaffected, and a transaction's own graph writes
+  do not count;
+- append-only commits and an initial import without graph rows (import marker
+  and relational rows only) leave it unchanged, and a clean reopen after that
+  import never lowers it;
+- after a forced group-commit durability barrier failure, the
+  `ConcurrentDatabase` accessor and a transaction opened before the failure
+  return the storage error, and a reopen reports it again;
+- after a forced WAL apply failure, `Database` and `runtime_status` return the
+  storage error, and a new `DatabaseTransaction` is refused;
+- `EmbeddedStoreHandle` reports it in `runtime_status` and production status,
+  supports compare-and-publish in `with_transaction`, and does not regress it
+  across a clean reopen (no lost commits).
+
+The readiness owner checks the JSON field. The checkpoint format is unchanged.
+
+No lane, feature matrix or timeout changes. Local replay:
+`cargo test --locked -p hawdb --lib graph_change_epoch`.
+
 ### Runtime admission refusals
 
 Runtime governor refusals are the typed, non-poisoning

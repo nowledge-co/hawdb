@@ -663,12 +663,17 @@ impl GraphStore {
     /// mutation. Relational index contents do not change, but their immutable
     /// read view must advance to the same global commit epoch so a later
     /// snapshot cannot combine graph state with a stale relational identity.
+    /// It advances the graph change epoch only if the commit's WAL record
+    /// changes the graph, exactly as replay of that record does.
     pub(super) fn finish_non_relational_commit(&mut self) {
         let next_commit_epoch = self.commit_epoch + 1;
         let index_publication =
             self.stage_relational_index_live_publication(next_commit_epoch, None);
         let row_publication = self.stage_relational_row_live_publication(next_commit_epoch, None);
         self.commit_epoch = next_commit_epoch;
+        if std::mem::take(&mut self.pending_commit_changes_graph) {
+            self.graph_change_commit_epoch = next_commit_epoch;
+        }
         self.version_index.apply_database_barrier(next_commit_epoch);
         self.publish_relational_index_live_view(index_publication);
         self.publish_relational_row_live_view(row_publication);

@@ -1734,6 +1734,65 @@ Out-of-core construction has two different typed refusals:
 Both refusals happen before publication, are non-poisoning, and must not be
 classified as storage corruption or transient runtime saturation.
 
+## Graph Change Commit Epoch
+
+`graph_commit_epoch` (`Database::commit_epoch`) advances on every commit,
+including relational-only ones. A host that keeps a shadow of an external graph
+needs a weaker check: did the graph change since its comparison? For that,
+`Database::graph_change_commit_epoch()` (also on `ConcurrentDatabase`) returns
+the commit epoch of the newest commit that changed graph data or graph schema
+([#1840](https://github.com/nowledge-co/hawdb/issues/1840)).
+
+What advances it:
+- node and relationship creates, property writes and deletes, including
+  relationship-only writes;
+- graph schema: node/relationship tables, labels, relationship types,
+  property definitions and their states, indexes, constraints and projected
+  graphs.
+
+Relational rows and DDL, append records and the initial-import marker do not.
+
+It is part of the graph state, not the search projection change log. It is
+present without a search projection and never regresses when that log is
+pruned. It is not persisted, so the on-disk format is unchanged. On open it
+starts at the checkpoint's commit epoch, which is an upper bound of the last
+graph change. WAL replay then advances it exactly for each graph-changing
+commit.
+
+Monotonicity holds only over surviving history. Within one open handle the
+value never decreases. Across a reopen it may advance once, and it never
+decreases while every acknowledged commit survives. Under relaxed durability
+(`SyncOnCheckpoint`) a crash can lose acknowledged graph commits: the value can
+move back (for example from 11 to 10) and a later commit can reuse 11 for
+different graph content.
+
+Never carry a baseline across a reopen. Under relaxed durability
+(`SyncOnCheckpoint`), a crash can lose acknowledged commits. The next commits
+then reuse their epochs, so one epoch value can describe different graph
+content before and after the crash. A host must discard any baseline or
+comparison value captured before a reopen and capture it again.
+
+A poisoned handle refuses to report the value and returns the storage error
+instead. For example, a failed group-commit durability barrier poisons it:
+the epoch of an uncertain commit cannot be relied on. This applies to every
+accessor, including the transaction accessors and `runtime_status`. Reopen
+the database to read it again.
+
+`EmbeddedRuntimeStatus` reports it as `graph_change_commit_epoch`. The
+production status and operations readiness reports show it as
+`graph.change_commit_epoch`.
+
+For compare-and-publish, read it inside the write transaction with
+`ConcurrentDatabaseTransaction::graph_change_commit_epoch()` (the transaction
+`EmbeddedStoreHandle::with_transaction` passes) or
+`DatabaseTransaction::graph_change_commit_epoch()`. The call returns the value
+at the transaction's base snapshot and makes the commit conditional on it. The
+check runs under the commit's exclusive access. If a graph-changing commit was
+published after that snapshot, the commit fails with the retryable
+`HawDBError::TransactionConflict { key: "graph_change_commit_epoch", .. }` and
+writes nothing. Concurrent relational-only commits never cause this refusal,
+and neither do the transaction's own graph writes.
+
 ## Relationship Locality
 
 The current in-memory adjacency key is:

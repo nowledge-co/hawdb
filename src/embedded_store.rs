@@ -2779,6 +2779,7 @@ impl EmbeddedStore {
             EmbeddedRuntimeStatus {
                 protocol: RUNTIME_STATUS_PROTOCOL.to_string(),
                 graph_commit_epoch,
+                graph_change_commit_epoch: self.graph.database().graph_change_commit_epoch()?,
                 changefeed: self
                     .graph
                     .database()
