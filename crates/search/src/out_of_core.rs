@@ -32,12 +32,14 @@ use super::{
 };
 use crate::bounded_file::{read_bound_file, read_bounded_file};
 use crate::error::{HawDBError, Result};
+use crate::projection_id_page;
 use crate::resident_documents::DocumentView;
 #[cfg(test)]
 use crate::{decode_search_segment_documents_bounded, validate_search_segment_documents};
 use crate::{
     RuntimeCapabilities, RuntimeCapability, SearchLexicalSourcePolicy, SearchLexicalTermPolicy,
 };
+use crate::{SearchProjectionIdBatch, SearchProjectionKind, SearchProjectionPageGeneration};
 use hawdb_core::{ResourceBudgetError, ResourceBudgetKind, ResourceBudgetScope};
 use hawdb_storage::durability::durable_replace_file;
 use hawdb_storage::file_io::{self as fs, File, OpenOptions};
@@ -49,6 +51,12 @@ use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+
+static OUT_OF_CORE_READER_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+fn next_out_of_core_reader_id() -> u64 {
+    OUT_OF_CORE_READER_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+}
 
 mod admitted_root;
 mod candidate_set;
@@ -561,6 +569,7 @@ pub(crate) struct SearchOutOfCoreMutationTargetOutput {
 
 #[derive(Debug)]
 pub struct SearchOutOfCoreReader {
+    reader_id: u64,
     root: PathBuf,
     _project_files: hawdb_storage::file_descriptors::ProjectFileDescriptors,
     config: SearchOutOfCoreConfig,
@@ -2290,6 +2299,83 @@ impl SearchOutOfCoreReader {
         self.manifest.generation
     }
 
+    /// Process-local identity for detecting an out-of-core source replacement
+    /// or generation advance between independently acquired ID pages.
+    #[doc(hidden)]
+    pub fn page_generation(&self) -> SearchProjectionPageGeneration {
+        SearchProjectionPageGeneration::OutOfCore {
+            reader: self.reader_id,
+            generation: self.generation(),
+        }
+    }
+
+    /// Working-memory admission for one sequential ID-block decode. Result ID
+    /// bytes are retained separately by the embedded facade.
+    #[doc(hidden)]
+    pub fn projection_id_page_working_memory_bytes(&self, limit: usize) -> Result<usize> {
+        let block = self.segments.iter().try_fold(0usize, |largest, segment| {
+            Ok::<_, HawDBError>(
+                largest.max(segment.lexical_projection.document_id_page_memory_bytes()?),
+            )
+        })?;
+        let candidates = limit
+            .saturating_add(1)
+            .checked_mul(std::mem::size_of::<String>() + crate::build_memory::SET_ENTRY_BYTES)
+            .ok_or_else(|| HawDBError::Execution("projection ID page capacity overflow".into()))?;
+        block
+            .checked_add(candidates)
+            .ok_or_else(|| HawDBError::Execution("projection ID page capacity overflow".into()))
+    }
+
+    /// Lists a globally ordered page using only per-segment lexical document
+    /// mappings. Content, metadata, and vector payload files are not read.
+    #[doc(hidden)]
+    pub fn list_projection_ids(
+        &self,
+        kinds: &BTreeSet<SearchProjectionKind>,
+        after: Option<&str>,
+        limit: usize,
+        task: &hawdb_core::RuntimeTaskContext,
+    ) -> Result<SearchProjectionIdBatch> {
+        task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
+        let wanted = limit.saturating_add(1);
+        let mut ids = BTreeSet::<String>::new();
+        for segment in &self.segments {
+            task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
+            segment.lexical_projection.visit_document_ids_with_task(
+                kinds,
+                after,
+                task,
+                &mut |id| {
+                    if ids.len() == wanted
+                        && ids.last().is_some_and(|largest| id > largest.as_str())
+                    {
+                        return Ok(false);
+                    }
+                    if !self.visibility.is_visible(segment.content_segment_id, id)
+                        || !projection_id_page::requested_kind(id, kinds)
+                    {
+                        return Ok(true);
+                    }
+                    if !ids.insert(id.to_string()) {
+                        return Err(HawDBError::Storage(format!(
+                            "search out-of-core segment set has duplicate document {id}"
+                        )));
+                    }
+                    if ids.len() > wanted {
+                        ids.pop_last();
+                    }
+                    Ok(true)
+                },
+            )?;
+        }
+        task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
+        Ok(projection_id_page::finish_ids(
+            ids.into_iter().collect(),
+            limit,
+        ))
+    }
+
     /// Attaches a newer durable head, sharing unchanged immutable content handles.
     ///
     /// Retained content paths and lengths are checked before their handles are
@@ -2315,6 +2401,7 @@ impl SearchOutOfCoreReader {
         let (closure, report) = reader.prepare_refresh()?;
         if let Some(closure) = closure {
             let next = Self {
+                reader_id: reader.reader_id,
                 root: reader.root.clone(),
                 _project_files: reader._project_files.clone(),
                 config: reader.config.clone(),

@@ -455,6 +455,7 @@ pub(super) fn open(context: OpenContext<'_, '_>) -> Result<OpenedRoot> {
         stationary_immutable: stationary.is_some(),
         _native_custody: native_custody,
         reader: SearchOutOfCoreReader {
+            reader_id: super::next_out_of_core_reader_id(),
             root,
             _project_files: project_files,
             config,

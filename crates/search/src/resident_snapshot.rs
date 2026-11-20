@@ -6,9 +6,12 @@
 use super::*;
 use hawdb_executor::QueryMemoryAccount;
 use hawdb_qos::{RuntimePermit, RuntimeRetainedMemory};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{OnceLock, Weak};
 
 mod capacity;
+
+static READ_GENERATION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone)]
 pub struct SearchIndexReadSnapshot {
@@ -17,6 +20,7 @@ pub struct SearchIndexReadSnapshot {
 
 #[derive(Debug)]
 pub(super) struct ReadGeneration {
+    id: u64,
     index: SearchIndex,
     freshness: Arc<SearchProjectionFreshness>,
     capacity: OnceLock<usize>,
@@ -242,6 +246,7 @@ impl SearchIndex {
             ..Self::default()
         };
         let generation = Arc::new(ReadGeneration {
+            id: READ_GENERATION_SEQUENCE.fetch_add(1, Ordering::Relaxed),
             index,
             freshness,
             capacity: OnceLock::new(),
@@ -320,6 +325,43 @@ impl ReadGeneration {
 }
 
 impl SearchIndexReadSnapshot {
+    /// Process-local identity for detecting a projection change between
+    /// independently acquired pages. This does not retain the generation.
+    #[doc(hidden)]
+    pub fn page_generation(&self) -> SearchProjectionPageGeneration {
+        SearchProjectionPageGeneration::Resident(self.generation.id)
+    }
+
+    /// Copies at most `limit + 1` matching IDs from this immutable resident
+    /// generation. The embedded facade holds the publication lock for this
+    /// short operation instead of acquiring a generation lease.
+    #[doc(hidden)]
+    pub fn list_projection_ids(
+        &self,
+        kinds: &BTreeSet<SearchProjectionKind>,
+        after: Option<&str>,
+        limit: usize,
+        task: &RuntimeTaskContext,
+    ) -> Result<SearchProjectionIdBatch> {
+        task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
+        let wanted = limit.saturating_add(1);
+        let mut ids = Vec::with_capacity(wanted.min(self.generation.index.documents.len()));
+        for id in self.generation.index.documents.keys() {
+            task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
+            if after.is_some_and(|after| id.as_str() <= after)
+                || !projection_id_page::requested_kind(id, kinds)
+            {
+                continue;
+            }
+            ids.push(id.clone());
+            if ids.len() == wanted {
+                break;
+            }
+        }
+        task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
+        Ok(projection_id_page::finish_ids(ids, limit))
+    }
+
     /// Mark this generation as held by a host publication. See
     /// [`SearchIndexPublishedSnapshot`] for how its memory is accounted.
     pub fn publish(self) -> SearchIndexPublishedSnapshot {
