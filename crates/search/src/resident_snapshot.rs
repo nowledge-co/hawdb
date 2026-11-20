@@ -342,6 +342,7 @@ impl SearchIndexReadSnapshot {
         after: Option<&str>,
         limit: usize,
         task: &RuntimeTaskContext,
+        permit: &RuntimePermit,
     ) -> Result<SearchProjectionIdBatch> {
         task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
         let wanted = limit.saturating_add(1);
@@ -353,7 +354,10 @@ impl SearchIndexReadSnapshot {
             {
                 continue;
             }
-            ids.push(id.clone());
+            let memory = permit
+                .reserve_retained_memory(u64::try_from(id.len()).unwrap_or(u64::MAX))
+                .map_err(HawDBError::from)?;
+            ids.push((id.clone(), memory));
             if ids.len() == wanted {
                 break;
             }

@@ -2309,8 +2309,9 @@ impl SearchOutOfCoreReader {
         }
     }
 
-    /// Working-memory admission for one sequential ID-block decode. Result ID
-    /// bytes are retained separately by the embedded facade.
+    /// Working-memory admission for one sequential ID-block decode and the
+    /// bounded candidate/page control structures. ID bytes receive separate
+    /// retained-memory reservations before they are copied.
     #[doc(hidden)]
     pub fn projection_id_page_working_memory_bytes(&self, limit: usize) -> Result<usize> {
         let block = self.segments.iter().try_fold(0usize, |largest, segment| {
@@ -2318,12 +2319,20 @@ impl SearchOutOfCoreReader {
                 largest.max(segment.lexical_projection.document_id_page_memory_bytes()?),
             )
         })?;
+        let entry_bytes = std::mem::size_of::<String>()
+            .checked_add(std::mem::size_of::<hawdb_qos::RuntimeRetainedMemory>())
+            .ok_or_else(|| HawDBError::Execution("projection ID page capacity overflow".into()))?;
         let candidates = limit
             .saturating_add(1)
-            .checked_mul(std::mem::size_of::<String>() + crate::build_memory::SET_ENTRY_BYTES)
+            .checked_mul(entry_bytes + crate::build_memory::SET_ENTRY_BYTES)
+            .ok_or_else(|| HawDBError::Execution("projection ID page capacity overflow".into()))?;
+        let page_vectors = limit
+            .saturating_add(1)
+            .checked_mul(entry_bytes)
             .ok_or_else(|| HawDBError::Execution("projection ID page capacity overflow".into()))?;
         block
             .checked_add(candidates)
+            .and_then(|bytes| bytes.checked_add(page_vectors))
             .ok_or_else(|| HawDBError::Execution("projection ID page capacity overflow".into()))
     }
 
@@ -2336,10 +2345,11 @@ impl SearchOutOfCoreReader {
         after: Option<&str>,
         limit: usize,
         task: &hawdb_core::RuntimeTaskContext,
+        permit: &hawdb_qos::RuntimePermit,
     ) -> Result<SearchProjectionIdBatch> {
         task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
         let wanted = limit.saturating_add(1);
-        let mut ids = BTreeSet::<String>::new();
+        let mut ids = BTreeMap::<String, hawdb_qos::RuntimeRetainedMemory>::new();
         for segment in &self.segments {
             task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
             segment.lexical_projection.visit_document_ids_with_task(
@@ -2348,7 +2358,9 @@ impl SearchOutOfCoreReader {
                 task,
                 &mut |id| {
                     if ids.len() == wanted
-                        && ids.last().is_some_and(|largest| id > largest.as_str())
+                        && ids
+                            .last_key_value()
+                            .is_some_and(|(largest, _)| id > largest)
                     {
                         return Ok(false);
                     }
@@ -2357,11 +2369,15 @@ impl SearchOutOfCoreReader {
                     {
                         return Ok(true);
                     }
-                    if !ids.insert(id.to_string()) {
+                    if ids.contains_key(id) {
                         return Err(HawDBError::Storage(format!(
                             "search out-of-core segment set has duplicate document {id}"
                         )));
                     }
+                    let memory = permit
+                        .reserve_retained_memory(u64::try_from(id.len()).unwrap_or(u64::MAX))
+                        .map_err(HawDBError::from)?;
+                    ids.insert(id.to_string(), memory);
                     if ids.len() > wanted {
                         ids.pop_last();
                     }

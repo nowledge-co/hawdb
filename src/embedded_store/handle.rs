@@ -874,14 +874,16 @@ impl EmbeddedStoreHandle {
                     "search projection ID page limit {limit} exceeds configured row limit {configured}"
                 )));
             }
-            let result_limit = config.max_read_result_payload_bytes.ok_or_else(|| {
-                HawDBError::Execution(
-                    "search projection ID page requires max_read_result_payload_bytes".into(),
-                )
-            })?;
+            let result_limit = config.max_read_result_payload_bytes.unwrap_or(usize::MAX);
             let control_bytes = limit
                 .checked_add(1)
-                .and_then(|rows| rows.checked_mul(size_of::<String>()))
+                .and_then(|rows| {
+                    rows.checked_mul(
+                        size_of::<String>()
+                            .saturating_add(size_of::<hawdb_qos::RuntimeRetainedMemory>())
+                            .saturating_mul(2),
+                    )
+                })
                 .ok_or_else(|| {
                     HawDBError::Execution("search projection ID page capacity overflow".into())
                 })?;
@@ -947,7 +949,7 @@ impl EmbeddedStoreHandle {
                 (Some(projection), None) => Source::Resident(
                     projection
                         .snapshot()
-                        .list_projection_ids(kinds, after, limit, &task)?,
+                        .list_projection_ids(kinds, after, limit, &task, &permit)?,
                 ),
                 (None, Some(projection)) => Source::OutOfCore(Arc::clone(&projection.reader)),
                 _ => unreachable!("validated exactly one projection source"),
@@ -956,13 +958,19 @@ impl EmbeddedStoreHandle {
         let batch = match source {
             Source::Resident(batch) => batch,
             Source::OutOfCore(projection) => {
-                projection.list_projection_ids(kinds, after, limit, &task)?
+                projection.list_projection_ids(kinds, after, limit, &task, &permit)?
             }
         };
         task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
-        let next = batch
-            .has_more
-            .then(|| batch.ids.last().expect("nonempty continued page").clone());
+        let next = if batch.has_more {
+            let last = batch.ids.last().expect("nonempty continued page");
+            let memory = permit
+                .reserve_retained_memory(u64::try_from(last.len()).unwrap_or(u64::MAX))
+                .map_err(HawDBError::from)?;
+            Some((last.clone(), memory))
+        } else {
+            None
+        };
         let retained_id_bytes = batch
             .ids
             .iter()
@@ -970,7 +978,7 @@ impl EmbeddedStoreHandle {
                 bytes.checked_add(u64::try_from(id.len()).unwrap_or(u64::MAX))
             })
             .and_then(|bytes| {
-                next.as_ref().map_or(Some(bytes), |next| {
+                next.as_ref().map_or(Some(bytes), |(next, _)| {
                     bytes.checked_add(u64::try_from(next.len()).unwrap_or(u64::MAX))
                 })
             })
@@ -982,17 +990,16 @@ impl EmbeddedStoreHandle {
                 "search projection ID page exceeds max_read_result_payload_bytes",
             ));
         }
-        let memory = (retained_id_bytes > 0)
-            .then(|| permit.reserve_retained_memory(retained_id_bytes))
-            .transpose()
-            .map_err(HawDBError::from)?;
+        let (next, cursor_memory) =
+            next.map_or((None, None), |(next, memory)| (Some(next), Some(memory)));
         self.finish_canonical_read(Ok(
             crate::search::SearchProjectionIdPage::from_admitted_ids(
                 batch.ids,
                 next,
                 expected_generation,
                 retained_id_bytes,
-                memory,
+                batch.memory,
+                cursor_memory,
             ),
         ))
     }

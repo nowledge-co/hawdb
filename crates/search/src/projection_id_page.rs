@@ -29,7 +29,8 @@ pub struct SearchProjectionIdPage {
     next: Option<String>,
     generation: SearchProjectionPageGeneration,
     retained_id_bytes: u64,
-    _memory: Option<RuntimeRetainedMemory>,
+    _memory: Vec<RuntimeRetainedMemory>,
+    _cursor_memory: Option<RuntimeRetainedMemory>,
 }
 
 impl SearchProjectionIdPage {
@@ -61,7 +62,8 @@ impl SearchProjectionIdPage {
         next: Option<String>,
         generation: SearchProjectionPageGeneration,
         retained_id_bytes: u64,
-        memory: Option<RuntimeRetainedMemory>,
+        memory: Vec<RuntimeRetainedMemory>,
+        cursor_memory: Option<RuntimeRetainedMemory>,
     ) -> Self {
         Self {
             ids,
@@ -69,17 +71,19 @@ impl SearchProjectionIdPage {
             generation,
             retained_id_bytes,
             _memory: memory,
+            _cursor_memory: cursor_memory,
         }
     }
 }
 
-/// Kernel-level page contents before the embedded facade attaches the runtime
-/// retained-result charge.
+/// Kernel-level page contents with the per-ID reservations acquired before
+/// copying. The embedded facade adds the copied next-cursor reservation.
 #[doc(hidden)]
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct SearchProjectionIdBatch {
     pub ids: Vec<String>,
     pub has_more: bool,
+    pub memory: Vec<RuntimeRetainedMemory>,
 }
 
 pub(crate) fn requested_kind(
@@ -109,8 +113,16 @@ pub(crate) fn kind_range_intersects(
     })
 }
 
-pub(crate) fn finish_ids(mut ids: Vec<String>, limit: usize) -> SearchProjectionIdBatch {
-    let has_more = ids.len() > limit;
-    ids.truncate(limit);
-    SearchProjectionIdBatch { ids, has_more }
+pub(crate) fn finish_ids(
+    mut entries: Vec<(String, RuntimeRetainedMemory)>,
+    limit: usize,
+) -> SearchProjectionIdBatch {
+    let has_more = entries.len() > limit;
+    entries.truncate(limit);
+    let (ids, memory) = entries.into_iter().unzip();
+    SearchProjectionIdBatch {
+        ids,
+        has_more,
+        memory,
+    }
 }
