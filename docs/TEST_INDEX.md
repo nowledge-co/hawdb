@@ -3071,8 +3071,8 @@ root general owner, which runs `api::tests::graph_change_epoch`. It checks:
 - node, relationship-only, property, schema (node table, index) and delete
   commits advance it to their commit epoch;
 - a reopen from a checkpoint taken after relational-only commits starts it at
-  the checkpoint's commit epoch, so it never regresses, and WAL replay restores
-  it exactly;
+  the checkpoint's commit epoch, so with no lost commits it never regresses,
+  and WAL replay restores it exactly;
 - pruning the search projection change log does not regress it;
 - a guarded `ConcurrentDatabase` transaction commits despite a concurrent
   relational commit;
@@ -3081,16 +3081,16 @@ root general owner, which runs `api::tests::graph_change_epoch`. It checks:
 - an unguarded transaction is unaffected, and a transaction's own graph writes
   do not count;
 - append-only commits and an initial import without graph rows (import marker
-  and relational rows only) leave it unchanged, and a reopen after that import
-  never lowers it;
+  and relational rows only) leave it unchanged, and a clean reopen after that
+  import never lowers it;
 - after a forced group-commit durability barrier failure, the
   `ConcurrentDatabase` accessor and a transaction opened before the failure
   return the storage error, and a reopen reports it again;
 - after a forced WAL apply failure, `Database` and `runtime_status` return the
   storage error, and a new `DatabaseTransaction` is refused;
 - `EmbeddedStoreHandle` reports it in `runtime_status` and production status,
-  supports compare-and-publish in `with_transaction`, and never regresses it
-  across a reopen.
+  supports compare-and-publish in `with_transaction`, and does not regress it
+  across a clean reopen (no lost commits).
 
 The readiness owner checks the JSON field. The checkpoint format is unchanged.
 
