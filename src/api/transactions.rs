@@ -658,6 +658,8 @@ impl<'a> PreparedGraphTransactionRequest<'a> {
     pub(super) fn into_trace(self, capture_trace: bool) -> QueryExecutionTrace {
         QueryExecutionTrace {
             statement: self.statement,
+            optimizer_cardinality_estimate_scope: capture_trace
+                .then_some(self.optimized.cardinality_estimate_scope),
             optimizer_trace: capture_trace.then_some(self.optimized.trace),
             plan_cache_lookup: Some(self.optimized.plan_cache_lookup),
             execution_profile: None,

@@ -16,6 +16,6 @@ mod analytics;
 mod relational;
 mod retrieval;
 
-pub(crate) use analytics::QueryExecutionTrace;
+pub(crate) use analytics::{PlanCardinalityEstimateScope, QueryExecutionTrace};
 pub use relational::*;
 pub use retrieval::*;
