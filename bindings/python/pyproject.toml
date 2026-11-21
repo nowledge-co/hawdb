@@ -30,6 +30,9 @@ requires-python = ">=3.11"
 dynamic = ["version"]
 
 [project.optional-dependencies]
+arrow = ["pyarrow>=16"]
+pandas = ["pandas>=2", "pyarrow>=16"]
+polars = ["polars>=1", "pyarrow>=16"]
 pydantic = ["pydantic>=2,<3"]
 
 [project.urls]
