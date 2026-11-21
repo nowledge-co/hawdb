@@ -87,9 +87,34 @@ fn assert_boundary_error(
         assert_eq!(actual, expected, "{input}");
     } else {
         let actual = parse_postgres_select(input).expect_err("unsupported SELECT boundary");
-        assert_eq!(actual, expected, "{input}");
+        let set_operator = !explicit_as
+            && matches!(
+                keyword.to_ascii_uppercase().as_str(),
+                "UNION" | "EXCEPT" | "INTERSECT"
+            );
+        if set_operator {
+            let select_expected = SyntaxError::new(
+                SyntaxErrorCode::UnexpectedToken,
+                Span::new(start, start + keyword.len()),
+            )
+            .expected("end of statement")
+            .found(keyword);
+            assert_eq!(actual, select_expected, "{input}");
+        } else {
+            assert_eq!(actual, expected, "{input}");
+        }
         let actual = parse_postgres_statement(input).expect_err("unsupported statement boundary");
-        assert_eq!(actual, expected, "{input}");
+        if set_operator {
+            let statement_expected = SyntaxError::new(
+                SyntaxErrorCode::UnexpectedToken,
+                Span::new(start, start + keyword.len()),
+            )
+            .expected("end of statement")
+            .found(keyword);
+            assert_eq!(actual, statement_expected, "{input}");
+        } else {
+            assert_eq!(actual, expected, "{input}");
+        }
     }
 }
 

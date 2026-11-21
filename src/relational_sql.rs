@@ -30,6 +30,10 @@ mod query;
 mod postgres_compat;
 
 #[cfg(test)]
+#[path = "relational_sql/compound_queries.rs"]
+mod compound_queries;
+
+#[cfg(test)]
 #[path = "relational_sql/update_arithmetic.rs"]
 mod update_arithmetic;
 

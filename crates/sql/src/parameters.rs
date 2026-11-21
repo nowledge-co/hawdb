@@ -15,8 +15,8 @@
 use crate::{
     BranchSqlSelector, BranchSqlStatement, BranchSqlValue, DeleteStatement, ExprKind,
     InsertStatement, SelectProjection, SelectStatement, SqlArithmeticOperand, SqlAssignment,
-    SqlAssignmentValue, SqlBound, SqlColumnDefault, SqlExpression, SqlStatement, SqlValue,
-    UpdateStatement,
+    SqlAssignmentValue, SqlBound, SqlColumnDefault, SqlExpression, SqlQueryBody, SqlQueryStatement,
+    SqlStatement, SqlValue, UpdateStatement,
 };
 use hawdb_core::{HawDBError, Result};
 use std::collections::BTreeSet;
@@ -71,6 +71,7 @@ fn collect_statement_parameters(statement: &SqlStatement, positions: &mut BTreeS
             collect_statement_parameters(&explain.statement, positions)
         }
         SqlStatement::Select(select) => collect_select_parameters(select, positions),
+        SqlStatement::Query(query) => collect_query_parameters(query, positions),
         SqlStatement::CreateMaterializedView(create) => {
             collect_select_parameters(&create.query, positions)
         }
@@ -94,6 +95,29 @@ fn collect_statement_parameters(statement: &SqlStatement, positions: &mut BTreeS
         }
         SqlStatement::CreateIndex(_) => {}
         SqlStatement::Branch(branch) => collect_branch_parameters(branch, positions),
+    }
+}
+
+fn collect_query_parameters(query: &SqlQueryStatement, positions: &mut BTreeSet<usize>) {
+    for cte in &query.with {
+        collect_query_parameters(&cte.query, positions);
+    }
+    collect_query_body_parameters(&query.body, positions);
+    for order in &query.order_by {
+        collect_expression_parameters(&order.expression, positions);
+    }
+    collect_bound_parameter(query.limit, positions);
+    collect_bound_parameter(query.offset, positions);
+}
+
+fn collect_query_body_parameters(body: &SqlQueryBody, positions: &mut BTreeSet<usize>) {
+    match body {
+        SqlQueryBody::Select(select) => collect_select_parameters(select, positions),
+        SqlQueryBody::Nested(query) => collect_query_parameters(query, positions),
+        SqlQueryBody::SetOperation { left, right, .. } => {
+            collect_query_body_parameters(left, positions);
+            collect_query_body_parameters(right, positions);
+        }
     }
 }
 

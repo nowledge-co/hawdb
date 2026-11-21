@@ -384,6 +384,7 @@ fn compile_relational_mutation(
             }
         }
         SqlStatement::Select(_)
+        | SqlStatement::Query(_)
         | SqlStatement::CreateMaterializedView(_)
         | SqlStatement::DropMaterializedView(_)
         | SqlStatement::CreateSearchIndex(_)

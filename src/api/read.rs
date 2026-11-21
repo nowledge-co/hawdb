@@ -851,15 +851,20 @@ where
         );
         let prepared = self.relational_plan_template_cache.prepare(sql_text)?;
         reject_locking_select_without_manager(prepared.statement(), false)?;
-        let crate::sql::SqlStatement::Select(select) = prepared.statement() else {
-            return Err(HawDBError::Semantic(
-                "profiled relational SQL requires SELECT".to_string(),
-            ));
-        };
-        if system_sql::is_virtual_catalog_select(select) {
-            return Err(HawDBError::Semantic(
-                "profiled relational SQL does not support virtual system catalogs".to_string(),
-            ));
+        match prepared.statement() {
+            crate::sql::SqlStatement::Select(select)
+                if system_sql::is_virtual_catalog_select(select) =>
+            {
+                return Err(HawDBError::Semantic(
+                    "profiled relational SQL does not support virtual system catalogs".to_string(),
+                ));
+            }
+            crate::sql::SqlStatement::Select(_) | crate::sql::SqlStatement::Query(_) => {}
+            _ => {
+                return Err(HawDBError::Semantic(
+                    "profiled relational SQL requires SELECT".to_string(),
+                ));
+            }
         }
         self.execute_profiled_relational_sql(
             prepared,

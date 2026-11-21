@@ -25,6 +25,7 @@ use hawdb_core::{HawDBError, LogicalType, Result};
 pub enum SqlStatement {
     Explain(SqlExplainStatement),
     Select(SelectStatement),
+    Query(SqlQueryStatement),
     Insert(InsertStatement),
     Update(UpdateStatement),
     Delete(DeleteStatement),
@@ -39,6 +40,110 @@ pub enum SqlStatement {
     /// distinct from relational DDL: their executor operates on the durable
     /// branch catalog rather than a selected branch's schema.
     Branch(BranchSqlStatement),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SqlQueryStatement {
+    pub with: Vec<SqlCommonTableExpression>,
+    pub body: SqlQueryBody,
+    pub order_by: Vec<SqlOrderItem>,
+    pub limit: Option<SqlBound>,
+    pub offset: Option<SqlBound>,
+    pub lock_strength: Option<SqlLockStrength>,
+}
+
+impl SqlQueryStatement {
+    pub fn into_simple_select(self) -> std::result::Result<SelectStatement, Box<Self>> {
+        if !self.with.is_empty() || !matches!(&self.body, SqlQueryBody::Select(_)) {
+            return Err(Box::new(self));
+        }
+        let Self {
+            with: _,
+            body,
+            order_by,
+            limit,
+            offset,
+            lock_strength,
+        } = self;
+        let SqlQueryBody::Select(mut select) = body else {
+            unreachable!("simple query body was checked")
+        };
+        select.order_by = order_by;
+        select.limit = limit;
+        select.offset = offset;
+        select.lock_strength = lock_strength;
+        Ok(*select)
+    }
+
+    /// Visits every base `SELECT` in lexical order, including CTE definitions
+    /// and nested set-operation branches.
+    pub fn visit_selects(&self, visit: &mut impl FnMut(&SelectStatement)) {
+        for cte in &self.with {
+            cte.query.visit_selects(visit);
+        }
+        self.body.visit_selects(visit);
+    }
+
+    pub fn contains_locking_clause(&self) -> bool {
+        if self.lock_strength.is_some()
+            || self
+                .with
+                .iter()
+                .any(|cte| cte.query.contains_locking_clause())
+        {
+            return true;
+        }
+        self.body.contains_locking_clause()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SqlCommonTableExpression {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub query: Box<SqlQueryStatement>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SqlQueryBody {
+    Select(Box<SelectStatement>),
+    Nested(Box<SqlQueryStatement>),
+    SetOperation {
+        left: Box<SqlQueryBody>,
+        operator: SqlSetOperator,
+        all: bool,
+        right: Box<SqlQueryBody>,
+    },
+}
+
+impl SqlQueryBody {
+    fn visit_selects(&self, visit: &mut impl FnMut(&SelectStatement)) {
+        match self {
+            Self::Select(select) => visit(select),
+            Self::Nested(query) => query.visit_selects(visit),
+            Self::SetOperation { left, right, .. } => {
+                left.visit_selects(visit);
+                right.visit_selects(visit);
+            }
+        }
+    }
+
+    fn contains_locking_clause(&self) -> bool {
+        match self {
+            Self::Select(select) => select.lock_strength.is_some(),
+            Self::Nested(query) => query.contains_locking_clause(),
+            Self::SetOperation { left, right, .. } => {
+                left.contains_locking_clause() || right.contains_locking_clause()
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SqlSetOperator {
+    Union,
+    Intersect,
+    Except,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

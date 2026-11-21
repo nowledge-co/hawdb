@@ -91,6 +91,8 @@ use access::{
 mod aggregate;
 use aggregate::execute_aggregate_select;
 
+mod compound;
+
 use crate::aggregate as having;
 use crate::aggregate::{
     aggregate_group_base_memory_bytes, charge_aggregate_memory, AggregateProjectionState,
@@ -295,6 +297,24 @@ impl<'a, R: RelationalQueryStoreReader> RelationalQueryReadModes<'a, R> {
         self
     }
 
+    fn with_memory_overlay<'b>(
+        &'b self,
+        tables: &'b BTreeSet<String>,
+    ) -> RelationalQueryReadModes<'b, R>
+    where
+        'a: 'b,
+    {
+        RelationalQueryReadModes {
+            index: self.index,
+            row: RelationalRowReadMode::MemoryOverlay {
+                base: &self.row,
+                tables,
+            },
+            cost_contexts: self.cost_contexts,
+            index_runtime: self.index_runtime,
+        }
+    }
+
     fn cost_context(self, binding: BindingId) -> RelationalAccessCostContext {
         self.cost_contexts
             .map_or_else(RelationalAccessCostContext::default, |contexts| {
@@ -473,46 +493,41 @@ pub fn execute_prepared_relational_query_with_resources<'a, R: RelationalQuerySt
         ..RelationalSqlStageTimings::default()
     };
     match prepared.statement {
-        SqlStatement::Select(mut select) => {
-            if select.text_search().is_some() {
-                crate::literal_coercion::coerce_select(&mut select, state, parameters)?;
-                return text_search::execute_text_search_select(
-                    &select,
-                    parameters,
-                    state,
-                    read_modes,
-                    resources,
-                    initial_stage_timings,
-                );
-            }
-            if select.from.is_none() {
-                crate::literal_coercion::coerce_select(&mut select, state, parameters)?;
-                return execute_fromless_select(
-                    &select,
-                    parameters,
-                    state,
-                    initial_stage_timings,
-                    resources.limits.hydration,
-                    &resources,
-                );
-            }
-            let (prepared, snapshot) = prepare_relational_select_with_snapshot(
-                select,
-                parameters,
-                state,
-                read_modes,
-                resources,
-                initial_stage_timings,
-            )?;
-            let mut execution = prepared.execution.admit(state, read_modes, resources)?;
-            execution.planning_snapshot = Some(snapshot);
-            execute_select_timed(&prepared, parameters, execution)
-        }
+        SqlStatement::Select(select) => execute_select_statement(
+            select,
+            parameters,
+            state,
+            read_modes,
+            resources,
+            initial_stage_timings,
+        ),
+        SqlStatement::Query(query) => compound::execute_query(
+            query,
+            parameters,
+            state,
+            read_modes,
+            resources,
+            initial_stage_timings,
+        ),
         SqlStatement::Explain(explain) => {
-            let SqlStatement::Select(mut select) = *explain.statement else {
-                return Err(HawDBError::Semantic(
-                    "EXPLAIN only supports relational SELECT".to_string(),
-                ));
+            let mut select = match *explain.statement {
+                SqlStatement::Query(query) => {
+                    return compound::explain_query(
+                        query,
+                        parameters,
+                        state,
+                        read_modes,
+                        resources,
+                        initial_stage_timings,
+                        explain.analyze,
+                    );
+                }
+                SqlStatement::Select(select) => select,
+                _ => {
+                    return Err(HawDBError::Semantic(
+                        "EXPLAIN only supports relational SELECT".to_string(),
+                    ));
+                }
             };
             if select.text_search().is_some() {
                 crate::literal_coercion::coerce_select(&mut select, state, parameters)?;
@@ -580,6 +595,49 @@ pub fn execute_prepared_relational_query_with_resources<'a, R: RelationalQuerySt
             "relational query entrypoint requires SELECT or EXPLAIN SELECT".to_string(),
         )),
     }
+}
+
+fn execute_select_statement<'a, R: RelationalQueryStoreReader>(
+    mut select: SelectStatement,
+    parameters: &[Value],
+    state: &'a RelationalState,
+    read_modes: RelationalQueryReadModes<'a, R>,
+    resources: RelationalQueryResourceContext<'_>,
+    stage_timings: RelationalSqlStageTimings,
+) -> Result<RelationalQueryOutput> {
+    if select.text_search().is_some() {
+        crate::literal_coercion::coerce_select(&mut select, state, parameters)?;
+        return text_search::execute_text_search_select(
+            &select,
+            parameters,
+            state,
+            read_modes,
+            resources,
+            stage_timings,
+        );
+    }
+    if select.from.is_none() {
+        crate::literal_coercion::coerce_select(&mut select, state, parameters)?;
+        return execute_fromless_select(
+            &select,
+            parameters,
+            state,
+            stage_timings,
+            resources.limits.hydration,
+            &resources,
+        );
+    }
+    let (prepared, snapshot) = prepare_relational_select_with_snapshot(
+        select,
+        parameters,
+        state,
+        read_modes,
+        resources,
+        stage_timings,
+    )?;
+    let mut execution = prepared.execution.admit(state, read_modes, resources)?;
+    execution.planning_snapshot = Some(snapshot);
+    execute_select_timed(&prepared, parameters, execution)
 }
 
 #[doc(hidden)]

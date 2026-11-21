@@ -69,9 +69,10 @@ struct Transformer<'a> {
 pub(super) enum Output {
     Explain {
         analyze: bool,
-        select: Box<crate::PostgresSelectSyntax>,
+        query: Box<crate::PostgresQuerySyntax>,
     },
     Select(Box<crate::PostgresSelectSyntax>),
+    Query(Box<crate::PostgresQuerySyntax>),
     Create(Box<crate::CreatePropertyGraph>),
     GraphTable(Box<crate::GraphTable>),
 }

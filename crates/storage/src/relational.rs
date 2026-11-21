@@ -3121,6 +3121,77 @@ impl AsRef<[u8]> for RelationalOverflowRead<'_> {
 }
 
 impl RelationalState {
+    /// Attaches one statement-scoped relation to a cloned query snapshot.
+    ///
+    /// This does not use the mutation path and must never be published, logged,
+    /// or checkpointed. Query runtimes identify the attached table separately
+    /// and read its resident rows instead of the snapshot row backend.
+    #[doc(hidden)]
+    pub fn attach_ephemeral_query_table(
+        &mut self,
+        schema: RelationalTableSchema,
+        rows: Vec<RelationalRow>,
+    ) -> Result<(), RelationalError> {
+        validate_table_schema(&schema)?;
+        if !schema.primary_key.is_empty()
+            || !schema.unique_constraints.is_empty()
+            || !schema.foreign_keys.is_empty()
+            || !schema.indexes.is_empty()
+            || schema.materialized_view.is_some()
+        {
+            return Err(RelationalError::Schema(
+                "ephemeral query tables cannot declare storage constraints".into(),
+            ));
+        }
+        let last_row_id = i64::try_from(rows.len()).map_err(|_| {
+            RelationalError::Admission(format!(
+                "ephemeral query table {} exceeds the hidden row ID range",
+                schema.name
+            ))
+        })?;
+        let mut keyed = BTreeMap::new();
+        for (ordinal, row) in rows.into_iter().enumerate() {
+            validate_row(&schema, &row)?;
+            let row_id = i64::try_from(ordinal)
+                .ok()
+                .and_then(|ordinal| ordinal.checked_add(1))
+                .ok_or_else(|| {
+                    RelationalError::Admission(format!(
+                        "ephemeral query table {} exceeds the hidden row ID range",
+                        schema.name
+                    ))
+                })?;
+            keyed.insert(RelationalKey(vec![RelationalValue::BigInt(row_id)]), row);
+        }
+        let row_count = keyed.len();
+        let name = schema.name.clone();
+        self.schemas.insert(name.clone(), Arc::new(schema.into()));
+        self.segments.insert(
+            name.clone(),
+            Arc::new(RelationalTableSegment {
+                last_row_id,
+                rows: RelationalRowPages::from_map(keyed),
+                ..Default::default()
+            }),
+        );
+        if !self.materialized_rows_resident {
+            let previous = self
+                .detached_row_counts
+                .insert(name, row_count)
+                .unwrap_or_default();
+            self.detached_total_row_count = self
+                .detached_total_row_count
+                .saturating_sub(previous)
+                .checked_add(row_count)
+                .ok_or_else(|| {
+                    RelationalError::Admission(
+                        "ephemeral query row count exceeds platform capacity".into(),
+                    )
+                })?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn clone_metadata_with_work_context(
         &self,
         work: &crate::background::CheckpointWorkContext,

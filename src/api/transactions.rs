@@ -799,7 +799,9 @@ pub(crate) fn execute_recorded_database_transaction_sql_request(
         let statement_kind = observability::sql_statement_kind(prepared.statement());
         let reads = matches!(
             prepared.statement(),
-            crate::sql::SqlStatement::Select(_) | crate::sql::SqlStatement::Explain(_)
+            crate::sql::SqlStatement::Select(_)
+                | crate::sql::SqlStatement::Query(_)
+                | crate::sql::SqlStatement::Explain(_)
         );
         let result = execute_database_transaction_prepared_sql(
             runtime,
@@ -1028,22 +1030,49 @@ fn execute_database_transaction_prepared_sql_at_clock(
     }
     let pending_generated_read_table = match prepared.statement() {
         crate::sql::SqlStatement::Select(select) => {
-            select.from.as_ref().map(|from| from.name.as_str())
+            select.from.as_ref().map(|from| from.name.clone())
+        }
+        crate::sql::SqlStatement::Query(query) => {
+            let mut pending = None;
+            query.visit_selects(&mut |select| {
+                if pending.is_none()
+                    && let Some(table) = select.from.as_ref()
+                    && state.pending_generated_append_tables.contains(&table.name)
+                {
+                    pending = Some(table.name.clone());
+                }
+            });
+            pending
         }
         crate::sql::SqlStatement::Explain(explain) => match explain.statement.as_ref() {
             crate::sql::SqlStatement::Select(select) => {
-                select.from.as_ref().map(|from| from.name.as_str())
+                select.from.as_ref().map(|from| from.name.clone())
+            }
+            crate::sql::SqlStatement::Query(query) => {
+                let mut pending = None;
+                query.visit_selects(&mut |select| {
+                    if pending.is_none()
+                        && let Some(table) = select.from.as_ref()
+                        && state.pending_generated_append_tables.contains(&table.name)
+                    {
+                        pending = Some(table.name.clone());
+                    }
+                });
+                pending
             }
             _ => None,
         },
         _ => None,
     };
     if pending_generated_read_table
+        .as_deref()
         .is_some_and(|table| state.pending_generated_append_tables.contains(table))
     {
         return Err(HawDBError::Execution(format!(
             "strict append table {} has uncommitted generated-order rows; reads are unavailable until commit",
-            pending_generated_read_table.expect("pending generated table was checked")
+            pending_generated_read_table
+                .as_deref()
+                .expect("pending generated table was checked")
         )));
     }
     if let Some(plan) = crate::relational_sql::compile_prepared_append_select_sql(
@@ -1110,7 +1139,9 @@ fn execute_database_transaction_prepared_sql_at_clock(
     }
     if matches!(
         prepared.statement(),
-        crate::sql::SqlStatement::Select(_) | crate::sql::SqlStatement::Explain(_)
+        crate::sql::SqlStatement::Select(_)
+            | crate::sql::SqlStatement::Query(_)
+            | crate::sql::SqlStatement::Explain(_)
     ) {
         let read_modes = transaction_relational_read_modes(runtime, state)?;
         let output = crate::relational_sql::execute_prepared_relational_query_with_resources(
@@ -1518,9 +1549,12 @@ pub(super) fn reject_locking_select_without_manager(
 ) -> Result<()> {
     let locking_select = match statement {
         crate::sql::SqlStatement::Select(select) => select.lock_strength.is_some(),
-        crate::sql::SqlStatement::Explain(explain) => {
-            matches!(explain.statement.as_ref(), crate::sql::SqlStatement::Select(select) if select.lock_strength.is_some())
-        }
+        crate::sql::SqlStatement::Query(query) => query.contains_locking_clause(),
+        crate::sql::SqlStatement::Explain(explain) => match explain.statement.as_ref() {
+            crate::sql::SqlStatement::Select(select) => select.lock_strength.is_some(),
+            crate::sql::SqlStatement::Query(query) => query.contains_locking_clause(),
+            _ => false,
+        },
         _ => false,
     };
     if locking_select && !allow_locking_select {

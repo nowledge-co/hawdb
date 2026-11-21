@@ -29,7 +29,9 @@ pub(super) fn parse(input: &str) -> Result<SqlStatement> {
             next = syntax::first_token(&input[offset..])
                 .map_err(|error| HawDBError::Parse(error.to_string()))?;
         }
-        if !next.is_keyword(&input[offset..], "SELECT") {
+        if !next.is_keyword(&input[offset..], "SELECT")
+            && !next.is_keyword(&input[offset..], "WITH")
+        {
             return Err(HawDBError::Semantic(
                 if ["UPDATE", "DELETE", "INSERT", "CREATE", "ALTER", "DROP"]
                     .iter()
@@ -53,10 +55,18 @@ pub(super) fn parse(input: &str) -> Result<SqlStatement> {
     let lowerer = Lowerer::new(input);
     match statement {
         syntax::RelationalStatementSyntax::Select(select) => lowerer.select(&select),
-        syntax::RelationalStatementSyntax::Explain { analyze, select } => {
+        syntax::RelationalStatementSyntax::Query(query) => {
+            Ok(SqlStatement::Query(lowerer.query(&query)?))
+        }
+        syntax::RelationalStatementSyntax::Explain { analyze, query } => {
+            let query = lowerer.query(&query)?;
+            let statement = match query.into_simple_select() {
+                Ok(select) => SqlStatement::Select(select),
+                Err(query) => SqlStatement::Query(*query),
+            };
             Ok(SqlStatement::Explain(SqlExplainStatement {
                 analyze,
-                statement: Box::new(lowerer.select(&select)?),
+                statement: Box::new(statement),
             }))
         }
     }
@@ -155,6 +165,100 @@ impl<'a> Lowerer<'a> {
     }
 
     pub(super) fn select(&self, select: &syntax::PostgresSelectSyntax) -> Result<SqlStatement> {
+        self.select_statement(select).map(SqlStatement::Select)
+    }
+
+    fn query(&self, query: &syntax::PostgresQuerySyntax) -> Result<SqlQueryStatement> {
+        if query.locking.as_ref().is_some_and(|lock| lock.nonblocking) {
+            return Err(HawDBError::Semantic(
+                "FOR UPDATE/SHARE OF, NOWAIT, and SKIP LOCKED are not supported".into(),
+            ));
+        }
+        let with = query
+            .with
+            .iter()
+            .map(|cte| {
+                let name = self.ident(&cte.name);
+                let columns = cte
+                    .columns
+                    .iter()
+                    .map(|column| self.ident(column))
+                    .collect();
+                Ok(SqlCommonTableExpression {
+                    name,
+                    columns,
+                    query: Box::new(self.query(&cte.query)?),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(SqlQueryStatement {
+            with,
+            body: self.query_body(&query.body)?,
+            order_by: query
+                .order_by
+                .iter()
+                .map(|item| self.order_item(item))
+                .collect::<Result<_>>()?,
+            limit: query
+                .limit
+                .as_ref()
+                .map(|expr| self.bound(expr))
+                .transpose()?,
+            offset: query
+                .offset
+                .as_ref()
+                .map(|expr| self.bound(expr))
+                .transpose()?,
+            lock_strength: query.locking.as_ref().map(|lock| match lock.strength {
+                syntax::LockStrengthSyntax::Share => SqlLockStrength::Share,
+                syntax::LockStrengthSyntax::Update => SqlLockStrength::Update,
+            }),
+        })
+    }
+
+    fn query_body(&self, body: &syntax::PostgresQueryBodySyntax) -> Result<SqlQueryBody> {
+        Ok(match body {
+            syntax::PostgresQueryBodySyntax::Select(select) => {
+                SqlQueryBody::Select(Box::new(self.select_statement(select)?))
+            }
+            syntax::PostgresQueryBodySyntax::Nested(query) => {
+                SqlQueryBody::Nested(Box::new(self.query(query)?))
+            }
+            syntax::PostgresQueryBodySyntax::SetOperation {
+                left,
+                operator,
+                all,
+                right,
+                ..
+            } => SqlQueryBody::SetOperation {
+                left: Box::new(self.query_body(left)?),
+                operator: match operator {
+                    syntax::PostgresSetOperator::Union => SqlSetOperator::Union,
+                    syntax::PostgresSetOperator::Intersect => SqlSetOperator::Intersect,
+                    syntax::PostgresSetOperator::Except => SqlSetOperator::Except,
+                },
+                all: *all,
+                right: Box::new(self.query_body(right)?),
+            },
+        })
+    }
+
+    fn order_item(&self, item: &syntax::OrderBySyntax) -> Result<SqlOrderItem> {
+        Ok(SqlOrderItem {
+            expression: self.lower(&item.expression, ExpressionPosition::Column)?,
+            direction: match item.direction {
+                Some(syntax::OrderDirectionSyntax::Descending) => SqlOrderDirection::Desc,
+                _ => SqlOrderDirection::Asc,
+            },
+            nulls: match item.nulls {
+                Some(syntax::NullOrderSyntax::First) => SqlNullOrder::First,
+                Some(syntax::NullOrderSyntax::Last) => SqlNullOrder::Last,
+                None => SqlNullOrder::DialectDefault,
+            },
+        })
+    }
+
+    fn select_statement(&self, select: &syntax::PostgresSelectSyntax) -> Result<SelectStatement> {
         if select.locking.as_ref().is_some_and(|lock| lock.nonblocking) {
             return Err(HawDBError::Semantic(
                 "FOR UPDATE/SHARE OF, NOWAIT, and SKIP LOCKED are not supported".into(),
@@ -266,22 +370,7 @@ impl<'a> Lowerer<'a> {
             order_by: select
                 .order_by
                 .iter()
-                .map(|item| {
-                    Ok(SqlOrderItem {
-                        expression: self.lower(&item.expression, ExpressionPosition::Column)?,
-                        direction: match item.direction {
-                            Some(syntax::OrderDirectionSyntax::Descending) => {
-                                SqlOrderDirection::Desc
-                            }
-                            _ => SqlOrderDirection::Asc,
-                        },
-                        nulls: match item.nulls {
-                            Some(syntax::NullOrderSyntax::First) => SqlNullOrder::First,
-                            Some(syntax::NullOrderSyntax::Last) => SqlNullOrder::Last,
-                            None => SqlNullOrder::DialectDefault,
-                        },
-                    })
-                })
+                .map(|item| self.order_item(item))
                 .collect::<Result<_>>()?,
             limit: select
                 .limit
@@ -309,7 +398,7 @@ impl<'a> Lowerer<'a> {
         {
             return Err(HawDBError::Semantic("PostgreSQL SELECT without FROM does not support WHERE, GROUP BY, HAVING, ORDER BY, LIMIT, OFFSET, or locking clauses".into()));
         }
-        Ok(SqlStatement::Select(statement))
+        Ok(statement)
     }
 }
 

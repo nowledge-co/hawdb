@@ -62,9 +62,10 @@ impl Transformer<'_> {
         match self.tree.nodes[node].name {
             Some("RelationalExplain") => Output::Explain {
                 analyze: self.tree.child(node, "Analyze").is_some(),
-                select: Box::new(self.select(self.child(node, "RelationalSelect"))),
+                query: Box::new(self.query(self.child(node, "RelationalQuery"))),
             },
-            Some("Select" | "RelationalSelect") => Output::Select(Box::new(self.select(node))),
+            Some("RelationalQuery") => Output::Query(Box::new(self.query(node))),
+            Some("Select" | "RelationalSelectCore") => Output::Select(Box::new(self.select(node))),
             Some("CreatePropertyGraph") => Output::Create(Box::new(self.create(node))),
             Some("GraphTable") => Output::GraphTable(Box::new(self.graph_table(node))),
             _ => unreachable!("statement CST alternative"),
@@ -87,8 +88,160 @@ impl Transformer<'_> {
             .and_then(|clause| self.tree.child(clause, "Or"))
             .map(|id| self.expr(id))
     }
+    fn locking(&self, node: NodeId) -> Option<LockingClauseSyntax> {
+        self.tree
+            .child(node, "Locking")
+            .or_else(|| self.tree.child(node, "RelationalLocking"))
+            .map(|id| {
+                let strength_node = self.tree.child(id, "Locking").unwrap_or(id);
+                LockingClauseSyntax {
+                    nonblocking: self.tree.child(id, "Nonblocking").is_some(),
+                    strength: if self.tree.child(strength_node, "Share").is_some() {
+                        LockStrengthSyntax::Share
+                    } else {
+                        LockStrengthSyntax::Update
+                    },
+                    span: self.span(id),
+                }
+            })
+    }
+    fn query(&self, node: NodeId) -> PostgresQuerySyntax {
+        let with = self
+            .tree
+            .child(node, "RelationalWith")
+            .map_or_else(Vec::new, |with| {
+                self.tree
+                    .children(with)
+                    .iter()
+                    .filter(|id| self.tree.nodes[**id].name == Some("RelationalCte"))
+                    .map(|id| self.cte(*id))
+                    .collect()
+            });
+        let order_by = self.tree.child(node, "Order").map_or_else(Vec::new, |id| {
+            self.tree
+                .children(id)
+                .iter()
+                .map(|id| self.order(*id))
+                .collect()
+        });
+        PostgresQuerySyntax {
+            with,
+            body: self.query_union_except(self.child(node, "RelationalUnionExcept")),
+            order_by,
+            limit: self.clause(node, "RelationalLimit"),
+            offset: self.clause(node, "RelationalOffset"),
+            locking: self.locking(node),
+            span: self.span(node),
+        }
+    }
+    fn cte(&self, node: NodeId) -> PostgresCommonTableExpressionSyntax {
+        PostgresCommonTableExpressionSyntax {
+            name: self.ident(self.child(node, "Identifier")),
+            columns: self
+                .tree
+                .child(node, "Identifiers")
+                .map_or_else(Vec::new, |columns| self.identifiers(columns)),
+            query: Box::new(self.query(self.child(node, "RelationalQuery"))),
+            span: self.span(node),
+        }
+    }
+    fn query_union_except(&self, node: NodeId) -> PostgresQueryBodySyntax {
+        let mut children = self.tree.children(node).iter().copied();
+        let first = children
+            .find(|id| self.tree.nodes[*id].name == Some("RelationalIntersect"))
+            .expect("union/except has a first intersect operand");
+        let mut left = self.query_intersect(first);
+        let mut operator = None;
+        let mut all = false;
+        for child in children {
+            match self.tree.nodes[child].name {
+                Some("SetUnion") => {
+                    operator = Some(PostgresSetOperator::Union);
+                    all = false;
+                }
+                Some("SetExcept") => {
+                    operator = Some(PostgresSetOperator::Except);
+                    all = false;
+                }
+                Some("SetQuantifier") => {
+                    all = self.tokens[self.tree.nodes[child].start].is_keyword(self.input, "ALL");
+                }
+                Some("RelationalIntersect") => {
+                    let right = self.query_intersect(child);
+                    let operator = operator.take().expect("set operator precedes operand");
+                    let span = Span {
+                        start: self.body_span(&left).start,
+                        end: self.body_span(&right).end,
+                    };
+                    left = PostgresQueryBodySyntax::SetOperation {
+                        left: Box::new(left),
+                        operator,
+                        all,
+                        right: Box::new(right),
+                        span,
+                    };
+                }
+                _ => {}
+            }
+        }
+        left
+    }
+    fn query_intersect(&self, node: NodeId) -> PostgresQueryBodySyntax {
+        let mut children = self.tree.children(node).iter().copied();
+        let first = children
+            .find(|id| self.tree.nodes[*id].name == Some("RelationalQueryPrimary"))
+            .expect("intersect has a first primary operand");
+        let mut left = self.query_primary(first);
+        let mut intersect = false;
+        let mut all = false;
+        for child in children {
+            match self.tree.nodes[child].name {
+                Some("SetIntersect") => {
+                    intersect = true;
+                    all = false;
+                }
+                Some("SetQuantifier") => {
+                    all = self.tokens[self.tree.nodes[child].start].is_keyword(self.input, "ALL");
+                }
+                Some("RelationalQueryPrimary") => {
+                    let right = self.query_primary(child);
+                    assert!(intersect, "INTERSECT precedes its right operand");
+                    let span = Span {
+                        start: self.body_span(&left).start,
+                        end: self.body_span(&right).end,
+                    };
+                    left = PostgresQueryBodySyntax::SetOperation {
+                        left: Box::new(left),
+                        operator: PostgresSetOperator::Intersect,
+                        all,
+                        right: Box::new(right),
+                        span,
+                    };
+                    intersect = false;
+                }
+                _ => {}
+            }
+        }
+        left
+    }
+    fn query_primary(&self, node: NodeId) -> PostgresQueryBodySyntax {
+        if let Some(select) = self.tree.child(node, "RelationalSelectCore") {
+            PostgresQueryBodySyntax::Select(Box::new(self.select(select)))
+        } else {
+            PostgresQueryBodySyntax::Nested(Box::new(
+                self.query(self.child(node, "RelationalQuery")),
+            ))
+        }
+    }
+    fn body_span(&self, body: &PostgresQueryBodySyntax) -> Span {
+        match body {
+            PostgresQueryBodySyntax::Select(select) => select.span,
+            PostgresQueryBodySyntax::Nested(query) => query.span,
+            PostgresQueryBodySyntax::SetOperation { span, .. } => *span,
+        }
+    }
     pub(super) fn select(&self, node: NodeId) -> PostgresSelectSyntax {
-        let relational = self.tree.nodes[node].name == Some("RelationalSelect");
+        let relational = self.tree.nodes[node].name == Some("RelationalSelectCore");
         let projection = self.child(
             node,
             if relational {
@@ -115,22 +268,7 @@ impl Transformer<'_> {
                 .map(|id| self.order(*id))
                 .collect()
         });
-        let locking = self
-            .tree
-            .child(node, "Locking")
-            .or_else(|| self.tree.child(node, "RelationalLocking"))
-            .map(|id| {
-                let strength_node = self.tree.child(id, "Locking").unwrap_or(id);
-                LockingClauseSyntax {
-                    nonblocking: self.tree.child(id, "Nonblocking").is_some(),
-                    strength: if self.tree.child(strength_node, "Share").is_some() {
-                        LockStrengthSyntax::Share
-                    } else {
-                        LockStrengthSyntax::Update
-                    },
-                    span: self.span(id),
-                }
-            });
+        let locking = self.locking(node);
         PostgresSelectSyntax {
             distinct: self
                 .tree

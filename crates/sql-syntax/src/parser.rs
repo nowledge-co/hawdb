@@ -26,7 +26,9 @@ pub fn parse_postgres_statement(input: &str) -> Result<PostgresStatementSyntax, 
         frontend::Output::Create(create) => {
             Ok(PostgresStatementSyntax::CreatePropertyGraph(*create))
         }
-        frontend::Output::Explain { .. } | frontend::Output::GraphTable(_) => {
+        frontend::Output::Explain { .. }
+        | frontend::Output::Query(_)
+        | frontend::Output::GraphTable(_) => {
             unreachable!("SQL entry excludes standalone GRAPH_TABLE")
         }
     }
@@ -38,8 +40,12 @@ pub fn parse_relational_statement(
 ) -> Result<crate::RelationalStatementSyntax, SyntaxError> {
     match frontend::parse(input, "RelationalStatementInput")? {
         frontend::Output::Select(select) => Ok(crate::RelationalStatementSyntax::Select(select)),
-        frontend::Output::Explain { analyze, select } => {
-            Ok(crate::RelationalStatementSyntax::Explain { analyze, select })
+        frontend::Output::Query(query) => match (*query).into_simple_select() {
+            Ok(select) => Ok(crate::RelationalStatementSyntax::Select(Box::new(select))),
+            Err(query) => Ok(crate::RelationalStatementSyntax::Query(query)),
+        },
+        frontend::Output::Explain { analyze, query } => {
+            Ok(crate::RelationalStatementSyntax::Explain { analyze, query })
         }
         _ => unreachable!("relational entry returns SELECT or EXPLAIN SELECT"),
     }
