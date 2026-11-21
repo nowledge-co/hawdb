@@ -791,11 +791,11 @@ fn database_written_before_property_defaults_receives_recreate_refusal() {
                 hawdb_core::StorageFormatError::UnsupportedVersion {
                     format: hawdb_core::RELATIONAL_ROW_PAGE_FORMAT,
                     found: 2,
-                    supported: 3,
+                    supported: 4,
                 } | hawdb_core::StorageFormatError::UnsupportedVersion {
                     format: hawdb_core::RELATIONAL_DURABLE_CODEC_FORMAT,
                     found: 3,
-                    supported: 4,
+                    supported: 5,
                 }
             )
         ),

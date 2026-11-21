@@ -187,9 +187,10 @@ manifests carry the final high-water marks, and metadata-only staging retains
 them independently of hydrated rows. An insert followed by deletion must still
 publish its allocator advance at checkpoint.
 
-The relational durable codec is version 3, canonical row-root manifests are
-version 2, and row-delta manifests/runs are version 2. Older development formats
-are rejected; recreate development databases. No production compatibility
+The covering-index writer uses relational durable codec version 5 and canonical
+row-root manifest version 4. The partial-index writer uses codec version 4 and
+row-root manifest version 3. Row-delta manifests and runs remain version 2.
+Older development formats are rejected; recreate development databases. No production compatibility
 migration is introduced under the current greenfield policy.
 
 PostgreSQL type aliases normalize to canonical storage types: INT/INTEGER,

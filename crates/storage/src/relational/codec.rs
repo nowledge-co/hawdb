@@ -66,7 +66,7 @@ pub(crate) use checkpoint::{
 
 const WAL_MAGIC: &[u8; 8] = b"SKRLWAL1";
 const CHECKPOINT_MAGIC: &[u8; 8] = b"SKRLCKP1";
-const CODEC_VERSION: u16 = 4;
+const CODEC_VERSION: u16 = 5;
 const HEADER_BYTES: usize = 64;
 const RELATIONAL_CHECKPOINT_ARTIFACT_ID: u64 = 1;
 

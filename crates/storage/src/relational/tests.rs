@@ -66,10 +66,10 @@ impl TestConstraintIndex {
                 let positions = column_positions(schema, &definition.columns)
                     .expect("fixture index columns must exist");
                 for (primary_key, row) in state.rows(&schema.name) {
-                    let index_key = row_key(row, &positions);
-                    if !index_includes_key(&definition, &index_key) {
+                    if !index_includes_row(&definition, row, &positions) {
                         continue;
                     }
+                    let index_key = row_key(row, &positions);
                     postings
                         .entry((schema.name.clone(), definition.name.clone(), index_key))
                         .or_default()

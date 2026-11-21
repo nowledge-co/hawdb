@@ -67,7 +67,7 @@ Files:
 
 ### Reader compatibility refusals
 
-Relational WAL and full-checkpoint envelopes currently use codec version 4;
+Relational WAL and full-checkpoint envelopes currently use codec version 5;
 embedded append WAL records (including checkpoint schema records) remain at
 version 3.
 A reader accepts its supported version exactly. An intact envelope requiring a
@@ -82,10 +82,11 @@ is always one of the constants exported from `hawdb` and `hawdb_core`:
 `LOGICAL_DUMP_FORMAT` or `SEARCH_PROJECTION_MANIFEST_FORMAT`. Hosts compare
 against these constants instead of matching message text. They are recorded in
 `docs/persistent-format.lock`. Current relational schema tags 0 through 5
-represent column, COUNT(*), COUNT(column), SUM, MIN, and MAX. Codec version 4
-adds declared-index `INCLUDE` metadata. Row-page format v3 (`SKRPGM03`) carries
-the same metadata; v1 and v2 manifests fail with the typed unsupported-version
-error and require recreating the development database.
+represent column, COUNT(*), COUNT(column), SUM, MIN, and MAX. Codec version 5
+adds declared-index `INCLUDE` metadata. Row-page format v4 (`SKRPGM04`) carries
+the same metadata. Codec v4 and row-page v3 are reserved for the partial-index
+layout. This reader reports a typed unsupported-version error for v1, v2 and
+v3 row manifests and requires recreating the development database.
 
 `RELATIONAL_CHECKPOINT_LAYOUT_FORMAT` refuses intact checkpoints this reader
 cannot serve in the requested configuration, with `UnsupportedFeature` whose

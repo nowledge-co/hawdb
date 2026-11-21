@@ -18,7 +18,7 @@ use super::{
 };
 use crate::file_io::{self as fs, File};
 use crate::relational::{
-    column_positions, index_includes_key, index_storage_key, RelationalIndexDefinition,
+    column_positions, index_includes_row, index_storage_key, RelationalIndexDefinition,
     RelationalIndexRole, RelationalIndexRowSource, RelationalTableSchema,
 };
 use hawdb_integrity::Crc32cHasher;
@@ -118,6 +118,9 @@ pub(super) fn write_index_from_rows(
         max_spill_bytes,
     );
     source.visit_rows(table, &mut |primary_key, row| {
+        if !index_includes_row(definition, row, &positions) {
+            return Ok(());
+        }
         let index_key =
             index_storage_key(row, &positions, &included_positions).map_err(|error| {
                 RelationalIndexShadowError::Admission(format!(
@@ -125,9 +128,6 @@ pub(super) fn write_index_from_rows(
                     definition.name
                 ))
             })?;
-        if !index_includes_key(definition, &index_key) {
-            return Ok(());
-        }
         sorter.push(EncodedIndexEntry {
             index_key: encode_relational_key(&index_key)?,
             row_id: encode_relational_key(primary_key)?,

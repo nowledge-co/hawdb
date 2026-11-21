@@ -2617,6 +2617,28 @@ impl RelationalIndexPages {
             .and_then(|index| self.pages[index].get(key))
     }
 
+    fn logical_posting(&self, prefix: &RelationalKey) -> Option<RelationalIndexPosting<'_>> {
+        let start = self.page_index(prefix)?;
+        let first = self.pages[start].range(prefix..).next()?.0;
+        if !relational_key_has_prefix(first, prefix) {
+            return None;
+        }
+        let pages = &self.pages[start..];
+        let end = pages.partition_point(|page| {
+            page.first_key_value()
+                .is_some_and(|(key, _)| key <= prefix || relational_key_has_prefix(key, prefix))
+        });
+        let pages = &pages[..end];
+        let last = pages
+            .last()?
+            .range(first..)
+            .rfind(|(key, _)| relational_key_has_prefix(key, prefix))?
+            .0;
+        Some(RelationalIndexPosting(
+            RelationalIndexPostingSource::Logical { pages, first, last },
+        ))
+    }
+
     fn insert_posting(&mut self, index_key: RelationalKey, primary_key: RelationalKey) -> bool {
         self.insert_posting_with_allocations(index_key, primary_key, None)
             .expect("ordinary index insertion has no allocation refusal")
@@ -2981,27 +3003,50 @@ fn relational_key_has_prefix(key: &RelationalKey, prefix: &RelationalKey) -> boo
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct RelationalIndexPosting<'a> {
-    postings: &'a RelationalKeySetPages,
+pub struct RelationalIndexPosting<'a>(RelationalIndexPostingSource<'a>);
+
+#[derive(Debug, Clone, Copy)]
+enum RelationalIndexPostingSource<'a> {
+    Exact(&'a RelationalKeySetPages),
+    Logical {
+        pages: &'a [RelationalIndexPage],
+        first: &'a RelationalKey,
+        last: &'a RelationalKey,
+    },
 }
 
 impl<'a> RelationalIndexPosting<'a> {
     pub fn len(self) -> usize {
-        self.postings.len
+        self.posting_sets().map(|set| set.len).sum()
     }
 
     pub fn is_empty(self) -> bool {
-        self.postings.is_empty()
+        self.posting_sets().all(RelationalKeySetPages::is_empty)
     }
 
     pub fn contains(self, key: &RelationalKey) -> bool {
-        self.postings
-            .page_index(key)
-            .is_some_and(|index| self.postings.pages[index].contains(key))
+        self.posting_sets().any(|postings| {
+            postings
+                .page_index(key)
+                .is_some_and(|index| postings.pages[index].contains(key))
+        })
     }
 
     pub fn iter(self) -> impl DoubleEndedIterator<Item = &'a RelationalKey> {
-        self.postings.iter()
+        self.posting_sets().flat_map(RelationalKeySetPages::iter)
+    }
+
+    fn posting_sets(self) -> impl DoubleEndedIterator<Item = &'a RelationalKeySetPages> {
+        let (exact, pages, bounds) = match self.0 {
+            RelationalIndexPostingSource::Exact(postings) => (Some(postings), &[][..], None),
+            RelationalIndexPostingSource::Logical { pages, first, last } => {
+                (None, pages, Some(first..=last))
+            }
+        };
+        exact.into_iter().chain(pages.iter().flat_map(move |page| {
+            page.range(bounds.clone().expect("logical posting has bounds"))
+                .map(|(_, postings)| postings)
+        }))
     }
 }
 
@@ -5600,12 +5645,17 @@ impl RelationalState {
         index: &str,
         key: &RelationalKey,
     ) -> Option<RelationalIndexPosting<'_>> {
-        self.segments
-            .get(table)?
-            .indexes
-            .get(index)?
+        let postings = self.segments.get(table)?.indexes.get(index)?;
+        if self.table_schema(table)?.indexes.iter().any(|definition| {
+            definition.name == index
+                && !definition.included_columns.is_empty()
+                && key.0.len() == definition.columns.len()
+        }) {
+            return postings.logical_posting(key);
+        }
+        postings
             .get(key)
-            .map(|postings| RelationalIndexPosting { postings })
+            .map(|postings| RelationalIndexPosting(RelationalIndexPostingSource::Exact(postings)))
     }
 
     pub fn index_prefix_cardinality(
@@ -9056,10 +9106,10 @@ fn rebuild_indexes_with_allocations(
                 work: work.clone(),
                 memory: Default::default(),
             };
-            let logical_key = row_key_with_allocations(row, &positions, Some(&key_context))?;
-            if index.role.is_unique() && key_contains_null(&logical_key) {
+            if !index_includes_row(index, row, &positions) {
                 continue;
             }
+            let logical_key = row_key_with_allocations(row, &positions, Some(&key_context))?;
             if index.role.is_unique() && postings.prefix_cardinality_at_most(&logical_key, 1) != 0 {
                 return Err(RelationalError::Constraint(format!(
                     "unique index {} on table {table} has a duplicate key",
@@ -9122,15 +9172,10 @@ fn rebuild_indexes(state: &mut RelationalState, table: &str) -> Result<(), Relat
         let included_positions = column_positions(schema, &index.included_columns)?;
         let mut postings = RelationalIndexPages::default();
         for (primary_key, row) in segment.rows.iter() {
-            let logical_key = row_key(row, &positions);
-            if index.role.is_unique()
-                && logical_key
-                    .0
-                    .iter()
-                    .any(|value| matches!(value, RelationalValue::Null))
-            {
+            if !index_includes_row(&index, row, &positions) {
                 continue;
             }
+            let logical_key = row_key(row, &positions);
             if index.role.is_unique() && postings.prefix_cardinality_at_most(&logical_key, 1) != 0 {
                 return Err(RelationalError::Constraint(format!(
                     "unique index {} on table {table} has a duplicate key",
@@ -9208,6 +9253,9 @@ fn refresh_indexes_for_keys_with_allocations(
             if let Some(previous_row) =
                 previous_segment.and_then(|segment| segment.rows.get(primary_key))
             {
+                if !index_includes_row(&index, previous_row, &positions) {
+                    continue;
+                }
                 let key_context =
                     allocations.map(|context| crate::background::CheckpointDecodeContext {
                         work: context.work.clone(),
@@ -9233,20 +9281,15 @@ fn refresh_indexes_for_keys_with_allocations(
             let Some(row) = next_segment.rows.get(primary_key) else {
                 continue;
             };
+            if !index_includes_row(&index, row, &positions) {
+                continue;
+            }
             let key_context =
                 allocations.map(|context| crate::background::CheckpointDecodeContext {
                     work: context.work.clone(),
                     memory: Default::default(),
                 });
             let logical_key = row_key_with_allocations(row, &positions, key_context.as_ref())?;
-            if index.role.is_unique()
-                && logical_key
-                    .0
-                    .iter()
-                    .any(|value| matches!(value, RelationalValue::Null))
-            {
-                continue;
-            }
             if enforce_unique
                 && index.role.is_unique()
                 && postings
@@ -9575,12 +9618,8 @@ fn capture_relational_index_changes_with_allocations(
                         })
                     }
                 };
-                let includes_row = |row: &&RelationalRow| {
-                    !index.role.is_unique()
-                        || !positions.iter().any(|position| {
-                            matches!(row.values()[*position], RelationalValue::Null)
-                        })
-                };
+                let includes_row =
+                    |row: &&RelationalRow| index_includes_row(index, row, &positions);
                 let previous_index_row = previous_row.filter(includes_row);
                 let next_index_row = next_row.filter(includes_row);
                 let equal = match (previous_index_row, next_index_row) {
@@ -9970,13 +10009,15 @@ fn row_capture_limit_invalidated(
     }
 }
 
-fn index_includes_key(index: &RelationalIndexDefinition, key: &RelationalKey) -> bool {
+fn index_includes_row(
+    index: &RelationalIndexDefinition,
+    row: &RelationalRow,
+    positions: &[usize],
+) -> bool {
     !index.role.is_unique()
-        || !key
-            .0
+        || !positions
             .iter()
-            .take(index.columns.len())
-            .any(|value| matches!(value, RelationalValue::Null))
+            .any(|&position| matches!(row.values()[position], RelationalValue::Null))
 }
 
 fn push_captured_index_change_with_allocations(

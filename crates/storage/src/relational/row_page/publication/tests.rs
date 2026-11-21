@@ -863,7 +863,7 @@ fn v1_row_page_manifest_requires_recreation() {
             RelationalRowPagePublicationError::UnsupportedFormat(
                 hawdb_core::error::StorageFormatError::UnsupportedVersion {
                     found: 1,
-                    supported: 3,
+                    supported: 4,
                     ..
                 }
             )
@@ -880,7 +880,7 @@ fn v1_row_page_manifest_requires_recreation() {
     ));
     // An unknown manifest-header version under the current format is corrupt,
     // distinct from the typed refusal for an older format magic.
-    encoded[..8].copy_from_slice(b"SKRPGM03");
+    encoded[..8].copy_from_slice(b"SKRPGM04");
     encoded[8..10].copy_from_slice(&2u16.to_le_bytes());
     fs::write(&path, &encoded).unwrap();
     assert!(
@@ -913,7 +913,7 @@ fn v2_row_page_manifest_requires_recreation() {
         RelationalRowPagePublicationError::UnsupportedFormat(
             hawdb_core::error::StorageFormatError::UnsupportedVersion {
                 found: 2,
-                supported: 3,
+                supported: 4,
                 ..
             }
         )

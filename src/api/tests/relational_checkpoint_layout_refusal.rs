@@ -89,6 +89,54 @@ fn restore_database_bytes(root: &std::path::Path, files: &BTreeMap<std::path::Pa
 }
 
 #[test]
+fn partial_index_writer_has_a_distinct_format() {
+    // The #1874 v4 codec and v3 row-root writer checkpointed a named index
+    // with the predicate `id > 5` over twenty `docs` rows.
+    let bundle = zstd::decode_all(
+        include_bytes!("../../../tests/fixtures/partial_index_v4.bundle.zst").as_slice(),
+    )
+    .unwrap();
+    for read_only in [false, true] {
+        let path = unique_test_dir("partial-index-format-refusal");
+        super::property_defaults::unpack_fixture(&bundle, &path);
+        let before = database_bytes(&path);
+        let config = DatabaseConfig {
+            storage_residency_mode: StorageResidencyMode::OutOfCore,
+            relational_index_mode: RelationalIndexMode::Authoritative,
+            read_only,
+            recovery_mode: if read_only {
+                crate::RecoveryMode::Strict
+            } else {
+                crate::RecoveryMode::default()
+            },
+            ..DatabaseConfig::default()
+        };
+        let error = Database::open_with_config(&path, config)
+            .and_then(|mut db| db.query_sql("SELECT id FROM docs"))
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                HawDBError::UnsupportedStorageFormat(
+                    StorageFormatError::UnsupportedVersion {
+                        format: hawdb_core::RELATIONAL_ROW_PAGE_FORMAT,
+                        found: 3,
+                        supported: 4,
+                    } | StorageFormatError::UnsupportedVersion {
+                        format: "relational durable codec",
+                        found: 4,
+                        supported: 5,
+                    }
+                )
+            ),
+            "{error:?}"
+        );
+        assert_eq!(database_bytes(&path), before);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}
+
+#[test]
 fn newer_row_root_layout_is_typed_or_served_by_authoritative_out_of_core() {
     use RelationalIndexMode as Index;
     use StorageResidencyMode as Residency;
