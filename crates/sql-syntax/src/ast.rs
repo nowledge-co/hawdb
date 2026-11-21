@@ -22,10 +22,75 @@ pub enum PgqStatement {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelationalStatementSyntax {
     Select(Box<PostgresSelectSyntax>),
+    Query(Box<PostgresQuerySyntax>),
     Explain {
         analyze: bool,
-        select: Box<PostgresSelectSyntax>,
+        query: Box<PostgresQuerySyntax>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PostgresQuerySyntax {
+    pub with: Vec<PostgresCommonTableExpressionSyntax>,
+    pub body: PostgresQueryBodySyntax,
+    pub order_by: Vec<OrderBySyntax>,
+    pub limit: Option<ExpressionSyntax>,
+    pub offset: Option<ExpressionSyntax>,
+    pub locking: Option<LockingClauseSyntax>,
+    pub span: Span,
+}
+
+impl PostgresQuerySyntax {
+    pub fn into_simple_select(self) -> Result<PostgresSelectSyntax, Box<Self>> {
+        if !self.with.is_empty() || !matches!(&self.body, PostgresQueryBodySyntax::Select(_)) {
+            return Err(Box::new(self));
+        }
+        let Self {
+            with: _,
+            body,
+            order_by,
+            limit,
+            offset,
+            locking,
+            span: _,
+        } = self;
+        let PostgresQueryBodySyntax::Select(mut select) = body else {
+            unreachable!("simple query body was checked")
+        };
+        select.order_by = order_by;
+        select.limit = limit;
+        select.offset = offset;
+        select.locking = locking;
+        Ok(*select)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PostgresCommonTableExpressionSyntax {
+    pub name: Identifier,
+    pub columns: Vec<Identifier>,
+    pub query: Box<PostgresQuerySyntax>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PostgresQueryBodySyntax {
+    Select(Box<PostgresSelectSyntax>),
+    Nested(Box<PostgresQuerySyntax>),
+    SetOperation {
+        left: Box<PostgresQueryBodySyntax>,
+        operator: PostgresSetOperator,
+        all: bool,
+        right: Box<PostgresQueryBodySyntax>,
+        span: Span,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostgresSetOperator {
+    Union,
+    Intersect,
+    Except,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

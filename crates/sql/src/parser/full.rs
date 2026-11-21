@@ -1026,7 +1026,7 @@ impl Fold<'_> {
             self.input,
             self.tree,
             self.tokens,
-            self.child(node, "RelationalSelect"),
+            self.child(node, "RelationalSelectCore"),
         );
         let SqlStatement::Select(query) = self.lowerer.select(&select)? else {
             unreachable!("SELECT AST");

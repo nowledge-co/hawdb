@@ -22,6 +22,30 @@ authoritative; this is a map of test families, not an exhaustive list of every
 Rust test function. Update it when changing a family's scope, build profile,
 execution lane, fixture size, isolation or known failure mode.
 
+PostgreSQL non-recursive CTE and set-operation compatibility
+([#1863](https://github.com/nowledge-co/hawdb/issues/1863)) stays in the existing
+SQL syntax, SQL lowering, relational-query and root general-test owners. Syntax
+and lowering tests pin statement-scoped `WITH`, explicit CTE column aliases,
+`UNION`/`INTERSECT`/`EXCEPT` `DISTINCT` and `ALL`, PostgreSQL precedence,
+parenthesized branch tails, parameters and rejection of `WITH RECURSIVE`.
+The existing alias-boundary differential campaign keeps set operators out of
+bare and explicit table aliases while recognizing them as query boundaries.
+`query::tests::compound_queries` covers duplicate multiplicity, NULL equality,
+numeric common types, incompatible arity/types, lexical materialization order,
+catalog shadowing, unused-CTE validation without evaluation, empty typed
+results, top-level and branch ordering/limits,
+intermediate-row and blocking-memory refusal, and non-executing `EXPLAIN`
+beside executing `EXPLAIN ANALYZE`. Root
+`relational_sql::compound_queries` reopens checkpointed fixtures and reads the
+same parameterized CTE/set query in Materialized/Materialized and
+OutOfCore/DemandPaged modes. These statement-scoped ephemeral relations never
+enter WAL, checkpoint or publication state. Replay with
+`cargo test --locked -p hawdb-sql-syntax --lib`,
+`cargo test --locked -p hawdb-sql --lib`,
+`cargo test --locked -p hawdb-relational compound_queries --lib`, and
+`cargo test --locked -p hawdb --lib compound_queries`. No new CI lane, fixture
+amplification, profile or timeout is introduced.
+
 Checked candidate exhaustion ([#1713](https://github.com/nowledge-co/hawdb/issues/1713))
 is owned by `candidate_evidence::consumption::tests` in the existing Search unit
 feature matrix, including `//crates/search:hawdb_search_tests`. Text cases

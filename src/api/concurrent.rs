@@ -1295,9 +1295,12 @@ fn reject_optimistic_locking_select(
 ) -> Result<()> {
     let locking_select = match prepared.statement() {
         SqlStatement::Select(select) => select.lock_strength.is_some(),
-        SqlStatement::Explain(explain) => {
-            matches!(explain.statement.as_ref(), SqlStatement::Select(select) if select.lock_strength.is_some())
-        }
+        SqlStatement::Query(query) => query.contains_locking_clause(),
+        SqlStatement::Explain(explain) => match explain.statement.as_ref() {
+            SqlStatement::Select(select) => select.lock_strength.is_some(),
+            SqlStatement::Query(query) => query.contains_locking_clause(),
+            _ => false,
+        },
         _ => false,
     };
     if locking_select {
@@ -1311,6 +1314,7 @@ fn reject_optimistic_locking_select(
 pub(super) fn sql_statement_uses_snapshot(statement: &SqlStatement) -> bool {
     match statement {
         SqlStatement::Select(select) => select.lock_strength.is_none(),
+        SqlStatement::Query(query) => !query.contains_locking_clause(),
         SqlStatement::Explain(explain) => sql_statement_uses_snapshot(&explain.statement),
         SqlStatement::Insert(_)
         | SqlStatement::CreateMaterializedView(_)
@@ -1447,19 +1451,37 @@ fn sql_lock_requests(
         {
             Some(LockMode::Shared)
         }
-        SqlStatement::Explain(explain)
-            if explain.analyze
-                && matches!(
-                    explain.statement.as_ref(),
-                    SqlStatement::Select(select)
-                        if select
-                            .from
-                            .as_ref()
-                            .is_some_and(|from| append_state.schema(&from.name).is_some())
-                ) =>
-        {
-            Some(LockMode::Shared)
+        SqlStatement::Query(query) => {
+            let mut uses_append_table = false;
+            query.visit_selects(&mut |select| {
+                uses_append_table |= select
+                    .from
+                    .as_ref()
+                    .is_some_and(|from| append_state.schema(&from.name).is_some());
+            });
+            uses_append_table.then_some(LockMode::Shared)
         }
+        SqlStatement::Explain(explain) if explain.analyze => match explain.statement.as_ref() {
+            SqlStatement::Select(select)
+                if select
+                    .from
+                    .as_ref()
+                    .is_some_and(|from| append_state.schema(&from.name).is_some()) =>
+            {
+                Some(LockMode::Shared)
+            }
+            SqlStatement::Query(query) => {
+                let mut uses_append_table = false;
+                query.visit_selects(&mut |select| {
+                    uses_append_table |= select
+                        .from
+                        .as_ref()
+                        .is_some_and(|from| append_state.schema(&from.name).is_some());
+                });
+                uses_append_table.then_some(LockMode::Shared)
+            }
+            _ => None,
+        },
         SqlStatement::Insert(insert) if append_state.schema(&insert.table.name).is_some() => {
             Some(LockMode::Exclusive)
         }
@@ -1499,14 +1521,28 @@ fn sql_lock_requests(
             }
             Ok(select_lock_requests(select, parameters, state))
         }
+        SqlStatement::Query(query) => {
+            if query.contains_locking_clause() {
+                return Err(HawDBError::Semantic(
+                    "locking clauses are not supported on CTE or set-operation queries".to_string(),
+                ));
+            }
+            Ok(Vec::new())
+        }
         SqlStatement::Explain(explain) => {
             if !explain.analyze {
                 return Ok(Vec::new());
             }
-            let SqlStatement::Select(select) = explain.statement.as_ref() else {
-                return Ok(Vec::new());
-            };
-            Ok(select_lock_requests(select, parameters, state))
+            match explain.statement.as_ref() {
+                SqlStatement::Select(select) => Ok(select_lock_requests(select, parameters, state)),
+                SqlStatement::Query(query) if query.contains_locking_clause() => {
+                    Err(HawDBError::Semantic(
+                        "locking clauses are not supported on CTE or set-operation queries"
+                            .to_string(),
+                    ))
+                }
+                _ => Ok(Vec::new()),
+            }
         }
         SqlStatement::Insert(_) => {
             let compiled =

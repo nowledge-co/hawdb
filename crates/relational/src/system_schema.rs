@@ -249,7 +249,10 @@ pub fn statement_writes_system_schema_registry(statement: &SqlStatement) -> bool
             Some(&statement.name)
         }
         SqlStatement::DropSearchIndex(statement) => Some(&statement.name),
-        SqlStatement::Select(_) | SqlStatement::Explain(_) | SqlStatement::Branch(_) => None,
+        SqlStatement::Select(_)
+        | SqlStatement::Query(_)
+        | SqlStatement::Explain(_)
+        | SqlStatement::Branch(_) => None,
     };
     table.is_some_and(|table| {
         table.name == ENGINE_SYSTEM_SCHEMA_REGISTRY_TABLE

@@ -119,6 +119,11 @@ pub(in crate::api) fn collect_transaction(
             };
             record(dependencies, key)
         }
+        // Compound queries can read several lexical scopes, including CTE
+        // definitions whose names shadow catalog tables. Retain a conservative
+        // database dependency until every query-body scope can emit exact
+        // table/range keys; this is broad but never misses a conflict.
+        SqlStatement::Query(_) => record(dependencies, VersionKey::Database),
         SqlStatement::Insert(statement) => {
             let key = VersionKey::ReadRelationalTableDomain(
                 transaction_schema(state, &statement.table)?.name.clone(),

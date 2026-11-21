@@ -28,6 +28,7 @@ use std::num::{NonZeroU64, NonZeroUsize};
 mod aggregate_memory;
 mod authoritative_nested_index;
 mod columnar_aggregate;
+mod compound_queries;
 mod cross_join;
 mod decimal;
 mod distinct_output;
@@ -50,9 +51,9 @@ fn assert_intermediate_work_refusal(error: &HawDBError) {
     assert!(cause.used.saturating_add(cause.requested) > cause.budget);
 }
 
-fn assert_aggregate_memory_refusal(error: &HawDBError, owner: &str) {
+fn assert_blocking_memory_refusal(error: &HawDBError, owner: &str) {
     let HawDBError::ResourceBudgetExceeded(cause) = error else {
-        panic!("aggregate lost its typed memory refusal: {error}");
+        panic!("blocking operator lost its typed memory refusal: {error}");
     };
     assert_eq!(cause.resource, hawdb_core::ResourceBudgetKind::MemoryBytes);
     assert_eq!(cause.scope, hawdb_core::ResourceBudgetScope::Operator);

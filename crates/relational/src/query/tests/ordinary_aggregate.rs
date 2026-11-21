@@ -279,7 +279,7 @@ fn having_rejection_does_not_bypass_work_memory_or_output_limits() {
                 "aggregate output lost its result budget cause: {error}"
             );
         } else if expected == "blocking_operator_bytes" {
-            assert_aggregate_memory_refusal(&error, "RelationalAggregate");
+            assert_blocking_memory_refusal(&error, "RelationalAggregate");
         } else if expected == "max_intermediate_rows" {
             assert_intermediate_work_refusal(&error);
         } else {

@@ -62,7 +62,8 @@ pub(super) fn projection_access_planning(
     table: &str,
 ) -> RelationalProjectionAccessPlanning {
     RelationalProjectionAccessPlanning {
-        force_full_scan: row_read_mode.is_projection_table(table),
+        force_full_scan: row_read_mode.is_projection_table(table)
+            || row_read_mode.is_memory_overlay_table(table),
         row_count_override: row_read_mode.projection_estimated_rows(table),
     }
 }
