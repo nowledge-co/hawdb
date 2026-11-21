@@ -55,6 +55,7 @@ pub struct OptimizerIndexStatistics {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct OptimizerCatalog {
+    pub(super) sampled_match: Option<super::join_sampling::SampledMatchStatistics>,
     // Catalog containers are COW snapshots. Keep the source identity without
     // copying descriptor maps or collecting values from the graph at planning time.
     pub(super) source_schema: Option<Catalog>,
@@ -437,6 +438,7 @@ impl OptimizerCatalog {
         );
         Self {
             source_schema: None,
+            sampled_match: None,
             parameter_scalar_types: BTreeMap::new(),
             statistics_parameter_values: BTreeMap::new(),
             assume_all_indexes: false,

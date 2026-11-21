@@ -44,6 +44,20 @@ pub trait GraphReadEngine {
 
     fn statistics(&self, catalog: &Catalog) -> GraphStatistics;
 
+    fn sample_join_path(
+        &self,
+        _request: &crate::join_sampling::JoinSamplingRequest,
+        _limits: crate::join_sampling::JoinSamplingLimits,
+        _task: Option<&hawdb_core::RuntimeTaskContext>,
+    ) -> Result<crate::join_sampling::JoinSamplingReport> {
+        Ok(crate::join_sampling::JoinSamplingReport {
+            snapshot_epoch: self.commit_epoch(),
+            estimates: None,
+            refusal: Some(crate::join_sampling::JoinSamplingRefusal::Unsupported),
+            work: Default::default(),
+        })
+    }
+
     /// Whether a declared range index delivers ascending `Value::cmp` order
     /// through both full and projected execution visitors on this read view.
     /// A descriptor alone is not sufficient: an out-of-core base needs a

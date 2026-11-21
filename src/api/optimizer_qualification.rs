@@ -328,6 +328,7 @@ impl<S: executor::ExecutionStore> DatabaseReadTransaction<S> {
                 access_control: options.access_control,
                 optimizer_search: search,
                 scoring: options.scoring,
+                task_context: options.task_context,
             },
         )?;
         if let Some(alternative) = qualification.bounded_order_alternative() {

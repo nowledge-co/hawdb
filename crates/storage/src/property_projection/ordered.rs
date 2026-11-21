@@ -170,7 +170,7 @@ fn merge_descriptor_report(
     Ok(())
 }
 
-fn descriptor_memory(
+pub(super) fn descriptor_memory(
     encoded: &[u8],
     identity: &str,
     arity: usize,
@@ -639,7 +639,7 @@ impl PersistentPropertyProjectionReader {
             &read.payload,
             self.manifest.generation,
             block,
-            arity,
+            Some(arity),
             |_, value| {
                 max_key = max_key.max(standalone_value_allocation_bytes(value)?);
                 Ok(())
@@ -664,7 +664,7 @@ impl PersistentPropertyProjectionReader {
             &read.payload,
             self.manifest.generation,
             block,
-            arity,
+            Some(arity),
             |offset, _| {
                 view.extend_from_slice(&(offset as u64).to_le_bytes());
                 Ok(())
@@ -691,11 +691,11 @@ impl PersistentPropertyProjectionReader {
     }
 }
 
-fn walk_entries(
+pub(super) fn walk_entries(
     payload: &[u8],
     generation: ManifestGeneration,
     block: &PersistentPropertyProjectionBlockDescriptor,
-    arity: usize,
+    arity: Option<usize>,
     mut consume: impl FnMut(usize, &[u8]) -> Result<(), PersistentPropertyProjectionError>,
 ) -> Result<(), PersistentPropertyProjectionError> {
     let mut cursor = block_cursor(payload, generation, block)?;
@@ -704,14 +704,15 @@ fn walk_entries(
         let offset = cursor.offset;
         let length = cursor.read_u32()? as usize;
         let value = cursor.read_exact(length)?;
-        if value.len() < 5
-            || value[0] != 5
-            || u32::from_le_bytes(
-                value[1..5]
-                    .try_into()
-                    .expect("checked composite list header"),
-            ) as usize
-                != arity
+        if let Some(arity) = arity
+            && (value.len() < 5
+                || value[0] != 5
+                || u32::from_le_bytes(
+                    value[1..5]
+                        .try_into()
+                        .expect("checked composite list header"),
+                ) as usize
+                    != arity)
         {
             return Err(PersistentPropertyProjectionError::Corrupt(
                 "ordered block key has invalid composite arity".into(),

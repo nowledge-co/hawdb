@@ -1,0 +1,1751 @@
+{
+  "source": "a23142feefe263990309f6e2620bade9148c7435",
+  "binary_sha256": "f2004bdf1640aaabfcfa691ffd401a40ecf6f40f7845962697366eed22e036bc",
+  "platform": "macOS-27.0.1-arm64-arm-64bit",
+  "feature": "default + qualification",
+  "profile": "repository release; thin LTO; checks disabled",
+  "baseline": "same executable with join_sampling=None",
+  "candidate": "Some(JoinSamplingLimits::default())",
+  "cache": "new handles; first queries miss the physical plan cache; no explicit storage/OS cache eviction; default storage-cache lifecycle; fixture fits RAM",
+  "commands": [
+    {
+      "args": [
+        "one",
+        "materialized",
+        "256",
+        "7",
+        "skewed"
+      ],
+      "file": "00-one-materialized-256-7-skewed.jsonl",
+      "returncode": 0,
+      "wall_seconds": 2.678555083,
+      "process_user_seconds_including_fixture": 0.544048,
+      "process_system_seconds_including_fixture": 0.300742,
+      "scenario_id": 0,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> one materialized 256 7 skewed",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "one",
+            "materialized",
+            "256",
+            "7",
+            "skewed"
+          ],
+          "setup_ns": 1916560041
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 59902125,
+          "sampling_limits": null
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 16456541,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        }
+      ]
+    },
+    {
+      "args": [
+        "one",
+        "materialized",
+        "256",
+        "7",
+        "skewed",
+        "candidate-first"
+      ],
+      "file": "01-one-materialized-256-7-skewed-candidate-first.jsonl",
+      "returncode": 0,
+      "wall_seconds": 1.925764,
+      "process_user_seconds_including_fixture": 0.48447300000000004,
+      "process_system_seconds_including_fixture": 0.2733,
+      "scenario_id": 1,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> one materialized 256 7 skewed candidate-first",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "one",
+            "materialized",
+            "256",
+            "7",
+            "skewed",
+            "candidate-first"
+          ],
+          "setup_ns": 1806952375
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 60454875,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 17517708,
+          "sampling_limits": null
+        }
+      ]
+    },
+    {
+      "args": [
+        "one",
+        "materialized",
+        "256",
+        "7",
+        "uniform"
+      ],
+      "file": "02-one-materialized-256-7-uniform.jsonl",
+      "returncode": 0,
+      "wall_seconds": 1.8197882499999993,
+      "process_user_seconds_including_fixture": 0.326271,
+      "process_system_seconds_including_fixture": 0.2728229999999999,
+      "scenario_id": 2,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> one materialized 256 7 uniform",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "one",
+            "materialized",
+            "256",
+            "7",
+            "uniform"
+          ],
+          "setup_ns": 1716663875
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 54003375,
+          "sampling_limits": null
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 17110208,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        }
+      ]
+    },
+    {
+      "args": [
+        "one",
+        "materialized",
+        "256",
+        "7",
+        "uniform",
+        "candidate-first"
+      ],
+      "file": "03-one-materialized-256-7-uniform-candidate-first.jsonl",
+      "returncode": 0,
+      "wall_seconds": 2.0944017079999995,
+      "process_user_seconds_including_fixture": 0.3414649999999999,
+      "process_system_seconds_including_fixture": 0.28441800000000017,
+      "scenario_id": 3,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> one materialized 256 7 uniform candidate-first",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "one",
+            "materialized",
+            "256",
+            "7",
+            "uniform",
+            "candidate-first"
+          ],
+          "setup_ns": 1988755333
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 58373750,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 16729916,
+          "sampling_limits": null
+        }
+      ]
+    },
+    {
+      "args": [
+        "one",
+        "out-of-core",
+        "256",
+        "7",
+        "skewed"
+      ],
+      "file": "04-one-out-of-core-256-7-skewed.jsonl",
+      "returncode": 0,
+      "wall_seconds": 2.3455431250000007,
+      "process_user_seconds_including_fixture": 0.5144329999999999,
+      "process_system_seconds_including_fixture": 0.3028639999999998,
+      "scenario_id": 4,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> one out-of-core 256 7 skewed",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "one",
+            "out-of-core",
+            "256",
+            "7",
+            "skewed"
+          ],
+          "setup_ns": 2229000875
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 52252916,
+          "sampling_limits": null
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 10311667,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        }
+      ]
+    },
+    {
+      "args": [
+        "one",
+        "out-of-core",
+        "256",
+        "7",
+        "skewed",
+        "candidate-first"
+      ],
+      "file": "05-one-out-of-core-256-7-skewed-candidate-first.jsonl",
+      "returncode": 0,
+      "wall_seconds": 2.158994917000001,
+      "process_user_seconds_including_fixture": 0.467549,
+      "process_system_seconds_including_fixture": 0.24901600000000013,
+      "scenario_id": 5,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> one out-of-core 256 7 skewed candidate-first",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "one",
+            "out-of-core",
+            "256",
+            "7",
+            "skewed",
+            "candidate-first"
+          ],
+          "setup_ns": 2053966542
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 43074125,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 12129083,
+          "sampling_limits": null
+        }
+      ]
+    },
+    {
+      "args": [
+        "one",
+        "out-of-core",
+        "256",
+        "7",
+        "uniform"
+      ],
+      "file": "06-one-out-of-core-256-7-uniform.jsonl",
+      "returncode": 0,
+      "wall_seconds": 2.132136375,
+      "process_user_seconds_including_fixture": 0.3238760000000003,
+      "process_system_seconds_including_fixture": 0.2840750000000001,
+      "scenario_id": 6,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> one out-of-core 256 7 uniform",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "one",
+            "out-of-core",
+            "256",
+            "7",
+            "uniform"
+          ],
+          "setup_ns": 2029220167
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 50812917,
+          "sampling_limits": null
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 12519791,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        }
+      ]
+    },
+    {
+      "args": [
+        "one",
+        "out-of-core",
+        "256",
+        "7",
+        "uniform",
+        "candidate-first"
+      ],
+      "file": "07-one-out-of-core-256-7-uniform-candidate-first.jsonl",
+      "returncode": 0,
+      "wall_seconds": 1.762446624999999,
+      "process_user_seconds_including_fixture": 0.3238970000000001,
+      "process_system_seconds_including_fixture": 0.26859900000000003,
+      "scenario_id": 7,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> one out-of-core 256 7 uniform candidate-first",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "one",
+            "out-of-core",
+            "256",
+            "7",
+            "uniform",
+            "candidate-first"
+          ],
+          "setup_ns": 1662444791
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 50357125,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 11215125,
+          "sampling_limits": null
+        }
+      ]
+    },
+    {
+      "args": [
+        "two",
+        "materialized",
+        "256",
+        "7",
+        "skewed"
+      ],
+      "file": "08-two-materialized-256-7-skewed.jsonl",
+      "returncode": 0,
+      "wall_seconds": 2.4708947079999994,
+      "process_user_seconds_including_fixture": 0.9747789999999998,
+      "process_system_seconds_including_fixture": 0.28160300000000005,
+      "scenario_id": 8,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> two materialized 256 7 skewed",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "two",
+            "materialized",
+            "256",
+            "7",
+            "skewed"
+          ],
+          "setup_ns": 2330623917
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 64548834,
+          "sampling_limits": null
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 19100625,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        }
+      ]
+    },
+    {
+      "args": [
+        "two",
+        "materialized",
+        "256",
+        "7",
+        "skewed",
+        "candidate-first"
+      ],
+      "file": "09-two-materialized-256-7-skewed-candidate-first.jsonl",
+      "returncode": 0,
+      "wall_seconds": 2.4834112079999997,
+      "process_user_seconds_including_fixture": 0.9625199999999996,
+      "process_system_seconds_including_fixture": 0.2824639999999996,
+      "scenario_id": 9,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> two materialized 256 7 skewed candidate-first",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "two",
+            "materialized",
+            "256",
+            "7",
+            "skewed",
+            "candidate-first"
+          ],
+          "setup_ns": 2346357417
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 61966167,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 21343375,
+          "sampling_limits": null
+        }
+      ]
+    },
+    {
+      "args": [
+        "two",
+        "materialized",
+        "256",
+        "7",
+        "uniform"
+      ],
+      "file": "10-two-materialized-256-7-uniform.jsonl",
+      "returncode": 0,
+      "wall_seconds": 2.1822039999999987,
+      "process_user_seconds_including_fixture": 0.7090120000000004,
+      "process_system_seconds_including_fixture": 0.27317300000000033,
+      "scenario_id": 10,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> two materialized 256 7 uniform",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "two",
+            "materialized",
+            "256",
+            "7",
+            "uniform"
+          ],
+          "setup_ns": 2042015625
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 60000916,
+          "sampling_limits": null
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 31473625,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        }
+      ]
+    },
+    {
+      "args": [
+        "two",
+        "materialized",
+        "256",
+        "7",
+        "uniform",
+        "candidate-first"
+      ],
+      "file": "11-two-materialized-256-7-uniform-candidate-first.jsonl",
+      "returncode": 0,
+      "wall_seconds": 2.1740883340000003,
+      "process_user_seconds_including_fixture": 0.7156950000000002,
+      "process_system_seconds_including_fixture": 0.2705059999999997,
+      "scenario_id": 11,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> two materialized 256 7 uniform candidate-first",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "two",
+            "materialized",
+            "256",
+            "7",
+            "uniform",
+            "candidate-first"
+          ],
+          "setup_ns": 2056762500
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 59377959,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 19506541,
+          "sampling_limits": null
+        }
+      ]
+    },
+    {
+      "args": [
+        "two",
+        "out-of-core",
+        "256",
+        "7",
+        "skewed"
+      ],
+      "file": "12-two-out-of-core-256-7-skewed.jsonl",
+      "returncode": 0,
+      "wall_seconds": 2.4107798749999994,
+      "process_user_seconds_including_fixture": 0.9382959999999994,
+      "process_system_seconds_including_fixture": 0.2669490000000003,
+      "scenario_id": 12,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> two out-of-core 256 7 skewed",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "two",
+            "out-of-core",
+            "256",
+            "7",
+            "skewed"
+          ],
+          "setup_ns": 2291370083
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 41290625,
+          "sampling_limits": null
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 10723791,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        }
+      ]
+    },
+    {
+      "args": [
+        "two",
+        "out-of-core",
+        "256",
+        "7",
+        "skewed",
+        "candidate-first"
+      ],
+      "file": "13-two-out-of-core-256-7-skewed-candidate-first.jsonl",
+      "returncode": 0,
+      "wall_seconds": 2.546660292000002,
+      "process_user_seconds_including_fixture": 0.9972589999999997,
+      "process_system_seconds_including_fixture": 0.2986019999999998,
+      "scenario_id": 13,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> two out-of-core 256 7 skewed candidate-first",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "two",
+            "out-of-core",
+            "256",
+            "7",
+            "skewed",
+            "candidate-first"
+          ],
+          "setup_ns": 2402956083
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 54343292,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 13062292,
+          "sampling_limits": null
+        }
+      ]
+    },
+    {
+      "args": [
+        "two",
+        "out-of-core",
+        "256",
+        "7",
+        "uniform"
+      ],
+      "file": "14-two-out-of-core-256-7-uniform.jsonl",
+      "returncode": 0,
+      "wall_seconds": 2.0565983329999966,
+      "process_user_seconds_including_fixture": 0.7214920000000014,
+      "process_system_seconds_including_fixture": 0.27617199999999986,
+      "scenario_id": 14,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> two out-of-core 256 7 uniform",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "two",
+            "out-of-core",
+            "256",
+            "7",
+            "uniform"
+          ],
+          "setup_ns": 1942082292
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 50824833,
+          "sampling_limits": null
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 11588041,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        }
+      ]
+    },
+    {
+      "args": [
+        "two",
+        "out-of-core",
+        "256",
+        "7",
+        "uniform",
+        "candidate-first"
+      ],
+      "file": "15-two-out-of-core-256-7-uniform-candidate-first.jsonl",
+      "returncode": 0,
+      "wall_seconds": 2.1785652089999985,
+      "process_user_seconds_including_fixture": 0.6988769999999995,
+      "process_system_seconds_including_fixture": 0.2790140000000001,
+      "scenario_id": 15,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> two out-of-core 256 7 uniform candidate-first",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "two",
+            "out-of-core",
+            "256",
+            "7",
+            "uniform",
+            "candidate-first"
+          ],
+          "setup_ns": 2063389959
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 50933583,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 12172125,
+          "sampling_limits": null
+        }
+      ]
+    },
+    {
+      "args": [
+        "point",
+        "materialized",
+        "256",
+        "7",
+        "skewed"
+      ],
+      "file": "16-point-materialized-256-7-skewed.jsonl",
+      "returncode": 0,
+      "wall_seconds": 1.9686920830000005,
+      "process_user_seconds_including_fixture": 0.47428200000000054,
+      "process_system_seconds_including_fixture": 0.2731560000000002,
+      "scenario_id": 16,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> point materialized 256 7 skewed",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "point",
+            "materialized",
+            "256",
+            "7",
+            "skewed"
+          ],
+          "setup_ns": 1865231459
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 60639667,
+          "sampling_limits": null
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 18919250,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        }
+      ]
+    },
+    {
+      "args": [
+        "point",
+        "materialized",
+        "256",
+        "7",
+        "skewed",
+        "candidate-first"
+      ],
+      "file": "17-point-materialized-256-7-skewed-candidate-first.jsonl",
+      "returncode": 0,
+      "wall_seconds": 1.8424516250000025,
+      "process_user_seconds_including_fixture": 0.4701039999999992,
+      "process_system_seconds_including_fixture": 0.270238,
+      "scenario_id": 17,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> point materialized 256 7 skewed candidate-first",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "point",
+            "materialized",
+            "256",
+            "7",
+            "skewed",
+            "candidate-first"
+          ],
+          "setup_ns": 1732147583
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 66108917,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 20410500,
+          "sampling_limits": null
+        }
+      ]
+    },
+    {
+      "args": [
+        "point",
+        "out-of-core",
+        "256",
+        "7",
+        "skewed"
+      ],
+      "file": "18-point-out-of-core-256-7-skewed.jsonl",
+      "returncode": 0,
+      "wall_seconds": 1.9677547089999976,
+      "process_user_seconds_including_fixture": 0.469672000000001,
+      "process_system_seconds_including_fixture": 0.2839799999999997,
+      "scenario_id": 18,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> point out-of-core 256 7 skewed",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "point",
+            "out-of-core",
+            "256",
+            "7",
+            "skewed"
+          ],
+          "setup_ns": 1880124500
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 49631375,
+          "sampling_limits": null
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 14583625,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        }
+      ]
+    },
+    {
+      "args": [
+        "point",
+        "out-of-core",
+        "256",
+        "7",
+        "skewed",
+        "candidate-first"
+      ],
+      "file": "19-point-out-of-core-256-7-skewed-candidate-first.jsonl",
+      "returncode": 0,
+      "wall_seconds": 1.961459665999996,
+      "process_user_seconds_including_fixture": 0.47718499999999864,
+      "process_system_seconds_including_fixture": 0.2840020000000001,
+      "scenario_id": 19,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> point out-of-core 256 7 skewed candidate-first",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "point",
+            "out-of-core",
+            "256",
+            "7",
+            "skewed",
+            "candidate-first"
+          ],
+          "setup_ns": 1873363042
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 49394625,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 13029417,
+          "sampling_limits": null
+        }
+      ]
+    },
+    {
+      "args": [
+        "two",
+        "materialized",
+        "256",
+        "7",
+        "no-index"
+      ],
+      "file": "20-two-materialized-256-7-no-index.jsonl",
+      "returncode": 0,
+      "wall_seconds": 2.4817869169999938,
+      "process_user_seconds_including_fixture": 0.9802949999999999,
+      "process_system_seconds_including_fixture": 0.2791220000000001,
+      "scenario_id": 20,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> two materialized 256 7 no-index",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "two",
+            "materialized",
+            "256",
+            "7",
+            "no-index"
+          ],
+          "setup_ns": 2307497583
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 64759625,
+          "sampling_limits": null
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 22913875,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        }
+      ]
+    },
+    {
+      "args": [
+        "two",
+        "materialized",
+        "256",
+        "7",
+        "no-index",
+        "candidate-first"
+      ],
+      "file": "21-two-materialized-256-7-no-index-candidate-first.jsonl",
+      "returncode": 0,
+      "wall_seconds": 2.4064232920000066,
+      "process_user_seconds_including_fixture": 0.9486940000000015,
+      "process_system_seconds_including_fixture": 0.2791870000000003,
+      "scenario_id": 21,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> two materialized 256 7 no-index candidate-first",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "two",
+            "materialized",
+            "256",
+            "7",
+            "no-index",
+            "candidate-first"
+          ],
+          "setup_ns": 2256369375
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 62207708,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 17939792,
+          "sampling_limits": null
+        }
+      ]
+    },
+    {
+      "args": [
+        "two",
+        "out-of-core",
+        "256",
+        "7",
+        "no-index"
+      ],
+      "file": "22-two-out-of-core-256-7-no-index.jsonl",
+      "returncode": 0,
+      "wall_seconds": 2.4278101250000006,
+      "process_user_seconds_including_fixture": 0.9572489999999991,
+      "process_system_seconds_including_fixture": 0.2759659999999995,
+      "scenario_id": 22,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> two out-of-core 256 7 no-index",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "two",
+            "out-of-core",
+            "256",
+            "7",
+            "no-index"
+          ],
+          "setup_ns": 2261099500
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 52032125,
+          "sampling_limits": null
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 9560667,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        }
+      ]
+    },
+    {
+      "args": [
+        "two",
+        "out-of-core",
+        "256",
+        "7",
+        "no-index",
+        "candidate-first"
+      ],
+      "file": "23-two-out-of-core-256-7-no-index-candidate-first.jsonl",
+      "returncode": 0,
+      "wall_seconds": 2.158155749999999,
+      "process_user_seconds_including_fixture": 0.8438730000000003,
+      "process_system_seconds_including_fixture": 0.12805,
+      "scenario_id": 23,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> two out-of-core 256 7 no-index candidate-first",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "two",
+            "out-of-core",
+            "256",
+            "7",
+            "no-index",
+            "candidate-first"
+          ],
+          "setup_ns": 2030347125
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 24880583,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 9933958,
+          "sampling_limits": null
+        }
+      ]
+    },
+    {
+      "args": [
+        "two",
+        "materialized",
+        "256",
+        "7",
+        "refuse"
+      ],
+      "file": "24-two-materialized-256-7-refuse.jsonl",
+      "returncode": 0,
+      "wall_seconds": 2.447088542000003,
+      "process_user_seconds_including_fixture": 0.962416000000001,
+      "process_system_seconds_including_fixture": 0.2769820000000003,
+      "scenario_id": 24,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> two materialized 256 7 refuse",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "two",
+            "materialized",
+            "256",
+            "7",
+            "refuse"
+          ],
+          "setup_ns": 2293586791
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 64584417,
+          "sampling_limits": null
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 19220417,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 0, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        }
+      ]
+    },
+    {
+      "args": [
+        "two",
+        "materialized",
+        "256",
+        "7",
+        "refuse",
+        "candidate-first"
+      ],
+      "file": "25-two-materialized-256-7-refuse-candidate-first.jsonl",
+      "returncode": 0,
+      "wall_seconds": 2.4306792920000007,
+      "process_user_seconds_including_fixture": 0.9567309999999978,
+      "process_system_seconds_including_fixture": 0.2749449999999998,
+      "scenario_id": 25,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> two materialized 256 7 refuse candidate-first",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "two",
+            "materialized",
+            "256",
+            "7",
+            "refuse",
+            "candidate-first"
+          ],
+          "setup_ns": 2281307750
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 61242583,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 0, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 18669625,
+          "sampling_limits": null
+        }
+      ]
+    },
+    {
+      "args": [
+        "two",
+        "out-of-core",
+        "256",
+        "7",
+        "refuse"
+      ],
+      "file": "26-two-out-of-core-256-7-refuse.jsonl",
+      "returncode": 0,
+      "wall_seconds": 2.4900541250000003,
+      "process_user_seconds_including_fixture": 0.9950840000000021,
+      "process_system_seconds_including_fixture": 0.2770330000000003,
+      "scenario_id": 26,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> two out-of-core 256 7 refuse",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "two",
+            "out-of-core",
+            "256",
+            "7",
+            "refuse"
+          ],
+          "setup_ns": 2325235333
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 49993459,
+          "sampling_limits": null
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 9920833,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 0, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        }
+      ]
+    },
+    {
+      "args": [
+        "two",
+        "out-of-core",
+        "256",
+        "7",
+        "refuse",
+        "candidate-first"
+      ],
+      "file": "27-two-out-of-core-256-7-refuse-candidate-first.jsonl",
+      "returncode": 0,
+      "wall_seconds": 2.4837440000000015,
+      "process_user_seconds_including_fixture": 0.9997709999999991,
+      "process_system_seconds_including_fixture": 0.28171000000000035,
+      "scenario_id": 27,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> two out-of-core 256 7 refuse candidate-first",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "two",
+            "out-of-core",
+            "256",
+            "7",
+            "refuse",
+            "candidate-first"
+          ],
+          "setup_ns": 2318453000
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 50079834,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 0, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 10176541,
+          "sampling_limits": null
+        }
+      ]
+    },
+    {
+      "args": [
+        "one",
+        "materialized",
+        "4",
+        "7",
+        "skewed"
+      ],
+      "file": "28-one-materialized-4-7-skewed.jsonl",
+      "returncode": 0,
+      "wall_seconds": 1.5353179999999966,
+      "process_user_seconds_including_fixture": 0.04210000000000136,
+      "process_system_seconds_including_fixture": 0.26122399999999946,
+      "scenario_id": 28,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> one materialized 4 7 skewed",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "one",
+            "materialized",
+            "4",
+            "7",
+            "skewed"
+          ],
+          "setup_ns": 1453215208
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 47440375,
+          "sampling_limits": null
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 11037583,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        }
+      ]
+    },
+    {
+      "args": [
+        "one",
+        "materialized",
+        "4",
+        "7",
+        "skewed",
+        "candidate-first"
+      ],
+      "file": "29-one-materialized-4-7-skewed-candidate-first.jsonl",
+      "returncode": 0,
+      "wall_seconds": 1.4732202090000044,
+      "process_user_seconds_including_fixture": 0.04452099999999959,
+      "process_system_seconds_including_fixture": 0.2711490000000003,
+      "scenario_id": 29,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> one materialized 4 7 skewed candidate-first",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "one",
+            "materialized",
+            "4",
+            "7",
+            "skewed",
+            "candidate-first"
+          ],
+          "setup_ns": 1387058834
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 48553667,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 10806917,
+          "sampling_limits": null
+        }
+      ]
+    },
+    {
+      "args": [
+        "one",
+        "out-of-core",
+        "4",
+        "7",
+        "skewed"
+      ],
+      "file": "30-one-out-of-core-4-7-skewed.jsonl",
+      "returncode": 0,
+      "wall_seconds": 1.5297192499999994,
+      "process_user_seconds_including_fixture": 0.044426999999998884,
+      "process_system_seconds_including_fixture": 0.27541800000000016,
+      "scenario_id": 30,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> one out-of-core 4 7 skewed",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "one",
+            "out-of-core",
+            "4",
+            "7",
+            "skewed"
+          ],
+          "setup_ns": 1408958250
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 47488042,
+          "sampling_limits": null
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 10912000,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        }
+      ]
+    },
+    {
+      "args": [
+        "one",
+        "out-of-core",
+        "4",
+        "7",
+        "skewed",
+        "candidate-first"
+      ],
+      "file": "31-one-out-of-core-4-7-skewed-candidate-first.jsonl",
+      "returncode": 0,
+      "wall_seconds": 1.4830049589999987,
+      "process_user_seconds_including_fixture": 0.04506200000000149,
+      "process_system_seconds_including_fixture": 0.2709910000000004,
+      "scenario_id": 31,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> one out-of-core 4 7 skewed candidate-first",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "one",
+            "out-of-core",
+            "4",
+            "7",
+            "skewed",
+            "candidate-first"
+          ],
+          "setup_ns": 1399839042
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 46077041,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 11193000,
+          "sampling_limits": null
+        }
+      ]
+    },
+    {
+      "args": [
+        "two",
+        "materialized",
+        "4",
+        "7",
+        "skewed"
+      ],
+      "file": "32-two-materialized-4-7-skewed.jsonl",
+      "returncode": 0,
+      "wall_seconds": 1.512302333000008,
+      "process_user_seconds_including_fixture": 0.0467039999999983,
+      "process_system_seconds_including_fixture": 0.26863299999999946,
+      "scenario_id": 32,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> two materialized 4 7 skewed",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "two",
+            "materialized",
+            "4",
+            "7",
+            "skewed"
+          ],
+          "setup_ns": 1401778334
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 45640083,
+          "sampling_limits": null
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 10704416,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        }
+      ]
+    },
+    {
+      "args": [
+        "two",
+        "materialized",
+        "4",
+        "7",
+        "skewed",
+        "candidate-first"
+      ],
+      "file": "33-two-materialized-4-7-skewed-candidate-first.jsonl",
+      "returncode": 0,
+      "wall_seconds": 1.494358915999996,
+      "process_user_seconds_including_fixture": 0.048474999999999824,
+      "process_system_seconds_including_fixture": 0.27154099999999914,
+      "scenario_id": 33,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> two materialized 4 7 skewed candidate-first",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "two",
+            "materialized",
+            "4",
+            "7",
+            "skewed",
+            "candidate-first"
+          ],
+          "setup_ns": 1410215666
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 46245625,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 10868833,
+          "sampling_limits": null
+        }
+      ]
+    },
+    {
+      "args": [
+        "two",
+        "out-of-core",
+        "4",
+        "7",
+        "skewed"
+      ],
+      "file": "34-two-out-of-core-4-7-skewed.jsonl",
+      "returncode": 0,
+      "wall_seconds": 1.4714393750000028,
+      "process_user_seconds_including_fixture": 0.047084999999999155,
+      "process_system_seconds_including_fixture": 0.2717860000000005,
+      "scenario_id": 34,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> two out-of-core 4 7 skewed",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "two",
+            "out-of-core",
+            "4",
+            "7",
+            "skewed"
+          ],
+          "setup_ns": 1383856250
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 48303541,
+          "sampling_limits": null
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 11183833,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        }
+      ]
+    },
+    {
+      "args": [
+        "two",
+        "out-of-core",
+        "4",
+        "7",
+        "skewed",
+        "candidate-first"
+      ],
+      "file": "35-two-out-of-core-4-7-skewed-candidate-first.jsonl",
+      "returncode": 0,
+      "wall_seconds": 1.5463917920000085,
+      "process_user_seconds_including_fixture": 0.04844800000000049,
+      "process_system_seconds_including_fixture": 0.2741319999999998,
+      "scenario_id": 35,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> two out-of-core 4 7 skewed candidate-first",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "two",
+            "out-of-core",
+            "4",
+            "7",
+            "skewed",
+            "candidate-first"
+          ],
+          "setup_ns": 1458183417
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 48731500,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 11415041,
+          "sampling_limits": null
+        }
+      ]
+    },
+    {
+      "args": [
+        "point",
+        "materialized",
+        "256",
+        "100",
+        "skewed"
+      ],
+      "file": "36-point-materialized-256-100-skewed.jsonl",
+      "returncode": 0,
+      "wall_seconds": 1.9772435000000002,
+      "process_user_seconds_including_fixture": 0.4974860000000021,
+      "process_system_seconds_including_fixture": 0.276625000000001,
+      "scenario_id": 36,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> point materialized 256 100 skewed",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "point",
+            "materialized",
+            "256",
+            "100",
+            "skewed"
+          ],
+          "setup_ns": 1866341041
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 60342583,
+          "sampling_limits": null
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 19791292,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        }
+      ]
+    },
+    {
+      "args": [
+        "point",
+        "materialized",
+        "256",
+        "100",
+        "skewed",
+        "candidate-first"
+      ],
+      "file": "37-point-materialized-256-100-skewed-candidate-first.jsonl",
+      "returncode": 0,
+      "wall_seconds": 1.9202826670000093,
+      "process_user_seconds_including_fixture": 0.4802989999999987,
+      "process_system_seconds_including_fixture": 0.27067899999999945,
+      "scenario_id": 37,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> point materialized 256 100 skewed candidate-first",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "point",
+            "materialized",
+            "256",
+            "100",
+            "skewed",
+            "candidate-first"
+          ],
+          "setup_ns": 1814074709
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 59556791,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 19323667,
+          "sampling_limits": null
+        }
+      ]
+    },
+    {
+      "args": [
+        "point",
+        "out-of-core",
+        "256",
+        "100",
+        "skewed"
+      ],
+      "file": "38-point-out-of-core-256-100-skewed.jsonl",
+      "returncode": 0,
+      "wall_seconds": 1.9554877500000032,
+      "process_user_seconds_including_fixture": 0.47128800000000126,
+      "process_system_seconds_including_fixture": 0.2788170000000001,
+      "scenario_id": 38,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> point out-of-core 256 100 skewed",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "point",
+            "out-of-core",
+            "256",
+            "100",
+            "skewed"
+          ],
+          "setup_ns": 1860470083
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 50744041,
+          "sampling_limits": null
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 12982709,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        }
+      ]
+    },
+    {
+      "args": [
+        "point",
+        "out-of-core",
+        "256",
+        "100",
+        "skewed",
+        "candidate-first"
+      ],
+      "file": "39-point-out-of-core-256-100-skewed-candidate-first.jsonl",
+      "returncode": 0,
+      "wall_seconds": 1.9772502500000115,
+      "process_user_seconds_including_fixture": 0.47790099999999924,
+      "process_system_seconds_including_fixture": 0.29039899999999896,
+      "scenario_id": 39,
+      "replay_command": "target/release/deps/index_join_sampling-<hash> point out-of-core 256 100 skewed candidate-first",
+      "setup_and_opens": [
+        {
+          "event": "fixture",
+          "note": "same checkpoint; fixture fits RAM; OutOfCore denotes residency only; storage-cache-cold is not OS-cache-cold",
+          "scenario": [
+            "point",
+            "out-of-core",
+            "256",
+            "100",
+            "skewed",
+            "candidate-first"
+          ],
+          "setup_ns": 1843902917
+        },
+        {
+          "enabled": true,
+          "event": "open",
+          "open_ns": 84656333,
+          "sampling_limits": "JoinSamplingLimits { max_samples: 32, max_probes: 1024, max_prepared_entries: 16384, max_read_bytes: 8388608, max_read_operations: 256, max_retained_bytes: 4194304, max_duration: 20ms, seed: 7640891576956012809 }"
+        },
+        {
+          "enabled": false,
+          "event": "open",
+          "open_ns": 12822375,
+          "sampling_limits": null
+        }
+      ]
+    }
+  ],
+  "captured_at_utc": "2026-11-04T20:24:45.029365+00:00",
+  "hardware": {
+    "cpu": "Apple M5 Max",
+    "cores": 18,
+    "ram_bytes": 38654705664,
+    "storage": "2 TB internal SSD, Apple Fabric, APFS"
+  },
+  "base_main": "0b137fd117c5bf020f4b2dda04a2fd1fdf97e6d0",
+  "build_command": "cargo build --locked --release --features qualification --bench index_join_sampling",
+  "first_worktree_release_build_seconds": 167.16,
+  "final_release_build_seconds": 139.17,
+  "build_cost_scope": "shared registry and toolchain caches; no fully cold host build claim",
+  "raw_schema_note": "queries.csv retains every per-query observation; plans.json retains selected plans and sampling decisions; process CPU includes setup and opens, not per-query CPU",
+  "limitations": [
+    "Dataset fits RAM; not larger-than-memory qualification.",
+    "OS page cache and other workstation activity are uncontrolled.",
+    "Same source/binary with configuration off/on; no separately compiled pristine-main baseline.",
+    "Two process orders per scenario; no confidence intervals or universal performance guarantee."
+  ]
+}

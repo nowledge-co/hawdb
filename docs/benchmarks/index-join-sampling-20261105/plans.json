@@ -1,0 +1,714 @@
+[
+  {
+    "scenario_id": 0,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 15620, cpu: 6400, random_io: 4096, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n      FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n        SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 0,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 6660, cpu: 3072, random_io: 1280, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [
+      "apply transformation:sampled_match_orientation: both endpoint orientations were sampled; reverse orientation reduces estimated visited rows",
+      "join sampling: epoch=9221 selected=Some(\"reverse\") refusal=None forward_work_rows=Some(4352) reverse_work_rows=Some(1280) probes=322 prepared_entries=1152 read_bytes=0 read_operations=0 retained_bytes=28240 elapsed_ns=27750"
+    ],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=R direction=<- properties={} hops=1..1 optional=false target=a:A\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        SeqNodeScan variable=b label=B"
+  },
+  {
+    "scenario_id": 1,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 6660, cpu: 3072, random_io: 1280, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [
+      "apply transformation:sampled_match_orientation: both endpoint orientations were sampled; reverse orientation reduces estimated visited rows",
+      "join sampling: epoch=9221 selected=Some(\"reverse\") refusal=None forward_work_rows=Some(4352) reverse_work_rows=Some(1280) probes=322 prepared_entries=1152 read_bytes=0 read_operations=0 retained_bytes=28240 elapsed_ns=31209"
+    ],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=R direction=<- properties={} hops=1..1 optional=false target=a:A\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        SeqNodeScan variable=b label=B"
+  },
+  {
+    "scenario_id": 1,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 15620, cpu: 6400, random_io: 4096, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n      FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n        SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 2,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 10244, cpu: 4096, random_io: 2560, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n      FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n        SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 2,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 5892, cpu: 2304, random_io: 1280, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [
+      "join sampling: epoch=6149 selected=Some(\"forward\") refusal=None forward_work_rows=Some(1280) reverse_work_rows=Some(1280) probes=322 prepared_entries=768 read_bytes=0 read_operations=0 retained_bytes=22096 elapsed_ns=26458"
+    ],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n      FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n        SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 3,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 5892, cpu: 2304, random_io: 1280, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [
+      "join sampling: epoch=6149 selected=Some(\"forward\") refusal=None forward_work_rows=Some(1280) reverse_work_rows=Some(1280) probes=322 prepared_entries=768 read_bytes=0 read_operations=0 retained_bytes=22096 elapsed_ns=28125"
+    ],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n      FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n        SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 3,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 10244, cpu: 4096, random_io: 2560, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n      FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n        SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 4,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 15620, cpu: 6400, random_io: 4096, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n      FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n        SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 4,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 6660, cpu: 3072, random_io: 1280, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [
+      "apply transformation:sampled_match_orientation: both endpoint orientations were sampled; reverse orientation reduces estimated visited rows",
+      "join sampling: epoch=9221 selected=Some(\"reverse\") refusal=None forward_work_rows=Some(4352) reverse_work_rows=Some(1280) probes=322 prepared_entries=2620 read_bytes=316980 read_operations=51 retained_bytes=652770 elapsed_ns=330708"
+    ],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=R direction=<- properties={} hops=1..1 optional=false target=a:A\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        SeqNodeScan variable=b label=B"
+  },
+  {
+    "scenario_id": 5,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 6660, cpu: 3072, random_io: 1280, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [
+      "apply transformation:sampled_match_orientation: both endpoint orientations were sampled; reverse orientation reduces estimated visited rows",
+      "join sampling: epoch=9221 selected=Some(\"reverse\") refusal=None forward_work_rows=Some(4352) reverse_work_rows=Some(1280) probes=322 prepared_entries=2620 read_bytes=316980 read_operations=51 retained_bytes=652770 elapsed_ns=332416"
+    ],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=R direction=<- properties={} hops=1..1 optional=false target=a:A\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        SeqNodeScan variable=b label=B"
+  },
+  {
+    "scenario_id": 5,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 15620, cpu: 6400, random_io: 4096, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n      FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n        SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 6,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 10244, cpu: 4096, random_io: 2560, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n      FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n        SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 6,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 5892, cpu: 2304, random_io: 1280, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [
+      "join sampling: epoch=6149 selected=Some(\"forward\") refusal=None forward_work_rows=Some(1280) reverse_work_rows=Some(1280) probes=322 prepared_entries=2352 read_bytes=305020 read_operations=47 retained_bytes=636522 elapsed_ns=341042"
+    ],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n      FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n        SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 7,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 5892, cpu: 2304, random_io: 1280, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [
+      "join sampling: epoch=6149 selected=Some(\"forward\") refusal=None forward_work_rows=Some(1280) reverse_work_rows=Some(1280) probes=322 prepared_entries=2352 read_bytes=305020 read_operations=47 retained_bytes=636522 elapsed_ns=340625"
+    ],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n      FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n        SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 7,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 10244, cpu: 4096, random_io: 2560, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n      FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n        SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 8,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 42500, cpu: 15360, random_io: 13056, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=S direction=-> properties={} hops=1..1 optional=false target=c:C\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 8,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 7940, cpu: 3328, random_io: 1792, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [
+      "apply transformation:sampled_match_orientation: both endpoint orientations were sampled; reverse orientation reduces estimated visited rows",
+      "join sampling: epoch=14343 selected=Some(\"reverse\") refusal=None forward_work_rows=Some(7936) reverse_work_rows=Some(1536) probes=541 prepared_entries=1464 read_bytes=0 read_operations=0 retained_bytes=39312 elapsed_ns=40833"
+    ],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=R direction=<- properties={} hops=1..1 optional=false target=a:A\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=c:C rel_type=S direction=<- properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=c label=C"
+  },
+  {
+    "scenario_id": 9,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 7940, cpu: 3328, random_io: 1792, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [
+      "apply transformation:sampled_match_orientation: both endpoint orientations were sampled; reverse orientation reduces estimated visited rows",
+      "join sampling: epoch=14343 selected=Some(\"reverse\") refusal=None forward_work_rows=Some(7936) reverse_work_rows=Some(1536) probes=541 prepared_entries=1464 read_bytes=0 read_operations=0 retained_bytes=39312 elapsed_ns=47375"
+    ],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=R direction=<- properties={} hops=1..1 optional=false target=a:A\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=c:C rel_type=S direction=<- properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=c label=C"
+  },
+  {
+    "scenario_id": 9,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 42500, cpu: 15360, random_io: 13056, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=S direction=-> properties={} hops=1..1 optional=false target=c:C\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 10,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 25604, cpu: 9216, random_io: 7680, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=S direction=-> properties={} hops=1..1 optional=false target=c:C\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 10,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 9156, cpu: 3328, random_io: 2400, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [
+      "join sampling: epoch=11271 selected=Some(\"forward\") refusal=None forward_work_rows=Some(2176) reverse_work_rows=Some(2816) probes=521 prepared_entries=1096 read_bytes=0 read_operations=0 retained_bytes=29808 elapsed_ns=39166"
+    ],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=S direction=-> properties={} hops=1..1 optional=false target=c:C\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 11,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 9156, cpu: 3328, random_io: 2400, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [
+      "join sampling: epoch=11271 selected=Some(\"forward\") refusal=None forward_work_rows=Some(2176) reverse_work_rows=Some(2816) probes=521 prepared_entries=1096 read_bytes=0 read_operations=0 retained_bytes=29808 elapsed_ns=38000"
+    ],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=S direction=-> properties={} hops=1..1 optional=false target=c:C\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 11,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 25604, cpu: 9216, random_io: 7680, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=S direction=-> properties={} hops=1..1 optional=false target=c:C\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 12,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 42500, cpu: 15360, random_io: 13056, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=S direction=-> properties={} hops=1..1 optional=false target=c:C\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 12,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 7940, cpu: 3328, random_io: 1792, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [
+      "apply transformation:sampled_match_orientation: both endpoint orientations were sampled; reverse orientation reduces estimated visited rows",
+      "join sampling: epoch=14343 selected=Some(\"reverse\") refusal=None forward_work_rows=Some(7936) reverse_work_rows=Some(1536) probes=541 prepared_entries=3730 read_bytes=592367 read_operations=84 retained_bytes=1221096 elapsed_ns=576083"
+    ],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=R direction=<- properties={} hops=1..1 optional=false target=a:A\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=c:C rel_type=S direction=<- properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=c label=C"
+  },
+  {
+    "scenario_id": 13,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 7940, cpu: 3328, random_io: 1792, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [
+      "apply transformation:sampled_match_orientation: both endpoint orientations were sampled; reverse orientation reduces estimated visited rows",
+      "join sampling: epoch=14343 selected=Some(\"reverse\") refusal=None forward_work_rows=Some(7936) reverse_work_rows=Some(1536) probes=541 prepared_entries=3730 read_bytes=592367 read_operations=84 retained_bytes=1221096 elapsed_ns=661500"
+    ],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=R direction=<- properties={} hops=1..1 optional=false target=a:A\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=c:C rel_type=S direction=<- properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=c label=C"
+  },
+  {
+    "scenario_id": 13,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 42500, cpu: 15360, random_io: 13056, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=S direction=-> properties={} hops=1..1 optional=false target=c:C\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 14,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 25604, cpu: 9216, random_io: 7680, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=S direction=-> properties={} hops=1..1 optional=false target=c:C\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 14,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 9156, cpu: 3328, random_io: 2400, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [
+      "join sampling: epoch=11271 selected=Some(\"forward\") refusal=None forward_work_rows=Some(2176) reverse_work_rows=Some(2816) probes=521 prepared_entries=3494 read_bytes=583071 read_operations=68 retained_bytes=1200408 elapsed_ns=540250"
+    ],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=S direction=-> properties={} hops=1..1 optional=false target=c:C\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 15,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 9156, cpu: 3328, random_io: 2400, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [
+      "join sampling: epoch=11271 selected=Some(\"forward\") refusal=None forward_work_rows=Some(2176) reverse_work_rows=Some(2816) probes=521 prepared_entries=3494 read_bytes=583071 read_operations=68 retained_bytes=1200408 elapsed_ns=616750"
+    ],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=S direction=-> properties={} hops=1..1 optional=false target=c:C\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 15,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 25604, cpu: 9216, random_io: 7680, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=S direction=-> properties={} hops=1..1 optional=false target=c:C\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 16,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 7, cpu: 3, random_io: 2, sequential_io: 0, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  NodeProjectionScanExec variable=a label=A access=IndexNodeSeek access_detail=PropertyValues { property: \"id\", values: [Int(0)] } properties=[\"id\"] predicate=None output=node_binding columns=[]"
+  },
+  {
+    "scenario_id": 16,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 7, cpu: 3, random_io: 2, sequential_io: 0, output_rows: 0 }",
+    "decisions": [],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  NodeProjectionScanExec variable=a label=A access=IndexNodeSeek access_detail=PropertyValues { property: \"id\", values: [Int(0)] } properties=[\"id\"] predicate=None output=node_binding columns=[]"
+  },
+  {
+    "scenario_id": 17,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 7, cpu: 3, random_io: 2, sequential_io: 0, output_rows: 0 }",
+    "decisions": [],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  NodeProjectionScanExec variable=a label=A access=IndexNodeSeek access_detail=PropertyValues { property: \"id\", values: [Int(0)] } properties=[\"id\"] predicate=None output=node_binding columns=[]"
+  },
+  {
+    "scenario_id": 17,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 7, cpu: 3, random_io: 2, sequential_io: 0, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  NodeProjectionScanExec variable=a label=A access=IndexNodeSeek access_detail=PropertyValues { property: \"id\", values: [Int(0)] } properties=[\"id\"] predicate=None output=node_binding columns=[]"
+  },
+  {
+    "scenario_id": 18,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 7, cpu: 3, random_io: 2, sequential_io: 0, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  NodeProjectionScanExec variable=a label=A access=IndexNodeSeek access_detail=PropertyValues { property: \"id\", values: [Int(0)] } properties=[\"id\"] predicate=None output=node_binding columns=[]"
+  },
+  {
+    "scenario_id": 18,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 7, cpu: 3, random_io: 2, sequential_io: 0, output_rows: 0 }",
+    "decisions": [],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  NodeProjectionScanExec variable=a label=A access=IndexNodeSeek access_detail=PropertyValues { property: \"id\", values: [Int(0)] } properties=[\"id\"] predicate=None output=node_binding columns=[]"
+  },
+  {
+    "scenario_id": 19,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 7, cpu: 3, random_io: 2, sequential_io: 0, output_rows: 0 }",
+    "decisions": [],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  NodeProjectionScanExec variable=a label=A access=IndexNodeSeek access_detail=PropertyValues { property: \"id\", values: [Int(0)] } properties=[\"id\"] predicate=None output=node_binding columns=[]"
+  },
+  {
+    "scenario_id": 19,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 7, cpu: 3, random_io: 2, sequential_io: 0, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  NodeProjectionScanExec variable=a label=A access=IndexNodeSeek access_detail=PropertyValues { property: \"id\", values: [Int(0)] } properties=[\"id\"] predicate=None output=node_binding columns=[]"
+  },
+  {
+    "scenario_id": 20,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 42500, cpu: 15360, random_io: 13056, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=S direction=-> properties={} hops=1..1 optional=false target=c:C\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 20,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 42500, cpu: 15360, random_io: 13056, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=S direction=-> properties={} hops=1..1 optional=false target=c:C\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 21,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 42500, cpu: 15360, random_io: 13056, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=S direction=-> properties={} hops=1..1 optional=false target=c:C\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 21,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 42500, cpu: 15360, random_io: 13056, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=S direction=-> properties={} hops=1..1 optional=false target=c:C\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 22,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 42500, cpu: 15360, random_io: 13056, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=S direction=-> properties={} hops=1..1 optional=false target=c:C\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 22,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 42500, cpu: 15360, random_io: 13056, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=S direction=-> properties={} hops=1..1 optional=false target=c:C\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 23,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 42500, cpu: 15360, random_io: 13056, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=S direction=-> properties={} hops=1..1 optional=false target=c:C\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 23,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 42500, cpu: 15360, random_io: 13056, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=S direction=-> properties={} hops=1..1 optional=false target=c:C\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 24,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 42500, cpu: 15360, random_io: 13056, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=S direction=-> properties={} hops=1..1 optional=false target=c:C\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 24,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 42500, cpu: 15360, random_io: 13056, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [
+      "join sampling: epoch=14343 selected=None refusal=Some(ProbeBudget) forward_work_rows=None reverse_work_rows=None probes=0 prepared_entries=0 read_bytes=0 read_operations=0 retained_bytes=96 elapsed_ns=917"
+    ],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=S direction=-> properties={} hops=1..1 optional=false target=c:C\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 25,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 42500, cpu: 15360, random_io: 13056, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [
+      "join sampling: epoch=14343 selected=None refusal=Some(ProbeBudget) forward_work_rows=None reverse_work_rows=None probes=0 prepared_entries=0 read_bytes=0 read_operations=0 retained_bytes=96 elapsed_ns=1125"
+    ],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=S direction=-> properties={} hops=1..1 optional=false target=c:C\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 25,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 42500, cpu: 15360, random_io: 13056, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=S direction=-> properties={} hops=1..1 optional=false target=c:C\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 26,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 42500, cpu: 15360, random_io: 13056, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=S direction=-> properties={} hops=1..1 optional=false target=c:C\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 26,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 42500, cpu: 15360, random_io: 13056, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [
+      "join sampling: epoch=14343 selected=None refusal=Some(ProbeBudget) forward_work_rows=None reverse_work_rows=None probes=0 prepared_entries=0 read_bytes=0 read_operations=0 retained_bytes=96 elapsed_ns=750"
+    ],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=S direction=-> properties={} hops=1..1 optional=false target=c:C\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 27,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 42500, cpu: 15360, random_io: 13056, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [
+      "join sampling: epoch=14343 selected=None refusal=Some(ProbeBudget) forward_work_rows=None reverse_work_rows=None probes=0 prepared_entries=0 read_bytes=0 read_operations=0 retained_bytes=96 elapsed_ns=792"
+    ],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=S direction=-> properties={} hops=1..1 optional=false target=c:C\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 27,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 42500, cpu: 15360, random_io: 13056, sequential_io: 1028, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=S direction=-> properties={} hops=1..1 optional=false target=c:C\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 28,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 248, cpu: 100, random_io: 64, sequential_io: 20, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n      FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n        SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 28,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 108, cpu: 48, random_io: 20, sequential_io: 20, output_rows: 0 }",
+    "decisions": [
+      "apply transformation:sampled_match_orientation: both endpoint orientations were sampled; reverse orientation reduces estimated visited rows",
+      "join sampling: epoch=149 selected=Some(\"reverse\") refusal=None forward_work_rows=Some(68) reverse_work_rows=Some(20) probes=162 prepared_entries=88 read_bytes=0 read_operations=0 retained_bytes=3792 elapsed_ns=8917"
+    ],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=R direction=<- properties={} hops=1..1 optional=false target=a:A\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        SeqNodeScan variable=b label=B"
+  },
+  {
+    "scenario_id": 29,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 108, cpu: 48, random_io: 20, sequential_io: 20, output_rows: 0 }",
+    "decisions": [
+      "apply transformation:sampled_match_orientation: both endpoint orientations were sampled; reverse orientation reduces estimated visited rows",
+      "join sampling: epoch=149 selected=Some(\"reverse\") refusal=None forward_work_rows=Some(68) reverse_work_rows=Some(20) probes=162 prepared_entries=88 read_bytes=0 read_operations=0 retained_bytes=3792 elapsed_ns=10166"
+    ],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=R direction=<- properties={} hops=1..1 optional=false target=a:A\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        SeqNodeScan variable=b label=B"
+  },
+  {
+    "scenario_id": 29,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 248, cpu: 100, random_io: 64, sequential_io: 20, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n      FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n        SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 30,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 248, cpu: 100, random_io: 64, sequential_io: 20, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n      FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n        SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 30,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 108, cpu: 48, random_io: 20, sequential_io: 20, output_rows: 0 }",
+    "decisions": [
+      "apply transformation:sampled_match_orientation: both endpoint orientations were sampled; reverse orientation reduces estimated visited rows",
+      "join sampling: epoch=149 selected=Some(\"reverse\") refusal=None forward_work_rows=Some(68) reverse_work_rows=Some(20) probes=162 prepared_entries=132 read_bytes=9198 read_operations=12 retained_bytes=20444 elapsed_ns=39875"
+    ],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=R direction=<- properties={} hops=1..1 optional=false target=a:A\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        SeqNodeScan variable=b label=B"
+  },
+  {
+    "scenario_id": 31,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 108, cpu: 48, random_io: 20, sequential_io: 20, output_rows: 0 }",
+    "decisions": [
+      "apply transformation:sampled_match_orientation: both endpoint orientations were sampled; reverse orientation reduces estimated visited rows",
+      "join sampling: epoch=149 selected=Some(\"reverse\") refusal=None forward_work_rows=Some(68) reverse_work_rows=Some(20) probes=162 prepared_entries=132 read_bytes=9198 read_operations=12 retained_bytes=20444 elapsed_ns=40875"
+    ],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=R direction=<- properties={} hops=1..1 optional=false target=a:A\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        SeqNodeScan variable=b label=B"
+  },
+  {
+    "scenario_id": 31,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 248, cpu: 100, random_io: 64, sequential_io: 20, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n      FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n        SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 32,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 668, cpu: 240, random_io: 204, sequential_io: 20, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=S direction=-> properties={} hops=1..1 optional=false target=c:C\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 32,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 128, cpu: 52, random_io: 28, sequential_io: 20, output_rows: 0 }",
+    "decisions": [
+      "apply transformation:sampled_match_orientation: both endpoint orientations were sampled; reverse orientation reduces estimated visited rows",
+      "join sampling: epoch=231 selected=Some(\"reverse\") refusal=None forward_work_rows=Some(148) reverse_work_rows=Some(24) probes=279 prepared_entries=112 read_bytes=0 read_operations=0 retained_bytes=6464 elapsed_ns=13167"
+    ],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=R direction=<- properties={} hops=1..1 optional=false target=a:A\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=c:C rel_type=S direction=<- properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=c label=C"
+  },
+  {
+    "scenario_id": 33,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 128, cpu: 52, random_io: 28, sequential_io: 20, output_rows: 0 }",
+    "decisions": [
+      "apply transformation:sampled_match_orientation: both endpoint orientations were sampled; reverse orientation reduces estimated visited rows",
+      "join sampling: epoch=231 selected=Some(\"reverse\") refusal=None forward_work_rows=Some(148) reverse_work_rows=Some(24) probes=279 prepared_entries=112 read_bytes=0 read_operations=0 retained_bytes=6464 elapsed_ns=14209"
+    ],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=R direction=<- properties={} hops=1..1 optional=false target=a:A\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=c:C rel_type=S direction=<- properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=c label=C"
+  },
+  {
+    "scenario_id": 33,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 668, cpu: 240, random_io: 204, sequential_io: 20, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=S direction=-> properties={} hops=1..1 optional=false target=c:C\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 34,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 668, cpu: 240, random_io: 204, sequential_io: 20, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=S direction=-> properties={} hops=1..1 optional=false target=c:C\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 34,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 128, cpu: 52, random_io: 28, sequential_io: 20, output_rows: 0 }",
+    "decisions": [
+      "apply transformation:sampled_match_orientation: both endpoint orientations were sampled; reverse orientation reduces estimated visited rows",
+      "join sampling: epoch=231 selected=Some(\"reverse\") refusal=None forward_work_rows=Some(148) reverse_work_rows=Some(24) probes=279 prepared_entries=186 read_bytes=14969 read_operations=21 retained_bytes=35426 elapsed_ns=56833"
+    ],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=R direction=<- properties={} hops=1..1 optional=false target=a:A\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=c:C rel_type=S direction=<- properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=c label=C"
+  },
+  {
+    "scenario_id": 35,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 128, cpu: 52, random_io: 28, sequential_io: 20, output_rows: 0 }",
+    "decisions": [
+      "apply transformation:sampled_match_orientation: both endpoint orientations were sampled; reverse orientation reduces estimated visited rows",
+      "join sampling: epoch=231 selected=Some(\"reverse\") refusal=None forward_work_rows=Some(148) reverse_work_rows=Some(24) probes=279 prepared_entries=186 read_bytes=14969 read_operations=21 retained_bytes=35426 elapsed_ns=59583"
+    ],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=R direction=<- properties={} hops=1..1 optional=false target=a:A\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=c:C rel_type=S direction=<- properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=c label=C"
+  },
+  {
+    "scenario_id": 35,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 668, cpu: 240, random_io: 204, sequential_io: 20, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  FilterExec predicate=PropertyEq { variable: \"c\", property: \"kind\", value: Int(1) }\n    AdjacencyExpandExec source=b:B rel_type=S direction=-> properties={} hops=1..1 optional=false target=c:C\n      FilterExec predicate=PropertyEq { variable: \"b\", property: \"kind\", value: Int(1) }\n        AdjacencyExpandExec source=a:A rel_type=R direction=-> properties={} hops=1..1 optional=false target=b:B\n          FilterExec predicate=PropertyEq { variable: \"a\", property: \"kind\", value: Int(1) }\n            SeqNodeScan variable=a label=A"
+  },
+  {
+    "scenario_id": 36,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 7, cpu: 3, random_io: 2, sequential_io: 0, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  NodeProjectionScanExec variable=a label=A access=IndexNodeSeek access_detail=PropertyValues { property: \"id\", values: [Int(0)] } properties=[\"id\"] predicate=None output=node_binding columns=[]"
+  },
+  {
+    "scenario_id": 36,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 7, cpu: 3, random_io: 2, sequential_io: 0, output_rows: 0 }",
+    "decisions": [],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  NodeProjectionScanExec variable=a label=A access=IndexNodeSeek access_detail=PropertyValues { property: \"id\", values: [Int(0)] } properties=[\"id\"] predicate=None output=node_binding columns=[]"
+  },
+  {
+    "scenario_id": 37,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 7, cpu: 3, random_io: 2, sequential_io: 0, output_rows: 0 }",
+    "decisions": [],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  NodeProjectionScanExec variable=a label=A access=IndexNodeSeek access_detail=PropertyValues { property: \"id\", values: [Int(0)] } properties=[\"id\"] predicate=None output=node_binding columns=[]"
+  },
+  {
+    "scenario_id": 37,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 7, cpu: 3, random_io: 2, sequential_io: 0, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  NodeProjectionScanExec variable=a label=A access=IndexNodeSeek access_detail=PropertyValues { property: \"id\", values: [Int(0)] } properties=[\"id\"] predicate=None output=node_binding columns=[]"
+  },
+  {
+    "scenario_id": 38,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 7, cpu: 3, random_io: 2, sequential_io: 0, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  NodeProjectionScanExec variable=a label=A access=IndexNodeSeek access_detail=PropertyValues { property: \"id\", values: [Int(0)] } properties=[\"id\"] predicate=None output=node_binding columns=[]"
+  },
+  {
+    "scenario_id": 38,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 7, cpu: 3, random_io: 2, sequential_io: 0, output_rows: 0 }",
+    "decisions": [],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  NodeProjectionScanExec variable=a label=A access=IndexNodeSeek access_detail=PropertyValues { property: \"id\", values: [Int(0)] } properties=[\"id\"] predicate=None output=node_binding columns=[]"
+  },
+  {
+    "scenario_id": 39,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 7, cpu: 3, random_io: 2, sequential_io: 0, output_rows: 0 }",
+    "decisions": [],
+    "enabled": true,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  NodeProjectionScanExec variable=a label=A access=IndexNodeSeek access_detail=PropertyValues { property: \"id\", values: [Int(0)] } properties=[\"id\"] predicate=None output=node_binding columns=[]"
+  },
+  {
+    "scenario_id": 39,
+    "cost": "PlanCostBreakdown { estimated_rows: 1, cost: 7, cpu: 3, random_io: 2, sequential_io: 0, output_rows: 0 }",
+    "decisions": [],
+    "enabled": false,
+    "event": "plan",
+    "plan": "AggregateExec columns=[total]\n  NodeProjectionScanExec variable=a label=A access=IndexNodeSeek access_detail=PropertyValues { property: \"id\", values: [Int(0)] } properties=[\"id\"] predicate=None output=node_binding columns=[]"
+  }
+]

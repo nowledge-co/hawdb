@@ -296,6 +296,7 @@ impl Database {
                 access_control,
                 optimizer_search,
                 scoring,
+                task_context: None,
             },
         )
     }

@@ -28,6 +28,7 @@ pub use manifest::{
     ScanSegmentFallback, ScanSegmentManifest, ScanSegmentManifestError, SegmentPayloadRange,
 };
 pub use predicate::{PruningDecision, PruningReason, RangeBound, ScanPredicate, SegmentPruner};
+pub(crate) use reader::AdmittedSegmentReadError;
 pub(crate) use reader::{CheckpointRangeReadError, CheckpointRangeReadProgress};
 pub use reader::{
     FileSegmentRangeReader, SegmentRangeRead, SegmentRangeReader, SegmentReadControl,

@@ -70,6 +70,11 @@ pub enum SegmentReadError {
     },
 }
 
+pub(crate) enum AdmittedSegmentReadError<E> {
+    Admission(E),
+    Read(SegmentReadError),
+}
+
 impl Display for SegmentReadError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
@@ -412,6 +417,45 @@ impl FileSegmentRangeReader {
             cache_hit: false,
             cache_miss,
         })
+    }
+
+    /// Admit a cache miss before opening/reading the selected range. A cache
+    /// insertion racing the second lookup may conservatively consume a credit.
+    pub(crate) fn read_range_admitted<E>(
+        &self,
+        range: &SegmentReadRange,
+        admit: impl FnOnce(u64) -> Result<(), E>,
+    ) -> Result<SegmentRangeRead, AdmittedSegmentReadError<E>> {
+        if !self.artifacts.contains_key(&range.artifact_id) {
+            return Err(AdmittedSegmentReadError::Read(
+                SegmentReadError::ArtifactNotFound {
+                    artifact_id: range.artifact_id,
+                },
+            ));
+        }
+        if let (Some(cache), Some(digest), [segment_id]) = (
+            &self.cache,
+            range.content_digest,
+            range.segment_ids.as_slice(),
+        ) {
+            let key = SegmentCacheKey {
+                store_id: self.store_id,
+                manifest_generation: self.manifest_generation,
+                segment_id: *segment_id,
+                content_digest: digest,
+                representation: RepresentationKind::RawBytes,
+            };
+            if let Some(lease) = cache.get(&key) {
+                return Ok(SegmentRangeRead {
+                    payload: lease.into_bytes(),
+                    cache_hit: true,
+                    cache_miss: false,
+                });
+            }
+        }
+        admit(range.length.get()).map_err(AdmittedSegmentReadError::Admission)?;
+        self.read_range_with_report(range)
+            .map_err(AdmittedSegmentReadError::Read)
     }
 }
 

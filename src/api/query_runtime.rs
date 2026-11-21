@@ -300,6 +300,13 @@ impl PreparedRuntimeQuery {
 
     pub(super) fn matches_request(&self, request: QueryRequest<'_>) -> bool {
         self.cypher_text == request.cypher
+            && self
+                .optimizer_environment
+                .as_ref()
+                .is_none_or(|environment| {
+                    environment
+                        .matches_sampling_parameters(request.parameters.unwrap_or(&BTreeMap::new()))
+                })
             && self.access_control.as_ref() == request.access_control
             && self.scoring_key == request.scoring.map(|scoring| scoring.bind().cache_key())
     }
@@ -662,6 +669,7 @@ impl RuntimePlanningContext<'_> {
                 access_control: options.access_control,
                 optimizer_search,
                 scoring: options.scoring,
+                task_context: options.task_context,
             },
         )
     }

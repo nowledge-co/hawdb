@@ -82,6 +82,7 @@ pub mod graph_index;
 pub mod graph_index_metrics;
 #[doc(hidden)]
 pub mod graph_overlay;
+pub mod join_sampling;
 pub use hawdb_core::ids;
 pub use hawdb_core::ids::{NodeId, NodeRecord, ProjectedNodeRecord, RelId, RelRecord};
 mod immutable_files;

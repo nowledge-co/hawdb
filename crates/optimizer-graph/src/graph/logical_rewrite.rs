@@ -54,12 +54,23 @@ pub(super) fn rewrite_logical_plan_with_catalog(
     catalog: &super::OptimizerCatalog,
     options: crate::OptimizerQualificationOptions,
 ) -> LogicalRewriteOutput {
-    // Choose chain starts first; the fixed-point rewrite then pushes each
-    // lifted conjunct down to the expansion that binds it.
     let mut start_events = Vec::new();
-    let started = super::chain_start::rewrite(plan.clone(), catalog, options, &mut start_events);
+    let sampled = super::join_sampling::rewrite(plan, catalog);
+    // A complete query-local sample already chose between both endpoints.
+    // Ordinary catalog-based chain starts remain the fallback for other paths.
+    let started = if super::join_sampling::matches_plan(plan, catalog) {
+        sampled.as_ref().unwrap_or(plan).clone()
+    } else {
+        super::chain_start::rewrite(plan.clone(), catalog, options, &mut start_events)
+    };
     let mut output = rewrite_logical_plan(&started);
     output.events.splice(0..0, start_events);
+    if sampled.is_some() {
+        output.events.push(RuleEvent::applied(
+            "transformation:sampled_match_orientation",
+            "both endpoint orientations were sampled; reverse orientation reduces estimated visited rows",
+        ));
+    }
     output.plan = super::proofs::rewrite(output.plan, catalog, options, &mut output.events);
     let applied = output
         .events

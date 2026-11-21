@@ -268,11 +268,61 @@ impl GraphDescriptorTreeDemandReader {
         )
     }
 
+    pub(crate) fn scan_prefix_admitted(
+        &self,
+        prefix: &[u8],
+        limits: GraphDescriptorTreeReadLimits,
+        admit: ReadAdmission<'_>,
+        visit: ReadAdmission<'_>,
+        consumer: impl FnMut(
+            &[u8],
+            &[u8],
+        )
+            -> Result<GraphDescriptorTreeScanControl, GraphDescriptorTreeError>,
+    ) -> Result<
+        (
+            GraphDescriptorTreeReadReport,
+            GraphDescriptorTreeScanControl,
+        ),
+        GraphDescriptorTreeError,
+    > {
+        self.scan_bound_admitted(
+            GraphDescriptorTreeScanStart::Prefix(prefix),
+            limits,
+            false,
+            Some(admit),
+            Some(visit),
+            consumer,
+        )
+    }
+
     fn scan_bound(
         &self,
         start: GraphDescriptorTreeScanStart<'_>,
         limits: GraphDescriptorTreeReadLimits,
         retain: bool,
+        consumer: impl FnMut(
+            &[u8],
+            &[u8],
+        )
+            -> Result<GraphDescriptorTreeScanControl, GraphDescriptorTreeError>,
+    ) -> Result<
+        (
+            GraphDescriptorTreeReadReport,
+            GraphDescriptorTreeScanControl,
+        ),
+        GraphDescriptorTreeError,
+    > {
+        self.scan_bound_admitted(start, limits, retain, None, None, consumer)
+    }
+
+    fn scan_bound_admitted(
+        &self,
+        start: GraphDescriptorTreeScanStart<'_>,
+        limits: GraphDescriptorTreeReadLimits,
+        retain: bool,
+        admit: Option<ReadAdmission<'_>>,
+        visit: Option<ReadAdmission<'_>>,
         mut consumer: impl FnMut(
             &[u8],
             &[u8],
@@ -308,6 +358,8 @@ impl GraphDescriptorTreeDemandReader {
             )));
         }
         let mut state = TraversalState::new(limits, self.root.page_count, false)?;
+        state.admit_read = admit;
+        state.admit_visit = visit;
         let retained_prefix = match start {
             GraphDescriptorTreeScanStart::Prefix(prefix) if retain && leaf_scope::is_open() => {
                 Some(prefix)
@@ -463,8 +515,11 @@ impl GraphDescriptorTreeDemandReader {
         )
             -> Result<GraphDescriptorTreeScanControl, GraphDescriptorTreeError>,
     ) -> Result<GraphDescriptorTreeScanControl, GraphDescriptorTreeError> {
+        if let Some(visit) = state.admit_visit {
+            visit(reference.length.get())?;
+        }
         state.admit_page(reference)?;
-        let page = self.read_page(reference, use_cache, &mut state.report)?;
+        let page = self.read_page(reference, use_cache, &mut state.report, state.admit_read)?;
         state.report.maximum_depth = state
             .report
             .maximum_depth
@@ -638,6 +693,7 @@ impl GraphDescriptorTreeDemandReader {
         reference: &GraphDescriptorPageRef,
         use_cache: bool,
         report: &mut GraphDescriptorTreeReadReport,
+        admit: Option<ReadAdmission<'_>>,
     ) -> Result<GraphDescriptorPageView, GraphDescriptorTreeError> {
         self.validate_selected_reference(reference)?;
         let cache_key = SegmentCacheKey {
@@ -672,6 +728,9 @@ impl GraphDescriptorTreeDemandReader {
             .storage_bytes_read
             .checked_add(reference.length.get())
             .ok_or_else(|| admission("graph descriptor read byte accounting overflow"))?;
+        if let Some(admit) = admit {
+            admit(reference.length.get())?;
+        }
         let mut file = File::open(&self.page_artifact)?;
         let actual_len = file.metadata()?.len();
         let end = reference
@@ -825,19 +884,23 @@ impl GraphDescriptorTreeScanStart<'_> {
     }
 }
 
-struct TraversalState {
+type ReadAdmission<'a> = &'a dyn Fn(u64) -> Result<(), GraphDescriptorTreeError>;
+
+struct TraversalState<'a> {
     limits: GraphDescriptorTreeReadLimits,
     report: GraphDescriptorTreeReadReport,
     visited: VisitedPages,
     leaf_pages: u64,
     previous_key: Option<Vec<u8>>,
     verify_global_key_order: bool,
+    admit_read: Option<ReadAdmission<'a>>,
+    admit_visit: Option<ReadAdmission<'a>>,
     // Retained-prefix scans inside an open leaf scope keep the last leaf.
     capture_leaf: bool,
     captured_leaf: Option<RetainedLeaf>,
 }
 
-impl TraversalState {
+impl TraversalState<'_> {
     fn new(
         limits: GraphDescriptorTreeReadLimits,
         root_page_count: u64,
@@ -854,6 +917,8 @@ impl TraversalState {
             leaf_pages: 0,
             previous_key: None,
             verify_global_key_order: false,
+            admit_read: None,
+            admit_visit: None,
             capture_leaf: false,
             captured_leaf: None,
         })

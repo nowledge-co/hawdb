@@ -24,6 +24,8 @@ mod cardinality;
 mod catalog;
 mod chain_start;
 mod costing;
+#[doc(hidden)]
+pub mod join_sampling;
 mod logical_rewrite;
 mod lowering;
 mod match_reads;
