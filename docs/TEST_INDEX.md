@@ -65,7 +65,8 @@ bare and explicit table aliases while recognizing them as query boundaries.
 `query::tests::compound_queries` covers duplicate multiplicity, NULL equality,
 numeric common types, incompatible arity/types, lexical materialization order,
 catalog shadowing, unused-CTE validation without evaluation, empty typed
-results, top-level and branch ordering/limits,
+results including UUID-returning scalar functions, top-level and branch
+ordering/limits,
 intermediate-row and blocking-memory refusal, and non-executing `EXPLAIN`
 beside executing `EXPLAIN ANALYZE`. Root
 `relational_sql::compound_queries` reopens checkpointed fixtures and reads the

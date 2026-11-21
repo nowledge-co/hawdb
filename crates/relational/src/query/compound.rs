@@ -1016,6 +1016,12 @@ fn select_output_types(
                     ExprKind::Function { name, .. } if name == "count" => {
                         Some(RelationalScalarType::BigInt)
                     }
+                    ExprKind::Function { name, .. } if name == "uuidv7" => {
+                        Some(RelationalScalarType::Uuid)
+                    }
+                    ExprKind::Function { name, .. } if name == "version" => {
+                        Some(RelationalScalarType::Text)
+                    }
                     ExprKind::Function {
                         name, arguments, ..
                     } if matches!(name.as_str(), "sum" | "min" | "max") => arguments

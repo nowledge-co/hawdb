@@ -163,6 +163,18 @@ fn ctes_materialize_in_order_apply_aliases_and_shadow_catalog_tables() {
     );
     assert!(output.rows.is_empty());
 
+    let output = query(
+        &state,
+        "WITH empty(v) AS (SELECT uuidv7() FROM numbers WHERE id < 0) \
+         SELECT v FROM empty UNION ALL SELECT uuidv7() AS v",
+    );
+    assert_eq!(output.rows.len(), 1);
+    let output_values = values(&output);
+    assert!(matches!(
+        output_values.as_slice(),
+        [row] if matches!(row.as_slice(), [Value::Uuid(_)])
+    ));
+
     let output = query_with_limits(
         &state,
         "WITH selected(v) AS (SELECT n FROM numbers) \
