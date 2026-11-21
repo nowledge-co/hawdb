@@ -2197,7 +2197,10 @@ SQL, relational and root unit owners. Parser source-bound transitions cover
 ordering. `sql_session_update_delete_and_upsert_return_final_row_images` and the
 two `data_modifying_cte` SQL-session cases cover old/new row visibility,
 zero/many rows, generated defaults, conflicts, output row/payload refusal and
-final-query failure without publication. Storage's
+final-query failure without publication. The root execution-request contract
+applies the same payload ceilings to INSERT, UPDATE and DELETE `RETURNING`
+through session, direct-transaction and callback routes, including rollback
+after a caught refusal. Storage's
 `mutation_outcome_row_capture_is_explicit` keeps ordinary non-`RETURNING`
 mutations count-only, without hydrating or retaining changed row payloads. Root recovery adds
 `data_modifying_cte_replays_then_survives_checkpoint_reopen` for WAL replay and

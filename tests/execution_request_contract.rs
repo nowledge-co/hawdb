@@ -1784,7 +1784,7 @@ fn native_sql_returning_payload_control(route: &str, mutation: &str) {
         .into_iter()
         .flat_map(|ceiling| [false, true].map(|admitted| (ceiling, admitted)))
     {
-        let allowed = ceiling == 4096 && mutation == "insert";
+        let allowed = ceiling == 4096;
         let directory = IdentityDirectory::new();
         let path = directory.0.join("returning-payload");
         let mut database = hawdb::Database::open(&path).unwrap();
@@ -1886,22 +1886,11 @@ fn native_sql_returning_payload_control(route: &str, mutation: &str) {
             }
             assert!(observed_epoch > epoch, "{route}/{mutation}/{ceiling}");
         } else {
-            if mutation == "insert" {
-                assert!(
-                    matches!(result, Err(hawdb::HawDBError::ReadBudgetExceeded(ref cause))
-                    if cause.resource == hawdb::ReadBudgetResource::PayloadBytes && cause.limit == ceiling),
-                    "{route}/{mutation}/{ceiling}: result={result:?}, epochs={epoch}->{observed_epoch}, stored={stored:?}"
-                );
-            } else {
-                // UPDATE/DELETE RETURNING are outside the current SQL
-                // fragment. Preserve their fail-closed semantic refusal;
-                // do not add new SQL capability to repair a result budget.
-                assert!(
-                    matches!(result, Err(hawdb::HawDBError::Semantic(ref message))
-                    if message.contains("unsupported PostgreSQL")),
-                    "{route}/{mutation}/{ceiling}: {result:?}"
-                );
-            }
+            assert!(
+                matches!(result, Err(hawdb::HawDBError::ReadBudgetExceeded(ref cause))
+                if cause.resource == hawdb::ReadBudgetResource::PayloadBytes && cause.limit == ceiling),
+                "{route}/{mutation}/{ceiling}: result={result:?}, epochs={epoch}->{observed_epoch}, stored={stored:?}"
+            );
             assert_eq!(observed_epoch, epoch, "{route}/{mutation}/{ceiling}");
         }
         assert_eq!(stored, expected, "{route}/{mutation}/{ceiling}");
