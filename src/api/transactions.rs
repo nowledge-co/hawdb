@@ -190,6 +190,7 @@ impl DatabaseTransactionState {
     pub(super) fn stage_sparse_authoritative_relational_statement(
         &self,
         transaction: hawdb_storage::relational::RelationalTransaction,
+        capture_mutation_rows: bool,
     ) -> Result<Option<SparseRelationalStatementStage>> {
         let rows = match &self.relational_rows {
             Ok(Some(rows)) => rows,
@@ -224,6 +225,7 @@ impl DatabaseTransactionState {
                 rows,
                 transaction,
                 index,
+                capture_mutation_rows,
             )
             .map_err(map_transaction_relational_error)?;
         Ok(Some(SparseRelationalStatementStage {
@@ -917,6 +919,137 @@ pub(super) struct DatabaseTransactionSqlOptions<'a> {
     pub(super) join_planning: RelationalJoinPlanningDirective,
 }
 
+struct StagedRelationalSqlTransaction {
+    state: hawdb_storage::relational::RelationalState,
+    mutation_outcomes: Vec<hawdb_storage::relational::RelationalMutationOutcome>,
+    index_capture: Option<hawdb_storage::relational::RelationalIndexChangeCapture>,
+    row_capture: Option<hawdb_storage::relational::RelationalRowChangeCapture>,
+}
+
+fn stage_relational_sql_transaction(
+    runtime: &DatabaseTransactionRuntime,
+    state: &mut DatabaseTransactionState,
+    transaction: hawdb_storage::relational::RelationalTransaction,
+    capture_mutation_rows: bool,
+) -> Result<StagedRelationalSqlTransaction> {
+    let mut index_capture = None;
+    let mut row_capture = None;
+    let (next, mutation_outcomes) = if runtime
+        .config
+        .relational_index_mode
+        .requires_authoritative_indexes()
+    {
+        if let Some(staged) = state.stage_sparse_authoritative_relational_statement(
+            transaction.clone(),
+            capture_mutation_rows,
+        )? {
+            index_capture = Some(staged.index_capture);
+            row_capture = Some(staged.row_capture);
+            (staged.state, staged.mutation_outcomes)
+        } else {
+            let index = match &mut state.relational_index {
+                Ok(Some(index)) => index,
+                Ok(None) => {
+                    return Err(HawDBError::StorageIntegrity(
+                        "authoritative transaction index view is unavailable".to_string(),
+                    ));
+                }
+                Err(error) => {
+                    return Err(HawDBError::StorageIntegrity(format!(
+                        "authoritative transaction index view could not be pinned: {error}"
+                    )));
+                }
+            };
+            let (next, capture, outcomes) = state
+                .relational_state
+                .stage_transaction_with_authoritative_index_outcomes_and_row_capture(
+                    transaction,
+                    hawdb_storage::relational::RelationalMutationLimits::default(),
+                    hawdb_storage::relational::RelationalOverflowConfig::default(),
+                    index.capture_limits(),
+                    index,
+                    capture_mutation_rows,
+                )
+                .map_err(map_transaction_relational_error)?;
+            index_capture = Some(capture);
+            (next, outcomes)
+        }
+    } else {
+        state
+            .relational_state
+            .stage_transaction_with_outcomes_and_row_capture(
+                transaction,
+                hawdb_storage::relational::RelationalMutationLimits::default(),
+                hawdb_storage::relational::RelationalOverflowConfig::default(),
+                capture_mutation_rows,
+            )
+            .map_err(map_transaction_relational_error)?
+    };
+    Ok(StagedRelationalSqlTransaction {
+        state: next,
+        mutation_outcomes,
+        index_capture,
+        row_capture,
+    })
+}
+
+fn publish_staged_relational_sql_transaction(
+    state: &mut DatabaseTransactionState,
+    staged: StagedRelationalSqlTransaction,
+    transaction: hawdb_storage::relational::RelationalTransaction,
+    returning: impl IntoIterator<Item = Option<crate::relational_sql::RelationalReturningProjection>>,
+) -> Result<()> {
+    let next_relational_rows = if let Some(row_capture) = staged.row_capture {
+        let rows = match &state.relational_rows {
+            Ok(Some(rows)) => rows,
+            Ok(None) => {
+                return Err(HawDBError::StorageIntegrity(
+                    "relational row transaction view is unavailable".to_string(),
+                ));
+            }
+            Err(error) => {
+                return Err(HawDBError::StorageIntegrity(format!(
+                    "relational transaction row view could not be pinned: {error}"
+                )));
+            }
+        };
+        Some(
+            rows.stage_advance(row_capture)
+                .map_err(map_transaction_relational_error)?,
+        )
+    } else {
+        None
+    };
+    if let Some(index_capture) = staged.index_capture {
+        state
+            .relational_index
+            .as_mut()
+            .map_err(|error| {
+                HawDBError::StorageIntegrity(format!(
+                    "authoritative transaction index view could not be pinned: {error}"
+                ))
+            })?
+            .as_mut()
+            .ok_or_else(|| {
+                HawDBError::StorageIntegrity(
+                    "authoritative transaction index view is unavailable".to_string(),
+                )
+            })?
+            .append(index_capture)
+            .map_err(map_transaction_relational_error)?;
+    }
+    if let Some(next_relational_rows) = next_relational_rows {
+        state.relational_rows = Ok(Some(next_relational_rows));
+    }
+    state.relational_state = staged.state;
+    state
+        .relational_transaction
+        .writes
+        .extend(transaction.writes);
+    state.relational_returning.extend(returning);
+    Ok(())
+}
+
 /// Executes one SQL statement of a transaction with the statement clock
 /// pinned to the transaction start (PostgreSQL `transaction_timestamp()`).
 pub(super) fn execute_database_transaction_prepared_sql(
@@ -1137,6 +1270,72 @@ fn execute_database_transaction_prepared_sql_at_clock(
         )
         .map(sql_query_result);
     }
+    if let Some(plan) = crate::relational_sql::compile_prepared_data_modifying_cte_query(
+        &prepared.template,
+        parameters,
+        &state.relational_state,
+    )? {
+        runtime.ensure_writable(
+            state
+                .graph_transaction
+                .as_ref()
+                .expect("database transaction must own a graph workspace")
+                .store(),
+        )?;
+        let transaction = plan.transaction;
+        let staged = stage_relational_sql_transaction(runtime, state, transaction.clone(), true)?;
+        if staged.mutation_outcomes.len() != plan.ctes.len() {
+            return Err(HawDBError::StorageIntegrity(format!(
+                "data-modifying CTE statement planned {} mutations but staging produced {} outcomes",
+                plan.ctes.len(),
+                staged.mutation_outcomes.len()
+            )));
+        }
+        for (outcome, cte) in staged.mutation_outcomes.iter().zip(&plan.ctes) {
+            project_relational_mutation_outcome(
+                outcome,
+                Some(&cte.returning),
+                &staged.state,
+                runtime.config.mutation_limits,
+                true,
+            )?;
+        }
+        let tables = crate::relational_sql::materialize_data_modifying_ctes(
+            &plan.ctes,
+            &staged.mutation_outcomes,
+            &staged.state,
+        )?;
+        let query = crate::relational_sql::PreparedRelationalSql {
+            template: Arc::new(hawdb_sql::PreparedPostgresStatement {
+                statement: crate::sql::SqlStatement::Query(plan.query),
+                parameters: prepared.template.parameters.clone(),
+            }),
+            parse_nanos: prepared.parse_nanos,
+        };
+        let read_modes = transaction_relational_read_modes(runtime, state)?;
+        let output =
+            crate::relational_sql::execute_prepared_relational_query_with_ephemeral_tables(
+                query,
+                parameters,
+                &state.relational_state,
+                read_modes,
+                relational_query_resource_context(
+                    &runtime.config,
+                    max_rows,
+                    max_read_result_payload_bytes,
+                    options.task_context,
+                )
+                .with_join_planning(options.join_planning),
+                tables,
+            )?;
+        let returning = plan
+            .ctes
+            .into_iter()
+            .map(|cte| Some(cte.returning))
+            .collect::<Vec<_>>();
+        publish_staged_relational_sql_transaction(state, staged, transaction, returning)?;
+        return Ok(sql_query_result(QueryOutput { rows: output.rows }));
+    }
     if matches!(
         prepared.statement(),
         crate::sql::SqlStatement::Select(_)
@@ -1219,68 +1418,25 @@ fn execute_database_transaction_prepared_sql_at_clock(
         &state.relational_state,
     )?;
     let transaction = compiled.transaction;
-    let mut pending_index_capture = None;
-    let mut pending_row_capture = None;
-    let (next_relational_state, mutation_outcomes) = if runtime
-        .config
-        .relational_index_mode
-        .requires_authoritative_indexes()
-    {
-        if let Some(staged) =
-            state.stage_sparse_authoritative_relational_statement(transaction.clone())?
-        {
-            pending_index_capture = Some(staged.index_capture);
-            pending_row_capture = Some(staged.row_capture);
-            (staged.state, staged.mutation_outcomes)
-        } else {
-            let index = match &mut state.relational_index {
-                Ok(Some(index)) => index,
-                Ok(None) => {
-                    return Err(HawDBError::StorageIntegrity(
-                        "authoritative transaction index view is unavailable".to_string(),
-                    ));
-                }
-                Err(error) => {
-                    return Err(HawDBError::StorageIntegrity(format!(
-                        "authoritative transaction index view could not be pinned: {error}"
-                    )));
-                }
-            };
-            let (next, capture, outcomes) = state
-                .relational_state
-                .stage_transaction_with_authoritative_index_and_outcomes(
-                    transaction.clone(),
-                    hawdb_storage::relational::RelationalMutationLimits::default(),
-                    hawdb_storage::relational::RelationalOverflowConfig::default(),
-                    index.capture_limits(),
-                    index,
-                )
-                .map_err(map_transaction_relational_error)?;
-            pending_index_capture = Some(capture);
-            (next, outcomes)
-        }
-    } else {
-        state
-            .relational_state
-            .stage_transaction_with_outcomes(
-                transaction.clone(),
-                hawdb_storage::relational::RelationalMutationLimits::default(),
-                hawdb_storage::relational::RelationalOverflowConfig::default(),
-            )
-            .map_err(map_transaction_relational_error)?
-    };
-    if mutation_outcomes.len() > 1 {
+    let staged = stage_relational_sql_transaction(
+        runtime,
+        state,
+        transaction.clone(),
+        compiled.returning.is_some(),
+    )?;
+    if staged.mutation_outcomes.len() > 1 {
         return Err(HawDBError::StorageIntegrity(
             "one SQL statement produced multiple relational mutation outcomes".to_string(),
         ));
     }
-    let mutation = mutation_outcomes
+    let mutation = staged
+        .mutation_outcomes
         .first()
         .map(|outcome| {
             project_relational_mutation_outcome(
                 outcome,
                 compiled.returning.as_ref(),
-                &next_relational_state,
+                &staged.state,
                 runtime.config.mutation_limits,
                 true,
             )
@@ -1302,56 +1458,12 @@ fn execute_database_transaction_prepared_sql_at_clock(
             max_read_result_payload_bytes,
         )?;
     }
-    let next_relational_rows = if let Some(row_capture) = pending_row_capture {
-        let rows = match &state.relational_rows {
-            Ok(Some(rows)) => rows,
-            Ok(None) => {
-                return Err(HawDBError::StorageIntegrity(
-                    "relational row transaction view is unavailable".to_string(),
-                ));
-            }
-            Err(error) => {
-                return Err(HawDBError::StorageIntegrity(format!(
-                    "relational transaction row view could not be pinned: {error}"
-                )));
-            }
-        };
-        Some(
-            rows.stage_advance(row_capture)
-                .map_err(map_transaction_relational_error)?,
-        )
-    } else {
-        None
-    };
-    if let Some(index_capture) = pending_index_capture {
-        state
-            .relational_index
-            .as_mut()
-            .map_err(|error| {
-                HawDBError::StorageIntegrity(format!(
-                    "authoritative transaction index view could not be pinned: {error}"
-                ))
-            })?
-            .as_mut()
-            .ok_or_else(|| {
-                HawDBError::StorageIntegrity(
-                    "authoritative transaction index view is unavailable".to_string(),
-                )
-            })?
-            .append(index_capture)
-            .map_err(map_transaction_relational_error)?;
-    }
-    if let Some(next_relational_rows) = next_relational_rows {
-        state.relational_rows = Ok(Some(next_relational_rows));
-    }
-    state.relational_state = next_relational_state;
-    state
-        .relational_transaction
-        .writes
-        .extend(transaction.writes);
-    state
-        .relational_returning
-        .extend(mutation_outcomes.iter().map(|_| compiled.returning.clone()));
+    let returning = staged
+        .mutation_outcomes
+        .iter()
+        .map(|_| compiled.returning.clone())
+        .collect::<Vec<_>>();
+    publish_staged_relational_sql_transaction(state, staged, transaction, returning)?;
     let rows = mutation
         .as_ref()
         .map(|mutation| mutation.rows.clone())
@@ -1645,6 +1757,7 @@ pub(super) fn commit_database_transaction_state_inner(
         }
     }
     let returning = std::mem::take(&mut state.relational_returning);
+    let capture_relational_mutation_rows = returning.iter().any(Option::is_some);
     let relational_transaction = std::mem::take(&mut state.relational_transaction);
     let append_transaction = std::mem::take(&mut state.append_transaction);
     let mutation_limits = db.config.mutation_limits;
@@ -1655,6 +1768,7 @@ pub(super) fn commit_database_transaction_state_inner(
             transaction: graph_transaction,
             relational: relational_transaction,
             append: append_transaction,
+            capture_relational_mutation_rows,
         },
         task_context,
         |branch_runtime, inputs| {

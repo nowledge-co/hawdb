@@ -146,6 +146,7 @@ impl GraphStore {
             transaction,
             relational,
             append,
+            capture_relational_mutation_rows,
         } = inputs;
         let mut retained = None;
         let result = self.commit_prepared_transaction_parts(
@@ -153,6 +154,7 @@ impl GraphStore {
             transaction,
             relational,
             append,
+            capture_relational_mutation_rows,
             limits,
             allow_stale_rebase,
             Some(&mut retained),
@@ -164,6 +166,7 @@ impl GraphStore {
                     transaction,
                     relational: retained.relational.unwrap_or_default(),
                     append: retained.append.unwrap_or_default(),
+                    capture_relational_mutation_rows,
                 },
                 error,
             }),
@@ -214,6 +217,7 @@ impl GraphStore {
             prepared,
             relational_transaction,
             append_transaction,
+            true,
             limits,
             allow_stale_rebase,
             None,
@@ -230,6 +234,7 @@ impl GraphStore {
         prepared: PreparedGraphMutationTransaction,
         relational_transaction: RelationalTransaction,
         append_transaction: AppendTransaction,
+        capture_relational_mutation_rows: bool,
         limits: MutationLimits,
         allow_stale_rebase: bool,
         retain: Option<&mut Option<(RetainedLiveHeadroomCommit, PreparedGraphMutationTransaction)>>,
@@ -278,6 +283,7 @@ impl GraphStore {
                 limits,
                 MutationCommitOptions {
                     relational: Some(relational_transaction),
+                    capture_relational_mutation_rows: Some(capture_relational_mutation_rows),
                     append: Some(append_transaction),
                     mvcc_read_epoch,
                     prepared_wal,
@@ -294,6 +300,7 @@ impl GraphStore {
             limits,
             MutationCommitOptions {
                 relational: Some(relational_transaction),
+                capture_relational_mutation_rows: Some(capture_relational_mutation_rows),
                 append: Some(append_transaction),
                 mvcc_read_epoch,
                 prepared_wal,
@@ -2190,6 +2197,7 @@ impl GraphStore {
     ) -> Result<MutationSummary> {
         let MutationCommitOptions {
             relational: relational_transaction,
+            capture_relational_mutation_rows,
             append: append_transaction,
             preserve_single_create_wal,
             mvcc_read_epoch,
@@ -2198,6 +2206,7 @@ impl GraphStore {
             retain_on_live_headroom,
             creation_clock: _,
         } = options;
+        let capture_relational_mutation_rows = capture_relational_mutation_rows.unwrap_or(true);
         self.ensure_usable()?;
         ensure_mutation_commit_limits(&ops, &rows, limits)?;
         if let Some(captured_graph_ops) = captured_graph_ops {
@@ -2278,7 +2287,7 @@ impl GraphStore {
                         &hydrated_workspace.proven_absent_primary_keys,
                     );
                 self.relational_state
-                    .stage_sparse_transaction_with_primary_key_changes(
+                    .stage_sparse_transaction_with_primary_key_changes_and_row_capture(
                         RelationalSparseLiveStage {
                             transaction: transaction.clone(),
                             hydrated_workspace: hydrated_workspace.rows,
@@ -2289,11 +2298,12 @@ impl GraphStore {
                             constraint_index: &proven_constraint_index,
                         },
                         self.search_projection_primary_key_capture_limits,
+                        capture_relational_mutation_rows,
                     )
                     .map_err(map_relational_staging_error)?
             } else {
                 self.relational_state
-                    .stage_transaction_with_primary_key_changes(
+                    .stage_transaction_with_primary_key_changes_and_row_capture(
                         transaction.clone(),
                         self.relational_mutation_limits,
                         self.relational_overflow_config,
@@ -2303,6 +2313,7 @@ impl GraphStore {
                         authoritative_index.as_ref().map(|index| {
                             index as &dyn hawdb_storage::relational::RelationalConstraintIndex
                         }),
+                        capture_relational_mutation_rows,
                     )
                     .map_err(map_relational_staging_error)?
             };

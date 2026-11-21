@@ -1526,6 +1526,7 @@ fn controlled_update_match_denies_wide_key_before_copy_and_retries() {
             memory: Default::default(),
         };
         let observer = crate::test_allocator::AllocationObservation::start();
+        let mut outcome_hydration = RelationalHydrationBudget::default();
         let result = apply_update(
             &mut target,
             "documents",
@@ -1538,11 +1539,13 @@ fn controlled_update_match_denies_wide_key_before_copy_and_retries() {
                 checkpoint_allocations: Some(&context),
                 replay_access_tracker: None,
                 primary_key_lookup: true,
+                capture_mutation_outcome: false,
+                outcome_hydration: &mut outcome_hydration,
             },
         );
         let wide_allocations = observer.finish();
         if succeeds {
-            assert_eq!(result.unwrap(), 1);
+            assert_eq!(result.unwrap().0, 1);
             assert_eq!(
                 target.row("documents", &key).unwrap().values()[2],
                 RelationalValue::Text("new".into())

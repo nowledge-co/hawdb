@@ -99,3 +99,49 @@ fn assert_committed(db: &mut Database) {
         assert!(row["w"] != Value::Int(1) || row["o"] != Value::Int(3));
     }
 }
+
+#[test]
+fn data_modifying_cte_replays_then_survives_checkpoint_reopen() {
+    let path = unique_test_dir("data_modifying_cte_checkpoint_reopen");
+    {
+        let mut db = Database::open(&path).unwrap();
+        db.query_sql("CREATE TABLE left_items (id BIGINT PRIMARY KEY, value BIGINT NOT NULL)")
+            .unwrap();
+        db.query_sql("CREATE TABLE right_items (id BIGINT PRIMARY KEY)")
+            .unwrap();
+        db.query_sql("INSERT INTO left_items (id, value) VALUES (1, 0)")
+            .unwrap();
+        db.query_sql("INSERT INTO right_items (id) VALUES (1)")
+            .unwrap();
+        db.checkpoint().unwrap();
+        let output = db
+            .query_sql(
+                "WITH changed AS (\
+                     UPDATE left_items SET value = value + 1 WHERE id = 1 RETURNING id\
+                 ), removed AS (\
+                     DELETE FROM right_items WHERE id = 1 RETURNING id\
+                 ) SELECT id FROM changed UNION ALL SELECT id FROM removed ORDER BY id",
+            )
+            .unwrap();
+        assert_eq!(output.rows.len(), 2);
+    }
+
+    for checkpoint in [true, false] {
+        let mut db = Database::open(&path).unwrap();
+        assert_eq!(
+            db.query_sql("SELECT value FROM left_items WHERE id = 1")
+                .unwrap()
+                .rows[0]["value"],
+            Value::Int(1)
+        );
+        assert!(db
+            .query_sql("SELECT id FROM right_items WHERE id = 1")
+            .unwrap()
+            .rows
+            .is_empty());
+        if checkpoint {
+            db.checkpoint().unwrap();
+        }
+    }
+    std::fs::remove_dir_all(path).unwrap();
+}

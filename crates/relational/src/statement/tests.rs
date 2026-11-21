@@ -453,6 +453,38 @@ fn prepared_mutations_bind_current_schema_parameters_and_returning() {
 }
 
 #[test]
+fn data_modifying_ctes_preserve_source_order_visibility() {
+    let state = state();
+    let forward = hawdb_sql::prepare_postgres_sql(
+        "WITH before AS (SELECT id FROM changed), \
+         changed AS (UPDATE items SET counter = 1 WHERE id = 1 RETURNING id) \
+         SELECT id FROM before",
+    )
+    .unwrap();
+    let error = compile_prepared_data_modifying_cte_query(&forward, &[], &state).unwrap_err();
+    assert_eq!(
+        error,
+        HawDBError::Semantic(
+            "common table expression before cannot reference later data-modifying CTE changed"
+                .into()
+        )
+    );
+
+    let ordered = hawdb_sql::prepare_postgres_sql(
+        "WITH changed AS (UPDATE items SET counter = 1 WHERE id = 1 RETURNING id), \
+         after AS (SELECT id FROM changed) SELECT id FROM after",
+    )
+    .unwrap();
+    let compiled = compile_prepared_data_modifying_cte_query(&ordered, &[], &state)
+        .unwrap()
+        .expect("data-modifying CTE plan");
+    assert_eq!(compiled.ctes.len(), 1);
+    assert_eq!(compiled.ctes[0].name, "changed");
+    assert_eq!(compiled.query.with.len(), 1);
+    assert_eq!(compiled.query.with[0].name, "after");
+}
+
+#[test]
 fn statement_compilation_differential_smoke() {
     campaign(16);
 }

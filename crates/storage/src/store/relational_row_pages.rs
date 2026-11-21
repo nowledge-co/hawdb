@@ -834,6 +834,7 @@ impl GraphStore {
         rows: &RelationalTransactionRowView,
         transaction: RelationalTransaction,
         constraint_index: &dyn RelationalConstraintIndex,
+        capture_mutation_rows: bool,
     ) -> Result<
         (
             RelationalState,
@@ -871,7 +872,7 @@ impl GraphStore {
             &proven_absent_primary_keys,
         );
         state
-            .stage_sparse_transaction_with_authoritative_replay_access_and_outcomes(
+            .stage_sparse_transaction_with_authoritative_replay_access_outcomes_and_row_capture(
                 RelationalSparseLiveStage {
                     transaction,
                     hydrated_workspace,
@@ -881,6 +882,7 @@ impl GraphStore {
                     row_capture_limits,
                     constraint_index: &proven_constraint_index,
                 },
+                capture_mutation_rows,
             )
             .map(|(next, index_capture, row_capture, _, outcomes)| {
                 (next, index_capture, row_capture, outcomes)

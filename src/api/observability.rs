@@ -652,8 +652,12 @@ impl Database {
                     SqlStatement::Insert(insert) if insert.returning.is_empty() => {
                         Some(&insert.table)
                     }
-                    SqlStatement::Update(update) => Some(&update.table),
-                    SqlStatement::Delete(delete) => Some(&delete.table),
+                    SqlStatement::Update(update) if update.returning.is_empty() => {
+                        Some(&update.table)
+                    }
+                    SqlStatement::Delete(delete) if delete.returning.is_empty() => {
+                        Some(&delete.table)
+                    }
                     _ => None,
                 };
                 let has_empty_rowpage_result = match empty_result_table {
@@ -672,11 +676,18 @@ impl Database {
                 let can_commit_empty_result = has_empty_rowpage_result
                     && self.config.mutation_limits
                         == hawdb_storage::mutation::MutationLimits::default();
+                let has_data_modifying_cte = matches!(
+                    prepared.statement(),
+                    SqlStatement::Query(query) if query.contains_data_modifying_cte()
+                );
                 if !can_commit_empty_result
-                    && matches!(
-                        prepared.statement(),
-                        SqlStatement::Insert(_) | SqlStatement::Update(_) | SqlStatement::Delete(_)
-                    )
+                    && (has_data_modifying_cte
+                        || matches!(
+                            prepared.statement(),
+                            SqlStatement::Insert(_)
+                                | SqlStatement::Update(_)
+                                | SqlStatement::Delete(_)
+                        ))
                 {
                     // Validate result-bearing DML before publication, regardless
                     // of whether a ceiling exists.
@@ -719,7 +730,9 @@ impl Database {
                         ));
                     }
                     let super::TransactionCommitResult {
-                        output, mutations, ..
+                        output: committed_output,
+                        mutations,
+                        ..
                     } = transaction.commit_with_result()?;
                     // The staged outcome is provisional; report the one
                     // recomputed against the durable commit instead.
@@ -733,6 +746,11 @@ impl Database {
                             })
                         })
                         .transpose()?;
+                    let output = if has_data_modifying_cte {
+                        result.output
+                    } else {
+                        committed_output
+                    };
                     return Ok(super::SqlStatementResult { output, mutation });
                 }
                 if matches!(

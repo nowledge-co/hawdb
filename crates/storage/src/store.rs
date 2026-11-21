@@ -766,6 +766,7 @@ pub struct KernelWriteBatch {
 #[derive(Default)]
 struct MutationCommitOptions<'a> {
     relational: Option<RelationalTransaction>,
+    capture_relational_mutation_rows: Option<bool>,
     append: Option<AppendTransaction>,
     preserve_single_create_wal: bool,
     mvcc_read_epoch: Option<u64>,
@@ -812,6 +813,7 @@ pub struct PreparedTransactionCommit {
     pub transaction: PreparedGraphMutationTransaction,
     pub relational: RelationalTransaction,
     pub append: AppendTransaction,
+    pub capture_relational_mutation_rows: bool,
 }
 
 /// An isolated graph mutation workspace for a single explicit transaction.

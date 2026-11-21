@@ -20,19 +20,21 @@ use crate::{
 use hawdb_core::{HawDBError, Result, Value};
 use hawdb_sql::{
     AlterTableAddColumnStatement, CreateIndexStatement, CreateTableStatement, Expr, ExprKind,
-    PreparedPostgresStatement, SqlArithmeticOperand, SqlAssignmentValue, SqlComparisonOp,
-    SqlConflictAction, SqlPredicate, SqlReferentialAction, SqlStatement, SqlTableConstraint,
-    SqlTableStorage, SqlValue,
+    PreparedPostgresStatement, SqlArithmeticOperand, SqlAssignmentValue, SqlCommonTableExpression,
+    SqlCommonTableExpressionBody, SqlComparisonOp, SqlConflictAction, SqlPredicate,
+    SqlQueryStatement, SqlReferentialAction, SqlStatement, SqlTableConstraint, SqlTableStorage,
+    SqlValue,
 };
 use hawdb_storage::relational::{
     RelationalBigIntArithmeticOperator, RelationalBigIntOperand, RelationalColumnDefault,
     RelationalColumnSchema, RelationalComparisonOp, RelationalConflictAction,
-    RelationalForeignKeySchema, RelationalIndexSchema, RelationalInsertMode, RelationalPredicate,
-    RelationalReferentialAction, RelationalRow, RelationalScalarType, RelationalState,
-    RelationalTableSchema, RelationalTransaction, RelationalUpdateAssignment,
-    RelationalUpdateValue, RelationalUpsertAssignment, RelationalUpsertValue, RelationalValue,
-    RelationalWrite,
+    RelationalForeignKeySchema, RelationalIndexSchema, RelationalInsertMode,
+    RelationalMutationOutcome, RelationalPredicate, RelationalReferentialAction, RelationalRow,
+    RelationalScalarType, RelationalState, RelationalTableSchema, RelationalTransaction,
+    RelationalUpdateAssignment, RelationalUpdateValue, RelationalUpsertAssignment,
+    RelationalUpsertValue, RelationalValue, RelationalWrite,
 };
+use std::collections::BTreeSet;
 
 mod numeric;
 
@@ -55,6 +57,243 @@ pub struct CompiledRelationalStatement {
 pub struct RelationalReturningProjection {
     pub table: String,
     pub columns: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompiledDataModifyingCteQuery {
+    pub transaction: RelationalTransaction,
+    pub query: SqlQueryStatement,
+    pub ctes: Vec<RelationalDataModifyingCte>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RelationalDataModifyingCte {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub returning: RelationalReturningProjection,
+}
+
+pub fn compile_prepared_data_modifying_cte_query(
+    prepared: &PreparedPostgresStatement,
+    parameters: &[Value],
+    state: &RelationalState,
+) -> Result<Option<CompiledDataModifyingCteQuery>> {
+    let SqlStatement::Query(query) = &prepared.statement else {
+        return Ok(None);
+    };
+    if !query.contains_data_modifying_cte() {
+        return Ok(None);
+    }
+    if prepared.parameters.len() != parameters.len() {
+        return Err(HawDBError::Semantic(format!(
+            "PostgreSQL statement requires {} parameters, but {} parameters were supplied",
+            prepared.parameters.len(),
+            parameters.len()
+        )));
+    }
+    let mut query = query.clone();
+    let mut retained = Vec::new();
+    let mut ctes = Vec::new();
+    let mut writes = Vec::new();
+    let mut names = BTreeSet::new();
+    let mut mutated_tables = BTreeSet::new();
+    let mut later_data_modifying_ctes = query
+        .with
+        .iter()
+        .filter(|cte| matches!(cte.body, SqlCommonTableExpressionBody::Mutation(_)))
+        .map(|cte| cte.name.clone())
+        .collect::<BTreeSet<_>>();
+    for cte in std::mem::take(&mut query.with) {
+        if !names.insert(cte.name.clone()) {
+            return Err(HawDBError::Semantic(format!(
+                "common table expression {} is specified more than once",
+                cte.name
+            )));
+        }
+        match cte.body {
+            SqlCommonTableExpressionBody::Query(cte_query) => {
+                if cte_query.contains_data_modifying_cte() {
+                    return Err(HawDBError::Semantic(
+                        "data-modifying CTEs are supported only in the top-level WITH list".into(),
+                    ));
+                }
+                if let Some(later) =
+                    first_referenced_relation(&cte_query, &later_data_modifying_ctes)
+                {
+                    return Err(HawDBError::Semantic(format!(
+                        "common table expression {} cannot reference later data-modifying CTE {later}",
+                        cte.name
+                    )));
+                }
+                retained.push(SqlCommonTableExpression {
+                    name: cte.name,
+                    columns: cte.columns,
+                    body: SqlCommonTableExpressionBody::Query(cte_query),
+                });
+            }
+            SqlCommonTableExpressionBody::Mutation(statement) => {
+                later_data_modifying_ctes.remove(&cte.name);
+                let compiled = compile_relational_mutation(&statement, parameters, state)?;
+                let returning = compiled.returning.ok_or_else(|| {
+                    HawDBError::Semantic(format!(
+                        "data-modifying CTE {} requires a RETURNING clause",
+                        cte.name
+                    ))
+                })?;
+                if !mutated_tables.insert(returning.table.clone()) {
+                    return Err(HawDBError::Semantic(format!(
+                        "data-modifying CTEs cannot target table {} more than once",
+                        returning.table
+                    )));
+                }
+                if !cte.columns.is_empty() && cte.columns.len() != returning.columns.len() {
+                    return Err(HawDBError::Semantic(format!(
+                        "common table expression {} declares {} columns but returns {}",
+                        cte.name,
+                        cte.columns.len(),
+                        returning.columns.len()
+                    )));
+                }
+                let mut output_names = BTreeSet::new();
+                let output_columns = if cte.columns.is_empty() {
+                    &returning.columns
+                } else {
+                    &cte.columns
+                };
+                if let Some(duplicate) = output_columns
+                    .iter()
+                    .find(|column| !output_names.insert(column.as_str()))
+                {
+                    return Err(HawDBError::Semantic(format!(
+                        "common table expression {} repeats output column {duplicate}",
+                        cte.name
+                    )));
+                }
+                writes.extend(compiled.transaction.writes);
+                ctes.push(RelationalDataModifyingCte {
+                    name: cte.name,
+                    columns: cte.columns,
+                    returning,
+                });
+            }
+        }
+    }
+    if query.body.contains_data_modifying_cte() {
+        return Err(HawDBError::Semantic(
+            "data-modifying CTEs are supported only in the top-level WITH list".into(),
+        ));
+    }
+    query.with = retained;
+    Ok(Some(CompiledDataModifyingCteQuery {
+        transaction: RelationalTransaction { writes },
+        query,
+        ctes,
+    }))
+}
+
+fn first_referenced_relation(
+    query: &SqlQueryStatement,
+    candidates: &BTreeSet<String>,
+) -> Option<String> {
+    let mut referenced = None;
+    query.visit_selects(&mut |select| {
+        if referenced.is_some() {
+            return;
+        }
+        referenced = select
+            .from
+            .iter()
+            .chain(select.joins.iter().map(|join| &join.table))
+            .find(|table| table.schema.is_none() && candidates.contains(&table.name))
+            .map(|table| table.name.clone());
+    });
+    referenced
+}
+
+pub fn materialize_data_modifying_ctes(
+    ctes: &[RelationalDataModifyingCte],
+    outcomes: &[RelationalMutationOutcome],
+    state: &RelationalState,
+) -> Result<Vec<crate::query::RelationalEphemeralQueryTable>> {
+    if ctes.len() != outcomes.len() {
+        return Err(HawDBError::StorageIntegrity(format!(
+            "data-modifying CTE plan recorded {} projections but staging produced {} outcomes",
+            ctes.len(),
+            outcomes.len()
+        )));
+    }
+    ctes.iter()
+        .zip(outcomes)
+        .map(|(cte, outcome)| {
+            if outcome.table != cte.returning.table {
+                return Err(HawDBError::StorageIntegrity(format!(
+                    "data-modifying CTE {} expected table {} but staging returned {}",
+                    cte.name, cte.returning.table, outcome.table
+                )));
+            }
+            let source = state.table_schema(&outcome.table).ok_or_else(|| {
+                HawDBError::StorageIntegrity(format!(
+                    "data-modifying CTE outcome references unknown table {}",
+                    outcome.table
+                ))
+            })?;
+            let positions = cte
+                .returning
+                .columns
+                .iter()
+                .map(|column| {
+                    source.column_position(column).ok_or_else(|| {
+                        HawDBError::StorageIntegrity(format!(
+                            "data-modifying CTE outcome references unknown column {column}"
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let names = if cte.columns.is_empty() {
+                cte.returning.columns.clone()
+            } else {
+                cte.columns.clone()
+            };
+            let columns = names
+                .into_iter()
+                .zip(
+                    positions
+                        .iter()
+                        .map(|position| source.columns[*position].scalar_type),
+                )
+                .map(|(name, scalar_type)| RelationalColumnSchema {
+                    name,
+                    scalar_type,
+                    nullable: true,
+                    default: None,
+                })
+                .collect();
+            let rows = outcome
+                .rows
+                .iter()
+                .map(|row| {
+                    RelationalRow::new(
+                        positions
+                            .iter()
+                            .map(|position| row.values()[*position].clone())
+                            .collect(),
+                    )
+                })
+                .collect();
+            Ok(crate::query::RelationalEphemeralQueryTable {
+                schema: RelationalTableSchema {
+                    name: cte.name.clone(),
+                    columns,
+                    primary_key: Vec::new(),
+                    unique_constraints: Vec::new(),
+                    foreign_keys: Vec::new(),
+                    indexes: Vec::new(),
+                    materialized_view: None,
+                },
+                rows,
+            })
+        })
+        .collect()
 }
 
 pub fn compile_relational_statement_sql_with_result(
@@ -124,49 +363,19 @@ fn compile_relational_mutation(
     state: &RelationalState,
 ) -> Result<CompiledRelationalStatement> {
     let statement = &*crate::literal_coercion::coerce_mutation(statement, state, parameters)?;
-    let mut returning = None;
-    let write = match statement {
+    let (write, returning) = match statement {
         SqlStatement::Insert(insert) => {
             reject_non_public_schema(insert.table.schema.as_deref())?;
             let schema = state.table_schema(&insert.table.name).ok_or_else(|| {
                 HawDBError::Semantic(format!("unknown relational table {}", insert.table.name))
             })?;
-            if !insert.returning.is_empty() {
-                for column in &insert.returning {
-                    if column
-                        .qualifier
-                        .as_deref()
-                        .is_some_and(|qualifier| qualifier != insert.table.name)
-                    {
-                        return Err(HawDBError::Semantic(format!(
-                            "INSERT RETURNING has unknown qualifier {qualifier}",
-                            qualifier = column.qualifier.as_deref().unwrap_or_default()
-                        )));
-                    }
-                    if schema.column_position(&column.name).is_none() {
-                        return Err(HawDBError::Semantic(format!(
-                            "table {} has no column {}",
-                            schema.name, column.name
-                        )));
-                    }
-                }
-                if matches!(
-                    insert.on_conflict.as_ref().map(|conflict| &conflict.action),
-                    Some(SqlConflictAction::DoUpdate(_))
-                ) {
-                    return Err(HawDBError::Semantic(
-                        "INSERT RETURNING with ON CONFLICT DO UPDATE is not supported".to_string(),
-                    ));
-                }
-                returning = Some(RelationalReturningProjection {
-                    table: insert.table.name.clone(),
-                    columns: insert
-                        .returning
-                        .iter()
-                        .map(|column| column.name.clone())
-                        .collect(),
-                });
-            }
+            let returning = compile_returning(
+                &insert.returning,
+                &insert.table.name,
+                None,
+                schema,
+                "INSERT",
+            )?;
             let positions = crate::insert_column_positions(
                 &insert.columns,
                 &insert.rows,
@@ -198,7 +407,7 @@ fn compile_relational_mutation(
                     Ok(RelationalRow::new(row))
                 })
                 .collect::<Result<Vec<_>>>()?;
-            if let Some(conflict) = &insert.on_conflict {
+            let write = if let Some(conflict) = &insert.on_conflict {
                 let action = match &conflict.action {
                     SqlConflictAction::DoNothing => RelationalConflictAction::DoNothing,
                     SqlConflictAction::DoUpdate(assignments) => RelationalConflictAction::Update(
@@ -249,7 +458,8 @@ fn compile_relational_mutation(
                     rows,
                     mode: RelationalInsertMode::Error,
                 }
-            }
+            };
+            (write, returning)
         }
         SqlStatement::Delete(delete) => {
             reject_non_public_schema(delete.table.schema.as_deref())?;
@@ -262,16 +472,26 @@ fn compile_relational_mutation(
                         .to_string(),
                 )
             })?;
-            RelationalWrite::DeleteWhere {
-                table: delete.table.name.clone(),
-                predicate: compile_mutation_predicate(
-                    selection,
-                    parameters,
-                    schema,
-                    delete.alias.as_deref(),
-                    &delete.table.name,
-                )?,
-            }
+            let returning = compile_returning(
+                &delete.returning,
+                &delete.table.name,
+                delete.alias.as_deref(),
+                schema,
+                "DELETE",
+            )?;
+            (
+                RelationalWrite::DeleteWhere {
+                    table: delete.table.name.clone(),
+                    predicate: compile_mutation_predicate(
+                        selection,
+                        parameters,
+                        schema,
+                        delete.alias.as_deref(),
+                        &delete.table.name,
+                    )?,
+                },
+                returning,
+            )
         }
         SqlStatement::Update(update) => {
             reject_non_public_schema(update.table.schema.as_deref())?;
@@ -284,6 +504,13 @@ fn compile_relational_mutation(
                         .to_string(),
                 )
             })?;
+            let returning = compile_returning(
+                &update.returning,
+                &update.table.name,
+                update.alias.as_deref(),
+                schema,
+                "UPDATE",
+            )?;
             let assignments = update
                 .assignments
                 .iter()
@@ -371,17 +598,20 @@ fn compile_relational_mutation(
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
-            RelationalWrite::UpdateWhere {
-                table: update.table.name.clone(),
-                assignments,
-                predicate: compile_mutation_predicate(
-                    selection,
-                    parameters,
-                    schema,
-                    update.alias.as_deref(),
-                    &update.table.name,
-                )?,
-            }
+            (
+                RelationalWrite::UpdateWhere {
+                    table: update.table.name.clone(),
+                    assignments,
+                    predicate: compile_mutation_predicate(
+                        selection,
+                        parameters,
+                        schema,
+                        update.alias.as_deref(),
+                        &update.table.name,
+                    )?,
+                },
+                returning,
+            )
         }
         SqlStatement::Select(_)
         | SqlStatement::Query(_)
@@ -405,6 +635,38 @@ fn compile_relational_mutation(
         },
         returning,
     })
+}
+
+fn compile_returning(
+    columns: &[hawdb_sql::SqlColumnRef],
+    table: &str,
+    alias: Option<&str>,
+    schema: &RelationalTableSchema,
+    statement: &str,
+) -> Result<Option<RelationalReturningProjection>> {
+    if columns.is_empty() {
+        return Ok(None);
+    }
+    for column in columns {
+        if column.qualifier.as_deref().is_some_and(|qualifier| {
+            qualifier != table && alias.is_none_or(|alias| qualifier != alias)
+        }) {
+            return Err(HawDBError::Semantic(format!(
+                "{statement} RETURNING has unknown qualifier {qualifier}",
+                qualifier = column.qualifier.as_deref().unwrap_or_default()
+            )));
+        }
+        if schema.column_position(&column.name).is_none() {
+            return Err(HawDBError::Semantic(format!(
+                "table {} has no column {}",
+                schema.name, column.name
+            )));
+        }
+    }
+    Ok(Some(RelationalReturningProjection {
+        table: table.to_string(),
+        columns: columns.iter().map(|column| column.name.clone()).collect(),
+    }))
 }
 
 fn compile_bigint_arithmetic_operand(

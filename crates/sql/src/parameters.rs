@@ -15,8 +15,8 @@
 use crate::{
     BranchSqlSelector, BranchSqlStatement, BranchSqlValue, DeleteStatement, ExprKind,
     InsertStatement, SelectProjection, SelectStatement, SqlArithmeticOperand, SqlAssignment,
-    SqlAssignmentValue, SqlBound, SqlColumnDefault, SqlExpression, SqlQueryBody, SqlQueryStatement,
-    SqlStatement, SqlValue, UpdateStatement,
+    SqlAssignmentValue, SqlBound, SqlColumnDefault, SqlCommonTableExpressionBody, SqlExpression,
+    SqlQueryBody, SqlQueryStatement, SqlStatement, SqlValue, UpdateStatement,
 };
 use hawdb_core::{HawDBError, Result};
 use std::collections::BTreeSet;
@@ -100,7 +100,14 @@ fn collect_statement_parameters(statement: &SqlStatement, positions: &mut BTreeS
 
 fn collect_query_parameters(query: &SqlQueryStatement, positions: &mut BTreeSet<usize>) {
     for cte in &query.with {
-        collect_query_parameters(&cte.query, positions);
+        match &cte.body {
+            SqlCommonTableExpressionBody::Query(query) => {
+                collect_query_parameters(query, positions)
+            }
+            SqlCommonTableExpressionBody::Mutation(statement) => {
+                collect_statement_parameters(statement, positions)
+            }
+        }
     }
     collect_query_body_parameters(&query.body, positions);
     for order in &query.order_by {
