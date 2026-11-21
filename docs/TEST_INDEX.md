@@ -403,6 +403,24 @@ admission counters are not assumed stable while that worker can run. Local repla
 `cargo test --locked -p hawdb --lib catch_up_admission_tests -- --test-threads=1`.
 See [caller-priority catch-up](https://github.com/nowledge-co/hawdb/issues/1306).
 
+Admission-time host refresh ([#1879](https://github.com/nowledge-co/hawdb/issues/1879))
+uses the existing `//crates/qos:hawdb_qos_tests` and root
+`//:hawdb_unit_general_tests` owners. QoS `runtime::host_refresh_tests` drive a
+governor built by `detect` over a test-only scripted host whose samples are
+counted: admission clears a Critical snapshot after recovery and sets it at
+onset, samples at most once per interval (production interval 1 s, the
+detection itself counting as the first sample), and an explicit refresh both
+samples at once and defers the next admission sample. Pinned detected
+governors and caller-supplied `new` snapshots are never re-sampled, even after
+an explicit refresh; concurrent admission and refresh do not deadlock. Root
+`embedded_store::tests::stale_memory_pressure_tests` set a Critical snapshot on
+a real `open_with_options` handle and retry
+`advance_search_projection_source_epoch` unchanged for up to 3 s until it is
+admitted; they use the real host detector and skip their assertion if the test
+host itself is under critical memory pressure. No new lane, profile or timeout.
+Replay with `cargo test --locked -p hawdb-qos --lib host_refresh_tests` and
+`cargo test --locked -p hawdb --lib stale_memory_pressure_tests`.
+
 `embedded_store::tests::storage_pressure_tests` (`nowledge-co/hawdb#1725`)
 belongs to the existing root `//:hawdb_unit_general_tests` owner. It opens a
 durable handle with explicit checkpoints only and pins

@@ -1702,6 +1702,16 @@ other work holds the capacity or the host is short of memory: drop the request
 and retry it later unchanged. When it is false, the request can never fit the
 configured limits.
 
+A handle's default governor is detected from the host
+(`RuntimeGovernor::detect`). Unless its resources are pinned, admission
+re-samples host and cgroup memory at most once per second, the same default
+interval the Tokio adapter uses. A `memory_pressure` refusal therefore clears on
+its own about a second after the host recovers, and pressure that starts after
+open is seen just as quickly; callers retry unchanged and need no refresh call.
+`refresh_runtime_resources()` remains available to take a sample immediately.
+Governors built with `RuntimeGovernor::new` from a caller-supplied snapshot, and
+pinned governors, are never re-sampled on admission; their owner updates them.
+
 Reads that pin the resident search projection need a second admission step.
 After the read itself is admitted, the read funds the retained search generation
 it pins from the same governor memory. Concurrent readers of one generation
