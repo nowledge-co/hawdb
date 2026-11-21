@@ -300,7 +300,7 @@ fn invalid_schema_and_mutation_shapes_keep_the_existing_errors() {
         ("DELETE FROM items WHERE other.id = 1", vec![], "unknown qualifier"),
         ("UPDATE items SET missing = 1 WHERE id = 1", vec![], "has no column missing"),
         ("CREATE TABLE IF NOT EXISTS t (id BIGINT PRIMARY KEY)", vec![], "must not hide drift"),
-        ("INSERT INTO items (id) VALUES (1) ON CONFLICT (id) DO UPDATE SET counter = 1 RETURNING id", vec![], "RETURNING with ON CONFLICT DO UPDATE"),
+        ("INSERT INTO items (id) VALUES (1) ON CONFLICT (id) DO UPDATE SET counter = 1 RETURNING missing", vec![], "has no column missing"),
     ] {
         let error = compile_relational_statement_sql(sql, &parameters, &state).unwrap_err();
         assert!(error.to_string().contains(message), "{sql}: {error}");
