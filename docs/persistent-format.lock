@@ -31,6 +31,7 @@ crates/storage/src/column_group/shadow_metadata.rs const SHADOW_KEY_DICTIONARY_V
 crates/storage/src/durable_manifest.rs pub const STORAGE_VERSION: &str = "hawdb-storage-v1";
 crates/storage/src/durable_manifest.rs pub const STORAGE_VERSION_REVISION: u16 = 1;
 crates/storage/src/durable_manifest.rs const STORAGE_VERSION_PREFIX: &str = "hawdb-storage-v";
+crates/storage/src/file_io/source_directory/windows.rs const FILE_CASE_SENSITIVE_INFORMATION: i32 = 71;
 crates/storage/src/graph_descriptor_page.rs const PAGE_MAGIC: &[u8; 8] = b"SKGDPG01";
 crates/storage/src/graph_descriptor_page.rs const PAGE_VERSION: u16 = 1;
 crates/storage/src/graph_descriptor_tree/builder.rs const REF_RUN_MAGIC: &[u8; 8] = b"SKGDRF01";

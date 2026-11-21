@@ -11,6 +11,7 @@ STORAGE_MODELS = [
     "HawDBAutomaticHandoffWake",
     "HawDBBoundedMorselMerge",
     "HawDBBranchLifecycle",
+    "HawDBCapturedDirectoryRelabel",
     "HawDBColumnGroupManifest",
     "HawDBColumnarShadowIntegration",
     "HawDBCompactionVisibility",

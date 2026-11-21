@@ -2242,3 +2242,25 @@ controls are `:HawDBAutocommitScopeUnprotectedPredicate_check`,
 `:HawDBAutocommitScopeEarlySnapshot_check`, and
 `:HawDBAutocommitScopeIgnoreSchema_check`. Do not infer positive qualification
 from successful counterexample controls.
+
+### Captured directory relabel
+
+`HawDBCapturedDirectoryRelabel` models one same-parent, no-replace movement
+through the original live parent and original child, independent native and
+recorder namespace maps, native effect/lost reply versus known success, retained
+owners, and separate parent durability. Caller exclusion and actual metadata
+funding are prerequisites, not permissions supplied by an FD context. The
+bounded contract covers fresh finish validation, sticky observed binding fault
+through restoration, and independent recoverable FD/sync refusal retries.
+The full CapturedOpen constructor is a separate protocol and is not qualified
+by this model. [API and refinement](../CAPTURED_DIRECTORY_RELABEL.md) describe
+native platform, recorder, resource and runtime evidence boundaries.
+
+The baseline joins the existing `storage_models` carrier. Thirteen producer
+controls use fourteen independent oracle configurations; five positive
+reachability configurations separately prove successful ordinary/retry paths,
+sticky restoration refusal, and original-owner retention after a lost reply.
+They retain the baseline's complete finite domains. Run their existing manual
+carrier with `bazel test //docs/tla:captured_directory_relabel_controls --jobs=1`;
+`mutants/mutants.txt` binds every expected first invariant for the standalone
+causal audit. An expected witness violation is not a baseline PASS or mutant RED.
