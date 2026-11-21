@@ -19,7 +19,7 @@ use crate::{
 };
 use hawdb_core::{HawDBError, Result, Value};
 use hawdb_sql::{
-    AlterTableAddColumnStatement, CreateIndexStatement, CreateTableStatement, ExprKind,
+    AlterTableAddColumnStatement, CreateIndexStatement, CreateTableStatement, Expr, ExprKind,
     PreparedPostgresStatement, SqlArithmeticOperand, SqlAssignmentValue, SqlComparisonOp,
     SqlConflictAction, SqlPredicate, SqlReferentialAction, SqlStatement, SqlTableConstraint,
     SqlTableStorage, SqlValue,
@@ -462,6 +462,9 @@ pub(super) fn compile_mutation_predicate(
         ExprKind::Compare { left, op, right } => {
             numeric::compile_comparison(left, *op, right, parameters, schema, alias, table)?
         }
+        ExprKind::RowCompare { left, op, right } => {
+            compile_mutation_row_comparison(left, *op, right, parameters, schema, alias, table)?
+        }
         ExprKind::Like { .. } => {
             return Err(HawDBError::Semantic(
                 "single-table mutation predicates do not support LIKE or ILIKE".to_string(),
@@ -526,6 +529,52 @@ pub(super) fn compile_mutation_predicate(
                 "unsupported single-table mutation predicate".to_owned(),
             ));
         }
+    })
+}
+
+fn compile_mutation_row_comparison(
+    left: &[Expr],
+    op: SqlComparisonOp,
+    right: &[Expr],
+    parameters: &[Value],
+    schema: &RelationalTableSchema,
+    alias: Option<&str>,
+    table: &str,
+) -> Result<RelationalPredicate> {
+    use hawdb_storage::relational::RelationalRowComparisonField;
+
+    if left.len() != right.len() || left.is_empty() {
+        return Err(HawDBError::Semantic(
+            "row comparison requires the same non-zero number of fields on both sides".to_string(),
+        ));
+    }
+    let compare = |index: usize, field_op| {
+        numeric::compile_comparison(
+            &left[index],
+            field_op,
+            &right[index],
+            parameters,
+            schema,
+            alias,
+            table,
+        )
+    };
+    let strict = match op {
+        SqlComparisonOp::Lt | SqlComparisonOp::Lte => Some(SqlComparisonOp::Lt),
+        SqlComparisonOp::Gt | SqlComparisonOp::Gte => Some(SqlComparisonOp::Gt),
+        SqlComparisonOp::Eq | SqlComparisonOp::NotEq => None,
+    };
+    let fields = (0..left.len())
+        .map(|index| {
+            Ok(RelationalRowComparisonField {
+                equality: compare(index, SqlComparisonOp::Eq)?,
+                ordering: strict.map(|strict| compare(index, strict)).transpose()?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(RelationalPredicate::RowCompare {
+        fields,
+        op: compile_comparison_op(op),
     })
 }
 

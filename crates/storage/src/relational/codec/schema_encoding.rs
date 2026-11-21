@@ -320,6 +320,32 @@ pub(super) fn predicate(
             super::numeric::encode(sink, expression)?;
             sink.raw(&[u8::from(*negated)])?;
         }
+        RelationalPredicate::RowCompare { fields, op } => {
+            sink.raw(&[7, comparison_tag(*op)])?;
+            count(sink, fields.len(), "row comparison fields")?;
+            let ordered = !matches!(
+                op,
+                RelationalComparisonOp::Eq | RelationalComparisonOp::NotEq
+            );
+            for field in fields {
+                predicate(sink, &field.equality)?;
+                if ordered {
+                    predicate(
+                        sink,
+                        field.ordering.as_ref().ok_or_else(|| {
+                            RelationalError::Durability(
+                                "ordered row comparison field is missing its ordering predicate"
+                                    .into(),
+                            )
+                        })?,
+                    )?;
+                } else if field.ordering.is_some() {
+                    return Err(RelationalError::Durability(
+                        "equality row comparison field has an ordering predicate".into(),
+                    ));
+                }
+            }
+        }
         RelationalPredicate::And(left, right) | RelationalPredicate::Or(left, right) => {
             sink.raw(&[u8::from(matches!(input, RelationalPredicate::Or(..)))])?;
             predicate(sink, left)?;

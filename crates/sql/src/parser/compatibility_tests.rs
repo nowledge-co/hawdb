@@ -15,6 +15,36 @@
 use super::*;
 
 #[test]
+fn row_constructor_comparisons_preserve_fields_and_reject_arity_mismatches() {
+    for sql in [
+        "SELECT id FROM t WHERE (tenant, created, id) > ($1, $2, $3)",
+        "SELECT id FROM t WHERE ROW(tenant, created, id) <= ROW($1, $2, $3)",
+        "SELECT id FROM t WHERE ((tenant, created, id)) > ((($1, $2, $3)))",
+    ] {
+        let SqlStatement::Select(select) = parse_postgres_sql(sql).unwrap() else {
+            panic!("expected SELECT")
+        };
+        let ExprKind::RowCompare { left, op, right } = select.selection.unwrap().kind else {
+            panic!("expected row comparison")
+        };
+        assert_eq!(left.len(), 3, "{sql}");
+        assert_eq!(right.len(), 3, "{sql}");
+        assert!(matches!(op, SqlComparisonOp::Gt | SqlComparisonOp::Lte));
+    }
+    for sql in [
+        "SELECT id FROM t WHERE (tenant, id) > ($1)",
+        "SELECT id FROM t WHERE ROW(tenant) = ROW($1, $2)",
+        "SELECT id FROM t WHERE (tenant, id) = $1",
+    ] {
+        let error = parse_postgres_sql(sql).unwrap_err();
+        assert!(
+            error.to_string().contains("row comparison"),
+            "{sql}: {error}"
+        );
+    }
+}
+
+#[test]
 fn unlogged_tables_are_rejected_without_weakening_durability() {
     let error = parse_postgres_sql("CREATE UNLOGGED TABLE t (id BIGINT)").unwrap_err();
     assert!(matches!(error, HawDBError::Semantic(_)));

@@ -235,6 +235,28 @@ impl Compiler<'_, '_> {
                     right: Box::new(self.slot(right_state, target, right.span)?),
                 }
             }
+            ExprKind::RowCompare { left, op, right } => {
+                if left.len() != right.len() {
+                    return Err(HawDBError::Semantic(
+                        "row comparison requires the same number of fields on both sides"
+                            .to_string(),
+                    ));
+                }
+                let mut bound_left = Vec::with_capacity(left.len());
+                let mut bound_right = Vec::with_capacity(right.len());
+                for (left, right) in left.iter().zip(right) {
+                    let left_state = self.bindings.scalar(left, self.grouped)?;
+                    let right_state = self.bindings.scalar(right, self.grouped)?;
+                    let target = binding::comparison_type(&[&left_state, &right_state])?;
+                    bound_left.push(self.slot(left_state, target, left.span)?);
+                    bound_right.push(self.slot(right_state, target, right.span)?);
+                }
+                ExprKind::RowCompare {
+                    left: bound_left,
+                    op: *op,
+                    right: bound_right,
+                }
+            }
             ExprKind::IsNull {
                 expression,
                 negated,

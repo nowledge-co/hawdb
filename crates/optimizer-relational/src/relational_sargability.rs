@@ -15,7 +15,8 @@
 //! Extracts index-compatible constraints without binding values or accessing storage.
 //!
 //! Extraction is deliberately conservative: conjunctive equalities/ranges and the
-//! existing two-column keyset shape qualify. Callers retain residual evaluation,
+//! PostgreSQL row comparisons and the legacy two-column keyset shape qualify.
+//! Callers retain residual evaluation,
 //! schema/type checks, parameter binding, index enumeration, and cost selection.
 
 use hawdb_expression::sql::{
@@ -143,7 +144,8 @@ pub fn predicate_is_covered_by_equalities(
     })
 }
 
-/// Recognizes the existing strict, two-column keyset cursor plus equality prefix.
+/// Recognizes a strict row-comparison keyset cursor (or the legacy expanded
+/// two-column form) plus an equality prefix.
 /// Values remain borrowed and unbound so nullability and types are checked by the caller.
 pub fn canonical_keyset_values<'a>(
     predicate: Option<&'a SqlPredicate>,
@@ -151,7 +153,7 @@ pub fn canonical_keyset_values<'a>(
     order_by: &[SqlOrderItem],
     table: &str,
     qualifier: &str,
-) -> Option<(&'a SqlValue, &'a SqlValue)> {
+) -> Option<Vec<&'a SqlValue>> {
     canonical_keyset_values_with_range(predicate, access_columns, order_by, table, qualifier, None)
 }
 
@@ -164,14 +166,17 @@ pub fn canonical_keyset_values_with_range<'a>(
     table: &str,
     qualifier: &str,
     range_column: Option<&str>,
-) -> Option<(&'a SqlValue, &'a SqlValue)> {
+) -> Option<Vec<&'a SqlValue>> {
     let predicate = predicate?;
-    if order_by.len() != 2 || order_by[0].direction != order_by[1].direction {
+    let first_order = order_by.first()?;
+    if order_by
+        .iter()
+        .any(|item| item.direction != first_order.direction)
+    {
         return None;
     }
-    let first_order_column = order_by[0].expression.as_column()?;
-    let second_order_column = order_by[1].expression.as_column()?;
-    let expected = match order_by[0].direction {
+    let first_order_column = first_order.expression.as_column()?;
+    let expected = match first_order.direction {
         SqlOrderDirection::Asc => SqlComparisonOp::Gt,
         SqlOrderDirection::Desc => SqlComparisonOp::Lt,
     };
@@ -214,20 +219,52 @@ pub fn canonical_keyset_values_with_range<'a>(
         if cursor.is_some() {
             return None;
         }
-        cursor = match_keyset_or(
-            term,
-            first_order_column,
-            second_order_column,
-            expected,
-            table,
-            qualifier,
-        );
-        cursor?;
+        cursor = match_row_keyset(term, order_by, expected, table, qualifier).or_else(|| {
+            let [first, second] = order_by else {
+                return None;
+            };
+            match_keyset_or(
+                term,
+                first.expression.as_column()?,
+                second.expression.as_column()?,
+                expected,
+                table,
+                qualifier,
+            )
+            .map(|(first, second)| vec![first, second])
+        });
+        cursor.as_ref()?;
     }
     if equality_columns != *access_columns {
         return None;
     }
     cursor
+}
+
+fn match_row_keyset<'a>(
+    predicate: &'a SqlPredicate,
+    order_by: &[SqlOrderItem],
+    comparison: SqlComparisonOp,
+    table: &str,
+    qualifier: &str,
+) -> Option<Vec<&'a SqlValue>> {
+    let ExprKind::RowCompare { left, op, right } = &predicate.kind else {
+        return None;
+    };
+    if *op != comparison || left.len() != order_by.len() || right.len() != order_by.len() {
+        return None;
+    }
+    left.iter()
+        .zip(right)
+        .zip(order_by)
+        .map(|((left, right), order)| {
+            let left = left.as_column()?;
+            let expected = order.expression.as_column()?;
+            (left.name == expected.name && column_matches(left, table, qualifier))
+                .then(|| right.as_value())
+                .flatten()
+        })
+        .collect()
 }
 
 /// Appends column/value equalities reachable only through conjunctions.

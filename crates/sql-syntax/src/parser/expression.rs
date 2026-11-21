@@ -61,6 +61,8 @@ pub(super) const NESTING_RULES: &[&str] = &[
     "InContents",
     "FilterContents",
     "CastContents",
+    "RowContents",
+    "ShorthandRowContents",
 ];
 pub(super) fn rules() -> Vec<Rule> {
     vec![
@@ -195,6 +197,7 @@ pub(super) fn rules() -> Vec<Rule> {
         (
             "Atom",
             choice(vec![
+                r("RowConstructor"),
                 r("Parenthesized"),
                 r("Wildcard"),
                 r("Parameter"),
@@ -208,6 +211,32 @@ pub(super) fn rules() -> Vec<Rule> {
                 r("Function"),
                 r("QualifiedWildcard"),
                 r("Column"),
+            ]),
+        ),
+        (
+            "RowConstructor",
+            choice(vec![
+                seq(vec![
+                    k("ROW"),
+                    t(T::LeftParen),
+                    r("RowContents"),
+                    t(T::RightParen),
+                ]),
+                seq(vec![
+                    t(T::LeftParen),
+                    r("ShorthandRowContents"),
+                    t(T::RightParen),
+                ]),
+            ]),
+        ),
+        ("RowContents", list("Or")),
+        (
+            "ShorthandRowContents",
+            seq(vec![
+                r("Or"),
+                t(T::Comma),
+                r("Or"),
+                rep(seq(vec![t(T::Comma), r("Or")])),
             ]),
         ),
         (
@@ -397,6 +426,22 @@ impl Fold<'_> {
                 }
             }
             "Parenthesized" => Kind::Parenthesized(Box::new(self.expression(children[0]))),
+            "RowConstructor" => Kind::Row(
+                if let Some(contents) = self.tree.child(node, "RowContents") {
+                    self.tree
+                        .children(contents)
+                        .iter()
+                        .map(|id| self.expression(*id))
+                        .collect()
+                } else {
+                    self.tree
+                        .children(self.tree.required(node, "ShorthandRowContents"))
+                        .iter()
+                        .filter(|id| self.tree.nodes[**id].name == Some("Or"))
+                        .map(|id| self.expression(*id))
+                        .collect()
+                },
+            ),
             "Wildcard" => Kind::Wildcard(None),
             "QualifiedWildcard" => Kind::Wildcard(Some(self.name(children[0]))),
             "Column" => Kind::Column(self.name(children[0])),

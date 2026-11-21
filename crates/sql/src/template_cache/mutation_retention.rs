@@ -136,6 +136,9 @@ fn expression(expr: &Expr) -> Option<usize> {
         | ExprKind::Compare { left, right, .. } => {
             sum([boxed_expression(left), boxed_expression(right)])
         }
+        ExprKind::RowCompare { left, right, .. } => {
+            sum([vector(left, expression), vector(right, expression)])
+        }
         ExprKind::Negate(item)
         | ExprKind::Not(item)
         | ExprKind::Cast {

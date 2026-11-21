@@ -511,6 +511,13 @@ impl<'a> GraphTableBinder<'a> {
                     "relational LIKE and FILTER are not qualified GRAPH_TABLE expressions",
                 ));
             }
+            ExpressionKindSyntax::Row(_) => {
+                return Err(PgqBindError::new(
+                    PgqBindErrorCode::UnsupportedExpression,
+                    expression.span,
+                    "row constructors are not qualified GRAPH_TABLE expressions",
+                ));
+            }
             ExpressionKindSyntax::Column(name) => self.bind_column_reference(name)?,
             ExpressionKindSyntax::Wildcard(_) => {
                 return Err(PgqBindError::new(
