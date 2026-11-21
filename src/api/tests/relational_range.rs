@@ -382,6 +382,105 @@ fn sql_row_comparisons_preserve_postgresql_null_and_lexicographic_semantics() {
     );
 }
 
+#[test]
+fn row_comparison_mutations_evaluate_fields_left_to_right() {
+    let path = unique_test_dir("row-comparison-lazy-mutations");
+    let mut db = Database::open(&path).unwrap();
+    db.query_sql(
+        "CREATE TABLE row_cmp_lazy (\
+           id BIGINT PRIMARY KEY, a BIGINT, divisor BIGINT NOT NULL, body TEXT NOT NULL)",
+    )
+    .unwrap();
+    let predicate = "(a, 10 / divisor) > (1, 0)";
+
+    db.query_sql("INSERT INTO row_cmp_lazy (id, a, divisor, body) VALUES (1, 2, 0, 'decided')")
+        .unwrap();
+    assert_eq!(
+        query_ids(
+            &mut db,
+            &format!("SELECT id FROM row_cmp_lazy WHERE {predicate}"),
+            &[],
+        ),
+        vec![Value::Int(1)]
+    );
+    db.query_sql(&format!(
+        "UPDATE row_cmp_lazy SET body = 'updated' WHERE {predicate}"
+    ))
+    .unwrap();
+    assert_eq!(
+        db.query_sql("SELECT body FROM row_cmp_lazy WHERE id = 1")
+            .unwrap()
+            .rows[0]["body"],
+        Value::String("updated".into())
+    );
+    drop(db);
+    let mut db = Database::open(&path).unwrap();
+    assert_eq!(
+        db.query_sql("SELECT body FROM row_cmp_lazy WHERE id = 1")
+            .unwrap()
+            .rows[0]["body"],
+        Value::String("updated".into())
+    );
+    db.query_sql(&format!("DELETE FROM row_cmp_lazy WHERE {predicate}"))
+        .unwrap();
+    drop(db);
+    let mut db = Database::open(&path).unwrap();
+    assert!(db
+        .query_sql("SELECT id FROM row_cmp_lazy")
+        .unwrap()
+        .rows
+        .is_empty());
+
+    db.query_sql(
+        "INSERT INTO row_cmp_lazy (id, a, divisor, body) VALUES \
+         (2, 1, 0, 'tied'), (3, NULL, 0, 'unknown')",
+    )
+    .unwrap();
+    for sql in [
+        format!("SELECT id FROM row_cmp_lazy WHERE id = 2 AND {predicate}"),
+        format!("UPDATE row_cmp_lazy SET body = 'wrong' WHERE id = 2 AND {predicate}"),
+        format!("DELETE FROM row_cmp_lazy WHERE id = 2 AND {predicate}"),
+    ] {
+        let error = db.query_sql(&sql).unwrap_err();
+        assert!(
+            error.to_string().contains("division by zero"),
+            "{sql}: {error}"
+        );
+    }
+    assert_eq!(
+        db.query_sql("SELECT body FROM row_cmp_lazy WHERE id = 2")
+            .unwrap()
+            .rows[0]["body"],
+        Value::String("tied".into())
+    );
+
+    assert!(db
+        .query_sql(&format!(
+            "SELECT id FROM row_cmp_lazy WHERE id = 3 AND {predicate}"
+        ))
+        .unwrap()
+        .rows
+        .is_empty());
+    db.query_sql(&format!(
+        "UPDATE row_cmp_lazy SET body = 'wrong' WHERE id = 3 AND {predicate}"
+    ))
+    .unwrap();
+    db.query_sql(&format!(
+        "DELETE FROM row_cmp_lazy WHERE id = 3 AND {predicate}"
+    ))
+    .unwrap();
+    let rows = db
+        .query_sql("SELECT id, body FROM row_cmp_lazy ORDER BY id")
+        .unwrap()
+        .rows;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["id"], Value::Int(2));
+    assert_eq!(rows[1]["id"], Value::Int(3));
+    assert_eq!(rows[1]["body"], Value::String("unknown".into()));
+    drop(db);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
 fn seed_row_keyset(database: &mut Database, indexed: bool) {
     database
         .query_sql("CREATE TABLE row_keyset (id BIGINT PRIMARY KEY, tenant TEXT NOT NULL, bucket BIGINT NOT NULL, rank BIGINT NOT NULL)")

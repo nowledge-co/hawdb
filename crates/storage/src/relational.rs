@@ -6055,6 +6055,12 @@ pub enum RelationalComparisonOp {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelationalRowComparisonField {
+    pub equality: RelationalPredicate,
+    pub ordering: Option<RelationalPredicate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelationalPredicate {
     NumericCompare {
         left: RelationalNumericExpression,
@@ -6064,6 +6070,10 @@ pub enum RelationalPredicate {
     NumericIsNull {
         expression: RelationalNumericExpression,
         negated: bool,
+    },
+    RowCompare {
+        fields: Vec<RelationalRowComparisonField>,
+        op: RelationalComparisonOp,
     },
     And(Box<RelationalPredicate>, Box<RelationalPredicate>),
     Or(Box<RelationalPredicate>, Box<RelationalPredicate>),
@@ -8688,6 +8698,47 @@ fn validate_predicate(
         RelationalPredicate::NumericIsNull { expression, .. } => {
             expression.compile(schema, None).map(|_| ())
         }
+        RelationalPredicate::RowCompare { fields, op } => {
+            if fields.is_empty() {
+                return Err(RelationalError::Schema(
+                    "row comparison requires at least one field".into(),
+                ));
+            }
+            let expected_ordering = match op {
+                RelationalComparisonOp::Eq | RelationalComparisonOp::NotEq => None,
+                RelationalComparisonOp::Lt | RelationalComparisonOp::Lte => {
+                    Some(RelationalComparisonOp::Lt)
+                }
+                RelationalComparisonOp::Gt | RelationalComparisonOp::Gte => {
+                    Some(RelationalComparisonOp::Gt)
+                }
+            };
+            for field in fields {
+                validate_predicate(schema, &field.equality)?;
+                if comparison_predicate_op(&field.equality) != Some(RelationalComparisonOp::Eq) {
+                    return Err(RelationalError::Schema(
+                        "row comparison equality field has an invalid operator".into(),
+                    ));
+                }
+                match (&field.ordering, expected_ordering) {
+                    (None, None) => {}
+                    (Some(ordering), Some(expected)) => {
+                        validate_predicate(schema, ordering)?;
+                        if comparison_predicate_op(ordering) != Some(expected) {
+                            return Err(RelationalError::Schema(
+                                "row comparison ordering field has an invalid operator".into(),
+                            ));
+                        }
+                    }
+                    _ => {
+                        return Err(RelationalError::Schema(
+                            "row comparison fields do not match its operator".into(),
+                        ));
+                    }
+                }
+            }
+            Ok(())
+        }
         RelationalPredicate::And(left, right) | RelationalPredicate::Or(left, right) => {
             validate_predicate(schema, left)?;
             validate_predicate(schema, right)
@@ -8716,6 +8767,14 @@ fn validate_predicate(
             }
             Ok(())
         }
+    }
+}
+
+fn comparison_predicate_op(predicate: &RelationalPredicate) -> Option<RelationalComparisonOp> {
+    match predicate {
+        RelationalPredicate::NumericCompare { op, .. }
+        | RelationalPredicate::Compare { op, .. } => Some(*op),
+        _ => None,
     }
 }
 
@@ -8748,21 +8807,63 @@ fn predicate_truth(
         } => Ok(Some(
             expression.evaluate_row(schema, row)?.is_null() != *negated,
         )),
-        RelationalPredicate::And(left, right) => match (
-            predicate_truth(schema, row, left)?,
-            predicate_truth(schema, row, right)?,
-        ) {
-            (Some(false), _) | (_, Some(false)) => Ok(Some(false)),
-            (Some(true), Some(true)) => Ok(Some(true)),
-            _ => Ok(None),
+        RelationalPredicate::RowCompare { fields, op } => {
+            if matches!(
+                op,
+                RelationalComparisonOp::Eq | RelationalComparisonOp::NotEq
+            ) {
+                let mut unknown = false;
+                for field in fields {
+                    match predicate_truth(schema, row, &field.equality)? {
+                        Some(false) => {
+                            return Ok(Some(*op == RelationalComparisonOp::NotEq));
+                        }
+                        Some(true) => {}
+                        None => unknown = true,
+                    }
+                }
+                return Ok(if unknown {
+                    None
+                } else {
+                    Some(*op == RelationalComparisonOp::Eq)
+                });
+            }
+            for field in fields {
+                match predicate_truth(schema, row, &field.equality)? {
+                    Some(true) => continue,
+                    None => return Ok(None),
+                    Some(false) => {
+                        return predicate_truth(
+                            schema,
+                            row,
+                            field
+                                .ordering
+                                .as_ref()
+                                .expect("validated ordered row comparison field"),
+                        );
+                    }
+                }
+            }
+            Ok(Some(matches!(
+                op,
+                RelationalComparisonOp::Lte | RelationalComparisonOp::Gte
+            )))
+        }
+        RelationalPredicate::And(left, right) => match predicate_truth(schema, row, left)? {
+            Some(false) => Ok(Some(false)),
+            Some(true) => predicate_truth(schema, row, right),
+            None => match predicate_truth(schema, row, right)? {
+                Some(false) => Ok(Some(false)),
+                Some(true) | None => Ok(None),
+            },
         },
-        RelationalPredicate::Or(left, right) => match (
-            predicate_truth(schema, row, left)?,
-            predicate_truth(schema, row, right)?,
-        ) {
-            (Some(true), _) | (_, Some(true)) => Ok(Some(true)),
-            (Some(false), Some(false)) => Ok(Some(false)),
-            _ => Ok(None),
+        RelationalPredicate::Or(left, right) => match predicate_truth(schema, row, left)? {
+            Some(true) => Ok(Some(true)),
+            Some(false) => predicate_truth(schema, row, right),
+            None => match predicate_truth(schema, row, right)? {
+                Some(true) => Ok(Some(true)),
+                Some(false) | None => Ok(None),
+            },
         },
         RelationalPredicate::Not(predicate) => {
             Ok(predicate_truth(schema, row, predicate)?.map(|value| !value))

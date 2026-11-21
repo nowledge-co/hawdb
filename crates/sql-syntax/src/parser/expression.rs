@@ -62,6 +62,7 @@ pub(super) const NESTING_RULES: &[&str] = &[
     "FilterContents",
     "CastContents",
     "RowContents",
+    "ShorthandRowContents",
 ];
 pub(super) fn rules() -> Vec<Rule> {
     vec![
@@ -223,15 +224,21 @@ pub(super) fn rules() -> Vec<Rule> {
                 ]),
                 seq(vec![
                     t(T::LeftParen),
-                    r("Or"),
-                    t(T::Comma),
-                    r("Or"),
-                    rep(seq(vec![t(T::Comma), r("Or")])),
+                    r("ShorthandRowContents"),
                     t(T::RightParen),
                 ]),
             ]),
         ),
         ("RowContents", list("Or")),
+        (
+            "ShorthandRowContents",
+            seq(vec![
+                r("Or"),
+                t(T::Comma),
+                r("Or"),
+                rep(seq(vec![t(T::Comma), r("Or")])),
+            ]),
+        ),
         (
             "Parenthesized",
             seq(vec![
@@ -427,7 +434,8 @@ impl Fold<'_> {
                         .map(|id| self.expression(*id))
                         .collect()
                 } else {
-                    children
+                    self.tree
+                        .children(self.tree.required(node, "ShorthandRowContents"))
                         .iter()
                         .filter(|id| self.tree.nodes[**id].name == Some("Or"))
                         .map(|id| self.expression(*id))

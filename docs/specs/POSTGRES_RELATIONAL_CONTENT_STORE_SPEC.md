@@ -441,13 +441,16 @@ the leading equality prefix must complete the composite index key. `>` is the
 native ascending shape and `<` is the native descending shape. The legacy
 expanded two-column shape `(sort > cursor OR (sort = cursor AND id >
 cursor_id))`, and its descending counterpart, remains equivalent and supported.
-Cursor fields must be non-null at runtime; a NULL comparison produces unknown
-and therefore no matching row. Mixed directions, nullable order columns,
-incomplete index suffixes, inclusive row predicates, and non-canonical
-predicates MUST retain the blocking fallback. Descending pages traverse the
-same ascending index in reverse; neither direction may hydrate rows beyond the
-bounded locator page. Planned and runtime explain evidence must distinguish
-exclusive seek, direction, full order-prefix arity, and early stop.
+Every cursor field must be non-null at runtime for the exclusive seek; a NULL
+cursor therefore disqualifies that fast path. Residual row evaluation can still
+match a row when an earlier field pair decides the comparison. Only a row that
+reaches the NULL pair produces unknown and does not match. Mixed directions,
+nullable order columns, incomplete index suffixes, inclusive row predicates,
+and non-canonical predicates MUST retain the blocking fallback. Descending
+pages traverse the same ascending index in reverse; neither direction may
+hydrate rows beyond the bounded locator page. Planned and runtime explain
+evidence must distinguish exclusive seek, direction, full order-prefix arity,
+and early stop.
 
 Blocking relational rows MUST carry a typed `sort_keys + locator + stable
 ordinal` record and MUST NOT materialize an executor `Binding`, public `Value`,

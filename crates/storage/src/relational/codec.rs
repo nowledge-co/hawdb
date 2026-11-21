@@ -21,10 +21,10 @@ use super::{
     RelationalOverflowRef, RelationalOverflowSegment, RelationalPredicate,
     RelationalPrimaryKeyChangeCapture, RelationalPrimaryKeyChangeRebuildReason,
     RelationalReferentialAction, RelationalReplayAccess, RelationalReplayAccessSet, RelationalRow,
-    RelationalScalarType, RelationalState, RelationalTablePrimaryKeyChanges, RelationalTableSchema,
-    RelationalTableSegment, RelationalTransaction, RelationalUpdateAssignment,
-    RelationalUpdateValue, RelationalUpsertAssignment, RelationalUpsertValue, RelationalValue,
-    RelationalWrite, Uuid,
+    RelationalRowComparisonField, RelationalScalarType, RelationalState,
+    RelationalTablePrimaryKeyChanges, RelationalTableSchema, RelationalTableSegment,
+    RelationalTransaction, RelationalUpdateAssignment, RelationalUpdateValue,
+    RelationalUpsertAssignment, RelationalUpsertValue, RelationalValue, RelationalWrite, Uuid,
 };
 use crate::file_io::File;
 use crate::{
@@ -2622,6 +2622,21 @@ impl<I: DecodeInput> Decoder<I> {
                 expression: self.numeric_expression()?,
                 negated: self.boolean("numeric predicate negation")?,
             }),
+            7 => {
+                let op = self.comparison_op()?;
+                let count = self.count(self.limits.max_values, "row comparison fields")?;
+                let ordered = !matches!(
+                    op,
+                    RelationalComparisonOp::Eq | RelationalComparisonOp::NotEq
+                );
+                let fields = self.repeated(count, |decoder| {
+                    Ok(RelationalRowComparisonField {
+                        equality: decoder.predicate()?,
+                        ordering: ordered.then(|| decoder.predicate()).transpose()?,
+                    })
+                })?;
+                Ok(RelationalPredicate::RowCompare { fields, op })
+            }
             0 => Ok(RelationalPredicate::And(
                 self.boxed_predicate()?,
                 self.boxed_predicate()?,

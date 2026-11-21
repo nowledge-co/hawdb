@@ -3221,6 +3221,12 @@ fn relational_predicate_primary_key(
                 pending.push(right);
                 pending.push(left);
             }
+            RelationalPredicate::RowCompare {
+                fields,
+                op: RelationalComparisonOp::Eq,
+            } => {
+                pending.extend(fields.iter().rev().map(|field| &field.equality));
+            }
             RelationalPredicate::Compare {
                 column,
                 op: RelationalComparisonOp::Eq,

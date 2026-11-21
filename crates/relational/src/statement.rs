@@ -541,6 +541,8 @@ fn compile_mutation_row_comparison(
     alias: Option<&str>,
     table: &str,
 ) -> Result<RelationalPredicate> {
+    use hawdb_storage::relational::RelationalRowComparisonField;
+
     if left.len() != right.len() || left.is_empty() {
         return Err(HawDBError::Semantic(
             "row comparison requires the same non-zero number of fields on both sides".to_string(),
@@ -557,44 +559,23 @@ fn compile_mutation_row_comparison(
             table,
         )
     };
-    let and_all = |mut predicates: Vec<RelationalPredicate>| {
-        let first = predicates.remove(0);
-        predicates.into_iter().fold(first, |left, right| {
-            RelationalPredicate::And(Box::new(left), Box::new(right))
+    let strict = match op {
+        SqlComparisonOp::Lt | SqlComparisonOp::Lte => Some(SqlComparisonOp::Lt),
+        SqlComparisonOp::Gt | SqlComparisonOp::Gte => Some(SqlComparisonOp::Gt),
+        SqlComparisonOp::Eq | SqlComparisonOp::NotEq => None,
+    };
+    let fields = (0..left.len())
+        .map(|index| {
+            Ok(RelationalRowComparisonField {
+                equality: compare(index, SqlComparisonOp::Eq)?,
+                ordering: strict.map(|strict| compare(index, strict)).transpose()?,
+            })
         })
-    };
-    let equality = || {
-        (0..left.len())
-            .map(|index| compare(index, SqlComparisonOp::Eq))
-            .collect::<Result<Vec<_>>>()
-            .map(and_all)
-    };
-    if op == SqlComparisonOp::Eq {
-        return equality();
-    }
-    if op == SqlComparisonOp::NotEq {
-        return equality().map(|predicate| RelationalPredicate::Not(Box::new(predicate)));
-    }
-    let strict = if matches!(op, SqlComparisonOp::Lt | SqlComparisonOp::Lte) {
-        SqlComparisonOp::Lt
-    } else {
-        SqlComparisonOp::Gt
-    };
-    let mut branches = Vec::with_capacity(left.len() + usize::from(op != strict));
-    for index in 0..left.len() {
-        let mut branch = (0..index)
-            .map(|prefix| compare(prefix, SqlComparisonOp::Eq))
-            .collect::<Result<Vec<_>>>()?;
-        branch.push(compare(index, strict)?);
-        branches.push(and_all(branch));
-    }
-    if op != strict {
-        branches.push(equality()?);
-    }
-    let first = branches.remove(0);
-    Ok(branches.into_iter().fold(first, |left, right| {
-        RelationalPredicate::Or(Box::new(left), Box::new(right))
-    }))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(RelationalPredicate::RowCompare {
+        fields,
+        op: compile_comparison_op(op),
+    })
 }
 
 pub(super) fn validate_mutation_column(
