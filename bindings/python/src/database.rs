@@ -705,22 +705,22 @@ impl QueryResult {
     /// column whose values no single Arrow type holds exactly raises
     /// `TypeError`. Needs PyArrow (the `arrow` extra), imported on first use.
     fn to_arrow<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        arrow_table::table(py, &self.rows, "to_arrow", "arrow")
+        arrow_table::to_arrow(py, &self.rows)
     }
 
-    /// `to_arrow()` converted by `pyarrow.Table.to_pandas()`, with its
-    /// defaults. Needs pandas and PyArrow (the `pandas` extra).
+    /// `to_arrow()` converted by `pyarrow.Table.to_pandas()`, with integer
+    /// columns as pandas' nullable `Int64` and integers in nested values
+    /// kept as Python integers, so none is rounded through float64. Needs
+    /// pandas and PyArrow (the `pandas` extra).
     fn to_pandas<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        arrow_table::import_optional(py, "pandas", "to_pandas", "pandas")?;
-        arrow_table::table(py, &self.rows, "to_pandas", "pandas")?.call_method0("to_pandas")
+        arrow_table::to_pandas(py, &self.rows)
     }
 
-    /// `to_arrow()` converted by `polars.from_arrow()`. Needs Polars and
-    /// PyArrow (the `polars` extra).
+    /// `to_arrow()` converted by `polars.from_arrow()`. A column that needs
+    /// `decimal256`, which Polars cannot import, raises `TypeError`. Needs
+    /// Polars and PyArrow (the `polars` extra).
     fn to_polars<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let polars = arrow_table::import_optional(py, "polars", "to_polars", "polars")?;
-        let table = arrow_table::table(py, &self.rows, "to_polars", "polars")?;
-        polars.call_method1("from_arrow", (table,))
+        arrow_table::to_polars(py, &self.rows)
     }
 
     /// The first non-null value of column `column` in the whole result,

@@ -703,7 +703,7 @@ Engine errors stay `hawdb.exceptions`.
 `QueryResult.to_arrow()` returns every row of a result as a `pyarrow.Table`,
 with one column per result column in result order. `to_pandas()` and
 `to_polars()` convert that table with `pyarrow.Table.to_pandas()` and
-`polars.from_arrow()`, each with its defaults. All three convert the whole
+`polars.from_arrow()`. All three convert the whole
 materialized result, whatever has been fetched, and do not move the fetch
 cursor. `import hawdb` imports none of these packages: each method imports
 what it needs when called, and raises `ImportError` naming the extra that
@@ -737,7 +737,7 @@ UUID is told apart from a string and temporal values keep their nanoseconds:
 | date | `date32` |
 | local time | `time64[ns]` |
 | local datetime | `timestamp[ns]` |
-| zoned datetime | `timestamp[ns, tz]` of the instant; `tz` is the offset all values share, such as `+02:00`, or `UTC` when they differ |
+| zoned datetime | `timestamp[ns, tz]` of the instant; `tz` is the offset all values share, such as `+02:00`, or `UTC` when they differ or the offset has seconds |
 | duration | `month_day_nano_interval` |
 | list | `list<item>` |
 | map, including a node or relationship | `struct` with a field for every key of any map in the column, null where a map lacks the key |
@@ -756,17 +756,26 @@ column, the row counted from 0 and the place inside a nested value, such as
 `column "n", row 1, at $.age`; cast the values in the query instead. A value
 outside its Arrow type raises `ValueError`: a datetime outside 1677-09-21 to
 2262-04-11 for `timestamp[ns]`, or a duration beyond 32-bit months or days
-or 64-bit nanoseconds. Only the offsets of zoned datetimes are not kept in a
-column whose values have different offsets; their instants are.
+or 64-bit nanoseconds. Only the offsets of zoned datetimes can be lost: a
+column whose values have different offsets, or an offset with seconds such as
+`+00:00:30` that Arrow cannot name, is `UTC`. Their instants are kept.
 
-pandas' default conversion refuses `time64[ns]` values with nonzero
-nanoseconds and dates outside years 1 to 9999;
-`result.to_arrow().to_pandas(types_mapper=pandas.ArrowDtype)` keeps them in
-Arrow-backed columns. Polars 1.0 through 2.1 cannot import
-`month_day_nano_interval` columns, and panic on `decimal256` columns with a
-`PanicException`, which `except Exception` does not catch; use `to_arrow()`
-for such results. Arrow conversion builds Python objects for one column at a
-time, like `fetchall()` for that column, before PyArrow copies them.
+`to_pandas()` keeps integers exact. pandas' default stores an integer column
+with nulls as `float64`, which rounds integers beyond 2^53, so every integer
+column becomes pandas' nullable `Int64` dtype, and integers inside nested
+values stay Python integers next to their nulls. Like pandas' own conversion,
+`to_pandas()` refuses `time64[ns]` values with nonzero nanoseconds and dates
+outside years 1 to 9999; `result.to_arrow().to_pandas(types_mapper=pandas.ArrowDtype)`
+keeps them in Arrow-backed columns.
+
+Polars 1.0 through 2.1 cannot import `month_day_nano_interval` or
+`decimal256`. `to_polars()` raises `TypeError` for a column that needs
+`decimal256`, decimals wider than 38 digits, even inside a nested value,
+because Polars would panic with a `PanicException` that `except Exception`
+does not catch. Use `to_arrow()` for such results.
+
+Arrow conversion builds Python objects for one column at a time, like
+`fetchall()` for that column, before PyArrow copies them.
 
 ## LlamaIndex property graph store
 

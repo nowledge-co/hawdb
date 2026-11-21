@@ -50,9 +50,17 @@ class QueryResult:
         that mixes kinds of values raises ``TypeError``.
         """
     def to_pandas(self) -> pandas.DataFrame:
-        """``to_arrow().to_pandas()``; needs ``hawdb[pandas]``."""
+        """``to_arrow().to_pandas()`` with exact integers; needs ``hawdb[pandas]``.
+
+        Integer columns use pandas' nullable ``Int64`` dtype, and integers in
+        nested values stay Python integers.
+        """
     def to_polars(self) -> polars.DataFrame:
-        """``polars.from_arrow(to_arrow())``; needs ``hawdb[polars]``."""
+        """``polars.from_arrow(to_arrow())``; needs ``hawdb[polars]``.
+
+        A column that needs ``decimal256``, which Polars cannot import,
+        raises ``TypeError``.
+        """
     def _first_non_null(self, column: int) -> Any: ...
     def _repr_html_(self) -> str: ...
     def _display_rows(

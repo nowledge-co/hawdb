@@ -38,22 +38,81 @@ const UNIX_EPOCH_JULIAN_DAY: i32 = 2_440_588;
 const DECIMAL128_DIGITS: u8 = 38;
 const NANOS_PER_SECOND: i64 = 1_000_000_000;
 
-/// Imports the optional package `module` for `QueryResult.{method}()`, or
-/// raises `ImportError` naming the extra that installs it, chained to the
-/// original error.
-pub fn import_optional<'py>(
+/// The public conversion a table is built for. It names the method and extra
+/// in errors, and Polars cannot import every Arrow type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Target {
+    Arrow,
+    Pandas,
+    Polars,
+}
+
+impl Target {
+    fn method(self) -> &'static str {
+        match self {
+            Target::Arrow => "to_arrow",
+            Target::Pandas => "to_pandas",
+            Target::Polars => "to_polars",
+        }
+    }
+
+    /// The `hawdb[...]` extra that installs what the method needs.
+    fn extra(self) -> &'static str {
+        match self {
+            Target::Arrow => "arrow",
+            Target::Pandas => "pandas",
+            Target::Polars => "polars",
+        }
+    }
+}
+
+/// `QueryResult.to_arrow()`: every row as a `pyarrow.Table`.
+pub fn to_arrow<'py>(py: Python<'py>, rows: &QueryRows) -> PyResult<Bound<'py, PyAny>> {
+    table(py, rows, Target::Arrow)
+}
+
+/// `QueryResult.to_pandas()`: the table converted by
+/// `pyarrow.Table.to_pandas()`, with integers kept exact. By default pandas
+/// stores integers with nulls as float64, which rounds those beyond 2^53, so
+/// every integer column becomes the nullable `Int64` dtype and integers in
+/// nested values with nulls stay Python integers.
+pub fn to_pandas<'py>(py: Python<'py>, rows: &QueryRows) -> PyResult<Bound<'py, PyAny>> {
+    let pandas = import_optional(py, "pandas", Target::Pandas)?;
+    let table = table(py, rows, Target::Pandas)?;
+    let integers = PyDict::new(py);
+    integers.set_item(
+        import_optional(py, "pyarrow", Target::Pandas)?.call_method0("int64")?,
+        pandas.call_method0("Int64Dtype")?,
+    )?;
+    let options = PyDict::new(py);
+    options.set_item("types_mapper", integers.getattr("get")?)?;
+    options.set_item("integer_object_nulls", true)?;
+    table.call_method("to_pandas", (), Some(&options))
+}
+
+/// `QueryResult.to_polars()`: the table converted by `polars.from_arrow()`.
+pub fn to_polars<'py>(py: Python<'py>, rows: &QueryRows) -> PyResult<Bound<'py, PyAny>> {
+    let polars = import_optional(py, "polars", Target::Polars)?;
+    let table = table(py, rows, Target::Polars)?;
+    polars.call_method1("from_arrow", (table,))
+}
+
+/// Imports the optional package `module` for the target's method, or raises
+/// `ImportError` naming the extra that installs it, chained to the original
+/// error.
+fn import_optional<'py>(
     py: Python<'py>,
     module: &str,
-    method: &str,
-    extra: &str,
+    target: Target,
 ) -> PyResult<Bound<'py, PyModule>> {
     py.import(module).map_err(|error| {
         if !error.is_instance_of::<PyImportError>(py) {
             return error;
         }
         let missing = PyImportError::new_err(format!(
-            "QueryResult.{method}() requires {module}; \
-             install it with \"pip install 'hawdb[{extra}]'\""
+            "QueryResult.{}() requires {module}; install it with \"pip install 'hawdb[{}]'\"",
+            target.method(),
+            target.extra(),
         ));
         missing.set_cause(py, Some(error));
         missing
@@ -61,14 +120,10 @@ pub fn import_optional<'py>(
 }
 
 /// Every row of `rows` as a `pyarrow.Table`, one column per result column
-/// in result order. `method` and `extra` name the public call in errors.
-pub fn table<'py>(
-    py: Python<'py>,
-    rows: &QueryRows,
-    method: &str,
-    extra: &str,
-) -> PyResult<Bound<'py, PyAny>> {
-    let pyarrow = import_optional(py, "pyarrow", method, extra)?;
+/// in result order.
+fn table<'py>(py: Python<'py>, rows: &QueryRows, target: Target) -> PyResult<Bound<'py, PyAny>> {
+    let method = target.method();
+    let pyarrow = import_optional(py, "pyarrow", target)?;
     let columns = rows.schema().columns();
     let mut converter = Converter { py, decimal: None };
     let mut arrays = Vec::with_capacity(columns.len());
@@ -93,6 +148,15 @@ pub fn table<'py>(
                     return Err(PyValueError::new_err(format!("{place}: {range}")));
                 }
             }
+        }
+        // Polars up to at least 2.1 panics on decimal256, and its
+        // PanicException is a BaseException that ordinary handlers miss.
+        if target == Target::Polars
+            && let Some(wide) = kind.wide_decimal()
+        {
+            return Err(PyTypeError::new_err(format!(
+                "QueryResult.to_polars(): column {column:?}{wide}"
+            )));
         }
         arrays.push(pyarrow.call_method1("array", (values, arrow_type(&pyarrow, &kind)?))?);
     }
@@ -239,6 +303,37 @@ impl Kind {
             Kind::Struct(_) => "map",
         }
     }
+
+    /// The first decimal in this type that needs `decimal256`, at its place
+    /// inside the column value.
+    fn wide_decimal(&self) -> Option<WideDecimal> {
+        match self {
+            Kind::Decimal {
+                integer_digits,
+                scale,
+            } => {
+                let precision = decimal_precision(*integer_digits, *scale);
+                (precision > DECIMAL128_DIGITS).then(|| WideDecimal {
+                    precision,
+                    scale: *scale,
+                    steps: Vec::new(),
+                })
+            }
+            Kind::List(item) => item.wide_decimal().map(|wide| wide.within(Step::Item)),
+            Kind::Struct(fields) => fields.iter().find_map(|(key, field)| {
+                field
+                    .wide_decimal()
+                    .map(|wide| wide.within(Step::Field(key.clone())))
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// The digits of a `decimal128` or `decimal256` that holds a column's values.
+fn decimal_precision(integer_digits: u8, scale: u8) -> u8 {
+    // Both are at most 38, so the sum cannot overflow.
+    (integer_digits + scale).max(1)
 }
 
 /// The name of a value's kind in conflict messages.
@@ -274,8 +369,7 @@ fn arrow_type<'py>(pyarrow: &Bound<'py, PyModule>, kind: &Kind) -> PyResult<Boun
             integer_digits,
             scale,
         } => {
-            // Both are at most 38, so the sum cannot overflow.
-            let precision = (integer_digits + scale).max(1);
+            let precision = decimal_precision(*integer_digits, *scale);
             let factory = if precision <= DECIMAL128_DIGITS {
                 "decimal128"
             } else {
@@ -468,25 +562,68 @@ impl Conflict {
 }
 
 /// Formats as `, at $.key[*]: <found> value after <expected> values; ...`,
-/// to follow a [`Place`]. The path is omitted for a column value itself.
+/// to follow a [`Place`].
 impl Display for Conflict {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        if !self.steps.is_empty() {
-            formatter.write_str(", at $")?;
-            for step in self.steps.iter().rev() {
-                match step {
-                    Step::Field(key) if is_identifier(key) => write!(formatter, ".{key}")?,
-                    Step::Field(key) => write!(formatter, "[{key:?}]")?,
-                    Step::Item => formatter.write_str("[*]")?,
-                }
-            }
-        }
         write!(
             formatter,
-            ": {} value after {} values; an Arrow column holds one type, \
+            "{}: {} value after {} values; an Arrow column holds one type, \
              so cast the values in the query",
-            self.found, self.expected
+            Path(&self.steps),
+            self.found,
+            self.expected
         )
+    }
+}
+
+/// A decimal type that Polars cannot import.
+struct WideDecimal {
+    precision: u8,
+    scale: u8,
+    /// From the decimal out to the column value.
+    steps: Vec<Step>,
+}
+
+impl WideDecimal {
+    fn within(mut self, step: Step) -> Self {
+        self.steps.push(step);
+        self
+    }
+}
+
+/// Formats as `, at $.key[*]: Polars cannot import decimal256(...); ...`, to
+/// follow the column name.
+impl Display for WideDecimal {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{}: Polars cannot import decimal256({}, {}), Arrow's type for \
+             decimals wider than 38 digits; use to_arrow() for this result",
+            Path(&self.steps),
+            self.precision,
+            self.scale
+        )
+    }
+}
+
+/// Steps stored from a nested value out to the column value, formatted as
+/// `, at $.key[*]`; nothing for the column value itself.
+struct Path<'a>(&'a [Step]);
+
+impl Display for Path<'_> {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        if self.0.is_empty() {
+            return Ok(());
+        }
+        formatter.write_str(", at $")?;
+        for step in self.0.iter().rev() {
+            match step {
+                Step::Field(key) if is_identifier(key) => write!(formatter, ".{key}")?,
+                Step::Field(key) => write!(formatter, "[{key:?}]")?,
+                Step::Item => formatter.write_str("[*]")?,
+            }
+        }
+        Ok(())
     }
 }
 

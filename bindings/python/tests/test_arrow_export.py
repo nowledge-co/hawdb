@@ -246,6 +246,8 @@ def test_temporal_values_are_exact(pa, db):
         (["2026-01-01T00:00-05:30"], "-05:30"),
         (["2026-01-01T00:00Z", "2026-01-01T00:00+00:00"], "UTC"),
         (["2026-01-01T00:00+02:00", "2026-01-01T00:00Z"], "UTC"),
+        # Arrow names offsets only in whole minutes.
+        (["2026-01-01T00:00+00:00:30"], "UTC"),
     ],
 )
 def test_zoned_datetimes_share_an_offset_or_use_utc(pa, db, texts, zone):
@@ -417,10 +419,25 @@ def test_to_pandas(pa, db):
     assert isinstance(frame, pandas.DataFrame)
     assert list(frame.columns) == ["name", "age", "node"]
     assert frame["name"].tolist() == ["a", "b"]
-    # pandas' default conversion: a nullable integer column becomes float.
+    assert frame["age"].dtype == pandas.Int64Dtype()
     assert frame["age"].tolist()[0] == 3
-    assert pandas.isna(frame["age"].tolist()[1])
+    assert frame["age"].tolist()[1] is pandas.NA
     assert list(frame["node"].tolist()[0]["labels"]) == ["P"]
+
+
+def test_to_pandas_keeps_integers_exact(pa, db):
+    pandas = pytest.importorskip("pandas")
+    # pandas' default stores integers with nulls as float64, which rounds this.
+    big = 2**53 + 1
+    frame = db.execute(
+        "UNWIND $x AS x RETURN x, [x, null] AS l, {v: x} AS m, 1 AS one",
+        {"x": [big, None]},
+    ).to_pandas()
+    assert frame["x"].dtype == pandas.Int64Dtype()
+    assert frame["one"].dtype == pandas.Int64Dtype()
+    assert frame["x"].tolist() == [big, pandas.NA]
+    assert [list(items) for items in frame["l"]] == [[big, None], [None, None]]
+    assert frame["m"].tolist() == [{"v": big}, {"v": None}]
 
 
 def test_to_polars(pa, db):
@@ -441,3 +458,28 @@ def test_to_polars(pa, db):
     assert frame.schema["at"] == polars.Datetime("ns", "UTC")
     assert frame["age"].to_list() == [3, None]
     assert frame["node"].to_list()[1]["name"] == "b"
+
+
+@pytest.mark.parametrize(
+    "statement,column,path",
+    [
+        ("UNWIND $d AS d RETURN d", "d", ""),
+        ("UNWIND [0] AS z RETURN $d AS l", "l", ", at $[*]"),
+        ("UNWIND $d AS d RETURN {price: d} AS m", "m", ", at $.price"),
+    ],
+)
+def test_to_polars_refuses_decimals_polars_cannot_import(pa, db, statement, column, path):
+    pytest.importorskip("polars")
+    # Polars panics on decimal256 with a PanicException, a BaseException.
+    wide = [decimal.Decimal("9" * 38), decimal.Decimal("0." + "1" * 38)]
+    result = db.execute(statement, {"d": wide})
+    with pytest.raises(TypeError) as error:
+        result.to_polars()
+    assert str(error.value) == (
+        f'QueryResult.to_polars(): column "{column}"{path}: Polars cannot import '
+        "decimal256(76, 38), Arrow's type for decimals wider than 38 digits; "
+        "use to_arrow() for this result"
+    )
+    assert result.to_arrow().num_rows > 0
+    narrow = db.execute(statement, {"d": [decimal.Decimal("1.5")]})
+    assert narrow.to_polars().to_dicts() == narrow.to_arrow().to_pylist()
