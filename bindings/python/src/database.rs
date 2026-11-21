@@ -24,6 +24,7 @@ use pyo3::exceptions::{PyIndexError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PySequenceMethods, PyString, PyTuple};
 
+use crate::arrow_table;
 use crate::errors::{format_embedded_error, format_hawdb_error, StorageError};
 use crate::value::{
     parameter_sequence, py_dict_to_params, py_list_to_params, py_sequence_to_params, value_to_py,
@@ -533,6 +534,8 @@ impl Database {
 /// never touches the engine again. Rows become Python objects only as they
 /// are fetched: each fetch builds new dicts (or tuples) that the caller owns,
 /// so the result never keeps a Python copy of a row it has handed out.
+/// `to_arrow()`, `to_pandas()` and `to_polars()` convert every row at once,
+/// without moving the fetch cursor.
 #[pyclass(module = "hawdb", name = "QueryResult")]
 pub struct QueryResult {
     /// The engine's rows, moved out of its `QueryOutput` without a copy.
@@ -693,6 +696,31 @@ impl QueryResult {
 
     fn __next__<'py>(&mut self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
         self.fetchone(py)
+    }
+
+    /// Every row as a `pyarrow.Table` with one column per result column, in
+    /// result order, independent of the fetch cursor.
+    ///
+    /// Each column's Arrow type is inferred from the engine's values, and a
+    /// column whose values no single Arrow type holds exactly raises
+    /// `TypeError`. Needs PyArrow (the `arrow` extra), imported on first use.
+    fn to_arrow<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        arrow_table::table(py, &self.rows, "to_arrow", "arrow")
+    }
+
+    /// `to_arrow()` converted by `pyarrow.Table.to_pandas()`, with its
+    /// defaults. Needs pandas and PyArrow (the `pandas` extra).
+    fn to_pandas<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        arrow_table::import_optional(py, "pandas", "to_pandas", "pandas")?;
+        arrow_table::table(py, &self.rows, "to_pandas", "pandas")?.call_method0("to_pandas")
+    }
+
+    /// `to_arrow()` converted by `polars.from_arrow()`. Needs Polars and
+    /// PyArrow (the `polars` extra).
+    fn to_polars<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let polars = arrow_table::import_optional(py, "polars", "to_polars", "polars")?;
+        let table = arrow_table::table(py, &self.rows, "to_polars", "polars")?;
+        polars.call_method1("from_arrow", (table,))
     }
 
     /// The first non-null value of column `column` in the whole result,

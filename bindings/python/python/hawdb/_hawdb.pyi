@@ -15,6 +15,12 @@
 import os
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
+# Optional packages, imported at run time only by the QueryResult methods
+# that return their types.
+import pandas
+import polars
+import pyarrow
+
 from hawdb import exceptions as exceptions
 
 __version__: str
@@ -37,6 +43,16 @@ class QueryResult:
     def fetchall(self) -> List[Dict[str, Any]]: ...
     def fetchmany_tuples(self, size: int = 1) -> List[Tuple[Any, ...]]:
         """Up to ``size`` rows from the shared cursor, as tuples in column order."""
+    def to_arrow(self) -> pyarrow.Table:
+        """Every row as a ``pyarrow.Table``, without moving the cursor.
+
+        Needs ``hawdb[arrow]``. Column types come from the values; a column
+        that mixes kinds of values raises ``TypeError``.
+        """
+    def to_pandas(self) -> pandas.DataFrame:
+        """``to_arrow().to_pandas()``; needs ``hawdb[pandas]``."""
+    def to_polars(self) -> polars.DataFrame:
+        """``polars.from_arrow(to_arrow())``; needs ``hawdb[polars]``."""
     def _first_non_null(self, column: int) -> Any: ...
     def _repr_html_(self) -> str: ...
     def _display_rows(

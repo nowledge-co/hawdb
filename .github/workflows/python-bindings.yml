@@ -126,21 +126,31 @@ jobs:
         if: matrix.os == 'ubuntu-24.04'
         run: pip install "pyarrow==26.0.0"
 
-      - name: Test public Arrow protocols against the installed wheel
+      - name: Test public Arrow protocols and QueryResult.to_arrow against the installed wheel
         if: matrix.os == 'ubuntu-24.04'
         run: |
           python -c 'import pyarrow; print(pyarrow.__version__)'
-          pytest tests/test_arrow_consumer.py
+          pytest tests/test_arrow_consumer.py tests/test_arrow_export.py
 
       - name: Provision the optional pandas DB-API consumer
         if: matrix.os == 'ubuntu-24.04'
         run: pip install "pandas==3.1.0"
 
-      - name: Test pandas.read_sql over the DB-API against the installed wheel
+      - name: Test pandas.read_sql and QueryResult.to_pandas against the installed wheel
         if: matrix.os == 'ubuntu-24.04'
         run: |
           python -c 'import pandas; print(pandas.__version__)'
-          pytest tests/test_dbapi.py -k pandas
+          pytest tests/test_dbapi.py tests/test_arrow_export.py -k pandas
+
+      - name: Provision the optional Polars consumer
+        if: matrix.os == 'ubuntu-24.04'
+        run: pip install "polars==2.1.0"
+
+      - name: Test QueryResult.to_polars against the installed wheel
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          python -c 'import polars; print(polars.__version__)'
+          pytest tests/test_arrow_export.py -k polars
 
       - name: Provision the optional LlamaIndex consumer
         if: matrix.os == 'ubuntu-24.04'
