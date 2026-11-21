@@ -103,7 +103,17 @@ impl RelationalFieldPlan {
         schema: &RelationalTableSchema,
     ) -> Result<()> {
         if access.kind == hawdb_optimizer::RelationalAccessPathKind::Index {
-            access.covering = self.index_covers_table(table, schema, &access.index_columns)?;
+            let included_columns = schema
+                .indexes
+                .iter()
+                .find(|index| index.name == access.name && index.columns == access.index_columns)
+                .map_or(&[][..], |index| index.included_columns.as_slice());
+            access.covering = self.index_covers_table_with_included(
+                table,
+                schema,
+                &access.index_columns,
+                included_columns,
+            )?;
             access.requires_row_fetch = !access.covering;
         }
         Ok(())
@@ -159,13 +169,27 @@ impl RelationalFieldPlan {
         schema: &RelationalTableSchema,
         index_columns: &[String],
     ) -> Result<bool> {
+        self.index_covers_table_with_included(table, schema, index_columns, &[])
+    }
+
+    pub fn index_covers_table_with_included(
+        &self,
+        table: &str,
+        schema: &RelationalTableSchema,
+        index_columns: &[String],
+        included_columns: &[String],
+    ) -> Result<bool> {
         let fields = self.scan_fields.get(table).ok_or_else(|| {
             HawDBError::StorageIntegrity(format!(
                 "relational query has no field plan for table {table}"
             ))
         })?;
         let mut covered = BTreeSet::new();
-        for column in index_columns.iter().chain(&schema.primary_key) {
+        for column in index_columns
+            .iter()
+            .chain(included_columns)
+            .chain(&schema.primary_key)
+        {
             let Some(ordinal) = schema.column_position(column) else {
                 return Ok(false);
             };
@@ -625,6 +649,14 @@ fn collect_expression_hydration_columns(
         } => {
             collect_expression_hydration_columns(left, metadata_columns, value_columns);
             collect_expression_hydration_columns(right, metadata_columns, value_columns);
+        }
+        Expr {
+            kind: ExprKind::RowCompare { left, right, .. },
+            ..
+        } => {
+            for expression in left.iter().chain(right) {
+                collect_expression_hydration_columns(expression, metadata_columns, value_columns);
+            }
         }
         Expr {
             kind:

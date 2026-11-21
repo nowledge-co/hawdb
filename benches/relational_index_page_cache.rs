@@ -163,7 +163,9 @@ fn seeded_state() -> RelationalState {
                         indexes: vec![RelationalIndexSchema {
                             name: "messages_owner_idx".to_string(),
                             columns: vec!["owner".to_string()],
+                            included_columns: Vec::new(),
                             unique: false,
+                            predicate: None,
                         }],
                     }),
                     RelationalWrite::Insert {

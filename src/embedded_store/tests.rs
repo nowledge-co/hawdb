@@ -8056,6 +8056,7 @@ mod search_epoch_advance_tests;
 mod search_marker_tests;
 mod search_projection_document_lookup_tests;
 mod search_projection_rebuild_tests;
+mod stale_memory_pressure_tests;
 mod storage_pressure_tests;
 mod wal_generation_reclamation_tests;
 mod write_task_context_tests;

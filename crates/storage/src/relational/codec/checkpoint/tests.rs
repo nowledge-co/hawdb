@@ -128,7 +128,9 @@ impl Fixture {
             indexes: vec![RelationalIndexSchema {
                 name: "flag-界".repeat(10000),
                 columns: vec!["flag".into()],
+                included_columns: Vec::new(),
                 unique: false,
+                predicate: None,
             }],
         };
         store
@@ -592,7 +594,9 @@ fn checkpoint_units_relational_wide_schema_defaults_keys_and_foreign_metadata_pr
         schema.indexes.push(RelationalIndexSchema {
             name: format!("index-{id}-界"),
             columns: vec![name],
+            included_columns: Vec::new(),
             unique: id % 2 == 0,
+            predicate: None,
         });
     }
     let mut expected = Encoder::default();

@@ -852,7 +852,7 @@ fn v1_row_page_manifest_requires_recreation() {
         .unwrap();
     let path = directory.join(RELATIONAL_ROW_PAGE_MANIFEST_FILE);
     // A fixed-slot v1 database is refused explicitly, whatever follows its
-    // magic, rather than being read as a corrupt v2 manifest.
+    // magic, rather than being read as a corrupt current manifest.
     let mut encoded = fs::read(&path).unwrap();
     encoded[..8].copy_from_slice(b"SKRPGM01");
     fs::write(&path, &encoded).unwrap();
@@ -863,7 +863,7 @@ fn v1_row_page_manifest_requires_recreation() {
             RelationalRowPagePublicationError::UnsupportedFormat(
                 hawdb_core::error::StorageFormatError::UnsupportedVersion {
                     found: 1,
-                    supported: 2,
+                    supported: 5,
                     ..
                 }
             )
@@ -878,8 +878,9 @@ fn v1_row_page_manifest_requires_recreation() {
         hawdb_core::HawDBError::from_storage_error(error),
         hawdb_core::HawDBError::UnsupportedStorageFormat(_)
     ));
-    // Any other version of the v2 manifest is unsupported, not v1.
-    encoded[..8].copy_from_slice(b"SKRPGM02");
+    // An unknown manifest-header version under the current format is corrupt,
+    // distinct from the typed refusal for an older format magic.
+    encoded[..8].copy_from_slice(b"SKRPGM05");
     encoded[8..10].copy_from_slice(&2u16.to_le_bytes());
     fs::write(&path, &encoded).unwrap();
     assert!(
@@ -887,6 +888,33 @@ fn v1_row_page_manifest_requires_recreation() {
         Err(RelationalRowPagePublicationError::Corrupt(message))
             if message.contains("unsupported row-page manifest version 2"))
     );
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn row_page_manifest_authenticates_legacy_layout_magic() {
+    let directory = unique_test_dir("legacy-manifest-magic");
+    let config = RelationalRowPagePublicationConfig::default();
+    RelationalRowPagePublisher::new(config)
+        .publish(
+            &directory,
+            1,
+            10,
+            None,
+            vec![table_delta("documents", vec![page(1, 1, 10, 1, 2)])],
+        )
+        .unwrap();
+    let path = directory.join(RELATIONAL_ROW_PAGE_MANIFEST_FILE);
+    let mut encoded = fs::read(&path).unwrap();
+    for magic in [b"SKRPGM02", b"SKRPGM03", b"SKRPGM04"] {
+        encoded[..8].copy_from_slice(magic);
+        fs::write(&path, &encoded).unwrap();
+        assert!(matches!(
+            RelationalRowPageRootReader::open_latest(&directory, config).unwrap_err(),
+            RelationalRowPagePublicationError::Corrupt(message)
+                if message.contains("row-page manifest checksum mismatch")
+        ));
+    }
     fs::remove_dir_all(directory).unwrap();
 }
 
@@ -1540,17 +1568,23 @@ fn schema_collection_limits_are_enforced_before_artifact_creation() {
         crate::relational::RelationalIndexSchema {
             name: "documents_value_1_idx".to_string(),
             columns: vec!["value_1".to_string()],
+            included_columns: Vec::new(),
             unique: false,
+            predicate: None,
         },
         crate::relational::RelationalIndexSchema {
             name: "documents_id_idx".to_string(),
             columns: vec!["id".to_string()],
+            included_columns: Vec::new(),
             unique: false,
+            predicate: None,
         },
         crate::relational::RelationalIndexSchema {
             name: "documents_value_1_id_idx".to_string(),
             columns: vec!["value_1".to_string(), "id".to_string()],
+            included_columns: Vec::new(),
             unique: false,
+            predicate: None,
         },
     ];
     delta.schema_digest =

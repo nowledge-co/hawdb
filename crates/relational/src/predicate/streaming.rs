@@ -14,7 +14,7 @@
 
 //! Bound single-relation qualification with caller-owned borrowed row values.
 
-use super::{compare_value_refs, scalar::Scalar};
+use super::{compare_row_fields, compare_value_refs, scalar::Scalar};
 use crate::query_value::{bind_sql_value, value_to_relational};
 use hawdb_core::{HawDBError, Result, Value};
 use hawdb_sql::{ExprKind, SqlColumnRef, SqlComparisonOp, SqlLikeEscape, SqlPredicate};
@@ -55,6 +55,11 @@ enum StreamingPredicate {
         left: Scalar,
         op: SqlComparisonOp,
         right: Scalar,
+    },
+    RowCompare {
+        left: Box<[Scalar]>,
+        op: SqlComparisonOp,
+        right: Box<[Scalar]>,
     },
     InList {
         left: Scalar,
@@ -104,6 +109,30 @@ impl StreamingPredicate {
                     left,
                     op: *op,
                     right,
+                })
+            }
+            ExprKind::RowCompare { left, op, right } => {
+                if left.len() != right.len() {
+                    return Err(HawDBError::Semantic(
+                        "row comparison requires the same number of fields on both sides"
+                            .to_string(),
+                    ));
+                }
+                let mut bound_left = Vec::with_capacity(left.len());
+                let mut bound_right = Vec::with_capacity(right.len());
+                for (left, right) in left.iter().zip(right) {
+                    let mut left = Scalar::bind(left, parameters, schema, table, qualifier)?;
+                    let mut right = Scalar::bind(right, parameters, schema, table, qualifier)?;
+                    right.coerce_comparison_literal(&left)?;
+                    left.coerce_comparison_literal(&right)?;
+                    validate_comparison(&left, &right, schema)?;
+                    bound_left.push(left);
+                    bound_right.push(right);
+                }
+                Ok(Self::RowCompare {
+                    left: bound_left.into_boxed_slice(),
+                    op: *op,
+                    right: bound_right.into_boxed_slice(),
                 })
             }
             ExprKind::InList {
@@ -191,6 +220,15 @@ impl StreamingPredicate {
                 .map(|truth| truth.map(|value| !value)),
             Self::Compare { left, op, right } => {
                 compare_value_refs(left.evaluate(resolve)?, right.evaluate(resolve)?, *op)
+            }
+            Self::RowCompare { left, op, right } => {
+                compare_row_fields(left.len(), right.len(), *op, |index, field_op| {
+                    compare_value_refs(
+                        left[index].evaluate(resolve)?,
+                        right[index].evaluate(resolve)?,
+                        field_op,
+                    )
+                })
             }
             Self::InList {
                 left,

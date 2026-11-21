@@ -16,13 +16,14 @@
 use super::RelationalJoinPlanningContext;
 use super::{
     choose_base_access, choose_join_access, elapsed_nanos, measure_nanos,
-    plan_relational_field_plan, projection_access_planning, projection_contains_aggregate,
-    reject_non_public_schema, resolve_relational_order_target, select_output_schema,
-    validate_scalar_expressions, HawDBError, Instant, PreparedRelationalAccessPlan,
-    PreparedRelationalExecutionDescriptor, PreparedRelationalSelect, QuerySchema,
-    RelationalAccessPathDescriptor, RelationalBaseAccessPlanning, RelationalQueryLimits,
-    RelationalQueryReadModes, RelationalQueryResourceContext, RelationalQueryStoreReader,
-    RelationalSqlStageTimings, RelationalState, Result, SelectStatement, Value,
+    plan_relational_execution_field_plan, plan_relational_field_plan, projection_access_planning,
+    projection_contains_aggregate, reject_non_public_schema, resolve_relational_order_target,
+    select_output_schema, validate_scalar_expressions, HawDBError, Instant,
+    PreparedRelationalAccessPlan, PreparedRelationalExecutionDescriptor, PreparedRelationalSelect,
+    QuerySchema, RelationalAccessPathDescriptor, RelationalBaseAccessPlanning,
+    RelationalQueryLimits, RelationalQueryReadModes, RelationalQueryResourceContext,
+    RelationalQueryStoreReader, RelationalSqlStageTimings, RelationalState, Result,
+    SelectStatement, Value,
 };
 pub(super) use crate::field_plan::resolved_access_order_by;
 use crate::row_runtime::{map_snapshot_error, RelationalRowReadMode};
@@ -214,6 +215,22 @@ pub(super) fn prepare_relational_select_with_snapshot(
         read_modes.index,
         &snapshot.cost_contexts,
     )?;
+    let field_plan = if !planned.statement.order_by.is_empty() && planned.statement.joins.is_empty()
+    {
+        // Ordered index execution streams projected values only when the
+        // selected index covers the complete output field plan. Preparation
+        // initially costs the predicate/order scan fields; refresh the final
+        // descriptor before selecting the execution mode.
+        let fields = plan_relational_execution_field_plan(&planned.statement, state, true)?;
+        let table = &planned.statement.from_table().name;
+        let schema = state
+            .table_schema(table)
+            .ok_or_else(|| HawDBError::Semantic(format!("unknown relational table {table}")))?;
+        fields.apply_access_coverage(&mut access_plan.base_access.descriptor, table, schema)?;
+        fields
+    } else {
+        field_plan
+    };
     access_plan.apply_physical_index_coverage_with_cost_contexts(
         state,
         &field_plan,

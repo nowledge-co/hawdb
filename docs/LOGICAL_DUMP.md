@@ -140,7 +140,10 @@ take file names from the manifest, never by listing the directory.
         { "columns": ["thread"], "references_table": "threads", "references_columns": ["id"],
           "on_delete": "cascade", "on_update": "no_action" }
       ],
-      "indexes": [{ "name": "events_at", "columns": ["at"], "unique": false }]
+      "indexes": [
+        { "name": "events_at", "columns": ["at"],
+          "included_columns": ["body", "score"], "unique": false }
+      ]
     }
   ],
   "graph": {
@@ -170,6 +173,18 @@ take file names from the manifest, never by listing the directory.
 - Index and constraint *definitions* are dumped, never their physical state.
   Import rebuilds them over the imported data, which also re-validates every
   constraint.
+- A partial SQL index adds a structured `predicate` to its index definition.
+  Predicate nodes are `and`, `or`, `not`, `compare`, and `is_null`; comparison
+  literals use the ordinary dump value encoding. Older format-1 dumps omit the
+  field and continue to import as full indexes. Import renders the structured
+  predicate through the SQL parser before loading rows, then rebuilds only its
+  `TRUE` members.
+- A relational index may list `included_columns`. They are recreated with
+  PostgreSQL `INCLUDE (...)` and provide covering payload only; `columns`
+  alone define ordering and uniqueness. The field is omitted when empty, and
+  format-1 dumps written before covering indexes therefore import with an empty
+  list. `verify` rejects an unknown column, a duplicate, or overlap between a
+  key and included column before publishing any imported state.
 - A graph property may carry a `default`, the creation-time default declared
   by `CREATE PROPERTY ... DEFAULT ...`: `{"literal": <value>}` (a non-null
   value in the encoding below that the property `type` accepts) or
@@ -338,7 +353,8 @@ Format version 1 covers the selected branch's:
 
 - relational tables: every column type, nullability, defaults, primary keys,
   unique constraints, foreign keys including self-references, secondary
-  indexes, SQL search index definitions (rebuilt from the rows on import),
+  indexes including deterministic partial-index predicates, SQL search index
+  definitions (rebuilt from the rows on import),
   and rows;
 - the property graph: labels, relationship types, typed node and
   relationship tables and properties with their schema states and

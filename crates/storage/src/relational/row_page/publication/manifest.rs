@@ -26,11 +26,13 @@ use std::path::Path;
 mod checkpoint;
 pub(super) use checkpoint::{encode_manifest_with_work_context, root_set_digest_with_work_context};
 
-/// Row-page format v2: exact-length pages packed back to back, addressed by
-/// byte offset and length (#1521). v1 (`SKRPGM01`) used fixed 1 MiB slots.
-const MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM02";
+use crate::relational::codec::IndexSchemaLayout;
+const MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM05";
+const LEGACY_V4_MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM04";
+const LEGACY_V3_MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM03";
+const LEGACY_V2_MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM02";
 const LEGACY_V1_MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM01";
-const ROW_PAGE_FORMAT_VERSION: u16 = 2;
+const ROW_PAGE_FORMAT_VERSION: u16 = 5;
 const MANIFEST_VERSION: u16 = 1;
 /// generation, allocated pages, allocated bytes, live pages, live bytes.
 pub(super) const PHYSICAL_GENERATION_BYTES: usize = 40;
@@ -42,7 +44,14 @@ const ARTIFACT_METADATA_BYTES: usize = 44;
 pub(super) fn root_set_digest(
     tables: &[RelationalRowPageTableRoot],
 ) -> Result<Sha256Digest, RelationalRowPagePublicationError> {
-    let payload = encode_tables(tables, None)?;
+    root_set_digest_inner(tables, IndexSchemaLayout::Combined)
+}
+
+fn root_set_digest_inner(
+    tables: &[RelationalRowPageTableRoot],
+    layout: IndexSchemaLayout,
+) -> Result<Sha256Digest, RelationalRowPagePublicationError> {
+    let payload = encode_tables(tables, None, layout)?;
     let mut hasher = IntegrityHasher::new();
     hasher.update(&payload);
     Ok(hasher.finish().sha256)
@@ -60,8 +69,14 @@ fn encode_manifest_inner(
     config: RelationalRowPagePublicationConfig,
     work: Option<&crate::background::CheckpointWorkContext>,
 ) -> Result<Vec<u8>, RelationalRowPagePublicationError> {
-    validate_manifest_inner(manifest, config, ErrorClass::Admission, work)?;
-    let mut payload = encode_tables(&manifest.tables, work)?;
+    validate_manifest_inner(
+        manifest,
+        config,
+        ErrorClass::Admission,
+        work,
+        IndexSchemaLayout::Combined,
+    )?;
+    let mut payload = encode_tables(&manifest.tables, work, IndexSchemaLayout::Combined)?;
     let unit = start_unit(work)?;
     let occupancy_bytes = manifest
         .physical_generations
@@ -310,20 +325,29 @@ fn decode_manifest_inner(
     work: Option<&crate::background::CheckpointWorkContext>,
 ) -> Result<RelationalRowPageRootManifest, RelationalRowPagePublicationError> {
     let unit = start_unit(work)?;
-    // A fixed-slot v1 database is an unsupported format, not corruption:
-    // hosts map `UnsupportedStorageFormat` to "recreate the database".
-    if encoded.len() >= 8 && &encoded[..8] == LEGACY_V1_MANIFEST_MAGIC {
-        return Err(RelationalRowPagePublicationError::UnsupportedFormat(
-            hawdb_core::error::StorageFormatError::UnsupportedVersion {
-                format: hawdb_core::RELATIONAL_ROW_PAGE_FORMAT,
-                found: 1,
-                supported: ROW_PAGE_FORMAT_VERSION,
-            },
-        ));
-    }
-    if encoded.len() < MANIFEST_HEADER_BYTES || &encoded[..8] != MANIFEST_MAGIC {
+    let layout = match encoded.get(..8) {
+        Some(magic) if magic == MANIFEST_MAGIC => IndexSchemaLayout::Combined,
+        Some(magic) if magic == LEGACY_V4_MANIFEST_MAGIC => IndexSchemaLayout::Include,
+        Some(magic) if magic == LEGACY_V3_MANIFEST_MAGIC => IndexSchemaLayout::Predicate,
+        Some(magic) if magic == LEGACY_V2_MANIFEST_MAGIC => IndexSchemaLayout::Full,
+        Some(magic) if magic == LEGACY_V1_MANIFEST_MAGIC => {
+            return Err(RelationalRowPagePublicationError::UnsupportedFormat(
+                hawdb_core::error::StorageFormatError::UnsupportedVersion {
+                    format: hawdb_core::RELATIONAL_ROW_PAGE_FORMAT,
+                    found: 1,
+                    supported: ROW_PAGE_FORMAT_VERSION,
+                },
+            ))
+        }
+        _ => {
+            return Err(RelationalRowPagePublicationError::Corrupt(
+                "invalid row-page manifest header".into(),
+            ))
+        }
+    };
+    if encoded.len() < MANIFEST_HEADER_BYTES {
         return Err(RelationalRowPagePublicationError::Corrupt(
-            "invalid row-page manifest header".to_string(),
+            "invalid row-page manifest header".into(),
         ));
     }
     let version = read_u16(&encoded[8..10]);
@@ -435,7 +459,13 @@ fn decode_manifest_inner(
             )
         })?;
     finish_unit(unit);
-    let tables = decode_tables(&payload[..generations_offset], table_count, config, work)?;
+    let tables = decode_tables(
+        &payload[..generations_offset],
+        table_count,
+        config,
+        work,
+        layout,
+    )?;
     let mut physical_generations = Vec::with_capacity(generation_count);
     for entry in payload[generations_offset..trailer_offset]
         .as_chunks::<PHYSICAL_GENERATION_BYTES>()
@@ -469,7 +499,7 @@ fn decode_manifest_inner(
         tables,
         physical_generations,
     };
-    validate_manifest_inner(&manifest, config, ErrorClass::Corrupt, work)?;
+    validate_manifest_inner(&manifest, config, ErrorClass::Corrupt, work, layout)?;
     if let Some(work) = work {
         work.checkpoint()
             .map_err(super::root::checkpoint::work_error)?;
@@ -502,6 +532,7 @@ fn validate_manifest_inner(
     config: RelationalRowPagePublicationConfig,
     class: ErrorClass,
     work: Option<&crate::background::CheckpointWorkContext>,
+    layout: IndexSchemaLayout,
 ) -> Result<(), RelationalRowPagePublicationError> {
     let unit = start_unit(work)?;
     let fail = |message| class.error(message);
@@ -657,14 +688,19 @@ fn validate_manifest_inner(
         let schema_digest = match work {
             Some(work) => work
                 .classify(|work| {
-                    crate::relational::index_shadow::relational_schema_digest_with_work_context(
+                    crate::relational::index_shadow::schema_digest_for_binding(
                         &table.schema,
-                        work,
+                        Some(table.schema_digest),
+                        Some(work),
                     )
                 })
                 .map_err(|error| map_classified_error(error, class)),
-            None => crate::relational::index_shadow::relational_schema_digest(&table.schema)
-                .map_err(|error| fail(error.to_string())),
+            None => crate::relational::index_shadow::schema_digest_for_binding(
+                &table.schema,
+                Some(table.schema_digest),
+                None,
+            )
+            .map_err(|error| fail(error.to_string())),
         }?;
         let mut unit = start_unit(work)?;
         if schema_digest != table.schema_digest {
@@ -733,8 +769,8 @@ fn validate_manifest_inner(
         )));
     }
     let digest = match work {
-        Some(work) => root_set_digest_with_work_context(&manifest.tables, work)?,
-        None => root_set_digest(&manifest.tables)?,
+        Some(work) => checkpoint::root_set_digest_for_layout(&manifest.tables, work, layout)?,
+        None => root_set_digest_inner(&manifest.tables, layout)?,
     };
     if digest != manifest.root_set_digest {
         return Err(fail("row-page root-set digest mismatch".to_string()));
@@ -817,18 +853,23 @@ fn validate_occupancy(
 fn encode_tables(
     tables: &[RelationalRowPageTableRoot],
     work: Option<&crate::background::CheckpointWorkContext>,
+    layout: IndexSchemaLayout,
 ) -> Result<Vec<u8>, RelationalRowPagePublicationError> {
     let mut encoded = Vec::new();
     for table in tables {
         encode_raw_bytes(table.table.as_bytes(), &mut encoded, work)?;
         let schema = match work {
             Some(work) => {
-                crate::relational::codec::encode_relational_table_schema_with_work_context(
+                crate::relational::codec::encode_relational_table_schema_with_layout_and_work(
                     &table.schema,
+                    layout,
                     work,
                 )
             }
-            None => crate::relational::codec::encode_relational_table_schema(&table.schema),
+            None => crate::relational::codec::encode_relational_table_schema_for_layout(
+                &table.schema,
+                layout,
+            ),
         }
         .map_err(map_schema_encode_error)?;
         encode_raw_bytes(&schema, &mut encoded, work)?;
@@ -853,6 +894,7 @@ fn decode_tables(
     table_count: usize,
     config: RelationalRowPagePublicationConfig,
     work: Option<&crate::background::CheckpointWorkContext>,
+    layout: IndexSchemaLayout,
 ) -> Result<Vec<RelationalRowPageTableRoot>, RelationalRowPagePublicationError> {
     let unit = start_unit(work)?;
     let mut tables = Vec::with_capacity(table_count);
@@ -875,17 +917,19 @@ fn decode_tables(
         )?;
         let schema = match work {
             Some(work) => {
-                crate::relational::codec::decode_relational_table_schema_with_work_context(
+                crate::relational::codec::decode_relational_table_schema_with_layout_and_work(
                     &schema_bytes,
+                    layout,
                     config.max_manifest_bytes.get(),
                     config.page_limits.max_columns.get(),
                     work,
                 )
             }
-            None => crate::relational::codec::decode_relational_table_schema(
+            None => crate::relational::codec::decode_relational_table_schema_for_layout(
                 &schema_bytes,
                 config.max_manifest_bytes.get(),
                 config.page_limits.max_columns.get(),
+                layout,
             ),
         }
         .map_err(map_schema_decode_error)?;

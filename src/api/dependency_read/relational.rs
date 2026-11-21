@@ -390,6 +390,12 @@ fn qualify_expression(expression: &Expr, nodes: &mut usize, depth: usize) -> Res
             }
             Ok(())
         }
+        ExprKind::RowCompare { left, right, .. } => {
+            for expression in left.iter().chain(right) {
+                qualify_expression(expression, nodes, depth + 1)?;
+            }
+            Ok(())
+        }
         ExprKind::Function { .. } => Err(refusal("function expressions")),
     }
 }

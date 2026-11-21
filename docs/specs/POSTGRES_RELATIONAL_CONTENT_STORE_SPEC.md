@@ -81,6 +81,8 @@ The scoped grammar includes:
 
 - table and column aliases, `INNER JOIN`, and `LEFT JOIN`;
 - boolean predicates with SQL three-valued null behavior;
+- PostgreSQL row constructors in comparison predicates, using either
+  `(expression, ...)` or `ROW(expression, ...)` syntax;
 - `DISTINCT`, `GROUP BY`, `COUNT`, `SUM`, `MIN`, `MAX`, `COALESCE`, and
   `OCTET_LENGTH`;
 - deterministic PostgreSQL null ordering, `LIMIT`, and `OFFSET`;
@@ -88,8 +90,9 @@ The scoped grammar includes:
   `UPDATE`, and `DELETE`;
 - `SELECT ... FOR SHARE` and `SELECT ... FOR UPDATE` in pessimistic concurrent
   transactions;
-- `CREATE TABLE`, primary/unique/foreign-key constraints, `CREATE INDEX`, and
-  append-only `ALTER TABLE ... ADD COLUMN` parsing.
+- `CREATE TABLE`, primary/unique/foreign-key constraints, `CREATE INDEX`
+  including partial predicates and PostgreSQL `INCLUDE` covering payloads, and append-only `ALTER
+  TABLE ... ADD COLUMN` parsing.
 
 Unsupported syntax MUST fail during parse or binding. It MUST NOT silently use
 different semantics.
@@ -149,6 +152,15 @@ and `BYTEA`, including nullability and deterministic defaults. Primary keys,
 unique constraints, ordered secondary indexes, and foreign keys are evaluated
 against the final staged transaction state.
 
+A partial index admits only rows for which its stored predicate is SQL `TRUE`;
+`FALSE` and `UNKNOWN` rows are absent. Its deterministic subset is limited to
+column-to-literal comparisons, `IS [NOT] NULL`, `AND`, `OR`, and `NOT`.
+Mutation, replay, checkpoint, and authoritative index-shadow paths MUST apply
+the same predicate. A partial unique index enforces uniqueness only among its
+members and MUST NOT serve as a general foreign-key or conflict target. The
+planner may select it only after a conservative proof that the query predicate
+implies the stored predicate.
+
 `BYTEA` binds to the shared `Value::Binary`/`ValueRef::Binary` logical value.
 Query projection, comparison, hashing, spill, WAL, checkpoint, and JSON result
 boundaries MUST preserve raw bytes without retyping them as text or integer
@@ -186,10 +198,9 @@ manifests carry the final high-water marks, and metadata-only staging retains
 them independently of hydrated rows. An insert followed by deletion must still
 publish its allocator advance at checkpoint.
 
-The relational durable codec is version 3, canonical row-root manifests are
-version 2, and row-delta manifests/runs are version 2. Older development formats
-are rejected; recreate development databases. No production compatibility
-migration is introduced under the current greenfield policy.
+The relational writer uses durable codec v6 and canonical row-root manifest v5.
+It reads codec v3 (full indexes), v4 (partial indexes), and v5 (covering indexes),
+and their respective v2, v3, and v4 row-root manifests. Row-delta manifests and runs remain v2.
 
 PostgreSQL type aliases normalize to canonical storage types: INT/INTEGER,
 SMALLINT and TINYINT to BIGINT; FLOAT, FLOAT8 and FLOAT(25..53) to DOUBLE
@@ -432,16 +443,23 @@ accepted. Each locator batch is bounded by both `batch_rows` and
 payload values enter neither the locator column nor an intermediate `Binding`;
 only the selected locator batch may perform final projection hydration.
 
-A canonical two-column keyset predicate MAY continue that ordered index path
-from an exclusive cursor. The accepted shape is one leading equality prefix
-followed by `(sort > cursor OR (sort = cursor AND id > cursor_id))` for uniform
-ascending order, or the corresponding `<` predicate for uniform descending
-order. The cursor values must complete the composite index key, and both order
-columns must be non-null. Mixed directions, nullable order columns, incomplete
-index suffixes, and non-canonical predicates MUST retain the blocking fallback.
-Descending pages traverse the same ascending index in reverse; neither
-direction may hydrate rows beyond the bounded locator page. Planned and runtime
-explain evidence must distinguish exclusive seek, direction, and early stop.
+A strict row-constructor keyset predicate MAY continue that ordered index path
+from an exclusive cursor. Its left fields must exactly match the uniformly
+ordered suffix, its right fields must be values, and those values together with
+the leading equality prefix must complete the composite index key. `>` is the
+native ascending shape and `<` is the native descending shape. The legacy
+expanded two-column shape `(sort > cursor OR (sort = cursor AND id >
+cursor_id))`, and its descending counterpart, remains equivalent and supported.
+Every cursor field must be non-null at runtime for the exclusive seek; a NULL
+cursor therefore disqualifies that fast path. Residual row evaluation can still
+match a row when an earlier field pair decides the comparison. Only a row that
+reaches the NULL pair produces unknown and does not match. Mixed directions,
+nullable order columns, incomplete index suffixes, inclusive row predicates,
+and non-canonical predicates MUST retain the blocking fallback. Descending
+pages traverse the same ascending index in reverse; neither direction may
+hydrate rows beyond the bounded locator page. Planned and runtime explain
+evidence must distinguish exclusive seek, direction, full order-prefix arity,
+and early stop.
 
 Blocking relational rows MUST carry a typed `sort_keys + locator + stable
 ordinal` record and MUST NOT materialize an executor `Binding`, public `Value`,

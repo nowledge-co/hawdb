@@ -34,7 +34,7 @@ use hawdb_storage::{
         RelationalRowPageSnapshotPointsReport, RelationalRowPageSnapshotRangeReport,
         RelationalRowPageSnapshotReadError, RelationalRowPageSnapshotReadLimits,
         RelationalRowPageSnapshotReader, RelationalRowPageSnapshotRowSource, RelationalState,
-        RelationalValueRef,
+        RelationalValue, RelationalValueRef,
     },
 };
 use std::cell::{Cell, RefCell};
@@ -557,6 +557,7 @@ impl<'a> RelationalRowRuntime<'a> {
     pub fn read_index_covered(
         &self,
         table: &str,
+        index_name: &str,
         index_columns: &[String],
         index_key: &RelationalKey,
         primary_key: &RelationalKey,
@@ -565,17 +566,31 @@ impl<'a> RelationalRowRuntime<'a> {
             .state
             .table_schema(table)
             .ok_or_else(|| HawDBError::Semantic(format!("unknown relational table {table}")))?;
-        if !self
-            .fields
-            .index_covers_table(table, schema, index_columns)?
-        {
+        let included_columns = schema
+            .indexes
+            .iter()
+            .find(|index| index.name == index_name && index.columns == index_columns)
+            .map_or(&[][..], |index| index.included_columns.as_slice());
+        if !self.fields.index_covers_table_with_included(
+            table,
+            schema,
+            index_columns,
+            included_columns,
+        )? {
             return Ok(None);
         }
-        if index_key.0.len() != index_columns.len() {
+        let expected_values = index_columns
+            .len()
+            .checked_add(included_columns.len())
+            .ok_or_else(|| {
+                HawDBError::StorageIntegrity(format!(
+                    "relational index {index_name} coverage width overflows on table {table}"
+                ))
+            })?;
+        if index_key.0.len() != expected_values {
             return Err(HawDBError::StorageIntegrity(format!(
-                "relational index key for table {table} has {} values but its descriptor has {} columns",
+                "relational index key for table {table} has {} values but its descriptor has {expected_values} key and INCLUDE columns",
                 index_key.0.len(),
-                index_columns.len()
             )));
         }
         if primary_key.0.len() != schema.primary_key.len().max(1) {
@@ -596,6 +611,43 @@ impl<'a> RelationalRowRuntime<'a> {
                 ))
             })?;
             values.insert(ordinal, value.clone());
+        }
+        for (column, payload) in included_columns
+            .iter()
+            .zip(&index_key.0[index_columns.len()..])
+        {
+            let RelationalValue::Bytea(payload) = payload else {
+                return Err(HawDBError::StorageIntegrity(format!(
+                    "relational index {index_name} on table {table} has a non-payload INCLUDE value"
+                )));
+            };
+            let value = hawdb_storage::relational::decode_relational_index_included_value(
+                payload,
+                payload.len().max(1),
+            )
+            .map_err(|error| {
+                HawDBError::StorageIntegrity(format!(
+                    "relational index {index_name} on table {table} has a corrupt INCLUDE payload: {error}"
+                ))
+            })?;
+            let ordinal = schema.column_position(column).ok_or_else(|| {
+                HawDBError::StorageIntegrity(format!(
+                    "relational index coverage references unknown INCLUDE column {column} on table {table}"
+                ))
+            })?;
+            let declared = &schema.columns[ordinal];
+            if matches!(value, RelationalValue::Null) {
+                if !declared.nullable {
+                    return Err(HawDBError::StorageIntegrity(format!(
+                        "relational index {index_name} has NULL for NOT NULL INCLUDE column {column}"
+                    )));
+                }
+            } else if !declared.scalar_type.accepts(value.as_ref()) {
+                return Err(HawDBError::StorageIntegrity(format!(
+                    "relational index {index_name} has an invalid INCLUDE value type for column {column}"
+                )));
+            }
+            values.insert(ordinal, value);
         }
         for (column, value) in schema.primary_key.iter().zip(&primary_key.0) {
             let ordinal = schema.column_position(column).ok_or_else(|| {

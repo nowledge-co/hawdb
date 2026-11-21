@@ -393,7 +393,7 @@ fn index_coverage_binds_snapshot_without_reading_row_pages() {
     let task = RuntimeTaskContext::default();
     let runtime = fixture.runtime(1, "SELECT id, bucket FROM docs", &task);
     let row = runtime
-        .read_index_covered("docs", &["bucket".into()], &key(1), &key(4))
+        .read_index_covered("docs", "bucket_idx", &["bucket".into()], &key(1), &key(4))
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -407,20 +407,62 @@ fn index_coverage_binds_snapshot_without_reading_row_pages() {
     assert_eq!(evidence.rows_visited, 0);
     assert_eq!(evidence.logical_pages, 0);
     assert!(matches!(
-        runtime.read_index_covered("docs", &["bucket".into()], &RelationalKey(vec![]), &key(4)),
+        runtime.read_index_covered(
+            "docs",
+            "bucket_idx",
+            &["bucket".into()],
+            &RelationalKey(vec![]),
+            &key(4)
+        ),
         Err(HawDBError::StorageIntegrity(_))
     ));
     assert!(matches!(
-        runtime.read_index_covered("docs", &["bucket".into()], &key(1), &RelationalKey(vec![])),
+        runtime.read_index_covered(
+            "docs",
+            "bucket_idx",
+            &["bucket".into()],
+            &key(1),
+            &RelationalKey(vec![])
+        ),
         Err(HawDBError::StorageIntegrity(_))
     ));
     let uncovered = fixture.runtime(1, "SELECT body FROM docs", &task);
     assert!(uncovered
-        .read_index_covered("docs", &["bucket".into()], &key(1), &key(4))
+        .read_index_covered("docs", "bucket_idx", &["bucket".into()], &key(1), &key(4))
         .unwrap()
         .is_none());
     assert_eq!(uncovered.evidence().base_generation, None);
     drop((runtime, uncovered));
+    fixture.remove();
+}
+
+#[test]
+fn covering_index_payload_corruption_fails_closed_without_row_fallback() {
+    let mut state = state();
+    apply(
+        &mut state,
+        "CREATE INDEX bucket_covering_idx ON docs (bucket) INCLUDE (body)",
+        &[],
+    );
+    let fixture = Fixture::with_state(state);
+    let task = RuntimeTaskContext::default();
+    let runtime = fixture.runtime(1, "SELECT id, body FROM docs", &task);
+    for payload in [
+        RelationalValue::Text("not-an-encoded-payload".into()),
+        RelationalValue::Bytea(vec![0xff]),
+    ] {
+        let error = runtime
+            .read_index_covered(
+                "docs",
+                "bucket_covering_idx",
+                &["bucket".into()],
+                &RelationalKey(vec![RelationalValue::BigInt(1), payload]),
+                &key(4),
+            )
+            .unwrap_err();
+        assert!(matches!(error, HawDBError::StorageIntegrity(_)), "{error}");
+    }
+    assert_eq!(runtime.evidence().rows_visited, 0);
     fixture.remove();
 }
 

@@ -90,7 +90,9 @@ fn schema() -> RelationalTableSchema {
         schema.indexes.push(RelationalIndexSchema {
             name: format!("index-{id}-界"),
             columns: vec![name],
+            included_columns: Vec::new(),
             unique: id % 2 == 0,
+            predicate: None,
         });
     }
     schema

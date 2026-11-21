@@ -8,6 +8,7 @@ mod index;
 #[path = "../simd/key_compare.rs"]
 mod key_compare;
 mod performance;
+mod storage;
 #[cfg(test)]
 #[path = "../structural/keys.rs"]
 mod structural_keys;

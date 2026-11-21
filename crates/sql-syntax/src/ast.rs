@@ -398,6 +398,11 @@ pub enum ExpressionKindSyntax {
         values: Vec<ExpressionSyntax>,
         negated: bool,
     },
+    /// `ROW(a, b, ...)` or the PostgreSQL shorthand `(a, b, ...)`.
+    ///
+    /// A single parenthesized expression remains `Parenthesized`; the
+    /// shorthand row form therefore always contains at least two fields.
+    Row(Vec<ExpressionSyntax>),
     Between {
         expression: Box<ExpressionSyntax>,
         low: Box<ExpressionSyntax>,

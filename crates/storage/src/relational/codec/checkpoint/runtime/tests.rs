@@ -46,7 +46,9 @@ fn fixture() -> RelationalState {
         indexes: vec![RelationalIndexSchema {
             name: "declared_alt".into(),
             columns: vec!["alt".into()],
+            included_columns: Vec::new(),
             unique: true,
+            predicate: None,
         }],
     };
     let children = RelationalTableSchema {
@@ -71,17 +73,23 @@ fn fixture() -> RelationalState {
             RelationalIndexSchema {
                 name: "group".into(),
                 columns: vec!["group".into()],
+                included_columns: Vec::new(),
                 unique: false,
+                predicate: None,
             },
             RelationalIndexSchema {
                 name: "group_id".into(),
                 columns: vec!["group".into(), "id".into()],
+                included_columns: Vec::new(),
                 unique: false,
+                predicate: None,
             },
             RelationalIndexSchema {
                 name: "label".into(),
                 columns: vec!["label".into()],
+                included_columns: Vec::new(),
                 unique: true,
+                predicate: None,
             },
         ],
     };

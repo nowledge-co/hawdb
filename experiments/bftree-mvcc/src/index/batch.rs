@@ -38,20 +38,19 @@ fn decode_head(bytes: &[u8], epoch: u64) -> Result<Lookup> {
     }
 }
 
-fn point(tree: &BfTree, key: &[u8], epoch: u64, history: bool) -> Result<Lookup> {
+fn point(storage: &impl Storage, key: &[u8], epoch: u64, history: bool) -> Result<Lookup> {
     if history {
-        return Ok(Lookup::Ready(history_get(tree, key, epoch)?));
+        return Ok(Lookup::Ready(history_get(storage, key, epoch)?));
     }
     let mut buffer = [0; MAX_VALUE + 9];
-    match tree.read(&prefix(key, 2), &mut buffer) {
-        LeafReadResult::Found(n) => decode_head(&buffer[..n as usize], epoch),
-        LeafReadResult::NotFound => Ok(Lookup::Ready(None)),
-        _ => Err(Error::Invalid("unexpected batch head state")),
+    match storage.get(&prefix(key, 2), &mut buffer)? {
+        Some(n) => decode_head(&buffer[..n], epoch),
+        None => Ok(Lookup::Ready(None)),
     }
 }
 
-fn lookup_bf(
-    tree: &BfTree,
+fn lookup_ordered(
+    storage: &impl Storage,
     keys: &[&[u8]],
     epoch: u64,
     history: bool,
@@ -82,15 +81,12 @@ fn lookup_bf(
         let mut visited = 0;
         work.cursor_starts += 1;
         {
-            // Reuse a native leaf cursor for dense keys. Bound each guard by
-            // 32 returned records; hidden native deleted slots are not counted
-            // as returned records by Bf-Tree. Sparse/deep-history inputs fall
-            // back without scanning their entire intervening key space.
-            let mut scan = tree
-                .scan_with_count(&seek, 32, ScanReturnField::KeyAndValue)
-                .map_err(|e| Error::Index(format!("{e:?}")))?;
+            // Reuse a cursor for dense keys. Bound each guard by returned
+            // records and fall back on sparse or deep-history inputs.
+            const WINDOW: NonZeroUsize = NonZeroUsize::new(32).unwrap();
+            let mut scan = storage.scan(&seek, ScanLimit::Count(WINDOW))?;
             let mut buffer = [0; MAX_KEY * 2 + MAX_VALUE + 64];
-            while let Some((k, v)) = scan.next(&mut buffer) {
+            while let Some((k, v)) = scan.next(&mut buffer)? {
                 visited += 1;
                 work.scanned_records += 1;
                 if work.scanned_records + work.point_probes > crate::adapter::MAX_BATCH_LOOKUPS * 66
@@ -161,13 +157,13 @@ fn lookup_bf(
     if fallback {
         for position in next..keys.len() {
             work.point_probes += 1;
-            out[position] = point(tree, keys[position], epoch, history)?;
+            out[position] = point(storage, keys[position], epoch, history)?;
         }
     }
     Ok(out)
 }
 
-impl View {
+impl<S: Storage> View<S> {
     pub fn get_many(&self, keys: &[&[u8]]) -> Result<BatchRead> {
         let mut order: Vec<_> = (0..keys.len()).collect();
         order.sort_unstable_by(|a, b| keys[*a].cmp(keys[*b]));
@@ -197,13 +193,13 @@ impl View {
                     )
                 })
                 .collect(),
-            Self::Bf {
-                tree,
+            Self::Ordered {
+                storage,
                 layout,
                 epoch,
             } => {
-                let mut selected = lookup_bf(
-                    tree,
+                let mut selected = lookup_ordered(
+                    storage.as_ref(),
                     &targets,
                     *epoch,
                     *layout == Layout::Versioned,
@@ -221,7 +217,8 @@ impl View {
                         .iter()
                         .map(|position| targets[*position])
                         .collect();
-                    let values = lookup_bf(tree, &history_keys, *epoch, true, &mut work)?;
+                    let values =
+                        lookup_ordered(storage.as_ref(), &history_keys, *epoch, true, &mut work)?;
                     for (position, value) in unresolved.into_iter().zip(values) {
                         selected[position] = value;
                     }
