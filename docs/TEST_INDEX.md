@@ -1263,7 +1263,9 @@ directory, all decoded entry slots (including deleted slots), and key bytes;
 it replaces the earlier 320 KiB estimate based on encoded lengths payloads.
 A sparse-after-deletion regression retains only the last document of each
 of 32 lengths rows, succeeds at 128 KiB, and requires refusal at 32 KiB before
-half the control's decoded-array allocation bytes are allocated. Its multi-term case on a second corpus
+half the control's decoded-array allocation bytes are allocated. SQL prepare
+runs outside this allocator probe so CST growth cannot be mistaken for BM25
+execution work. Its multi-term case on a second corpus
 (ten short documents repeating the term) compares exact rows and score bits
 with a residual-filtered scan and a whole-match-set ranking across
 sealed-block boundaries, visiting fewer postings and skipping blocks
