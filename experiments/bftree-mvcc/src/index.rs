@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::adapter::{Batch, Error, Result, MAX_KEY, MAX_SCAN_RECORDS, MAX_SCAN_ROWS, MAX_VALUE};
-use bf_tree::{BfTree, Config, LeafInsertResult, LeafReadResult, ScanReturnField};
+use crate::storage::{ScanLimit, Storage, StorageCursor};
 use hawdb_storage::cow::{CowPageWeight, CowSegmentedMap};
 use serde::Serialize;
+use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -60,13 +61,13 @@ impl CowPageWeight for Value {
 }
 type CowMap = CowSegmentedMap<Key, Value>;
 
-pub enum Index {
-    Bf { tree: Arc<BfTree>, layout: Layout },
+pub enum Index<S: Storage> {
+    Ordered { storage: Arc<S>, layout: Layout },
     Cow(Mutex<CowMap>),
 }
-pub enum View {
-    Bf {
-        tree: Arc<BfTree>,
+pub enum View<S: Storage> {
+    Ordered {
+        storage: Arc<S>,
         layout: Layout,
         epoch: u64,
     },
@@ -77,7 +78,7 @@ pub struct Previous<'a> {
     pub value: &'a Option<Vec<u8>>,
 }
 pub enum Prepared {
-    Bf,
+    Ordered,
     Cow(CowMap),
 }
 
@@ -187,19 +188,11 @@ fn decode_value(bytes: &[u8]) -> Result<Option<Vec<u8>>> {
         _ => Err(Error::Invalid("invalid value tag")),
     }
 }
-fn insert(tree: &BfTree, key: &[u8], value: &[u8]) -> Result<()> {
-    match tree.insert(key, value) {
-        LeafInsertResult::Success => Ok(()),
-        LeafInsertResult::InvalidKV(reason) => Err(Error::Index(reason)),
-    }
-}
-fn history_get(tree: &BfTree, key: &[u8], epoch: u64) -> Result<Option<Vec<u8>>> {
+fn history_get(storage: &impl Storage, key: &[u8], epoch: u64) -> Result<Option<Vec<u8>>> {
     let seek = version_key(key, epoch);
     let mut buffer = [0; MAX_KEY * 2 + MAX_VALUE + 64];
-    let mut scan = tree
-        .scan_with_count(&seek, 1, ScanReturnField::KeyAndValue)
-        .map_err(|e| Error::Index(format!("{e:?}")))?;
-    let Some((k, v)) = scan.next(&mut buffer) else {
+    let mut scan = storage.scan(&seek, ScanLimit::Count(NonZeroUsize::MIN))?;
+    let Some((k, v)) = scan.next(&mut buffer)? else {
         return Ok(None);
     };
     if buffer.first() != Some(&1) {
@@ -239,7 +232,7 @@ fn head_key_pairs(encoded: &[u8]) -> Result<&[[u8; 2]]> {
     Ok(pairs)
 }
 
-fn scan_hybrid(tree: &BfTree, epoch: u64, start: &[u8], end: &[u8]) -> Result<Rows> {
+fn scan_hybrid(storage: &impl Storage, epoch: u64, start: &[u8], end: &[u8]) -> Result<Rows> {
     let mut resume = prefix(start, 2);
     let upper = prefix(end, 2);
     let mut rows = Vec::new();
@@ -248,12 +241,10 @@ fn scan_hybrid(tree: &BfTree, epoch: u64, start: &[u8], end: &[u8]) -> Result<Ro
     loop {
         let mut resume_needed = false;
         {
-            let mut scan = tree
-                .scan_with_end_key(&resume, &upper, ScanReturnField::KeyAndValue)
-                .map_err(|e| Error::Index(format!("{e:?}")))?;
+            let mut scan = storage.scan(&resume, ScanLimit::EndInclusive(&upper))?;
             let mut buffer = [0; MAX_KEY * 2 + MAX_VALUE + 64];
             for visited in 1..=SCAN_WINDOW {
-                let Some((key_len, value_len)) = scan.next(&mut buffer) else {
+                let Some((key_len, value_len)) = scan.next(&mut buffer)? else {
                     break;
                 };
                 work += 1;
@@ -297,7 +288,7 @@ fn scan_hybrid(tree: &BfTree, epoch: u64, start: &[u8], end: &[u8]) -> Result<Ro
         for (key, value) in deferred.drain(..) {
             let visible = match value {
                 Some(value) => Some(value),
-                None => history_get(tree, &key, epoch)?,
+                None => history_get(storage, &key, epoch)?,
             };
             if let Some(value) = visible {
                 push_scan_row(&mut rows, key, value)?;
@@ -309,7 +300,7 @@ fn scan_hybrid(tree: &BfTree, epoch: u64, start: &[u8], end: &[u8]) -> Result<Ro
     }
 }
 
-impl Index {
+impl<S: Storage> Index<S> {
     pub fn retained_value(&self, key: &[u8], epoch: u64, latest: bool) -> Result<Option<Vec<u8>>> {
         if let Self::Cow(state) = self {
             if !latest {
@@ -321,7 +312,7 @@ impl Index {
                 .get(&Key(key.to_vec()))
                 .map(|value| value.0.as_ref().clone()));
         }
-        let Self::Bf { tree, layout } = self else {
+        let Self::Ordered { storage, layout } = self else {
             unreachable!()
         };
         let head = *layout == Layout::Hybrid && latest;
@@ -331,9 +322,9 @@ impl Index {
             version_key(key, epoch)
         };
         let mut buffer = [0; MAX_VALUE + 9];
-        match tree.read(&encoded, &mut buffer) {
-            LeafReadResult::Found(n) => {
-                let value = &buffer[..n as usize];
+        match storage.get(&encoded, &mut buffer)? {
+            Some(n) => {
+                let value = &buffer[..n];
                 if head {
                     let found_epoch = u64::from_be_bytes(
                         value
@@ -350,21 +341,21 @@ impl Index {
                     decode_value(value)
                 }
             }
-            _ => Err(Error::Invalid("retained index version is missing")),
+            None => Err(Error::Invalid("retained index version is missing")),
         }
     }
     pub fn current_head(&self, key: &[u8]) -> Result<Option<(u64, Option<Vec<u8>>)>> {
-        let Self::Bf {
-            tree,
+        let Self::Ordered {
+            storage,
             layout: Layout::Hybrid,
         } = self
         else {
             return Ok(None);
         };
         let mut buffer = [0; MAX_VALUE + 9];
-        match tree.read(&prefix(key, 2), &mut buffer) {
-            LeafReadResult::Found(n) => {
-                let bytes = &buffer[..n as usize];
+        match storage.get(&prefix(key, 2), &mut buffer)? {
+            Some(n) => {
+                let bytes = &buffer[..n];
                 let epoch = u64::from_be_bytes(
                     bytes
                         .get(..8)
@@ -374,8 +365,7 @@ impl Index {
                 );
                 Ok(Some((epoch, decode_value(&bytes[8..])?)))
             }
-            LeafReadResult::NotFound => Ok(None),
-            _ => Err(Error::Invalid("unexpected replay head state")),
+            None => Ok(None),
         }
     }
     pub fn restore_version(
@@ -387,15 +377,14 @@ impl Index {
     ) -> Result<()> {
         let mut buffer = [0; MAX_VALUE + 9];
         match self {
-            Self::Bf { tree, layout } => {
+            Self::Ordered { storage, layout } => {
                 let head = *layout == Layout::Hybrid && latest;
                 let key = if head {
                     prefix(key, 2)
                 } else {
                     version_key(key, epoch)
                 };
-                insert(
-                    tree,
+                storage.put(
                     &key,
                     encode_value(value, head.then_some(epoch), &mut buffer),
                 )
@@ -411,40 +400,29 @@ impl Index {
             }
         }
     }
-    pub fn remove_version(&self, key: &[u8], epoch: u64) {
-        if let Self::Bf { tree, .. } = self {
-            tree.delete(&version_key(key, epoch));
+    pub fn remove_version(&self, key: &[u8], epoch: u64) -> Result<()> {
+        if let Self::Ordered { storage, .. } = self {
+            storage.delete(&version_key(key, epoch))?;
         }
+        Ok(())
     }
     pub fn new(layout: Layout) -> Result<Self> {
         if layout == Layout::Cow {
             return Ok(Self::Cow(Mutex::new(CowMap::default())));
         }
-        let mut config = Config::default();
-        config
-            // bf-tree 0.5.6 can scan-promote a clean record-cache mini-page
-            // without loading its base buffer. Use whole-page read caching
-            // until that dependency path is fixed; keep both layouts identical.
-            .read_record_cache(false)
-            .cb_min_record_size(4)
-            .cb_max_record_size(1400)
-            .cb_max_key_len(256)
-            .cb_size_byte(4 * 1024 * 1024);
-        Ok(Self::Bf {
-            tree: Arc::new(
-                BfTree::with_config(config, None).map_err(|e| Error::Index(format!("{e:?}")))?,
-            ),
+        Ok(Self::Ordered {
+            storage: Arc::new(S::new_empty()?),
             layout,
         })
     }
-    pub fn capture(&self, published: &AtomicU64) -> Result<(u64, View)> {
+    pub fn capture(&self, published: &AtomicU64) -> Result<(u64, View<S>)> {
         Ok(match self {
-            Self::Bf { tree, layout } => {
+            Self::Ordered { storage, layout } => {
                 let epoch = published.load(Ordering::Acquire);
                 (
                     epoch,
-                    View::Bf {
-                        tree: Arc::clone(tree),
+                    View::Ordered {
+                        storage: Arc::clone(storage),
                         layout: *layout,
                         epoch,
                     },
@@ -469,28 +447,25 @@ impl Index {
         let mut encoded_value = [0; MAX_VALUE + 9];
         for (i, change) in batch.writes.iter().enumerate() {
             match self {
-                Self::Bf {
-                    tree,
+                Self::Ordered {
+                    storage,
                     layout: Layout::Versioned,
-                } => insert(
-                    tree,
+                } => storage.put(
                     &version_key(&change.key, batch.epoch),
                     encode_value(&change.value, None, &mut encoded_value),
                 )?,
-                Self::Bf { tree, .. } => {
+                Self::Ordered { storage, .. } => {
                     let head = prefix(&change.key, 2);
                     // The coordinator already retains exact immutable mutation
                     // receipts for retries. Borrow the previous value rather than
                     // reading and cache-promoting the head again on every update.
                     if let Some(previous) = previous(&change.key)? {
-                        insert(
-                            tree,
+                        storage.put(
                             &version_key(&change.key, previous.epoch),
                             encode_value(previous.value, None, &mut encoded_value),
                         )?;
                     }
-                    insert(
-                        tree,
+                    storage.put(
                         &head,
                         encode_value(&change.value, Some(batch.epoch), &mut encoded_value),
                     )?;
@@ -509,7 +484,7 @@ impl Index {
             }
             installed(i + 1)?;
         }
-        Ok(cow.map_or(Prepared::Bf, Prepared::Cow))
+        Ok(cow.map_or(Prepared::Ordered, Prepared::Cow))
     }
     pub fn publish(&self, prepared: Prepared, epoch: u64, published: &AtomicU64) -> Result<()> {
         match (self, prepared) {
@@ -518,27 +493,27 @@ impl Index {
                 *state = candidate;
                 published.store(epoch, Ordering::Release);
             }
-            (Self::Bf { .. }, Prepared::Bf) => published.store(epoch, Ordering::Release),
+            (Self::Ordered { .. }, Prepared::Ordered) => published.store(epoch, Ordering::Release),
             _ => return Err(Error::Invalid("layout mismatch")),
         }
         Ok(())
     }
 }
 
-impl View {
+impl<S: Storage> View<S> {
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         match self {
             Self::Cow(state) => Ok(state.get(&Key(key.to_vec())).map(|v| v.0.as_ref().clone())),
-            Self::Bf {
-                tree,
+            Self::Ordered {
+                storage,
                 layout,
                 epoch,
             } => {
                 if *layout == Layout::Hybrid {
                     let mut head = [0; MAX_VALUE + 32];
-                    match tree.read(&prefix(key, 2), &mut head) {
-                        LeafReadResult::Found(n) => {
-                            let head = &head[..n as usize];
+                    match storage.get(&prefix(key, 2), &mut head)? {
+                        Some(n) => {
+                            let head = &head[..n];
                             let version = u64::from_be_bytes(
                                 head.get(..8)
                                     .ok_or(Error::Invalid("short head"))?
@@ -549,13 +524,10 @@ impl View {
                                 return decode_value(&head[8..]);
                             }
                         }
-                        LeafReadResult::NotFound => return Ok(None),
-                        other => {
-                            return Err(Error::Index(format!("Bf-Tree read failed: {other:?}")));
-                        }
+                        None => return Ok(None),
                     }
                 }
-                history_get(tree, key, *epoch)
+                history_get(storage.as_ref(), key, *epoch)
             }
         }
     }
@@ -580,8 +552,8 @@ impl View {
             }
             return Ok(rows);
         }
-        let Self::Bf {
-            tree,
+        let Self::Ordered {
+            storage,
             layout,
             epoch,
         } = self
@@ -589,7 +561,7 @@ impl View {
             unreachable!()
         };
         if *layout == Layout::Hybrid {
-            return scan_hybrid(tree, *epoch, start, end);
+            return scan_hybrid(storage.as_ref(), *epoch, start, end);
         }
         let namespace = 1;
         let mut resume = prefix(start, namespace);
@@ -608,11 +580,9 @@ impl View {
             let mut visited = 0;
             let mut finished = false;
             {
-                let mut scan = tree
-                    .scan_with_end_key(&resume, &upper, ScanReturnField::KeyAndValue)
-                    .map_err(|e| Error::Index(format!("{e:?}")))?;
+                let mut scan = storage.scan(&resume, ScanLimit::EndInclusive(&upper))?;
                 let mut buffer = [0; MAX_KEY * 2 + MAX_VALUE + 64];
-                while let Some((k, v)) = scan.next(&mut buffer) {
+                while let Some((k, v)) = scan.next(&mut buffer)? {
                     let physical = &buffer[..k];
                     if skip_resume && physical == &*resume {
                         continue;
@@ -687,9 +657,9 @@ mod tests {
 
     #[test]
     fn physical_scan_budget_counts_versions_discarded_before_copying() {
-        let index = Index::new(Layout::Versioned).unwrap();
+        let index = Index::<crate::storage::BfTreeStorage>::new(Layout::Versioned).unwrap();
         let (_, empty) = index.capture(&AtomicU64::new(0)).unwrap();
-        let Index::Bf { tree, .. } = &index else {
+        let Index::Ordered { storage, .. } = &index else {
             unreachable!()
         };
         // Populate the actual index without journal synchronization: this
@@ -697,15 +667,17 @@ mod tests {
         // key is distinct, newer than the retained snapshot and produces no
         // row. Version-run seeks cannot skip these unvisited logical keys.
         for key in 0..MAX_SCAN_RECORDS as u64 {
-            insert(tree, &version_key(&key.to_be_bytes(), 1), &[0]).unwrap();
+            storage
+                .put(&version_key(&key.to_be_bytes(), 1), &[0])
+                .unwrap();
         }
         assert!(empty.scan(b"", b"z").unwrap().is_empty());
-        insert(
-            tree,
-            &version_key(&(MAX_SCAN_RECORDS as u64).to_be_bytes(), 1),
-            &[0],
-        )
-        .unwrap();
+        storage
+            .put(
+                &version_key(&(MAX_SCAN_RECORDS as u64).to_be_bytes(), 1),
+                &[0],
+            )
+            .unwrap();
         assert!(matches!(
             empty.scan(b"", b"z"),
             Err(Error::Budget("scan physical records"))
