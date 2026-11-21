@@ -154,6 +154,22 @@ pub enum RelationalRowPageSnapshotReadError {
     Stopped(RuntimeCancellationReason),
 }
 
+impl RelationalRowPageSnapshotReadError {
+    fn from_admission(error: hawdb_core::HawDBError) -> Self {
+        match error {
+            hawdb_core::HawDBError::RuntimeTaskStopped(reason) => Self::Stopped(reason),
+            error => Self::Admission(error.to_string()),
+        }
+    }
+
+    fn from_relational(error: crate::relational::RelationalError) -> Self {
+        match error {
+            crate::relational::RelationalError::Stopped(reason) => Self::Stopped(reason),
+            error => Self::Admission(error.to_string()),
+        }
+    }
+}
+
 impl fmt::Display for RelationalRowPageSnapshotReadError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -1685,15 +1701,13 @@ fn clone_projection_key(
     };
     let mut values = context
         .vector_capacity(key.0.len())
-        .map_err(|error| RelationalRowPageSnapshotReadError::Admission(error.to_string()))?;
+        .map_err(RelationalRowPageSnapshotReadError::from_admission)?;
     for value in &key.0 {
         values.push(
             value
                 .as_ref()
                 .to_owned_value_with_allocations(context)
-                .map_err(|error| {
-                    RelationalRowPageSnapshotReadError::Admission(error.to_string())
-                })?,
+                .map_err(RelationalRowPageSnapshotReadError::from_relational)?,
         );
     }
     Ok(RelationalKey(values))
@@ -1711,7 +1725,7 @@ fn project_overlay_value(
     let mut fields = match allocations {
         Some(context) => context
             .vector_capacity(requested_fields.len())
-            .map_err(|error| RelationalRowPageSnapshotReadError::Admission(error.to_string()))?,
+            .map_err(RelationalRowPageSnapshotReadError::from_admission)?,
         None => Vec::with_capacity(requested_fields.len()),
     };
     for ordinal in requested_fields {
@@ -1719,9 +1733,7 @@ fn project_overlay_value(
             Some(context) => row.values()[*ordinal]
                 .as_ref()
                 .to_owned_value_with_allocations(context)
-                .map_err(|error| {
-                    RelationalRowPageSnapshotReadError::Admission(error.to_string())
-                })?,
+                .map_err(RelationalRowPageSnapshotReadError::from_relational)?,
             None => row.values()[*ordinal].clone(),
         };
         fields.push(RelationalProjectedField {
@@ -1793,6 +1805,9 @@ fn map_delta_error(error: RelationalRowDeltaError) -> RelationalRowPageSnapshotR
         RelationalRowDeltaError::Admission(message) => {
             RelationalRowPageSnapshotReadError::Admission(message)
         }
+        RelationalRowDeltaError::Stopped(reason) => {
+            RelationalRowPageSnapshotReadError::Stopped(reason)
+        }
         RelationalRowDeltaError::Durability(message) => {
             RelationalRowPageSnapshotReadError::Durability(message)
         }
@@ -1839,6 +1854,9 @@ fn map_row_error(error: RelationalRowPageError) -> RelationalRowPageSnapshotRead
         RelationalRowPageError::Admission(message) => {
             RelationalRowPageSnapshotReadError::Admission(message)
         }
+        RelationalRowPageError::Stopped(reason) => {
+            RelationalRowPageSnapshotReadError::Stopped(reason)
+        }
         RelationalRowPageError::Corrupt(message) => {
             RelationalRowPageSnapshotReadError::Corrupt(message)
         }
@@ -1857,6 +1875,14 @@ fn map_row_publication_error(
         }
         RelationalRowPagePublicationError::Admission(message) => {
             RelationalRowPageSnapshotReadError::Admission(message)
+        }
+        RelationalRowPagePublicationError::Stopped(reason) => {
+            RelationalRowPageSnapshotReadError::Stopped(reason)
+        }
+        // Snapshot reads do not publish; retain an unexpected publication
+        // diagnostic as a strict durability failure.
+        RelationalRowPagePublicationError::PublishOutcomeUnknown(error) => {
+            RelationalRowPageSnapshotReadError::Durability(error.to_string())
         }
         RelationalRowPagePublicationError::Corrupt(message) => {
             RelationalRowPageSnapshotReadError::Corrupt(message)

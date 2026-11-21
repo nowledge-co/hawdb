@@ -14,8 +14,15 @@
 
 use super::super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlanCardinalityEstimateScope {
+    TemplatePlan,
+    BoundPlan,
+}
+
 pub(crate) struct QueryExecutionTrace {
     pub(crate) statement: cypher::Statement,
+    pub(crate) optimizer_cardinality_estimate_scope: Option<PlanCardinalityEstimateScope>,
     pub(crate) optimizer_trace: Option<OptimizerTrace>,
     pub(crate) plan_cache_lookup: Option<PlanCacheLookup>,
     pub(crate) execution_profile: Option<executor::ReadExecutionProfile>,
@@ -25,6 +32,7 @@ impl QueryExecutionTrace {
     pub(in crate::api) fn uncached(statement: cypher::Statement) -> Self {
         Self {
             statement,
+            optimizer_cardinality_estimate_scope: None,
             optimizer_trace: None,
             plan_cache_lookup: None,
             execution_profile: None,

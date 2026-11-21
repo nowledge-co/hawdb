@@ -162,9 +162,7 @@ pub(super) fn externalize_row_with_allocations(
     }
     let values = Arc::get_mut(&mut row.values).expect("externalization has unique row backing");
     for (position, value) in values.iter_mut().enumerate() {
-        let unit = context
-            .start_unit()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        let unit = context.start_unit().map_err(work_error)?;
         let input = if protected.contains(&position) {
             None
         } else {
@@ -195,17 +193,15 @@ pub(super) fn externalize_row_with_allocations(
                     Sha256Digest,
                     RelationalOverflowSegment,
                 >())
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                .map_err(RelationalError::from_admission)?;
             // Transfer node ownership before allocating the map entry. Refusal
             // during transfer cannot leave a live node without its inventory.
             let mut memory = node_context.memory.into_inner();
             state
                 ._metadata_memory
                 .append_retained(&mut memory, &context.work)
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
-            let unit = context
-                .start_unit()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                .map_err(work_error)?;
+            let unit = context.start_unit().map_err(work_error)?;
             state.overflow_segments.insert(
                 digest,
                 RelationalOverflowSegment::CheckpointInline(encoded.bytes),
@@ -214,9 +210,7 @@ pub(super) fn externalize_row_with_allocations(
         }
         *value = RelationalValue::Overflow(encoded.reference);
     }
-    context
-        .checkpoint()
-        .map_err(|error| RelationalError::Admission(error.to_string()))?;
+    context.checkpoint().map_err(work_error)?;
     Ok(())
 }
 
@@ -245,11 +239,9 @@ fn protected_column_positions_with_allocations(
         if !positions.contains(&position) {
             context
                 .reserve(crate::cow::checkpoint_tree_node_bytes::<usize, ()>())
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                .map_err(RelationalError::from_admission)?;
         }
-        let unit = context
-            .start_unit()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        let unit = context.start_unit().map_err(work_error)?;
         positions.insert(position);
         unit.finish();
     }
@@ -465,9 +457,7 @@ fn runtime_checkpoint(
     task_context: Option<&hawdb_core::RuntimeTaskContext>,
 ) -> Result<(), RelationalError> {
     task_context.map_or(Ok(()), |context| {
-        context.checkpoint().map_err(|reason| {
-            RelationalError::Admission(format!("relational hydration stopped: {reason}"))
-        })
+        context.checkpoint().map_err(RelationalError::Stopped)
     })
 }
 
@@ -559,8 +549,11 @@ pub(super) fn prune_unreachable_segments_after_changes(
     Ok(())
 }
 
-fn admission(error: impl ToString) -> RelationalError {
-    RelationalError::Admission(error.to_string())
+fn work_error(error: crate::background::CheckpointWorkError) -> RelationalError {
+    match error.stop_reason() {
+        Some(reason) => RelationalError::Stopped(reason),
+        None => RelationalError::Admission(error.to_string()),
+    }
 }
 
 fn prune_changed_segments(
@@ -578,7 +571,7 @@ fn prune_changed_segments(
     });
     let charge_unit = || -> Result<(), RelationalError> {
         if let Some(scratch) = &scratch {
-            scratch.start_unit().map_err(admission)?.finish();
+            scratch.start_unit().map_err(work_error)?.finish();
         }
         Ok(())
     };
@@ -589,7 +582,7 @@ fn prune_changed_segments(
             {
                 scratch
                     .reserve(crate::cow::checkpoint_tree_node_bytes::<Sha256Digest, ()>())
-                    .map_err(admission)?;
+                    .map_err(RelationalError::from_admission)?;
             }
             set.insert(digest);
             Ok(())
@@ -668,7 +661,7 @@ fn prune_changed_segments(
         next.overflow_segments.remove(digest);
     }
     if let Some(scratch) = &scratch {
-        scratch.checkpoint().map_err(admission)?;
+        scratch.checkpoint().map_err(work_error)?;
     }
     Ok(())
 }
@@ -724,11 +717,9 @@ pub(super) fn prune_unreachable_segments_with_allocations(
                 {
                     scratch
                         .reserve(crate::cow::checkpoint_tree_node_bytes::<Sha256Digest, ()>())
-                        .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                        .map_err(RelationalError::from_admission)?;
                 }
-                let unit = scratch
-                    .start_unit()
-                    .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                let unit = scratch.start_unit().map_err(work_error)?;
                 if let RelationalValue::Overflow(reference) = value {
                     reachable.insert(reference.digest);
                 }
@@ -754,11 +745,9 @@ pub(super) fn prune_unreachable_segments_with_allocations(
         }
     });
     if let Some(error) = refusal {
-        return Err(RelationalError::Admission(error.to_string()));
+        return Err(work_error(error));
     }
-    scratch
-        .checkpoint()
-        .map_err(|error| RelationalError::Admission(error.to_string()))?;
+    scratch.checkpoint().map_err(work_error)?;
     Ok(())
 }
 

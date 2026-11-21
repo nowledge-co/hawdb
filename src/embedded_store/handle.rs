@@ -833,6 +833,176 @@ impl EmbeddedStoreHandle {
         }
         self.with_admitted_search(|read| read.hydrate(document_ids))
     }
+
+    /// Lists one ordered page of Search projection document IDs for the
+    /// requested kinds without retaining the projection across calls.
+    ///
+    /// `after` is exclusive. A caller must compare `page.generation()` on every
+    /// page and restart from `None` if it changes. The returned page retains a
+    /// runtime memory charge for its ID/cursor bytes only; resident generations
+    /// are read under the short publication lock, and out-of-core generations
+    /// are pinned only for this call while decoding their ID mappings.
+    pub fn list_search_projection_ids(
+        &self,
+        kinds: &BTreeSet<SearchProjectionKind>,
+        after: Option<&str>,
+        limit: usize,
+        task_context: &RuntimeTaskContext,
+    ) -> Result<crate::search::SearchProjectionIdPage> {
+        if limit == 0 {
+            return Err(HawDBError::Execution(
+                "search projection ID page limit must be greater than zero".into(),
+            ));
+        }
+        task_context
+            .checkpoint()
+            .map_err(HawDBError::RuntimeTaskStopped)?;
+
+        let (governor, request, expected_generation, result_limit) = {
+            let published = self.lock_published_read()?;
+            let published = published.as_ref().ok_or_else(|| {
+                HawDBError::Execution(
+                    "search projection publication changed; retry the page".into(),
+                )
+            })?;
+            published.view.snapshot.ensure_usable()?;
+            let config = published.view.snapshot.config();
+            if let Some(configured) = config.read_result_row_limit()
+                && limit > configured
+            {
+                return Err(HawDBError::Execution(format!(
+                    "search projection ID page limit {limit} exceeds configured row limit {configured}"
+                )));
+            }
+            let result_limit = config.max_read_result_payload_bytes.unwrap_or(usize::MAX);
+            let control_bytes = limit
+                .checked_add(1)
+                .and_then(|rows| {
+                    rows.checked_mul(
+                        size_of::<String>()
+                            .saturating_add(size_of::<hawdb_qos::RuntimeRetainedMemory>())
+                            .saturating_mul(2),
+                    )
+                })
+                .ok_or_else(|| {
+                    HawDBError::Execution("search projection ID page capacity overflow".into())
+                })?;
+            let (generation, working_bytes, io_slots) = match (
+                &published.resident_projection,
+                &published.out_of_core_projection,
+            ) {
+                (Some(projection), None) => {
+                    (projection.snapshot().page_generation(), control_bytes, 0)
+                }
+                (None, Some(projection)) => (
+                    projection.reader().page_generation(),
+                    projection
+                        .reader()
+                        .projection_id_page_working_memory_bytes(limit)?,
+                    published.external_seed_io_slots,
+                ),
+                (None, None) => return Err(missing_search_projection_error()),
+                (Some(_), Some(_)) => return Err(ambiguous_search_projection_error()),
+            };
+            let working_bytes = u64::try_from(working_bytes).unwrap_or(u64::MAX);
+            (
+                published.governor.clone(),
+                RuntimeWorkRequest::foreground_query(working_bytes, 0)
+                    .with_io_slots(io_slots)
+                    .with_blocking(true),
+                generation,
+                result_limit,
+            )
+        };
+
+        let permit = try_admit_runtime(&governor, request)?;
+        let task = permit.bind_task_context(task_context.clone());
+        enum Source {
+            Resident(crate::search::SearchProjectionIdBatch),
+            OutOfCore(Arc<crate::search::SearchOutOfCoreReader>),
+        }
+        let source = {
+            let published = self.lock_published_read()?;
+            let published = published.as_ref().ok_or_else(|| {
+                HawDBError::Execution(
+                    "search projection publication changed; retry the page".into(),
+                )
+            })?;
+            let generation = match (
+                &published.resident_projection,
+                &published.out_of_core_projection,
+            ) {
+                (Some(projection), None) => projection.snapshot().page_generation(),
+                (None, Some(projection)) => projection.reader().page_generation(),
+                (None, None) => return Err(missing_search_projection_error()),
+                (Some(_), Some(_)) => return Err(ambiguous_search_projection_error()),
+            };
+            if generation != expected_generation {
+                return Err(HawDBError::Execution(
+                    "search projection changed while admitting an ID page; retry the page".into(),
+                ));
+            }
+            match (
+                &published.resident_projection,
+                &published.out_of_core_projection,
+            ) {
+                (Some(projection), None) => Source::Resident(
+                    projection
+                        .snapshot()
+                        .list_projection_ids(kinds, after, limit, &task, &permit)?,
+                ),
+                (None, Some(projection)) => Source::OutOfCore(Arc::clone(&projection.reader)),
+                _ => unreachable!("validated exactly one projection source"),
+            }
+        };
+        let batch = match source {
+            Source::Resident(batch) => batch,
+            Source::OutOfCore(projection) => {
+                projection.list_projection_ids(kinds, after, limit, &task, &permit)?
+            }
+        };
+        task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
+        let next = if batch.has_more {
+            let last = batch.ids.last().expect("nonempty continued page");
+            let memory = permit
+                .reserve_retained_memory(u64::try_from(last.len()).unwrap_or(u64::MAX))
+                .map_err(HawDBError::from)?;
+            Some((last.clone(), memory))
+        } else {
+            None
+        };
+        let retained_id_bytes = batch
+            .ids
+            .iter()
+            .try_fold(0u64, |bytes, id| {
+                bytes.checked_add(u64::try_from(id.len()).unwrap_or(u64::MAX))
+            })
+            .and_then(|bytes| {
+                next.as_ref().map_or(Some(bytes), |(next, _)| {
+                    bytes.checked_add(u64::try_from(next.len()).unwrap_or(u64::MAX))
+                })
+            })
+            .ok_or_else(|| HawDBError::Execution("projection ID page size overflow".into()))?;
+        if retained_id_bytes > u64::try_from(result_limit).unwrap_or(u64::MAX) {
+            return Err(HawDBError::read_budget_exceeded(
+                ReadBudgetResource::PayloadBytes,
+                result_limit,
+                "search projection ID page exceeds max_read_result_payload_bytes",
+            ));
+        }
+        let (next, cursor_memory) =
+            next.map_or((None, None), |(next, memory)| (Some(next), Some(memory)));
+        self.finish_canonical_read(Ok(
+            crate::search::SearchProjectionIdPage::from_admitted_ids(
+                batch.ids,
+                next,
+                expected_generation,
+                retained_id_bytes,
+                batch.memory,
+                cursor_memory,
+            ),
+        ))
+    }
 }
 
 impl EmbeddedStoreHandle {

@@ -723,10 +723,10 @@ fn candidate_compaction_fails_closed_on_limits_cancellation_and_corruption() {
             .exists());
     }
     task.cancellation().cancel();
-    assert!(
-        matches!(publisher.persist_generation_compacting(request, Vec::new(), rewrite, &task),
-        Err(RelationalRowPagePublicationError::Admission(message)) if message.contains("stopped"))
-    );
+    assert!(matches!(
+        publisher.persist_generation_compacting(request, Vec::new(), rewrite, &task),
+        Err(RelationalRowPagePublicationError::Stopped(_))
+    ));
     let mut artifact = OpenOptions::new()
         .write(true)
         .open(directory.join(relational_row_page_artifact_file(1)))

@@ -410,7 +410,7 @@ impl RelationalIndexShadowManifest {
             })?;
         memory
             .reserve(root_bytes, work)
-            .map_err(|error| RelationalIndexShadowError::Admission(error.to_string()))?;
+            .map_err(checkpoint::work_error)?;
         let mut roots = Vec::with_capacity(root_count);
         for _ in 0..root_count {
             let (namespace, next) = decode_bytes(
@@ -462,7 +462,7 @@ impl RelationalIndexShadowManifest {
             ] {
                 memory
                     .reserve(bytes, work)
-                    .map_err(|error| RelationalIndexShadowError::Admission(error.to_string()))?;
+                    .map_err(checkpoint::work_error)?;
             }
             let leading_prefixes = statistics_bytes
                 .as_chunks::<{ 3 * 8 }>()
@@ -764,6 +764,7 @@ pub struct RelationalIndexLiveUnavailable {
 #[derive(Debug)]
 pub enum RelationalIndexShadowError {
     Admission(String),
+    Stopped(hawdb_core::RuntimeCancellationReason),
     Corrupt(String),
     Durability(String),
     FileDescriptors(hawdb_core::error::FileDescriptorError),
@@ -783,6 +784,9 @@ impl fmt::Display for RelationalIndexShadowError {
         match self {
             Self::Admission(message) => {
                 write!(formatter, "relational index shadow admission failed: {message}")
+            }
+            Self::Stopped(reason) => {
+                write!(formatter, "relational index shadow stopped: {reason}")
             }
             Self::Corrupt(message) => write!(formatter, "corrupt relational index shadow: {message}"),
             Self::FileDescriptors(error) => fmt::Display::fmt(error, formatter),
@@ -807,6 +811,7 @@ impl fmt::Display for RelationalIndexShadowError {
 impl std::error::Error for RelationalIndexShadowError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Stopped(reason) => Some(reason),
             Self::FileDescriptors(error) => Some(error),
             Self::UnsupportedFormat(error) => Some(error),
             _ => None,
@@ -1347,9 +1352,7 @@ impl RelationalIndexShadowReader {
         ));
         let mut memory = crate::background::CheckpointAllocationOwner::default();
         let mut encoded_memory = crate::background::CheckpointAllocationOwner::default();
-        let wave = work
-            .io_wave()
-            .map_err(|error| RelationalIndexShadowError::Admission(error.to_string()))?;
+        let wave = work.io_wave().map_err(checkpoint::work_error)?;
         let length = fs::metadata(&manifest_path)
             .map_err(|error| {
                 RelationalIndexShadowError::from_io("read bound index manifest metadata", error)
@@ -1367,7 +1370,7 @@ impl RelationalIndexShadowReader {
         }
         encoded_memory
             .reserve(capacity, work)
-            .map_err(|error| RelationalIndexShadowError::Admission(error.to_string()))?;
+            .map_err(checkpoint::work_error)?;
         let mut encoded = vec![0; capacity];
         let mut file = File::open(&manifest_path).map_err(|error| {
             RelationalIndexShadowError::from_io("open bound index manifest", error)
@@ -1385,9 +1388,7 @@ impl RelationalIndexShadowReader {
             ));
         }
         drop(wave);
-        let digest = work
-            .integrity(&encoded)
-            .map_err(|error| RelationalIndexShadowError::Admission(error.to_string()))?;
+        let digest = work.integrity(&encoded).map_err(checkpoint::work_error)?;
         if encoded.len() as u64 != binding.manifest_artifact.encoded_len
             || digest.crc32c.as_u64() != binding.manifest_artifact.encoded_crc32c
             || digest.sha256 != binding.manifest_artifact.encoded_sha256
@@ -1430,7 +1431,7 @@ impl RelationalIndexShadowReader {
         ] {
             memory
                 .reserve(bytes, work)
-                .map_err(|error| RelationalIndexShadowError::Admission(error.to_string()))?;
+                .map_err(checkpoint::work_error)?;
         }
         let mut reader = Self::from_manifest(directory, manifest, config, page_cache, store_id)?;
         reader._memory = memory;

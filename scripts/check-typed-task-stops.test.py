@@ -171,6 +171,37 @@ class TypedTaskStopsTest(unittest.TestCase):
         finally:
             CHECK.STORAGE_ALLOWLIST = allowlist
 
+    def test_internal_admission_text_is_refused(self):
+        self.write(
+            "crates/storage/src/rows.rs",
+            "fn check(task: &Task, error: E) -> Result<()> {\n"
+            "    task.checkpoint().map_err(|reason| RowError::Admission(reason.to_string()))?;\n"
+            "    match error {\n"
+            "        E::Stopped(reason) => Err(RowError::Admission(format!(\"{reason}\"))),\n"
+            "        _ => Ok(()),\n"
+            "    }\n"
+            "}\n",
+        )
+        self.assertEqual(
+            CHECK.scan(self.root),
+            [
+                "crates/storage/src/rows.rs:2: task check maps its stop to Admission",
+                "crates/storage/src/rows.rs:4: stop arm reports Admission text",
+            ],
+        )
+
+    def test_io_stop_arm_may_keep_other_refusals_as_admission(self):
+        self.write(
+            "crates/search/src/vector.rs",
+            "fn io(admission: &A) -> Result<()> {\n"
+            "    admission.io().map_err(|error| match error {\n"
+            "        RuntimeIoWaveError::Stopped(reason) => ProjectionError::Cancelled(reason),\n"
+            "        error => ProjectionError::Admission(error.into()),\n"
+            "    })\n"
+            "}\n",
+        )
+        self.assertEqual(CHECK.scan(self.root), [])
+
     def test_block_arm_does_not_leak_into_the_next_arm(self):
         self.write(
             "src/transactions.rs",
@@ -209,6 +240,39 @@ class TypedTaskStopsTest(unittest.TestCase):
             "crates/search/src/consumer.rs:6: task check maps its stop to Execution", found
         )
         self.assertFalse(any(":7:" in violation for violation in found), found)
+
+    def test_started_work_unit_mapped_to_admission_is_refused(self):
+        self.write(
+            "crates/storage/src/checkpoint.rs",
+            "fn run(work: &Work) -> Result<()> {\n"
+            "    let unit = work.start_unit()\n"
+            "        .map_err(|error| StorageError::Admission(error.to_string()))?;\n"
+            "    unit.finish();\n"
+            "    Ok(())\n"
+            "}\n",
+        )
+        self.assertEqual(
+            CHECK.scan(self.root),
+            [
+                "crates/storage/src/checkpoint.rs:2: task check maps its stop to Admission"
+            ],
+        )
+
+    def test_admitted_allocation_mapped_to_admission_is_refused(self):
+        self.write(
+            "crates/storage/src/checkpoint.rs",
+            "fn run(context: &CheckpointDecodeContext) -> Result<()> {\n"
+            "    context.vector_capacity(16)\n"
+            "        .map_err(|error| StorageError::Admission(error.to_string()))?;\n"
+            "    Ok(())\n"
+            "}\n",
+        )
+        self.assertEqual(
+            CHECK.scan(self.root),
+            [
+                "crates/storage/src/checkpoint.rs:2: admitted operation maps a possible stop to Admission"
+            ],
+        )
 
     def test_rustfmt_wrapped_stop_arm_is_refused(self):
         self.write(
@@ -451,6 +515,49 @@ class TypedTaskStopsTest(unittest.TestCase):
             ["crates/storage/src/writer.rs:6", "crates/storage/src/writer.rs:7"],
         )
         self.assertIn("point-free `flatten_to_text`", found[0])
+
+    def test_work_error_definition_must_preserve_stop_reason(self):
+        self.write(
+            "crates/storage/src/writer.rs",
+            "fn work_error(error: CheckpointWorkError) -> StorageError {\n"
+            "    StorageError::Admission(error.to_string())\n"
+            "}\n"
+            "fn write(work: &Work) -> Result<()> {\n"
+            "    work.checkpoint().map_err(work_error)?;\n"
+            "    Ok(())\n"
+            "}\n",
+        )
+        found = CHECK.scan(self.root)
+        self.assertEqual(len(found), 1)
+        self.assertIn("work_error flattens CheckpointWorkError", found[0])
+
+        self.write(
+            "crates/storage/src/writer.rs",
+            "fn work_error(error: CheckpointWorkError) -> StorageError {\n"
+            "    match error.stop_reason() {\n"
+            "        Some(reason) => StorageError::Stopped(reason),\n"
+            "        None => StorageError::Admission(error.to_string()),\n"
+            "    }\n"
+            "}\n"
+            "fn write(work: &Work) -> Result<()> {\n"
+            "    work.checkpoint().map_err(work_error)?;\n"
+            "    Ok(())\n"
+            "}\n",
+        )
+        self.assertEqual(CHECK.scan(self.root), [])
+
+    def test_named_and_qualified_work_error_definition_is_checked(self):
+        self.write(
+            "crates/storage/src/writer.rs",
+            "fn relational_work_error(\n"
+            "    error: crate::background::CheckpointWorkError,\n"
+            ") -> StorageError {\n"
+            "    StorageError::Admission(error.to_string())\n"
+            "}\n",
+        )
+        found = CHECK.scan(self.root)
+        self.assertEqual(len(found), 1)
+        self.assertIn("work_error flattens CheckpointWorkError", found[0])
 
     def test_formatted_closure_needs_or_stop_unless_the_error_cannot_stop(self):
         self.write(

@@ -51,7 +51,10 @@ impl CompactionFailure {
 }
 
 pub(super) fn work_error(error: CheckpointWorkError) -> AppendTableError {
-    AppendTableError::Admission(error.to_string())
+    match error.stop_reason() {
+        Some(reason) => AppendTableError::Stopped(reason),
+        None => AppendTableError::Admission(error.to_string()),
+    }
 }
 
 impl AppendState {

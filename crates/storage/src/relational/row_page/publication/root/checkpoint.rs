@@ -18,7 +18,10 @@ use crate::background::{CheckpointWorkContext, CheckpointWorkError};
 pub(in crate::relational::row_page::publication) fn work_error(
     error: CheckpointWorkError,
 ) -> RelationalRowPagePublicationError {
-    RelationalRowPagePublicationError::Admission(error.to_string())
+    match error.stop_reason() {
+        Some(reason) => RelationalRowPagePublicationError::Stopped(reason),
+        None => RelationalRowPagePublicationError::Admission(error.to_string()),
+    }
 }
 
 pub(super) fn write_page(

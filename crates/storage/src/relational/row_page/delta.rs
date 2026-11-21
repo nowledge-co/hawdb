@@ -257,6 +257,7 @@ pub struct RelationalRowDeltaReadReport {
 pub enum RelationalRowDeltaError {
     UnsupportedFormat(hawdb_core::error::StorageFormatError),
     Admission(String),
+    Stopped(hawdb_core::RuntimeCancellationReason),
     Corrupt(String),
     Durability(String),
     FileDescriptors(hawdb_core::error::FileDescriptorError),
@@ -281,6 +282,7 @@ impl fmt::Display for RelationalRowDeltaError {
         match self {
             Self::UnsupportedFormat(error) => fmt::Display::fmt(error, formatter),
             Self::Admission(message) => write!(formatter, "relational row delta admission failed: {message}"),
+            Self::Stopped(reason) => write!(formatter, "relational row delta stopped: {reason}"),
             Self::Corrupt(message) => write!(formatter, "corrupt relational row delta: {message}"),
             Self::FileDescriptors(error) => fmt::Display::fmt(error, formatter),
             Self::Durability(message) => write!(formatter, "relational row delta durability failed: {message}"),
@@ -312,6 +314,7 @@ impl std::error::Error for RelationalRowDeltaError {
         match self {
             Self::UnsupportedFormat(error) => Some(error),
             Self::FileDescriptors(error) => Some(error),
+            Self::Stopped(reason) => Some(reason),
             Self::Publication(error) => Some(error),
             Self::Row(error) => Some(error),
             Self::Admission(_)
@@ -327,13 +330,35 @@ impl std::error::Error for RelationalRowDeltaError {
 
 impl From<super::RelationalRowPagePublicationError> for RelationalRowDeltaError {
     fn from(error: super::RelationalRowPagePublicationError) -> Self {
-        Self::Publication(error)
+        match error {
+            super::RelationalRowPagePublicationError::Stopped(reason) => Self::Stopped(reason),
+            error => Self::Publication(error),
+        }
     }
 }
 
 impl From<super::RelationalRowPageError> for RelationalRowDeltaError {
     fn from(error: super::RelationalRowPageError) -> Self {
-        Self::Row(error)
+        match error {
+            super::RelationalRowPageError::Stopped(reason) => Self::Stopped(reason),
+            error => Self::Row(error),
+        }
+    }
+}
+
+impl RelationalRowDeltaError {
+    fn from_work(error: crate::background::CheckpointWorkError) -> Self {
+        match error.stop_reason() {
+            Some(reason) => Self::Stopped(reason),
+            None => Self::Admission(error.to_string()),
+        }
+    }
+
+    fn from_admission(error: hawdb_core::HawDBError) -> Self {
+        match error {
+            hawdb_core::HawDBError::RuntimeTaskStopped(reason) => Self::Stopped(reason),
+            error => Self::Admission(error.to_string()),
+        }
     }
 }
 
@@ -361,7 +386,7 @@ impl RowDeltaBytes {
             .reserve(
                 std::mem::size_of::<AdmittedRowDeltaBytes>() + 2 * std::mem::size_of::<usize>(),
             )
-            .map_err(|error| RelationalRowDeltaError::Admission(error.to_string()))?;
+            .map_err(RelationalRowDeltaError::from_admission)?;
         Ok(Self::Admitted(std::sync::Arc::new(AdmittedRowDeltaBytes {
             bytes,
             _memory: context.memory.borrow().clone(),

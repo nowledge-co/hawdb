@@ -332,7 +332,13 @@ fn borrowed_reader_refuses_an_unbound_task_before_range_allocation_or_io() {
         "range buffer allocated before execution refusal: {peak}"
     );
     assert!(
-        matches!(&error, HawDBError::Execution(message) if message.contains("0-slot reservation")),
+        matches!(
+            &error,
+            HawDBError::RuntimeIoWaveReservationExceeded {
+                requested_slots: 1,
+                reserved_slots: 0,
+            }
+        ),
         "{error:?}"
     );
     drop(error);
@@ -345,6 +351,34 @@ fn borrowed_reader_refuses_an_unbound_task_before_range_allocation_or_io() {
     // Lazy ledger account metadata belongs to these owners, not the refused
     // range buffer; include their destruction in the complete heap audit.
     assert_eq!(allocation::live(), 0);
+}
+
+#[cfg(feature = "vector-search")]
+#[test]
+fn vector_reader_preserves_io_wave_reservation_refusal() {
+    use hawdb_vector_projection::{ProjectionError, ProjectionReadAdmission};
+
+    let governor = governor();
+    let permit = governor
+        .try_admit(RuntimeWorkRequest::background_maintenance(2 << 20).with_io_wave_slots(1))
+        .unwrap();
+    // Deliberately do not bind the task to the permit: the governed reader has
+    // no corresponding I/O reservation and must expose that contract error.
+    let task = RuntimeTaskContext::default();
+    let memory = BuildMemory::new(&task).unwrap();
+    let admission = ReadAdmission {
+        memory: &memory,
+        task: &task,
+        permit: crate::build_memory::read::ReadPermit::Governed(&permit),
+    };
+    let error = ProjectionReadAdmission::acquire_io(&admission).unwrap_err();
+    assert!(matches!(
+        error,
+        ProjectionError::Admission(HawDBError::RuntimeIoWaveReservationExceeded {
+            requested_slots: 1,
+            reserved_slots: 0,
+        })
+    ));
 }
 
 #[test]

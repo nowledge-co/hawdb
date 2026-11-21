@@ -175,6 +175,23 @@ Replay with `cargo test --locked -p hawdb --lib out_of_core_working_memory`
 and `cargo test --locked -p hawdb-search --lib admitted_working`. No new lane,
 profile or timeout.
 
+Out-of-core reader refusal typing (`nowledge-co/hawdb#1842`) stays in the
+existing core, search and binding owners. `runtime_io_wave_tests` in
+`//crates/core:hawdb_core_tests` proves direct and `io::Error`-wrapped I/O-wave
+reservation refusals remain typed while stops remain `RuntimeTaskStopped`.
+`build_memory::read::tests::borrowed_reader_refuses_an_unbound_task_before_range_allocation_or_io`,
+its vector-reader companion, and
+`out_of_core::admitted_root::tests::admitted_root_preserves_io_wave_reservation_refusal`
+in `//crates/search:hawdb_search_tests` force the 1/0-slot mismatch before
+native work. `mutation_working_budget_rejects_combined_runs_before_second_decode`
+and `out_of_core_mutation_working_budget_is_enforced_only_for_mutation_closures`
+assert the complete `ResourceBudgetExceeded` identity for
+`max_mutation_working_bytes`. The existing Python/FFI error-test targets check
+their public kinds and fields. Replay with `cargo test --locked -p hawdb-core
+runtime_io_wave_tests`, `cargo test --locked -p hawdb-search --all-features
+io_wave_reservation`, and the binding error-test commands; no fixture, lane,
+profile, timeout or retry changes.
+
 The same Mem query owner also covers PR 1504 review optimizations: invariant
 regexp_replace validation on empty scans, cache rebinding across pattern and
 replacement values (including an invalid-pattern failure), row-dependent patterns,
@@ -386,6 +403,24 @@ admission counters are not assumed stable while that worker can run. Local repla
 `cargo test --locked -p hawdb --lib catch_up_admission_tests -- --test-threads=1`.
 See [caller-priority catch-up](https://github.com/nowledge-co/hawdb/issues/1306).
 
+Admission-time host refresh ([#1879](https://github.com/nowledge-co/hawdb/issues/1879))
+uses the existing `//crates/qos:hawdb_qos_tests` and root
+`//:hawdb_unit_general_tests` owners. QoS `runtime::host_refresh_tests` drive a
+governor built by `detect` over a test-only scripted host whose samples are
+counted: admission clears a Critical snapshot after recovery and sets it at
+onset, samples at most once per interval (production interval 1 s, the
+detection itself counting as the first sample), and an explicit refresh both
+samples at once and defers the next admission sample. Pinned detected
+governors and caller-supplied `new` snapshots are never re-sampled, even after
+an explicit refresh; concurrent admission and refresh do not deadlock. Root
+`embedded_store::tests::stale_memory_pressure_tests` set a Critical snapshot on
+a real `open_with_options` handle and retry
+`advance_search_projection_source_epoch` unchanged for up to 3 s until it is
+admitted; they use the real host detector and skip their assertion if the test
+host itself is under critical memory pressure. No new lane, profile or timeout.
+Replay with `cargo test --locked -p hawdb-qos --lib host_refresh_tests` and
+`cargo test --locked -p hawdb --lib stale_memory_pressure_tests`.
+
 `embedded_store::tests::storage_pressure_tests` (`nowledge-co/hawdb#1725`)
 belongs to the existing root `//:hawdb_unit_general_tests` owner. It opens a
 durable handle with explicit checkpoints only and pins
@@ -554,6 +589,20 @@ profile or timeout is added. Local replay:
 `cargo test --locked -p hawdb --lib externally_owned_search_kinds -- --test-threads=4`
 and `cargo test --locked -p hawdb-search --lib projection_ownership`. See
 [the contract](SEARCH_EXTERNALLY_OWNED_KINDS.md).
+
+`embedded_store::projection_id_page_tests` (`nowledge-co/hawdb#1851`) stays in
+the existing root `//:hawdb_unit_general_tests` owner. Resident and out-of-core
+fixtures page the same mixed Memory/Source corpus, assert document-ID ordering,
+exclusive cursors, kind filtering and path-specific generation tokens. The
+resident mutation case proves a generation change is visible between pages
+without the first page pinning its source. A live page raises governor retained
+memory on both paths by exactly its UTF-8 ID and copied-cursor bytes and refunds
+the charge on drop; both paths serve a page under a 64-byte payload cap that
+cannot hold the complete projection. A 1 KiB governor refuses an oversized
+page with typed `RuntimeAdmissionRefused(memory_saturated)`, and pre-cancelled
+work returns typed `RuntimeTaskStopped`. The fixtures are small and add no lane,
+profile or timeout. Local replay:
+`cargo test --locked -p hawdb --all-features projection_id_page_tests`.
 
 Search-crate owner `out_of_core::manifest_version::tests` (`nowledge-co/hawdb#1763`),
 in the same `hawdb-search` unit lane, covers the selector version gate. A newer
@@ -1611,6 +1660,7 @@ owns the restricted-token descriptor case.
 | --- | --- | --- |
 | `//:hawdb_manual_checkpoint_tests`, `//:hawdb_manual_checkpoint_minimal_tests` | Explicit ordinary/concurrent/embedded checkpoints preserve durable publication independently of background support/admission. Embedded controls retain one same-governor background or foreground I/O permit, distinguish allowed foreground work from legitimate refusal, and check reopen and refunds. | Compatibility labels for the unpublished `hawdb-test-contracts` crate; default merges these five cases with six WAL recovery cases, and minimal retains those five plus all six WAL cases already available under Cargo without default features. Both required root carriers retain the original 300s deadline and use exclusive/single-thread execution. Replay `cargo test --locked -p hawdb-test-contracts --test checkpoint_contracts`, adding `--no-default-features` for minimal. The existing root automatic-checkpoint `publication_io` family also pauses the actual owner with its acquired wave, observes manual suspension, and checks durable completion/refunds under [#1219](https://github.com/nowledge-co/hawdb/issues/1219). |
 | `//:hawdb_unit_general_tests` | Embedded API, schema/query and general facade regressions | Shared unit executable; partition script assigns each discovered case an owner. |
+| Embedded query-report optimizer feedback | `embedded_store::tests::graph_query_with_report_can_capture_physical_plan_on_demand` keeps plan capture opt-in and correlates the selected fingerprint, optimizer estimates and executor actual rows through stable plan-local operator IDs. `graph_query_report_keeps_template_estimates_distinct_from_bound_observations` distinguishes reusable-template estimates on cache miss/hit from bound estimates on forced `memo` and `direct_fallback` bypasses, using 95/5 bindings and complete operator identity maps. The ordinary report path retains executor actuals while proving plan identity and optimizer estimates stay absent without capture. | Existing `//:hawdb_unit_general_tests` owner, profile and timeout; focused replay: `cargo test --locked -p hawdb --lib graph_query_with_report_`. Ref [#1596](https://github.com/nowledge-co/hawdb/issues/1596). |
 | Automatic checkpoint `read_handoff` | Read callbacks, concurrent and SQL reads adopt ready generations; invalid identities fail closed; typed EXPLAIN ANALYZE progresses without the owner mutex | Five existing cases in `//:hawdb_unit_checkpoint_lifecycle_tests`. The seal-pause fixture waits for the owner's handoff-pause acknowledgement before adoption or guard release; observing `Phase::Handoff` alone races probe entry. The invalid-identity case prepares its foreign persistent database before entering the bounded owner pause, keeping unrelated setup I/O outside the 15-second assertion window. Existing query, admission refund, snapshot and reopen assertions and deadlines remain. Replay: `bazel test //:hawdb_unit_checkpoint_lifecycle_tests --test_arg=api::automatic_checkpoint::tests::read_handoff`. Ref [#1116](https://github.com/nowledge-co/hawdb/issues/1116); this fixture race is distinct from other checkpoint/branch-open stalls. |
 | `//:hawdb_unit_concurrent_tests` | Transaction locks, read observation, commit admission and concurrent publication races | Known long target: [#972](https://github.com/nowledge-co/hawdb/issues/972). Preserve barriers and observations; a deadline is not a substitute for a deterministic schedule. |
 | Covered pessimistic graph mutations (`covered_graph`) and concurrent metrics (`api::concurrent::metrics::tests`) | Retained staged results under existing locks, new-target/upgrade replay, stale-epoch refusal, lock timeout/retry, rollback, failed-statement atomicity, durable reopen, disabled-by-default instrumentation and explicit metrics inspection during writer ownership | Owned by `//:hawdb_unit_concurrent_tests`; local replay with `--test_arg=covered_graph` or `--test_arg=api::concurrent::metrics::tests`. Assertions use work counts and final rows rather than timing thresholds. |
@@ -2748,7 +2798,7 @@ caller retry, fixture assertion or target timeout is changed.
 
 | Family | Purpose and owner | Lane and known limits |
 | --- | --- | --- |
-| Adapter correctness and recovery | [`experiments/bftree-mvcc`](../experiments/bftree-mvcc/README.md); `cargo test --locked --manifest-path experiments/bftree-mvcc/Cargo.toml --all-targets --all-features` | Manual independent workspace, no CI. Snapshot/atomic-pair visibility, conflict/rollback, binary-key model, page splits/history/ranges, deep-version filtered chunks and tombstones, exact inclusive snapshot seeks, native-returned-record/row budgets, bounds/ownership, exact retry and recovered receipt-backed sparse updates/deletion/reinsertion, uncertain/unwind and subprocess crash replay. Comparison-kernel differential tests cover binary ordering, 0–160-byte lengths, pointer offsets, every mismatch position, prefixes and random pairs; head/separator tests cover fixed previews and valid binary fences. Shuffled variable-length binary keys and deep histories exercise actual native inner levels, retained generations and late gap writes. The default dependency remains unpatched. Both ignored children are exercised by parent crash tests. Process exit alone does not qualify power-loss safety. |
+| Adapter correctness and recovery | [`experiments/bftree-mvcc`](../experiments/bftree-mvcc/README.md); `cargo test --locked --manifest-path experiments/bftree-mvcc/Cargo.toml --all-targets --all-features` | Manual independent workspace, no CI. Snapshot/atomic-pair visibility, conflict/rollback, binary-key model, page splits/history/ranges, deep-version filtered chunks and tombstones, exact inclusive snapshot seeks, Hybrid continuation past a tombstone before zero-byte extensions, native-returned-record/row budgets, bounds/ownership, exact retry and recovered receipt-backed sparse updates/deletion/reinsertion, uncertain/unwind and subprocess crash replay. Comparison-kernel differential tests cover binary ordering, 0–160-byte lengths, pointer offsets, every mismatch position, prefixes and random pairs; head/separator tests cover fixed previews and valid binary fences. Shuffled variable-length binary keys and deep histories exercise actual native inner levels, retained generations and late gap writes. The default dependency remains unpatched. Both ignored children are exercised by parent crash tests. Process exit alone does not qualify power-loss safety. |
 | Bounded batch reads | Same independent workspace, `src/index/batch.rs` and adapter regressions; `bench-advanced <new-journal> <layout> 512 24 prefix64 keep` under the global release profile | Manual only. Input order/duplicates, missing/binary/prefix/max-length keys, old/current snapshots, dense cursor positioning and sparse/deep-history fallback, carried encoded targets, complete budget refusal and snapshot/collector races. Reports separate dense/sparse/missing/duplicate scalar/batch request tails and observable wrapper work; cursor starts are not exact native root-descent counts. Ownership regression retains an incidental descriptor copy across final-handle close/reopen, while active snapshots and the next owner remain exclusive. |
 | Snapshot-safe collection/checkpoints | Same workspace, `src/adapter/maintenance.rs` and `maintenance/tests.rs`; `maintenance-demo <new-journal>` and `bench-advanced ... collect` | Manual only. Read/write leases, fixed-horizon bounded passes, released-lease cursor catch-up, retained anchors/tombstones, old-writer conflicts, generation publication, exact old receipts read by captured WAL ranges, full-prefix verification and suffix-only index replay. Injected errors and 15 subprocess exit/layout boundaries cover durable/partial deletion and checkpoint publication. Checksummed invalid metadata, lost unacknowledged tails, torn/zeroed writes and reordered full blocks fail closed without repairing evidence. Device/filesystem power-loss behavior remains unqualified. Receipt evidence consumes the unchanged bounded journal; collection does not reclaim disk capacity. |
 | Compile-time storage selection | Same independent workspace, `cargo test --locked --manifest-path experiments/bftree-mvcc/Cargo.toml storage_backend` | Manual only. A test-only ordered map and Bf-Tree open the same versioned and hybrid journals in both directions, including checkpoint rebuilds, retained snapshots, bounded scans, batch reads, tombstones and collection replay. A backend deletion failure after a durable collection requires reopen and replay. |
@@ -3046,6 +3096,41 @@ message checks. The binding owners pin the mapping:
 - `bindings/python` `errors::tests::wal_record_limit_is_a_non_retryable_execution_error_with_its_limit`.
 No lane, feature matrix or timeout changes. Local replay:
 `cargo test --locked -p hawdb --lib wal_record_limit`.
+### Graph change commit epoch
+
+The graph change commit epoch
+([#1840](https://github.com/nowledge-co/hawdb/issues/1840)) is covered by the
+root general owner, which runs `api::tests::graph_change_epoch`. It checks:
+- relational DDL, rows and transactions leave the epoch unchanged;
+- node, relationship-only, property, schema (node table, index) and delete
+  commits advance it to their commit epoch;
+- a reopen from a checkpoint taken after relational-only commits starts it at
+  the checkpoint's commit epoch, so with no lost commits it never regresses,
+  and WAL replay restores it exactly;
+- pruning the search projection change log does not regress it;
+- a guarded `ConcurrentDatabase` transaction commits despite a concurrent
+  relational commit;
+- a concurrent graph commit refuses that transaction with a typed, retryable
+  `TransactionConflict` that writes nothing, and a retry succeeds;
+- an unguarded transaction is unaffected, and a transaction's own graph writes
+  do not count;
+- append-only commits and an initial import without graph rows (import marker
+  and relational rows only) leave it unchanged, and a clean reopen after that
+  import never lowers it;
+- after a forced group-commit durability barrier failure, the
+  `ConcurrentDatabase` accessor and a transaction opened before the failure
+  return the storage error, and a reopen reports it again;
+- after a forced WAL apply failure, `Database` and `runtime_status` return the
+  storage error, and a new `DatabaseTransaction` is refused;
+- `EmbeddedStoreHandle` reports it in `runtime_status` and production status,
+  supports compare-and-publish in `with_transaction`, and does not regress it
+  across a clean reopen (no lost commits).
+
+The readiness owner checks the JSON field. The checkpoint format is unchanged.
+
+No lane, feature matrix or timeout changes. Local replay:
+`cargo test --locked -p hawdb --lib graph_change_epoch`.
+
 ### Runtime admission refusals
 
 Runtime governor refusals are the typed, non-poisoning
@@ -3084,9 +3169,12 @@ Every producer reports a stopped runtime task as
 `//:typed_task_stops_test` runs `scripts/check-typed-task-stops.py` over the
 production sources of the root, core, executor, search, relational, storage,
 analytics, runtime-tokio and vector-projection crates. It fails on:
-- a task check whose `map_err` builds `Execution` or `Storage`;
+- a task check, started work unit or admitted allocation/processing operation
+  whose `map_err` builds `Admission`, `Execution` or `Storage`;
+- a named `CheckpointWorkError` conversion helper that does not preserve
+  `stop_reason()`;
 - a `Stopped(..)` or `Cancelled(..)` arm (bound name, `_`, `..` or struct
-  pattern) whose body builds `Execution` or `Storage`, even from a prebuilt
+  pattern) whose body builds `Admission`, `Execution` or `Storage`, even from a prebuilt
   message.
 
 `Storage` is allowed only through an explicit allowlist, which is empty today.
@@ -3107,9 +3195,11 @@ string, raw-string, byte and char literals masked out (lifetimes and loop
 labels are not literals). Matches inside comments or literals are ignored.
 Files declared as `#[cfg(test)] mod name;` (with or without `#[path]`) are
 skipped.
-`//:typed_task_stops_script_test` holds the scan's 10 negative and positive
+`//:typed_task_stops_script_test` holds the scan's negative and positive
 controls. They cover:
 - multi-line closures and `to_string`;
+- qualified and specially named work-error helpers, started work units and
+  admitted allocation contexts;
 - wildcard, rest and struct arms;
 - a block arm that must not leak into the next arm;
 - the `Storage` allowlist;
@@ -3118,6 +3208,19 @@ existing cancellation tests in search, executor, relational, storage and the
 embedded runtime assert the typed variant. Local replay:
 `python3 scripts/check-typed-task-stops.py` and
 `python3 scripts/check-typed-task-stops.test.py`.
+
+Storage cancellation sweeps for append tables, relational codecs, index
+shadows, overflow roots and row-page roots cancel every observed CPU and I/O
+unit and assert the internal `Stopped(reason)` variant before the public
+`RuntimeTaskStopped` conversion. Publication sweeps additionally assert that a
+pre-rename stop leaves authority unchanged, while a stop after the first
+durable rename reports `PublishOutcomeUnknown`, retains an immutable artifact
+prefix and can be resolved by reopen/retry. The focused row-page helper test
+`publisher::checkpoint::post_rename_stop_tests::a_stop_after_the_rename_reports_publish_outcome_unknown`
+guards the lost-reply conversion itself; the exhaustive publisher tests guard
+state retention across later artifacts. These remain in the existing
+`//crates/storage:hawdb_storage_tests` owner and lane. Ref
+[#1856](https://github.com/nowledge-co/hawdb/issues/1856).
 
 ### Write transaction deadlines and cancellation
 

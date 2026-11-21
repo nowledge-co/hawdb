@@ -207,7 +207,7 @@ fn read_key(
     let mut bytes = match context.allocations {
         Some(allocations) => allocations
             .vector_capacity(len)
-            .map_err(|error| RelationalRowPagePublicationError::Admission(error.to_string()))?,
+            .map_err(RelationalRowPagePublicationError::from_admission)?,
         None => Vec::with_capacity(len),
     };
     unit.finish();

@@ -77,14 +77,60 @@ pub struct RuntimeResourceSnapshot {
 #[derive(Debug)]
 pub(crate) struct RuntimeResourceDetector {
     system: Option<System>,
+    #[cfg(test)]
+    scripted: Option<ScriptedHostResources>,
+}
+
+/// Test-only host whose samples a test controls and counts.
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub(crate) struct ScriptedHostResources {
+    current: std::sync::Arc<std::sync::Mutex<RuntimeResourceSnapshot>>,
+    samples: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+#[cfg(test)]
+impl ScriptedHostResources {
+    pub(crate) fn new(initial: RuntimeResourceSnapshot) -> Self {
+        Self {
+            current: std::sync::Arc::new(std::sync::Mutex::new(initial)),
+            samples: std::sync::Arc::default(),
+        }
+    }
+
+    pub(crate) fn set(&self, resources: RuntimeResourceSnapshot) {
+        *self.current.lock().unwrap() = resources;
+    }
+
+    pub(crate) fn samples(&self) -> u64 {
+        self.samples.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub(crate) fn detector(&self) -> RuntimeResourceDetector {
+        RuntimeResourceDetector {
+            system: None,
+            scripted: Some(self.clone()),
+        }
+    }
 }
 
 impl RuntimeResourceDetector {
     pub(crate) fn new() -> Self {
-        Self { system: None }
+        Self {
+            system: None,
+            #[cfg(test)]
+            scripted: None,
+        }
     }
 
     pub(crate) fn detect(&mut self) -> RuntimeResourceSnapshot {
+        #[cfg(test)]
+        if let Some(scripted) = &self.scripted {
+            scripted
+                .samples
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            return *scripted.current.lock().unwrap();
+        }
         let host_parallelism = std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
         let (host_total_bytes, host_available_bytes) =
             detect_host_memory(&mut self.system, System::new);

@@ -22,8 +22,11 @@ use crate::background::{CheckpointBytes, CheckpointWorkContext, CheckpointWorkEr
 #[cfg(test)]
 mod tests;
 
-fn work_error(error: CheckpointWorkError) -> RelationalIndexShadowError {
-    RelationalIndexShadowError::Admission(error.to_string())
+pub(super) fn work_error(error: CheckpointWorkError) -> RelationalIndexShadowError {
+    match error.stop_reason() {
+        Some(reason) => RelationalIndexShadowError::Stopped(reason),
+        None => RelationalIndexShadowError::Admission(error.to_string()),
+    }
 }
 
 pub(in crate::relational) fn relational_schema_digest_with_work_context(

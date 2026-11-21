@@ -376,89 +376,96 @@ impl RelationalRowPagePublisher {
         )?;
 
         checkpoint::publish(&build.paths.page_tmp, &build.paths.page, self.work.as_ref())?;
-        maybe_stop(
-            build.stop_after,
-            RelationalRowPagePublicationPhase::CandidatePagesDurable,
-        )?;
-        checkpoint::publish(
-            &build.paths.descriptor_tmp,
-            &build.paths.descriptor,
-            self.work.as_ref(),
-        )?;
-        checkpoint::publish(&build.paths.key_tmp, &build.paths.key, self.work.as_ref())?;
-        maybe_stop(
-            build.stop_after,
-            RelationalRowPagePublicationPhase::CandidateRootDurable,
-        )?;
-        checkpoint::publish(
-            &build.paths.generation_manifest_tmp,
-            &build.paths.generation_manifest,
-            self.work.as_ref(),
-        )?;
-        maybe_stop(
-            build.stop_after,
-            RelationalRowPagePublicationPhase::CandidateManifestDurable,
-        )?;
-
-        if build.select_latest {
-            let actual_previous = manifest::read_manifest_if_exists_with_work_context(
-                &build.paths.latest_manifest,
-                self.config,
+        let publication = (|| {
+            maybe_stop(
+                build.stop_after,
+                RelationalRowPagePublicationPhase::CandidatePagesDurable,
+            )?;
+            checkpoint::publish(
+                &build.paths.descriptor_tmp,
+                &build.paths.descriptor,
                 self.work.as_ref(),
-            )?
-            .map(|manifest| manifest.generation);
-            if actual_previous != build.expected_previous_generation {
-                return Err(RelationalRowPagePublicationError::StaleGeneration {
-                    expected_previous: build.expected_previous_generation,
-                    actual_previous,
-                });
+            )?;
+            checkpoint::publish(&build.paths.key_tmp, &build.paths.key, self.work.as_ref())?;
+            maybe_stop(
+                build.stop_after,
+                RelationalRowPagePublicationPhase::CandidateRootDurable,
+            )?;
+            checkpoint::publish(
+                &build.paths.generation_manifest_tmp,
+                &build.paths.generation_manifest,
+                self.work.as_ref(),
+            )?;
+            maybe_stop(
+                build.stop_after,
+                RelationalRowPagePublicationPhase::CandidateManifestDurable,
+            )?;
+
+            if build.select_latest {
+                let actual_previous = manifest::read_manifest_if_exists_with_work_context(
+                    &build.paths.latest_manifest,
+                    self.config,
+                    self.work.as_ref(),
+                )?
+                .map(|manifest| manifest.generation);
+                if actual_previous != build.expected_previous_generation {
+                    return Err(RelationalRowPagePublicationError::StaleGeneration {
+                        expected_previous: build.expected_previous_generation,
+                        actual_previous,
+                    });
+                }
             }
-        }
-        maybe_stop(
-            build.stop_after,
-            RelationalRowPagePublicationPhase::BaseRevalidated,
-        )?;
-        if build.select_latest {
-            checkpoint::write_synced(
-                build.temporary,
-                &build.paths.latest_manifest_tmp,
-                &encoded_manifest,
-                self.work.as_ref(),
+            maybe_stop(
+                build.stop_after,
+                RelationalRowPagePublicationPhase::BaseRevalidated,
             )?;
-            checkpoint::select(
-                &build.paths.latest_manifest_tmp,
-                &build.paths.latest_manifest,
-                self.work.as_ref(),
-            )?;
-        }
+            if build.select_latest {
+                checkpoint::write_synced(
+                    build.temporary,
+                    &build.paths.latest_manifest_tmp,
+                    &encoded_manifest,
+                    self.work.as_ref(),
+                )?;
+                checkpoint::select(
+                    &build.paths.latest_manifest_tmp,
+                    &build.paths.latest_manifest,
+                    self.work.as_ref(),
+                )?;
+            }
 
-        Ok(RelationalRowPagePublicationReport {
-            generation: build.generation,
-            source_commit_epoch: build.source_commit_epoch,
-            dirty_pages_written: dirty_page_count,
-            relocated_pages_written: root.relocated_page_count,
-            root_pages: manifest.root_page_count,
-            reused_pages: root.reused_page_count,
-            page_artifact_bytes: manifest.page_artifact.encoded_len,
-            root_descriptor_bytes: manifest.root_descriptor_artifact.encoded_len,
-            root_key_bytes: manifest.root_key_artifact.encoded_len,
-            manifest_bytes: encoded_manifest.len() as u64,
-            generation_artifacts: super::RelationalRowPageGenerationArtifacts {
-                generation: manifest.generation,
-                source_commit_epoch: manifest.source_commit_epoch,
-                root_set_digest: manifest.root_set_digest,
-                manifest_artifact: super::RelationalRowPageArtifactMetadata {
-                    encoded_len: encoded_manifest.len() as u64,
-                    encoded_crc32c: manifest_digest.crc32c.get(),
-                    encoded_sha256: manifest_digest.sha256,
+            Ok(RelationalRowPagePublicationReport {
+                generation: build.generation,
+                source_commit_epoch: build.source_commit_epoch,
+                dirty_pages_written: dirty_page_count,
+                relocated_pages_written: root.relocated_page_count,
+                root_pages: manifest.root_page_count,
+                reused_pages: root.reused_page_count,
+                page_artifact_bytes: manifest.page_artifact.encoded_len,
+                root_descriptor_bytes: manifest.root_descriptor_artifact.encoded_len,
+                root_key_bytes: manifest.root_key_artifact.encoded_len,
+                manifest_bytes: encoded_manifest.len() as u64,
+                generation_artifacts: super::RelationalRowPageGenerationArtifacts {
+                    generation: manifest.generation,
+                    source_commit_epoch: manifest.source_commit_epoch,
+                    root_set_digest: manifest.root_set_digest,
+                    manifest_artifact: super::RelationalRowPageArtifactMetadata {
+                        encoded_len: encoded_manifest.len() as u64,
+                        encoded_crc32c: manifest_digest.crc32c.get(),
+                        encoded_sha256: manifest_digest.sha256,
+                    },
                 },
-            },
-            events: if build.select_latest {
-                COMPLETE_PUBLICATION_TRACE
-            } else {
-                CANDIDATE_PUBLICATION_TRACE
-            },
-        })
+                events: if build.select_latest {
+                    COMPLETE_PUBLICATION_TRACE
+                } else {
+                    CANDIDATE_PUBLICATION_TRACE
+                },
+            })
+        })();
+        checkpoint::after_publication(
+            publication,
+            &build.paths.page,
+            "row-page artifact publication",
+        )
     }
 }
 
@@ -638,7 +645,7 @@ fn preflight_deltas(
                     schema, config.page_limits.max_columns.get(),
                 ),
             }
-            .map_err(|error| RelationalRowPagePublicationError::Admission(error.to_string()))?;
+            .map_err(RelationalRowPagePublicationError::from_relational)?;
             let names_equal = match work {
                 Some(work) => {
                     root::checkpoint::compare(schema.name.as_bytes(), delta.table.as_bytes(), work)?
@@ -668,7 +675,7 @@ fn preflight_deltas(
                 }
                 None => crate::relational::index_shadow::relational_schema_digest(schema),
             }
-            .map_err(|error| RelationalRowPagePublicationError::Admission(error.to_string()))?;
+            .map_err(RelationalRowPagePublicationError::from_index_shadow)?;
             if digest != delta.schema_digest {
                 return Err(RelationalRowPagePublicationError::Admission(format!(
                     "row-page schema digest differs from table {}",
@@ -853,6 +860,9 @@ fn overflow_dependency_error(
         RelationalOverflowPublicationError::Admission(message) => {
             RelationalRowPagePublicationError::Admission(message)
         }
+        RelationalOverflowPublicationError::PublishOutcomeUnknown(error) => {
+            RelationalRowPagePublicationError::PublishOutcomeUnknown(error)
+        }
         RelationalOverflowPublicationError::Corrupt(message) => {
             RelationalRowPagePublicationError::Corrupt(message)
         }
@@ -865,9 +875,7 @@ fn overflow_dependency_error(
             ))
         }
         RelationalOverflowPublicationError::Stopped(reason) => {
-            RelationalRowPagePublicationError::Admission(format!(
-                "overflow dependency validation stopped: {reason}"
-            ))
+            RelationalRowPagePublicationError::Stopped(reason)
         }
         RelationalOverflowPublicationError::StaleGeneration {
             expected_previous,
@@ -1040,7 +1048,7 @@ fn clone_table_name(
 ) -> Result<String, RelationalRowPagePublicationError> {
     match work {
         Some(work) => crate::relational::codec::clone_string_with_work_context(name, work)
-            .map_err(|error| RelationalRowPagePublicationError::Admission(error.to_string())),
+            .map_err(RelationalRowPagePublicationError::from_relational),
         None => Ok(name.to_owned()),
     }
 }

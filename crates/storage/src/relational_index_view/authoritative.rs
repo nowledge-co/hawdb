@@ -447,6 +447,7 @@ pub(super) fn map_constraint_read_error(error: RelationalIndexShadowError) -> Re
     match error {
             RelationalIndexShadowError::UnsupportedFormat(error) => RelationalError::UnsupportedFormat(error),
         RelationalIndexShadowError::FileDescriptors(error) => RelationalError::FileDescriptors(error),
+        RelationalIndexShadowError::Stopped(reason) => RelationalError::Stopped(reason),
         RelationalIndexShadowError::Admission(message) => RelationalError::Admission(message),
         RelationalIndexShadowError::Durability(message) => RelationalError::Durability(message),
         RelationalIndexShadowError::Corrupt(message) => RelationalError::Corruption(message),

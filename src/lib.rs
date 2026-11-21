@@ -295,6 +295,7 @@ pub use embedded_store::{
     source_mutation_dual_write_readiness, source_mutation_family_requirements,
     BackgroundMaintenanceReport, BoundedSearchCandidateOutput, CutoverControls,
     CutoverControlsReport, DefinedSearchProjectionConsumer, EmbeddedGraph,
+    EmbeddedOptimizerCardinalityEstimate, EmbeddedOptimizerCardinalityEstimateScope,
     EmbeddedProductionStatus, EmbeddedQueryExecutionPath, EmbeddedQueryOutput, EmbeddedQueryReport,
     EmbeddedQueryReportOptions, EmbeddedReadOptions, EmbeddedReadOutput, EmbeddedReadReport,
     EmbeddedReadSnapshot, EmbeddedReadSnapshotBudget, EmbeddedReadSnapshotReport,

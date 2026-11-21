@@ -24,7 +24,10 @@ use crate::relational::{
 };
 
 fn work_error(error: CheckpointWorkError) -> RelationalError {
-    RelationalError::Admission(error.to_string())
+    match error.stop_reason() {
+        Some(reason) => RelationalError::Stopped(reason),
+        None => RelationalError::Admission(error.to_string()),
+    }
 }
 
 fn cpu<T>(

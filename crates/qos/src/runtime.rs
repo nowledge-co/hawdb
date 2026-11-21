@@ -43,7 +43,12 @@ const SHARED_HOST_RESULT_BUDGET_BYTES: u64 = 16 * 1024 * 1024;
 const MOBILE_RESULT_BUDGET_BYTES: u64 = 2 * 1024 * 1024;
 const IO_WAVE_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const BACKGROUND_ADMISSION_AGING: Duration = Duration::from_millis(100);
+/// Most frequent host re-sample taken on the synchronous admission path of a
+/// host-detected governor; the Tokio adapter's default refresh interval.
+const ADMISSION_HOST_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
+#[cfg(test)]
+mod host_refresh_tests;
 mod maintenance;
 mod memory_target;
 mod retained_memory;
@@ -482,7 +487,58 @@ struct RuntimeGovernorInner {
     state: Mutex<RuntimeGovernorState>,
     io_available: Condvar,
     resource_detector: Mutex<Option<RuntimeResourceDetector>>,
+    /// Present only for governors built by `detect*`: admission keeps their
+    /// host snapshot fresh. Caller-supplied snapshots (`new*`) never get one.
+    host_refresh: Option<HostRefreshGate>,
     telemetry: RwLock<Option<Arc<dyn RuntimeTelemetrySink>>>,
+}
+
+/// Rate gate for re-sampling the host from admission, checked without taking
+/// the governor state lock.
+#[derive(Debug)]
+struct HostRefreshGate {
+    origin: Instant,
+    interval_nanos: u64,
+    /// Nanoseconds after `origin` of the latest host sample or claim.
+    last_sample_nanos: AtomicU64,
+}
+
+impl HostRefreshGate {
+    /// The governor sampled the host while it was being built.
+    fn new(interval: Duration) -> Self {
+        Self {
+            origin: Instant::now(),
+            interval_nanos: duration_nanos(interval),
+            last_sample_nanos: AtomicU64::new(0),
+        }
+    }
+
+    fn now_nanos(&self) -> u64 {
+        duration_nanos(self.origin.elapsed())
+    }
+
+    /// Claims the next host sample once the interval has passed since the
+    /// latest one. Concurrent admissions race for a single claim.
+    fn try_claim(&self) -> bool {
+        let now = self.now_nanos();
+        let last = self.last_sample_nanos.load(Ordering::Acquire);
+        now.saturating_sub(last) >= self.interval_nanos
+            && self
+                .last_sample_nanos
+                .compare_exchange(last, now.max(last), Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+    }
+
+    /// Records a sample taken outside admission, such as an explicit or
+    /// Tokio-adapter refresh, so admission does not repeat it at once.
+    fn record_sample(&self) {
+        self.last_sample_nanos
+            .fetch_max(self.now_nanos(), Ordering::AcqRel);
+    }
+}
+
+fn duration_nanos(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
 #[derive(Debug)]
@@ -675,6 +731,20 @@ impl RuntimeGovernor {
         storage_io: IoConcurrencyBudget,
         process_memory_policy: Option<ProcessMemoryPolicy>,
     ) -> Self {
+        Self::with_host(config, resources, storage_io, process_memory_policy, None)
+    }
+
+    fn with_host(
+        config: RuntimeGovernorConfig,
+        resources: RuntimeResourceSnapshot,
+        storage_io: IoConcurrencyBudget,
+        process_memory_policy: Option<ProcessMemoryPolicy>,
+        host: Option<(RuntimeResourceDetector, Duration)>,
+    ) -> Self {
+        let (resource_detector, host_refresh) = match host {
+            Some((detector, interval)) => (Some(detector), Some(HostRefreshGate::new(interval))),
+            None => (None, None),
+        };
         let limits = derive_limits(config, resources, storage_io, 0);
         let governor = Self {
             inner: Arc::new(RuntimeGovernorInner {
@@ -705,7 +775,8 @@ impl RuntimeGovernor {
                     pressure_adjustments: 0,
                 }),
                 io_available: Condvar::new(),
-                resource_detector: Mutex::new(None),
+                resource_detector: Mutex::new(resource_detector),
+                host_refresh,
                 telemetry: RwLock::new(None),
             }),
         };
@@ -716,30 +787,51 @@ impl RuntimeGovernor {
         governor
     }
 
+    /// Detects host resources and keeps them fresh: unless pinned, admission
+    /// re-samples the host at most once per second, so memory pressure that
+    /// starts or clears after construction is seen without an explicit
+    /// `refresh_from_host`.
     pub fn detect(config: RuntimeGovernorConfig, storage_io: IoConcurrencyBudget) -> Self {
-        let mut detector = RuntimeResourceDetector::new();
-        let resources = detector.detect();
-        let governor = Self::new(config, resources, storage_io);
-        *mutex_lock(&governor.inner.resource_detector) = Some(detector);
-        governor
+        Self::detect_inner(
+            config,
+            storage_io,
+            None,
+            RuntimeResourceDetector::new(),
+            ADMISSION_HOST_REFRESH_INTERVAL,
+        )
     }
 
-    /// Detects host resources once and attaches a caller-owned RSS policy.
+    /// Like `detect`, with a caller-owned RSS policy attached. Admission
+    /// re-samples host resources, never process RSS.
     pub fn detect_with_process_memory_policy(
         config: RuntimeGovernorConfig,
         storage_io: IoConcurrencyBudget,
         process_memory_policy: ProcessMemoryPolicy,
     ) -> Self {
-        let mut detector = RuntimeResourceDetector::new();
+        Self::detect_inner(
+            config,
+            storage_io,
+            Some(process_memory_policy),
+            RuntimeResourceDetector::new(),
+            ADMISSION_HOST_REFRESH_INTERVAL,
+        )
+    }
+
+    fn detect_inner(
+        config: RuntimeGovernorConfig,
+        storage_io: IoConcurrencyBudget,
+        process_memory_policy: Option<ProcessMemoryPolicy>,
+        mut detector: RuntimeResourceDetector,
+        refresh_interval: Duration,
+    ) -> Self {
         let resources = detector.detect();
-        let governor = Self::new_with_process_memory_policy(
+        Self::with_host(
             config,
             resources,
             storage_io,
             process_memory_policy,
-        );
-        *mutex_lock(&governor.inner.resource_detector) = Some(detector);
-        governor
+            Some((detector, refresh_interval)),
+        )
     }
 
     pub fn set_telemetry_sink(&self, telemetry: Option<Arc<dyn RuntimeTelemetrySink>>) {
@@ -805,6 +897,7 @@ impl RuntimeGovernor {
         waiter: Option<&RuntimeAdmissionWaiter>,
         request: RuntimeWorkRequest,
     ) -> Result<RuntimePermit, RuntimeAdmissionError> {
+        self.refresh_from_host_if_due();
         let (result, next) = {
             let mut state = mutex_lock(&self.inner.state);
             let queue_error = admission_queue_error(&state, waiter, request, Instant::now());
@@ -1003,9 +1096,27 @@ impl RuntimeGovernor {
         mutex_lock(&self.inner.state).resources_pinned = true;
     }
 
+    /// Keeps a host-detected governor's snapshot fresh for admission without
+    /// a Tokio adapter or explicit refresh: synchronous callers that retry a
+    /// `memory_pressure` refusal unchanged see recovery, and new pressure is
+    /// seen too. The host is sampled outside the state lock.
+    fn refresh_from_host_if_due(&self) {
+        if self
+            .inner
+            .host_refresh
+            .as_ref()
+            .is_some_and(HostRefreshGate::try_claim)
+        {
+            self.refresh_from_host();
+        }
+    }
+
     pub fn refresh_from_host(&self) -> bool {
         if mutex_lock(&self.inner.state).resources_pinned {
             return false;
+        }
+        if let Some(gate) = &self.inner.host_refresh {
+            gate.record_sample();
         }
         let resources = mutex_lock(&self.inner.resource_detector)
             .get_or_insert_with(RuntimeResourceDetector::new)

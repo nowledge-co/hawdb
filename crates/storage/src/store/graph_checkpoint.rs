@@ -229,6 +229,9 @@ fn exact_overflow_publication_error(
         | hawdb_storage::relational::RelationalOverflowPublicationError::StaleGeneration {
             ..
         } => HawDBError::Storage(message),
+        hawdb_storage::relational::RelationalOverflowPublicationError::PublishOutcomeUnknown(
+            error,
+        ) => *error,
         // Every overflow publisher stop is before its rename.
         hawdb_storage::relational::RelationalOverflowPublicationError::Stopped(reason) => {
             HawDBError::RuntimeTaskStopped(reason)

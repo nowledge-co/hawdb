@@ -222,7 +222,10 @@ Scan visibility checks borrow the native iterator's buffer. Only visible output
 keys/values, or Hybrid keys needing a historical point seek, become owned rows.
 The physical resume key uses a bounded stack buffer; each scan reuses one owned
 row batch. Discarded newer/duplicate versions no longer allocate and copy their
-payloads. Hybrid history lookups still occur after releasing the native guard.
+payloads. Hybrid appends visible heads directly until a head needs history. It
+then defers that head and the remaining result rows in the window so historical
+seeks take place after releasing the native guard. The next Hybrid window seeks
+past the previous physical head using its encoded successor.
 
 Every native batch returns at most 32 records, including records discarded by
 the adapter. Native deleted slots may be skipped internally and are not counted

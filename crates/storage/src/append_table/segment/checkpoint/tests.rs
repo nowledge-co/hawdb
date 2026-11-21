@@ -28,8 +28,12 @@ fn scheduler() -> LocalQosScheduler {
 
 fn stopped<T: std::fmt::Debug>(result: Result<T, AppendTableError>) {
     assert!(
-        matches!(&result, Err(AppendTableError::Admission(message))
-        if message.contains("checkpoint build stopped") && message.contains("cancelled")),
+        matches!(
+            &result,
+            Err(AppendTableError::Stopped(
+                hawdb_core::RuntimeCancellationReason::Cancelled
+            ))
+        ),
         "{result:?}"
     );
 }

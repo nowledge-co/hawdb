@@ -88,9 +88,10 @@ pub use hawdb_readiness::bounded_read_evidence::{
 };
 use hawdb_readiness::embedded_query_report::plan_cache_report;
 pub use hawdb_readiness::embedded_query_report::{
-    fast_path_classification, EmbeddedQueryApiBehavior, EmbeddedQueryExecutionPath,
-    EmbeddedQueryOutput, EmbeddedQueryOutputRowShape, EmbeddedQueryReport,
-    EmbeddedQueryReportOptions, FastPathClassification, QUERY_REPORT_PROTOCOL,
+    fast_path_classification, EmbeddedOptimizerCardinalityEstimate,
+    EmbeddedOptimizerCardinalityEstimateScope, EmbeddedQueryApiBehavior,
+    EmbeddedQueryExecutionPath, EmbeddedQueryOutput, EmbeddedQueryOutputRowShape,
+    EmbeddedQueryReport, EmbeddedQueryReportOptions, FastPathClassification, QUERY_REPORT_PROTOCOL,
 };
 pub use hawdb_readiness::embedded_store_reports::{
     BackgroundMaintenanceReport, LibraryProductionPathSummary, LibraryReadinessReport,
@@ -207,6 +208,8 @@ mod candidate_facade_tests;
 mod exact_candidate_tests;
 #[cfg(test)]
 mod out_of_core_working_memory_tests;
+#[cfg(test)]
+mod projection_id_page_tests;
 
 #[cfg(test)]
 mod runtime_status_facade_tests {
@@ -1032,9 +1035,13 @@ impl EmbeddedGraph {
         cypher: &str,
         parameters: &BTreeMap<String, Value>,
     ) -> Result<QueryOutput> {
-        Ok(self
-            .query_with_params_with_report(cypher, parameters)?
-            .output)
+        let mut external = crate::executor::NoExternalReadOperator;
+        self.execute_query_request_with_external(
+            crate::QueryRequest::new(cypher).with_params(parameters),
+            false,
+            &mut external,
+        )
+        .map(|execution| execution.output)
     }
 
     pub fn query_with_params_with_report(
@@ -1132,6 +1139,36 @@ impl EmbeddedGraph {
         options: EmbeddedQueryReportOptions,
         external: &mut dyn crate::executor::ExternalReadOperator,
     ) -> Result<EmbeddedQueryOutput> {
+        let execution = self.execute_query_request_with_external(
+            request,
+            options.capture_physical_plan,
+            external,
+        )?;
+        let report = embedded_query_report(EmbeddedQueryReportInput {
+            mode: self.mode,
+            statement: &execution.trace.statement,
+            trace: execution.trace.optimizer_trace.as_ref(),
+            optimizer_cardinality_estimate_scope: execution
+                .trace
+                .optimizer_cardinality_estimate_scope,
+            plan_cache_lookup: execution.trace.plan_cache_lookup,
+            execution_profile: execution.trace.execution_profile.as_ref(),
+            output: &execution.output,
+            options,
+            elapsed_micros: execution.elapsed_micros,
+        });
+        Ok(EmbeddedQueryOutput {
+            output: execution.output,
+            report,
+        })
+    }
+
+    fn execute_query_request_with_external(
+        &mut self,
+        request: crate::QueryRequest<'_>,
+        capture_physical_plan: bool,
+        external: &mut dyn crate::executor::ExternalReadOperator,
+    ) -> Result<ExecutedEmbeddedQuery> {
         let default_context = RuntimeTaskContext::default();
         let task_context = request.task_context.unwrap_or(&default_context);
         let empty = BTreeMap::new();
@@ -1145,7 +1182,7 @@ impl EmbeddedGraph {
         let result = self.db.query_prepared_request_with_trace_and_external(
             prepared,
             request.with_task_context(&execution_task_context),
-            options.capture_physical_plan,
+            capture_physical_plan,
             external,
         );
         self.record_runtime_cancellation(result.as_ref().err(), task_context);
@@ -1154,17 +1191,11 @@ impl EmbeddedGraph {
             self.check_runtime_context(task_context)?;
         }
         let elapsed_micros = started.elapsed().as_micros();
-        let report = embedded_query_report(EmbeddedQueryReportInput {
-            mode: self.mode,
-            statement: &execution_trace.statement,
-            trace: execution_trace.optimizer_trace.as_ref(),
-            plan_cache_lookup: execution_trace.plan_cache_lookup,
-            execution_profile: execution_trace.execution_profile.as_ref(),
-            output: &output,
-            options,
+        Ok(ExecutedEmbeddedQuery {
+            output,
+            trace: execution_trace,
             elapsed_micros,
-        });
-        Ok(EmbeddedQueryOutput { output, report })
+        })
     }
 
     fn admit_materialized_query(
@@ -2748,6 +2779,7 @@ impl EmbeddedStore {
             EmbeddedRuntimeStatus {
                 protocol: RUNTIME_STATUS_PROTOCOL.to_string(),
                 graph_commit_epoch,
+                graph_change_commit_epoch: self.graph.database().graph_change_commit_epoch()?,
                 changefeed: self
                     .graph
                     .database()
@@ -3686,10 +3718,17 @@ struct EmbeddedQueryReportInput<'a> {
     mode: GraphMode,
     statement: &'a cypher::Statement,
     trace: Option<&'a crate::optimizer::OptimizerTrace>,
+    optimizer_cardinality_estimate_scope: Option<crate::api::PlanCardinalityEstimateScope>,
     plan_cache_lookup: Option<PlanCacheLookup>,
     execution_profile: Option<&'a ReadExecutionProfile>,
     output: &'a QueryOutput,
     options: EmbeddedQueryReportOptions,
+    elapsed_micros: u128,
+}
+
+struct ExecutedEmbeddedQuery {
+    output: QueryOutput,
+    trace: crate::api::QueryExecutionTrace,
     elapsed_micros: u128,
 }
 
@@ -3719,6 +3758,33 @@ fn embedded_query_report(input: EmbeddedQueryReportInput<'_>) -> EmbeddedQueryRe
                 .map(|trace| trace.rule_events.len())
                 .unwrap_or_default(),
             plan_cache_lookup: input.plan_cache_lookup,
+            selected_plan_fingerprint: input
+                .trace
+                .map(|trace| trace.selected_plan_fingerprint.as_str()),
+            optimizer_cardinality_estimate_scope: input.optimizer_cardinality_estimate_scope.map(
+                |scope| match scope {
+                    crate::api::PlanCardinalityEstimateScope::TemplatePlan => {
+                        EmbeddedOptimizerCardinalityEstimateScope::TemplatePlan
+                    }
+                    crate::api::PlanCardinalityEstimateScope::BoundPlan => {
+                        EmbeddedOptimizerCardinalityEstimateScope::BoundPlan
+                    }
+                },
+            ),
+            optimizer_cardinality_estimates: input
+                .trace
+                .map(|trace| {
+                    trace
+                        .selected_plan_cardinality_estimates
+                        .iter()
+                        .map(|estimate| EmbeddedOptimizerCardinalityEstimate {
+                            operator_id: estimate.operator_id.ordinal(),
+                            operator: estimate.operator.as_str().to_string(),
+                            estimated_rows: estimate.estimated_rows,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             execution_profile: input.execution_profile,
             output: input.output,
             options: input.options,

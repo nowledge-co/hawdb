@@ -283,6 +283,15 @@ pub enum HawDBError {
     /// nothing ran. Not a storage failure and never poisoning. See
     /// [`RuntimeAdmissionRefusal::retryable`].
     RuntimeAdmissionRefused(RuntimeAdmissionRefusal),
+    /// The task asked for more concurrent I/O slots than its successful
+    /// runtime admission reserved. Nothing ran and retrying the same task
+    /// unchanged cannot succeed; admit it again with a larger I/O reservation.
+    /// This is not transient I/O saturation: admitted callers wait for held
+    /// slots until their task stops.
+    RuntimeIoWaveReservationExceeded {
+        requested_slots: usize,
+        reserved_slots: usize,
+    },
     /// The caller's `RuntimeTaskContext` was cancelled or passed its deadline
     /// (or its resource budget was exhausted) before the work completed.
     /// Nothing from the stopped work was committed. Not a storage failure and
@@ -412,6 +421,13 @@ impl Display for HawDBError {
             ),
             HawDBError::WalRecordLimitExceeded(error) => write!(f, "execution error: {error}"),
             HawDBError::RuntimeAdmissionRefused(error) => write!(f, "execution error: {error}"),
+            HawDBError::RuntimeIoWaveReservationExceeded {
+                requested_slots,
+                reserved_slots,
+            } => write!(
+                f,
+                "execution error: runtime I/O wave requested {requested_slots} slots, exceeding the {reserved_slots}-slot reservation"
+            ),
             HawDBError::RuntimeTaskStopped(reason) => {
                 write!(f, "execution error: runtime task stopped: {reason}")
             }
@@ -531,6 +547,12 @@ impl HawDBError {
         if let Some(error) = (&error as &dyn std::error::Error).downcast_ref::<Self>() {
             return error.clone();
         }
+        // Storage publishers wrap this public error after their durable
+        // rename. Preserve it before looking for an inner task-stop reason:
+        // a lost response after publication is not a rollback-safe stop.
+        if let Some(error) = find_publish_outcome_unknown(&error) {
+            return error;
+        }
         // A cancelled or expired runtime task anywhere in the cause chain is
         // a stop, not a storage failure.
         if let Some(reason) = find_runtime_task_stop(&error) {
@@ -588,23 +610,25 @@ impl HawDBError {
 
 pub type Result<T> = std::result::Result<T, HawDBError>;
 
-/// An I/O-wave stop is the typed task stop; exceeding the wave reservation is
-/// a caller error and stays an execution error.
+/// Preserve both I/O-wave outcomes without requiring callers to parse text.
 impl From<crate::RuntimeIoWaveError> for HawDBError {
     fn from(error: crate::RuntimeIoWaveError) -> Self {
         match error {
             crate::RuntimeIoWaveError::Stopped(reason) => Self::RuntimeTaskStopped(reason),
-            error => Self::Execution(error.to_string()),
+            crate::RuntimeIoWaveError::ReservationExceeded {
+                requested_slots,
+                reserved_slots,
+            } => Self::RuntimeIoWaveReservationExceeded {
+                requested_slots,
+                reserved_slots,
+            },
         }
     }
 }
 
 impl HawDBError {
-    /// An execution error carrying `error`'s message, or the typed
-    /// `RuntimeTaskStopped` when `error` is (or is caused by) a cancelled or
-    /// expired runtime task. Use it instead of `Execution(error.to_string())`.
-    /// The typed `RuntimeTaskStopped` when `error` is (or is caused by) a
-    /// cancelled or expired runtime task, otherwise `otherwise()`. Wrap any
+    /// Return the typed `RuntimeTaskStopped` when `error` is (or is caused by)
+    /// a cancelled or expired runtime task, otherwise `otherwise()`. Wrap any
     /// contextual message built from an error that may carry a stop.
     pub fn or_stop(
         error: &(dyn std::error::Error + 'static),
@@ -616,12 +640,70 @@ impl HawDBError {
         }
     }
 
+    /// Preserve task stops and I/O-wave reservation mismatches through error
+    /// wrappers; all other causes keep their existing execution diagnostic.
     pub fn from_execution_error(error: impl std::error::Error + 'static) -> Self {
-        match find_runtime_task_stop(&error) {
-            Some(reason) => Self::RuntimeTaskStopped(reason),
+        if let Some(reason) = find_runtime_task_stop(&error) {
+            return Self::RuntimeTaskStopped(reason);
+        }
+        match find_runtime_io_wave_reservation(&error) {
+            Some((requested_slots, reserved_slots)) => Self::RuntimeIoWaveReservationExceeded {
+                requested_slots,
+                reserved_slots,
+            },
             None => Self::Execution(error.to_string()),
         }
     }
+}
+
+fn find_publish_outcome_unknown(error: &(dyn std::error::Error + 'static)) -> Option<HawDBError> {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        if let Some(error @ HawDBError::PublishOutcomeUnknown { .. }) =
+            error.downcast_ref::<HawDBError>()
+        {
+            return Some(error.clone());
+        }
+        if let Some(error) = error.downcast_ref::<std::io::Error>()
+            && let Some(inner) = error.get_ref()
+            && let Some(error) = find_publish_outcome_unknown(inner)
+        {
+            return Some(error);
+        }
+        current = error.source();
+    }
+    None
+}
+
+fn find_runtime_io_wave_reservation(
+    error: &(dyn std::error::Error + 'static),
+) -> Option<(usize, usize)> {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        if let Some(crate::RuntimeIoWaveError::ReservationExceeded {
+            requested_slots,
+            reserved_slots,
+        }) = error.downcast_ref::<crate::RuntimeIoWaveError>()
+        {
+            return Some((*requested_slots, *reserved_slots));
+        }
+        if let Some(HawDBError::RuntimeIoWaveReservationExceeded {
+            requested_slots,
+            reserved_slots,
+        }) = error.downcast_ref::<HawDBError>()
+        {
+            return Some((*requested_slots, *reserved_slots));
+        }
+        // io::Error hides its boxed cause from Error::source.
+        if let Some(error) = error.downcast_ref::<std::io::Error>()
+            && let Some(inner) = error.get_ref()
+            && let Some(refusal) = find_runtime_io_wave_reservation(inner)
+        {
+            return Some(refusal);
+        }
+        current = error.source();
+    }
+    None
 }
 
 /// The cancellation reason of a stopped runtime task in `error`'s cause chain.
@@ -715,5 +797,44 @@ fn descriptor_os_limit(code: i32) -> bool {
     {
         let _ = code;
         false
+    }
+}
+
+#[cfg(test)]
+mod runtime_io_wave_tests {
+    use super::*;
+
+    fn refusal() -> crate::RuntimeIoWaveError {
+        crate::RuntimeIoWaveError::ReservationExceeded {
+            requested_slots: 2,
+            reserved_slots: 1,
+        }
+    }
+
+    #[test]
+    fn reservation_refusal_stays_typed_directly_and_through_io_context() {
+        for error in [
+            HawDBError::from(refusal()),
+            HawDBError::from_execution_error(refusal()),
+            HawDBError::from_execution_error(std::io::Error::other(refusal())),
+        ] {
+            assert!(matches!(
+                error,
+                HawDBError::RuntimeIoWaveReservationExceeded {
+                    requested_slots: 2,
+                    reserved_slots: 1,
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn stopped_io_wave_stays_a_task_stop() {
+        assert!(matches!(
+            HawDBError::from_execution_error(crate::RuntimeIoWaveError::Stopped(
+                crate::RuntimeCancellationReason::DeadlineExceeded,
+            )),
+            HawDBError::RuntimeTaskStopped(crate::RuntimeCancellationReason::DeadlineExceeded)
+        ));
     }
 }

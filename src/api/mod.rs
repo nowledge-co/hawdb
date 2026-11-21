@@ -614,6 +614,11 @@ pub(super) struct DatabaseTransactionState {
     /// pins the statement clock to it, so `CURRENT_TIMESTAMP`, `now()`,
     /// `LOCALTIMESTAMP` and clock defaults agree across the transaction.
     sql_clock: hawdb_core::temporal::OffsetDateTime,
+    /// Graph change epoch of the transaction's base snapshot.
+    base_graph_change_commit_epoch: u64,
+    /// Set once the caller reads the graph change epoch: commit is refused
+    /// unless the committed graph change epoch still equals this value.
+    graph_change_guard: Option<u64>,
 }
 
 struct SparseRelationalStatementStage {
