@@ -33,6 +33,14 @@ pub(in crate::relational) fn relational_schema_digest_with_work_context(
     schema: &RelationalTableSchema,
     work: &CheckpointWorkContext,
 ) -> Result<Sha256Digest, RelationalIndexShadowError> {
+    digest_with_include_metadata(schema, work, true)
+}
+
+pub(super) fn digest_with_include_metadata(
+    schema: &RelationalTableSchema,
+    work: &CheckpointWorkContext,
+    include_metadata: bool,
+) -> Result<Sha256Digest, RelationalIndexShadowError> {
     let mut output = SchemaDigest {
         hasher: IntegrityHasher::new(),
         work,
@@ -86,6 +94,9 @@ pub(in crate::relational) fn relational_schema_digest_with_work_context(
     for index in &schema.indexes {
         output.bytes(index.name.as_bytes())?;
         output.strings(&index.columns)?;
+        if include_metadata {
+            output.strings(&index.included_columns)?;
+        }
         output.update(&[u8::from(index.unique)])?;
         if let Some(predicate) = &index.predicate {
             // Full-index schemas retain their legacy durable digest. Partial
@@ -253,10 +264,11 @@ impl SchemaDigest<'_> {
                 self.bytes(column.as_bytes())?;
                 self.update(&[u8::from(*negated)])
             }
-            RelationalPredicate::NumericCompare { .. }
+            RelationalPredicate::RowCompare { .. }
+            | RelationalPredicate::NumericCompare { .. }
             | RelationalPredicate::NumericIsNull { .. } => {
                 Err(RelationalIndexShadowError::Admission(
-                    "partial-index schema contains an unsupported numeric predicate".into(),
+                    "partial-index schema contains an unsupported predicate".into(),
                 ))
             }
         }

@@ -8,6 +8,8 @@ use std::sync::mpsc;
 use std::thread;
 use tempfile::tempdir;
 
+mod storage_backend;
+
 const LAYOUTS: [Layout; 3] = [Layout::Versioned, Layout::Hybrid, Layout::Cow];
 
 #[test]

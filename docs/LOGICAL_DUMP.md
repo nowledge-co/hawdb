@@ -140,7 +140,10 @@ take file names from the manifest, never by listing the directory.
         { "columns": ["thread"], "references_table": "threads", "references_columns": ["id"],
           "on_delete": "cascade", "on_update": "no_action" }
       ],
-      "indexes": [{ "name": "events_at", "columns": ["at"], "unique": false }]
+      "indexes": [
+        { "name": "events_at", "columns": ["at"],
+          "included_columns": ["body", "score"], "unique": false }
+      ]
     }
   ],
   "graph": {
@@ -176,6 +179,12 @@ take file names from the manifest, never by listing the directory.
   field and continue to import as full indexes. Import renders the structured
   predicate through the SQL parser before loading rows, then rebuilds only its
   `TRUE` members.
+- A relational index may list `included_columns`. They are recreated with
+  PostgreSQL `INCLUDE (...)` and provide covering payload only; `columns`
+  alone define ordering and uniqueness. The field is omitted when empty, and
+  format-1 dumps written before covering indexes therefore import with an empty
+  list. `verify` rejects an unknown column, a duplicate, or overlap between a
+  key and included column before publishing any imported state.
 - A graph property may carry a `default`, the creation-time default declared
   by `CREATE PROPERTY ... DEFAULT ...`: `{"literal": <value>}` (a non-null
   value in the encoding below that the property `type` accepts) or

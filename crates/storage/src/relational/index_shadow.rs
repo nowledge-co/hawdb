@@ -1563,15 +1563,19 @@ impl RelationalIndexShadowReader {
         &self,
         state: &RelationalState,
     ) -> Result<(), RelationalIndexShadowError> {
-        let expected =
-            required_logical_roots(state, self.config.max_roots.get(), ErrorClass::Admission)?;
-        let matches = borrowed_logical_roots(&self.manifest.roots)
+        let expected = required_logical_roots(
+            state,
+            &self.manifest,
+            self.config.max_roots.get(),
+            ErrorClass::Admission,
+        )?;
+        let roots_match = borrowed_logical_roots(&self.manifest.roots)
             .eq(expected.iter().map(RootDigestEntry::from_logical));
         let expected_catalog = catalog_schema_digest(&expected, ErrorClass::Corrupt)?;
         let expected_root_set = root_set_digest(&expected);
         if self.manifest.catalog_schema_digest != expected_catalog
             || self.manifest.root_set_digest != expected_root_set
-            || !matches
+            || !roots_match
         {
             return Err(RelationalIndexShadowError::Corrupt(format!(
                 "required relational index roots do not match the pinned schema: expected {} roots with catalog/root-set {}/{}, found {} roots with {}/{}",
@@ -1969,9 +1973,9 @@ impl LeadingPrefixStatisticsBuilder {
         }
         let leading_non_null =
             ordered_relational_key_prefix_ends(key, &mut self.current_prefix_ends)?;
-        if self.current_prefix_ends.len() != self.statistics.len() {
+        if self.current_prefix_ends.len() < self.statistics.len() {
             return Err(RelationalIndexShadowError::Corrupt(format!(
-                "relational index key contains {} values, expected {}",
+                "relational index key contains {} values, expected at least {}",
                 self.current_prefix_ends.len(),
                 self.statistics.len()
             )));
@@ -2487,6 +2491,40 @@ fn encode_relational_key(key: &RelationalKey) -> Result<Vec<u8>, RelationalIndex
 pub(super) fn relational_schema_digest(
     schema: &RelationalTableSchema,
 ) -> Result<Sha256Digest, RelationalIndexShadowError> {
+    digest_with_include_metadata(schema, true)
+}
+
+/// Before covering indexes, a declared index had no INCLUDE count in its
+/// schema digest. Try that exact encoding only for a schema it can describe.
+pub(crate) fn schema_digest_for_binding(
+    schema: &RelationalTableSchema,
+    recorded: Option<Sha256Digest>,
+    work: Option<&crate::background::CheckpointWorkContext>,
+) -> Result<Sha256Digest, RelationalIndexShadowError> {
+    let digest = |include_metadata| match work {
+        Some(work) => checkpoint::digest_with_include_metadata(schema, work, include_metadata),
+        None => digest_with_include_metadata(schema, include_metadata),
+    };
+    let current = digest(true)?;
+    if recorded.is_some_and(|old| old != current)
+        && !schema.indexes.is_empty()
+        && schema
+            .indexes
+            .iter()
+            .all(|index| index.included_columns.is_empty())
+    {
+        let legacy = digest(false)?;
+        if recorded == Some(legacy) {
+            return Ok(legacy);
+        }
+    }
+    Ok(current)
+}
+
+fn digest_with_include_metadata(
+    schema: &RelationalTableSchema,
+    include_metadata: bool,
+) -> Result<Sha256Digest, RelationalIndexShadowError> {
     let mut encoded = Vec::new();
     encode_bytes(&mut encoded, schema.name.as_bytes())?;
     encode_count(&mut encoded, schema.columns.len(), "columns")?;
@@ -2540,6 +2578,9 @@ pub(super) fn relational_schema_digest(
     for index in &schema.indexes {
         encode_bytes(&mut encoded, index.name.as_bytes())?;
         encode_string_list(&mut encoded, &index.columns)?;
+        if include_metadata {
+            encode_string_list(&mut encoded, &index.included_columns)?;
+        }
         encoded.push(u8::from(index.unique));
         if let Some(predicate) = &index.predicate {
             // Preserve the pre-partial-index digest byte-for-byte for schemas
@@ -2585,11 +2626,11 @@ fn encode_index_predicate(
             encoded.push(u8::from(*negated));
             Ok(())
         }
-        RelationalPredicate::NumericCompare { .. } | RelationalPredicate::NumericIsNull { .. } => {
-            Err(RelationalIndexShadowError::Admission(
-                "partial-index schema contains an unsupported numeric predicate".into(),
-            ))
-        }
+        RelationalPredicate::RowCompare { .. }
+        | RelationalPredicate::NumericCompare { .. }
+        | RelationalPredicate::NumericIsNull { .. } => Err(RelationalIndexShadowError::Admission(
+            "partial-index schema contains an unsupported predicate".into(),
+        )),
     }
 }
 
@@ -2633,16 +2674,21 @@ fn borrowed_logical_roots(
 
 fn required_logical_roots(
     state: &RelationalState,
+    manifest: &RelationalIndexShadowManifest,
     max_roots: usize,
     error_class: ErrorClass,
 ) -> Result<Vec<RelationalIndexLogicalRoot>, RelationalIndexShadowError> {
     let expected_count = required_root_count(state, max_roots, error_class)?;
     let mut roots = Vec::with_capacity(expected_count);
     for (table, schema) in &state.schemas {
-        let schema_digest = relational_schema_digest(schema)?;
+        let definitions = schema.required_index_definitions();
+        let recorded = definitions
+            .first()
+            .and_then(|definition| manifest.root(table, &definition.name))
+            .map(|root| root.schema_digest);
+        let schema_digest = schema_digest_for_binding(schema, recorded, None)?;
         roots.extend(
-            schema
-                .required_index_definitions()
+            definitions
                 .into_iter()
                 .map(|definition| RelationalIndexLogicalRoot {
                     identity: IndexIdentity {

@@ -62,6 +62,7 @@ mod comparison_chains;
 mod compressed_histogram;
 mod concurrent_transactions;
 mod cost_based_start;
+mod covering_indexes;
 mod crystal_reads;
 mod crystal_source;
 mod cypher_order_by_nulls;

@@ -362,13 +362,14 @@ impl Binder<'_> {
             }
             Syntax::Like { .. }
             | Syntax::Filtered { .. }
+            | Syntax::Row(_)
             | Syntax::Wildcard(_)
             | Syntax::Parameter(_)
             | Syntax::Collate { .. } => {
                 return Err(self.error(
                     Code::UnsupportedExpression,
                     span,
-                    "wildcards, parameters and COLLATE are not creation properties",
+                    "row constructors, wildcards, parameters and COLLATE are not creation properties",
                 ));
             }
         };

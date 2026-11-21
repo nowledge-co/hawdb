@@ -848,6 +848,19 @@ pub(crate) fn explain_predicate(predicate: &SqlPredicate) -> String {
             explain_comparison_operator(*op),
             explain_expression(right)
         ),
+        ExprKind::RowCompare { left, op, right } => format!(
+            "({}) {} ({})",
+            left.iter()
+                .map(explain_expression)
+                .collect::<Vec<_>>()
+                .join(", "),
+            explain_comparison_operator(*op),
+            right
+                .iter()
+                .map(explain_expression)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         ExprKind::InList {
             left,
             values,

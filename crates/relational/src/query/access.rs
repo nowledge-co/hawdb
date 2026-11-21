@@ -286,9 +286,6 @@ pub(super) fn index_access_candidate(
     let prefix_len = prefix.len();
     let key = RelationalKey(prefix);
     let bounds = range::bind_range(planning, columns, &key)?;
-    if prefix_len == 0 && bounds.is_none() {
-        return Ok(None);
-    }
     if !index_prefix_covers_matches(
         schema,
         columns,
@@ -322,15 +319,27 @@ pub(super) fn index_access_candidate(
     });
     let equality_covered =
         predicate_is_covered_by_equalities(planning.predicate, &access_columns, table, qualifier);
+    let has_included_columns = schema
+        .indexes
+        .iter()
+        .find(|index| index.name == name)
+        .is_some_and(|index| !index.included_columns.is_empty());
     let exclusive_bound = if equality_covered {
         None
-    } else if order_prefix_len == order_by.len()
+    } else if !has_included_columns
+        && order_prefix_len == order_by.len()
         && prefix_len.saturating_add(order_by.len()) == columns.len()
     {
         bind_canonical_keyset_bound(planning, &key, &access_columns, range_column)?
     } else {
         None
     };
+    // An empty equality prefix is legal only when a real first-column range or
+    // a complete row-constructor cursor supplies the traversal bound. Never
+    // turn a NULL or incompatible cursor into an unbounded empty-prefix scan.
+    if prefix_len == 0 && bounds.is_none() && exclusive_bound.is_none() {
+        return Ok(None);
+    }
     if !equality_covered && !range_covered && exclusive_bound.is_none() {
         order_prefix_len = 0;
         direction = RelationalIndexScanDirection::Forward;
@@ -373,7 +382,10 @@ pub(super) fn index_access_candidate(
         match state.index_prefix_cardinality_at_most(table, &name, &key, *cardinality_limit) {
             Some(rows) => rows,
             None if !state.materialized_index_postings_resident() => {
-                let exact_count = if !unique && prefix_len == columns.len() {
+                // A covering key can span many leaves with distinct payloads.
+                // Use prefix statistics rather than walking those leaves to plan a read.
+                let exact_count = if !unique && !has_included_columns && prefix_len == columns.len()
+                {
                     planning
                         .index_runtime
                         .map(|runtime| runtime.exact_posting_count(table, &name, &key))
@@ -502,7 +514,7 @@ pub(super) fn bind_canonical_keyset_bound(
         parameters,
         ..
     } = planning;
-    let Some((first, second)) = canonical_keyset_values_with_range(
+    let Some(values) = canonical_keyset_values_with_range(
         *predicate,
         access_columns,
         order_by,
@@ -513,7 +525,7 @@ pub(super) fn bind_canonical_keyset_bound(
         return Ok(None);
     };
     let mut bound = prefix.0.clone();
-    for (value, item) in [(first, &order_by[0]), (second, &order_by[1])] {
+    for (value, item) in values.into_iter().zip(order_by.iter()) {
         let Some(position) = schema.column_position(&item.expression.require_column()?.name) else {
             return Ok(None);
         };
@@ -913,7 +925,7 @@ pub(super) fn visit_base_entries<'a>(
             index_runtime.visit_range_entries(state, table, name, scan, |index_key, key| {
                 let row = match covered_columns {
                     Some(index_columns) => row_runtime
-                        .read_index_covered(table, index_columns, index_key, key)?,
+                        .read_index_covered(table, name, index_columns, index_key, key)?,
                     None => row_runtime.read_point(table, key)?,
                 };
                 match row {

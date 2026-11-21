@@ -173,20 +173,13 @@ fn action(value: RelationalReferentialAction) -> u8 {
 }
 
 pub(crate) fn schema(sink: &mut impl Sink, schema: Schema<'_>) -> Result<(), RelationalError> {
-    schema_with_index_predicates(sink, schema, true)
+    schema_for_layout(sink, schema, super::IndexSchemaLayout::Combined)
 }
 
-pub(crate) fn legacy_schema(
+pub(super) fn schema_for_layout(
     sink: &mut impl Sink,
     schema: Schema<'_>,
-) -> Result<(), RelationalError> {
-    schema_with_index_predicates(sink, schema, false)
-}
-
-fn schema_with_index_predicates(
-    sink: &mut impl Sink,
-    schema: Schema<'_>,
-    index_predicates: bool,
+    layout: super::IndexSchemaLayout,
 ) -> Result<(), RelationalError> {
     bytes(sink, schema.name.as_bytes())?;
     count(sink, schema.columns.len(), "table columns")?;
@@ -244,8 +237,15 @@ fn schema_with_index_predicates(
     for index in schema.indexes {
         bytes(sink, index.name.as_bytes())?;
         strings(sink, &index.columns)?;
+        if layout.has_includes() {
+            strings(sink, &index.included_columns)?;
+        } else if !index.included_columns.is_empty() {
+            return Err(RelationalError::Schema(
+                "legacy relational schema cannot encode INCLUDE columns".into(),
+            ));
+        }
         sink.raw(&[u8::from(index.unique)])?;
-        if index_predicates {
+        if layout.has_predicates() {
             sink.raw(&[u8::from(index.predicate.is_some())])?;
             if let Some(index_predicate) = &index.predicate {
                 predicate(sink, index_predicate)?;
@@ -344,6 +344,32 @@ pub(super) fn predicate(
             sink.raw(&[6])?;
             super::numeric::encode(sink, expression)?;
             sink.raw(&[u8::from(*negated)])?;
+        }
+        RelationalPredicate::RowCompare { fields, op } => {
+            sink.raw(&[7, comparison_tag(*op)])?;
+            count(sink, fields.len(), "row comparison fields")?;
+            let ordered = !matches!(
+                op,
+                RelationalComparisonOp::Eq | RelationalComparisonOp::NotEq
+            );
+            for field in fields {
+                predicate(sink, &field.equality)?;
+                if ordered {
+                    predicate(
+                        sink,
+                        field.ordering.as_ref().ok_or_else(|| {
+                            RelationalError::Durability(
+                                "ordered row comparison field is missing its ordering predicate"
+                                    .into(),
+                            )
+                        })?,
+                    )?;
+                } else if field.ordering.is_some() {
+                    return Err(RelationalError::Durability(
+                        "equality row comparison field has an ordering predicate".into(),
+                    ));
+                }
+            }
         }
         RelationalPredicate::And(left, right) | RelationalPredicate::Or(left, right) => {
             sink.raw(&[u8::from(matches!(input, RelationalPredicate::Or(..)))])?;

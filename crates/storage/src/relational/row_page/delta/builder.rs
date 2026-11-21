@@ -91,7 +91,13 @@ impl RelationalRowDeltaBuilder {
         state: &RelationalState,
         config: RelationalRowDeltaConfig,
     ) -> Result<(), RelationalRowDeltaError> {
-        let tables = table_metadata_for_state(state)?;
+        let tables = table_metadata_for_state(
+            state,
+            base.manifest()
+                .tables
+                .iter()
+                .map(|table| (table.table.as_str(), table.schema_digest)),
+        )?;
         codec::validate_tables_against_base(base, tables, config)?;
         Ok(())
     }
@@ -125,7 +131,13 @@ impl RelationalRowDeltaBuilder {
         config: RelationalRowDeltaConfig,
     ) -> Result<Self, RelationalRowDeltaError> {
         let delta_generation = next_recovery_delta_generation(base, expected_previous)?;
-        let tables = table_metadata_for_state(state)?;
+        let tables = table_metadata_for_state(
+            state,
+            base.manifest()
+                .tables
+                .iter()
+                .map(|table| (table.table.as_str(), table.schema_digest)),
+        )?;
         Self::new_inner(
             directory,
             base,
@@ -145,7 +157,13 @@ impl RelationalRowDeltaBuilder {
         state: &RelationalState,
         config: RelationalRowDeltaConfig,
     ) -> Result<Self, RelationalRowDeltaError> {
-        let tables = table_metadata_for_state(state)?;
+        let tables = table_metadata_for_state(
+            state,
+            base.manifest()
+                .tables
+                .iter()
+                .map(|table| (table.table.as_str(), table.schema_digest)),
+        )?;
         Self::new(
             directory,
             base,
@@ -557,11 +575,12 @@ impl RelationalRowDeltaBuilder {
                     schema.name
                 ))
             })?;
-            let digest =
-                crate::relational::index_shadow::relational_schema_digest_with_work_context(
-                    schema, work,
-                )
-                .map_err(|error| RelationalRowDeltaError::Corrupt(error.to_string()))?;
+            let digest = crate::relational::index_shadow::schema_digest_for_binding(
+                schema,
+                Some(table.schema_digest),
+                Some(work),
+            )
+            .map_err(|error| RelationalRowDeltaError::Corrupt(error.to_string()))?;
             changed |= table.table != schema.name
                 || table.schema_digest != digest
                 || table.column_count != columns;
@@ -589,7 +608,12 @@ impl RelationalRowDeltaBuilder {
         final_state: &RelationalState,
         selection: DeltaSelection,
     ) -> Result<RelationalRowDeltaReport, RelationalRowDeltaError> {
-        let final_tables = table_metadata_for_state(final_state)?;
+        let final_tables = table_metadata_for_state(
+            final_state,
+            self.tables
+                .iter()
+                .map(|table| (table.table.as_str(), table.schema_digest)),
+        )?;
         if final_tables.len() != self.tables.len()
             || final_tables
                 .iter()
@@ -1287,8 +1311,9 @@ fn next_row_delta_generation() -> u64 {
     generation.max(1)
 }
 
-fn table_metadata_for_state(
+fn table_metadata_for_state<'a>(
     state: &RelationalState,
+    mut base_digests: impl Iterator<Item = (&'a str, hawdb_integrity::Sha256Digest)>,
 ) -> Result<Vec<RelationalRowDeltaTableMetadata>, RelationalRowDeltaError> {
     state
         .table_schemas()
@@ -1305,15 +1330,15 @@ fn table_metadata_for_state(
                     schema.name
                 ))
             })?;
-            let schema_digest = state
-                .table_schema_digest(&schema.name)
-                .map_err(|error| RelationalRowDeltaError::Corrupt(error.to_string()))?
-                .ok_or_else(|| {
-                    RelationalRowDeltaError::Corrupt(format!(
-                        "row delta table {} disappeared while deriving its schema fence",
-                        schema.name
-                    ))
-                })?;
+            // Both inventories are in table-name order. A new or renamed table
+            // still fails the caller's exact schema comparison.
+            let recorded = base_digests
+                .next()
+                .filter(|(name, _)| *name == schema.name)
+                .map(|(_, digest)| digest);
+            let schema_digest =
+                crate::relational::index_shadow::schema_digest_for_binding(schema, recorded, None)
+                    .map_err(|error| RelationalRowDeltaError::Corrupt(error.to_string()))?;
             Ok(RelationalRowDeltaTableMetadata {
                 last_row_id: state.last_row_id(&schema.name),
                 table: schema.name.clone(),

@@ -60,6 +60,12 @@ pub(super) fn equality<'a>(
         RelationalPredicate::And(left, right) => {
             equality(left, column).or_else(|| equality(right, column))
         }
+        RelationalPredicate::RowCompare {
+            fields,
+            op: RelationalComparisonOp::Eq,
+        } => fields
+            .iter()
+            .find_map(|field| equality(&field.equality, column)),
         RelationalPredicate::Compare {
             column: name,
             op: RelationalComparisonOp::Eq,

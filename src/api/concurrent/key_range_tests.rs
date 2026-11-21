@@ -198,6 +198,7 @@ fn partial_index_does_not_narrow_the_range_lock_domain() {
         unique_constraints: Vec::new(),
         foreign_keys: Vec::new(),
         indexes: vec![hawdb_storage::relational::RelationalIndexSchema {
+            included_columns: Vec::new(),
             name: "active_key_idx".into(),
             columns: vec!["indexed_key".into()],
             unique: false,

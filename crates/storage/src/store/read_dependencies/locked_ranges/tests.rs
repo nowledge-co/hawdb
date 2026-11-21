@@ -54,6 +54,7 @@ fn fixture_with_group_type(group_type: RelationalScalarType) -> (GraphStore, Cat
                     indexes: vec![RelationalIndexSchema {
                         name: "by_group".into(),
                         columns: vec!["group".into(), "id".into()],
+                        included_columns: Vec::new(),
                         unique: false,
                         predicate: None,
                     }],
@@ -157,6 +158,7 @@ fn secondary_range_validation_ignores_a_partial_index_declared_first() {
                     foreign_keys: vec![],
                     indexes: vec![
                         RelationalIndexSchema {
+                            included_columns: Vec::new(),
                             name: "active_by_group".into(),
                             columns: vec!["group".into(), "id".into()],
                             unique: false,
@@ -167,6 +169,7 @@ fn secondary_range_validation_ignores_a_partial_index_declared_first() {
                             }),
                         },
                         RelationalIndexSchema {
+                            included_columns: Vec::new(),
                             name: "all_by_group".into(),
                             columns: vec!["group".into(), "id".into()],
                             unique: false,

@@ -311,6 +311,7 @@ pub(in crate::relational::row_page::publication) fn clone_schema(
     let indexes = clone_list(&schema.indexes, work, |index, work| {
         let name = text(&index.name, work)?;
         let columns = clone_names(&index.columns, work)?;
+        let included_columns = clone_names(&index.included_columns, work)?;
         let predicate = index
             .predicate
             .as_ref()
@@ -322,6 +323,7 @@ pub(in crate::relational::row_page::publication) fn clone_schema(
         fixed(work, || RelationalIndexSchema {
             name,
             columns,
+            included_columns,
             unique: index.unique,
             predicate,
         })

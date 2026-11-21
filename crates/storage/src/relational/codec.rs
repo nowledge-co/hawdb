@@ -21,10 +21,10 @@ use super::{
     RelationalOverflowRef, RelationalOverflowSegment, RelationalPredicate,
     RelationalPrimaryKeyChangeCapture, RelationalPrimaryKeyChangeRebuildReason,
     RelationalReferentialAction, RelationalReplayAccess, RelationalReplayAccessSet, RelationalRow,
-    RelationalScalarType, RelationalState, RelationalTablePrimaryKeyChanges, RelationalTableSchema,
-    RelationalTableSegment, RelationalTransaction, RelationalUpdateAssignment,
-    RelationalUpdateValue, RelationalUpsertAssignment, RelationalUpsertValue, RelationalValue,
-    RelationalWrite, Uuid,
+    RelationalRowComparisonField, RelationalScalarType, RelationalState,
+    RelationalTablePrimaryKeyChanges, RelationalTableSchema, RelationalTableSegment,
+    RelationalTransaction, RelationalUpdateAssignment, RelationalUpdateValue,
+    RelationalUpsertAssignment, RelationalUpsertValue, RelationalValue, RelationalWrite, Uuid,
 };
 use crate::file_io::File;
 use crate::{
@@ -53,22 +53,56 @@ mod vector_schema_tests;
 #[cfg(test)]
 mod compatibility_tests;
 
+#[cfg(test)]
+pub(crate) use checkpoint::{
+    decode_relational_table_schema_with_work_context,
+    encode_relational_table_schema_with_work_context,
+};
 mod checkpoint;
 mod numeric;
 pub(crate) use checkpoint::{
-    clone_string_with_work_context, decode_legacy_relational_table_schema_with_work_context,
-    decode_relational_checkpoint_file_with_work_context,
-    decode_relational_table_schema_with_work_context, decode_row_owned, decode_schema_owned,
-    encode_legacy_relational_table_schema_with_work_context,
+    clone_string_with_work_context, decode_relational_checkpoint_file_with_work_context,
+    decode_relational_table_schema_with_layout_and_work, decode_row_owned, decode_schema_owned,
     encode_relational_checkpoint_with_work_context,
     encode_relational_row_payload_with_work_context,
-    encode_relational_table_schema_with_work_context,
+    encode_relational_table_schema_with_layout_and_work,
     validate_relational_table_schema_codec_shape_with_work_context, CheckpointOutputIo,
 };
 
 const WAL_MAGIC: &[u8; 8] = b"SKRLWAL1";
 const CHECKPOINT_MAGIC: &[u8; 8] = b"SKRLCKP1";
-const CODEC_VERSION: u16 = 4;
+const CODEC_VERSION: u16 = 6;
+/// The two legacy extensions were written independently, in different slots.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum IndexSchemaLayout {
+    Full,
+    Predicate,
+    Include,
+    Combined,
+}
+impl IndexSchemaLayout {
+    fn from_codec(version: u16) -> Result<Self, RelationalError> {
+        match version {
+            3 => Ok(Self::Full),
+            4 => Ok(Self::Predicate),
+            5 => Ok(Self::Include),
+            CODEC_VERSION => Ok(Self::Combined),
+            found => Err(RelationalError::UnsupportedFormat(
+                hawdb_core::error::StorageFormatError::UnsupportedVersion {
+                    format: "relational durable codec",
+                    found,
+                    supported: CODEC_VERSION,
+                },
+            )),
+        }
+    }
+    pub(super) fn has_includes(self) -> bool {
+        matches!(self, Self::Include | Self::Combined)
+    }
+    fn has_predicates(self) -> bool {
+        matches!(self, Self::Predicate | Self::Combined)
+    }
+}
 const HEADER_BYTES: usize = 64;
 const RELATIONAL_CHECKPOINT_ARTIFACT_ID: u64 = 1;
 
@@ -81,12 +115,13 @@ pub(crate) fn encode_relational_table_schema(
     Ok(encoder.finish())
 }
 
-pub(crate) fn encode_legacy_relational_table_schema(
+pub(crate) fn encode_relational_table_schema_for_layout(
     schema: &RelationalTableSchema,
+    layout: IndexSchemaLayout,
 ) -> Result<Vec<u8>, RelationalError> {
     validate_table_schema(schema)?;
     let mut encoder = Encoder::default();
-    schema_encoding::legacy_schema(&mut encoder, schema.into())?;
+    schema_encoding::schema_for_layout(&mut encoder, schema.into(), layout)?;
     Ok(encoder.finish())
 }
 
@@ -95,22 +130,19 @@ pub(crate) fn decode_relational_table_schema(
     max_encoded_bytes: usize,
     max_schema_items: usize,
 ) -> Result<RelationalTableSchema, RelationalError> {
-    decode_relational_table_schema_inner(encoded, max_encoded_bytes, max_schema_items, true)
+    decode_relational_table_schema_for_layout(
+        encoded,
+        max_encoded_bytes,
+        max_schema_items,
+        IndexSchemaLayout::Combined,
+    )
 }
 
-pub(crate) fn decode_legacy_relational_table_schema(
+pub(crate) fn decode_relational_table_schema_for_layout(
     encoded: &[u8],
     max_encoded_bytes: usize,
     max_schema_items: usize,
-) -> Result<RelationalTableSchema, RelationalError> {
-    decode_relational_table_schema_inner(encoded, max_encoded_bytes, max_schema_items, false)
-}
-
-fn decode_relational_table_schema_inner(
-    encoded: &[u8],
-    max_encoded_bytes: usize,
-    max_schema_items: usize,
-    index_predicates: bool,
+    layout: IndexSchemaLayout,
 ) -> Result<RelationalTableSchema, RelationalError> {
     if encoded.len() > max_encoded_bytes {
         return Err(RelationalError::Admission(format!(
@@ -129,7 +161,7 @@ fn decode_relational_table_schema_inner(
         max_overflow_bytes: 0,
     };
     let mut decoder = Decoder::from_slice(encoded, limits, true);
-    let schema = decoder.table_schema_with_index_predicates(index_predicates)?;
+    let schema = decoder.table_schema_for_layout(layout)?;
     decoder.finish()?;
     validate_table_schema(&schema)?;
     Ok(schema)
@@ -478,7 +510,8 @@ pub fn decode_relational_wal_batch(
     let (epoch, payload, version) = decode_envelope(bytes, WAL_MAGIC, limits.max_record_bytes)?;
     decode_relational_wal_payload(
         epoch,
-        Decoder::from_slice(payload, limits, false).with_index_predicates(version == CODEC_VERSION),
+        Decoder::from_slice(payload, limits, false)
+            .with_layout(IndexSchemaLayout::from_codec(version)?),
     )
 }
 
@@ -503,7 +536,7 @@ pub(crate) fn decode_relational_wal_batch_owned(
     };
     decode_relational_wal_payload(
         epoch,
-        Decoder::new(input, limits, false).with_index_predicates(version == CODEC_VERSION),
+        Decoder::new(input, limits, false).with_layout(IndexSchemaLayout::from_codec(version)?),
     )
 }
 
@@ -771,9 +804,9 @@ pub(crate) fn validate_relational_checkpoint_file_format(
         input.verify_remaining()?;
         return Err(error);
     }
-    let index_predicates = input.version == CODEC_VERSION;
-    let mut decoder = Decoder::new(ReadAheadFileInput::new(input), limits, false)
-        .with_index_predicates(index_predicates);
+    let layout = IndexSchemaLayout::from_codec(input.version)?;
+    let mut decoder =
+        Decoder::new(ReadAheadFileInput::new(input), limits, false).with_layout(layout);
     let table_count = decoder.count(limits.max_tables, "checkpoint tables")?;
     for _ in 0..table_count {
         let name = decoder.string()?;
@@ -866,7 +899,8 @@ fn decode_relational_checkpoint_with_storage(
         decode_envelope(bytes, CHECKPOINT_MAGIC, limits.max_record_bytes)?;
     decode_relational_checkpoint_from_decoder(
         epoch,
-        Decoder::from_slice(payload, limits, true).with_index_predicates(version == CODEC_VERSION),
+        Decoder::from_slice(payload, limits, true)
+            .with_layout(IndexSchemaLayout::from_codec(version)?),
         limits,
         storage,
         index_load,
@@ -885,7 +919,7 @@ fn decode_relational_checkpoint_from_decoder<I: DecodeInput>(
             decoder.input.verify_remaining()?;
             return Err(error);
         }
-        decoder.index_predicates = version == CODEC_VERSION;
+        decoder.layout = IndexSchemaLayout::from_codec(version)?;
     }
     let work = decoder.input.checkpoint_work_context().cloned();
     let table_count = decoder.count(limits.max_tables, "checkpoint tables")?;
@@ -1275,7 +1309,7 @@ fn decode_envelope_with_work_context<'a>(
 }
 
 fn validate_codec_version(version: u16) -> Result<(), RelationalError> {
-    if !matches!(version, 3 | CODEC_VERSION) {
+    if !matches!(version, 3..=CODEC_VERSION) {
         return Err(RelationalError::UnsupportedFormat(
             hawdb_core::StorageFormatError::UnsupportedVersion {
                 format: hawdb_core::RELATIONAL_DURABLE_CODEC_FORMAT,
@@ -1426,6 +1460,7 @@ impl Encoder {
     fn index(&mut self, index: &RelationalIndexSchema) -> Result<(), RelationalError> {
         self.string(&index.name)?;
         self.string_list(&index.columns)?;
+        self.string_list(&index.included_columns)?;
         self.u8(u8::from(index.unique));
         self.u8(u8::from(index.predicate.is_some()));
         if let Some(predicate) = &index.predicate {
@@ -1826,7 +1861,7 @@ impl FileDecodeInput {
             expected_sha256,
             hasher: IntegrityHasher::new(),
         };
-        if matches!(version, 3 | CODEC_VERSION) {
+        if matches!(version, 3..=CODEC_VERSION) {
             validate_codec_flags(flags)?;
         }
         Ok((epoch, input))
@@ -1890,7 +1925,7 @@ struct Decoder<I> {
     value_bytes: usize,
     overflow_bytes: usize,
     retain_overflow_bytes: bool,
-    index_predicates: bool,
+    layout: IndexSchemaLayout,
 }
 
 impl<'a> Decoder<SliceDecodeInput<'a>> {
@@ -1925,12 +1960,12 @@ impl<I: DecodeInput> Decoder<I> {
             value_bytes: 0,
             overflow_bytes: 0,
             retain_overflow_bytes,
-            index_predicates: true,
+            layout: IndexSchemaLayout::Combined,
         }
     }
 
-    fn with_index_predicates(mut self, index_predicates: bool) -> Self {
-        self.index_predicates = index_predicates;
+    fn with_layout(mut self, layout: IndexSchemaLayout) -> Self {
+        self.layout = layout;
         self
     }
 
@@ -2270,12 +2305,12 @@ impl<I: DecodeInput> Decoder<I> {
     }
 
     fn table_schema(&mut self) -> Result<RelationalTableSchema, RelationalError> {
-        self.table_schema_with_index_predicates(self.index_predicates)
+        self.table_schema_for_layout(self.layout)
     }
 
-    fn table_schema_with_index_predicates(
+    fn table_schema_for_layout(
         &mut self,
-        index_predicates: bool,
+        layout: IndexSchemaLayout,
     ) -> Result<RelationalTableSchema, RelationalError> {
         let name = self.string()?;
         let column_count = self.count(self.limits.max_values, "table columns")?;
@@ -2314,7 +2349,7 @@ impl<I: DecodeInput> Decoder<I> {
         let foreign_key_count = self.count(self.limits.max_values, "foreign keys")?;
         let foreign_keys = self.repeated(foreign_key_count, Self::foreign_key)?;
         let index_count = self.count(self.limits.max_values, "indexes")?;
-        let indexes = self.repeated(index_count, |decoder| decoder.index(index_predicates))?;
+        let indexes = self.repeated(index_count, |decoder| decoder.index(layout))?;
         let derived_relation = self.u8()?;
         let materialized_view = if derived_relation == 2 {
             let source = self.string()?;
@@ -2475,12 +2510,20 @@ impl<I: DecodeInput> Decoder<I> {
         }
     }
 
-    fn index(&mut self, index_predicates: bool) -> Result<RelationalIndexSchema, RelationalError> {
+    fn index(
+        &mut self,
+        layout: IndexSchemaLayout,
+    ) -> Result<RelationalIndexSchema, RelationalError> {
         Ok(RelationalIndexSchema {
             name: self.string()?,
             columns: self.string_list()?,
+            included_columns: if layout.has_includes() {
+                self.string_list()?
+            } else {
+                Vec::new()
+            },
             unique: self.boolean("index unique")?,
-            predicate: if index_predicates && self.boolean("partial index predicate")? {
+            predicate: if layout.has_predicates() && self.boolean("partial index predicate")? {
                 Some(self.predicate()?)
             } else {
                 None
@@ -2496,7 +2539,7 @@ impl<I: DecodeInput> Decoder<I> {
             1 => Ok(RelationalWrite::CreateTable(self.table_schema()?)),
             2 => Ok(RelationalWrite::CreateIndex {
                 table: self.string()?,
-                index: self.index(self.index_predicates)?,
+                index: self.index(self.layout)?,
             }),
             3 => {
                 let table = self.string()?;
@@ -2683,6 +2726,21 @@ impl<I: DecodeInput> Decoder<I> {
                 expression: self.numeric_expression()?,
                 negated: self.boolean("numeric predicate negation")?,
             }),
+            7 => {
+                let op = self.comparison_op()?;
+                let count = self.count(self.limits.max_values, "row comparison fields")?;
+                let ordered = !matches!(
+                    op,
+                    RelationalComparisonOp::Eq | RelationalComparisonOp::NotEq
+                );
+                let fields = self.repeated(count, |decoder| {
+                    Ok(RelationalRowComparisonField {
+                        equality: decoder.predicate()?,
+                        ordering: ordered.then(|| decoder.predicate()).transpose()?,
+                    })
+                })?;
+                Ok(RelationalPredicate::RowCompare { fields, op })
+            }
             0 => Ok(RelationalPredicate::And(
                 self.boxed_predicate()?,
                 self.boxed_predicate()?,

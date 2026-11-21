@@ -264,6 +264,7 @@ fn seeded_store(target_prefix_rows: usize) -> RelationalStore {
                         index: RelationalIndexSchema {
                             name: "idx_messages_space".to_string(),
                             columns: vec!["space_id".to_string()],
+                            included_columns: Vec::new(),
                             unique: false,
                             predicate: None,
                         },
@@ -278,6 +279,7 @@ fn seeded_store(target_prefix_rows: usize) -> RelationalStore {
                                 "order_index".to_string(),
                                 "id".to_string(),
                             ],
+                            included_columns: Vec::new(),
                             unique: false,
                             predicate: None,
                         },

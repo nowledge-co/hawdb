@@ -1381,17 +1381,25 @@ fn relational_schema_index_rows(schema: &RelationalTableSchema) -> Vec<Row> {
     );
     if !schema.primary_key.is_empty() {
         let name = format!("{}_pkey", schema.name);
-        rows.push(pg_index_row(schema, &name, &schema.primary_key, true, None));
+        rows.push(pg_index_row(
+            schema,
+            &name,
+            &schema.primary_key,
+            &[],
+            true,
+            None,
+        ));
     }
     rows.extend(schema.unique_constraints.iter().map(|columns| {
         let name = format!("{}_{}_key", schema.name, columns.join("_"));
-        pg_index_row(schema, &name, columns, true, None)
+        pg_index_row(schema, &name, columns, &[], true, None)
     }));
     rows.extend(schema.indexes.iter().map(|index| {
         pg_index_row(
             schema,
             &index.name,
             &index.columns,
+            &index.included_columns,
             index.unique,
             index.predicate.as_ref(),
         )
@@ -1403,6 +1411,7 @@ fn pg_index_row(
     schema: &RelationalTableSchema,
     index_name: &str,
     columns: &[String],
+    included_columns: &[String],
     unique: bool,
     predicate: Option<&RelationalPredicate>,
 ) -> Row {
@@ -1415,8 +1424,20 @@ fn pg_index_row(
     let predicate = predicate
         .map(|predicate| format!(" WHERE {}", pg_index_predicate(predicate)))
         .unwrap_or_default();
+    let include = if included_columns.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " INCLUDE ({})",
+            included_columns
+                .iter()
+                .map(|column| quote_postgres_identifier(column))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
     let index_definition = format!(
-        "CREATE {unique}INDEX {} ON public.{} USING btree ({columns}){predicate}",
+        "CREATE {unique}INDEX {} ON public.{} USING btree ({columns}){include}{predicate}",
         quote_postgres_identifier(index_name),
         quote_postgres_identifier(&schema.name),
     );
@@ -1466,7 +1487,9 @@ fn pg_index_predicate(predicate: &RelationalPredicate) -> String {
             quote_postgres_identifier(column),
             if *negated { "NOT " } else { "" }
         ),
-        RelationalPredicate::NumericCompare { .. } | RelationalPredicate::NumericIsNull { .. } => {
+        RelationalPredicate::RowCompare { .. }
+        | RelationalPredicate::NumericCompare { .. }
+        | RelationalPredicate::NumericIsNull { .. } => {
             "/* unsupported partial-index predicate */ FALSE".to_string()
         }
     }

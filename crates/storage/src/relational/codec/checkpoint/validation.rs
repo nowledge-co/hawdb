@@ -46,6 +46,28 @@ fn validate_columns(
     work.checkpoint().map_err(work_error)
 }
 
+fn validate_included_columns(
+    positions: &BTreeMap<&str, usize>,
+    key_columns: &[String],
+    included_columns: &[String],
+    work: &CheckpointWorkContext,
+) -> Result<(), RelationalError> {
+    let mut unique = key_columns
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    for column in included_columns {
+        let unit = work.start_unit().map_err(work_error)?;
+        if !positions.contains_key(column.as_str()) || !unique.insert(column.as_str()) {
+            return Err(RelationalError::Schema(format!(
+                "index INCLUDE references unknown or duplicate column {column}"
+            )));
+        }
+        unit.finish();
+    }
+    work.checkpoint().map_err(work_error)
+}
+
 pub(crate) fn validate_table_schema_with_work_context<'a>(
     schema: &'a RelationalTableSchema,
     work: &CheckpointWorkContext,
@@ -139,6 +161,7 @@ pub(crate) fn validate_table_schema_with_work_context<'a>(
             crate::relational::validate_index_predicate(schema, predicate)?;
             work.checkpoint().map_err(work_error)?;
         }
+        validate_included_columns(&positions, &index.columns, &index.included_columns, work)?;
     }
     work.checkpoint().map_err(work_error)?;
     Ok(positions)

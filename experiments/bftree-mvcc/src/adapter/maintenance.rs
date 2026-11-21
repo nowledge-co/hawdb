@@ -285,7 +285,7 @@ impl Snapshot {
         }
         Ok(())
     }
-    fn restore(&self, layout: Layout) -> Result<Index> {
+    fn restore<S: Storage>(&self, layout: Layout) -> Result<Index<S>> {
         let index = Index::new(layout)?;
         for (position, row) in self.rows.iter().enumerate() {
             let latest = self
@@ -310,10 +310,10 @@ fn journal_reader(journal: &Journal, layout: Layout) -> Result<BinaryWalReader<W
     ))
 }
 
-pub(super) fn recover(
+pub(super) fn recover<S: Storage>(
     journal: &mut Journal,
     layout: Layout,
-) -> Result<(Index, u64, RecoveryReport)> {
+) -> Result<(Index<S>, u64, RecoveryReport)> {
     // Validate the complete evidence stream first. This bounds receipt payload
     // residency and permits skipping covered index reconstruction, while never
     // treating a checkpoint as permission to ignore corrupt earlier evidence.
@@ -427,7 +427,7 @@ pub(super) fn recover(
                     Some(1) => {
                         let plan = GcPlan::decode(&payload)?;
                         for (key, version) in &plan.entries {
-                            index.remove_version(key, *version);
+                            index.remove_version(key, *version)?;
                         }
                     }
                     _ => return Err(Error::Invalid("unexpected post-checkpoint record")),
@@ -445,7 +445,7 @@ pub(super) fn recover(
     Ok((index, epoch, report))
 }
 
-impl Store {
+impl<S: Storage> Store<S> {
     pub fn storage_stats(&self) -> Result<StorageStats> {
         self.0.usable()?;
         let journal = self.0.journal.lock().map_err(|_| Error::NeedsRecovery)?;
@@ -554,7 +554,7 @@ impl Store {
                 hook(MaintenanceStage::Durable)?;
                 let index = self.0.index.read().map_err(|_| Error::NeedsRecovery)?;
                 for (n, (key, version)) in plan.entries.iter().enumerate() {
-                    index.remove_version(key, *version);
+                    index.remove_version(key, *version)?;
                     hook(MaintenanceStage::Removed(n + 1))?;
                 }
                 plan.apply_metadata(&mut journal)?;

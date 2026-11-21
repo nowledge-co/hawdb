@@ -59,12 +59,21 @@ fn fixture() -> (
                             RelationalIndexSchema {
                                 name: "bucket_idx".into(),
                                 columns: vec!["bucket".into()],
+                                included_columns: Vec::new(),
                                 unique: false,
                                 predicate: None,
                             },
                             RelationalIndexSchema {
+                                predicate: None,
                                 name: "bucket_id_idx".into(),
                                 columns: vec!["bucket".into(), "id".into()],
+                                included_columns: Vec::new(),
+                                unique: false,
+                            },
+                            RelationalIndexSchema {
+                                name: "bucket_covering_idx".into(),
+                                columns: vec!["bucket".into()],
+                                included_columns: vec!["id".into()],
                                 unique: false,
                                 predicate: None,
                             },
@@ -164,6 +173,174 @@ fn exact_posting_counts_match_skewed_values_without_visiting_rows_or_chains() {
         Err(RelationalIndexShadowError::Admission(message)) if message.contains("2 complete key components")
     ));
     drop(reader);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn covering_posting_counts_match_logical_keys_across_leaves() {
+    let (directory, state, reader, _) = fixture();
+    let index = "bucket_covering_idx";
+    let root = reader.manifest().root("counts", index).unwrap();
+    let lookup = key(2);
+    let postings = state.index_lookup("counts", index, &lookup).unwrap();
+    assert_eq!(postings.len(), 37);
+    assert!(!postings.is_empty());
+    assert!(postings.contains(&key(11)));
+    assert!(!postings.contains(&key(10)));
+    let mut ids = postings.iter().cloned().collect::<Vec<_>>();
+    assert_eq!(
+        postings.iter().rev().cloned().collect::<Vec<_>>(),
+        ids.iter().rev().cloned().collect::<Vec<_>>()
+    );
+    ids.sort_unstable();
+    assert_eq!(ids, (11..48).map(key).collect::<Vec<_>>());
+    assert!(state.index_lookup("counts", index, &key(3)).is_none());
+
+    let limits = RelationalIndexReadLimits {
+        max_rows: NonZeroUsize::MIN,
+        ..RelationalIndexReadLimits::default()
+    };
+    let (count, report) = reader
+        .count_exact_postings("counts", index, &lookup, limits)
+        .unwrap();
+    assert_eq!(count, 37);
+    assert_eq!(report.matched_index_keys, 37);
+    assert_eq!(report.rows_visited, 0);
+    assert!(report.pages_read > root.height as usize + 1);
+    let limited = RelationalIndexReadLimits {
+        max_pages: NonZeroUsize::new(root.height as usize + 1).unwrap(),
+        ..limits
+    };
+    assert!(matches!(
+        reader.count_exact_postings("counts", index, &lookup, limited),
+        Err(RelationalIndexShadowError::Admission(_))
+    ));
+    assert_eq!(
+        reader
+            .count_exact_postings("counts", index, &key(3), limits)
+            .unwrap()
+            .0,
+        0
+    );
+    drop(reader);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn covering_unique_skips_oversized_inline_payload_for_null_key() {
+    let directory = std::env::temp_dir().join(format!(
+        "hawdb-covering-null-key-{}",
+        hawdb_core::generate_uuidv7().unwrap()
+    ));
+    let overflow = RelationalOverflowConfig {
+        threshold_bytes: 32 * 1024,
+        ..RelationalOverflowConfig::default()
+    };
+    let column = |name: &str, scalar_type, nullable| RelationalColumnSchema {
+        name: name.into(),
+        scalar_type,
+        nullable,
+        default: None,
+    };
+    let schema = RelationalTableSchema {
+        name: "wide".into(),
+        columns: vec![
+            column("id", RelationalScalarType::BigInt, false),
+            column("group_id", RelationalScalarType::BigInt, true),
+            column("payload", RelationalScalarType::Text, false),
+        ],
+        primary_key: vec!["id".into()],
+        unique_constraints: Vec::new(),
+        foreign_keys: Vec::new(),
+        indexes: vec![RelationalIndexSchema {
+            predicate: None,
+            name: "wide_idx".into(),
+            columns: vec!["group_id".into()],
+            included_columns: vec!["payload".into()],
+            unique: true,
+        }],
+        materialized_view: None,
+    };
+    let oversized = "x".repeat(20 * 1024);
+    let row = |group, payload: &str| {
+        RelationalRow::new(vec![
+            RelationalValue::BigInt(1),
+            group,
+            RelationalValue::Text(payload.into()),
+        ])
+    };
+    let write_row = |row, mode| RelationalWrite::Insert {
+        table: "wide".into(),
+        rows: vec![row],
+        mode,
+    };
+    let stage = |state: &RelationalState, writes| {
+        state.stage_transaction(
+            RelationalTransaction { writes },
+            Default::default(),
+            overflow,
+        )
+    };
+    let state = stage(
+        &RelationalState::default(),
+        vec![
+            RelationalWrite::CreateTable(schema),
+            write_row(
+                row(RelationalValue::Null, &oversized),
+                RelationalInsertMode::Error,
+            ),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        state.row("wide", &key(1)).unwrap().values()[2],
+        RelationalValue::Text(oversized.clone())
+    );
+    let config = RelationalIndexShadowConfig::default();
+    RelationalIndexShadowWriter::new(config)
+        .publish(&directory, &state, 1, 1, None)
+        .unwrap();
+    let reader = RelationalIndexShadowReader::open(&directory, 1, 1, config).unwrap();
+    let null_key = RelationalKey(vec![RelationalValue::Null]);
+    assert_eq!(
+        reader
+            .count_exact_postings("wide", "wide_idx", &null_key, Default::default())
+            .unwrap()
+            .0,
+        0
+    );
+    drop(reader);
+
+    let error = stage(
+        &state,
+        vec![write_row(
+            row(RelationalValue::BigInt(7), &oversized),
+            RelationalInsertMode::Replace,
+        )],
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("exceeding limit"), "{error}");
+    let updated = stage(
+        &state,
+        vec![write_row(
+            row(RelationalValue::BigInt(7), "small"),
+            RelationalInsertMode::Replace,
+        )],
+    )
+    .unwrap();
+    assert!(updated
+        .index_lookup("wide", "wide_idx", &key(7))
+        .unwrap()
+        .contains(&key(1)));
+    let deleted = stage(
+        &state,
+        vec![RelationalWrite::DeleteByPrimaryKey {
+            table: "wide".into(),
+            keys: vec![key(1)],
+        }],
+    )
+    .unwrap();
+    assert!(deleted.row("wide", &key(1)).is_none());
     std::fs::remove_dir_all(directory).unwrap();
 }
 

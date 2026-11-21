@@ -93,8 +93,28 @@ fn schema_and_index_compilation_need_no_database_runtime() {
             index: RelationalIndexSchema {
                 name: "counter_idx".into(),
                 columns: vec!["counter".into(), "id".into()],
+                included_columns: Vec::new(),
                 unique: false,
                 predicate: None,
+            },
+        }],
+    );
+    assert_eq!(
+        compile_relational_statement_sql(
+            "CREATE UNIQUE INDEX owner_idx ON items (owner_id) INCLUDE (counter, body)",
+            &[],
+            &state
+        )
+        .unwrap()
+        .writes,
+        [RelationalWrite::CreateIndex {
+            table: "items".into(),
+            index: RelationalIndexSchema {
+                predicate: None,
+                name: "owner_idx".into(),
+                columns: vec!["owner_id".into()],
+                included_columns: vec!["counter".into(), "body".into()],
+                unique: true,
             },
         }],
     );
@@ -197,6 +217,7 @@ fn foreign_key_binding_ignores_partial_unique_indexes() {
                     foreign_keys: Vec::new(),
                     indexes: vec![
                         RelationalIndexSchema {
+                            included_columns: Vec::new(),
                             name: "partial_b_a".into(),
                             columns: vec!["b".into(), "a".into()],
                             unique: true,
@@ -207,6 +228,7 @@ fn foreign_key_binding_ignores_partial_unique_indexes() {
                             }),
                         },
                         RelationalIndexSchema {
+                            included_columns: Vec::new(),
                             name: "full_a_b".into(),
                             columns: vec!["a".into(), "b".into()],
                             unique: true,

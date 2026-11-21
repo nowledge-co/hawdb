@@ -214,7 +214,7 @@ fn validate_search_indexes(schema: &Schema, tables: &BTreeSet<&str>) -> Result<(
     Ok(())
 }
 
-fn validate_partial_indexes(schema: &Schema) -> Result<()> {
+fn validate_table_indexes(schema: &Schema) -> Result<()> {
     fn validate(predicate: &IndexPredicate, columns: &BTreeSet<&str>) -> Result<()> {
         match predicate {
             IndexPredicate::And { left, right } | IndexPredicate::Or { left, right } => {
@@ -240,7 +240,29 @@ fn validate_partial_indexes(schema: &Schema) -> Result<()> {
             .iter()
             .map(|column| column.name.as_str())
             .collect::<BTreeSet<_>>();
+        let mut names = BTreeSet::new();
         for index in &table.indexes {
+            if index.name.is_empty() || !names.insert(index.name.as_str()) {
+                return Err(malformed(format!(
+                    "table {} has an empty or duplicate index name {}",
+                    table.name, index.name
+                )));
+            }
+            if index.columns.is_empty() {
+                return Err(malformed(format!(
+                    "index {} on table {} has no key columns",
+                    index.name, table.name
+                )));
+            }
+            let mut used = BTreeSet::new();
+            for column in index.columns.iter().chain(&index.included_columns) {
+                if !columns.contains(column.as_str()) || !used.insert(column.as_str()) {
+                    return Err(malformed(format!(
+                        "index {} on table {} references unknown or duplicate column {}",
+                        index.name, table.name, column
+                    )));
+                }
+            }
             if let Some(predicate) = &index.predicate {
                 validate(predicate, &columns)?;
                 index_predicate_sql(predicate)?;
@@ -285,7 +307,7 @@ impl<'a> Plan<'a> {
             return Err(malformed("schema.json lists a table twice"));
         }
         validate_search_indexes(schema, &names)?;
-        validate_partial_indexes(schema)?;
+        validate_table_indexes(schema)?;
         validate_graph_property_defaults(&schema.graph)?;
         let mut paths = BTreeSet::from([manifest.schema.path.as_str()]);
         let mut plan = Self {
@@ -796,12 +818,18 @@ impl Target {
                 continue;
             }
             for index in &table.indexes {
+                let include = if index.included_columns.is_empty() {
+                    String::new()
+                } else {
+                    format!(" INCLUDE ({})", column_list(&index.included_columns))
+                };
                 let sql = format!(
-                    "CREATE {}INDEX {} ON {} ({}){}",
+                    "CREATE {}INDEX {} ON {} ({}){}{}",
                     if index.unique { "UNIQUE " } else { "" },
                     quote_identifier(&index.name),
                     quote_identifier(&table.name),
                     column_list(&index.columns),
+                    include,
                     index
                         .predicate
                         .as_ref()

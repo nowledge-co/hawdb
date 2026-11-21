@@ -156,6 +156,8 @@ pub(super) enum ReferentialAction {
 pub(super) struct Index {
     pub name: String,
     pub columns: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub included_columns: Vec<String>,
     pub unique: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub predicate: Option<IndexPredicate>,

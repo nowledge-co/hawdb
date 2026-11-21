@@ -67,6 +67,7 @@ impl DecodeInput for Input<'_> {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn decode_schema(
     encoded: &[u8],
     max_encoded_bytes: usize,
@@ -79,12 +80,13 @@ pub(crate) fn decode_schema(
         max_schema_items,
         work,
         None,
-        true,
+        IndexSchemaLayout::Combined,
     )
 }
 
-pub(crate) fn decode_legacy_schema(
+pub(crate) fn decode_schema_for_layout(
     encoded: &[u8],
+    layout: IndexSchemaLayout,
     max_encoded_bytes: usize,
     max_schema_items: usize,
     work: &CheckpointWorkContext,
@@ -95,7 +97,7 @@ pub(crate) fn decode_legacy_schema(
         max_schema_items,
         work,
         None,
-        false,
+        layout,
     )
 }
 
@@ -111,7 +113,7 @@ pub(crate) fn decode_schema_owned(
         max_schema_items,
         allocations,
         Some(allocations),
-        true,
+        IndexSchemaLayout::Combined,
     )
 }
 
@@ -121,7 +123,7 @@ fn decode_schema_inner(
     max_schema_items: usize,
     work: &CheckpointWorkContext,
     allocations: Option<&crate::background::CheckpointDecodeContext>,
-    index_predicates: bool,
+    layout: IndexSchemaLayout,
 ) -> Result<RelationalTableSchema, RelationalError> {
     if encoded.len() > max_encoded_bytes {
         return Err(RelationalError::Admission(format!(
@@ -148,7 +150,7 @@ fn decode_schema_inner(
         allocations,
     };
     let mut decoder = Decoder::new(input, limits, true);
-    let schema = decoder.table_schema_with_index_predicates(index_predicates)?;
+    let schema = decoder.table_schema_for_layout(layout)?;
     decoder.finish()?;
     let scratch = allocations.map(|_| crate::background::CheckpointDecodeContext {
         work: work.clone(),
@@ -169,7 +171,12 @@ fn decode_schema_inner(
                     .iter()
                     .map(|foreign| foreign.columns.len()),
             )
-            .chain(schema.indexes.iter().map(|index| index.columns.len()))
+            .chain(schema.indexes.iter().map(|index| {
+                index
+                    .columns
+                    .len()
+                    .saturating_add(index.included_columns.len())
+            }))
             .max()
             .unwrap_or(0);
         if keys > 0 {

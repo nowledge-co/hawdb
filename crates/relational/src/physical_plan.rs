@@ -1173,8 +1173,16 @@ impl PreparedRelationalExecutionDescriptor {
             && select.group_by.is_empty();
         let mode = if ordered_index_projection
             && access_plan.base_access.descriptor.kind == RelationalAccessPathKind::Index
+            && !access_plan.base_access.descriptor.covering
         {
             PreparedRelationalExecutionMode::OrderedIndexProjection
+        } else if ordered_index_projection
+            && access_plan.base_access.descriptor.kind == RelationalAccessPathKind::Index
+        {
+            // A covering ordered index can stream projected values directly
+            // from its pinned leaf entries. The locator-batch mode below is
+            // specifically the base-row hydration path.
+            PreparedRelationalExecutionMode::StreamingProjection
         } else if ordered_primary_key_range {
             PreparedRelationalExecutionMode::StreamingProjection
         } else if has_aggregate || !select.group_by.is_empty() {

@@ -138,22 +138,17 @@ pub(in crate::relational::row_page::publication) fn root_set_digest_with_work_co
     tables: &[RelationalRowPageTableRoot],
     work: &CheckpointWorkContext,
 ) -> Result<Sha256Digest, RelationalRowPagePublicationError> {
-    let mut hasher = IntegrityHasher::new();
-    for table in tables {
-        let encoded = super::encode_tables(std::slice::from_ref(table), Some(work), false)?;
-        hash(&mut hasher, &encoded, work)?;
-    }
-    work.checkpoint().map_err(work_error)?;
-    Ok(hasher.finish().sha256)
+    root_set_digest_for_layout(tables, work, super::IndexSchemaLayout::Combined)
 }
 
-pub(super) fn legacy_root_set_digest_with_work_context(
+pub(super) fn root_set_digest_for_layout(
     tables: &[RelationalRowPageTableRoot],
     work: &CheckpointWorkContext,
+    layout: super::IndexSchemaLayout,
 ) -> Result<Sha256Digest, RelationalRowPagePublicationError> {
     let mut hasher = IntegrityHasher::new();
     for table in tables {
-        let encoded = super::encode_tables(std::slice::from_ref(table), Some(work), true)?;
+        let encoded = super::encode_tables(std::slice::from_ref(table), Some(work), layout)?;
         hash(&mut hasher, &encoded, work)?;
     }
     work.checkpoint().map_err(work_error)?;

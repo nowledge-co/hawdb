@@ -86,11 +86,11 @@ fn verify_checkpoint(encoded: &[u8], expected: &StorageFormatError) {
 
 #[test]
 fn intact_unsupported_versions_are_distinct_from_integrity_failures() {
-    for version in [1_u16, 2, u16::MAX] {
+    for version in [1_u16, 2, CODEC_VERSION + 1, u16::MAX] {
         let expected = StorageFormatError::UnsupportedVersion {
             format: "relational durable codec",
             found: version,
-            supported: 4,
+            supported: CODEC_VERSION,
         };
         let mut wal = encode_relational_wal_batch(1, &RelationalTransaction::default()).unwrap();
         wal[8..10].copy_from_slice(&version.to_le_bytes());
@@ -121,8 +121,9 @@ fn downgrade_full_index_record_to_v3(
     schema: &RelationalTableSchema,
 ) -> Vec<u8> {
     let current = encode_relational_table_schema(schema).unwrap();
-    let legacy = encode_legacy_relational_table_schema(schema).unwrap();
-    assert_eq!(current.len(), legacy.len() + 1);
+    let legacy =
+        encode_relational_table_schema_for_layout(schema, IndexSchemaLayout::Full).unwrap();
+    assert_eq!(current.len(), legacy.len() + 5);
     let offset = record[HEADER_BYTES..]
         .windows(current.len())
         .position(|candidate| candidate == current)
@@ -160,6 +161,7 @@ fn version_3_wal_and_checkpoint_decode_full_named_indexes() {
         unique_constraints: Vec::new(),
         foreign_keys: Vec::new(),
         indexes: vec![RelationalIndexSchema {
+            included_columns: Vec::new(),
             name: "documents_body_idx".into(),
             columns: vec!["body".into()],
             unique: false,
@@ -237,6 +239,7 @@ fn legacy_standalone_schema_decodes_declared_indexes_as_full_indexes() {
         unique_constraints: Vec::new(),
         foreign_keys: Vec::new(),
         indexes: vec![RelationalIndexSchema {
+            included_columns: Vec::new(),
             name: "documents_id".into(),
             columns: vec!["id".into()],
             unique: false,
@@ -244,13 +247,17 @@ fn legacy_standalone_schema_decodes_declared_indexes_as_full_indexes() {
         }],
         materialized_view: None,
     };
-    let mut legacy = encode_relational_table_schema(&schema).unwrap();
-    assert_eq!(&legacy[legacy.len() - 3..], &[0, 0, 0]);
-    let predicate_tag = legacy.len() - 2;
-    legacy.remove(predicate_tag);
+    let legacy =
+        encode_relational_table_schema_for_layout(&schema, IndexSchemaLayout::Full).unwrap();
 
     assert_eq!(
-        decode_legacy_relational_table_schema(&legacy, legacy.len(), 64).unwrap(),
+        decode_relational_table_schema_for_layout(
+            &legacy,
+            legacy.len(),
+            64,
+            IndexSchemaLayout::Full
+        )
+        .unwrap(),
         schema
     );
     assert!(decode_relational_table_schema(&legacy, legacy.len(), 64).is_err());
@@ -258,8 +265,14 @@ fn legacy_standalone_schema_decodes_declared_indexes_as_full_indexes() {
     let work =
         crate::background::CheckpointWorkContext::new(hawdb_core::RuntimeTaskContext::default());
     assert_eq!(
-        decode_legacy_relational_table_schema_with_work_context(&legacy, legacy.len(), 64, &work,)
-            .unwrap(),
+        decode_relational_table_schema_with_layout_and_work(
+            &legacy,
+            IndexSchemaLayout::Full,
+            legacy.len(),
+            64,
+            &work
+        )
+        .unwrap(),
         schema
     );
 }

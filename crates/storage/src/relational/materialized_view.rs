@@ -294,6 +294,25 @@ pub(super) fn clone_predicate(
             expression: expression.clone_with_allocations(context)?,
             negated: *negated,
         },
+        RelationalPredicate::RowCompare { fields, op } => {
+            let mut cloned = context
+                .vector_capacity(fields.len())
+                .map_err(RelationalError::from_admission)?;
+            for field in fields {
+                cloned.push(RelationalRowComparisonField {
+                    equality: clone_predicate(&field.equality, context)?,
+                    ordering: field
+                        .ordering
+                        .as_ref()
+                        .map(|ordering| clone_predicate(ordering, context))
+                        .transpose()?,
+                });
+            }
+            RelationalPredicate::RowCompare {
+                fields: cloned,
+                op: *op,
+            }
+        }
         RelationalPredicate::And(left, right) => {
             RelationalPredicate::And(boxed(left)?, boxed(right)?)
         }

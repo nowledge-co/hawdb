@@ -3235,6 +3235,12 @@ fn relational_predicate_primary_key(
                 pending.push(right);
                 pending.push(left);
             }
+            RelationalPredicate::RowCompare {
+                fields,
+                op: RelationalComparisonOp::Eq,
+            } => {
+                pending.extend(fields.iter().rev().map(|field| &field.equality));
+            }
             RelationalPredicate::Compare {
                 column,
                 op: RelationalComparisonOp::Eq,
@@ -3784,6 +3790,7 @@ mod tests {
                         indexes: vec![RelationalIndexSchema {
                             name: "declared_unique".into(),
                             columns: vec!["body".into()],
+                            included_columns: Vec::new(),
                             unique: true,
                             predicate: None,
                         }],
@@ -3926,6 +3933,7 @@ mod tests {
         schema.indexes.push(RelationalIndexSchema {
             name: "i".repeat(4096),
             columns: vec!["body".into()],
+            included_columns: Vec::new(),
             unique: true,
             predicate: None,
         });

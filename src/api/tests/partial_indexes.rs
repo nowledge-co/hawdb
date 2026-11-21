@@ -41,7 +41,7 @@ fn assert_rows_and_plans(database: &mut Database) {
         .unwrap();
     assert!(matches!(
         indexdef.rows[0].get("indexdef"),
-        Some(Value::String(definition)) if definition.contains("WHERE") && definition.contains("active")
+        Some(Value::String(definition)) if definition.contains("INCLUDE") && definition.contains("WHERE") && definition.contains("active")
     ));
 }
 
@@ -52,11 +52,11 @@ fn partial_index_survives_wal_checkpoint_and_reopen() {
         let mut database = Database::open(&path).unwrap();
         database
             .query_sql(
-                "CREATE TABLE items (id BIGINT PRIMARY KEY, slug TEXT NOT NULL, active BOOLEAN)",
+                "CREATE TABLE items (id BIGINT PRIMARY KEY, slug TEXT NOT NULL, active BOOLEAN, note TEXT)",
             )
             .unwrap();
         database
-            .query_sql("CREATE UNIQUE INDEX active_slug_idx ON items (slug) WHERE active = TRUE")
+            .query_sql("CREATE UNIQUE INDEX active_slug_idx ON items (slug) INCLUDE (active, note) WHERE active = TRUE")
             .unwrap();
         database
             .query_sql(
@@ -100,6 +100,27 @@ fn partial_index_survives_wal_checkpoint_and_reopen() {
         )
         .unwrap();
         assert_rows_and_plans(&mut database);
+        database
+            .query_sql("UPDATE items SET note = 'new' WHERE id = 1")
+            .unwrap();
+        let covered = database
+            .begin_read_transaction()
+            .unwrap()
+            .query_sql_with_params_options_profiled(
+                "SELECT note FROM items WHERE slug = 'same' AND active = TRUE",
+                &[],
+                QueryStreamOptions::default(),
+            )
+            .unwrap();
+        assert_eq!(covered.output.rows[0]["note"], Value::String("new".into()));
+        assert!(
+            covered.profile.operator_cardinality_profiles[0]
+                .access_path
+                .covering
+        );
+        assert!(database
+            .query_sql("UPDATE items SET active = TRUE WHERE id = 2")
+            .is_err());
         database
             .query_sql("UPDATE items SET active = FALSE WHERE id = 1")
             .unwrap();

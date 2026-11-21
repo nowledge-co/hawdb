@@ -97,6 +97,30 @@ fn graph_and_expression_nesting_have_independent_exact_limits() {
 }
 
 #[test]
+fn explicit_and_shorthand_rows_share_the_expression_nesting_limit() {
+    let limit = crate::parser::MAX_EXPRESSION_NESTING;
+    let explicit =
+        |depth: usize| (0..depth).fold("1".to_string(), |nested, _| format!("ROW(1,{nested})"));
+    let shorthand =
+        |depth: usize| (0..depth).fold("1".to_string(), |nested, _| format!("(1,{nested})"));
+    for (label, accepted_expression, rejected_expression) in [
+        ("explicit", explicit(limit), explicit(limit + 1)),
+        ("shorthand", shorthand(limit), shorthand(limit + 1)),
+    ] {
+        let accepted = format!("SELECT 1 FROM source WHERE {accepted_expression}");
+        parse_postgres_select(&accepted)
+            .unwrap_or_else(|error| panic!("{label} row at the nesting limit: {error}"));
+
+        let rejected = format!("SELECT 1 FROM source WHERE {rejected_expression}");
+        assert_eq!(
+            parse_postgres_select(&rejected).unwrap_err().code,
+            SyntaxErrorCode::ExpressionNestingLimitExceeded,
+            "{label} row beyond the nesting limit"
+        );
+    }
+}
+
+#[test]
 fn aggregate_distinct_does_not_inherit_select_distinct_on_guard() {
     let sql = "SELECT count(DISTINCT on) FROM items";
     let select = parse_postgres_select(sql).unwrap();

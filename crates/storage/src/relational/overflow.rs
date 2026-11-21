@@ -229,7 +229,12 @@ fn protected_column_positions_with_allocations(
                 .iter()
                 .flat_map(|key| key.columns.iter()),
         )
-        .chain(schema.indexes.iter().flat_map(|index| index.columns.iter()))
+        .chain(
+            schema
+                .indexes
+                .iter()
+                .flat_map(|index| index.columns.iter().chain(index.included_columns.iter())),
+        )
     {
         let position = schema.column_position(name).ok_or_else(|| {
             RelationalError::Schema(format!(
@@ -281,6 +286,9 @@ fn visit_predicate_columns(
         RelationalPredicate::Not(predicate) => visit_predicate_columns(predicate, visit),
         RelationalPredicate::Compare { column, .. } => visit(column),
         RelationalPredicate::IsNull { .. } => Ok(()),
+        RelationalPredicate::RowCompare { .. } => Err(RelationalError::Schema(
+            "partial indexes do not support row comparisons".into(),
+        )),
         RelationalPredicate::NumericCompare { .. } | RelationalPredicate::NumericIsNull { .. } => {
             Ok(())
         }
@@ -803,7 +811,12 @@ fn protected_column_positions(
                 .iter()
                 .flat_map(|key| key.columns.iter()),
         )
-        .chain(schema.indexes.iter().flat_map(|index| index.columns.iter()))
+        .chain(
+            schema
+                .indexes
+                .iter()
+                .flat_map(|index| index.columns.iter().chain(index.included_columns.iter())),
+        )
         .map(|name| {
             schema.column_position(name).ok_or_else(|| {
                 RelationalError::Schema(format!(

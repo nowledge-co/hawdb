@@ -440,6 +440,7 @@ pub struct CreateIndexStatement {
     pub name: String,
     pub table: SqlTableName,
     pub columns: Vec<SqlIndexColumn>,
+    pub included_columns: Vec<String>,
     pub unique: bool,
     pub if_not_exists: bool,
     pub predicate: Option<SqlPredicate>,

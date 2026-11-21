@@ -268,6 +268,7 @@ fn table_model(schema: &RelationalTableSchema) -> Result<Table> {
                 Ok(Index {
                     name: index.name.clone(),
                     columns: index.columns.clone(),
+                    included_columns: index.included_columns.clone(),
                     unique: index.unique,
                     predicate: index
                         .predicate
@@ -334,10 +335,12 @@ fn index_predicate_model(predicate: &RelationalPredicate) -> Result<IndexPredica
             column: column.clone(),
             negated: *negated,
         },
-        RelationalPredicate::NumericCompare { .. } | RelationalPredicate::NumericIsNull { .. } => {
+        RelationalPredicate::RowCompare { .. }
+        | RelationalPredicate::NumericCompare { .. }
+        | RelationalPredicate::NumericIsNull { .. } => {
             return Err(unsupported(
                 "this partial-index predicate",
-                "numeric expressions are not in the admitted partial-index subset",
+                "row comparisons and numeric expressions are outside the partial-index subset",
             ))
         }
     })

@@ -396,6 +396,7 @@ fn shared_vector_defaults_affect_ordinary_and_checkpoint_schema_digests() {
 fn partial_index_predicates_affect_both_schema_digest_paths() {
     let mut source = schema(RelationalValue::Text("default".into()));
     source.indexes.push(RelationalIndexSchema {
+        included_columns: Vec::new(),
         name: "partial_payload".into(),
         columns: vec!["id".into()],
         unique: false,

@@ -1809,8 +1809,8 @@ fn upsert_update_can_use_insert_locks(write: &RelationalWrite, state: &Relationa
         let absent = match conflict_index.role {
             RelationalIndexRole::Primary => state.row(table, &conflict_key).is_none(),
             _ => state
-                .index_lookup(table, &conflict_index.name, &conflict_key)
-                .is_none_or(|postings| postings.is_empty()),
+                .index_prefix_cardinality_at_most(table, &conflict_index.name, &conflict_key, 1)
+                .is_none_or(|count| count == 0),
         };
         // A later row in the same batch could update an earlier insertion into
         // an index key assembled from both row images, not either insert key.

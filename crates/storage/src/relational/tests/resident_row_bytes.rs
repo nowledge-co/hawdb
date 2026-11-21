@@ -369,6 +369,7 @@ fn relational_state_row_bytes_track_transactions_rollback_and_recovery() {
                 index: RelationalIndexSchema {
                     name: "events_at".to_string(),
                     columns: vec!["at".to_string()],
+                    included_columns: Vec::new(),
                     unique: false,
                     predicate: None,
                 },

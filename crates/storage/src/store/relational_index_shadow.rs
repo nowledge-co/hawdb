@@ -1142,7 +1142,10 @@ impl GraphStore {
         for (ordinal, probe) in probes.into_iter().enumerate() {
             let mut candidate = Vec::new();
             let read = match probe.kind {
-                RelationalIndexQualificationProbeKind::Exact => view.visit_exact_postings(
+                // Exact is exact in the declared logical key space. Covering
+                // indexes append INCLUDE payload to the physical leaf key, so
+                // the complete logical key is a physical prefix.
+                RelationalIndexQualificationProbeKind::Exact => view.visit_prefix_postings(
                     &probe.table,
                     &probe.index,
                     &probe.key,
@@ -1743,6 +1746,7 @@ mod tests {
                                 indexes: vec![RelationalIndexSchema {
                                     name: "documents_owner_idx".to_string(),
                                     columns: vec!["owner".to_string()],
+                                    included_columns: Vec::new(),
                                     unique: false,
                                     predicate: None,
                                 }],
@@ -2400,6 +2404,7 @@ mod tests {
                                     index: RelationalIndexSchema {
                                         name: "new_schema_index".into(),
                                         columns: vec!["id".into()],
+                                        included_columns: Vec::new(),
                                         unique: false,
                                         predicate: None,
                                     },
@@ -2812,7 +2817,7 @@ mod tests {
             let carol = RelationalKey(vec![RelationalValue::Text("carol".to_string())]);
             let mut pinned_rows = Vec::new();
             pinned
-                .visit_exact_postings(
+                .visit_prefix_postings(
                     "accounts",
                     "accounts_handle_idx",
                     &carol,
@@ -2826,7 +2831,7 @@ mod tests {
             assert!(pinned_rows.is_empty());
             let mut current_rows = Vec::new();
             current_index_view(&store)
-                .visit_exact_postings(
+                .visit_prefix_postings(
                     "accounts",
                     "accounts_handle_idx",
                     &carol,
@@ -2912,6 +2917,7 @@ mod tests {
                             unique_constraints: Vec::new(),
                             foreign_keys: Vec::new(),
                             indexes: vec![RelationalIndexSchema {
+                                included_columns: Vec::new(),
                                 name: "active_handle_idx".into(),
                                 columns: vec!["handle".into()],
                                 unique: true,
@@ -3076,6 +3082,7 @@ mod tests {
                             index: RelationalIndexSchema {
                                 name: "documents_id_idx".to_string(),
                                 columns: vec!["id".to_string()],
+                                included_columns: Vec::new(),
                                 unique: false,
                                 predicate: None,
                             },
@@ -3670,12 +3677,14 @@ mod tests {
                         RelationalIndexSchema {
                             name: "documents_owner_idx".to_string(),
                             columns: vec!["owner".to_string()],
+                            included_columns: Vec::new(),
                             unique: false,
                             predicate: None,
                         },
                         RelationalIndexSchema {
                             name: "documents_owner_id_idx".to_string(),
                             columns: vec!["owner".to_string(), "id".to_string()],
+                            included_columns: Vec::new(),
                             unique: false,
                             predicate: None,
                         },
@@ -4128,6 +4137,7 @@ mod tests {
                     indexes: vec![RelationalIndexSchema {
                         name: "accounts_handle_idx".to_string(),
                         columns: vec!["handle".to_string()],
+                        included_columns: vec!["tenant".to_string()],
                         unique: true,
                         predicate: None,
                     }],
