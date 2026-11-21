@@ -795,6 +795,7 @@ fn configure_relational_fast_paths(store: &mut GraphStore, config: &DatabaseConf
     store.set_relational_monotonic_append_fast_path_enabled(
         config.relational_monotonic_append_fast_path,
     );
+    store.set_legacy_relational_checkpoint_file_enabled(config.legacy_relational_checkpoint_file);
 }
 
 impl Default for Database {

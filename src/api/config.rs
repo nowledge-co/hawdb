@@ -119,6 +119,15 @@ pub struct DatabaseConfig {
     /// Enables the metadata-only monotonic INSERT fast path for RowPage tables.
     /// Disabled by default until workload qualification explicitly activates it.
     pub relational_monotonic_append_fast_path: bool,
+    /// Also write the legacy full-row `relational.N.hawdb` file at every
+    /// checkpoint. Off by default: the canonical row-page and overflow roots
+    /// carry the complete relational state, so a checkpoint writes only the
+    /// row pages and overflow extents changed since the previous one (#1737).
+    /// Enable it only while a host must keep downgrading to a release before
+    /// persistent format 3, which needs the full-row file unless it opens with
+    /// OutOfCore residency and Authoritative relational indexes. Each
+    /// checkpoint then rewrites the whole relational state.
+    pub legacy_relational_checkpoint_file: bool,
     pub max_search_projection_change_log_entries: Option<usize>,
     pub max_search_projection_change_log_bytes: Option<usize>,
     pub search_projection_relational_change_limits:
@@ -286,6 +295,7 @@ impl Default for DatabaseConfig {
             graph_columnar_shadow_checkpoint: false,
             relational_index_mode: hawdb_storage::config::RelationalIndexMode::default(),
             relational_monotonic_append_fast_path: false,
+            legacy_relational_checkpoint_file: false,
             max_search_projection_change_log_entries: Some(
                 DEFAULT_SEARCH_PROJECTION_CHANGE_LOG_MAX_ENTRIES,
             ),

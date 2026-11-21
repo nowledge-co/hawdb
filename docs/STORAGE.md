@@ -145,6 +145,23 @@ whether it changed. Development formats still break without migrations;
 embedding hosts carry data across a change with a logical dump (export with
 the old release, import with the new one). See [LOGICAL_DUMP.md](LOGICAL_DUMP.md).
 
+Version 3 ([#1737](https://github.com/nowledge-co/hawdb/issues/1737)) stops
+writing the legacy full-row `relational.<generation>.hawdb` file at checkpoint.
+The checkpoint-bound relational row-page and overflow roots, which every
+version 2 checkpoint already published, carry the relational state, and a
+checkpoint writes only their changed generations. No codec, magic or version
+constant changes. Version 3 opens version 2 databases, including their
+full-row files and WAL tails. A version 2 release (0.31 through 0.34) opens a
+version 3 database only with `OutOfCore` residency and `Authoritative`
+relational indexes; in every other configuration it refuses the open with
+"checkpoint stores canonical metadata-only relational rows; reopen requires
+OutOfCore residency with Authoritative relational indexes" and changes
+nothing. A host that must keep downgrading may set
+`DatabaseConfig::legacy_relational_checkpoint_file`, which writes the version
+2 layout at the cost of a full relational rewrite per checkpoint; otherwise
+carry data back with a logical dump. See
+[Checkpoints without the full-row file](specs/ROW_PAGE_AND_DEMAND_PAGED_INDEX_SPEC.md#checkpoints-without-the-full-row-file).
+
 Recovery:
 
 1. Load `manifest.hawdb` when present and verify its checksum.
@@ -590,8 +607,9 @@ checkpoint after recovery removes. Each WAL directory therefore holds at most
 the current and previous generation after a checkpoint.
 
 Every checkpoint of an admitted branch also publishes its closure (durable
-manifest, relational checkpoint, canonical/adjacency/property artifacts, row
-pages, index shadow, append segments) and a sealed root into the project's
+manifest, the legacy relational checkpoint when one is written,
+canonical/adjacency/property artifacts, row pages, index shadow, append
+segments) and a sealed root into the project's
 content-addressed object store (`branches/objects/objects/<kind>/<digest>`).
 A sealed root has no parent link, so a closure no longer referenced by any
 retained root is garbage. The same post-publication pass (foreground

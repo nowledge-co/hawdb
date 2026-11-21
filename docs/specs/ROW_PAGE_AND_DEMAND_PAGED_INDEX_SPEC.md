@@ -649,8 +649,10 @@ paging that new row root in bounded batches and feeding the existing
 memory-capped, spillable index sorter. The outer checkpoint manifest binds the
 row, overflow, and index candidates atomically. It does not emit the legacy
 full-row relational checkpoint, because doing so would require database-sized
-hydration. A later reopen with a residency/index mode that requires that legacy
-artifact fails closed instead of interpreting metadata-only state as empty.
+hydration. A later reopen in a residency/index mode that serves resident rows
+rebuilds them from the same row and overflow roots (see
+[Checkpoints without the full-row file](#checkpoints-without-the-full-row-file))
+instead of interpreting metadata-only state as empty.
 
 `OutOfCore` plus `Authoritative` is the production selector for canonical
 metadata-only relational rows. A checkpointed database MUST construct relation
@@ -660,9 +662,9 @@ checkpoint epoch. WAL opens either reuse exact source-bound recovery artifacts
 for a read-only handle or replay every authenticated access through bounded
 sparse builders for a writable handle. Both views must match the final database
 epoch before open succeeds. Snapshot WAL and schema-changing WAL are rejected
-until a new canonical checkpoint exists. Other residency or index modes retain
-the materialized path only for checkpoints they created; mode switching after
-a metadata-only checkpoint is intentionally rejected in unreleased v1.
+until a new canonical checkpoint exists. Other residency or index modes
+materialize rows from the checkpoint-bound row root, so either kind of handle
+can reopen a checkpoint the other wrote.
 
 Selector activation is implementation readiness, not deployment qualification.
 Representative-copy cold/warm latency, RSS, page-fault, cache, pin, WAL, and
@@ -1237,6 +1239,51 @@ Lightning export, schema-changing WAL, and snapshot WAL fail closed until a
 complete canonical checkpoint can be published; they must not treat detached
 rows as an empty database or silently fall back. Derived repair opens retain
 materialized rows until their writable repair phase completes.
+
+#### Checkpoints without the full-row file
+
+The checkpoint-bound row and overflow roots carry the complete relational
+state, so a checkpoint writes only their changed generations: dirty and
+relocated row pages, newly introduced overflow extents, and the per-generation
+root descriptor, key and manifest artifacts. It does not write the legacy
+full-row `relational.<generation>.hawdb` file in any residency or index mode
+([#1737](https://github.com/nowledge-co/hawdb/issues/1737)). Before #1737
+every checkpoint whose relational state was not metadata-only rewrote that
+file, so bytes written per checkpoint scaled with the whole relational state.
+
+Open selects the relational state by the checkpoint's own content:
+
+- a checkpoint that names a full-row file (written by persistent format 2 or by
+  `DatabaseConfig::legacy_relational_checkpoint_file`) decodes it, verifies its
+  length, CRC32C and SHA-256 binding, and checks its epoch, as before;
+- `OutOfCore` plus `Authoritative` builds the metadata-only state from the row
+  root, as above;
+- every other mode materializes the state from the row root: it reads each
+  table's row pages in key order, checks the page schema digest, primary-key
+  uniqueness, exact per-table row counts, hidden row handles and row shapes,
+  resolves every reachable overflow reference to a file-backed segment of its
+  physical extent (checking the descriptor's reference metadata), validates
+  materialized views and foreign keys, and rebuilds materialized index
+  postings unless the index mode omits them. Reconstruction preserves the
+  checkpoint decoder's table, row, logical-value, per-value byte and overflow
+  segment admission limits. Record bytes, WAL writes and decoded overflow-body
+  bytes have no row-root analogue: there is no monolithic relational record,
+  no WAL transaction, and overflow envelopes remain file-backed under the
+  bound root's artifact and extent limits. A missing extent or any mismatch
+  rejects open.
+
+A writable handle with resident rows keeps them across the checkpoint. Once
+the overflow root of the published generation exists, resident overflow values
+that are still inline, or that still read a legacy full-row file, are rebound
+to that root's extents; later checkpoints reuse those extents in place.
+Adoption happens with the rest of the prepared checkpoint, only if the source
+epoch is unchanged. The stale full-row file left at a generation by an
+abandoned preparation is removed before the roots are written.
+
+The opt-in `legacy_relational_checkpoint_file` exists only for hosts that must
+keep a downgrade path to persistent format 2 releases, which require the
+full-row file outside `OutOfCore` plus `Authoritative`. With it every
+checkpoint again rewrites the complete relational state.
 
 Relational transaction apply derives exact primary-key changes from the
 authoritative before and after states. Multiple relational fragments in one

@@ -1090,13 +1090,22 @@ impl GraphStore {
             let property_projection_manifest_artifact = plan.property_projection.expect("completed property projection publication");
             #[cfg(test)]
             eprintln!("bounded-preparation-stage relational-start");
-            let relational_checkpoint_artifact = durable.write_relational_checkpoint(
-                &self.relational_state,
-                commit_epoch,
-                generation,
-                work,
-            )?;
-            let checkpoint_relational_state = relational_checkpoint_artifact
+            // The row-page and overflow roots published below carry the
+            // complete relational state, so this checkpoint writes only their
+            // changed generations instead of a legacy full-row file (#1737).
+            // A host that must keep a downgrade path may still request it.
+            let relational_checkpoint_artifact = if self.legacy_relational_checkpoint_file {
+                durable.write_relational_checkpoint(
+                    &self.relational_state,
+                    commit_epoch,
+                    generation,
+                    work,
+                )?
+            } else {
+                durable.remove_relational_checkpoint(generation, work)?;
+                None
+            };
+            let legacy_relational_state = relational_checkpoint_artifact
                 .map(|_| {
                     let index_load = self.relational_checkpoint_index_load();
                     decode_relational_checkpoint_file_with_work_context(
@@ -1277,6 +1286,25 @@ impl GraphStore {
                     overflow_publication_config,
                 )
                 .map_err(HawDBError::from_storage_error)?;
+            // Resident overflow values move to the published extents once this
+            // checkpoint is adopted, as they did when the state was decoded
+            // from a full-row file.
+            let checkpoint_relational_state = if legacy_relational_state.is_some() {
+                legacy_relational_state
+            } else if metadata_only_rows {
+                None
+            } else {
+                let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+                let state = self
+                    .relational_state
+                    .with_overflow_segments_bound_to_root(
+                        durable.root_path(),
+                        &relational_overflow_root,
+                    )
+                    .map_err(HawDBError::from_storage_error)?;
+                unit.finish();
+                state
+            };
 
             let row_request = RelationalRowPageGenerationRequest {
                 directory: durable.root_path(),

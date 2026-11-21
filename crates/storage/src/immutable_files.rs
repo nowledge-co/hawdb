@@ -682,6 +682,46 @@ impl ImmutableFileHandles {
         count
     }
 
+    /// Drops idle cached handles of the bound files at `paths`, keeping their
+    /// identity verification as a mount record so the next cold open of an
+    /// unchanged file does not hash it again. A one-shot scan uses this to
+    /// leave the descriptor cache as it found it.
+    pub(crate) fn release_idle_paths(&self, paths: &[PathBuf]) -> io::Result<usize> {
+        let mut references = Vec::with_capacity(paths.len());
+        for path in paths {
+            if let Some(binding) = self.binding(path)? {
+                references.push(binding.reference);
+            }
+        }
+        let mut released = 0;
+        for reference in references {
+            let key = CacheKey::Managed(reference);
+            let handle = {
+                let mut handles = self.handles.lock().unwrap_or_else(|e| e.into_inner());
+                match handles.get(&key) {
+                    Some(handle) if Arc::strong_count(&handle.file) == 1 => handles.remove(&key),
+                    _ => None,
+                }
+            };
+            let Some(handle) = handle else {
+                continue;
+            };
+            if let Ok(stamp) = handle.file.with_native(ObjectStamp::of_native) {
+                let mut records = self
+                    .mount_verified
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                if records.insert(reference, stamp, MOUNT_VERIFICATION_RECORDS_PER_PROJECT) {
+                    self.state.record_mount_verification_eviction();
+                }
+            }
+            drop(handle);
+            released += 1;
+        }
+        self.state.record_cache_evictions(released);
+        Ok(released)
+    }
+
     pub(crate) fn retire_source(&self, capture: u64) {
         self.remove_idle_matching(|key| key.capture() == Some(capture), usize::MAX);
     }

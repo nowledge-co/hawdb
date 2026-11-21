@@ -55,6 +55,7 @@ mod compatibility_tests;
 
 mod checkpoint;
 mod numeric;
+mod row_root;
 pub(crate) use checkpoint::{
     clone_string_with_work_context, decode_relational_checkpoint_file_with_work_context,
     decode_relational_table_schema_with_work_context, decode_row_owned, decode_schema_owned,
@@ -62,6 +63,10 @@ pub(crate) use checkpoint::{
     encode_relational_row_payload_with_work_context,
     encode_relational_table_schema_with_work_context,
     validate_relational_table_schema_codec_shape_with_work_context, CheckpointOutputIo,
+};
+pub use row_root::decode_relational_checkpoint_from_row_root;
+pub(in crate::relational) use row_root::{
+    overflow_segment_is_root_backed, overflow_segments_by_digest_from_root,
 };
 
 const WAL_MAGIC: &[u8; 8] = b"SKRLWAL1";

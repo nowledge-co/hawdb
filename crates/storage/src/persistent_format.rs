@@ -29,4 +29,10 @@
 
 /// Engine-wide persistent format version (docs/STORAGE.md, "Persistent
 /// format version").
-pub const PERSISTENT_FORMAT_VERSION: u32 = 2;
+///
+/// Version 3 (#1737): checkpoints no longer write the legacy full-row
+/// `relational.N.hawdb` file; the canonical row-page and overflow roots carry
+/// the relational state. Version 3 reads version 2 databases. Version 2
+/// releases open version 3 databases only with OutOfCore residency and
+/// Authoritative relational indexes and refuse every other configuration.
+pub const PERSISTENT_FORMAT_VERSION: u32 = 3;
