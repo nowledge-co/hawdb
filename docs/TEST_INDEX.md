@@ -4430,6 +4430,9 @@ open still refuses with the typed error.
 declares `docs_body_idx`. It verifies that the legacy full-index schema digest
 matches both the row root and its bound index generation through read-only
 authoritative open, indexed lookup, writable checkpoint, and reopen.
+`v3_wal_replays_standalone_create_index_after_checkpoint` opens a bundle written
+by `761d5b3ed` with one standalone CREATE INDEX WAL record after a checkpoint.
+It checks the replay boundary, recovered named index, and its resident postings.
 `api::tests::system_schema_registry::writable_metadata_only_transaction_checkpoints_rows_and_indexes`
 checks the same typed refusal on an `OutOfCore` + `Authoritative` checkpoint
 reopened with defaults. FFI `error_tests::newer_relational_checkpoint_layout_reports_unsupported_storage_format`

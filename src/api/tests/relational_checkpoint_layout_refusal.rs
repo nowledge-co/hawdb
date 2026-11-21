@@ -43,6 +43,11 @@ const SHADOW_INDEX_FIXTURE: &[u8] =
 const NAMED_SHADOW_INDEX_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/row_root_shadow_named_index_v2.bundle.zst");
 
+/// The v3 relational writer at `761d5b3ed` checkpointed the `docs` rows
+/// before committing a separate `CREATE INDEX docs_body_idx` transaction.
+const STANDALONE_CREATE_INDEX_WAL_V3: &[u8] =
+    include_bytes!("../../../tests/fixtures/standalone_create_index_wal_v3.bundle.zst");
+
 /// Every durable file below `root`. Lock files and each branch's disposable
 /// `runtime/` mount, which writable admission rebuilds from the sealed head
 /// before it loads the checkpoint, are not database content.
@@ -248,5 +253,37 @@ fn v2_row_root_with_named_index_reopens_read_only_and_writable() {
             .unwrap();
         assert_eq!(rows.rows[0]["id"], Value::Int(20));
     }
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn v3_wal_replays_standalone_create_index_after_checkpoint() {
+    let bundle = zstd::decode_all(STANDALONE_CREATE_INDEX_WAL_V3).unwrap();
+    let path = unique_test_dir("standalone-create-index-wal-v3");
+    super::property_defaults::unpack_fixture(&bundle, &path);
+    use hawdb_storage::relational::{RelationalKey, RelationalValue};
+    use hawdb_storage::schema::Catalog;
+    use hawdb_storage::store::GraphStore;
+
+    let store = GraphStore::open(&path, &mut Catalog::default()).unwrap();
+    let report = store.storage_recovery_report();
+    assert_eq!(report.replayed_wal_entries, 1);
+    assert_eq!(report.checkpoint_commit_epoch, Some(1));
+    assert_eq!(report.recovered_commit_epoch, 2);
+    let state = store.relational_state();
+    let schema = state.table_schema("docs").unwrap();
+    assert!(schema.indexes.iter().any(|index| {
+        index.name == "docs_body_idx" && index.columns == ["body"] && index.predicate.is_none()
+    }));
+    assert_eq!(state.row_count("docs"), 20);
+    let lookup = RelationalKey(vec![RelationalValue::Text("body 7".into())]);
+    let postings = state
+        .index_lookup("docs", "docs_body_idx", &lookup)
+        .unwrap();
+    assert_eq!(
+        postings.iter().cloned().collect::<Vec<_>>(),
+        vec![RelationalKey(vec![RelationalValue::BigInt(7)])],
+    );
+    drop(store);
     std::fs::remove_dir_all(path).unwrap();
 }

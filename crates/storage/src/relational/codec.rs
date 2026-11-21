@@ -2314,11 +2314,7 @@ impl<I: DecodeInput> Decoder<I> {
         let foreign_key_count = self.count(self.limits.max_values, "foreign keys")?;
         let foreign_keys = self.repeated(foreign_key_count, Self::foreign_key)?;
         let index_count = self.count(self.limits.max_values, "indexes")?;
-        let indexes = if index_predicates {
-            self.repeated(index_count, Self::index)?
-        } else {
-            self.repeated(index_count, Self::legacy_index)?
-        };
+        let indexes = self.repeated(index_count, |decoder| decoder.index(index_predicates))?;
         let derived_relation = self.u8()?;
         let materialized_view = if derived_relation == 2 {
             let source = self.string()?;
@@ -2479,25 +2475,16 @@ impl<I: DecodeInput> Decoder<I> {
         }
     }
 
-    fn index(&mut self) -> Result<RelationalIndexSchema, RelationalError> {
+    fn index(&mut self, index_predicates: bool) -> Result<RelationalIndexSchema, RelationalError> {
         Ok(RelationalIndexSchema {
             name: self.string()?,
             columns: self.string_list()?,
             unique: self.boolean("index unique")?,
-            predicate: if self.boolean("partial index predicate")? {
+            predicate: if index_predicates && self.boolean("partial index predicate")? {
                 Some(self.predicate()?)
             } else {
                 None
             },
-        })
-    }
-
-    fn legacy_index(&mut self) -> Result<RelationalIndexSchema, RelationalError> {
-        Ok(RelationalIndexSchema {
-            name: self.string()?,
-            columns: self.string_list()?,
-            unique: self.boolean("index unique")?,
-            predicate: None,
         })
     }
 
@@ -2509,7 +2496,7 @@ impl<I: DecodeInput> Decoder<I> {
             1 => Ok(RelationalWrite::CreateTable(self.table_schema()?)),
             2 => Ok(RelationalWrite::CreateIndex {
                 table: self.string()?,
-                index: self.index()?,
+                index: self.index(self.index_predicates)?,
             }),
             3 => {
                 let table = self.string()?;
