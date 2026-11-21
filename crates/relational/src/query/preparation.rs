@@ -62,7 +62,7 @@ impl RelationalQueryRowPlanningSnapshot {
                 let binding = BindingId::new(u32::try_from(index).map_err(|_| {
                     HawDBError::Execution("relational planning exceeds the binding-id range".into())
                 })?);
-                if row_mode.is_projection_table(table) {
+                if row_mode.is_projection_table(table) || row_mode.is_memory_overlay_table(table) {
                     continue;
                 }
                 let Some(root) = reader

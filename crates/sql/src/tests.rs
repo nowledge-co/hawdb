@@ -17,7 +17,7 @@ use super::{
     BranchSqlValue, SelectProjection, ShowBranchStatement, ShowBranchesStatement,
     SqlAssignmentValue, SqlBound, SqlColumnRef, SqlComparisonOp, SqlConflictAction, SqlDataType,
     SqlFunctionArgument, SqlJoinKind, SqlLikeEscape, SqlLockStrength, SqlOrderDirection,
-    SqlStatement, SqlTableName, SqlValue,
+    SqlQueryBody, SqlSetOperator, SqlStatement, SqlTableName, SqlValue,
 };
 use crate::{Expr, ExprKind};
 use hawdb_core::Value;
@@ -28,6 +28,50 @@ mod expression_migration;
 mod frontend_corpus;
 mod having_from;
 mod vector_schema;
+
+#[test]
+fn lowers_ctes_set_precedence_and_parameters_without_reparsing() {
+    let prepared = prepare_postgres_sql(
+        "WITH seed(id) AS (SELECT $1) \
+         SELECT id FROM seed UNION ALL SELECT $2 INTERSECT SELECT $3 \
+         ORDER BY id LIMIT $4 OFFSET $5",
+    )
+    .unwrap();
+    assert_eq!(
+        prepared
+            .parameters
+            .iter()
+            .map(|parameter| parameter.position)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3, 4, 5]
+    );
+    let SqlStatement::Query(query) = prepared.statement else {
+        panic!("compound query")
+    };
+    assert_eq!(query.with.len(), 1);
+    assert_eq!(query.with[0].name, "seed");
+    assert_eq!(query.with[0].columns, ["id"]);
+    let SqlQueryBody::SetOperation {
+        operator: SqlSetOperator::Union,
+        all: true,
+        right,
+        ..
+    } = query.body
+    else {
+        panic!("outer UNION ALL")
+    };
+    assert!(matches!(
+        right.as_ref(),
+        SqlQueryBody::SetOperation {
+            operator: SqlSetOperator::Intersect,
+            all: false,
+            ..
+        }
+    ));
+    assert_eq!(query.order_by.len(), 1);
+    assert_eq!(query.limit, Some(SqlBound::Parameter(4)));
+    assert_eq!(query.offset, Some(SqlBound::Parameter(5)));
+}
 
 #[test]
 fn parses_bounded_branch_catalog_inspection_statements() {

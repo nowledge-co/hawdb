@@ -38,6 +38,7 @@ use std::sync::Arc;
 pub(crate) fn sql_statement_kind(statement: &SqlStatement) -> &'static str {
     match statement {
         SqlStatement::Select(_) => "select",
+        SqlStatement::Query(_) => "select",
         SqlStatement::Insert(_) => "insert",
         SqlStatement::Update(_) => "update",
         SqlStatement::Delete(_) => "delete",
@@ -627,7 +628,9 @@ impl Database {
                 super::reject_locking_select_without_manager(prepared.statement(), false)?;
                 if matches!(
                     prepared.statement(),
-                    crate::sql::SqlStatement::Select(_) | crate::sql::SqlStatement::Explain(_)
+                    crate::sql::SqlStatement::Select(_)
+                        | crate::sql::SqlStatement::Query(_)
+                        | crate::sql::SqlStatement::Explain(_)
                 ) {
                     self.runtime.get_read()?;
                 }
@@ -817,7 +820,9 @@ impl Database {
 
                 if matches!(
                     prepared.statement(),
-                    crate::sql::SqlStatement::Select(_) | crate::sql::SqlStatement::Explain(_)
+                    crate::sql::SqlStatement::Select(_)
+                        | crate::sql::SqlStatement::Query(_)
+                        | crate::sql::SqlStatement::Explain(_)
                 ) {
                     let branch_runtime = self.runtime.get()?;
                     let query_result =

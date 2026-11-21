@@ -36,7 +36,11 @@ pub fn parse_postgres_sql(input: &str) -> Result<SqlStatement> {
     }
     let token = hawdb_sql_syntax::first_token(input)
         .map_err(|error| HawDBError::Parse(error.to_string()))?;
-    if token.is_keyword(input, "SELECT") || token.is_keyword(input, "EXPLAIN") {
+    if token.is_keyword(input, "SELECT")
+        || token.is_keyword(input, "WITH")
+        || token.is_keyword(input, "EXPLAIN")
+        || token.kind == hawdb_sql_syntax::TokenKind::LeftParen
+    {
         return owned::parse(input);
     }
     full::parse(input)

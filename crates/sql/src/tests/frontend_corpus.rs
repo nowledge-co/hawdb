@@ -178,7 +178,7 @@ fn production(sql: &str) -> Result<(Outcome, Option<&'static str>), String> {
     match prepare_postgres_sql(sql) {
         Ok(prepared) => {
             let family = match prepared.statement {
-                SqlStatement::Select(_) => "select",
+                SqlStatement::Select(_) | SqlStatement::Query(_) => "select",
                 SqlStatement::Explain(_) => "explain",
                 SqlStatement::Insert(_) => "insert",
                 SqlStatement::Update(_) => "update",

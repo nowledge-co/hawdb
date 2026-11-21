@@ -197,6 +197,12 @@ pub enum RelationalRowReadMode<
         reader: &'a ProjectionGenerationReader,
         tables: &'a BTreeSet<String>,
     },
+    /// Statement-scoped relations resident only in the supplied state. All
+    /// other tables continue through `base`, including its pinned snapshot.
+    MemoryOverlay {
+        base: &'a RelationalRowReadMode<'a, R>,
+        tables: &'a BTreeSet<String>,
+    },
 }
 
 impl<R: RelationalRowStoreReader> Copy for RelationalRowReadMode<'_, R> {}
@@ -208,17 +214,32 @@ impl<R: RelationalRowStoreReader> Clone for RelationalRowReadMode<'_, R> {
 }
 
 impl<'a, R: RelationalRowStoreReader> RelationalRowReadMode<'a, R> {
+    pub fn is_memory_overlay_table(self, table: &str) -> bool {
+        match self {
+            Self::MemoryOverlay { base, tables } => {
+                tables.contains(table) || base.is_memory_overlay_table(table)
+            }
+            _ => false,
+        }
+    }
+
     pub fn is_projection_table(self, table: &str) -> bool {
-        matches!(
-            self,
-            Self::ProjectionGeneration { tables, .. } if tables.contains(table)
-        )
+        match self {
+            Self::ProjectionGeneration { tables, .. } => tables.contains(table),
+            Self::MemoryOverlay { base, tables } => {
+                !tables.contains(table) && base.is_projection_table(table)
+            }
+            _ => false,
+        }
     }
 
     pub fn projection_estimated_rows(self, table: &str) -> Option<usize> {
         match self {
             Self::ProjectionGeneration { reader, tables, .. } if tables.contains(table) => {
                 Some(usize::try_from(reader.manifest().member_count).unwrap_or(usize::MAX))
+            }
+            Self::MemoryOverlay { base, tables } if !tables.contains(table) => {
+                base.projection_estimated_rows(table)
             }
             _ => None,
         }
@@ -245,6 +266,7 @@ impl<'a, R: RelationalRowStoreReader> RelationalRowReadMode<'a, R> {
             Self::Transaction { store, rows } => {
                 Some(store.open_relational_transaction_row_snapshot_reader(rows)?)
             }
+            Self::MemoryOverlay { base, .. } => return base.open_snapshot_reader(),
         })
     }
 
@@ -257,13 +279,38 @@ impl<'a, R: RelationalRowStoreReader> RelationalRowReadMode<'a, R> {
         hydration: RelationalHydrationBudget,
         task: &'a RuntimeTaskContext,
     ) -> Result<RelationalRowRuntime<'a>> {
-        let projection = match self {
-            Self::ProjectionGeneration { reader, tables, .. } => Some((reader, tables)),
-            _ => None,
-        };
-        Ok(RelationalRowRuntime::new(
-            state, snapshot, projection, fields, limits, hydration, task,
+        let projection = self.projection_generation();
+        let mut memory_tables = BTreeSet::new();
+        self.collect_memory_overlay_tables(&mut memory_tables);
+        Ok(RelationalRowRuntime::new_with_sources(
+            state,
+            RelationalRowRuntimeSources {
+                snapshot,
+                projection,
+                memory_tables,
+            },
+            fields,
+            limits,
+            hydration,
+            task,
         ))
+    }
+
+    fn projection_generation(
+        self,
+    ) -> Option<(&'a ProjectionGenerationReader, &'a BTreeSet<String>)> {
+        match self {
+            Self::ProjectionGeneration { reader, tables, .. } => Some((reader, tables)),
+            Self::MemoryOverlay { base, .. } => base.projection_generation(),
+            _ => None,
+        }
+    }
+
+    fn collect_memory_overlay_tables(self, output: &mut BTreeSet<String>) {
+        if let Self::MemoryOverlay { base, tables } = self {
+            base.collect_memory_overlay_tables(output);
+            output.extend(tables.iter().cloned());
+        }
     }
 }
 
@@ -277,11 +324,18 @@ pub struct RelationalRowRuntime<'a> {
     projection_pages: Cell<usize>,
     task: &'a RuntimeTaskContext,
     projection: Option<ProjectionRelationalRuntime<'a>>,
+    memory_tables: BTreeSet<String>,
 }
 
 struct ProjectionRelationalRuntime<'a> {
     reader: &'a ProjectionGenerationReader,
     tables: &'a BTreeSet<String>,
+}
+
+struct RelationalRowRuntimeSources<'a> {
+    snapshot: Option<RelationalRowPageSnapshotReader>,
+    projection: Option<(&'a ProjectionGenerationReader, &'a BTreeSet<String>)>,
+    memory_tables: BTreeSet<String>,
 }
 
 impl<'a> RelationalRowRuntime<'a> {
@@ -294,10 +348,33 @@ impl<'a> RelationalRowRuntime<'a> {
         hydration: RelationalHydrationBudget,
         task: &'a RuntimeTaskContext,
     ) -> Self {
-        let projection = projection
+        Self::new_with_sources(
+            state,
+            RelationalRowRuntimeSources {
+                snapshot,
+                projection,
+                memory_tables: BTreeSet::new(),
+            },
+            fields,
+            limits,
+            hydration,
+            task,
+        )
+    }
+
+    fn new_with_sources(
+        state: &'a RelationalState,
+        sources: RelationalRowRuntimeSources<'a>,
+        fields: RelationalFieldPlan,
+        limits: RelationalRowPageSnapshotReadLimits,
+        hydration: RelationalHydrationBudget,
+        task: &'a RuntimeTaskContext,
+    ) -> Self {
+        let projection = sources
+            .projection
             .filter(|(_, tables)| fields.uses_any_table(tables))
             .map(|(reader, tables)| ProjectionRelationalRuntime { reader, tables });
-        let backend = snapshot;
+        let backend = sources.snapshot;
         let runtime_path = match (&backend, &projection) {
             (_, Some(_)) => "projection_generation",
             (None, None) => "canonical_memory",
@@ -340,7 +417,12 @@ impl<'a> RelationalRowRuntime<'a> {
             projection_pages: Cell::new(0),
             task,
             projection,
+            memory_tables: sources.memory_tables,
         }
+    }
+
+    fn uses_memory_table(&self, table: &str) -> bool {
+        self.backend.is_none() || self.memory_tables.contains(table)
     }
 
     pub fn hydration(&self) -> RelationalHydrationBudget {
@@ -633,7 +715,7 @@ impl<'a> RelationalRowRuntime<'a> {
             return self.read_projection_point(table, key, fields, hydration_fields);
         }
         match &self.backend {
-            None => {
+            _ if self.uses_memory_table(table) => {
                 let Some((key, row)) = self.state.row_entry(table, key) else {
                     return Ok(None);
                 };
@@ -676,6 +758,7 @@ impl<'a> RelationalRowRuntime<'a> {
                 self.record_point(&report)?;
                 Ok(row.map(|row| RelationalReadRow { row: Arc::new(row) }))
             }
+            None => unreachable!("memory row mode handled before snapshot dispatch"),
         }
     }
 
@@ -703,7 +786,7 @@ impl<'a> RelationalRowRuntime<'a> {
             return Ok(rows);
         }
         match &self.backend {
-            None => {
+            _ if self.uses_memory_table(table) => {
                 let mut rows = BTreeMap::new();
                 for key in keys {
                     self.task
@@ -763,6 +846,7 @@ impl<'a> RelationalRowRuntime<'a> {
                     .map(|(key, row)| (key, RelationalReadRow { row: Arc::new(row) }))
                     .collect())
             }
+            None => unreachable!("memory row mode handled before snapshot dispatch"),
         }
     }
 
@@ -815,7 +899,7 @@ impl<'a> RelationalRowRuntime<'a> {
             });
         }
         match &self.backend {
-            None => {
+            _ if self.uses_memory_table(table) => {
                 let rows: Box<dyn Iterator<Item = _>> = match range {
                     None => Box::new(self.state.rows(table)),
                     Some(range) => Box::new(self.state.rows_in_range(table, range)),
@@ -890,6 +974,7 @@ impl<'a> RelationalRowRuntime<'a> {
                     None => Ok(!report.demand.stopped_early),
                 }
             }
+            None => unreachable!("memory row mode handled before snapshot dispatch"),
         }
     }
 
@@ -910,7 +995,7 @@ impl<'a> RelationalRowRuntime<'a> {
             });
         }
         match &self.backend {
-            None => {
+            _ if self.uses_memory_table(table) => {
                 for (key, row) in self.state.rows(table) {
                     self.task
                         .checkpoint()
@@ -977,6 +1062,7 @@ impl<'a> RelationalRowRuntime<'a> {
                     None => Ok(!report.demand.stopped_early),
                 }
             }
+            None => unreachable!("memory row mode handled before snapshot dispatch"),
         }
     }
 
