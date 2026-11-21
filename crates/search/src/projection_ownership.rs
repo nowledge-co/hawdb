@@ -337,10 +337,11 @@ fn write_durably(projection: &Path, name: &str, text: &str) -> Result<()> {
     let target = projection.join(name);
     let temporary = projection.join(format!("{name}.tmp.{}", std::process::id()));
     let written = (|| -> std::io::Result<()> {
-        let mut file = File::create(&temporary)?;
-        file.write_all(text.as_bytes())?;
-        file.sync_all()?;
-        drop(file);
+        {
+            let mut file = File::create(&temporary)?;
+            file.write_all(text.as_bytes())?;
+            file.sync_all()?;
+        }
         hawdb_storage::durability::durable_replace_file(&temporary, &target)
     })();
     if written.is_err() {

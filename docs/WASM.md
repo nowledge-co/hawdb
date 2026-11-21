@@ -39,12 +39,12 @@ the in-tree development example, which is separate from that deployment.
 
 Install the pinned Rust toolchain, `wasm32-unknown-unknown` target, LLVM tools,
 Python 3, Clang with a WASM backend, and the wasm-bindgen CLI matching
-`Cargo.lock` (currently `0.2.126`):
+`Cargo.lock` (currently `0.2.130`):
 
 ```sh
 rustup target add wasm32-unknown-unknown
 rustup component add llvm-tools
-cargo install wasm-bindgen-cli --version 0.2.126 --locked
+cargo install wasm-bindgen-cli --version 0.2.130 --locked
 bash scripts/build-wasm-playground.sh
 python3 -m http.server 8080 --bind 127.0.0.1 --directory examples/wasm-playground
 ```
@@ -219,10 +219,10 @@ traversal, error recovery, transaction rollback/commit, SQL UUIDv7 generation,
 deadline cancellation, result limits, and explicit persistence/spill rejection.
 
 Install the CLI version matching wasm-bindgen in `Cargo.lock` (currently
-`0.2.126`), plus Chrome and a compatible ChromeDriver on `PATH`:
+`0.2.130`), plus Chrome and a compatible ChromeDriver on `PATH`:
 
 ```sh
-cargo install wasm-bindgen-cli --version 0.2.126 --locked
+cargo install wasm-bindgen-cli --version 0.2.130 --locked
 CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner \
   WASM_BINDGEN_USE_BROWSER=1 \
   cargo test --locked -p hawdb --no-default-features \
