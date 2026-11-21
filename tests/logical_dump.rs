@@ -89,7 +89,10 @@ fn populate(database: &mut HawDBEmbedded) {
          score DOUBLE PRECISION, embedding VECTOR(3), at TIMESTAMP(6), flag BOOLEAN, \
          PRIMARY KEY (thread, seq))",
     );
-    sql(database, "CREATE INDEX events_at ON events (at)");
+    sql(
+        database,
+        "CREATE INDEX events_at ON events (at) INCLUDE (body, score)",
+    );
     sql(
         database,
         "CREATE TABLE tree (id BIGINT PRIMARY KEY, parent BIGINT REFERENCES tree(id), label TEXT)",

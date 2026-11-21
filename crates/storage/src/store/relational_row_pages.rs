@@ -3680,6 +3680,7 @@ mod tests {
                         index: hawdb_storage::relational::RelationalIndexSchema {
                             name: "notes_body".to_string(),
                             columns: vec!["body".to_string()],
+                            included_columns: Vec::new(),
                             unique: false,
                         },
                     }],

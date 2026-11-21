@@ -66,7 +66,7 @@ pub(crate) use checkpoint::{
 
 const WAL_MAGIC: &[u8; 8] = b"SKRLWAL1";
 const CHECKPOINT_MAGIC: &[u8; 8] = b"SKRLCKP1";
-const CODEC_VERSION: u16 = 3;
+const CODEC_VERSION: u16 = 5;
 const HEADER_BYTES: usize = 64;
 const RELATIONAL_CHECKPOINT_ARTIFACT_ID: u64 = 1;
 
@@ -1388,6 +1388,7 @@ impl Encoder {
     fn index(&mut self, index: &RelationalIndexSchema) -> Result<(), RelationalError> {
         self.string(&index.name)?;
         self.string_list(&index.columns)?;
+        self.string_list(&index.included_columns)?;
         self.u8(u8::from(index.unique));
         Ok(())
     }
@@ -2423,6 +2424,7 @@ impl<I: DecodeInput> Decoder<I> {
         Ok(RelationalIndexSchema {
             name: self.string()?,
             columns: self.string_list()?,
+            included_columns: self.string_list()?,
             unique: self.boolean("index unique")?,
         })
     }

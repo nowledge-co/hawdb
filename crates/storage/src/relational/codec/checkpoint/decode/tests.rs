@@ -297,6 +297,7 @@ fn schema() -> RelationalTableSchema {
             schema.indexes.push(RelationalIndexSchema {
                 name: format!("index-{id}"),
                 columns: vec![name],
+                included_columns: Vec::new(),
                 unique: id % 2 == 0,
             });
         }

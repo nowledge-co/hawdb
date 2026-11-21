@@ -53,6 +53,7 @@ fn fixture_with_group_type(group_type: RelationalScalarType) -> (GraphStore, Cat
                     indexes: vec![RelationalIndexSchema {
                         name: "by_group".into(),
                         columns: vec!["group".into(), "id".into()],
+                        included_columns: Vec::new(),
                         unique: false,
                     }],
                 })],

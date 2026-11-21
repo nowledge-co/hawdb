@@ -114,10 +114,22 @@ impl GraphStore {
                 if index.name != change.index {
                     continue;
                 }
-                if change.index_key.0.len() > 32 {
+                let Some(physical_width) = index
+                    .columns
+                    .len()
+                    .checked_add(index.included_columns.len())
+                else {
+                    return record_stamp(stamps, VersionKey::ReadBarrier);
+                };
+                if change.index_key.0.len() != physical_width || index.columns.len() > 32 {
                     return record_stamp(stamps, VersionKey::ReadBarrier);
                 }
-                for end in 1..=change.index_key.0.len() {
+                // INCLUDE values are a physical leaf-key suffix, not part of
+                // the index's searchable key space.  A payload-only update
+                // still invalidates every logical key prefix through its
+                // delete/insert capture, but must never publish a read token
+                // whose prefix includes payload bytes.
+                for end in 1..=index.columns.len() {
                     if !budget.prefix(
                         &change.table,
                         &index.name,
@@ -210,7 +222,11 @@ mod tests {
         RelationalRow, RelationalScalarType, RelationalTableSchema, RelationalTransaction,
         RelationalWrite,
     };
-    fn setup(store: &mut GraphStore, catalog: &mut Catalog) {
+    fn setup_with_included_columns(
+        store: &mut GraphStore,
+        catalog: &mut Catalog,
+        included_columns: Vec<String>,
+    ) {
         store
             .commit_relational_transaction(
                 catalog,
@@ -244,12 +260,16 @@ mod tests {
                         indexes: vec![RelationalIndexSchema {
                             name: "group_index".into(),
                             columns: vec!["group".into(), "id".into()],
+                            included_columns,
                             unique: false,
                         }],
                     })],
                 },
             )
             .unwrap();
+    }
+    fn setup(store: &mut GraphStore, catalog: &mut Catalog) {
+        setup_with_included_columns(store, catalog, Vec::new());
     }
     fn insert(ids: impl Iterator<Item = i64>, group: &str) -> RelationalTransaction {
         RelationalTransaction {
@@ -320,6 +340,45 @@ mod tests {
             }))
         ));
         store.validate_read_dependencies(&absent).unwrap();
+    }
+    #[test]
+    fn covering_payload_suffix_is_not_published_as_a_searchable_read_prefix() {
+        let mut store = GraphStore::default();
+        let mut catalog = Catalog::default();
+        setup_with_included_columns(&mut store, &mut catalog, vec!["body".into()]);
+        let logical = relational_index_prefix_read_key(
+            "rows",
+            "group_index",
+            [
+                RelationalValue::Text("g".into()),
+                RelationalValue::BigInt(1),
+            ]
+            .iter(),
+        )
+        .unwrap();
+        let payload = crate::relational::encode_relational_row_payload(&RelationalRow::new(vec![
+            RelationalValue::Text("body".into()),
+        ]))
+        .unwrap();
+        let physical = relational_index_prefix_read_key(
+            "rows",
+            "group_index",
+            [
+                RelationalValue::Text("g".into()),
+                RelationalValue::BigInt(1),
+                RelationalValue::Bytea(payload),
+            ]
+            .iter(),
+        )
+        .unwrap();
+        let _read = capture(&store, "g");
+
+        store
+            .commit_relational_transaction(&mut catalog, insert(std::iter::once(1), "g"))
+            .unwrap();
+
+        assert!(store.version_index.stamp(&logical).is_some());
+        assert!(store.version_index.stamp(&physical).is_none());
     }
     #[test]
     fn summary_admission_falls_back_without_invalidating_unrelated_point_tokens() {

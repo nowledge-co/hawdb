@@ -140,7 +140,10 @@ impl GraphStore {
         for (ordinal, (identity, uses)) in scheduled.into_iter().enumerate() {
             let mut candidate = Vec::new();
             let read = view
-                .visit_exact_postings(
+                // Constraint identities are complete logical keys. INCLUDE
+                // payload is only a physical suffix, so use a prefix read for
+                // both ordinary and covering unique indexes.
+                .visit_prefix_postings(
                     &identity.table,
                     &identity.index,
                     &identity.key,

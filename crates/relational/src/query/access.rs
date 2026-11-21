@@ -309,9 +309,15 @@ pub(super) fn index_access_candidate(
     });
     let equality_covered =
         predicate_is_covered_by_equalities(planning.predicate, &access_columns, table, qualifier);
+    let has_included_columns = schema
+        .indexes
+        .iter()
+        .find(|index| index.name == name)
+        .is_some_and(|index| !index.included_columns.is_empty());
     let exclusive_bound = if equality_covered {
         None
-    } else if order_prefix_len == order_by.len()
+    } else if !has_included_columns
+        && order_prefix_len == order_by.len()
         && prefix_len.saturating_add(order_by.len()) == columns.len()
     {
         bind_canonical_keyset_bound(planning, &key, &access_columns, range_column)?
@@ -366,7 +372,10 @@ pub(super) fn index_access_candidate(
         match state.index_prefix_cardinality_at_most(table, &name, &key, *cardinality_limit) {
             Some(rows) => rows,
             None if !state.materialized_index_postings_resident() => {
-                let exact_count = if !unique && prefix_len == columns.len() {
+                // A covering key can span many leaves with distinct payloads.
+                // Use prefix statistics rather than walking those leaves to plan a read.
+                let exact_count = if !unique && !has_included_columns && prefix_len == columns.len()
+                {
                     planning
                         .index_runtime
                         .map(|runtime| runtime.exact_posting_count(table, &name, &key))
@@ -846,7 +855,7 @@ pub(super) fn visit_base_entries<'a>(
             index_runtime.visit_range_entries(state, table, name, scan, |index_key, key| {
                 let row = match covered_columns {
                     Some(index_columns) => row_runtime
-                        .read_index_covered(table, index_columns, index_key, key)?,
+                        .read_index_covered(table, name, index_columns, index_key, key)?,
                     None => row_runtime.read_point(table, key)?,
                 };
                 match row {

@@ -885,7 +885,7 @@ impl RelationalConstraintIndex for RelationalTransactionIndexView {
             .visit_with_overlay(
                 table,
                 index,
-                RelationalIndexReadSelector::Exact(key),
+                RelationalIndexReadSelector::Prefix(key),
                 attempt.limits(),
                 visit,
                 IndexReadAdmission::new(&attempt),

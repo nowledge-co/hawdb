@@ -67,8 +67,9 @@ Files:
 
 ### Reader compatibility refusals
 
-Relational WAL and full-checkpoint envelopes currently use codec version 3;
-embedded append WAL records (including checkpoint schema records) use version 3.
+Relational WAL and full-checkpoint envelopes currently use codec version 5;
+embedded append WAL records (including checkpoint schema records) remain at
+version 3.
 A reader accepts its supported version exactly. An intact envelope requiring a
 different version returns `HawDBError::UnsupportedStorageFormat` with
 `StorageFormatError::UnsupportedVersion { format, found, supported }`.
@@ -80,9 +81,12 @@ is always one of the constants exported from `hawdb` and `hawdb_core`:
 `RELATIONAL_CHECKPOINT_LAYOUT_FORMAT`, `APPEND_WAL_FORMAT`,
 `LOGICAL_DUMP_FORMAT` or `SEARCH_PROJECTION_MANIFEST_FORMAT`. Hosts compare
 against these constants instead of matching message text. They are recorded in
-`docs/persistent-format.lock`. Current relational schema tags
-0 through 5 represent column, COUNT(*), COUNT(column), SUM, MIN, and MAX.
-This change does not add a feature bitmap or change any encoded bytes.
+`docs/persistent-format.lock`. Current relational schema tags 0 through 5
+represent column, COUNT(*), COUNT(column), SUM, MIN, and MAX. Codec version 5
+adds declared-index `INCLUDE` metadata. Row-page format v4 (`SKRPGM04`) carries
+the same metadata. Codec v4 and row-page v3 are reserved for the partial-index
+layout. This reader reports a typed unsupported-version error for v1, v2 and
+v3 row manifests and requires recreating the development database.
 
 `RELATIONAL_CHECKPOINT_LAYOUT_FORMAT` refuses intact checkpoints this reader
 cannot serve in the requested configuration, with `UnsupportedFeature` whose
@@ -144,6 +148,49 @@ Format` workflow fails while they disagree and states in each release's notes
 whether it changed. Development formats still break without migrations;
 embedding hosts carry data across a change with a logical dump (export with
 the old release, import with the new one). See [LOGICAL_DUMP.md](LOGICAL_DUMP.md).
+
+### Relational covering indexes
+
+PostgreSQL-style covering indexes use `CREATE [UNIQUE] INDEX name ON table
+(key, ...) INCLUDE (payload, ...)`. Key and included columns are distinct in
+the SQL AST, catalog, logical dump, checkpoint schema, row-page manifest, and
+runtime index definition. An included column must exist, may appear once, and
+must not repeat a key column.
+
+Only key columns define ordering, range and prefix boundaries, uniqueness, and
+the unique-index NULL policy. The physical leaf key appends each included
+value as a typed, length-bounded payload suffix so a leaf entry and its posting
+remain one generation-bound read. All logical index operations use only the
+declared key prefix. Thus a payload update captures one physical delete and
+insert but leaves the logical posting unchanged; authoritative constraint
+overlays fold that pair instead of treating it as a duplicate logical change.
+Shadow builds and checkpoint rebuilds use the same representation and enforce
+unique keys on the logical prefix.
+
+Field planning may report an index scan as `covering` only when the selected
+key columns, included columns, and implicit primary-key locator contain every
+field required by that execution phase. Ordered scans can then stream the
+projection without base-row hydration. A non-covered projection keeps the
+same index range but fetches the base row. The payload must come from the same
+pinned immutable generation plus its transaction/live overlay; a missing,
+wrongly typed, or malformed payload fails with storage integrity rather than
+silently mixing it with another row generation. Indexes with included columns
+currently decline the exclusive keyset-bound fast path and use the ordinary
+logical-prefix range, preserving cursor semantics.
+
+The complete encoded physical key and payload is limited to 16 KiB. Included
+columns stay inline while the index exists, so an oversized INSERT or UPDATE is
+rejected before publication and the row mutation remains atomic. Updating an
+included value rewrites the affected index entry; applications should
+therefore include read-mostly payloads rather than large or frequently changing
+values. `CREATE INDEX ... INCLUDE` rejects atomically when an existing included
+value has already been externalized; rewrite that value inline before creating
+the index. This avoids turning an overflow reference into an implicit second
+fetch behind an index-only plan.
+This layout raised `PERSISTENT_FORMAT_VERSION` to 3 and the relational durable
+codec to 4. HawDB still makes no production on-disk compatibility promise;
+logical dump format 1 carries `included_columns` while old dumps omit it and
+continue to import as an empty list.
 
 Recovery:
 

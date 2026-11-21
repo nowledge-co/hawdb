@@ -1564,13 +1564,13 @@ impl RelationalIndexShadowReader {
     ) -> Result<(), RelationalIndexShadowError> {
         let expected =
             required_logical_roots(state, self.config.max_roots.get(), ErrorClass::Admission)?;
-        let matches = borrowed_logical_roots(&self.manifest.roots)
+        let roots_match = borrowed_logical_roots(&self.manifest.roots)
             .eq(expected.iter().map(RootDigestEntry::from_logical));
         let expected_catalog = catalog_schema_digest(&expected, ErrorClass::Corrupt)?;
         let expected_root_set = root_set_digest(&expected);
         if self.manifest.catalog_schema_digest != expected_catalog
             || self.manifest.root_set_digest != expected_root_set
-            || !matches
+            || !roots_match
         {
             return Err(RelationalIndexShadowError::Corrupt(format!(
                 "required relational index roots do not match the pinned schema: expected {} roots with catalog/root-set {}/{}, found {} roots with {}/{}",
@@ -1968,9 +1968,9 @@ impl LeadingPrefixStatisticsBuilder {
         }
         let leading_non_null =
             ordered_relational_key_prefix_ends(key, &mut self.current_prefix_ends)?;
-        if self.current_prefix_ends.len() != self.statistics.len() {
+        if self.current_prefix_ends.len() < self.statistics.len() {
             return Err(RelationalIndexShadowError::Corrupt(format!(
-                "relational index key contains {} values, expected {}",
+                "relational index key contains {} values, expected at least {}",
                 self.current_prefix_ends.len(),
                 self.statistics.len()
             )));
@@ -2539,6 +2539,7 @@ pub(super) fn relational_schema_digest(
     for index in &schema.indexes {
         encode_bytes(&mut encoded, index.name.as_bytes())?;
         encode_string_list(&mut encoded, &index.columns)?;
+        encode_string_list(&mut encoded, &index.included_columns)?;
         encoded.push(u8::from(index.unique));
     }
     Ok(integrity_digest(&encoded).sha256)

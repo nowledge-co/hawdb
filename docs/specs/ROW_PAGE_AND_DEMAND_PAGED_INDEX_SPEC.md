@@ -1011,7 +1011,7 @@ key bytes. This rejects corrupted physical identity, offset, bounds, lengths,
 or key offsets and prevents complete valid descriptors from being moved between
 root generations or ordinals without detection when that descriptor is
 selected. The page digest is the page header's own CRC32C/SHA-256 over its
-exact encoded bytes; v2 has no separate slot digest and no zero tail. A
+exact encoded bytes; v2 and v3 have no separate slot digest and no zero tail. A
 descriptor's byte range MUST lie within the allocated bytes its physical
 generation declares in the manifest inventory. Table descriptors are contiguous and ordered by disjoint primary-key
 bounds. A table root in the compact manifest stores its complete digest-bound
@@ -1020,10 +1020,12 @@ schema, exact descriptor-derived row count, the next never-issued table-scoped
 never decreases, and is strictly greater than every active, dirty, or deleted
 page id admitted by that publication.
 
-The `SKRPGM02` manifest (format v2, version 1) has a fixed 316-byte header
-followed by a bounded table-root payload. Its header binds generation, source
-commit epoch, optional previous generation, the writer's target and maximum
-page sizes, dirty and root page counts, exact
+The `SKRPGM03` manifest (format v3, manifest version 1) has a fixed 316-byte
+header followed by a bounded table-root payload. Format v3 adds separately
+encoded declared-index `INCLUDE` columns to each table schema; they never alter
+the logical key prefix, ordering, or uniqueness. Its header binds generation,
+source commit epoch, optional previous generation, the writer's target and
+maximum page sizes, dirty and root page counts, exact
 length plus CRC32C/SHA-256 metadata for the page, descriptor, and key artifacts,
 the table-root-set SHA-256, and an optional exact overflow-root generation,
 source epoch, and root-set digest. The manifest has its own CRC32C and SHA-256.
@@ -1034,11 +1036,12 @@ file, allocated and live page counts and bytes; the current generation's
 allocated bytes equal its page artifact length, and every live byte count is
 the sum of its descriptors' exact lengths. The target page size is writer
 policy: readers accept any page within the codec limits and the manifest's
-declared maximum. A v1 (`SKRPGM01`, fixed one-MiB slots) manifest fails with
-the typed `UnsupportedStorageFormat` error (found version 1, supported
-version 2) naming the recreate-the-development-database remedy, so hosts
-report it as an unsupported format rather than corruption; there is no
-migration (HawDB has no persisted production format yet). Source commit epoch zero is valid only when both the table set
+declared maximum. A v1 (`SKRPGM01`, fixed one-MiB slots) or v2 (`SKRPGM02`,
+pre-`INCLUDE` schema) manifest fails with the typed
+`UnsupportedStorageFormat` error (found version 1 or 2, supported version 3)
+naming the recreate-the-development-database remedy, so hosts report it as an
+unsupported format rather than corruption; there is no migration (HawDB has
+no persisted production format yet). Source commit epoch zero is valid only when both the table set
 and root page count are empty.
 
 Standalone publication holds one directory-scoped exclusive lock and follows

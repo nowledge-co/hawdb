@@ -144,7 +144,12 @@ fn decode_schema_inner(
                     .iter()
                     .map(|foreign| foreign.columns.len()),
             )
-            .chain(schema.indexes.iter().map(|index| index.columns.len()))
+            .chain(schema.indexes.iter().map(|index| {
+                index
+                    .columns
+                    .len()
+                    .saturating_add(index.included_columns.len())
+            }))
             .max()
             .unwrap_or(0);
         if keys > 0 {

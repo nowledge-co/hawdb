@@ -1381,18 +1381,21 @@ fn relational_schema_index_rows(schema: &RelationalTableSchema) -> Vec<Row> {
     );
     if !schema.primary_key.is_empty() {
         let name = format!("{}_pkey", schema.name);
-        rows.push(pg_index_row(schema, &name, &schema.primary_key, true));
+        rows.push(pg_index_row(schema, &name, &schema.primary_key, &[], true));
     }
     rows.extend(schema.unique_constraints.iter().map(|columns| {
         let name = format!("{}_{}_key", schema.name, columns.join("_"));
-        pg_index_row(schema, &name, columns, true)
+        pg_index_row(schema, &name, columns, &[], true)
     }));
-    rows.extend(
-        schema
-            .indexes
-            .iter()
-            .map(|index| pg_index_row(schema, &index.name, &index.columns, index.unique)),
-    );
+    rows.extend(schema.indexes.iter().map(|index| {
+        pg_index_row(
+            schema,
+            &index.name,
+            &index.columns,
+            &index.included_columns,
+            index.unique,
+        )
+    }));
     rows
 }
 
@@ -1400,6 +1403,7 @@ fn pg_index_row(
     schema: &RelationalTableSchema,
     index_name: &str,
     columns: &[String],
+    included_columns: &[String],
     unique: bool,
 ) -> Row {
     let unique = if unique { "UNIQUE " } else { "" };
@@ -1408,8 +1412,20 @@ fn pg_index_row(
         .map(|column| quote_postgres_identifier(column))
         .collect::<Vec<_>>()
         .join(", ");
+    let include = if included_columns.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " INCLUDE ({})",
+            included_columns
+                .iter()
+                .map(|column| quote_postgres_identifier(column))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
     let index_definition = format!(
-        "CREATE {unique}INDEX {} ON public.{} USING btree ({columns})",
+        "CREATE {unique}INDEX {} ON public.{} USING btree ({columns}){include}",
         quote_postgres_identifier(index_name),
         quote_postgres_identifier(&schema.name),
     );

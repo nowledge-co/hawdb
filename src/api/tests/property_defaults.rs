@@ -771,55 +771,35 @@ pub(super) fn unpack_fixture(bundle: &[u8], target: &std::path::Path) {
     }
 }
 
-/// A database written by HawDB before property defaults existed (generated
-/// on main at d5ebd79b8: descriptors in both a checkpoint and the WAL tail)
-/// reopens with every descriptor reporting no default.
+/// A database written before property defaults existed carries durable codec
+/// v3 and row-page v2. The covering-index baseline refuses whichever old
+/// envelope admission reaches first instead of interpreting legacy schemas.
 #[test]
-fn database_written_before_property_defaults_reopens_without_defaults() {
+fn database_written_before_property_defaults_receives_recreate_refusal() {
     let path = unique_test_dir("property_defaults_pre_change_fixture");
     unpack_fixture(PRE_DEFAULTS_FIXTURE, &path);
-    {
-        let mut db = Database::open(&path).unwrap();
-        let schemas = db.property_schemas().unwrap();
-        assert_eq!(schemas.len(), 3);
-        for (table, property, value_type) in [
-            ("Memory", "score", PropertyType::Float),
-            ("Memory", "kind", PropertyType::String),
-            ("LINKS", "weight", PropertyType::Int),
-        ] {
-            let schema = schema(&schemas, table, property);
-            assert_eq!(schema.value_type, value_type);
-            assert_eq!(schema.state, SchemaObjectState::Public);
-            assert_eq!(schema.default, None, "{table}.{property}");
-        }
-        assert_eq!(
-            node_value(&mut db, "Memory", "m1", "score"),
-            Value::Float(1.5)
-        );
-        assert_eq!(node_value(&mut db, "Memory", "m2", "score"), Value::Null);
-        assert_eq!(
-            node_value(&mut db, "Memory", "m3", "kind"),
-            Value::String("note".into())
-        );
-        db.query("CREATE (:Memory {id: 'm4'})").unwrap();
-        assert!(!node_map(&mut db, "Memory", "m4").contains_key("score"));
-
-        // The old database accepts a defaulted declaration and backfills it.
-        db.query("CREATE PROPERTY ON NODE TABLE Memory(rank) TYPE INT DEFAULT 0")
-            .unwrap();
-        db.run_schema_maintenance().unwrap();
-        db.run_schema_maintenance().unwrap();
-        db.checkpoint().unwrap();
-    }
-    {
-        let mut db = Database::open(&path).unwrap();
-        for id in ["m1", "m2", "m3", "m4"] {
-            assert_eq!(node_value(&mut db, "Memory", id, "rank"), Value::Int(0));
-        }
-        assert_eq!(
-            schema_state(&db, "Memory", "rank"),
-            SchemaObjectState::Public
-        );
-    }
+    let error = match Database::open(&path) {
+        Ok(db) => db
+            .property_schemas()
+            .expect_err("pre-covering-index fixture unexpectedly admitted"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(
+            error,
+            HawDBError::UnsupportedStorageFormat(
+                hawdb_core::StorageFormatError::UnsupportedVersion {
+                    format: hawdb_core::RELATIONAL_ROW_PAGE_FORMAT,
+                    found: 2,
+                    supported: 4,
+                } | hawdb_core::StorageFormatError::UnsupportedVersion {
+                    format: hawdb_core::RELATIONAL_DURABLE_CODEC_FORMAT,
+                    found: 3,
+                    supported: 5,
+                }
+            )
+        ),
+        "{error}"
+    );
     std::fs::remove_dir_all(path).unwrap();
 }

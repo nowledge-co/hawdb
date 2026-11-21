@@ -863,7 +863,7 @@ fn v1_row_page_manifest_requires_recreation() {
             RelationalRowPagePublicationError::UnsupportedFormat(
                 hawdb_core::error::StorageFormatError::UnsupportedVersion {
                     found: 1,
-                    supported: 2,
+                    supported: 4,
                     ..
                 }
             )
@@ -878,8 +878,9 @@ fn v1_row_page_manifest_requires_recreation() {
         hawdb_core::HawDBError::from_storage_error(error),
         hawdb_core::HawDBError::UnsupportedStorageFormat(_)
     ));
-    // Any other version of the v2 manifest is unsupported, not v1.
-    encoded[..8].copy_from_slice(b"SKRPGM02");
+    // An unknown manifest-header version under the current format is corrupt,
+    // distinct from the typed refusal for an older format magic.
+    encoded[..8].copy_from_slice(b"SKRPGM04");
     encoded[8..10].copy_from_slice(&2u16.to_le_bytes());
     fs::write(&path, &encoded).unwrap();
     assert!(
@@ -887,6 +888,36 @@ fn v1_row_page_manifest_requires_recreation() {
         Err(RelationalRowPagePublicationError::Corrupt(message))
             if message.contains("unsupported row-page manifest version 2"))
     );
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn v2_row_page_manifest_requires_recreation() {
+    let directory = unique_test_dir("v2-manifest-refusal");
+    let config = RelationalRowPagePublicationConfig::default();
+    RelationalRowPagePublisher::new(config)
+        .publish(
+            &directory,
+            1,
+            10,
+            None,
+            vec![table_delta("documents", vec![page(1, 1, 10, 1, 2)])],
+        )
+        .unwrap();
+    let path = directory.join(RELATIONAL_ROW_PAGE_MANIFEST_FILE);
+    let mut encoded = fs::read(&path).unwrap();
+    encoded[..8].copy_from_slice(b"SKRPGM02");
+    fs::write(path, encoded).unwrap();
+    assert!(matches!(
+        RelationalRowPageRootReader::open_latest(&directory, config).unwrap_err(),
+        RelationalRowPagePublicationError::UnsupportedFormat(
+            hawdb_core::error::StorageFormatError::UnsupportedVersion {
+                found: 2,
+                supported: 4,
+                ..
+            }
+        )
+    ));
     fs::remove_dir_all(directory).unwrap();
 }
 
@@ -1540,16 +1571,19 @@ fn schema_collection_limits_are_enforced_before_artifact_creation() {
         crate::relational::RelationalIndexSchema {
             name: "documents_value_1_idx".to_string(),
             columns: vec!["value_1".to_string()],
+            included_columns: Vec::new(),
             unique: false,
         },
         crate::relational::RelationalIndexSchema {
             name: "documents_id_idx".to_string(),
             columns: vec!["id".to_string()],
+            included_columns: Vec::new(),
             unique: false,
         },
         crate::relational::RelationalIndexSchema {
             name: "documents_value_1_id_idx".to_string(),
             columns: vec!["value_1".to_string(), "id".to_string()],
+            included_columns: Vec::new(),
             unique: false,
         },
     ];

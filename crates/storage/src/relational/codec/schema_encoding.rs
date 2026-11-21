@@ -229,6 +229,7 @@ pub(crate) fn schema(sink: &mut impl Sink, schema: Schema<'_>) -> Result<(), Rel
     for index in schema.indexes {
         bytes(sink, index.name.as_bytes())?;
         strings(sink, &index.columns)?;
+        strings(sink, &index.included_columns)?;
         sink.raw(&[u8::from(index.unique)])?;
     }
     materialized_view(sink, schema.materialized_view)
