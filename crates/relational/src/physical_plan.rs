@@ -872,7 +872,8 @@ pub fn relational_join_distinct_values<R: RelationalIndexStoreReader>(
         {
             return Some(statistics.distinct_non_null_values);
         }
-        let complete_non_null_unique_key = definition.role.is_unique()
+        let complete_non_null_unique_key = definition.predicate.is_none()
+            && definition.role.is_unique()
             && definition.columns.len() == columns.len()
             && columns.iter().all(|column| {
                 schema

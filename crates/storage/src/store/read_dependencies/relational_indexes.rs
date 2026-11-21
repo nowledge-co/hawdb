@@ -262,6 +262,7 @@ mod tests {
                             columns: vec!["group".into(), "id".into()],
                             included_columns,
                             unique: false,
+                            predicate: None,
                         }],
                     })],
                 },

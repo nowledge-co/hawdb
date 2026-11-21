@@ -312,6 +312,7 @@ pub(crate) fn rebuild_indexes(
                 columns.as_slice(),
                 &[] as &[String],
                 RelationalIndexRole::UniqueConstraint,
+                None,
             )
         })
         .chain(schema.indexes.iter().map(|index| {
@@ -324,6 +325,7 @@ pub(crate) fn rebuild_indexes(
                 } else {
                     RelationalIndexRole::Secondary
                 },
+                index.predicate.as_ref(),
             )
         }))
         .chain(
@@ -339,16 +341,22 @@ pub(crate) fn rebuild_indexes(
                         foreign.columns.as_slice(),
                         &[] as &[String],
                         RelationalIndexRole::ForeignKeySupport,
+                        None,
                     )
                 }),
         );
     let mut indexes = BTreeMap::new();
-    for (name, names, included_names, role) in definitions {
+    for (name, names, included_names, role, predicate) in definitions {
         let key_positions = positions(schema, names, &columns, work)?;
         let included_positions = positions(schema, included_names, &columns, work)?;
         let mut entries: BTreeMap<RelationalKey, BTreeSet<RelationalKey>> = BTreeMap::new();
         let mut unique_keys = BTreeSet::new();
         for (primary_key, row) in segment.rows.iter() {
+            if let Some(predicate) = predicate
+                && crate::relational::predicate_truth(schema, row, predicate)? != Some(true)
+            {
+                continue;
+            }
             let logical_key = row_key(row, &key_positions, work)?;
             if role.is_unique() && has_null(&logical_key, work)? {
                 continue;
@@ -423,7 +431,7 @@ fn references_unique(
         let unit = work.start_unit().map_err(work_error)?;
         let unique = index.unique;
         unit.finish();
-        if unique && same_columns(columns, &index.columns, work)? {
+        if unique && index.predicate.is_none() && same_columns(columns, &index.columns, work)? {
             return Ok(true);
         }
     }

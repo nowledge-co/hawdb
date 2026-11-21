@@ -67,11 +67,11 @@ Files:
 
 ### Reader compatibility refusals
 
-Relational WAL and full-checkpoint envelopes currently use codec version 5;
+Relational WAL and full-checkpoint envelopes currently use codec version 6;
 embedded append WAL records (including checkpoint schema records) remain at
 version 3.
-A reader accepts its supported version exactly. An intact envelope requiring a
-different version returns `HawDBError::UnsupportedStorageFormat` with
+Readers select an explicit decoder for each supported version. An intact envelope
+requiring an unknown version returns `HawDBError::UnsupportedStorageFormat` with
 `StorageFormatError::UnsupportedVersion { format, found, supported }`.
 An unknown materialized-view expression tag returns `UnsupportedFeature` with
 the schema format, feature name, and numeric tag. `StorageFormatError::format()`
@@ -81,12 +81,12 @@ is always one of the constants exported from `hawdb` and `hawdb_core`:
 `RELATIONAL_CHECKPOINT_LAYOUT_FORMAT`, `APPEND_WAL_FORMAT`,
 `LOGICAL_DUMP_FORMAT` or `SEARCH_PROJECTION_MANIFEST_FORMAT`. Hosts compare
 against these constants instead of matching message text. They are recorded in
-`docs/persistent-format.lock`. Current relational schema tags 0 through 5
-represent column, COUNT(*), COUNT(column), SUM, MIN, and MAX. Codec version 5
-adds declared-index `INCLUDE` metadata. Row-page format v4 (`SKRPGM04`) carries
-the same metadata. Codec v4 and row-page v3 are reserved for the partial-index
-layout. This reader reports a typed unsupported-version error for v1, v2 and
-v3 row manifests and requires recreating the development database.
+`docs/persistent-format.lock`. Relational schema tags 0 through 5 represent
+column, COUNT(*), COUNT(column), SUM, MIN, and MAX. Codec v6 and row-page
+format v5 (`SKRPGM05`) record both covering columns and partial-index
+predicates. Readers decode full-index codec v3 / row-page v2, partial-index
+v4 / v3, and covering-index v5 / v4 using their original field layouts.
+Fixed-slot row-page v1 receives a typed unsupported-version error.
 
 `RELATIONAL_CHECKPOINT_LAYOUT_FORMAT` refuses intact checkpoints this reader
 cannot serve in the requested configuration, with `UnsupportedFeature` whose
@@ -149,6 +149,39 @@ whether it changed. Development formats still break without migrations;
 embedding hosts carry data across a change with a logical dump (export with
 the old release, import with the new one). See [LOGICAL_DUMP.md](LOGICAL_DUMP.md).
 
+### PostgreSQL partial indexes
+
+HawDB accepts `CREATE [UNIQUE] INDEX name ON table (columns) WHERE predicate`
+for deterministic, single-row predicates composed from column-to-literal
+comparisons, `IS [NOT] NULL`, `AND`, `OR`, and `NOT`. Parameters, column-to-column
+comparisons, arithmetic expressions, functions, subqueries, volatile values,
+index expressions, ordering/`NULLS` clauses, operator classes,
+storage parameters, and `CONCURRENTLY` are rejected instead of being discarded.
+Comparison literals cover NULL, BOOLEAN, BIGINT, finite DOUBLE PRECISION,
+NUMERIC, TEXT, UUID, TIMESTAMP, and TIMESTAMPTZ; BYTEA and VECTOR comparisons
+are outside this first durable/logical-dump-safe subset. `IS [NOT] NULL` remains
+available for every column type.
+TEXT columns used in comparisons remain inline because index membership must be
+decidable during mutation, recovery, and detached index builds without a hidden
+hydration budget. `IS [NOT] NULL` does not require that protection. Hosts should
+prefer compact status/tenant columns for partial predicates. Creating a TEXT
+comparison predicate over rows whose values are already externalized refuses
+the DDL atomically instead of performing an unbudgeted backfill hydration.
+
+Only rows for which the predicate evaluates SQL `TRUE` are members; `FALSE`
+and `UNKNOWN` rows are absent. Insert, update, delete, WAL replay, checkpoint
+rebuild, authoritative live deltas, index-shadow builds, and partial-unique
+checks use that same rule. A partial unique index is not a general conflict
+target or foreign-key target because rows outside its predicate are not unique.
+
+The SQL planner considers a partial index only when every top-level conjunct
+of its normalized predicate appears as an equivalent conjunct in the bound
+query predicate. This proof is deliberately conservative: a stronger but
+non-identical inequality, an `OR`, a join-only condition, or any unrecognized
+shape falls back to another index or a scan. It may miss an optimization, but
+it cannot return rows from an incomplete index as though it covered the whole
+query.
+
 ### Relational covering indexes
 
 PostgreSQL-style covering indexes use `CREATE [UNIQUE] INDEX name ON table
@@ -187,8 +220,7 @@ values. `CREATE INDEX ... INCLUDE` rejects atomically when an existing included
 value has already been externalized; rewrite that value inline before creating
 the index. This avoids turning an overflow reference into an implicit second
 fetch behind an index-only plan.
-This layout raised `PERSISTENT_FORMAT_VERSION` to 3 and the relational durable
-codec to 4. HawDB still makes no production on-disk compatibility promise;
+Covering columns can precede a partial-index `WHERE` clause. HawDB still makes no production on-disk compatibility promise;
 logical dump format 1 carries `included_columns` while old dumps omit it and
 continue to import as an empty list.
 

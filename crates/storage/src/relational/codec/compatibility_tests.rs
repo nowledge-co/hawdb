@@ -86,11 +86,11 @@ fn verify_checkpoint(encoded: &[u8], expected: &StorageFormatError) {
 
 #[test]
 fn intact_unsupported_versions_are_distinct_from_integrity_failures() {
-    for version in [1_u16, 2, 3, 4, u16::MAX] {
+    for version in [1_u16, 2, CODEC_VERSION + 1, u16::MAX] {
         let expected = StorageFormatError::UnsupportedVersion {
             format: "relational durable codec",
             found: version,
-            supported: 5,
+            supported: CODEC_VERSION,
         };
         let mut wal = encode_relational_wal_batch(1, &RelationalTransaction::default()).unwrap();
         wal[8..10].copy_from_slice(&version.to_le_bytes());
@@ -114,6 +114,167 @@ fn intact_unsupported_versions_are_distinct_from_integrity_failures() {
         decode_relational_wal_batch(&wal, RelationalDecodeLimits::wal()),
         Err(RelationalError::Corruption(_))
     ));
+}
+
+fn downgrade_full_index_record_to_v3(
+    mut record: Vec<u8>,
+    schema: &RelationalTableSchema,
+) -> Vec<u8> {
+    let current = encode_relational_table_schema(schema).unwrap();
+    let legacy =
+        encode_relational_table_schema_for_layout(schema, IndexSchemaLayout::Full).unwrap();
+    assert_eq!(current.len(), legacy.len() + 5);
+    let offset = record[HEADER_BYTES..]
+        .windows(current.len())
+        .position(|candidate| candidate == current)
+        .map(|offset| HEADER_BYTES + offset)
+        .expect("current schema bytes in durable record");
+    record.splice(offset..offset + current.len(), legacy);
+    record[8..10].copy_from_slice(&3_u16.to_le_bytes());
+    let payload_len = u64::try_from(record.len() - HEADER_BYTES).unwrap();
+    record[20..28].copy_from_slice(&payload_len.to_le_bytes());
+    let digest = integrity_digest(&record[HEADER_BYTES..]);
+    record[28..32].copy_from_slice(&digest.crc32c.get().to_le_bytes());
+    record[32..64].copy_from_slice(digest.sha256.as_bytes());
+    record
+}
+
+#[test]
+fn version_3_wal_and_checkpoint_decode_full_named_indexes() {
+    let schema = RelationalTableSchema {
+        name: "documents".into(),
+        columns: vec![
+            RelationalColumnSchema {
+                name: "id".into(),
+                scalar_type: RelationalScalarType::BigInt,
+                nullable: false,
+                default: None,
+            },
+            RelationalColumnSchema {
+                name: "body".into(),
+                scalar_type: RelationalScalarType::Text,
+                nullable: false,
+                default: None,
+            },
+        ],
+        primary_key: vec!["id".into()],
+        unique_constraints: Vec::new(),
+        foreign_keys: Vec::new(),
+        indexes: vec![RelationalIndexSchema {
+            included_columns: Vec::new(),
+            name: "documents_body_idx".into(),
+            columns: vec!["body".into()],
+            unique: false,
+            predicate: None,
+        }],
+        materialized_view: None,
+    };
+    let transaction = RelationalTransaction {
+        writes: vec![
+            RelationalWrite::CreateTable(schema.clone()),
+            RelationalWrite::Insert {
+                table: schema.name.clone(),
+                rows: vec![RelationalRow::new(vec![
+                    RelationalValue::BigInt(1),
+                    RelationalValue::Text("one".into()),
+                ])],
+                mode: RelationalInsertMode::Error,
+            },
+        ],
+    };
+    let state = RelationalState::default()
+        .stage_transaction(transaction.clone(), Default::default(), Default::default())
+        .unwrap();
+
+    let wal = downgrade_full_index_record_to_v3(
+        encode_relational_wal_batch(7, &transaction).unwrap(),
+        &schema,
+    );
+    let decoded = decode_relational_wal_batch(&wal, RelationalDecodeLimits::wal()).unwrap();
+    assert_eq!(decoded.epoch, 7);
+    assert_eq!(decoded.transaction, transaction);
+
+    let checkpoint = downgrade_full_index_record_to_v3(
+        encode_relational_checkpoint(7, &state).unwrap(),
+        &schema,
+    );
+    let limits = RelationalDecodeLimits::checkpoint();
+    let decoded = decode_relational_checkpoint(&checkpoint, limits).unwrap();
+    assert_eq!(decoded.epoch, 7);
+    assert_eq!(decoded.state.table_schema("documents"), Some(&schema));
+    assert_eq!(decoded.state.row_count("documents"), 1);
+
+    let path = std::env::temp_dir().join(format!(
+        "hawdb-v3-full-index-{}",
+        hawdb_core::generate_uuidv7().unwrap()
+    ));
+    std::fs::write(&path, &checkpoint).unwrap();
+    validate_relational_checkpoint_file_format(&path).unwrap();
+    let decoded = decode_relational_checkpoint_file(&path, limits).unwrap();
+    assert_eq!(decoded.state.table_schema("documents"), Some(&schema));
+    let work =
+        crate::background::CheckpointWorkContext::new(hawdb_core::RuntimeTaskContext::default());
+    let decoded = decode_relational_checkpoint_file_with_work_context(
+        &path,
+        limits,
+        RelationalCheckpointIndexLoad::MaterializedPostings,
+        &work,
+    )
+    .unwrap();
+    assert_eq!(decoded.state.table_schema("documents"), Some(&schema));
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn legacy_standalone_schema_decodes_declared_indexes_as_full_indexes() {
+    let schema = RelationalTableSchema {
+        name: "documents".into(),
+        columns: vec![RelationalColumnSchema {
+            name: "id".into(),
+            scalar_type: RelationalScalarType::BigInt,
+            nullable: false,
+            default: None,
+        }],
+        primary_key: vec!["id".into()],
+        unique_constraints: Vec::new(),
+        foreign_keys: Vec::new(),
+        indexes: vec![RelationalIndexSchema {
+            included_columns: Vec::new(),
+            name: "documents_id".into(),
+            columns: vec!["id".into()],
+            unique: false,
+            predicate: None,
+        }],
+        materialized_view: None,
+    };
+    let legacy =
+        encode_relational_table_schema_for_layout(&schema, IndexSchemaLayout::Full).unwrap();
+
+    assert_eq!(
+        decode_relational_table_schema_for_layout(
+            &legacy,
+            legacy.len(),
+            64,
+            IndexSchemaLayout::Full
+        )
+        .unwrap(),
+        schema
+    );
+    assert!(decode_relational_table_schema(&legacy, legacy.len(), 64).is_err());
+
+    let work =
+        crate::background::CheckpointWorkContext::new(hawdb_core::RuntimeTaskContext::default());
+    assert_eq!(
+        decode_relational_table_schema_with_layout_and_work(
+            &legacy,
+            IndexSchemaLayout::Full,
+            legacy.len(),
+            64,
+            &work
+        )
+        .unwrap(),
+        schema
+    );
 }
 
 #[test]

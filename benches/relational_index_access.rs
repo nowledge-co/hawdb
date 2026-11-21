@@ -266,6 +266,7 @@ fn seeded_store(target_prefix_rows: usize) -> RelationalStore {
                             columns: vec!["space_id".to_string()],
                             included_columns: Vec::new(),
                             unique: false,
+                            predicate: None,
                         },
                     },
                     RelationalWrite::CreateIndex {
@@ -280,6 +281,7 @@ fn seeded_store(target_prefix_rows: usize) -> RelationalStore {
                             ],
                             included_columns: Vec::new(),
                             unique: false,
+                            predicate: None,
                         },
                     },
                 ],

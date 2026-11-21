@@ -137,6 +137,7 @@ pub(super) fn schema() -> RelationalTableSchema {
             columns: vec!["id".into()],
             included_columns: Vec::new(),
             unique: ordinal % 2 == 0,
+            predicate: None,
         });
     }
     schema

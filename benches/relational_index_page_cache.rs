@@ -165,6 +165,7 @@ fn seeded_state() -> RelationalState {
                             columns: vec!["owner".to_string()],
                             included_columns: Vec::new(),
                             unique: false,
+                            predicate: None,
                         }],
                     }),
                     RelationalWrite::Insert {

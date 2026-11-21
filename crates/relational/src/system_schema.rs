@@ -243,6 +243,7 @@ pub fn statement_writes_system_schema_registry(statement: &SqlStatement) -> bool
                     included_columns: Vec::new(),
                     unique: false,
                     if_not_exists: false,
+                    predicate: None,
                 },
             )) {
                 return true;

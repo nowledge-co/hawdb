@@ -546,36 +546,64 @@ mod peg_baseline {
         assert_eq!(count, 15);
     }
 
+    #[test]
+    fn frozen_main_1872_partial_index_transitions_are_source_bound() {
+        let mut count = 0;
+        for line in
+            include_str!("../../fixtures/frontend_main_1872_partial_index_peg_baseline_v1.jsonl")
+                .lines()
+        {
+            let expected: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert_eq!(
+                expected["source_commit"],
+                "ebc2c9c4aa2eb737d785876eefed14432e82f0ed"
+            );
+            assert_case(expected["sql"].as_str().unwrap(), &expected);
+            count += 1;
+        }
+        assert_eq!(count, 16);
+    }
+
     pub(super) fn assert_case(input: &str, expected: &serde_json::Value) {
         use std::sync::OnceLock;
-        static TRANSITIONS: OnceLock<std::collections::BTreeMap<String, serde_json::Value>> =
-            OnceLock::new();
+        type Transitions = std::collections::BTreeMap<String, Vec<serde_json::Value>>;
+        static TRANSITIONS: OnceLock<Transitions> = OnceLock::new();
         let transitions = TRANSITIONS.get_or_init(|| {
-            [
+            let mut transitions = Transitions::new();
+            for line in [
                 include_str!("../../fixtures/frontend_main_1514_numeric_peg_baseline_v1.jsonl"),
                 include_str!(
                     "../../fixtures/frontend_main_1873_covering_index_peg_baseline_v1.jsonl"
                 ),
+                include_str!(
+                    "../../fixtures/frontend_main_1872_partial_index_peg_baseline_v1.jsonl"
+                ),
             ]
             .into_iter()
             .flat_map(str::lines)
-            .map(|line| {
-                let case: serde_json::Value = serde_json::from_str(line).unwrap();
-                (case["sql"].as_str().unwrap().to_owned(), case)
-            })
-            .collect()
-        });
-        let expected = if let Some(current) = transitions.get(input) {
-            if current["kind"] != expected["kind"]
-                || current["ast_sha256"] != expected["ast_sha256"]
             {
-                assert_eq!(current["previous_kind"], expected["kind"], "{input}");
-                assert_eq!(
-                    current["previous_ast_sha256"], expected["ast_sha256"],
-                    "{input}"
-                );
+                let case: serde_json::Value = serde_json::from_str(line).unwrap();
+                let input = case["sql"].as_str().unwrap();
+                let history = transitions.entry(input.to_owned()).or_default();
+                if let Some(prior) = history.last() {
+                    assert_eq!(case["previous_kind"], prior["kind"], "{input}");
+                    assert_eq!(case["previous_ast_sha256"], prior["ast_sha256"], "{input}");
+                }
+                history.push(case);
             }
-            current
+            transitions
+        });
+        let expected = if let Some(history) = transitions.get(input) {
+            assert!(
+                history.iter().any(|step| {
+                    (step["previous_kind"] == expected["kind"]
+                        && step["previous_ast_sha256"] == expected["ast_sha256"])
+                        || (step["kind"] == expected["kind"]
+                            && step["ast_sha256"] == expected["ast_sha256"])
+                }),
+                "unrecognized baseline for {input}"
+            );
+            history.last().unwrap()
         } else {
             expected
         };

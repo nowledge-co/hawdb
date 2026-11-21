@@ -156,6 +156,7 @@ mod ordered_range;
 mod out_of_core_labeled_expand;
 mod out_of_core_relationship_set;
 mod pagerank;
+mod partial_indexes;
 mod pattern_expressions;
 mod pattern_identity_imports;
 mod point_read_reuse;

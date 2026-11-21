@@ -159,6 +159,44 @@ pub(super) struct Index {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub included_columns: Vec<String>,
     pub unique: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predicate: Option<IndexPredicate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(super) enum IndexPredicate {
+    And {
+        left: Box<IndexPredicate>,
+        right: Box<IndexPredicate>,
+    },
+    Or {
+        left: Box<IndexPredicate>,
+        right: Box<IndexPredicate>,
+    },
+    Not {
+        predicate: Box<IndexPredicate>,
+    },
+    Compare {
+        column: String,
+        operator: IndexComparison,
+        value: serde_json::Value,
+    },
+    IsNull {
+        column: String,
+        negated: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum IndexComparison {
+    Eq,
+    NotEq,
+    Lt,
+    Lte,
+    Gt,
+    Gte,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

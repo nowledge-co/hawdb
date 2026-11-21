@@ -91,7 +91,7 @@ The scoped grammar includes:
 - `SELECT ... FOR SHARE` and `SELECT ... FOR UPDATE` in pessimistic concurrent
   transactions;
 - `CREATE TABLE`, primary/unique/foreign-key constraints, `CREATE INDEX`
-  including PostgreSQL `INCLUDE` covering payloads, and append-only `ALTER
+  including partial predicates and PostgreSQL `INCLUDE` covering payloads, and append-only `ALTER
   TABLE ... ADD COLUMN` parsing.
 
 Unsupported syntax MUST fail during parse or binding. It MUST NOT silently use
@@ -152,6 +152,15 @@ and `BYTEA`, including nullability and deterministic defaults. Primary keys,
 unique constraints, ordered secondary indexes, and foreign keys are evaluated
 against the final staged transaction state.
 
+A partial index admits only rows for which its stored predicate is SQL `TRUE`;
+`FALSE` and `UNKNOWN` rows are absent. Its deterministic subset is limited to
+column-to-literal comparisons, `IS [NOT] NULL`, `AND`, `OR`, and `NOT`.
+Mutation, replay, checkpoint, and authoritative index-shadow paths MUST apply
+the same predicate. A partial unique index enforces uniqueness only among its
+members and MUST NOT serve as a general foreign-key or conflict target. The
+planner may select it only after a conservative proof that the query predicate
+implies the stored predicate.
+
 `BYTEA` binds to the shared `Value::Binary`/`ValueRef::Binary` logical value.
 Query projection, comparison, hashing, spill, WAL, checkpoint, and JSON result
 boundaries MUST preserve raw bytes without retyping them as text or integer
@@ -189,11 +198,9 @@ manifests carry the final high-water marks, and metadata-only staging retains
 them independently of hydrated rows. An insert followed by deletion must still
 publish its allocator advance at checkpoint.
 
-The covering-index writer uses relational durable codec version 5 and canonical
-row-root manifest version 4. The partial-index writer uses codec version 4 and
-row-root manifest version 3. Row-delta manifests and runs remain version 2.
-Older development formats are rejected; recreate development databases. No production compatibility
-migration is introduced under the current greenfield policy.
+The relational writer uses durable codec v6 and canonical row-root manifest v5.
+It reads codec v3 (full indexes), v4 (partial indexes), and v5 (covering indexes),
+and their respective v2, v3, and v4 row-root manifests. Row-delta manifests and runs remain v2.
 
 PostgreSQL type aliases normalize to canonical storage types: INT/INTEGER,
 SMALLINT and TINYINT to BIGINT; FLOAT, FLOAT8 and FLOAT(25..53) to DOUBLE

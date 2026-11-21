@@ -443,6 +443,7 @@ pub struct CreateIndexStatement {
     pub included_columns: Vec<String>,
     pub unique: bool,
     pub if_not_exists: bool,
+    pub predicate: Option<SqlPredicate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

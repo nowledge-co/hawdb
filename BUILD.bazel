@@ -195,7 +195,10 @@ _HAWDB_COMPILE_DATA = [
     "tests/fixtures/pre_1683_property_descriptors.bundle",
     "tests/fixtures/row_root_relational_checkpoint.bundle",
     "tests/fixtures/row_root_shadow_index_checkpoint.bundle.zst",
+    "tests/fixtures/row_root_shadow_named_index_v2.bundle.zst",
+    "tests/fixtures/standalone_create_index_wal_v3.bundle.zst",
     "tests/fixtures/partial_index_v4.bundle.zst",
+    "tests/fixtures/covering_index_v5.bundle.zst",
 ]
 
 _HAWDB_COMMON_BASE_DEPS = [

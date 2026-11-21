@@ -92,6 +92,7 @@ fn schema() -> RelationalTableSchema {
             columns: vec![name],
             included_columns: Vec::new(),
             unique: id % 2 == 0,
+            predicate: None,
         });
     }
     schema

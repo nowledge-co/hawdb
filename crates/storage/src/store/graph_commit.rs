@@ -3792,6 +3792,7 @@ mod tests {
                             columns: vec!["body".into()],
                             included_columns: Vec::new(),
                             unique: true,
+                            predicate: None,
                         }],
                     })],
                 },
@@ -3934,6 +3935,7 @@ mod tests {
             columns: vec!["body".into()],
             included_columns: Vec::new(),
             unique: true,
+            predicate: None,
         });
         store
             .commit_relational_transaction(

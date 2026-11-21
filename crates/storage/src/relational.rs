@@ -120,6 +120,7 @@ pub use index_shadow::{
 };
 pub(crate) use index_shadow::{
     relational_index_recovery_manifest_generation_file, relational_index_recovery_prefix_file,
+    schema_digest_for_binding,
 };
 pub use overflow::{
     relational_overflow_descriptor_file, relational_overflow_extent_file,
@@ -742,6 +743,7 @@ pub struct RelationalIndexSchema {
     pub columns: Vec<String>,
     pub included_columns: Vec<String>,
     pub unique: bool,
+    pub predicate: Option<RelationalPredicate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -863,6 +865,11 @@ fn clone_index_schema_with_allocations(
         columns: clone_schema_strings(&index.columns, context)?,
         included_columns: clone_schema_strings(&index.included_columns, context)?,
         unique: index.unique,
+        predicate: index
+            .predicate
+            .as_ref()
+            .map(|predicate| materialized_view::clone_predicate(predicate, context))
+            .transpose()?,
     })
 }
 
@@ -973,6 +980,7 @@ pub struct RelationalIndexDefinition {
     pub columns: Vec<String>,
     pub included_columns: Vec<String>,
     pub role: RelationalIndexRole,
+    pub predicate: Option<RelationalPredicate>,
 }
 
 impl RelationalTableSchema {
@@ -1010,6 +1018,7 @@ impl RelationalTableSchema {
                 columns: self.primary_key.clone(),
                 included_columns: Vec::new(),
                 role: RelationalIndexRole::Primary,
+                predicate: None,
             });
         }
         definitions.extend(
@@ -1021,6 +1030,7 @@ impl RelationalTableSchema {
                     columns: columns.clone(),
                     included_columns: Vec::new(),
                     role: RelationalIndexRole::UniqueConstraint,
+                    predicate: None,
                 }),
         );
         definitions.extend(self.indexes.iter().map(|index| RelationalIndexDefinition {
@@ -1032,6 +1042,7 @@ impl RelationalTableSchema {
             } else {
                 RelationalIndexRole::Secondary
             },
+            predicate: index.predicate.clone(),
         }));
         definitions.extend(
             self.foreign_keys
@@ -1042,6 +1053,7 @@ impl RelationalTableSchema {
                     columns: foreign_key.columns.clone(),
                     included_columns: Vec::new(),
                     role: RelationalIndexRole::ForeignKeySupport,
+                    predicate: None,
                 }),
         );
         definitions
@@ -1054,6 +1066,7 @@ impl RelationalTableSchema {
                 columns: self.primary_key.clone(),
                 included_columns: Vec::new(),
                 role: RelationalIndexRole::Primary,
+                predicate: None,
             });
         }
         if let Some((ordinal, columns)) = self
@@ -1067,16 +1080,18 @@ impl RelationalTableSchema {
                 columns: columns.clone(),
                 included_columns: Vec::new(),
                 role: RelationalIndexRole::UniqueConstraint,
+                predicate: None,
             });
         }
         self.indexes
             .iter()
-            .find(|index| index.unique && index.columns == columns)
+            .find(|index| index.unique && index.predicate.is_none() && index.columns == columns)
             .map(|index| RelationalIndexDefinition {
                 name: index.name.clone(),
                 columns: index.columns.clone(),
                 included_columns: index.included_columns.clone(),
                 role: RelationalIndexRole::DeclaredUnique,
+                predicate: None,
             })
     }
 }
@@ -3389,8 +3404,12 @@ impl RelationalState {
                     table.table
                 ))
             })?;
-            let schema_digest = index_shadow::relational_schema_digest(&table.schema)
-                .map_err(|error| RelationalError::Corruption(error.to_string()))?;
+            let schema_digest = index_shadow::schema_digest_for_binding(
+                &table.schema,
+                Some(table.schema_digest),
+                None,
+            )
+            .map_err(|error| RelationalError::Corruption(error.to_string()))?;
             if schema_digest != table.schema_digest {
                 return Err(RelationalError::Corruption(format!(
                     "canonical row root table {} schema digest mismatch",
@@ -7419,6 +7438,9 @@ fn apply_transaction_inner(
                     .get_mut(&table)
                     .ok_or_else(|| RelationalError::Schema(format!("unknown table {table}")))?;
                 validate_column_list(schema, &index.columns, "index")?;
+                if let Some(predicate) = &index.predicate {
+                    validate_index_predicate(schema, predicate)?;
+                }
                 validate_included_column_list(schema, &index.columns, &index.included_columns)?;
                 if index.name.is_empty()
                     || is_reserved_relational_index_name(&index.name)
@@ -7933,10 +7955,9 @@ fn apply_upsert(
                 .unique_constraints
                 .iter()
                 .any(|columns| columns == conflict_columns)
-            || schema
-                .indexes
-                .iter()
-                .any(|index| index.unique && index.columns == conflict_columns))
+            || schema.indexes.iter().any(|index| {
+                index.unique && index.predicate.is_none() && index.columns == conflict_columns
+            }))
     {
         return Err(RelationalError::Schema(format!(
             "UPSERT conflict target on table {table} must name a primary or unique key"
@@ -8830,6 +8851,41 @@ fn validate_predicate(
     }
 }
 
+fn validate_index_predicate(
+    schema: &RelationalTableSchema,
+    predicate: &RelationalPredicate,
+) -> Result<(), RelationalError> {
+    validate_predicate(schema, predicate)?;
+    match predicate {
+        RelationalPredicate::And(left, right) | RelationalPredicate::Or(left, right) => {
+            validate_index_predicate(schema, left)?;
+            validate_index_predicate(schema, right)
+        }
+        RelationalPredicate::Not(predicate) => validate_index_predicate(schema, predicate),
+        RelationalPredicate::Compare { column, value, .. } => {
+            let position = schema
+                .column_position(column)
+                .expect("partial-index predicate schema was validated");
+            if matches!(
+                schema.columns[position].scalar_type,
+                RelationalScalarType::Bytea | RelationalScalarType::Vector(_)
+            ) || matches!(value, RelationalValue::DoublePrecision(value) if !value.is_finite())
+            {
+                return Err(RelationalError::Schema(format!(
+                    "partial-index comparison on column {column} uses an unsupported literal type"
+                )));
+            }
+            Ok(())
+        }
+        RelationalPredicate::IsNull { .. } => Ok(()),
+        RelationalPredicate::RowCompare { .. } | RelationalPredicate::NumericCompare { .. }
+        | RelationalPredicate::NumericIsNull { .. } => Err(RelationalError::Schema(
+            "partial-index predicates support column-to-literal comparisons, IS NULL, AND, OR, and NOT only"
+                .into(),
+        )),
+    }
+}
+
 fn comparison_predicate_op(predicate: &RelationalPredicate) -> Option<RelationalComparisonOp> {
     match predicate {
         RelationalPredicate::NumericCompare { op, .. }
@@ -8937,7 +8993,7 @@ fn predicate_truth(
                 || matches!(value, RelationalValue::Overflow(_))
             {
                 return Err(RelationalError::Admission(format!(
-                    "DELETE predicate on column {column} requires overflow hydration"
+                    "predicate on column {column} requires overflow hydration"
                 )));
             }
             if matches!(current, RelationalValue::Null) || matches!(value, RelationalValue::Null) {
@@ -8960,6 +9016,17 @@ fn predicate_truth(
                 matches!(row.values()[position], RelationalValue::Null) != *negated,
             ))
         }
+    }
+}
+
+pub(crate) fn index_includes_row(
+    schema: &RelationalTableSchema,
+    index: &RelationalIndexDefinition,
+    row: &RelationalRow,
+) -> Result<bool, RelationalError> {
+    match &index.predicate {
+        Some(predicate) => Ok(predicate_truth(schema, row, predicate)? == Some(true)),
+        None => Ok(true),
     }
 }
 
@@ -9039,6 +9106,9 @@ fn validate_table_schema(schema: &RelationalTableSchema) -> Result<(), Relationa
             )));
         }
         validate_column_list(schema, &index.columns, "index")?;
+        if let Some(predicate) = &index.predicate {
+            validate_index_predicate(schema, predicate)?;
+        }
         if !index.included_columns.is_empty() {
             validate_included_column_list(schema, &index.columns, &index.included_columns)?;
         }
@@ -9207,7 +9277,7 @@ fn rebuild_indexes_with_allocations(
                 work: work.clone(),
                 memory: Default::default(),
             };
-            if !index_includes_row(index, row, &positions) {
+            if !index_entry_includes_row(schema, index, row, &positions)? {
                 continue;
             }
             let logical_key = row_key_with_allocations(row, &positions, Some(&key_context))?;
@@ -9273,7 +9343,7 @@ fn rebuild_indexes(state: &mut RelationalState, table: &str) -> Result<(), Relat
         let included_positions = column_positions(schema, &index.included_columns)?;
         let mut postings = RelationalIndexPages::default();
         for (primary_key, row) in segment.rows.iter() {
-            if !index_includes_row(&index, row, &positions) {
+            if !index_entry_includes_row(schema, &index, row, &positions)? {
                 continue;
             }
             let logical_key = row_key(row, &positions);
@@ -9354,7 +9424,7 @@ fn refresh_indexes_for_keys_with_allocations(
             if let Some(previous_row) =
                 previous_segment.and_then(|segment| segment.rows.get(primary_key))
             {
-                if !index_includes_row(&index, previous_row, &positions) {
+                if !index_entry_includes_row(&schema, &index, previous_row, &positions)? {
                     continue;
                 }
                 let key_context =
@@ -9382,7 +9452,7 @@ fn refresh_indexes_for_keys_with_allocations(
             let Some(row) = next_segment.rows.get(primary_key) else {
                 continue;
             };
-            if !index_includes_row(&index, row, &positions) {
+            if !index_entry_includes_row(&schema, &index, row, &positions)? {
                 continue;
             }
             let key_context =
@@ -9455,7 +9525,7 @@ fn unique_index_definition_with_allocations(
     } else if let Some(index) = schema
         .indexes
         .iter()
-        .find(|index| index.unique && index.columns == columns)
+        .find(|index| index.unique && index.predicate.is_none() && index.columns == columns)
     {
         (
             clone_string_with_allocations(&index.name, Some(context))?,
@@ -9471,6 +9541,7 @@ fn unique_index_definition_with_allocations(
         columns,
         included_columns,
         role,
+        predicate: None,
     }))
 }
 
@@ -9492,7 +9563,8 @@ fn required_index_definitions_with_allocations(
     let mut push = |name,
                     columns: &[String],
                     included_columns: &[String],
-                    role|
+                    role,
+                    predicate: Option<&RelationalPredicate>|
      -> Result<(), RelationalError> {
         let columns = collect_results_with_allocations(
             columns
@@ -9514,6 +9586,9 @@ fn required_index_definitions_with_allocations(
             columns,
             included_columns,
             role,
+            predicate: predicate
+                .map(|predicate| materialized_view::clone_predicate(predicate, context))
+                .transpose()?,
         });
         unit.finish();
         Ok(())
@@ -9524,6 +9599,7 @@ fn required_index_definitions_with_allocations(
             &schema.primary_key,
             &[],
             RelationalIndexRole::Primary,
+            None,
         )?;
     }
     for (ordinal, columns) in schema.unique_constraints.iter().enumerate() {
@@ -9532,6 +9608,7 @@ fn required_index_definitions_with_allocations(
             columns,
             &[],
             RelationalIndexRole::UniqueConstraint,
+            None,
         )?;
     }
     for index in &schema.indexes {
@@ -9544,6 +9621,7 @@ fn required_index_definitions_with_allocations(
             } else {
                 RelationalIndexRole::Secondary
             },
+            index.predicate.as_ref(),
         )?;
     }
     for (ordinal, key) in schema.foreign_keys.iter().enumerate() {
@@ -9552,6 +9630,7 @@ fn required_index_definitions_with_allocations(
             &key.columns,
             &[],
             RelationalIndexRole::ForeignKeySupport,
+            None,
         )?;
     }
     context.checkpoint().map_err(RelationalError::from_work)?;
@@ -9719,10 +9798,18 @@ fn capture_relational_index_changes_with_allocations(
                         })
                     }
                 };
-                let includes_row =
-                    |row: &&RelationalRow| index_includes_row(index, row, &positions);
-                let previous_index_row = previous_row.filter(includes_row);
-                let next_index_row = next_row.filter(includes_row);
+                let previous_index_row = match previous_row {
+                    Some(row) if index_entry_includes_row(schema, index, row, &positions)? => {
+                        Some(row)
+                    }
+                    _ => None,
+                };
+                let next_index_row = match next_row {
+                    Some(row) if index_entry_includes_row(schema, index, row, &positions)? => {
+                        Some(row)
+                    }
+                    _ => None,
+                };
                 let equal = match (previous_index_row, next_index_row) {
                     (None, None) => true,
                     (Some(previous), Some(next)) => positions
@@ -10110,15 +10197,17 @@ fn row_capture_limit_invalidated(
     }
 }
 
-fn index_includes_row(
+fn index_entry_includes_row(
+    schema: &RelationalTableSchema,
     index: &RelationalIndexDefinition,
     row: &RelationalRow,
     positions: &[usize],
-) -> bool {
-    !index.role.is_unique()
-        || !positions
-            .iter()
-            .any(|&position| matches!(row.values()[position], RelationalValue::Null))
+) -> Result<bool, RelationalError> {
+    Ok(index_includes_row(schema, index, row)?
+        && (!index.role.is_unique()
+            || !positions
+                .iter()
+                .any(|&position| matches!(row.values()[position], RelationalValue::Null))))
 }
 
 fn push_captured_index_change_with_allocations(
@@ -10436,7 +10525,7 @@ fn validate_foreign_key_shape(
         || referenced_schema
             .indexes
             .iter()
-            .any(|index| index.unique && index.columns == *columns);
+            .any(|index| index.unique && index.predicate.is_none() && index.columns == *columns);
     if !references_unique_key {
         return Err(RelationalError::Schema(format!(
             "foreign key from {table} must reference a primary or unique key on {}",

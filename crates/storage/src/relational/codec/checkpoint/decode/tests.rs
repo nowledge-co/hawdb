@@ -299,6 +299,10 @@ fn schema() -> RelationalTableSchema {
                 columns: vec![name],
                 included_columns: Vec::new(),
                 unique: id % 2 == 0,
+                predicate: (id == 1).then(|| RelationalPredicate::IsNull {
+                    column: "column-1".into(),
+                    negated: true,
+                }),
             });
         }
     }

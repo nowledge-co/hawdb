@@ -71,6 +71,7 @@ impl Fixture {
                                 columns: vec!["bucket".into(), "rank".into()],
                                 included_columns: Vec::new(),
                                 unique: false,
+                                predicate: None,
                             }],
                         }),
                         RelationalWrite::Insert {

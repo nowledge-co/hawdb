@@ -67,13 +67,38 @@ impl DecodeInput for Input<'_> {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn decode_schema(
     encoded: &[u8],
     max_encoded_bytes: usize,
     max_schema_items: usize,
     work: &CheckpointWorkContext,
 ) -> Result<RelationalTableSchema, RelationalError> {
-    decode_schema_inner(encoded, max_encoded_bytes, max_schema_items, work, None)
+    decode_schema_inner(
+        encoded,
+        max_encoded_bytes,
+        max_schema_items,
+        work,
+        None,
+        IndexSchemaLayout::Combined,
+    )
+}
+
+pub(crate) fn decode_schema_for_layout(
+    encoded: &[u8],
+    layout: IndexSchemaLayout,
+    max_encoded_bytes: usize,
+    max_schema_items: usize,
+    work: &CheckpointWorkContext,
+) -> Result<RelationalTableSchema, RelationalError> {
+    decode_schema_inner(
+        encoded,
+        max_encoded_bytes,
+        max_schema_items,
+        work,
+        None,
+        layout,
+    )
 }
 
 pub(crate) fn decode_schema_owned(
@@ -88,6 +113,7 @@ pub(crate) fn decode_schema_owned(
         max_schema_items,
         allocations,
         Some(allocations),
+        IndexSchemaLayout::Combined,
     )
 }
 
@@ -97,6 +123,7 @@ fn decode_schema_inner(
     max_schema_items: usize,
     work: &CheckpointWorkContext,
     allocations: Option<&crate::background::CheckpointDecodeContext>,
+    layout: IndexSchemaLayout,
 ) -> Result<RelationalTableSchema, RelationalError> {
     if encoded.len() > max_encoded_bytes {
         return Err(RelationalError::Admission(format!(
@@ -123,7 +150,7 @@ fn decode_schema_inner(
         allocations,
     };
     let mut decoder = Decoder::new(input, limits, true);
-    let schema = decoder.table_schema()?;
+    let schema = decoder.table_schema_for_layout(layout)?;
     decoder.finish()?;
     let scratch = allocations.map(|_| crate::background::CheckpointDecodeContext {
         work: work.clone(),

@@ -66,7 +66,9 @@ impl TestConstraintIndex {
                 let positions = column_positions(schema, &definition.columns)
                     .expect("fixture index columns must exist");
                 for (primary_key, row) in state.rows(&schema.name) {
-                    if !index_includes_row(&definition, row, &positions) {
+                    if !index_entry_includes_row(schema, &definition, row, &positions)
+                        .expect("fixture predicate must evaluate")
+                    {
                         continue;
                     }
                     let index_key = row_key(row, &positions);
@@ -1994,6 +1996,7 @@ fn authoritative_constraint_staging_fails_closed_before_publication() {
                     columns: vec!["payload".to_string()],
                     included_columns: Vec::new(),
                     unique: false,
+                    predicate: None,
                 },
             }],
         },
@@ -2398,6 +2401,7 @@ fn append_updates_only_the_affected_posting_page() {
                             columns: vec!["thread_id".to_string()],
                             included_columns: Vec::new(),
                             unique: false,
+                            predicate: None,
                         },
                     },
                 ],
@@ -2457,6 +2461,230 @@ fn append_updates_only_the_affected_posting_page() {
 }
 
 #[test]
+fn partial_unique_index_tracks_membership_transitions_atomically() {
+    let store = RelationalStore::default();
+    store
+        .commit(
+            RelationalTransaction {
+                writes: vec![
+                    RelationalWrite::CreateTable(RelationalTableSchema {
+                        materialized_view: None,
+                        name: "items".into(),
+                        columns: vec![
+                            RelationalColumnSchema {
+                                name: "id".into(),
+                                scalar_type: RelationalScalarType::BigInt,
+                                nullable: false,
+                                default: None,
+                            },
+                            text_column("slug", false),
+                            RelationalColumnSchema {
+                                name: "active".into(),
+                                scalar_type: RelationalScalarType::Boolean,
+                                nullable: true,
+                                default: None,
+                            },
+                        ],
+                        primary_key: vec!["id".into()],
+                        unique_constraints: Vec::new(),
+                        foreign_keys: Vec::new(),
+                        indexes: Vec::new(),
+                    }),
+                    RelationalWrite::CreateIndex {
+                        table: "items".into(),
+                        index: RelationalIndexSchema {
+                            included_columns: Vec::new(),
+                            name: "active_slug_idx".into(),
+                            columns: vec!["slug".into()],
+                            unique: true,
+                            predicate: Some(RelationalPredicate::Compare {
+                                column: "active".into(),
+                                op: RelationalComparisonOp::Eq,
+                                value: RelationalValue::Boolean(true),
+                            }),
+                        },
+                    },
+                    RelationalWrite::Insert {
+                        table: "items".into(),
+                        rows: vec![
+                            RelationalRow::new(vec![
+                                RelationalValue::BigInt(1),
+                                RelationalValue::Text("same".into()),
+                                RelationalValue::Boolean(true),
+                            ]),
+                            RelationalRow::new(vec![
+                                RelationalValue::BigInt(2),
+                                RelationalValue::Text("same".into()),
+                                RelationalValue::Boolean(false),
+                            ]),
+                            RelationalRow::new(vec![
+                                RelationalValue::BigInt(3),
+                                RelationalValue::Text("same".into()),
+                                RelationalValue::Null,
+                            ]),
+                        ],
+                        mode: RelationalInsertMode::Error,
+                    },
+                ],
+            },
+            |_, _| Ok(()),
+        )
+        .expect("create and seed partial unique index");
+
+    let key = RelationalKey(vec![RelationalValue::Text("same".into())]);
+    let snapshot = store.snapshot().expect("partial-index snapshot");
+    assert_eq!(
+        snapshot
+            .value()
+            .index_prefix_lookup("items", "active_slug_idx", &key, usize::MAX)
+            .map(|keys| keys.into_iter().cloned().collect::<Vec<_>>()),
+        Some(vec![RelationalKey(vec![RelationalValue::BigInt(1)])])
+    );
+    drop(snapshot);
+
+    let duplicate = store.commit(
+        RelationalTransaction {
+            writes: vec![RelationalWrite::Insert {
+                table: "items".into(),
+                rows: vec![RelationalRow::new(vec![
+                    RelationalValue::BigInt(4),
+                    RelationalValue::Text("same".into()),
+                    RelationalValue::Boolean(true),
+                ])],
+                mode: RelationalInsertMode::Error,
+            }],
+        },
+        |_, _| Ok(()),
+    );
+    assert!(matches!(
+        duplicate,
+        Err(SnapshotCommitError::Stage(RelationalError::Constraint(_)))
+    ));
+
+    let by_id = |id| RelationalPredicate::Compare {
+        column: "id".into(),
+        op: RelationalComparisonOp::Eq,
+        value: RelationalValue::BigInt(id),
+    };
+    store
+        .commit(
+            RelationalTransaction {
+                writes: vec![
+                    RelationalWrite::UpdateWhere {
+                        table: "items".into(),
+                        assignments: vec![RelationalUpdateAssignment {
+                            column: "active".into(),
+                            value: RelationalUpdateValue::Value(RelationalValue::Boolean(false)),
+                        }],
+                        predicate: by_id(1),
+                    },
+                    RelationalWrite::UpdateWhere {
+                        table: "items".into(),
+                        assignments: vec![RelationalUpdateAssignment {
+                            column: "active".into(),
+                            value: RelationalUpdateValue::Value(RelationalValue::Boolean(true)),
+                        }],
+                        predicate: by_id(2),
+                    },
+                ],
+            },
+            |_, _| Ok(()),
+        )
+        .expect("move unique membership between rows in one transaction");
+
+    let snapshot = store.snapshot().expect("updated partial-index snapshot");
+    assert_eq!(
+        snapshot
+            .value()
+            .index_prefix_lookup("items", "active_slug_idx", &key, usize::MAX)
+            .map(|keys| keys.into_iter().cloned().collect::<Vec<_>>()),
+        Some(vec![RelationalKey(vec![RelationalValue::BigInt(2)])])
+    );
+    drop(snapshot);
+
+    store
+        .commit(
+            RelationalTransaction {
+                writes: vec![RelationalWrite::DeleteWhere {
+                    table: "items".into(),
+                    predicate: by_id(2),
+                }],
+            },
+            |_, _| Ok(()),
+        )
+        .expect("delete the remaining partial-index member");
+    let snapshot = store.snapshot().expect("deleted partial-index snapshot");
+    assert_eq!(
+        snapshot
+            .value()
+            .index_prefix_lookup("items", "active_slug_idx", &key, usize::MAX),
+        Some(Vec::new())
+    );
+}
+
+#[test]
+fn partial_index_creation_refuses_preexisting_overflow_without_schema_drift() {
+    let store = RelationalStore::with_overflow_config(
+        RelationalMutationLimits::default(),
+        RelationalOverflowConfig {
+            threshold_bytes: 16,
+            compression_level: 3,
+            max_value_bytes: 1024 * 1024,
+        },
+    );
+    store
+        .commit(create_payload_table(), |_, _| Ok(()))
+        .expect("create payload table");
+    store
+        .commit(
+            RelationalTransaction {
+                writes: vec![RelationalWrite::Insert {
+                    table: "messages".into(),
+                    rows: vec![RelationalRow::new(vec![
+                        RelationalValue::Text("message-1".into()),
+                        RelationalValue::Text("large-".repeat(128)),
+                    ])],
+                    mode: RelationalInsertMode::Error,
+                }],
+            },
+            |_, _| Ok(()),
+        )
+        .expect("externalize existing payload");
+
+    let result = store.commit(
+        RelationalTransaction {
+            writes: vec![RelationalWrite::CreateIndex {
+                table: "messages".into(),
+                index: RelationalIndexSchema {
+                    included_columns: Vec::new(),
+                    name: "partial_payload".into(),
+                    columns: vec!["id".into()],
+                    unique: false,
+                    predicate: Some(RelationalPredicate::Compare {
+                        column: "payload".into(),
+                        op: RelationalComparisonOp::Eq,
+                        value: RelationalValue::Text("needle".into()),
+                    }),
+                },
+            }],
+        },
+        |_, _| Ok(()),
+    );
+    assert!(matches!(
+        result,
+        Err(SnapshotCommitError::Stage(RelationalError::Admission(message)))
+            if message.contains("overflow hydration")
+    ));
+    let snapshot = store.snapshot().expect("unchanged schema snapshot");
+    assert!(snapshot
+        .value()
+        .table_schema("messages")
+        .unwrap()
+        .indexes
+        .is_empty());
+}
+
+#[test]
 fn composite_index_prefix_lookup_is_bounded_and_preserves_leading_column_order() {
     let store = RelationalStore::default();
     store
@@ -2493,6 +2721,7 @@ fn composite_index_prefix_lookup_is_bounded_and_preserves_leading_column_order()
                             ],
                             included_columns: Vec::new(),
                             unique: false,
+                            predicate: None,
                         },
                     },
                 ],
@@ -3445,6 +3674,7 @@ fn relational_index_shadow_publishes_generation_fenced_cold_pages() {
                             columns: vec!["owner".to_string()],
                             included_columns: Vec::new(),
                             unique: false,
+                            predicate: None,
                         }],
                     }),
                     RelationalWrite::Insert {
@@ -3597,6 +3827,7 @@ fn relational_index_shadow_range_seek_traverses_multiple_pages_in_both_direction
                             columns: vec!["owner".to_string(), "id".to_string()],
                             included_columns: Vec::new(),
                             unique: false,
+                            predicate: None,
                         }],
                     }),
                     RelationalWrite::Insert {
@@ -3840,6 +4071,7 @@ fn relational_index_shadow_publishes_skew_aware_leading_prefix_statistics() {
                             columns: vec!["tenant".to_string(), "category".to_string()],
                             included_columns: Vec::new(),
                             unique: false,
+                            predicate: None,
                         }],
                     }),
                     RelationalWrite::Insert {
@@ -3925,6 +4157,7 @@ fn relational_index_bound_open_verifies_one_canonical_manifest_image() {
                             columns: vec!["owner".to_string()],
                             included_columns: Vec::new(),
                             unique: false,
+                            predicate: None,
                         }],
                     }),
                     RelationalWrite::Insert {
@@ -4007,6 +4240,7 @@ fn relational_index_shadow_streams_rows_without_materialized_postings() {
                             columns: vec!["owner".to_string()],
                             included_columns: Vec::new(),
                             unique: false,
+                            predicate: None,
                         }],
                     }),
                     RelationalWrite::Insert {
@@ -4116,6 +4350,7 @@ fn relational_index_shadow_rejects_and_cleans_excess_spill_runs() {
                             columns: vec!["owner".to_string()],
                             included_columns: Vec::new(),
                             unique: false,
+                            predicate: None,
                         }],
                     }),
                     RelationalWrite::Insert {
@@ -4215,12 +4450,14 @@ fn required_relational_index_roots_cover_constraints_and_foreign_keys() {
                                 columns: vec!["handle".to_string()],
                                 included_columns: Vec::new(),
                                 unique: true,
+                                predicate: None,
                             },
                             RelationalIndexSchema {
                                 name: "accounts_status_idx".to_string(),
                                 columns: vec!["status".to_string()],
                                 included_columns: Vec::new(),
                                 unique: false,
+                                predicate: None,
                             },
                         ],
                     }),
@@ -4434,6 +4671,7 @@ fn required_relational_index_roots_cover_constraints_and_foreign_keys() {
                         columns: vec!["email".to_string()],
                         included_columns: Vec::new(),
                         unique: false,
+                        predicate: None,
                     },
                 }],
             },
@@ -4478,12 +4716,14 @@ fn relational_index_shadow_demand_reads_match_materialized_oracle() {
                                 columns: vec!["owner".to_string()],
                                 included_columns: Vec::new(),
                                 unique: false,
+                                predicate: None,
                             },
                             RelationalIndexSchema {
                                 name: "documents_owner_rank_idx".to_string(),
                                 columns: vec!["owner".to_string(), "rank".to_string()],
                                 included_columns: Vec::new(),
                                 unique: false,
+                                predicate: None,
                             },
                         ],
                     }),
@@ -4992,12 +5232,14 @@ fn relational_index_wal_deltas_merge_with_cold_base_and_stay_bounded() {
                                 columns: vec!["owner".to_string()],
                                 included_columns: Vec::new(),
                                 unique: false,
+                                predicate: None,
                             },
                             RelationalIndexSchema {
                                 name: "documents_owner_rank_idx".to_string(),
                                 columns: vec!["owner".to_string(), "rank".to_string()],
                                 included_columns: Vec::new(),
                                 unique: false,
+                                predicate: None,
                             },
                         ],
                     }),
@@ -5987,6 +6229,7 @@ fn relational_schema_rejects_reserved_and_duplicate_index_names() {
                             columns: vec!["id".to_string()],
                             included_columns: Vec::new(),
                             unique: false,
+                            predicate: None,
                         }],
                     })],
                 },
@@ -6013,12 +6256,14 @@ fn relational_schema_rejects_reserved_and_duplicate_index_names() {
                             columns: vec!["id".to_string()],
                             included_columns: Vec::new(),
                             unique: false,
+                            predicate: None,
                         },
                         RelationalIndexSchema {
                             name: "documents_id_idx".to_string(),
                             columns: vec!["id".to_string()],
                             included_columns: Vec::new(),
                             unique: true,
+                            predicate: None,
                         },
                     ],
                 })],
@@ -6056,6 +6301,7 @@ fn relational_schema_rejects_unknown_overlapping_and_duplicate_include_columns()
         vec!["payload".to_string(), "payload".to_string()],
     ] {
         let index = RelationalIndexSchema {
+            predicate: None,
             name: "documents_covering_idx".to_string(),
             columns: vec!["id".to_string()],
             included_columns,
@@ -6640,6 +6886,7 @@ fn covering_payload_update_captures_one_physical_delete_insert_pair() {
         panic!("fixture schema")
     };
     schema.indexes.push(RelationalIndexSchema {
+        predicate: None,
         name: "documents_owner_covering_idx".into(),
         columns: vec!["owner".into()],
         included_columns: vec!["payload".into()],
@@ -6741,6 +6988,7 @@ fn secondary_index_capture_keeps_unique_null_filter_and_nonunique_null_entries()
         columns: vec!["owner".into()],
         included_columns: Vec::new(),
         unique: false,
+        predicate: None,
     });
     let base = RelationalState::default()
         .stage_transaction(

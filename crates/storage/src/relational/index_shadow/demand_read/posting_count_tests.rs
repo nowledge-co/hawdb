@@ -61,8 +61,10 @@ fn fixture() -> (
                                 columns: vec!["bucket".into()],
                                 included_columns: Vec::new(),
                                 unique: false,
+                                predicate: None,
                             },
                             RelationalIndexSchema {
+                                predicate: None,
                                 name: "bucket_id_idx".into(),
                                 columns: vec!["bucket".into(), "id".into()],
                                 included_columns: Vec::new(),
@@ -73,6 +75,7 @@ fn fixture() -> (
                                 columns: vec!["bucket".into()],
                                 included_columns: vec!["id".into()],
                                 unique: false,
+                                predicate: None,
                             },
                         ],
                     }),
@@ -250,6 +253,7 @@ fn covering_unique_skips_oversized_inline_payload_for_null_key() {
         unique_constraints: Vec::new(),
         foreign_keys: Vec::new(),
         indexes: vec![RelationalIndexSchema {
+            predicate: None,
             name: "wide_idx".into(),
             columns: vec!["group_id".into()],
             included_columns: vec!["payload".into()],

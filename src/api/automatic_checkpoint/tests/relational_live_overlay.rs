@@ -365,10 +365,25 @@ fn crash_during_pressure_triggered_drain_recovers_whole_acknowledged_rounds() {
             "recovered round {recovered}, acknowledged {acknowledged} at {point}"
         );
         assert_round(rows, recovered);
-        // The recovered handle keeps draining under the same pressure.
+        // The recovered handle keeps draining under the same pressure. A
+        // slow checked-profile drain may exhaust the bounded capacity wait;
+        // that refusal is pre-WAL and retryable, just as it is for the
+        // growing-table fixture below.
         let next = recovered + 1;
+        let mut busy_retries = 0;
         for round in next..next + 160 {
-            update_round(&mut reopened, round).unwrap();
+            loop {
+                match update_round(&mut reopened, round) {
+                    Ok(()) => break,
+                    Err(HawDBError::BranchBusy {
+                        resource: "automatic checkpoint capacity",
+                    }) if busy_retries < 32 => busy_retries += 1,
+                    Err(error) => panic!(
+                        "post-recovery round {round} failed after {busy_retries} capacity retries at {point}: {error}; {:?}",
+                        reopened.automatic_checkpoint_report()
+                    ),
+                }
+            }
         }
         assert_round(
             reopened

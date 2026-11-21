@@ -931,18 +931,29 @@ impl Fold<'_> {
         {
             return Err(semantic("unsupported PostgreSQL CREATE INDEX clause"));
         }
+        let mut predicate = None;
         let mut included_columns = None;
         for tail in self.children(node, "HawIndexTail") {
-            let Some(names) = self.tree.child(tail, "HawNames") else {
-                return Err(semantic("unsupported PostgreSQL CREATE INDEX clause"));
-            };
-            if included_columns.is_some() {
-                return Err(semantic("CREATE INDEX supports one INCLUDE clause"));
+            if let Some(selection) = self.tree.child(tail, "Where")
+                && predicate.is_none()
+            {
+                predicate = Some(self.lowerer.lower(
+                    &self.expr(self.child(selection, "Or")),
+                    ExpressionPosition::Predicate,
+                )?);
+            } else if let Some(names) = self.tree.child(tail, "HawNames")
+                && included_columns.is_none()
+                && predicate.is_none()
+            {
+                included_columns = Some(self.names(
+                    names,
+                    "CREATE INDEX INCLUDE columns must be unqualified identifiers",
+                )?);
+            } else {
+                return Err(semantic(
+                    "unsupported or misplaced PostgreSQL CREATE INDEX clause",
+                ));
             }
-            included_columns = Some(self.names(
-                names,
-                "CREATE INDEX INCLUDE columns must be unqualified identifiers",
-            )?);
         }
         let name = self
             .tree
@@ -958,6 +969,7 @@ impl Fold<'_> {
             included_columns: included_columns.unwrap_or_default(),
             unique: self.has(node, "HawUnique"),
             if_not_exists: self.has(node, "HawIfNotExists"),
+            predicate,
         }))
     }
     fn create_search_index(&self, node: NodeId) -> Result<SqlStatement> {

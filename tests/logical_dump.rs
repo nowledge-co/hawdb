@@ -91,7 +91,7 @@ fn populate(database: &mut HawDBEmbedded) {
     );
     sql(
         database,
-        "CREATE INDEX events_at ON events (at) INCLUDE (body, score)",
+        "CREATE INDEX events_at ON events (at) INCLUDE (body, score) WHERE at IS NOT NULL",
     );
     sql(
         database,

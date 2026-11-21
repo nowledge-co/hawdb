@@ -26,8 +26,8 @@ use super::export::{quote_identifier, SYSTEM_SCHEMA_REGISTRY_TABLE};
 use super::files::{read_metadata, resolve_entry_path, verify_bytes, RecordReader, Stage};
 use super::model::{
     Column, ColumnDefault, FileEntry, FileKind, GraphConstraintKind, GraphIndexKind, GraphProperty,
-    GraphPropertyDefault, GraphSchema, GraphTableKind, Manifest, ReferentialAction, Schema,
-    SchemaState, Table, FORMAT_NAME, MANIFEST_FILE,
+    GraphPropertyDefault, GraphSchema, GraphTableKind, IndexComparison, IndexPredicate, Manifest,
+    ReferentialAction, Schema, SchemaState, Table, FORMAT_NAME, MANIFEST_FILE,
 };
 use super::value::{self, malformed};
 use super::{
@@ -215,6 +215,25 @@ fn validate_search_indexes(schema: &Schema, tables: &BTreeSet<&str>) -> Result<(
 }
 
 fn validate_table_indexes(schema: &Schema) -> Result<()> {
+    fn validate(predicate: &IndexPredicate, columns: &BTreeSet<&str>) -> Result<()> {
+        match predicate {
+            IndexPredicate::And { left, right } | IndexPredicate::Or { left, right } => {
+                validate(left, columns)?;
+                validate(right, columns)
+            }
+            IndexPredicate::Not { predicate } => validate(predicate, columns),
+            IndexPredicate::Compare { column, .. } | IndexPredicate::IsNull { column, .. } => {
+                if columns.contains(column.as_str()) {
+                    Ok(())
+                } else {
+                    Err(malformed(format!(
+                        "partial-index predicate references unknown column {column}"
+                    )))
+                }
+            }
+        }
+    }
+
     for table in &schema.tables {
         let columns = table
             .columns
@@ -243,6 +262,10 @@ fn validate_table_indexes(schema: &Schema) -> Result<()> {
                         index.name, table.name, column
                     )));
                 }
+            }
+            if let Some(predicate) = &index.predicate {
+                validate(predicate, &columns)?;
+                index_predicate_sql(predicate)?;
             }
         }
     }
@@ -424,6 +447,70 @@ fn default_sql(column: &Column) -> Result<Option<String>> {
                 )))
             }
         }),
+    })
+}
+
+fn index_predicate_sql(predicate: &IndexPredicate) -> Result<String> {
+    Ok(match predicate {
+        IndexPredicate::And { left, right } => format!(
+            "({} AND {})",
+            index_predicate_sql(left)?,
+            index_predicate_sql(right)?
+        ),
+        IndexPredicate::Or { left, right } => format!(
+            "({} OR {})",
+            index_predicate_sql(left)?,
+            index_predicate_sql(right)?
+        ),
+        IndexPredicate::Not { predicate } => {
+            format!("(NOT {})", index_predicate_sql(predicate)?)
+        }
+        IndexPredicate::Compare {
+            column,
+            operator,
+            value: literal,
+        } => format!(
+            "{} {} {}",
+            quote_identifier(column),
+            match operator {
+                IndexComparison::Eq => "=",
+                IndexComparison::NotEq => "<>",
+                IndexComparison::Lt => "<",
+                IndexComparison::Lte => "<=",
+                IndexComparison::Gt => ">",
+                IndexComparison::Gte => ">=",
+            },
+            literal_sql(&value::decode(literal)?, "partial-index predicate")?
+        ),
+        IndexPredicate::IsNull { column, negated } => format!(
+            "{} IS {}NULL",
+            quote_identifier(column),
+            if *negated { "NOT " } else { "" }
+        ),
+    })
+}
+
+fn literal_sql(value: &Value, context: &str) -> Result<String> {
+    Ok(match value {
+        Value::Null => "NULL".to_string(),
+        Value::Bool(true) => "TRUE".to_string(),
+        Value::Bool(false) => "FALSE".to_string(),
+        Value::Int(item) => item.to_string(),
+        Value::Float(item) if item.is_finite() => format!("{item:?}"),
+        Value::Decimal(item) => item.to_string(),
+        Value::String(item) => sql_string(item),
+        Value::Uuid(item) => sql_string(&item.to_string()),
+        Value::LocalDateTime(item) => sql_string(&hawdb_core::sql_timestamp::format_timestamp(
+            hawdb_core::sql_timestamp::from_naive(*item)?,
+        )?),
+        Value::DateTime(item) => sql_string(&hawdb_core::sql_timestamp::format_timestamptz(
+            hawdb_core::sql_timestamp::from_datetime(*item)?,
+        )?),
+        other => {
+            return Err(malformed(format!(
+                "{context} has a {other:?} literal that format 1 cannot render"
+            )))
+        }
     })
 }
 
@@ -737,12 +824,19 @@ impl Target {
                     format!(" INCLUDE ({})", column_list(&index.included_columns))
                 };
                 let sql = format!(
-                    "CREATE {}INDEX {} ON {} ({}){}",
+                    "CREATE {}INDEX {} ON {} ({}){}{}",
                     if index.unique { "UNIQUE " } else { "" },
                     quote_identifier(&index.name),
                     quote_identifier(&table.name),
                     column_list(&index.columns),
                     include,
+                    index
+                        .predicate
+                        .as_ref()
+                        .map(|predicate| index_predicate_sql(predicate)
+                            .map(|predicate| format!(" WHERE {predicate}")))
+                        .transpose()?
+                        .unwrap_or_default()
                 );
                 self.sql(&sql, &[])?;
             }

@@ -173,6 +173,14 @@ fn action(value: RelationalReferentialAction) -> u8 {
 }
 
 pub(crate) fn schema(sink: &mut impl Sink, schema: Schema<'_>) -> Result<(), RelationalError> {
+    schema_for_layout(sink, schema, super::IndexSchemaLayout::Combined)
+}
+
+pub(super) fn schema_for_layout(
+    sink: &mut impl Sink,
+    schema: Schema<'_>,
+    layout: super::IndexSchemaLayout,
+) -> Result<(), RelationalError> {
     bytes(sink, schema.name.as_bytes())?;
     count(sink, schema.columns.len(), "table columns")?;
     for column in schema.columns {
@@ -229,8 +237,24 @@ pub(crate) fn schema(sink: &mut impl Sink, schema: Schema<'_>) -> Result<(), Rel
     for index in schema.indexes {
         bytes(sink, index.name.as_bytes())?;
         strings(sink, &index.columns)?;
-        strings(sink, &index.included_columns)?;
+        if layout.has_includes() {
+            strings(sink, &index.included_columns)?;
+        } else if !index.included_columns.is_empty() {
+            return Err(RelationalError::Schema(
+                "legacy relational schema cannot encode INCLUDE columns".into(),
+            ));
+        }
         sink.raw(&[u8::from(index.unique)])?;
+        if layout.has_predicates() {
+            sink.raw(&[u8::from(index.predicate.is_some())])?;
+            if let Some(index_predicate) = &index.predicate {
+                predicate(sink, index_predicate)?;
+            }
+        } else if index.predicate.is_some() {
+            return Err(RelationalError::Schema(
+                "legacy relational schema cannot encode a partial index".into(),
+            ));
+        }
     }
     materialized_view(sink, schema.materialized_view)
 }

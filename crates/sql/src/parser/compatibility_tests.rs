@@ -134,15 +134,40 @@ fn unsupported_alias_mutation_and_ordering_syntax_is_never_executed() {
 }
 
 #[test]
+fn create_index_preserves_where_and_rejects_other_tail_clauses() {
+    let statement = parse_postgres_sql(
+        "CREATE UNIQUE INDEX active_items_idx ON items (tenant_id, id) WHERE deleted_at IS NULL",
+    )
+    .expect("PostgreSQL partial-index syntax");
+    let SqlStatement::CreateIndex(index) = statement else {
+        panic!("expected CREATE INDEX");
+    };
+    assert!(index.unique);
+    assert!(index.predicate.is_some());
+
+    for sql in [
+        "CREATE INDEX items_idx ON items (id) WHERE id > 0 INCLUDE (payload)",
+        "CREATE INDEX items_idx ON items USING btree (id)",
+        "CREATE INDEX items_idx ON items (id) WITH (fillfactor = 70)",
+    ] {
+        assert!(
+            parse_postgres_sql(sql).is_err(),
+            "unsupported clause: {sql}"
+        );
+    }
+}
+
+#[test]
 fn create_index_include_preserves_payload_columns_and_rejects_other_tails() {
     let SqlStatement::CreateIndex(index) = parse_postgres_sql(
-        r#"CREATE UNIQUE INDEX events_tenant ON events (tenant, sequence) INCLUDE ("Payload", checksum)"#,
+        r#"CREATE UNIQUE INDEX events_tenant ON events (tenant, sequence) INCLUDE ("Payload", checksum) WHERE tenant IS NOT NULL"#,
     )
     .unwrap()
     else {
         panic!("expected CREATE INDEX")
     };
     assert!(index.unique);
+    assert!(index.predicate.is_some());
     assert_eq!(
         index
             .columns
@@ -156,7 +181,7 @@ fn create_index_include_preserves_payload_columns_and_rejects_other_tails() {
     for sql in [
         "CREATE INDEX ix ON events (tenant) INCLUDE (payload) INCLUDE (checksum)",
         "CREATE INDEX ix ON events (tenant) INCLUDE (events.payload)",
-        "CREATE INDEX ix ON events (tenant) WHERE tenant IS NOT NULL",
+        "CREATE INDEX ix ON events (tenant) WHERE tenant IS NOT NULL WHERE tenant IS NULL",
         "CREATE INDEX ix ON events USING btree (tenant)",
         "CREATE INDEX CONCURRENTLY ix ON events (tenant)",
     ] {

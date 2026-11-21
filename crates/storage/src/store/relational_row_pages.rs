@@ -317,15 +317,14 @@ impl GraphStore {
                     "relational row checkpoint change references missing table {table}"
                 ))
             })?;
-            let schema_digest = self
-                .relational_state
-                .table_schema_digest(&table)
-                .map_err(crate::error::HawDBError::from_storage_error)?
-                .ok_or_else(|| {
-                    crate::error::HawDBError::Storage(format!(
-                        "relational row checkpoint cannot derive schema digest for {table}"
-                    ))
-                })?;
+            let recorded = base_manifest
+                .tables
+                .binary_search_by(|candidate| candidate.table.cmp(&table))
+                .ok()
+                .map(|index| base_manifest.tables[index].schema_digest);
+            let schema_digest =
+                crate::relational::schema_digest_for_binding(schema, recorded, None)
+                    .map_err(crate::error::HawDBError::from_storage_error)?;
             let mut plan = planner
                 .plan_table(&table, schema_digest, schema.columns.len(), changes)
                 .map_err(crate::error::HawDBError::from_storage_error)?;
@@ -3682,6 +3681,7 @@ mod tests {
                             columns: vec!["body".to_string()],
                             included_columns: Vec::new(),
                             unique: false,
+                            predicate: None,
                         },
                     }],
                 },

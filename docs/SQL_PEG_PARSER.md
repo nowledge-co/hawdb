@@ -411,13 +411,10 @@ flat arithmetic and cast chains cannot bypass the height limit.
 These compatibility results do not resolve the throughput, heap, rendered-error,
 or end-to-end performance gates described above.
 
-`frontend_main_1873_covering_index_peg_baseline_v1.jsonl` records 15
-source-bound SQL transitions from main
-`058085fa2d67cad32cdb47116226e7a0bf5a545d`: 14 previously accepted
-`CREATE INDEX` statements acquire the distinct empty `included_columns` AST
-field, and one statement changes from semantic rejection to an accepted
-PostgreSQL `INCLUDE` clause. Earlier frontend fixtures remain immutable, and
-each replacement asserts the prior outcome before accepting the new one.
+The covering-index transition fixture records the source-bound INCLUDE grammar
+and AST change from main `058085fa2`. The partial-index transition fixture
+records the subsequent WHERE grammar and AST change from main `ebc2c9c4a`.
+Tests check each transition against its predecessor and the current parser.
 
 `frontend_main_1514_numeric_alias_peg_baseline_v1.jsonl` adds 1,005 independent
 main outcomes across SELECT, INSERT, UPDATE, DELETE, and column defaults. It

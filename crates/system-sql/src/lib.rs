@@ -39,8 +39,8 @@ use hawdb_storage::{
     config::{RelationalIndexMode, StorageResidencyMode},
     projection::{ProjectedGraphStatus, SearchProjectionChangefeedStatus},
     relational::{
-        RelationalColumnDefault, RelationalScalarType, RelationalState, RelationalTableSchema,
-        RelationalValue,
+        RelationalColumnDefault, RelationalComparisonOp, RelationalPredicate, RelationalScalarType,
+        RelationalState, RelationalTableSchema, RelationalValue,
     },
 };
 use std::cmp::Ordering;
@@ -1381,11 +1381,18 @@ fn relational_schema_index_rows(schema: &RelationalTableSchema) -> Vec<Row> {
     );
     if !schema.primary_key.is_empty() {
         let name = format!("{}_pkey", schema.name);
-        rows.push(pg_index_row(schema, &name, &schema.primary_key, &[], true));
+        rows.push(pg_index_row(
+            schema,
+            &name,
+            &schema.primary_key,
+            &[],
+            true,
+            None,
+        ));
     }
     rows.extend(schema.unique_constraints.iter().map(|columns| {
         let name = format!("{}_{}_key", schema.name, columns.join("_"));
-        pg_index_row(schema, &name, columns, &[], true)
+        pg_index_row(schema, &name, columns, &[], true, None)
     }));
     rows.extend(schema.indexes.iter().map(|index| {
         pg_index_row(
@@ -1394,6 +1401,7 @@ fn relational_schema_index_rows(schema: &RelationalTableSchema) -> Vec<Row> {
             &index.columns,
             &index.included_columns,
             index.unique,
+            index.predicate.as_ref(),
         )
     }));
     rows
@@ -1405,6 +1413,7 @@ fn pg_index_row(
     columns: &[String],
     included_columns: &[String],
     unique: bool,
+    predicate: Option<&RelationalPredicate>,
 ) -> Row {
     let unique = if unique { "UNIQUE " } else { "" };
     let columns = columns
@@ -1412,6 +1421,9 @@ fn pg_index_row(
         .map(|column| quote_postgres_identifier(column))
         .collect::<Vec<_>>()
         .join(", ");
+    let predicate = predicate
+        .map(|predicate| format!(" WHERE {}", pg_index_predicate(predicate)))
+        .unwrap_or_default();
     let include = if included_columns.is_empty() {
         String::new()
     } else {
@@ -1425,7 +1437,7 @@ fn pg_index_row(
         )
     };
     let index_definition = format!(
-        "CREATE {unique}INDEX {} ON public.{} USING btree ({columns}){include}",
+        "CREATE {unique}INDEX {} ON public.{} USING btree ({columns}){include}{predicate}",
         quote_postgres_identifier(index_name),
         quote_postgres_identifier(&schema.name),
     );
@@ -1442,6 +1454,70 @@ fn pg_index_row(
         ("tablespace".to_string(), Value::Null),
         ("indexdef".to_string(), Value::String(index_definition)),
     ])
+}
+
+fn pg_index_predicate(predicate: &RelationalPredicate) -> String {
+    match predicate {
+        RelationalPredicate::And(left, right) => format!(
+            "({} AND {})",
+            pg_index_predicate(left),
+            pg_index_predicate(right)
+        ),
+        RelationalPredicate::Or(left, right) => format!(
+            "({} OR {})",
+            pg_index_predicate(left),
+            pg_index_predicate(right)
+        ),
+        RelationalPredicate::Not(predicate) => format!("(NOT {})", pg_index_predicate(predicate)),
+        RelationalPredicate::Compare { column, op, value } => format!(
+            "{} {} {}",
+            quote_postgres_identifier(column),
+            match op {
+                RelationalComparisonOp::Eq => "=",
+                RelationalComparisonOp::NotEq => "<>",
+                RelationalComparisonOp::Lt => "<",
+                RelationalComparisonOp::Lte => "<=",
+                RelationalComparisonOp::Gt => ">",
+                RelationalComparisonOp::Gte => ">=",
+            },
+            pg_relational_literal(value)
+        ),
+        RelationalPredicate::IsNull { column, negated } => format!(
+            "{} IS {}NULL",
+            quote_postgres_identifier(column),
+            if *negated { "NOT " } else { "" }
+        ),
+        RelationalPredicate::RowCompare { .. }
+        | RelationalPredicate::NumericCompare { .. }
+        | RelationalPredicate::NumericIsNull { .. } => {
+            "/* unsupported partial-index predicate */ FALSE".to_string()
+        }
+    }
+}
+
+fn pg_relational_literal(value: &RelationalValue) -> String {
+    match value {
+        RelationalValue::Null => "NULL".to_string(),
+        RelationalValue::Boolean(value) => value.to_string(),
+        RelationalValue::BigInt(value) => value.to_string(),
+        RelationalValue::Decimal(value) => value.to_string(),
+        RelationalValue::DoublePrecision(value) => value.to_string(),
+        RelationalValue::Text(value) => format!("'{}'::text", value.replace('\'', "''")),
+        RelationalValue::Bytea(value) => format!("'\\x{}'::bytea", encode_hex(value)),
+        RelationalValue::Uuid(value) => format!("'{value}'::uuid"),
+        RelationalValue::Vector(value) => Value::Vector(value.clone()).to_string(),
+        RelationalValue::Timestamp(value) => {
+            hawdb_core::sql_timestamp::format_timestamp(value.get())
+                .map(|text| format!("'{text}'::timestamp without time zone"))
+                .unwrap_or_else(|_| "NULL".to_string())
+        }
+        RelationalValue::TimestampTz(value) => {
+            hawdb_core::sql_timestamp::format_timestamptz(value.get())
+                .map(|text| format!("'{text}'::timestamp with time zone"))
+                .unwrap_or_else(|_| "NULL".to_string())
+        }
+        RelationalValue::Overflow(_) => "NULL".to_string(),
+    }
 }
 
 fn quote_postgres_identifier(identifier: &str) -> String {

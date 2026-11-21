@@ -95,6 +95,7 @@ fn schema_and_index_compilation_need_no_database_runtime() {
                 columns: vec!["counter".into(), "id".into()],
                 included_columns: Vec::new(),
                 unique: false,
+                predicate: None,
             },
         }],
     );
@@ -109,6 +110,7 @@ fn schema_and_index_compilation_need_no_database_runtime() {
         [RelationalWrite::CreateIndex {
             table: "items".into(),
             index: RelationalIndexSchema {
+                predicate: None,
                 name: "owner_idx".into(),
                 columns: vec!["owner_id".into()],
                 included_columns: vec!["counter".into(), "body".into()],
@@ -126,6 +128,131 @@ fn schema_and_index_compilation_need_no_database_runtime() {
         matches!(&alter.writes[..], [RelationalWrite::AddColumn { table, column }]
         if table == "items" && column.name == "label" && column.scalar_type == RelationalScalarType::Text)
     );
+}
+
+#[test]
+fn partial_index_compilation_binds_a_deterministic_row_predicate() {
+    let state = state();
+    let transaction = compile_relational_statement_sql(
+        "CREATE UNIQUE INDEX active_counter_idx ON items (counter) WHERE counter >= 0 AND owner_id IS NOT NULL",
+        &[],
+        &state,
+    )
+    .expect("compile partial index");
+    let [RelationalWrite::CreateIndex { index, .. }] = transaction.writes.as_slice() else {
+        panic!("expected CREATE INDEX write");
+    };
+    assert!(index.unique);
+    assert!(matches!(
+        index.predicate,
+        Some(RelationalPredicate::And(_, _))
+    ));
+
+    let ordered = compile_relational_statement_sql(
+        "CREATE INDEX ordered_counter_idx ON items (counter DESC)",
+        &[],
+        &state,
+    )
+    .expect_err("unsupported index ordering must not be discarded");
+    assert!(ordered.to_string().contains("ordering and NULLS"));
+
+    let expression = compile_relational_statement_sql(
+        "CREATE INDEX expression_counter_idx ON items (counter) WHERE counter + 1 > 2",
+        &[],
+        &state,
+    )
+    .expect_err("partial-index arithmetic is outside the deterministic subset");
+    assert!(expression.to_string().contains("partial-index predicates"));
+
+    let binary = compile_relational_statement_sql(
+        "CREATE INDEX binary_body_idx ON items (counter) WHERE body = 'raw'",
+        &[],
+        &state,
+    )
+    .expect_err("BYTEA comparison literals are outside the durable subset");
+    let binary = binary.to_string();
+    assert!(binary.contains("partial-index predicates"), "{binary}");
+
+    for sql in [
+        "CREATE INDEX parameterized_idx ON items (counter) WHERE counter > $1",
+        "CREATE INDEX cross_column_idx ON items (counter) WHERE counter > id",
+    ] {
+        assert!(
+            compile_relational_statement_sql(sql, &[], &state).is_err(),
+            "unsupported predicate must be rejected: {sql}"
+        );
+    }
+}
+
+#[test]
+fn foreign_key_binding_ignores_partial_unique_indexes() {
+    let state = RelationalState::default()
+        .stage_transaction(
+            RelationalTransaction {
+                writes: vec![RelationalWrite::CreateTable(RelationalTableSchema {
+                    materialized_view: None,
+                    name: "parents".into(),
+                    columns: vec![
+                        RelationalColumnSchema {
+                            name: "id".into(),
+                            scalar_type: RelationalScalarType::BigInt,
+                            nullable: false,
+                            default: None,
+                        },
+                        RelationalColumnSchema {
+                            name: "a".into(),
+                            scalar_type: RelationalScalarType::BigInt,
+                            nullable: false,
+                            default: None,
+                        },
+                        RelationalColumnSchema {
+                            name: "b".into(),
+                            scalar_type: RelationalScalarType::BigInt,
+                            nullable: false,
+                            default: None,
+                        },
+                    ],
+                    primary_key: vec!["id".into()],
+                    unique_constraints: Vec::new(),
+                    foreign_keys: Vec::new(),
+                    indexes: vec![
+                        RelationalIndexSchema {
+                            included_columns: Vec::new(),
+                            name: "partial_b_a".into(),
+                            columns: vec!["b".into(), "a".into()],
+                            unique: true,
+                            predicate: Some(RelationalPredicate::Compare {
+                                column: "id".into(),
+                                op: RelationalComparisonOp::Gt,
+                                value: RelationalValue::BigInt(0),
+                            }),
+                        },
+                        RelationalIndexSchema {
+                            included_columns: Vec::new(),
+                            name: "full_a_b".into(),
+                            columns: vec!["a".into(), "b".into()],
+                            unique: true,
+                            predicate: None,
+                        },
+                    ],
+                })],
+            },
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap();
+
+    let transaction = compile_relational_statement_sql(
+        "CREATE TABLE children (id BIGINT PRIMARY KEY, x BIGINT NOT NULL, y BIGINT NOT NULL, FOREIGN KEY (x, y) REFERENCES parents (a, b))",
+        &[],
+        &state,
+    )
+    .unwrap();
+    let [RelationalWrite::CreateTable(schema)] = transaction.writes.as_slice() else {
+        panic!("expected child table")
+    };
+    assert_eq!(schema.foreign_keys[0].columns, ["x", "y"]);
+    assert_eq!(schema.foreign_keys[0].referenced_columns, ["a", "b"]);
 }
 
 #[test]

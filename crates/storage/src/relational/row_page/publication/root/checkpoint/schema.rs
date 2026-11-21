@@ -304,21 +304,30 @@ pub(in crate::relational::row_page::publication) fn clone_schema(
             on_update: foreign.on_update,
         })
     })?;
+    let context = crate::background::CheckpointDecodeContext {
+        work: work.clone(),
+        memory: Default::default(),
+    };
     let indexes = clone_list(&schema.indexes, work, |index, work| {
         let name = text(&index.name, work)?;
         let columns = clone_names(&index.columns, work)?;
         let included_columns = clone_names(&index.included_columns, work)?;
+        let predicate = index
+            .predicate
+            .as_ref()
+            .map(|predicate| {
+                crate::relational::materialized_view::clone_predicate(predicate, &context)
+            })
+            .transpose()
+            .map_err(RelationalRowPagePublicationError::from_relational)?;
         fixed(work, || RelationalIndexSchema {
             name,
             columns,
             included_columns,
             unique: index.unique,
+            predicate,
         })
     })?;
-    let context = crate::background::CheckpointDecodeContext {
-        work: work.clone(),
-        memory: Default::default(),
-    };
     let materialized_view = schema
         .materialized_view
         .as_deref()
