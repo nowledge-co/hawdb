@@ -143,7 +143,7 @@ impl ConsumerReadSlot {
         let bytes = std::mem::size_of::<SharedSlot>() + 2 * std::mem::size_of::<usize>();
         let memory = permit
             .reserve_retained_memory(bytes as u64)
-            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+            .map_err(HawDBError::from_execution_error)?;
         Ok(Self(Arc::new(SharedSlot {
             identity: reservation.into(),
             state: Mutex::new(State { revision: 0, view }),
@@ -162,7 +162,7 @@ impl ConsumerReadSlot {
         self.0.require_governor(permit)?;
         let memory = permit
             .reserve_retained_memory(std::mem::size_of::<ConsumerReadPin>() as u64)
-            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+            .map_err(HawDBError::from_execution_error)?;
         let state = self.0.lock()?;
         let View::Ready(Some(version)) = &state.view else {
             return Err(HawDBError::ProjectionBusy);

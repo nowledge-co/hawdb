@@ -40,7 +40,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install Bazel
-        uses: bazel-contrib/setup-bazel@0.19.1
+        uses: bazel-contrib/setup-bazel@0.19.2
         with:
           bazelisk-cache: true
           disk-cache: ${{ github.workflow }}-${{ github.job }}

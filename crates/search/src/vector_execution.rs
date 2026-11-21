@@ -127,8 +127,11 @@ pub(super) fn execute_search_vector_plan(
             ),
             max_parallelism: vector_execution_options.max_parallelism.get(),
         });
-    let planned = plan_vector_search(&logical, &context)
-        .map_err(|error| HawDBError::Storage(format!("vector planning failed: {error}")))?;
+    let planned = plan_vector_search(&logical, &context).map_err(|error| {
+        HawDBError::or_stop(&error, || {
+            HawDBError::Storage(format!("vector planning failed: {error}"))
+        })
+    })?;
     debug_assert_eq!(planned.properties.precision, VectorPrecision::RawReranked);
     let vector_execution_options = VectorSearchExecutionOptions {
         max_parallelism: std::num::NonZeroUsize::new(
@@ -422,7 +425,7 @@ impl<'a> SearchVectorSource<'a, '_> {
         match self.vector_execution_options.task_context {
             Some(task_context) => task_context
                 .checkpoint()
-                .map_err(|reason| HawDBError::Execution(format!("vector search task {reason}"))),
+                .map_err(HawDBError::RuntimeTaskStopped),
             None => Ok(()),
         }
     }

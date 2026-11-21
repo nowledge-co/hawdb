@@ -703,6 +703,9 @@ fn reserve(
                     available_bytes,
                     ..
                 } => memory_error(requested_bytes as usize, available_bytes as usize),
+                hawdb_core::RuntimeMemoryError::Stopped(reason) => {
+                    HawDBError::RuntimeTaskStopped(reason)
+                }
                 error => {
                     HawDBError::Execution(format!("resident DiskANN allocation refused: {error}"))
                 }

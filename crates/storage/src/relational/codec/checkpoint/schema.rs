@@ -134,7 +134,7 @@ fn decode_schema_inner(
         if !schema.columns.is_empty() {
             MapMemory::<usize>::default()
                 .before_insert(schema.columns.len() - 1, scratch)
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                .map_err(RelationalError::from_admission)?;
         }
         let keys = std::iter::once(schema.primary_key.len())
             .chain(schema.unique_constraints.iter().map(Vec::len))
@@ -150,12 +150,12 @@ fn decode_schema_inner(
         if keys > 0 {
             MapMemory::<()>::default()
                 .before_insert(keys - 1, scratch)
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                .map_err(RelationalError::from_admission)?;
         }
         if !schema.indexes.is_empty() {
             MapMemory::<()>::default()
                 .before_insert(schema.indexes.len() - 1, scratch)
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                .map_err(RelationalError::from_admission)?;
         }
     }
     validate_table_schema_with_work_context(&schema, work)?;

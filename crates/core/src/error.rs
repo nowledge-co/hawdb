@@ -26,8 +26,10 @@ pub use storage_format::{
     RELATIONAL_ROW_PAGE_FORMAT, RELATIONAL_SCHEMA_FORMAT, SEARCH_PROJECTION_MANIFEST_FORMAT,
     STORAGE_MANIFEST_FORMAT,
 };
+mod admission;
 mod relational;
 mod wal_record;
+pub use admission::RuntimeAdmissionRefusal;
 pub use relational::{find_relational_error_kind, RelationalErrorKind, RelationalErrorSurface};
 pub use wal_record::{WalRecordLimit, WalRecordLimitError};
 
@@ -248,6 +250,27 @@ pub enum HawDBError {
         target_graph_commit_epoch: u64,
         message: String,
     },
+    /// The externally owned search projection kinds requested at open differ
+    /// from the set recorded with the projection (#1814). The open is refused
+    /// and nothing is changed. Kinds are their lowercase projection names,
+    /// sorted. Pass the recorded set again, or rebuild the projection into a
+    /// new directory to change it. Not a storage failure.
+    SearchProjectionOwnershipMismatch {
+        projection: std::path::PathBuf,
+        recorded: Vec<String>,
+        requested: Vec<String>,
+    },
+    /// An externally owned search projection record (#1814) in the
+    /// projection directory cannot be parsed. Not a storage failure and not
+    /// poisoning: nothing was changed. Reopen with
+    /// `EmbeddedStoreOpenOptions::with_externally_owned_search_kinds_reset`
+    /// to rewrite both records from the passed set; that creates a fresh
+    /// rows-required fence so the host re-pushes its rows.
+    SearchProjectionOwnershipMarkerCorrupt {
+        projection: std::path::PathBuf,
+        marker: String,
+        message: String,
+    },
     Execution(String),
     /// Box the diagnostic so successful Result values do not grow with its fields.
     ResourceBudgetExceeded(Box<ResourceBudgetError>),
@@ -256,6 +279,24 @@ pub enum HawDBError {
     /// is refused before anything is written and leaves the handle usable;
     /// see [`WalRecordLimitError`]. Not a storage failure.
     WalRecordLimitExceeded(Box<WalRecordLimitError>),
+    /// The runtime governor refused admission or retained-memory funding;
+    /// nothing ran. Not a storage failure and never poisoning. See
+    /// [`RuntimeAdmissionRefusal::retryable`].
+    RuntimeAdmissionRefused(RuntimeAdmissionRefusal),
+    /// The task asked for more concurrent I/O slots than its successful
+    /// runtime admission reserved. Nothing ran and retrying the same task
+    /// unchanged cannot succeed; admit it again with a larger I/O reservation.
+    /// This is not transient I/O saturation: admitted callers wait for held
+    /// slots until their task stops.
+    RuntimeIoWaveReservationExceeded {
+        requested_slots: usize,
+        reserved_slots: usize,
+    },
+    /// The caller's `RuntimeTaskContext` was cancelled or passed its deadline
+    /// (or its resource budget was exhausted) before the work completed.
+    /// Nothing from the stopped work was committed. Not a storage failure and
+    /// never poisoning; the caller decides whether to retry.
+    RuntimeTaskStopped(crate::RuntimeCancellationReason),
     GraphExpansionCandidateLimitExceeded {
         requested: usize,
         limit: usize,
@@ -282,6 +323,13 @@ pub enum HawDBError {
     },
     CapabilityUnavailable {
         capability: RuntimeCapability,
+    },
+    /// A write was refused because the handle is read-only (for example an
+    /// embedded store opened in `GraphMode::ShadowReadOnly`). Nothing was
+    /// written. This is a caller error, not a storage failure: reopen the
+    /// store writable to perform `operation`.
+    ReadOnly {
+        operation: &'static str,
     },
     BranchCommandUnsupported {
         command: &'static str,
@@ -344,6 +392,26 @@ impl Display for HawDBError {
                 "search projection epoch advance refused ({}): {message}",
                 reason.as_str()
             ),
+            HawDBError::SearchProjectionOwnershipMismatch {
+                projection,
+                recorded,
+                requested,
+            } => write!(
+                f,
+                "search projection ownership mismatch: {} records externally owned kinds [{}], open requested [{}]; pass the recorded set or rebuild the projection into a new directory",
+                projection.display(),
+                recorded.join(", "),
+                requested.join(", ")
+            ),
+            HawDBError::SearchProjectionOwnershipMarkerCorrupt {
+                projection,
+                marker,
+                message,
+            } => write!(
+                f,
+                "search projection ownership record {marker} in {} is unreadable ({message}); reopen with the externally owned search kinds reset to rewrite it",
+                projection.display()
+            ),
             HawDBError::Execution(message) => write!(f, "execution error: {message}"),
             HawDBError::ResourceBudgetExceeded(error) => write!(f, "execution error: {error}"),
             HawDBError::ReadBudgetExceeded(error) => write!(f, "execution error: {error}"),
@@ -352,6 +420,17 @@ impl Display for HawDBError {
                 "graph expansion candidate_limit exceeded: requested {requested} rows, limit {limit} rows; configure ExecutionMemoryConfig.graph_expansion_budget.candidate_limit"
             ),
             HawDBError::WalRecordLimitExceeded(error) => write!(f, "execution error: {error}"),
+            HawDBError::RuntimeAdmissionRefused(error) => write!(f, "execution error: {error}"),
+            HawDBError::RuntimeIoWaveReservationExceeded {
+                requested_slots,
+                reserved_slots,
+            } => write!(
+                f,
+                "execution error: runtime I/O wave requested {requested_slots} slots, exceeding the {reserved_slots}-slot reservation"
+            ),
+            HawDBError::RuntimeTaskStopped(reason) => {
+                write!(f, "execution error: runtime task stopped: {reason}")
+            }
             HawDBError::GraphExpansionPayloadLimitExceeded { requested, limit } => write!(
                 f,
                 "graph expansion payload_byte_limit exceeded: requested {requested} bytes, limit {limit} bytes; configure ExecutionMemoryConfig.graph_expansion_budget.payload_byte_limit"
@@ -378,6 +457,9 @@ impl Display for HawDBError {
             }
             HawDBError::CapabilityUnavailable { capability } => {
                 write!(f, "capability unavailable: {}", capability.as_str())
+            }
+            HawDBError::ReadOnly { operation } => {
+                write!(f, "execution error: {operation} requires a writable handle; this handle is read-only")
             }
             HawDBError::BranchCommandUnsupported { command, context } => {
                 write!(f, "{command} is unavailable in {context}")
@@ -407,6 +489,8 @@ impl std::error::Error for HawDBError {
             Self::ResourceBudgetExceeded(error) => Some(error.as_ref()),
             Self::ReadBudgetExceeded(error) => Some(error),
             Self::WalRecordLimitExceeded(error) => Some(error.as_ref()),
+            Self::RuntimeAdmissionRefused(error) => Some(error),
+            Self::RuntimeTaskStopped(reason) => Some(reason),
             Self::TransactionRetryRequired(error) => Some(error.as_ref()),
             Self::UnsupportedStorageFormat(error) => Some(error),
             Self::BranchReclamationBlocked { cause, .. } => Some(cause.as_ref()),
@@ -463,6 +547,17 @@ impl HawDBError {
         if let Some(error) = (&error as &dyn std::error::Error).downcast_ref::<Self>() {
             return error.clone();
         }
+        // Storage publishers wrap this public error after their durable
+        // rename. Preserve it before looking for an inner task-stop reason:
+        // a lost response after publication is not a rollback-safe stop.
+        if let Some(error) = find_publish_outcome_unknown(&error) {
+            return error;
+        }
+        // A cancelled or expired runtime task anywhere in the cause chain is
+        // a stop, not a storage failure.
+        if let Some(reason) = find_runtime_task_stop(&error) {
+            return Self::RuntimeTaskStopped(reason);
+        }
         if let Some(resource) = file_descriptor_error(&error) {
             Self::FileDescriptors(resource)
         } else if let Some(resource) = resource::find_resource_budget_error(&error) {
@@ -514,6 +609,133 @@ impl HawDBError {
 }
 
 pub type Result<T> = std::result::Result<T, HawDBError>;
+
+/// Preserve both I/O-wave outcomes without requiring callers to parse text.
+impl From<crate::RuntimeIoWaveError> for HawDBError {
+    fn from(error: crate::RuntimeIoWaveError) -> Self {
+        match error {
+            crate::RuntimeIoWaveError::Stopped(reason) => Self::RuntimeTaskStopped(reason),
+            crate::RuntimeIoWaveError::ReservationExceeded {
+                requested_slots,
+                reserved_slots,
+            } => Self::RuntimeIoWaveReservationExceeded {
+                requested_slots,
+                reserved_slots,
+            },
+        }
+    }
+}
+
+impl HawDBError {
+    /// Return the typed `RuntimeTaskStopped` when `error` is (or is caused by)
+    /// a cancelled or expired runtime task, otherwise `otherwise()`. Wrap any
+    /// contextual message built from an error that may carry a stop.
+    pub fn or_stop(
+        error: &(dyn std::error::Error + 'static),
+        otherwise: impl FnOnce() -> Self,
+    ) -> Self {
+        match find_runtime_task_stop(error) {
+            Some(reason) => Self::RuntimeTaskStopped(reason),
+            None => otherwise(),
+        }
+    }
+
+    /// Preserve task stops and I/O-wave reservation mismatches through error
+    /// wrappers; all other causes keep their existing execution diagnostic.
+    pub fn from_execution_error(error: impl std::error::Error + 'static) -> Self {
+        if let Some(reason) = find_runtime_task_stop(&error) {
+            return Self::RuntimeTaskStopped(reason);
+        }
+        match find_runtime_io_wave_reservation(&error) {
+            Some((requested_slots, reserved_slots)) => Self::RuntimeIoWaveReservationExceeded {
+                requested_slots,
+                reserved_slots,
+            },
+            None => Self::Execution(error.to_string()),
+        }
+    }
+}
+
+fn find_publish_outcome_unknown(error: &(dyn std::error::Error + 'static)) -> Option<HawDBError> {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        if let Some(error @ HawDBError::PublishOutcomeUnknown { .. }) =
+            error.downcast_ref::<HawDBError>()
+        {
+            return Some(error.clone());
+        }
+        if let Some(error) = error.downcast_ref::<std::io::Error>()
+            && let Some(inner) = error.get_ref()
+            && let Some(error) = find_publish_outcome_unknown(inner)
+        {
+            return Some(error);
+        }
+        current = error.source();
+    }
+    None
+}
+
+fn find_runtime_io_wave_reservation(
+    error: &(dyn std::error::Error + 'static),
+) -> Option<(usize, usize)> {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        if let Some(crate::RuntimeIoWaveError::ReservationExceeded {
+            requested_slots,
+            reserved_slots,
+        }) = error.downcast_ref::<crate::RuntimeIoWaveError>()
+        {
+            return Some((*requested_slots, *reserved_slots));
+        }
+        if let Some(HawDBError::RuntimeIoWaveReservationExceeded {
+            requested_slots,
+            reserved_slots,
+        }) = error.downcast_ref::<HawDBError>()
+        {
+            return Some((*requested_slots, *reserved_slots));
+        }
+        // io::Error hides its boxed cause from Error::source.
+        if let Some(error) = error.downcast_ref::<std::io::Error>()
+            && let Some(inner) = error.get_ref()
+            && let Some(refusal) = find_runtime_io_wave_reservation(inner)
+        {
+            return Some(refusal);
+        }
+        current = error.source();
+    }
+    None
+}
+
+/// The cancellation reason of a stopped runtime task in `error`'s cause chain.
+fn find_runtime_task_stop(
+    error: &(dyn std::error::Error + 'static),
+) -> Option<crate::RuntimeCancellationReason> {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        if let Some(reason) = error.downcast_ref::<crate::RuntimeCancellationReason>() {
+            return Some(*reason);
+        }
+        if let Some(HawDBError::RuntimeTaskStopped(reason)) = error.downcast_ref::<HawDBError>() {
+            return Some(*reason);
+        }
+        // io::Error hides its boxed cause from Error::source.
+        if let Some(error) = error.downcast_ref::<std::io::Error>()
+            && let Some(inner) = error.get_ref()
+            && let Some(reason) = find_runtime_task_stop(inner)
+        {
+            return Some(reason);
+        }
+        current = error.source();
+    }
+    None
+}
+
+/// A stopped runtime task is the typed `HawDBError::RuntimeTaskStopped`.
+impl From<crate::RuntimeCancellationReason> for HawDBError {
+    fn from(reason: crate::RuntimeCancellationReason) -> Self {
+        Self::RuntimeTaskStopped(reason)
+    }
+}
 
 impl From<ResourceBudgetError> for HawDBError {
     fn from(error: ResourceBudgetError) -> Self {
@@ -575,5 +797,44 @@ fn descriptor_os_limit(code: i32) -> bool {
     {
         let _ = code;
         false
+    }
+}
+
+#[cfg(test)]
+mod runtime_io_wave_tests {
+    use super::*;
+
+    fn refusal() -> crate::RuntimeIoWaveError {
+        crate::RuntimeIoWaveError::ReservationExceeded {
+            requested_slots: 2,
+            reserved_slots: 1,
+        }
+    }
+
+    #[test]
+    fn reservation_refusal_stays_typed_directly_and_through_io_context() {
+        for error in [
+            HawDBError::from(refusal()),
+            HawDBError::from_execution_error(refusal()),
+            HawDBError::from_execution_error(std::io::Error::other(refusal())),
+        ] {
+            assert!(matches!(
+                error,
+                HawDBError::RuntimeIoWaveReservationExceeded {
+                    requested_slots: 2,
+                    reserved_slots: 1,
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn stopped_io_wave_stays_a_task_stop() {
+        assert!(matches!(
+            HawDBError::from_execution_error(crate::RuntimeIoWaveError::Stopped(
+                crate::RuntimeCancellationReason::DeadlineExceeded,
+            )),
+            HawDBError::RuntimeTaskStopped(crate::RuntimeCancellationReason::DeadlineExceeded)
+        ));
     }
 }

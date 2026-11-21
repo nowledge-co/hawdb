@@ -66,7 +66,11 @@ pub(crate) fn decode<D: Decoder>(input: &str, backend: &D) -> Result<Value> {
         "s" => backend.string(rest).map(Value::String),
         "u" => hawdb_core::Uuid::parse_str(rest)
             .map(Value::Uuid)
-            .map_err(|error| HawDBError::Storage(format!("invalid UUID value: {error}"))),
+            .map_err(|error| {
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Storage(format!("invalid UUID value: {error}"))
+                })
+            }),
         "x" => backend.binary(rest).map(Value::Binary),
         "v" => backend.vector(rest).map(Value::Vector),
         "D" | "T" | "L" | "Z" | "P" => decode_temporal(kind, rest),
@@ -130,7 +134,11 @@ fn decode_temporal(kind: &str, rest: &str) -> Result<Value> {
         "P" => temporal::parse_duration(rest).map(Value::duration),
         _ => unreachable!("caller passes temporal tags"),
     }
-    .map_err(|error| HawDBError::Storage(format!("invalid encoded temporal value: {error}")))?;
+    .map_err(|error| {
+        HawDBError::or_stop(&error, || {
+            HawDBError::Storage(format!("invalid encoded temporal value: {error}"))
+        })
+    })?;
     // Accept only the canonical rendering, so one value has one encoding.
     if decoded.to_string() != rest {
         return Err(HawDBError::Storage(format!(

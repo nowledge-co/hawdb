@@ -462,7 +462,11 @@ impl Writer {
             },
             term,
         )
-        .map_err(|error| HawDBError::Storage(format!("cannot write mutation term: {error}")))?;
+        .map_err(|error| {
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!("cannot write mutation term: {error}"))
+            })
+        })?;
         self.count = self.count.checked_add(1).ok_or_else(size_overflow)?;
         self.scalar_bytes = self.scalar_bytes.max(bound);
         Ok(())

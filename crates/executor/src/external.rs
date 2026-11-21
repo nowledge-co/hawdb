@@ -49,9 +49,9 @@ pub struct ExternalReadResourceContract<'a> {
 impl ExternalReadResourceContract<'_> {
     pub fn checkpoint(&self) -> Result<()> {
         match self.task_context {
-            Some(task_context) => task_context.checkpoint().map_err(|reason| {
-                HawDBError::Execution(format!("external read task stopped: {reason}"))
-            }),
+            Some(task_context) => task_context
+                .checkpoint()
+                .map_err(HawDBError::RuntimeTaskStopped),
             None => Ok(()),
         }
     }

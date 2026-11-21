@@ -679,7 +679,10 @@ mod tests {
                 Some(&task),
             )
             .unwrap_err();
-        assert!(matches!(error, HawDBError::Execution(_)), "{error:?}");
+        assert!(matches!(
+            error,
+            HawDBError::RuntimeTaskStopped(hawdb_core::RuntimeCancellationReason::Cancelled)
+        ));
         let task = hawdb_core::RuntimeTaskContext::default().with_work_limit(0);
         assert!(fixture
             .store

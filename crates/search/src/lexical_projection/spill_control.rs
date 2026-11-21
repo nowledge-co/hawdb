@@ -166,7 +166,7 @@ impl Control {
                 let task = self.task().expect("captured spill task");
                 let _io = task
                     .acquire_io_wave(std::num::NonZeroUsize::MIN)
-                    .map_err(|error| crate::HawDBError::Execution(error.to_string()))?;
+                    .map_err(crate::HawDBError::from_execution_error)?;
                 if directory.governed() && _io.is_none() {
                     return Err(crate::HawDBError::Execution(
                         "captured spill open requires I/O admission".into(),
@@ -194,7 +194,7 @@ impl Control {
                 let task = self.task().expect("captured spill task");
                 let _io = task
                     .acquire_io_wave(std::num::NonZeroUsize::MIN)
-                    .map_err(|error| crate::HawDBError::Execution(error.to_string()))?;
+                    .map_err(crate::HawDBError::from_execution_error)?;
                 if directory.governed() && _io.is_none() {
                     return Err(crate::HawDBError::Execution(
                         "captured spill create requires I/O admission".into(),
@@ -222,7 +222,7 @@ impl Control {
                 let task = self.task().expect("captured spill task");
                 let _io = task
                     .acquire_io_wave(std::num::NonZeroUsize::MIN)
-                    .map_err(|error| crate::HawDBError::Execution(error.to_string()))?;
+                    .map_err(crate::HawDBError::from_execution_error)?;
                 if directory.governed() && _io.is_none() {
                     return Err(crate::HawDBError::Execution(
                         "captured spill removal requires I/O admission".into(),

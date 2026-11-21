@@ -1869,7 +1869,7 @@ impl<I: DecodeInput> Decoder<I> {
         match self.input.checkpoint_allocation_context() {
             Some(context) => context
                 .vector_capacity(count)
-                .map_err(|error| RelationalError::Admission(error.to_string())),
+                .map_err(RelationalError::from_admission),
             None => Ok(Vec::with_capacity(count)),
         }
     }
@@ -2043,7 +2043,7 @@ impl<I: DecodeInput> Decoder<I> {
             .map(|context| {
                 context
                     .vector_capacity(count)
-                    .map_err(|error| RelationalError::Admission(error.to_string()))
+                    .map_err(RelationalError::from_admission)
             })
             .transpose()?;
         let unit = work.start_unit().map_err(checkpoint::work_error)?;
@@ -2156,7 +2156,15 @@ impl<I: DecodeInput> Decoder<I> {
                 .map(RelationalValue::Decimal)
                 .map_err(|error| RelationalError::Corruption(error.to_string())),
             tag @ (10 | 11) => {
-                super::decode_timestamp_value(tag, i64::from_le_bytes(self.fixed()?))
+                let narrow = i64::from_le_bytes(self.fixed()?);
+                let excess = if narrow == hawdb_core::sql_timestamp::EXTENDED_MICROS {
+                    Some(u64::from_le_bytes(self.fixed()?))
+                } else {
+                    None
+                };
+                let micros = hawdb_core::sql_timestamp::join_micros(narrow, excess)
+                    .map_err(|error| RelationalError::Corruption(error.to_string()))?;
+                super::decode_timestamp_value(tag, micros)
             }
             8 => {
                 let bytes = self.bounded_bytes(self.limits.max_value_bytes, "VECTOR value")?;
@@ -2191,7 +2199,7 @@ impl<I: DecodeInput> Decoder<I> {
                         std::mem::size_of::<Vec<RelationalValue>>()
                             + 2 * std::mem::size_of::<usize>(),
                     )
-                    .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                    .map_err(RelationalError::from_admission)?;
             }
             let unit = work.start_unit().map_err(checkpoint::work_error)?;
             let row = RelationalRow::from_checkpoint_values(values);
@@ -2279,7 +2287,7 @@ impl<I: DecodeInput> Decoder<I> {
             if let Some(context) = self.input.checkpoint_allocation_context() {
                 context
                     .reserve(std::mem::size_of::<MaterializedViewDefinition>())
-                    .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                    .map_err(RelationalError::from_admission)?;
             }
             Some(Box::new(MaterializedViewDefinition {
                 source,
@@ -2329,7 +2337,7 @@ impl<I: DecodeInput> Decoder<I> {
             if let Some(context) = self.input.checkpoint_allocation_context() {
                 context
                     .reserve(std::mem::size_of::<MaterializedViewDefinition>())
-                    .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                    .map_err(RelationalError::from_admission)?;
             }
             Some(Box::new(MaterializedViewDefinition {
                 source,
@@ -2584,7 +2592,7 @@ impl<I: DecodeInput> Decoder<I> {
         if let Some(context) = self.input.checkpoint_allocation_context() {
             context
                 .reserve(std::mem::size_of::<RelationalPredicate>())
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                .map_err(RelationalError::from_admission)?;
         }
         Ok(Box::new(predicate))
     }

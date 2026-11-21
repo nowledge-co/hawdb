@@ -1820,3 +1820,24 @@ fn relationship_writes_the_endpoint_commands_decline_bind_over_read_rows() {
         assert!(plan(query).is_err(), "{query}");
     }
 }
+
+#[test]
+fn relationship_set_filters_storage_cannot_evaluate_bind_over_rows() {
+    let parameters = BTreeMap::from([
+        ("old".to_string(), Value::Null),
+        ("id".to_string(), Value::String("a".into())),
+    ]);
+    let plan = |query: &str| plan_pipeline_query(query, &parameters).unwrap();
+    for query in [
+        "MATCH (:E {id: $id})-[r:R]->(:E {id: 'b'}) WHERE r.s = $old OR (r.s IS NULL AND $old IS NULL) SET r.s = 'd'",
+        "MATCH (a:E {id: $id})-[r:R]->(b:E) WHERE r.s = 'x' AND ((r.t IS NULL AND $old IS NULL) OR r.t = $old) SET r.s = 'd', r.n = 1",
+        // Only single-node SET commands return rows.
+        "MATCH (a:E {id: $id})-[r:R]->(b:E) SET r.s = 'd' RETURN r.s",
+    ] {
+        assert!(matches!(plan(query), LogicalPlan::MatchSet(_)), "{query}");
+    }
+    assert!(matches!(
+        plan("MATCH (:E {id: $id})-[r:R]->(:E {id: 'b'}) WHERE r.s = 'x' OR r.s IS NULL SET r.s = 'd'"),
+        LogicalPlan::SetRelationshipProperty { .. }
+    ));
+}

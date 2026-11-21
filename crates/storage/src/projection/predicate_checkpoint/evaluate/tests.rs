@@ -123,7 +123,7 @@ fn checkpoint_units_predicate_evaluation_splits_wide_comparisons_before_completi
             matches(&predicate, &properties, &cancelled.context(local.clone()))
                 .unwrap_err()
                 .to_string(),
-            "storage error: checkpoint build stopped: cancelled"
+            "execution error: runtime task stopped: cancelled"
         );
         cancelled.assert_released(&local);
         let retry = Arc::new(CheckpointWorkProbe::default());
@@ -179,7 +179,7 @@ fn checkpoint_units_predicate_evaluation_cancels_each_actual_unit_and_retries_co
                 matches(&predicate, &properties, &cancelled.context(local.clone()))
                     .unwrap_err()
                     .to_string(),
-                "storage error: checkpoint build stopped: cancelled"
+                "execution error: runtime task stopped: cancelled"
             );
             assert_eq!(cancelled.completed.load(AtomicOrdering::SeqCst), cut);
             cancelled.assert_released(&local);

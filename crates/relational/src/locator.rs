@@ -471,10 +471,10 @@ fn relational_value_encoded_len(value: &RelationalValue) -> Result<usize> {
     match value {
         RelationalValue::Null => Ok(1),
         RelationalValue::Boolean(_) => Ok(2),
-        RelationalValue::BigInt(_)
-        | RelationalValue::DoublePrecision(_)
-        | RelationalValue::Timestamp(_)
-        | RelationalValue::TimestampTz(_) => Ok(9),
+        RelationalValue::BigInt(_) | RelationalValue::DoublePrecision(_) => Ok(9),
+        RelationalValue::Timestamp(value) | RelationalValue::TimestampTz(value) => {
+            Ok(1 + hawdb_core::sql_timestamp::encoded_micros_len(value.get()))
+        }
         RelationalValue::Text(value) => checked_add(5, value.len(), "text value"),
         RelationalValue::Bytea(value) => checked_add(5, value.len(), "bytea value"),
         RelationalValue::Vector(value) => checked_add(5, value.encoded().len(), "vector value"),
@@ -532,11 +532,15 @@ fn write_relational_value(
         }
         RelationalValue::Timestamp(value) => {
             output.push(9);
-            output.extend_from_slice(&value.to_le_bytes());
+            output.extend_from_slice(
+                hawdb_core::sql_timestamp::encode_micros(value.get())?.as_bytes(),
+            );
         }
         RelationalValue::TimestampTz(value) => {
             output.push(10);
-            output.extend_from_slice(&value.to_le_bytes());
+            output.extend_from_slice(
+                hawdb_core::sql_timestamp::encode_micros(value.get())?.as_bytes(),
+            );
         }
         RelationalValue::Overflow(_) => {
             return Err(HawDBError::Execution(
@@ -579,12 +583,18 @@ fn read_relational_value(
                 .map_err(|_| invalid_typed_record("invalid Decimal value"))?,
         ),
         tag @ (9 | 10) => {
-            let micros = hawdb_core::sql_timestamp::checked(i64::from_le_bytes(read_array(input)?))
+            let narrow = i64::from_le_bytes(read_array(input)?);
+            let excess = if narrow == hawdb_core::sql_timestamp::EXTENDED_MICROS {
+                Some(u64::from_le_bytes(read_array(input)?))
+            } else {
+                None
+            };
+            let micros = hawdb_core::sql_timestamp::join_micros(narrow, excess)
                 .map_err(|_| invalid_typed_record("invalid TIMESTAMP value"))?;
             if tag == 9 {
-                RelationalValue::Timestamp(micros)
+                RelationalValue::Timestamp(micros.into())
             } else {
-                RelationalValue::TimestampTz(micros)
+                RelationalValue::TimestampTz(micros.into())
             }
         }
         _ => return Err(invalid_typed_record("invalid relational value tag")),
@@ -809,6 +819,38 @@ mod tests {
         assert!(RelationalSortRecord::decode(&encoded[..encoded.len() - 1]).is_err());
         encoded.push(0);
         assert!(RelationalSortRecord::decode(&encoded).is_err());
+    }
+
+    #[test]
+    fn timestamp_spill_keys_preserve_extended_microseconds_and_reject_torn_records() {
+        for micros in [
+            hawdb_core::sql_timestamp::min_micros(),
+            -1,
+            0,
+            i128::from(i64::MAX) - 1,
+            i128::from(i64::MAX),
+            hawdb_core::sql_timestamp::max_micros(),
+        ] {
+            let record = RelationalSortRecord::new(
+                vec![RelationalSortKey::new(
+                    RelationalValue::Timestamp(micros.into()),
+                    SqlOrderDirection::Asc,
+                    SqlNullOrder::DialectDefault,
+                )
+                .unwrap()],
+                RelationalRowSetLocator::new(vec![Some(RelationalRowLocator::new(
+                    0,
+                    RelationalKey(vec![RelationalValue::TimestampTz(micros.into())]),
+                ))]),
+            );
+            let mut encoded = Vec::new();
+            record.encode(&mut encoded).unwrap();
+            assert_eq!(record.encoded_len().unwrap(), encoded.len());
+            assert_eq!(RelationalSortRecord::decode(&encoded).unwrap(), record);
+            for length in 0..encoded.len() {
+                assert!(RelationalSortRecord::decode(&encoded[..length]).is_err());
+            }
+        }
     }
 
     #[test]

@@ -197,10 +197,20 @@ fn checkpoint_units_wal_decode_map_memory_cancel_every_unit_and_retry_same_gover
                     .try_start(WorkRequest::background(WorkClass::Mutation, 1))
                     .unwrap()
             });
-            assert!(matches!(
-                decode_binary_wal_record_with_work_context(&bytes, &work),
-                Err(HawDBError::Execution(_))
-            ));
+            // Unit 0 is refused by the held scheduler slot (contention, not a stop);
+            // every later cut is a cancellation and reports the typed stop.
+            let result = decode_binary_wal_record_with_work_context(&bytes, &work).err();
+            if stop == 0 {
+                assert!(
+                    matches!(result, Some(HawDBError::Execution(_))),
+                    "{result:?}"
+                );
+            } else {
+                assert!(
+                    matches!(result, Some(HawDBError::RuntimeTaskStopped(_))),
+                    "{result:?}"
+                );
+            }
             drop(held);
             probe.assert_released(&scheduler);
             drop(work);

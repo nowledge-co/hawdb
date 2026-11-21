@@ -19,7 +19,9 @@
 
 use crate::bounded_read_evidence::GraphMode;
 use hawdb_route_ownership::graph::RouteOwnershipReadinessReport;
-use hawdb_search::SearchProjectionFreshness;
+use hawdb_search::{
+    projection_ownership::ExternallyOwnedRowsToken, SearchProjectionFreshness, SearchProjectionKind,
+};
 use hawdb_storage::projection::{SearchProjectionChangefeedStatus, SearchProjectionMutationId};
 
 pub const RUNTIME_STATUS_PROTOCOL: &str = "hawdb-nowledge-mem-runtime-status-v1";
@@ -29,9 +31,20 @@ pub const PRODUCTION_STATUS_PROTOCOL: &str = "hawdb-nowledge-mem-production-stat
 pub struct EmbeddedRuntimeStatus {
     pub protocol: String,
     pub graph_commit_epoch: u64,
+    /// Commit epoch of the newest commit that changed graph data or schema;
+    /// relational-only commits do not advance it (#1840). Never regresses
+    /// (a reopen may advance it once), and present without a search projection.
+    pub graph_change_commit_epoch: u64,
     pub changefeed: SearchProjectionChangefeedStatus,
     pub projection_freshness: Option<SearchProjectionFreshness>,
     pub file_descriptors: Option<hawdb_storage::file_descriptors::FileDescriptorMetrics>,
+    /// Kinds whose documents only the host writes; changefeed catch-up derives
+    /// no rows for them (#1814). Empty by default.
+    pub externally_owned_search_kinds: Vec<SearchProjectionKind>,
+    /// The fenced projection incarnation and epoch for which the host must
+    /// resupply its externally owned rows, or `None` when nothing is required
+    /// (#1814).
+    pub externally_owned_rows_required: Option<ExternallyOwnedRowsToken>,
 }
 
 impl EmbeddedRuntimeStatus {
@@ -53,6 +66,7 @@ impl EmbeddedRuntimeStatus {
         serde_json::json!({
             "protocol": self.protocol,
             "graph_commit_epoch": self.graph_commit_epoch,
+            "graph_change_commit_epoch": self.graph_change_commit_epoch,
             "file_descriptors": self.file_descriptors.map(|metrics| serde_json::json!({
                 "strict_capacity_limit": metrics.strict_capacity_limit,
                 "configured_limit": metrics.configured_limit,
@@ -85,6 +99,11 @@ impl EmbeddedRuntimeStatus {
                 "embedding_model": freshness.and_then(|freshness| freshness.embedding_model.as_deref()),
                 "embedding_version": freshness.and_then(|freshness| freshness.embedding_version.as_deref()),
                 "embedding_dimension": freshness.and_then(|freshness| freshness.embedding_dimension),
+                "externally_owned_kinds": self.externally_owned_search_kinds.iter().map(|kind| kind.as_str()).collect::<Vec<_>>(),
+                "externally_owned_rows_required": self.externally_owned_rows_required.map(|token| serde_json::json!({
+                    "incarnation": token.incarnation.to_string(),
+                    "epoch": token.epoch,
+                })),
                 "commit_lag": self.projection_commit_lag(),
                 "stale": self.projection_stale(),
             },
@@ -106,6 +125,7 @@ pub struct EmbeddedProductionStatus {
     pub search_projection_open: bool,
     pub search_hawdb_cutover_effective: bool,
     pub graph_commit_epoch: u64,
+    pub graph_change_commit_epoch: u64,
     pub search_projection_source_graph_commit_epoch: Option<u64>,
     pub search_projection_durable_source_graph_commit_epoch: Option<u64>,
     pub search_projection_commit_lag: u64,
@@ -196,6 +216,7 @@ impl EmbeddedProductionStatus {
             search_projection_open,
             search_hawdb_cutover_effective,
             graph_commit_epoch: runtime_status.graph_commit_epoch,
+            graph_change_commit_epoch: runtime_status.graph_change_commit_epoch,
             search_projection_source_graph_commit_epoch: freshness
                 .and_then(|freshness| freshness.source_graph_commit_epoch),
             search_projection_durable_source_graph_commit_epoch: freshness
@@ -226,6 +247,7 @@ impl EmbeddedProductionStatus {
                 "hawdb_route_count": self.graph_hawdb_route_count,
                 "legacy_route_count": self.graph_legacy_route_count,
                 "commit_epoch": self.graph_commit_epoch,
+                "change_commit_epoch": self.graph_change_commit_epoch,
             },
             "search": {
                 "projection_open": self.search_projection_open,
@@ -275,6 +297,7 @@ mod tests {
         let status = EmbeddedRuntimeStatus {
             protocol: "test".to_string(),
             graph_commit_epoch: 8,
+            graph_change_commit_epoch: 6,
             changefeed: changefeed(),
             projection_freshness: None,
             file_descriptors: Some(hawdb_storage::file_descriptors::FileDescriptorMetrics {
@@ -285,10 +308,13 @@ mod tests {
                 os_limit_clamped: true,
                 ..Default::default()
             }),
+            externally_owned_search_kinds: Vec::new(),
+            externally_owned_rows_required: None,
         };
 
         assert_eq!(status.projection_commit_lag(), 8);
         assert!(status.projection_stale());
+        assert_eq!(status.json()["graph_change_commit_epoch"], 6);
         assert_eq!(status.json()["file_descriptors"]["configured_limit"], 1024);
         assert_eq!(status.json()["file_descriptors"]["effective_limit"], 192);
         assert_eq!(
@@ -310,9 +336,12 @@ mod tests {
             EmbeddedRuntimeStatus {
                 protocol: "test".to_string(),
                 graph_commit_epoch: 8,
+                graph_change_commit_epoch: 6,
                 changefeed: changefeed(),
                 projection_freshness: None,
                 file_descriptors: None,
+                externally_owned_search_kinds: Vec::new(),
+                externally_owned_rows_required: None,
             },
             None,
         );

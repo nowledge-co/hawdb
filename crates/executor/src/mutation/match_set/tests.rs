@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
+use crate::binding::map_payload_bytes;
 use hawdb_plan_cypher::{
     MatchSetAssignment, MatchSetBinding, Projection, ProjectionExpression, ScalarBinaryOp,
     SetValue, SortItem,
@@ -99,6 +100,17 @@ fn resolve_with(
     limits: MutationLimits,
     ledger: &QueryMemoryLedger,
 ) -> Result<MatchSetOutcome> {
+    resolve_with_output(plan, input, nodes, limits, OutputLimits::default(), ledger)
+}
+
+fn resolve_with_output(
+    plan: &MatchSet<PhysicalPlan>,
+    input: Vec<Row>,
+    nodes: &[NodeRecord],
+    limits: MutationLimits,
+    output_limits: OutputLimits,
+    ledger: &QueryMemoryLedger,
+) -> Result<MatchSetOutcome> {
     let mut charge = match_set_account(ledger).reserve(0)?;
     resolve_match_set(
         plan,
@@ -116,7 +128,7 @@ fn resolve_with(
         },
         &mut charge,
         limits,
-        OutputLimits::default(),
+        output_limits,
         None,
     )
 }
@@ -418,4 +430,157 @@ fn entity_copies_and_computed_values_are_charged_to_query_memory() {
     assert_eq!(updates(&outcome).len(), 8);
     assert_eq!(ledger.snapshot().used_bytes, 0);
     assert!(ledger.snapshot().peak_bytes > 8 * 3 * 64 * 1024);
+}
+
+/// Result limits refuse as soon as the result is certain to exceed them,
+/// before later rows are projected: the fourth row's RETURN value would fail.
+#[test]
+fn result_limits_refuse_before_projecting_every_row() {
+    let nodes = (1..=6)
+        .map(|id| {
+            let name = if id == 4 {
+                Value::Int(0)
+            } else {
+                Value::String("n".into())
+            };
+            node(id, &[("name", name)])
+        })
+        .collect::<Vec<_>>();
+    let input = || {
+        (1..=6)
+            .map(|id| row(&[("n", Value::Int(id))]))
+            .collect::<Vec<_>>()
+    };
+    let lower = Projection {
+        expression: ProjectionExpression::Lower(Box::new(property("n", "name"))),
+        name: "name".into(),
+    };
+    let limits = MutationLimits {
+        max_result_rows: NonZeroUsize::new(2).unwrap(),
+        ..MutationLimits::default()
+    };
+    let unsorted = returns(vec![lower.clone()]);
+    let sorted = MatchSetReturn {
+        order_by: vec![SortItem {
+            key: SortKey::Column("name".into()),
+            direction: SortDirection::Asc,
+        }],
+        ..returns(vec![lower.clone()])
+    };
+    for returns in [unsorted, sorted] {
+        let set = plan(
+            vec![binding("n", Some(GraphEntityKind::Node))],
+            vec![assignment(
+                "n",
+                "seen",
+                MatchSetValue::Local(SetValue::Value(Value::Bool(true))),
+            )],
+            Some(returns),
+        );
+        let error = resolve(&set, input(), &nodes, limits).unwrap_err();
+        assert!(
+            error.to_string().contains("max_mutation_result_rows 2"),
+            "{error}"
+        );
+        assert!(
+            matches!(&error, HawDBError::ResourceBudgetExceeded(cause)
+                if cause.budget_option == "MutationLimits.max_result_rows"),
+            "{error:?}"
+        );
+    }
+    // A LIMIT within the budget is not refused early; here the bad row fails.
+    let limited = MatchSetReturn {
+        order_by: vec![SortItem {
+            key: SortKey::Column("name".into()),
+            direction: SortDirection::Asc,
+        }],
+        limit: Some(2),
+        ..returns(vec![lower])
+    };
+    let set = plan(
+        vec![binding("n", Some(GraphEntityKind::Node))],
+        Vec::new(),
+        Some(limited),
+    );
+    let error = resolve(&set, input(), &nodes, limits).unwrap_err();
+    assert!(error.to_string().contains("LOWER"), "{error}");
+}
+
+/// DISTINCT must still evaluate every input row, but only the final
+/// SKIP/LIMIT window consumes mutation-result and host-output budgets.
+#[test]
+fn distinct_window_alone_consumes_result_budgets() {
+    let nodes = [
+        node(1, &[("body", Value::String("discarded before".into()))]),
+        node(2, &[("body", Value::String("ok".into()))]),
+        node(3, &[("body", Value::String("discarded after".into()))]),
+    ];
+    let input = || {
+        (1..=3)
+            .map(|id| row(&[("n", Value::Int(id))]))
+            .collect::<Vec<_>>()
+    };
+    let body = Projection {
+        expression: property("n", "body"),
+        name: "body".into(),
+    };
+    let set = |returns| {
+        plan(
+            vec![binding("n", Some(GraphEntityKind::Node))],
+            vec![assignment(
+                "n",
+                "seen",
+                MatchSetValue::Local(SetValue::Value(Value::Bool(true))),
+            )],
+            Some(returns),
+        )
+    };
+    let selected = BTreeMap::from([("body".to_string(), Value::String("ok".into()))]);
+    let selected_bytes = map_payload_bytes(&selected);
+    let limits = MutationLimits {
+        max_result_rows: NonZeroUsize::new(1).unwrap(),
+        max_result_payload_bytes: NonZeroUsize::new(selected_bytes).unwrap(),
+        ..MutationLimits::default()
+    };
+    let ledger = QueryMemoryLedger::new(NonZeroUsize::new(64 << 20).unwrap());
+    let window = MatchSetReturn {
+        distinct: true,
+        offset: 1,
+        limit: Some(1),
+        ..returns(vec![body.clone()])
+    };
+    let outcome = resolve_with_output(
+        &set(window),
+        input(),
+        &nodes,
+        limits,
+        OutputLimits {
+            max_rows: Some(1),
+            max_payload_bytes: Some(selected_bytes),
+        },
+        &ledger,
+    )
+    .unwrap();
+    assert_eq!(outcome.rows, vec![selected]);
+    assert_eq!(updates(&outcome).len(), 3);
+
+    let none = MatchSetReturn {
+        distinct: true,
+        limit: Some(0),
+        ..returns(vec![body])
+    };
+    let outcome = resolve_with_output(
+        &set(none),
+        input(),
+        &nodes,
+        limits,
+        OutputLimits {
+            max_rows: Some(0),
+            max_payload_bytes: Some(0),
+        },
+        &ledger,
+    )
+    .unwrap();
+    assert!(outcome.rows.is_empty());
+    assert_eq!(updates(&outcome).len(), 3);
 }

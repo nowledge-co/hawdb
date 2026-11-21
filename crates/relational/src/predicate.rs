@@ -232,6 +232,17 @@ fn predicate_expression<'a>(
             })
             .map(Cow::Owned)
         }
+        ExprKind::Function {
+            name,
+            arguments,
+            distinct: false,
+            filter: None,
+        } if name == "octet_length" => {
+            let argument = crate::query_value::octet_length_argument(arguments)?;
+            let value = predicate_expression(argument, parameters, resolve)?;
+            crate::query_value::octet_length(value.as_ref().as_ref())
+                .map(|value| Cow::Owned(value.to_owned_value()))
+        }
         _ => Err(HawDBError::Semantic("unsupported predicate operand".into())),
     }
 }

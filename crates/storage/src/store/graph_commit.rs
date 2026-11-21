@@ -2465,6 +2465,9 @@ impl GraphStore {
         wal_result?;
         *catalog = working_catalog;
         self.install_search_projection_change(staged_projection_change);
+        // Consume the appended record's classification so it cannot outlive
+        // this commit.
+        let changes_graph = std::mem::take(&mut self.pending_commit_changes_graph);
         for op in ops {
             if matches!(op, WalOp::Relational { .. }) {
                 self.relational_state = staged_relational_state
@@ -2479,6 +2482,9 @@ impl GraphStore {
             }
         }
         self.commit_epoch = next_commit_epoch;
+        if changes_graph {
+            self.graph_change_commit_epoch = next_commit_epoch;
+        }
         self.version_index = staged_versions;
         if collapsed_read_summaries {
             let _ = self.read_summary_collapses.try_update(
@@ -2651,6 +2657,9 @@ impl GraphStore {
     }
 
     pub(super) fn append_durable_wal_single(&mut self, op: WalOp) -> Result<()> {
+        // Only a successful append leaves a classification for its commit.
+        self.pending_commit_changes_graph = false;
+        let changes_graph = op.changes_graph();
         let rebuild =
             search_projection_capture::projection_wal_requires_rebuild(std::slice::from_ref(&op));
         let result = (|| {
@@ -2665,6 +2674,7 @@ impl GraphStore {
         })();
         self.poison_on_storage_error(&result);
         result?;
+        self.pending_commit_changes_graph = changes_graph;
         if rebuild {
             self.install_search_projection_change(
                 search_projection_capture::PreparedSearchProjectionChange::Gap(
@@ -2684,6 +2694,9 @@ impl GraphStore {
         ops: &[WalOp],
         prepared: Option<crate::wal::binary::PreparedWalBatch>,
     ) -> Result<()> {
+        // Only a successful append leaves a classification for its commit.
+        self.pending_commit_changes_graph = false;
+        let changes_graph = ops.iter().any(WalOp::changes_graph);
         let rebuild = search_projection_capture::projection_wal_requires_rebuild(ops);
         let result = (|| {
             if self.durable.is_none() {
@@ -2701,6 +2714,7 @@ impl GraphStore {
         })();
         self.poison_on_storage_error(&result);
         result?;
+        self.pending_commit_changes_graph = changes_graph;
         if rebuild {
             self.install_search_projection_change(
                 search_projection_capture::PreparedSearchProjectionChange::Gap(
@@ -3510,13 +3524,13 @@ fn collect_append_version_writes(
 fn record_live_version(writes: &mut VersionWriteSet, key: VersionKey) -> Result<()> {
     writes
         .record_live(key)
-        .map_err(|error| HawDBError::Execution(error.to_string()))
+        .map_err(HawDBError::from_execution_error)
 }
 
 fn record_tombstone_version(writes: &mut VersionWriteSet, key: VersionKey) -> Result<()> {
     writes
         .record_tombstone(key)
-        .map_err(|error| HawDBError::Execution(error.to_string()))
+        .map_err(HawDBError::from_execution_error)
 }
 
 fn map_relational_staging_error(error: RelationalError) -> HawDBError {
@@ -3524,6 +3538,7 @@ fn map_relational_staging_error(error: RelationalError) -> HawDBError {
         RelationalError::UnsupportedFormat(error) => HawDBError::UnsupportedStorageFormat(error),
         RelationalError::FileDescriptors(error) => HawDBError::FileDescriptors(error),
         RelationalError::Corruption(_) => HawDBError::StorageIntegrity(error.to_string()),
+        RelationalError::Stopped(reason) => HawDBError::RuntimeTaskStopped(reason),
         RelationalError::Admission(_)
         | RelationalError::Schema(_)
         | RelationalError::Constraint(_)
@@ -3533,6 +3548,10 @@ fn map_relational_staging_error(error: RelationalError) -> HawDBError {
 
 fn map_append_staging_error(error: hawdb_storage::append_table::AppendTableError) -> HawDBError {
     match error {
+        hawdb_storage::append_table::AppendTableError::Stopped(reason) => {
+            HawDBError::RuntimeTaskStopped(reason)
+        }
+        hawdb_storage::append_table::AppendTableError::PublishOutcomeUnknown(error) => *error,
         hawdb_storage::append_table::AppendTableError::SequenceExhausted {
             table,
             watermark,

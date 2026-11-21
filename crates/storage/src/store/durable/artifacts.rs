@@ -526,7 +526,9 @@ pub(super) fn load_published_canonical_segments(
         open_budget,
     )?;
     let text = std::str::from_utf8(&encoded).map_err(|error| {
-        HawDBError::Storage(format!("canonical manifest is not UTF-8: {error}"))
+        HawDBError::or_stop(&error, || {
+            HawDBError::Storage(format!("canonical manifest is not UTF-8: {error}"))
+        })
     })?;
     let canonical_manifest =
         CanonicalSegmentManifest::decode(text).map_err(HawDBError::from_storage_error)?;
@@ -606,7 +608,9 @@ fn load_published_property_spills(
         open_budget,
     )?;
     let text = std::str::from_utf8(&encoded).map_err(|error| {
-        HawDBError::Storage(format!("property spill manifest is not UTF-8: {error}"))
+        HawDBError::or_stop(&error, || {
+            HawDBError::Storage(format!("property spill manifest is not UTF-8: {error}"))
+        })
     })?;
     let manifest = PropertySpillManifest::decode(text).map_err(HawDBError::from_storage_error)?;
     if manifest.generation != ManifestGeneration(generation) {
@@ -682,9 +686,11 @@ pub(in crate::store) fn load_published_property_projection(
         open_budget,
     )?;
     let text = std::str::from_utf8(&encoded).map_err(|error| {
-        HawDBError::Storage(format!(
-            "property projection manifest is not UTF-8: {error}"
-        ))
+        HawDBError::or_stop(&error, || {
+            HawDBError::Storage(format!(
+                "property projection manifest is not UTF-8: {error}"
+            ))
+        })
     })?;
     let manifest = PersistentPropertyProjectionManifest::decode(text)
         .map_err(HawDBError::from_storage_error)?;

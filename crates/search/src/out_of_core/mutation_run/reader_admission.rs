@@ -70,9 +70,7 @@ impl SearchMutationRun {
             captured_file,
         )?;
         let working = streaming::working_bytes(manifest.entry_count, scalar)?;
-        budget
-            .check(working)
-            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+        budget.check(working)?;
         let working = usize::try_from(working).map_err(|_| size_overflow())?;
         // Exact entry Vec, one owned document ID per record, body format, and
         // the run's inline storage. Terms keep shared file ranges, not strings.
@@ -115,15 +113,13 @@ impl SearchMutationRun {
             envelope.body.retained_capacity()?,
             (std::mem::size_of::<terms::TermFile>() + 2 * std::mem::size_of::<usize>()) as u64,
         )?;
-        budget
-            .retain(add(
-                logical,
-                multiply(
-                    manifest.entry_count as u64,
-                    crate::build_memory::SET_ENTRY_BYTES,
-                )?,
-            )?)
-            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+        budget.retain(add(
+            logical,
+            multiply(
+                manifest.entry_count as u64,
+                crate::build_memory::SET_ENTRY_BYTES,
+            )?,
+        )?)?;
         Ok(Self {
             body: envelope.body,
             vector_retraction_count: OnceLock::new(),

@@ -1,0 +1,27 @@
+{
+  "name": "@nowledge/hawdb-node",
+  "version": "0.36.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "engines": {
+    "node": ">=22.16.0"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit --strict --target es2022 --lib es2022,esnext.disposable --module nodenext tests/types.ts",
+    "test": "node --test --test-concurrency=1 tests/*.test.mjs",
+    "test:electron": "node tests/electron.mjs"
+  },
+  "devDependencies": {
+    "@electron/asar": "4.3.2",
+    "@electron/packager": "20.3.0",
+    "electron": "45.3.3",
+    "typescript": "7.0.2"
+  }
+}

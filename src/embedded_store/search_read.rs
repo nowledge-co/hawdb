@@ -80,7 +80,10 @@ impl EmbeddedStoreHandle {
             (
                 Arc::clone(&published.view),
                 published.mode,
-                published.resident_projection.clone(),
+                published
+                    .resident_projection
+                    .as_ref()
+                    .map(|published| published.snapshot().clone()),
                 published
                     .out_of_core_projection
                     .as_ref()

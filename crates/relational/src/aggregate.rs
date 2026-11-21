@@ -92,21 +92,8 @@ fn evaluate_row_expression<'a>(
                     "OCTET_LENGTH requires exactly one column".to_string(),
                 ));
             };
-            match resolve_column(row, column)? {
-                RelationalValue::Null => Ok(RelationalValue::Null),
-                RelationalValue::Text(value) => Ok(RelationalValue::BigInt(
-                    i64::try_from(value.len()).unwrap_or(i64::MAX),
-                )),
-                RelationalValue::Bytea(value) => Ok(RelationalValue::BigInt(
-                    i64::try_from(value.len()).unwrap_or(i64::MAX),
-                )),
-                RelationalValue::Overflow(reference) => Ok(RelationalValue::BigInt(
-                    i64::try_from(reference.uncompressed_bytes).unwrap_or(i64::MAX),
-                )),
-                _ => Err(HawDBError::Semantic(
-                    "OCTET_LENGTH requires TEXT or BYTEA input".to_string(),
-                )),
-            }
+            crate::query_value::octet_length(resolve_column(row, column)?.as_ref())
+                .map(|value| value.to_owned_value())
         }
         Expr {
             kind: ExprKind::Function { name, .. },

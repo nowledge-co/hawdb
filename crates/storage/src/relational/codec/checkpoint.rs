@@ -83,7 +83,10 @@ pub(crate) fn encode_relational_row_payload_with_work_context(
 }
 
 pub(super) fn work_error(error: CheckpointWorkError) -> RelationalError {
-    RelationalError::Admission(error.to_string())
+    match error.stop_reason() {
+        Some(reason) => RelationalError::Stopped(reason),
+        None => RelationalError::Admission(error.to_string()),
+    }
 }
 
 fn encode_value_with_work_context(

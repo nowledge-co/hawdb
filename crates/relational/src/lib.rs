@@ -370,15 +370,15 @@ pub fn coerce_relational_value(
             let micros = match value {
                 RelationalValue::Text(text) => kind.convert(&Value::String(text))?,
                 RelationalValue::Timestamp(micros) | RelationalValue::TimestampTz(micros) => {
-                    Some(precision.round(micros)?)
+                    Some(precision.round(micros.get())?)
                 }
                 _ => unreachable!("matched timestamp assignment operand"),
             }
             .expect("non-NULL timestamp assignment");
             Ok(if kind.zoned {
-                RelationalValue::TimestampTz(micros)
+                RelationalValue::TimestampTz(micros.into())
             } else {
-                RelationalValue::Timestamp(micros)
+                RelationalValue::Timestamp(micros.into())
             })
         }
         (_, value) => Ok(value),

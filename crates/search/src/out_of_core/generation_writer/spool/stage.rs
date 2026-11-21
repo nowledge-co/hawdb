@@ -329,7 +329,7 @@ fn retry_registered(
                 if let Some(native) = &attempt.ticket().captured {
                     let _host = task
                         .reserve_working_memory(_workspace.bytes() as u64)
-                        .map_err(|error| HawDBError::Execution(error.to_string()))?;
+                        .map_err(HawDBError::from_execution_error)?;
                     if native.governed && _host.is_none() {
                         return Err(HawDBError::Execution(
                             "governed scratch retry requires fresh memory admission".into(),
@@ -567,7 +567,7 @@ impl StageDirectory {
                 .map(|permit| {
                     permit
                         .reserve_retained_memory(retained_bytes as u64)
-                        .map_err(|error| HawDBError::Execution(error.to_string()))
+                        .map_err(HawDBError::from_execution_error)
                 })
                 .transpose()?;
             let registration = Registration::acquire(Owner {
@@ -662,7 +662,7 @@ impl StageDirectory {
                 .map(|task| {
                     match task
                         .try_acquire_io_wave(NonZeroUsize::MIN)
-                        .map_err(|error| HawDBError::Execution(error.to_string()))?
+                        .map_err(HawDBError::from_execution_error)?
                     {
                         hawdb_core::RuntimeIoWaveTryAcquire::Acquired(permit)
                             if permit.is_some() || (!governed && self.admission.is_none()) =>

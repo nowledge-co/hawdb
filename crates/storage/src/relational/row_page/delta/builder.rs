@@ -51,6 +51,12 @@ enum DeltaSelection {
 }
 
 #[derive(Debug, Clone)]
+enum RowDeltaInvalidation {
+    Error(String),
+    Stopped(hawdb_core::RuntimeCancellationReason),
+}
+
+#[derive(Debug, Clone)]
 pub struct RelationalRowDeltaBuilder {
     directory: PathBuf,
     base: RelationalRowDeltaBaseBinding,
@@ -72,7 +78,7 @@ pub struct RelationalRowDeltaBuilder {
     // checkpoint captures these keys, so they remain checkpoint debt.
     recorded_resident_bytes: usize,
     row_root_selection: RowRootSelection,
-    invalidated: Option<String>,
+    invalidated: Option<RowDeltaInvalidation>,
     // A durable, unselected prefix survives a later reader-admission denial.
     private_prefix: Option<(RelationalRecoverySourceIdentity, RelationalRowDeltaReport)>,
     _runs_memory: crate::background::CheckpointAllocationOwner,
@@ -332,7 +338,7 @@ impl RelationalRowDeltaBuilder {
         if let Some(context) = key_allocations.as_ref() {
             context
                 .reserve(std::mem::size_of::<Vec<u8>>() + 2 * std::mem::size_of::<usize>())
-                .map_err(|error| RelationalRowDeltaError::Admission(error.to_string()))?;
+                .map_err(RelationalRowDeltaError::from_admission)?;
         }
         let key = RowDeltaKey {
             table_ordinal,
@@ -400,7 +406,10 @@ impl RelationalRowDeltaBuilder {
         self.private_prefix = None;
         let result = self.record_inner(epoch, capture, work);
         if let Err(error) = &result {
-            self.invalidated = Some(error.to_string());
+            self.invalidated = Some(match error {
+                RelationalRowDeltaError::Stopped(reason) => RowDeltaInvalidation::Stopped(*reason),
+                error => RowDeltaInvalidation::Error(error.to_string()),
+            });
         }
         result
     }
@@ -477,7 +486,7 @@ impl RelationalRowDeltaBuilder {
             memory
                 .reserve(bytes, work)
                 .map(|_| ())
-                .map_err(|error| RelationalRowDeltaError::Admission(error.to_string()))
+                .map_err(RelationalRowDeltaError::from_work)
         };
         let checked_bytes = |count: usize, size: usize| {
             count.checked_mul(size).ok_or_else(|| {
@@ -500,7 +509,7 @@ impl RelationalRowDeltaBuilder {
             reserve(run.lower_bound.encoded_primary_key.len())?;
             reserve(run.upper_bound.encoded_primary_key.len())?;
         }
-        if let Some(reason) = &self.invalidated {
+        if let Some(RowDeltaInvalidation::Error(reason)) = &self.invalidated {
             reserve(reason.len())?;
         }
         reserve(codec::manifest_encoding_workspace_bytes(
@@ -888,13 +897,16 @@ impl RelationalRowDeltaBuilder {
         };
         let map_key_error = |error| match error {
             crate::relational::ordered_key::CheckpointKeyEncodeError::Work(error) => {
-                RelationalRowDeltaError::Admission(error.to_string())
+                RelationalRowDeltaError::from_work(error)
             }
             crate::relational::ordered_key::CheckpointKeyEncodeError::Key(
                 crate::relational::RelationalError::Corruption(message),
             ) => RelationalRowDeltaError::Corrupt(format!(
                 "row delta primary key cannot be encoded: {message}"
             )),
+            crate::relational::ordered_key::CheckpointKeyEncodeError::Key(
+                crate::relational::RelationalError::Stopped(reason),
+            ) => RelationalRowDeltaError::Stopped(reason),
             crate::relational::ordered_key::CheckpointKeyEncodeError::Key(error) => {
                 RelationalRowDeltaError::Admission(error.to_string())
             }
@@ -913,7 +925,7 @@ impl RelationalRowDeltaBuilder {
             .map_err(map_key_error)?;
         key_allocations
             .reserve(std::mem::size_of::<Vec<u8>>() + 2 * std::mem::size_of::<usize>())
-            .map_err(|error| RelationalRowDeltaError::Admission(error.to_string()))?;
+            .map_err(RelationalRowDeltaError::from_admission)?;
         let encoded_primary_key = std::sync::Arc::new(encoded_primary_key);
         if encoded_primary_key.len() > self.config.row_limits.max_key_bytes.get() {
             return Err(RelationalRowDeltaError::Admission(format!(
@@ -1104,7 +1116,7 @@ impl RelationalRowDeltaBuilder {
             let mut next_memory = crate::background::CheckpointAllocationOwner::default();
             next_memory
                 .reserve(bytes, work)
-                .map_err(|error| RelationalRowDeltaError::Admission(error.to_string()))?;
+                .map_err(RelationalRowDeltaError::from_work)?;
             let mut replacement = Vec::new();
             replacement.try_reserve_exact(capacity).map_err(|error| {
                 let failure =
@@ -1112,7 +1124,7 @@ impl RelationalRowDeltaBuilder {
                         bytes: bytes as u64,
                         reason: error.to_string(),
                     });
-                RelationalRowDeltaError::Admission(failure.to_string())
+                RelationalRowDeltaError::from_work(failure)
             })?;
             if replacement.capacity() != capacity {
                 return Err(RelationalRowDeltaError::Admission(
@@ -1127,13 +1139,13 @@ impl RelationalRowDeltaBuilder {
         let mut bounds_memory = crate::background::CheckpointAllocationOwner::default();
         bounds_memory
             .reserve(lower_key.encoded_primary_key.len(), work)
-            .map_err(|error| RelationalRowDeltaError::Admission(error.to_string()))?;
+            .map_err(RelationalRowDeltaError::from_work)?;
         bounds_memory
             .reserve(upper_key.encoded_primary_key.len(), work)
-            .map_err(|error| RelationalRowDeltaError::Admission(error.to_string()))?;
+            .map_err(RelationalRowDeltaError::from_work)?;
         self._bounds_memory
             .append(&mut bounds_memory, work)
-            .map_err(|error| RelationalRowDeltaError::Admission(error.to_string()))?;
+            .map_err(RelationalRowDeltaError::from_work)?;
         let lower_bound = super::RowDeltaBound {
             table_ordinal: lower_key.table_ordinal,
             encoded_primary_key: lower_key.encoded_primary_key.to_vec(),
@@ -1166,7 +1178,12 @@ impl RelationalRowDeltaBuilder {
 
     fn require_available(&self) -> Result<(), RelationalRowDeltaError> {
         if let Some(reason) = &self.invalidated {
-            return Err(RelationalRowDeltaError::Invalidated(reason.clone()));
+            return Err(match reason {
+                RowDeltaInvalidation::Error(reason) => {
+                    RelationalRowDeltaError::Invalidated(reason.clone())
+                }
+                RowDeltaInvalidation::Stopped(reason) => RelationalRowDeltaError::Stopped(*reason),
+            });
         }
         Ok(())
     }

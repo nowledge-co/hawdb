@@ -111,7 +111,26 @@ impl DatabaseTransactionState {
                 .begin_authoritative_relational_transaction_rows()
                 .map_err(|error| error.to_string()),
             sql_clock: hawdb_core::temporal::statement_now(),
+            base_graph_change_commit_epoch: runtime.store.graph_change_commit_epoch_unchecked(),
+            graph_change_guard: None,
         })
+    }
+
+    /// Returns the base snapshot's graph change epoch and makes commit
+    /// conditional on it: a graph-changing commit published after this
+    /// transaction's base refuses the commit with `TransactionConflict`.
+    pub(super) fn guard_graph_change_commit_epoch(&mut self) -> u64 {
+        self.graph_change_guard = Some(self.base_graph_change_commit_epoch);
+        self.base_graph_change_commit_epoch
+    }
+
+    /// Carries an armed graph change guard into a refreshed state. The
+    /// refreshed state reports the guarded value, never a newer one.
+    pub(super) fn keep_graph_change_guard(&mut self, previous: &Self) {
+        if let Some(expected) = previous.graph_change_guard {
+            self.base_graph_change_commit_epoch = expected;
+            self.graph_change_guard = Some(expected);
+        }
     }
 
     pub(crate) fn rollback(&mut self) {
@@ -149,6 +168,8 @@ impl DatabaseTransactionState {
             relational_index: std::mem::replace(&mut self.relational_index, Ok(None)),
             relational_rows: std::mem::replace(&mut self.relational_rows, Ok(None)),
             sql_clock: self.sql_clock,
+            base_graph_change_commit_epoch: self.base_graph_change_commit_epoch,
+            graph_change_guard: self.graph_change_guard.take(),
         }
     }
 
@@ -320,9 +341,18 @@ pub(super) fn execute_graph_transaction_plan(
                     .expect("usize::MAX is non-zero"),
                 ..runtime.config.mutation_limits
             },
-            PhysicalPlan::MutationReturn { returns, .. } => {
+            // The returned rows, not the internal summary, carry the result
+            // limits; they are projected and checked as typed refusals.
+            PhysicalPlan::MutationReturn { .. } => {
                 hawdb_executor::mutation::mutation_return_staging_limits(
-                    returns,
+                    runtime.config.mutation_limits,
+                )
+            }
+            PhysicalPlan::UnwindMutation {
+                operation: hawdb_plan_cypher::BatchMutationOperation::MergeRelationship(merge),
+                ..
+            } if merge.returns.is_some() => {
+                hawdb_executor::mutation::mutation_return_staging_limits(
                     runtime.config.mutation_limits,
                 )
             }
@@ -375,9 +405,13 @@ pub(super) fn execute_graph_transaction_plan(
                 )?;
                 if !outcome.mutations.is_empty() {
                     if is_mutation_return {
+                        let staging_limits =
+                            hawdb_executor::mutation::mutation_return_staging_limits(
+                                mutation_limits,
+                            );
                         transaction.stage_mutations_without_commit_rows(
                             outcome.mutations,
-                            mutation_limits,
+                            staging_limits,
                         )?;
                     } else {
                         transaction
@@ -646,6 +680,8 @@ impl<'a> PreparedGraphTransactionRequest<'a> {
     pub(super) fn into_trace(self, capture_trace: bool) -> QueryExecutionTrace {
         QueryExecutionTrace {
             statement: self.statement,
+            optimizer_cardinality_estimate_scope: capture_trace
+                .then_some(self.optimized.cardinality_estimate_scope),
             optimizer_trace: capture_trace.then_some(self.optimized.trace),
             plan_cache_lookup: Some(self.optimized.plan_cache_lookup),
             execution_profile: None,
@@ -1396,10 +1432,10 @@ pub(super) fn relational_value_to_query_value(
             Ok(Value::Vector(value.clone()))
         }
         hawdb_storage::relational::RelationalValue::Timestamp(value) => {
-            hawdb_core::sql_timestamp::local_value(*value)
+            hawdb_core::sql_timestamp::local_value(value.get())
         }
         hawdb_storage::relational::RelationalValue::TimestampTz(value) => {
-            hawdb_core::sql_timestamp::zoned_value(*value)
+            hawdb_core::sql_timestamp::zoned_value(value.get())
         }
         hawdb_storage::relational::RelationalValue::Overflow(_) => {
             Err(HawDBError::StorageIntegrity(
@@ -1413,6 +1449,10 @@ pub(super) fn map_transaction_append_error(
     error: hawdb_storage::append_table::AppendTableError,
 ) -> HawDBError {
     match error {
+        hawdb_storage::append_table::AppendTableError::Stopped(reason) => {
+            HawDBError::RuntimeTaskStopped(reason)
+        }
+        hawdb_storage::append_table::AppendTableError::PublishOutcomeUnknown(error) => *error,
         hawdb_storage::append_table::AppendTableError::UnsupportedFormat(error) => {
             HawDBError::UnsupportedStorageFormat(error)
         }
@@ -1464,6 +1504,9 @@ pub(super) fn map_transaction_relational_error(
             ),
             None => HawDBError::Execution(error.to_string()),
         },
+        hawdb_storage::relational::RelationalError::Stopped(reason) => {
+            HawDBError::RuntimeTaskStopped(reason)
+        }
         error @ hawdb_storage::relational::RelationalError::Admission(_) => {
             HawDBError::Execution(error.to_string())
         }
@@ -1556,6 +1599,18 @@ pub(super) fn commit_database_transaction_state_inner(
     if let Some(dependencies) = &state.read_dependencies {
         dependencies.validate(db)?;
     }
+    if let Some(expected) = state.graph_change_guard {
+        // Checked under the commit's exclusive database access, so no graph
+        // commit can slip in between this check and publication.
+        let current = db.graph_change_commit_epoch()?;
+        if current != expected {
+            return Err(HawDBError::TransactionConflict {
+                read_epoch: expected,
+                committed_epoch: current,
+                key: "graph_change_commit_epoch".to_string(),
+            });
+        }
+    }
     let returning = std::mem::take(&mut state.relational_returning);
     let relational_transaction = std::mem::take(&mut state.relational_transaction);
     let append_transaction = std::mem::take(&mut state.append_transaction);
@@ -1617,6 +1672,18 @@ pub(super) fn commit_database_transaction_state_inner(
 impl DatabaseTransaction<'_> {
     pub fn read_dependency_usage(&self) -> Option<TransactionReadDependencyUsage> {
         self.state.read_dependency_usage()
+    }
+
+    /// Returns the graph change commit epoch of this transaction's base
+    /// snapshot (see [`Database::graph_change_commit_epoch`]) and makes the
+    /// commit conditional on it. If a commit that changed graph data or schema
+    /// is published after the base snapshot, this transaction's commit fails
+    /// with `HawDBError::TransactionConflict` (key `graph_change_commit_epoch`)
+    /// and writes nothing. The transaction's own graph writes do not count.
+    /// Refused with the storage error if the database is poisoned.
+    pub fn graph_change_commit_epoch(&mut self) -> Result<u64> {
+        self.db.graph_change_commit_epoch()?;
+        Ok(self.state.guard_graph_change_commit_epoch())
     }
 
     pub(crate) fn apply_session_config(&mut self, config: SessionConfig) {

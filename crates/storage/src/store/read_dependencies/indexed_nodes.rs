@@ -30,7 +30,7 @@ pub(super) struct IndexedNodeReadInvalidations<'a> {
 pub(super) fn record_stamp(stamps: &mut VersionWriteSet, key: VersionKey) -> Result<()> {
     stamps
         .record_live(key)
-        .map_err(|error| HawDBError::Execution(error.to_string()))
+        .map_err(HawDBError::from_execution_error)
 }
 
 impl<'a> IndexedNodeReadInvalidations<'a> {

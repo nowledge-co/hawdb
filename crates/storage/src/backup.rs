@@ -207,9 +207,11 @@ impl BackupManifest {
                         encoded_len: parse_u64(encoded_len, "backup file length")?,
                         encoded_checksum: parse_u64(encoded_checksum, "backup file checksum")?,
                         sha256: sha256.parse().map_err(|error| {
-                            HawDBError::Storage(format!(
-                                "invalid backup file SHA-256 digest: {error}"
-                            ))
+                            HawDBError::or_stop(&error, || {
+                                HawDBError::Storage(format!(
+                                    "invalid backup file SHA-256 digest: {error}"
+                                ))
+                            })
                         })?,
                     });
                 }

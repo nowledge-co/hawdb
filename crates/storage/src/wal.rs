@@ -562,6 +562,49 @@ pub enum WalOp {
     Batch(Vec<WalOp>),
 }
 
+impl WalOp {
+    /// Whether committing this operation changes graph data or graph schema.
+    ///
+    /// Node and relationship writes, graph DDL (labels, relationship types,
+    /// node/relationship tables, property definitions and their states),
+    /// graph indexes, constraints and projected graphs count. Relational rows,
+    /// relational snapshots, append records and the initial-import marker do
+    /// not. A batch counts if any member does.
+    pub fn changes_graph(&self) -> bool {
+        match self {
+            WalOp::Batch(operations) => operations.iter().any(WalOp::changes_graph),
+            WalOp::Relational { .. }
+            | WalOp::RelationalSnapshot { .. }
+            | WalOp::Append { .. }
+            | WalOp::MarkInitialImportSource { .. } => false,
+            WalOp::CreateNodeLabel { .. }
+            | WalOp::CreateRelationshipType { .. }
+            | WalOp::CreateNodeTable { .. }
+            | WalOp::CreateRelationshipTable { .. }
+            | WalOp::CreateProperty { .. }
+            | WalOp::AlterTableState { .. }
+            | WalOp::AlterPropertyState { .. }
+            | WalOp::GcTableDescriptor { .. }
+            | WalOp::GcPropertyDescriptor { .. }
+            | WalOp::CreateIndex { .. }
+            | WalOp::CreateCompositeIndex { .. }
+            | WalOp::CreateRangeIndex { .. }
+            | WalOp::CreateFullTextIndex { .. }
+            | WalOp::CreateUniqueConstraint { .. }
+            | WalOp::CreateNodePropertyExistsConstraint { .. }
+            | WalOp::CreateRelationshipUniqueConstraint { .. }
+            | WalOp::CreateRelationshipPropertyExistsConstraint { .. }
+            | WalOp::CreateNode { .. }
+            | WalOp::CreateRelationship { .. }
+            | WalOp::SetNodeProperty { .. }
+            | WalOp::SetRelationshipProperty { .. }
+            | WalOp::DeleteNode { .. }
+            | WalOp::DeleteRelationship { .. }
+            | WalOp::ProjectGraph { .. } => true,
+        }
+    }
+}
+
 /// Validates graph property values before they enter the WAL or live state.
 pub fn validate_wal_op_values(ops: &[WalOp]) -> Result<()> {
     for op in ops {
@@ -583,9 +626,11 @@ pub fn validate_wal_op_values(ops: &[WalOp]) -> Result<()> {
 
 fn validate_wal_value(value: &Value) -> Result<()> {
     crate::canonical::validate_property_value(value).map_err(|error| {
-        HawDBError::Storage(format!(
-            "WAL value violates canonical storage limits: {error}"
-        ))
+        HawDBError::or_stop(&error, || {
+            HawDBError::Storage(format!(
+                "WAL value violates canonical storage limits: {error}"
+            ))
+        })
     })
 }
 

@@ -79,7 +79,7 @@ impl RuntimeQueryInput {
     ) -> Result<crate::api::PreparedRuntimeQuery, HawDBError> {
         context
             .checkpoint()
-            .map_err(|reason| HawDBError::Execution(format!("runtime task stopped: {reason}")))?;
+            .map_err(HawDBError::RuntimeTaskStopped)?;
         let prepared = match prepared {
             Some(prepared) if planning.accepts_prepared(&prepared) => prepared,
             stale => {
@@ -449,9 +449,9 @@ impl HawDBTokioEmbedded {
                 planning_request.memory_bytes,
                 context.clone(),
                 move |context| {
-                    context.checkpoint().map_err(|reason| {
-                        HawDBError::Execution(format!("runtime task stopped: {reason}"))
-                    })?;
+                    context
+                        .checkpoint()
+                        .map_err(HawDBError::RuntimeTaskStopped)?;
                     let planning = {
                         let embedded = embedded.autocommit()?;
                         embedded.database().runtime_sql_planning_snapshot()
@@ -478,9 +478,9 @@ impl HawDBTokioEmbedded {
                 },
                 context,
                 move |prepared, context| {
-                    context.checkpoint().map_err(|reason| {
-                        HawDBError::Execution(format!("runtime task stopped: {reason}"))
-                    })?;
+                    context
+                        .checkpoint()
+                        .map_err(HawDBError::RuntimeTaskStopped)?;
                     // The original schema-neutral cache and context survive waiting;
                     // rebuilding after a refusal cannot silently select another branch.
                     let prepared = match prepared {
@@ -757,9 +757,9 @@ impl HawDBTokioEmbedded {
                         input.capture_source(embedded.database())?;
                         embedded.database().runtime_planning_snapshot()?
                     };
-                    context.checkpoint().map_err(|reason| {
-                        HawDBError::Execution(format!("runtime task stopped: {reason}"))
-                    })?;
+                    context
+                        .checkpoint()
+                        .map_err(HawDBError::RuntimeTaskStopped)?;
                     planning.prepare_request(input.request.as_request().with_task_context(context))
                 },
             )
@@ -958,9 +958,7 @@ fn send_async_query_batch_with_retry(
     let ready = std::mem::replace(batch, Vec::with_capacity(capacity));
     let mut event = TokioQueryStreamEvent::Batch(ready);
     loop {
-        checkpoint().map_err(|reason| {
-            HawDBError::Execution(format!("asynchronous row producer stopped: {reason}"))
-        })?;
+        checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
         match sender.try_send(event) {
             Ok(()) => return Ok(()),
             Err(TokioBoundedTrySendError::Full(returned)) => {
@@ -1709,8 +1707,8 @@ mod tests {
                 .unwrap_err();
                 assert_eq!(retries.get(), retry_limit);
                 assert_eq!(checks.get(), retry_limit + 1);
-                assert!(matches!(error, HawDBError::Execution(message)
-                    if message == format!("asynchronous row producer stopped: {reason}")));
+                assert!(matches!(error, HawDBError::RuntimeTaskStopped(stopped)
+                    if stopped == reason));
                 assert!(pending.is_empty());
                 drop(sender);
                 assert!(matches!(runtime.block_on(receiver.recv()),

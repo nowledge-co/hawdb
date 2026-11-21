@@ -314,8 +314,17 @@ fn embedded_checkpoint_retains_foreground_io_refusal_and_refunds() {
     assert_eq!(before.active_foreground_io_slots, 1);
     let checkpoint = handle.checkpoint();
     assert!(
-        matches!(checkpoint, Err(hawdb::HawDBError::Execution(ref reason))
-            if reason == "runtime admission io_saturated: requested 1, available 0"),
+        matches!(
+            checkpoint,
+            Err(hawdb::HawDBError::RuntimeAdmissionRefused(
+                hawdb::RuntimeAdmissionRefusal {
+                    code: "io_saturated",
+                    requested: 1,
+                    available: 0,
+                    retryable: true,
+                }
+            ))
+        ),
         "foreground admission must remain effective: {checkpoint:?}",
     );
     let after = governor.snapshot();

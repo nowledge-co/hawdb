@@ -790,7 +790,8 @@ pub(super) fn with_typed_locator_bound_row_mode<'a, T>(
     for (binding, locator) in locator_layout.bindings.iter().zip(locator.rows()) {
         let row = match locator {
             Some(locator) => (if output_fields {
-                row_runtime.read_output_point(binding.table, locator.primary_key())?
+                row_runtime
+                    .read_output_point_for_projection(binding.table, locator.primary_key())?
             } else {
                 row_runtime.read_point(binding.table, locator.primary_key())?
             })

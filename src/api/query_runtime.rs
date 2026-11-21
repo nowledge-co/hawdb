@@ -1070,6 +1070,8 @@ impl Database {
                 QueryOutput { rows },
                 QueryExecutionTrace {
                     statement,
+                    optimizer_cardinality_estimate_scope: capture_trace
+                        .then_some(optimized.cardinality_estimate_scope),
                     optimizer_trace: capture_trace.then_some(optimized.trace),
                     plan_cache_lookup: Some(optimized.plan_cache_lookup),
                     execution_profile,
@@ -1182,7 +1184,7 @@ pub(super) fn query_runtime_checkpoint(
     match task_context {
         Some(task_context) => task_context
             .checkpoint()
-            .map_err(|reason| HawDBError::Execution(format!("runtime task stopped: {reason}"))),
+            .map_err(HawDBError::RuntimeTaskStopped),
         None => Ok(()),
     }
 }

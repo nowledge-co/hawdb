@@ -88,8 +88,8 @@ fn checkpoint_units_projected_graph_publication_cancels_at_every_io_and_retries(
             .unwrap_err();
         assert_eq!(
             error,
-            hawdb_core::HawDBError::Storage(
-                "checkpoint build I/O stopped: runtime I/O wave stopped: cancelled".into(),
+            hawdb_core::HawDBError::RuntimeTaskStopped(
+                hawdb_core::RuntimeCancellationReason::Cancelled
             )
         );
         assert_eq!(probe.io_waves.load(Ordering::SeqCst), wave);
@@ -430,8 +430,8 @@ fn checkpoint_units_metadata_publication_cancels_every_io_preserves_evidence_and
             .unwrap_err();
         assert_eq!(
             error,
-            hawdb_core::HawDBError::Storage(
-                "checkpoint build I/O stopped: runtime I/O wave stopped: cancelled".into()
+            hawdb_core::HawDBError::RuntimeTaskStopped(
+                hawdb_core::RuntimeCancellationReason::Cancelled
             )
         );
         assert_eq!(probe.io_waves.load(Ordering::SeqCst), wave);
@@ -507,7 +507,9 @@ fn checkpoint_units_metadata_publication_cancels_every_io_preserves_evidence_and
         .unwrap_err();
     assert_eq!(
         error,
-        hawdb_core::HawDBError::Storage("checkpoint build stopped: cancelled".into())
+        hawdb_core::HawDBError::RuntimeTaskStopped(
+            hawdb_core::RuntimeCancellationReason::Cancelled
+        )
     );
     probe.assert_released(&local);
     let path = fixture.root.join(checkpoint_generation_file(17));
@@ -727,8 +729,11 @@ fn checkpoint_units_relational_publication_cancels_every_io_preserves_evidence_a
             .durable()
             .write_relational_checkpoint(&state, 41, 17, &probe.context(local.clone()))
             .unwrap_err();
+        // Writer I/O waves stop typed; a wave inside the relational encoder
+        // still arrives through its admission text (#1850 remaining stops).
         assert!(
-            matches!(error, HawDBError::Storage(ref text) if text.contains("cancelled")),
+            matches!(error, HawDBError::RuntimeTaskStopped(_))
+                || matches!(error, HawDBError::Storage(ref text) if text.contains("cancelled")),
             "{error:?}"
         );
         assert_eq!(probe.io_waves.load(Ordering::SeqCst), wave);
@@ -790,7 +795,8 @@ fn checkpoint_units_relational_publication_cancels_every_io_preserves_evidence_a
             .write_relational_checkpoint(&state, 41, 17, &probe.context(local.clone()))
             .unwrap_err();
         assert!(
-            matches!(error, HawDBError::Storage(ref text) if text.contains("cancelled")),
+            matches!(error, HawDBError::RuntimeTaskStopped(_))
+                || matches!(error, HawDBError::Storage(ref text) if text.contains("cancelled")),
             "{error:?}"
         );
         assert_eq!(probe.completed.load(Ordering::SeqCst), limit);
@@ -827,7 +833,8 @@ fn checkpoint_units_relational_publication_cancels_every_io_preserves_evidence_a
         .write_relational_checkpoint(&state, 41, 17, &probe.context(local.clone()))
         .unwrap_err();
     assert!(
-        matches!(error, HawDBError::Storage(ref text) if text.contains("cancelled")),
+        matches!(error, HawDBError::RuntimeTaskStopped(_))
+            || matches!(error, HawDBError::Storage(ref text) if text.contains("cancelled")),
         "{error:?}"
     );
     probe.assert_released(&local);

@@ -334,7 +334,7 @@ impl RelationalScalarType {
         match (self, value) {
             (Self::Timestamp(precision), RelationalValueRef::Timestamp(value))
             | (Self::TimestampTz(precision), RelationalValueRef::TimestampTz(value)) => {
-                precision.accepts(value)
+                precision.accepts(value.get())
             }
             (_, value) => value.scalar_type() == Some(self),
         }
@@ -346,7 +346,7 @@ impl RelationalScalarType {
             (Self::Decimal(kind), RelationalValueRef::Decimal(value)) => kind.accepts(value),
             (Self::Timestamp(precision), RelationalValueRef::Timestamp(value))
             | (Self::TimestampTz(precision), RelationalValueRef::TimestampTz(value)) => {
-                precision.accepts(value)
+                precision.accepts(value.get())
             }
             (_, value) => value.scalar_type() == Some(self),
         }
@@ -380,9 +380,9 @@ pub enum RelationalValue {
     Vector(hawdb_core::Vector),
     Uuid(Uuid),
     /// Microseconds since 1970-01-01 00:00:00 (local, no zone).
-    Timestamp(i64),
+    Timestamp(hawdb_core::sql_timestamp::TimestampMicros),
     /// Microseconds since 1970-01-01 00:00:00 UTC.
-    TimestampTz(i64),
+    TimestampTz(hawdb_core::sql_timestamp::TimestampMicros),
     Overflow(RelationalOverflowRef),
 }
 
@@ -403,9 +403,9 @@ pub enum RelationalValueRef<'a> {
     Vector(hawdb_core::VectorRef<'a>),
     Uuid(Uuid),
     /// Microseconds since 1970-01-01 00:00:00 (local, no zone).
-    Timestamp(i64),
+    Timestamp(hawdb_core::sql_timestamp::TimestampMicros),
     /// Microseconds since 1970-01-01 00:00:00 UTC.
-    TimestampTz(i64),
+    TimestampTz(hawdb_core::sql_timestamp::TimestampMicros),
     Overflow(RelationalOverflowRef),
 }
 
@@ -443,10 +443,10 @@ impl RelationalValue {
         match self {
             Self::Null => 0,
             Self::Boolean(_) => 1,
-            Self::BigInt(_)
-            | Self::DoublePrecision(_)
-            | Self::Timestamp(_)
-            | Self::TimestampTz(_) => 8,
+            Self::BigInt(_) | Self::DoublePrecision(_) => 8,
+            Self::Timestamp(value) | Self::TimestampTz(value) => {
+                hawdb_core::sql_timestamp::encoded_micros_len(value.get())
+            }
             Self::Decimal(_) => hawdb_core::Decimal::ENCODED_LEN,
             Self::Text(value) => value.len(),
             Self::Bytea(value) => value.len(),
@@ -507,10 +507,10 @@ impl<'a> RelationalValueRef<'a> {
         match self {
             Self::Null => 0,
             Self::Boolean(_) => 1,
-            Self::BigInt(_)
-            | Self::DoublePrecision(_)
-            | Self::Timestamp(_)
-            | Self::TimestampTz(_) => 8,
+            Self::BigInt(_) | Self::DoublePrecision(_) => 8,
+            Self::Timestamp(value) | Self::TimestampTz(value) => {
+                hawdb_core::sql_timestamp::encoded_micros_len(value.get())
+            }
             Self::Decimal(_) => hawdb_core::Decimal::ENCODED_LEN,
             Self::Text(value) => value.len(),
             Self::Bytea(value) => value.len(),
@@ -541,8 +541,7 @@ impl<'a> RelationalValueRef<'a> {
         self,
         context: &crate::background::CheckpointDecodeContext,
     ) -> Result<RelationalValue, RelationalError> {
-        let admission =
-            |error: hawdb_core::HawDBError| RelationalError::Admission(error.to_string());
+        let admission = RelationalError::from_admission;
         let value = match self {
             Self::Text(value) => RelationalValue::Text(context.string(value).map_err(admission)?),
             Self::Bytea(_) | Self::Vector(_) => {
@@ -553,9 +552,7 @@ impl<'a> RelationalValueRef<'a> {
                 };
                 let mut bytes = context.vector_capacity(value.len()).map_err(admission)?;
                 for chunk in value.chunks(64 * 1024) {
-                    let unit = context
-                        .start_unit()
-                        .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                    let unit = context.start_unit().map_err(RelationalError::from_work)?;
                     bytes.extend_from_slice(chunk);
                     unit.finish();
                 }
@@ -570,9 +567,7 @@ impl<'a> RelationalValueRef<'a> {
             }
             _ => self.to_owned_value(),
         };
-        context
-            .checkpoint()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        context.checkpoint().map_err(RelationalError::from_work)?;
         Ok(value)
     }
 
@@ -783,18 +778,15 @@ impl RelationalSchemaData {
         };
         context
             .reserve(std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>())
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            .map_err(RelationalError::from_admission)?;
         let schema = clone_schema_with_allocations(schema, &context)?;
-        let unit = work
-            .start_unit()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        let unit = work.start_unit().map_err(RelationalError::from_work)?;
         let output = Arc::new(Self {
             schema,
             _memory: context.memory.into_inner(),
         });
         unit.finish();
-        work.checkpoint()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        work.checkpoint().map_err(RelationalError::from_work)?;
         Ok(output)
     }
 
@@ -812,19 +804,16 @@ impl RelationalSchemaData {
         };
         context
             .reserve(std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>())
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            .map_err(RelationalError::from_admission)?;
         let mut schema = clone_schema_with_allocations(&self.schema, &context)?;
         edit(&mut schema, &context)?;
-        let unit = work
-            .start_unit()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        let unit = work.start_unit().map_err(RelationalError::from_work)?;
         let output = Arc::new(Self {
             schema,
             _memory: context.memory.into_inner(),
         });
         unit.finish();
-        work.checkpoint()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        work.checkpoint().map_err(RelationalError::from_work)?;
         Ok(output)
     }
 }
@@ -1146,13 +1135,13 @@ pub(crate) fn decode_timestamp_type(
 /// rejecting microsecond counts outside the supported range as corruption.
 pub(crate) fn decode_timestamp_value(
     tag: u8,
-    micros: i64,
+    micros: i128,
 ) -> Result<RelationalValue, RelationalError> {
     let micros = hawdb_core::sql_timestamp::checked(micros)
         .map_err(|_| RelationalError::Corruption("TIMESTAMP value is out of range".into()))?;
     match tag {
-        10 => Ok(RelationalValue::Timestamp(micros)),
-        11 => Ok(RelationalValue::TimestampTz(micros)),
+        10 => Ok(RelationalValue::Timestamp(micros.into())),
+        11 => Ok(RelationalValue::TimestampTz(micros.into())),
         _ => Err(RelationalError::Corruption(format!(
             "invalid TIMESTAMP value tag {tag}"
         ))),
@@ -1177,18 +1166,14 @@ impl RelationalKey {
     ) -> Result<Self, RelationalError> {
         let mut values = context
             .vector_capacity(self.0.len())
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            .map_err(RelationalError::from_admission)?;
         for value in &self.0 {
             let value = value.as_ref().to_owned_value_with_allocations(context)?;
-            let unit = context
-                .start_unit()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            let unit = context.start_unit().map_err(RelationalError::from_work)?;
             values.push(value);
             unit.finish();
         }
-        context
-            .checkpoint()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        context.checkpoint().map_err(RelationalError::from_work)?;
         Ok(Self(values))
     }
 }
@@ -1241,6 +1226,9 @@ pub(crate) fn decode_relational_primary_key_owned(
         match error {
             ordered_key::OrderedRelationalKeyError::Admission(message) => {
                 RelationalError::Admission(message)
+            }
+            ordered_key::OrderedRelationalKeyError::Stopped(reason) => {
+                RelationalError::Stopped(reason)
             }
             error => RelationalError::Corruption(error.to_string()),
         }
@@ -1806,7 +1794,7 @@ impl RelationalReplayAccessTracker {
             }
             context
                 .reserve(bytes)
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                .map_err(RelationalError::from_admission)?;
             let key = primary_key.clone_with_allocations(context)?;
             let name = if self.entries.contains_key(table) {
                 None
@@ -1814,12 +1802,10 @@ impl RelationalReplayAccessTracker {
                 Some(
                     context
                         .string(table)
-                        .map_err(|error| RelationalError::Admission(error.to_string()))?,
+                        .map_err(RelationalError::from_admission)?,
                 )
             };
-            context
-                .checkpoint()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            context.checkpoint().map_err(RelationalError::from_work)?;
             (name, key)
         } else {
             (Some(table.to_string()), primary_key.clone())
@@ -1829,7 +1815,7 @@ impl RelationalReplayAccessTracker {
             .as_ref()
             .map(|context| context.start_unit())
             .transpose()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            .map_err(RelationalError::from_work)?;
         if let Some(keys) = self.entries.get_mut(table) {
             keys.insert(owned_key);
         } else {
@@ -1866,7 +1852,7 @@ impl RelationalReplayAccessTracker {
         let mut entries = match &allocations {
             Some(context) => context
                 .vector_capacity(entry_count)
-                .map_err(|error| RelationalError::Admission(error.to_string()))?,
+                .map_err(RelationalError::from_admission)?,
             None => Vec::with_capacity(entry_count),
         };
         for (table, keys) in tables {
@@ -1874,14 +1860,14 @@ impl RelationalReplayAccessTracker {
                 let table = match &allocations {
                     Some(context) => context
                         .string(&table)
-                        .map_err(|error| RelationalError::Admission(error.to_string()))?,
+                        .map_err(RelationalError::from_admission)?,
                     None => table.clone(),
                 };
                 let unit = allocations
                     .as_ref()
                     .map(|context| context.start_unit())
                     .transpose()
-                    .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                    .map_err(RelationalError::from_work)?;
                 entries.push(RelationalReplayAccess { table, primary_key });
                 if let Some(unit) = unit {
                     unit.finish();
@@ -1889,9 +1875,7 @@ impl RelationalReplayAccessTracker {
             }
         }
         if let Some(context) = &allocations {
-            context
-                .checkpoint()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            context.checkpoint().map_err(RelationalError::from_work)?;
         }
         // The conservative tree allowance stays with the moved keys until
         // the access set is destroyed; it cannot refund live key backing.
@@ -1986,7 +1970,7 @@ impl RelationalRow {
         let mut values = match &owned {
             Some(context) => context
                 .vector_capacity(count)
-                .map_err(|error| RelationalError::Admission(error.to_string()))?,
+                .map_err(RelationalError::from_admission)?,
             None => Vec::with_capacity(count),
         };
         for ordinal in 0..count {
@@ -1999,7 +1983,7 @@ impl RelationalRow {
                 .as_ref()
                 .map(|context| context.start_unit())
                 .transpose()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                .map_err(RelationalError::from_work)?;
             values.push(value);
             if let Some(unit) = unit {
                 unit.finish();
@@ -2010,10 +1994,8 @@ impl RelationalRow {
                 .reserve(
                     std::mem::size_of::<Vec<RelationalValue>>() + 2 * std::mem::size_of::<usize>(),
                 )
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
-            context
-                .checkpoint()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                .map_err(RelationalError::from_admission)?;
+            context.checkpoint().map_err(RelationalError::from_work)?;
             Ok(Self {
                 values: Arc::new(values),
                 _memory: context.memory.into_inner(),
@@ -2085,17 +2067,15 @@ impl RelationalTableSegment {
         };
         context
             .reserve(std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>())
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            .map_err(RelationalError::from_admission)?;
         let directory_context = crate::background::CheckpointDecodeContext {
             work: work.clone(),
             memory: Default::default(),
         };
         directory_context
             .reserve(RelationalRowDirectory::checkpoint_ownership_bytes())
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
-        let unit = work
-            .start_unit()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            .map_err(RelationalError::from_admission)?;
+        let unit = work.start_unit().map_err(RelationalError::from_work)?;
         let rows = RelationalRowPages::from_empty_directory(
             RelationalRowDirectory::from_checkpoint_value(
                 Vec::new(),
@@ -2109,8 +2089,7 @@ impl RelationalTableSegment {
             _memory: context.memory.into_inner(),
         });
         unit.finish();
-        work.checkpoint()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        work.checkpoint().map_err(RelationalError::from_work)?;
         Ok(output)
     }
 
@@ -2124,7 +2103,7 @@ impl RelationalTableSegment {
         };
         context
             .reserve(std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>())
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            .map_err(RelationalError::from_admission)?;
         let mut indexes = BTreeMap::new();
         for (name, pages) in &self.indexes {
             context
@@ -2132,19 +2111,15 @@ impl RelationalTableSegment {
                     String,
                     RelationalIndexPages,
                 >())
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                .map_err(RelationalError::from_admission)?;
             let name = context
                 .string(name)
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
-            let unit = work
-                .start_unit()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                .map_err(RelationalError::from_admission)?;
+            let unit = work.start_unit().map_err(RelationalError::from_work)?;
             indexes.insert(name, pages.clone());
             unit.finish();
         }
-        let unit = work
-            .start_unit()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        let unit = work.start_unit().map_err(RelationalError::from_work)?;
         let output = Arc::new(Self {
             last_row_id: self.last_row_id,
             rows: self.rows.clone(),
@@ -2152,8 +2127,7 @@ impl RelationalTableSegment {
             _memory: context.memory.into_inner(),
         });
         unit.finish();
-        work.checkpoint()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        work.checkpoint().map_err(RelationalError::from_work)?;
         Ok(output)
     }
 
@@ -2167,10 +2141,8 @@ impl RelationalTableSegment {
         };
         context
             .reserve(std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>())
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
-        let unit = context
-            .start_unit()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            .map_err(RelationalError::from_admission)?;
+        let unit = context.start_unit().map_err(RelationalError::from_work)?;
         let output = Arc::new(Self {
             last_row_id: self.last_row_id,
             rows: self.rows.clone(),
@@ -2341,10 +2313,8 @@ impl RelationalKeySetPages {
         };
         context
             .reserve(RelationalPostingDirectory::checkpoint_ownership_bytes())
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
-        let unit = work
-            .start_unit()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            .map_err(RelationalError::from_admission)?;
+        let unit = work.start_unit().map_err(RelationalError::from_work)?;
         let mut output = Self {
             pages: RelationalPostingDirectory::from_checkpoint_value(
                 Vec::new(),
@@ -2427,14 +2397,12 @@ impl RelationalKeySetPages {
         })?;
         let mut directory = directory_context
             .vector_capacity(capacity)
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            .map_err(RelationalError::from_admission)?;
         directory_context
             .reserve(RelationalPostingDirectory::checkpoint_ownership_bytes())
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            .map_err(RelationalError::from_admission)?;
         for page in self.pages.iter() {
-            let unit = work
-                .start_unit()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            let unit = work.start_unit().map_err(RelationalError::from_work)?;
             directory.push(page.clone());
             unit.finish();
         }
@@ -2451,14 +2419,12 @@ impl RelationalKeySetPages {
             .ok_or_else(|| RelationalError::Admission("posting page capacity overflow".into()))?;
         page_context
             .reserve(node_bytes)
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            .map_err(RelationalError::from_admission)?;
         let mut page = BTreeSet::new();
         if let Some(index) = target {
             for old in self.pages[index].iter() {
                 let owned = old.clone_with_allocations(&page_context)?;
-                let unit = work
-                    .start_unit()
-                    .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                let unit = work.start_unit().map_err(RelationalError::from_work)?;
                 page.insert(owned);
                 unit.finish();
             }
@@ -2468,9 +2434,7 @@ impl RelationalKeySetPages {
         } else {
             None
         };
-        let unit = work
-            .start_unit()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        let unit = work.start_unit().map_err(RelationalError::from_work)?;
         if let Some(incoming) = incoming {
             page.insert(incoming);
         } else {
@@ -2483,9 +2447,7 @@ impl RelationalKeySetPages {
                 .nth(page.len() / 2)
                 .expect("oversized posting page")
                 .clone_with_allocations(&split_context)?;
-            let unit = work
-                .start_unit()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            let unit = work.start_unit().map_err(RelationalError::from_work)?;
             let right = page.split_off(&split);
             unit.finish();
             Some(right)
@@ -2496,9 +2458,7 @@ impl RelationalKeySetPages {
             directory.remove(index);
         } else {
             let memory = page_context.memory.into_inner();
-            let unit = work
-                .start_unit()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            let unit = work.start_unit().map_err(RelationalError::from_work)?;
             let page = RelationalPostingPage::from_checkpoint_value(page, memory.clone());
             if target.is_some() {
                 directory[index] = page;
@@ -2513,16 +2473,13 @@ impl RelationalKeySetPages {
             }
             unit.finish();
         }
-        let unit = work
-            .start_unit()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        let unit = work.start_unit().map_err(RelationalError::from_work)?;
         let output = RelationalPostingDirectory::from_checkpoint_value(
             directory,
             directory_context.memory.into_inner(),
         );
         unit.finish();
-        work.checkpoint()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        work.checkpoint().map_err(RelationalError::from_work)?;
         self.pages = output;
         self.len = if insert {
             self.len.saturating_add(1)
@@ -2622,10 +2579,8 @@ impl RelationalIndexPages {
         };
         context
             .reserve(RelationalIndexDirectory::checkpoint_ownership_bytes())
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
-        let unit = work
-            .start_unit()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            .map_err(RelationalError::from_admission)?;
+        let unit = work.start_unit().map_err(RelationalError::from_work)?;
         let output = Self {
             pages: RelationalIndexDirectory::from_checkpoint_value(
                 Vec::new(),
@@ -2726,14 +2681,12 @@ impl RelationalIndexPages {
         })?;
         let mut directory = directory_context
             .vector_capacity(capacity)
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            .map_err(RelationalError::from_admission)?;
         directory_context
             .reserve(RelationalIndexDirectory::checkpoint_ownership_bytes())
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            .map_err(RelationalError::from_admission)?;
         for page in self.pages.iter() {
-            let unit = work
-                .start_unit()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            let unit = work.start_unit().map_err(RelationalError::from_work)?;
             directory.push(page.clone());
             unit.finish();
         }
@@ -2753,14 +2706,12 @@ impl RelationalIndexPages {
             .ok_or_else(|| RelationalError::Admission("index page capacity overflow".into()))?;
         page_context
             .reserve(node_bytes)
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            .map_err(RelationalError::from_admission)?;
         let mut page = BTreeMap::new();
         if let Some(index) = target {
             for (key, postings) in self.pages[index].iter() {
                 let key = key.clone_with_allocations(&page_context)?;
-                let unit = work
-                    .start_unit()
-                    .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                let unit = work.start_unit().map_err(RelationalError::from_work)?;
                 page.insert(key, postings.clone());
                 unit.finish();
             }
@@ -2773,9 +2724,7 @@ impl RelationalIndexPages {
         } else {
             let postings = RelationalKeySetPages::checkpoint_singleton(primary_key, work)?;
             let key = index_key.clone_with_allocations(&page_context)?;
-            let unit = work
-                .start_unit()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            let unit = work.start_unit().map_err(RelationalError::from_work)?;
             page.insert(key, postings);
             unit.finish();
         }
@@ -2785,9 +2734,7 @@ impl RelationalIndexPages {
                 .nth(page.len() / 2)
                 .expect("oversized index page")
                 .clone_with_allocations(&split_context)?;
-            let unit = work
-                .start_unit()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            let unit = work.start_unit().map_err(RelationalError::from_work)?;
             let right = page.split_off(&split);
             unit.finish();
             Some(right)
@@ -2798,9 +2745,7 @@ impl RelationalIndexPages {
             directory.remove(index);
         } else {
             let memory = page_context.memory.into_inner();
-            let unit = work
-                .start_unit()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            let unit = work.start_unit().map_err(RelationalError::from_work)?;
             let page = RelationalIndexPage::from_checkpoint_value(page, memory.clone());
             if target.is_some() {
                 directory[index] = page;
@@ -2815,16 +2760,13 @@ impl RelationalIndexPages {
             }
             unit.finish();
         }
-        let unit = work
-            .start_unit()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        let unit = work.start_unit().map_err(RelationalError::from_work)?;
         let output = RelationalIndexDirectory::from_checkpoint_value(
             directory,
             directory_context.memory.into_inner(),
         );
         unit.finish();
-        work.checkpoint()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        work.checkpoint().map_err(RelationalError::from_work)?;
         self.pages = output;
         Ok(true)
     }
@@ -3131,7 +3073,7 @@ impl RelationalOverflowSegment {
                         ))
                     }
                     crate::scan::CheckpointRangeReadError::Work(error) => {
-                        RelationalError::Admission(error.to_string())
+                        RelationalError::from_work(error)
                     }
                 });
         }
@@ -3183,8 +3125,7 @@ impl RelationalState {
         &self,
         work: &crate::background::CheckpointWorkContext,
     ) -> Result<Self, RelationalError> {
-        let admission =
-            |error: hawdb_core::HawDBError| RelationalError::Admission(error.to_string());
+        let admission = RelationalError::from_admission;
         let allocations = crate::background::CheckpointDecodeContext {
             work: work.clone(),
             memory: Default::default(),
@@ -3203,7 +3144,7 @@ impl RelationalState {
                 })?;
             context
                 .reserve(bytes)
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                .map_err(RelationalError::from_admission)?;
             Ok(())
         }
         reserve_tree::<String, Arc<RelationalSchemaData>>(self.schemas.len(), &allocations)?;
@@ -3225,9 +3166,7 @@ impl RelationalState {
         let mut row_counts = BTreeMap::new();
         for (name, count) in self.detached_row_counts.iter() {
             let name = count_allocations.string(name).map_err(admission)?;
-            let unit = work
-                .start_unit()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            let unit = work.start_unit().map_err(RelationalError::from_work)?;
             row_counts.insert(name, *count);
             unit.finish();
         }
@@ -3240,29 +3179,22 @@ impl RelationalState {
         let mut overflow_segments = BTreeMap::new();
         for (name, schema) in &self.schemas {
             let name = allocations.string(name).map_err(admission)?;
-            let unit = work
-                .start_unit()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            let unit = work.start_unit().map_err(RelationalError::from_work)?;
             schemas.insert(name, schema.clone());
             unit.finish();
         }
         for (name, segment) in &self.segments {
             let name = allocations.string(name).map_err(admission)?;
-            let unit = work
-                .start_unit()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            let unit = work.start_unit().map_err(RelationalError::from_work)?;
             segments.insert(name, segment.clone());
             unit.finish();
         }
         for (digest, segment) in &self.overflow_segments {
-            let unit = work
-                .start_unit()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            let unit = work.start_unit().map_err(RelationalError::from_work)?;
             overflow_segments.insert(*digest, segment.clone());
             unit.finish();
         }
-        work.checkpoint()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        work.checkpoint().map_err(RelationalError::from_work)?;
         Ok(Self {
             schemas,
             segments,
@@ -3556,8 +3488,7 @@ impl RelationalState {
             *segment = segment.checkpoint_without_indexes(work)?;
         }
         self.materialized_index_postings_resident = false;
-        work.checkpoint()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        work.checkpoint().map_err(RelationalError::from_work)?;
         Ok(())
     }
 
@@ -4868,8 +4799,7 @@ impl RelationalState {
             )));
         }
 
-        let admission =
-            |error: hawdb_core::HawDBError| RelationalError::Admission(error.to_string());
+        let admission = RelationalError::from_admission;
         let workspace_allocations =
             allocations.map(|context| crate::background::CheckpointDecodeContext {
                 work: context.work.clone(),
@@ -6525,6 +6455,8 @@ impl Default for RelationalStore {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelationalError {
     Admission(String),
+    /// The caller's runtime task was cancelled or passed its deadline.
+    Stopped(hawdb_core::RuntimeCancellationReason),
     Schema(String),
     Constraint(String),
     Durability(String),
@@ -6537,6 +6469,7 @@ impl fmt::Display for RelationalError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Admission(message) => write!(formatter, "relational admission failed: {message}"),
+            Self::Stopped(reason) => write!(formatter, "runtime task stopped: {reason}"),
             Self::Schema(message) => write!(formatter, "relational schema error: {message}"),
             Self::Constraint(message) => {
                 write!(formatter, "relational constraint violation: {message}")
@@ -6560,6 +6493,8 @@ impl std::error::Error for RelationalError {
         match self {
             Self::FileDescriptors(error) => Some(error),
             Self::UnsupportedFormat(error) => Some(error),
+            // Lets `HawDBError::from_storage_error` report the typed stop.
+            Self::Stopped(reason) => Some(reason),
             Self::Constraint(_) => Some(&hawdb_core::RelationalErrorKind::Constraint),
             Self::Schema(_) => Some(&hawdb_core::RelationalErrorKind::Schema),
             _ => None,
@@ -6568,6 +6503,24 @@ impl std::error::Error for RelationalError {
 }
 
 impl RelationalError {
+    /// Preserves a checkpoint task stop while converting other work refusals
+    /// into relational admission diagnostics.
+    pub(crate) fn from_work(error: crate::background::CheckpointWorkError) -> Self {
+        match error.stop_reason() {
+            Some(reason) => Self::Stopped(reason),
+            None => Self::Admission(error.to_string()),
+        }
+    }
+
+    /// Wraps an engine error raised while admitting relational work; a
+    /// stopped runtime task stays a typed `Stopped`.
+    pub(crate) fn from_admission(error: hawdb_core::HawDBError) -> Self {
+        match error {
+            hawdb_core::HawDBError::RuntimeTaskStopped(reason) => Self::Stopped(reason),
+            error => Self::Admission(error.to_string()),
+        }
+    }
+
     /// The typed kind of a constraint or schema refusal.
     pub const fn kind(&self) -> Option<hawdb_core::RelationalErrorKind> {
         match self {
@@ -6752,7 +6705,7 @@ fn push_cascade_delete_with_allocations(
     };
     let table = context
         .string(table)
-        .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        .map_err(RelationalError::from_admission)?;
     if queue.len() == queue.capacity() {
         let capacity =
             queue.capacity().max(2).checked_mul(2).ok_or_else(|| {
@@ -6760,13 +6713,11 @@ fn push_cascade_delete_with_allocations(
             })?;
         let mut replacement = context
             .vector_capacity(capacity)
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            .map_err(RelationalError::from_admission)?;
         // Conversion reuses the admitted Vec backing. Cancellation while
         // moving requires the caller to discard its private transaction stage.
         while !queue.is_empty() {
-            let unit = context
-                .start_unit()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            let unit = context.start_unit().map_err(RelationalError::from_work)?;
             replacement.push(queue.pop_front().expect("nonempty cascade queue"));
             unit.finish();
         }
@@ -6774,9 +6725,7 @@ fn push_cascade_delete_with_allocations(
         // Keep conservative credits for replaced capacities until this
         // statement's queue inventory drops, after every queued row.
     }
-    let unit = context
-        .start_unit()
-        .map_err(|error| RelationalError::Admission(error.to_string()))?;
+    let unit = context.start_unit().map_err(RelationalError::from_work)?;
     queue.push_back(CascadeDelete { table, row });
     unit.finish();
     Ok(())
@@ -6817,21 +6766,21 @@ fn apply_delete_cascades(
                     .as_ref()
                     .map(|context| context.start_unit())
                     .transpose()
-                    .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                    .map_err(RelationalError::from_work)?;
                 if foreign_key.referenced_table == table
                     && foreign_key.on_delete == RelationalReferentialAction::Cascade
                 {
                     let name = match &inbound_context {
                         Some(context) => context
                             .string(child_table)
-                            .map_err(|error| RelationalError::Admission(error.to_string()))?,
+                            .map_err(RelationalError::from_admission)?,
                         None => child_table.clone(),
                     };
                     let entry = (name, Arc::clone(child_schema), ordinal);
                     match &inbound_context {
                         Some(context) => context
                             .push(&mut inbound, entry)
-                            .map_err(|error| RelationalError::Admission(error.to_string()))?,
+                            .map_err(RelationalError::from_admission)?,
                         None => inbound.push(entry),
                     }
                 }
@@ -6873,7 +6822,7 @@ fn apply_delete_cascades(
                     .as_ref()
                     .map(|context| context.start_unit())
                     .transpose()
-                    .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                    .map_err(RelationalError::from_work)?;
                 if row_matches_key(candidate, &local_positions, &referenced_key) {
                     push_cloned_key_with_allocations(&mut child_keys, key, child_context.as_ref())?;
                 }
@@ -7025,9 +6974,7 @@ fn add_column_with_allocations(
     }
     let mut rewrite_bytes = 0usize;
     for (key, row) in segment.rows.iter() {
-        let unit = work
-            .start_unit()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        let unit = work.start_unit().map_err(RelationalError::from_work)?;
         rewrite_bytes = rewrite_bytes.saturating_add(
             relational_row_entry_bytes(key, row).saturating_add(fill.estimated_payload_bytes()),
         );
@@ -7040,7 +6987,7 @@ fn add_column_with_allocations(
         let column = clone_column_with_allocations(column, context)?;
         context
             .push(&mut schema.columns, column)
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            .map_err(RelationalError::from_admission)?;
         validate_table_schema(schema)
     })?;
     let count = schema.columns.len();
@@ -7068,10 +7015,8 @@ fn add_column_with_allocations(
     };
     segment_context
         .reserve(std::mem::size_of::<RelationalTableSegment>() + 2 * std::mem::size_of::<usize>())
-        .map_err(|error| RelationalError::Admission(error.to_string()))?;
-    let unit = work
-        .start_unit()
-        .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        .map_err(RelationalError::from_admission)?;
+    let unit = work.start_unit().map_err(RelationalError::from_work)?;
     let replacement = Arc::new(RelationalTableSegment {
         last_row_id: state.segments[table].last_row_id,
         rows,
@@ -7079,8 +7024,7 @@ fn add_column_with_allocations(
         _memory: segment_context.memory.into_inner(),
     });
     unit.finish();
-    work.checkpoint()
-        .map_err(|error| RelationalError::Admission(error.to_string()))?;
+    work.checkpoint().map_err(RelationalError::from_work)?;
     *state
         .segments
         .get_mut(table)
@@ -7223,13 +7167,13 @@ fn apply_transaction_inner(
                                 String,
                                 Arc<RelationalSchemaData>,
                             >())
-                            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                            .map_err(RelationalError::from_admission)?;
                         map_context
                             .reserve(crate::cow::checkpoint_tree_node_bytes::<
                                 String,
                                 Arc<RelationalTableSegment>,
                             >())
-                            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                            .map_err(RelationalError::from_admission)?;
                         let schema_name =
                             clone_string_with_allocations(&schema.name, Some(&map_context))?;
                         let segment_name =
@@ -7237,10 +7181,8 @@ fn apply_transaction_inner(
                         let mut memory = map_context.memory.into_inner();
                         next._metadata_memory
                             .append_retained(&mut memory, &context.work)
-                            .map_err(|error| RelationalError::Admission(error.to_string()))?;
-                        let unit = context
-                            .start_unit()
-                            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                            .map_err(RelationalError::from_work)?;
+                        let unit = context.start_unit().map_err(RelationalError::from_work)?;
                         next.segments.insert(segment_name, segment);
                         next.schemas.insert(schema_name, owned_schema);
                         unit.finish();
@@ -7424,7 +7366,7 @@ fn apply_transaction_inner(
                                     clone_index_schema_with_allocations(&index, allocations)?;
                                 allocations
                                     .push(&mut schema.indexes, index)
-                                    .map_err(|error| RelationalError::Admission(error.to_string()))
+                                    .map_err(RelationalError::from_admission)
                             })?;
                     }
                     None => Arc::make_mut(schema).indexes.push(index),
@@ -7457,7 +7399,7 @@ fn apply_transaction_inner(
                 let mut prepared_rows = match &preparation_context {
                     Some(context) => context
                         .vector_capacity(rows.len())
-                        .map_err(|error| RelationalError::Admission(error.to_string()))?,
+                        .map_err(RelationalError::from_admission)?,
                     None => Vec::with_capacity(rows.len()),
                 };
                 for mut row in rows {
@@ -7473,7 +7415,7 @@ fn apply_transaction_inner(
                         .as_ref()
                         .map(|context| context.start_unit())
                         .transpose()
-                        .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                        .map_err(RelationalError::from_work)?;
                     prepared_rows.push(row);
                     if let Some(unit) = unit {
                         unit.finish();
@@ -8186,12 +8128,12 @@ fn insert_staged_conflict_with_allocations(
                 RelationalKey,
                 Option<RelationalKey>,
             >())
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            .map_err(RelationalError::from_admission)?;
     }
     let unit = allocations
         .map(|context| context.start_unit())
         .transpose()
-        .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        .map_err(RelationalError::from_work)?;
     let previous = conflicts.insert(key, value);
     if let Some(unit) = unit {
         unit.finish();
@@ -8424,7 +8366,7 @@ fn apply_update(
             match &match_context {
                 Some(context) => context
                     .push(&mut matched, (matched_key, row.clone()))
-                    .map_err(|error| RelationalError::Admission(error.to_string()))?,
+                    .map_err(RelationalError::from_admission)?,
                 None => matched.push((matched_key, row.clone())),
             }
             if matched.len() > limits.max_rows.get() {
@@ -8448,7 +8390,7 @@ fn apply_update(
     let mut updates = match &update_context {
         Some(context) => context
             .vector_capacity(matched.len())
-            .map_err(|error| RelationalError::Admission(error.to_string()))?,
+            .map_err(RelationalError::from_admission)?,
         None => Vec::with_capacity(matched.len()),
     };
     for (old_key, row) in &matched {
@@ -8460,7 +8402,7 @@ fn apply_update(
         let mut replacements = match &replacement_context {
             Some(context) => context
                 .vector_capacity(resolved.len())
-                .map_err(|error| RelationalError::Admission(error.to_string()))?,
+                .map_err(RelationalError::from_admission)?,
             None => Vec::with_capacity(resolved.len()),
         };
         // Evaluate every assignment in source order, including one overwritten
@@ -8484,7 +8426,7 @@ fn apply_update(
                 .as_ref()
                 .map(|context| context.start_unit())
                 .transpose()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                .map_err(RelationalError::from_work)?;
             replacements.push((*target, value));
             if let Some(unit) = unit {
                 unit.finish();
@@ -8519,7 +8461,7 @@ fn apply_update(
             .as_ref()
             .map(|context| context.start_unit())
             .transpose()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            .map_err(RelationalError::from_work)?;
         updates.push((retained_old_key, new_key, updated));
         if let Some(unit) = unit {
             unit.finish();
@@ -8563,7 +8505,7 @@ fn push_cloned_key_with_allocations(
     match allocations {
         Some(context) => context
             .push(keys, key)
-            .map_err(|error| RelationalError::Admission(error.to_string())),
+            .map_err(RelationalError::from_admission),
         None => {
             keys.push(key);
             Ok(())
@@ -8584,17 +8526,17 @@ fn changed_table_keys_with_allocations<'a>(
                         String,
                         BTreeSet<RelationalKey>,
                     >())
-                    .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                    .map_err(RelationalError::from_admission)?;
                 context
                     .string(table)
-                    .map_err(|error| RelationalError::Admission(error.to_string()))?
+                    .map_err(RelationalError::from_admission)?
             }
             None => table.to_owned(),
         };
         let unit = allocations
             .map(|context| context.start_unit())
             .transpose()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            .map_err(RelationalError::from_work)?;
         tables.insert(name, BTreeSet::new());
         if let Some(unit) = unit {
             unit.finish();
@@ -8615,17 +8557,17 @@ fn insert_table_name_with_allocations(
         Some(context) => {
             context
                 .reserve(crate::cow::checkpoint_tree_node_bytes::<String, ()>())
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                .map_err(RelationalError::from_admission)?;
             context
                 .string(table)
-                .map_err(|error| RelationalError::Admission(error.to_string()))?
+                .map_err(RelationalError::from_admission)?
         }
         None => table.to_owned(),
     };
     let unit = allocations
         .map(|context| context.start_unit())
         .transpose()
-        .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        .map_err(RelationalError::from_work)?;
     tables.insert(name);
     if let Some(unit) = unit {
         unit.finish();
@@ -8645,7 +8587,7 @@ fn insert_changed_key_with_allocations(
         Some(context) => {
             context
                 .reserve(crate::cow::checkpoint_tree_node_bytes::<RelationalKey, ()>())
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                .map_err(RelationalError::from_admission)?;
             key.clone_with_allocations(context)?
         }
         None => key.clone(),
@@ -8653,7 +8595,7 @@ fn insert_changed_key_with_allocations(
     let unit = allocations
         .map(|context| context.start_unit())
         .transpose()
-        .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        .map_err(RelationalError::from_work)?;
     keys.insert(owned);
     if let Some(unit) = unit {
         unit.finish();
@@ -9057,7 +8999,7 @@ fn rebuild_indexes_with_allocations(
     };
     owned_context
         .reserve(std::mem::size_of::<RelationalTableSegment>() + 2 * std::mem::size_of::<usize>())
-        .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        .map_err(RelationalError::from_admission)?;
     let definitions =
         required_index_definitions_with_allocations(schema, Some(&definition_context))?;
     let mut indexes = BTreeMap::new();
@@ -9095,17 +9037,13 @@ fn rebuild_indexes_with_allocations(
                 String,
                 RelationalIndexPages,
             >())
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            .map_err(RelationalError::from_admission)?;
         let name = clone_string_with_allocations(&index.name, Some(&owned_context))?;
-        let unit = work
-            .start_unit()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        let unit = work.start_unit().map_err(RelationalError::from_work)?;
         indexes.insert(name, postings);
         unit.finish();
     }
-    let unit = work
-        .start_unit()
-        .map_err(|error| RelationalError::Admission(error.to_string()))?;
+    let unit = work.start_unit().map_err(RelationalError::from_work)?;
     let replacement = Arc::new(RelationalTableSegment {
         last_row_id: source.last_row_id,
         rows: source.rows.clone(),
@@ -9113,8 +9051,7 @@ fn rebuild_indexes_with_allocations(
         _memory: owned_context.memory.into_inner(),
     });
     unit.finish();
-    work.checkpoint()
-        .map_err(|error| RelationalError::Admission(error.to_string()))?;
+    work.checkpoint().map_err(RelationalError::from_work)?;
     *state
         .segments
         .get_mut(table)
@@ -9283,7 +9220,7 @@ fn clone_string_with_allocations(
     match allocations {
         Some(context) => context
             .string(text)
-            .map_err(|error| RelationalError::Admission(error.to_string())),
+            .map_err(RelationalError::from_admission),
         None => Ok(text.to_owned()),
     }
 }
@@ -9344,7 +9281,7 @@ fn required_index_definitions_with_allocations(
         .ok_or_else(|| RelationalError::Admission("index definition capacity overflow".into()))?;
     let mut definitions = context
         .vector_capacity(count)
-        .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        .map_err(RelationalError::from_admission)?;
     let mut push = |name, columns: &[String], role| -> Result<(), RelationalError> {
         let columns = collect_results_with_allocations(
             columns
@@ -9353,9 +9290,7 @@ fn required_index_definitions_with_allocations(
             columns.len(),
             Some(context),
         )?;
-        let unit = context
-            .start_unit()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        let unit = context.start_unit().map_err(RelationalError::from_work)?;
         definitions.push(RelationalIndexDefinition {
             name,
             columns,
@@ -9396,9 +9331,7 @@ fn required_index_definitions_with_allocations(
             RelationalIndexRole::ForeignKeySupport,
         )?;
     }
-    context
-        .checkpoint()
-        .map_err(|error| RelationalError::Admission(error.to_string()))?;
+    context.checkpoint().map_err(RelationalError::from_work)?;
     Ok(definitions)
 }
 
@@ -9419,10 +9352,8 @@ fn admitted_ordinal_index_name(
         .ok_or_else(|| RelationalError::Admission("index name capacity overflow".into()))?;
     let mut name = context
         .string_capacity(capacity)
-        .map_err(|error| RelationalError::Admission(error.to_string()))?;
-    let unit = context
-        .start_unit()
-        .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        .map_err(RelationalError::from_work)?;
+    let unit = context.start_unit().map_err(RelationalError::from_work)?;
     write!(&mut name, "{prefix}{ordinal}")
         .map_err(|error| RelationalError::Admission(error.to_string()))?;
     unit.finish();
@@ -9604,9 +9535,7 @@ fn capture_relational_index_changes_with_allocations(
         }
     }
     if let Some(context) = allocations {
-        context
-            .checkpoint()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        context.checkpoint().map_err(RelationalError::from_work)?;
     }
     Ok(RelationalIndexChangeCapture::Captured {
         changes,
@@ -9653,7 +9582,7 @@ fn capture_relational_row_changes_with_allocations(
             rewritten_tables.iter().map(|name| match allocations {
                 Some(context) => context
                     .string(name)
-                    .map_err(|error| RelationalError::Admission(error.to_string())),
+                    .map_err(RelationalError::from_admission),
                 None => Ok(name.clone()),
             }),
             rewritten_tables.len(),
@@ -9723,7 +9652,7 @@ fn capture_relational_row_change_entries(
             let table = match allocations {
                 Some(context) => context
                     .string(table)
-                    .map_err(|error| RelationalError::Admission(error.to_string()))?,
+                    .map_err(RelationalError::from_admission)?,
                 None => table.clone(),
             };
             let primary_key = clone_key_with_allocations(primary_key, allocations)?;
@@ -9735,16 +9664,14 @@ fn capture_relational_row_change_entries(
             match allocations {
                 Some(context) => context
                     .push(&mut changes, change)
-                    .map_err(|error| RelationalError::Admission(error.to_string()))?,
+                    .map_err(RelationalError::from_admission)?,
                 None => changes.push(change),
             }
             encoded_bytes = next_bytes;
         }
     }
     if let Some(context) = allocations {
-        context
-            .checkpoint()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        context.checkpoint().map_err(RelationalError::from_work)?;
     }
     Ok(RelationalRowChangeCapture::Captured {
         changes,
@@ -9927,7 +9854,7 @@ fn push_captured_index_change_with_allocations(
     match allocations {
         Some(context) => context
             .push(changes, change)
-            .map_err(|error| RelationalError::Admission(error.to_string()))?,
+            .map_err(RelationalError::from_admission)?,
         None => changes.push(change),
     }
     *encoded_bytes = next_bytes;
@@ -10182,7 +10109,7 @@ fn validate_foreign_keys_incremental(
                     let unit = allocations
                         .map(|context| context.start_unit())
                         .transpose()
-                        .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                        .map_err(RelationalError::from_work)?;
                     referenced = !key_contains_null(&previous_target)
                         && row_matches_key(row, &local_positions, &previous_target);
                     if let Some(unit) = unit {
@@ -10325,7 +10252,7 @@ fn collect_results_with_allocations<T>(
     };
     let mut values = context
         .vector_capacity(capacity)
-        .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        .map_err(RelationalError::from_admission)?;
     for item in items {
         let item = item?;
         if values.len() == capacity {
@@ -10333,15 +10260,11 @@ fn collect_results_with_allocations<T>(
                 "resolved input exceeds its admitted capacity".into(),
             ));
         }
-        let unit = context
-            .start_unit()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        let unit = context.start_unit().map_err(RelationalError::from_work)?;
         values.push(item);
         unit.finish();
     }
-    context
-        .checkpoint()
-        .map_err(|error| RelationalError::Admission(error.to_string()))?;
+    context.checkpoint().map_err(RelationalError::from_work)?;
     Ok(values)
 }
 
@@ -10353,7 +10276,7 @@ fn column_positions_with_allocations(
     let mut positions = match allocations {
         Some(context) => context
             .vector_capacity(columns.len())
-            .map_err(|error| RelationalError::Admission(error.to_string()))?,
+            .map_err(RelationalError::from_admission)?,
         None => Vec::with_capacity(columns.len()),
     };
     for column in columns {
@@ -10363,16 +10286,14 @@ fn column_positions_with_allocations(
         let unit = allocations
             .map(|context| context.start_unit())
             .transpose()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            .map_err(RelationalError::from_work)?;
         positions.push(position);
         if let Some(unit) = unit {
             unit.finish();
         }
     }
     if let Some(context) = allocations {
-        context
-            .checkpoint()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        context.checkpoint().map_err(RelationalError::from_work)?;
     }
     Ok(positions)
 }
@@ -10387,20 +10308,16 @@ fn row_key_with_allocations(
     };
     let mut values = context
         .vector_capacity(positions.len())
-        .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        .map_err(RelationalError::from_admission)?;
     for position in positions {
         let value = row.values()[*position]
             .as_ref()
             .to_owned_value_with_allocations(context)?;
-        let unit = context
-            .start_unit()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        let unit = context.start_unit().map_err(RelationalError::from_work)?;
         values.push(value);
         unit.finish();
     }
-    context
-        .checkpoint()
-        .map_err(|error| RelationalError::Admission(error.to_string()))?;
+    context.checkpoint().map_err(RelationalError::from_work)?;
     Ok(RelationalKey(values))
 }
 

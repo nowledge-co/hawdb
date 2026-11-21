@@ -177,11 +177,7 @@ impl<'a> JoinSamplingContext<'a> {
     pub(crate) fn checkpoint(&self) -> SamplingResult<()> {
         if let Some(task) = self.task {
             task.check_work_limit()?;
-            task.checkpoint().map_err(|reason| {
-                SamplingError::Storage(HawDBError::Execution(format!(
-                    "runtime task stopped: {reason}"
-                )))
-            })?;
+            task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
         }
         if self.started.elapsed() >= self.limits.max_duration {
             return Err(SamplingError::Refused(JoinSamplingRefusal::Deadline));
@@ -249,9 +245,7 @@ impl<'a> JoinSamplingContext<'a> {
                     return Err(SamplingError::Refused(JoinSamplingRefusal::IoAdmission));
                 }
                 Err(hawdb_core::RuntimeIoWaveError::Stopped(reason)) => {
-                    return Err(SamplingError::Storage(HawDBError::Execution(format!(
-                        "join sampling I/O stopped: {reason}"
-                    ))));
+                    return Err(HawDBError::RuntimeTaskStopped(reason).into());
                 }
             }
         }
@@ -280,9 +274,9 @@ impl<'a> JoinSamplingContext<'a> {
         self.task.map_or(Ok(None), |task| {
             task.reserve_working_memory(self.limits.max_retained_bytes as u64)
                 .map_err(|error| match error {
-                    hawdb_core::RuntimeMemoryError::Stopped(reason) => SamplingError::Storage(
-                        HawDBError::Execution(format!("join sampling memory stopped: {reason}")),
-                    ),
+                    hawdb_core::RuntimeMemoryError::Stopped(reason) => {
+                        HawDBError::RuntimeTaskStopped(reason).into()
+                    }
                     _ => SamplingError::Refused(JoinSamplingRefusal::MemoryBudget),
                 })
         })

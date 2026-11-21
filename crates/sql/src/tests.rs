@@ -841,3 +841,5 @@ fn like_layout_preserves_folding_boundaries_and_compacts_wildcards() {
     );
     assert!(super::sql_like_scratch_bytes("x", "x!", escape, false).is_err());
 }
+
+mod octet_length;

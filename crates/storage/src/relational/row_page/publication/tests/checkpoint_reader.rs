@@ -197,8 +197,12 @@ fn checkpoint_units_row_reader_cancel_every_actual_cpu_io_boundary_retains_sourc
             )
             .unwrap_err();
             assert!(
-                matches!(error, RelationalRowPagePublicationError::Admission(_))
-                    && error.to_string().contains("stopped"),
+                matches!(
+                    error,
+                    RelationalRowPagePublicationError::Stopped(
+                        hawdb_core::RuntimeCancellationReason::Cancelled
+                    )
+                ),
                 "{error:?}"
             );
             probe.assert_released(&local);
@@ -493,8 +497,12 @@ fn checkpoint_units_row_reader_generation_and_bound_open_cancel_all_units_and_pr
                 }
                 let error = operation(Some(&probe.context(local.clone()))).unwrap_err();
                 assert!(
-                    matches!(error, RelationalRowPagePublicationError::Admission(_))
-                        && error.to_string().contains("stopped"),
+                    matches!(
+                        error,
+                        RelationalRowPagePublicationError::Stopped(
+                            hawdb_core::RuntimeCancellationReason::Cancelled
+                        )
+                    ),
                     "{error:?}"
                 );
                 probe.assert_released(&local);

@@ -321,13 +321,11 @@ pub enum PropertyDefault {
 impl PropertyDefault {
     /// Resolves the default for a record created by a transaction whose
     /// creation clock is `clock`.
-    pub fn resolve(&self, clock: chrono::NaiveDateTime) -> Value {
+    pub fn resolve(&self, clock: crate::temporal::PlainDateTime) -> Value {
         match self {
             Self::Value(value) => value.clone(),
             Self::CurrentTimestamp => Value::Int(
-                clock
-                    .and_utc()
-                    .timestamp_millis()
+                crate::temporal::types::epoch_millis(clock.assume_utc())
                     .saturating_mul(1_000_000)
                     .max(0),
             ),
@@ -336,12 +334,12 @@ impl PropertyDefault {
 
     /// The `current_timestamp()` creation clock: the statement clock truncated
     /// to whole milliseconds, as a timezone-naive UTC timestamp.
-    pub fn creation_clock() -> chrono::NaiveDateTime {
+    pub fn creation_clock() -> crate::temporal::PlainDateTime {
         let now = crate::temporal::statement_now();
-        let millis = now.timestamp_millis();
-        chrono::DateTime::from_timestamp_millis(millis)
-            .unwrap_or(now)
-            .naive_utc()
+        let millis = crate::temporal::types::epoch_millis(now);
+        crate::temporal::types::utc_datetime(
+            crate::temporal::types::datetime_from_millis(millis).unwrap_or(now),
+        )
     }
 
     /// Whether this descriptor state applies defaults to newly created records.
@@ -864,7 +862,7 @@ impl Catalog {
         kind: TableKind,
         name: &str,
         properties: &mut BTreeMap<String, Value>,
-        clock: &mut impl FnMut() -> chrono::NaiveDateTime,
+        clock: &mut impl FnMut() -> crate::temporal::PlainDateTime,
     ) {
         for (property, default) in self.creation_defaults(kind, name) {
             if !properties.contains_key(property) {

@@ -9,7 +9,7 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-chrono = { version = "0.4", default-features = false, features = ["std"] }
+time = { version = "0.3.47", default-features = false, features = ["std", "large-dates", "parsing", "formatting"] }
 getrandom = "0.4"
 uuid = "1"
 regex = "1"
@@ -19,3 +19,6 @@ num-traits = "0.2.19"
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 getrandom = { version = "0.4", features = ["wasm_js"] }
 web-time = "1.1"
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dev-dependencies]
+wasm-bindgen-test = "0.3"

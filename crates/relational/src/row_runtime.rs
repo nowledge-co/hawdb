@@ -445,6 +445,18 @@ impl<'a> RelationalRowRuntime<'a> {
         self.read_point_with_fields(table, key, fields, fields)
     }
 
+    /// SQL projection may need only a field's NULL marker or byte length.
+    /// Explicit output reads above retain their full-hydration contract.
+    pub(crate) fn read_output_point_for_projection(
+        &self,
+        table: &str,
+        key: &RelationalKey,
+    ) -> Result<Option<RelationalReadRow>> {
+        let fields = self.fields.output_fields(table)?;
+        let hydration_fields = self.fields.output_hydration_fields(table)?;
+        self.read_point_with_fields(table, key, fields, hydration_fields)
+    }
+
     /// Reads each distinct key once while retaining the caller-owned mapping
     /// from duplicate input keys to their output rows.
     pub fn read_points(
@@ -642,9 +654,9 @@ impl<'a> RelationalRowRuntime<'a> {
             None => {
                 let mut rows = BTreeMap::new();
                 for key in keys {
-                    self.task.checkpoint().map_err(|reason| {
-                        HawDBError::Execution(format!("runtime task stopped: {reason}"))
-                    })?;
+                    self.task
+                        .checkpoint()
+                        .map_err(HawDBError::RuntimeTaskStopped)?;
                     let Some((key, row)) = self.state.row_entry(table, &key) else {
                         continue;
                     };
@@ -757,9 +769,9 @@ impl<'a> RelationalRowRuntime<'a> {
                     Some(range) => Box::new(self.state.rows_in_range(table, range)),
                 };
                 for (key, row) in rows {
-                    self.task.checkpoint().map_err(|reason| {
-                        HawDBError::Execution(format!("runtime task stopped: {reason}"))
-                    })?;
+                    self.task
+                        .checkpoint()
+                        .map_err(HawDBError::RuntimeTaskStopped)?;
                     self.admit_memory_row()?;
                     if !visit(self.project_memory_row(
                         table,
@@ -848,9 +860,9 @@ impl<'a> RelationalRowRuntime<'a> {
         match &self.backend {
             None => {
                 for (key, row) in self.state.rows(table) {
-                    self.task.checkpoint().map_err(|reason| {
-                        HawDBError::Execution(format!("runtime task stopped: {reason}"))
-                    })?;
+                    self.task
+                        .checkpoint()
+                        .map_err(HawDBError::RuntimeTaskStopped)?;
                     self.admit_memory_row()?;
                     let projected =
                         self.project_memory_row(table, key, row, fields, hydration_fields)?;
@@ -1005,9 +1017,9 @@ impl<'a> RelationalRowRuntime<'a> {
             )
         })?;
         loop {
-            self.task.checkpoint().map_err(|reason| {
-                HawDBError::Execution(format!("runtime task stopped: {reason}"))
-            })?;
+            self.task
+                .checkpoint()
+                .map_err(HawDBError::RuntimeTaskStopped)?;
             let page = projection
                 .reader
                 .read_page(cursor.as_ref(), self.projection_page_limits()?)
@@ -1487,6 +1499,7 @@ fn map_state_to_demand_error(error: RelationalError) -> RelationalRowPageDemandR
             RelationalRowPageDemandReadError::FileDescriptors(error)
         }
         RelationalError::Admission(message) => RelationalRowPageDemandReadError::Admission(message),
+        RelationalError::Stopped(reason) => RelationalRowPageDemandReadError::Stopped(reason),
         RelationalError::Durability(message) => {
             RelationalRowPageDemandReadError::Durability(message)
         }
@@ -1503,6 +1516,7 @@ fn map_state_error(error: RelationalError) -> HawDBError {
         RelationalError::UnsupportedFormat(error) => HawDBError::UnsupportedStorageFormat(error),
         RelationalError::FileDescriptors(error) => HawDBError::FileDescriptors(error),
         RelationalError::Admission(message) => HawDBError::Execution(message),
+        RelationalError::Stopped(reason) => HawDBError::RuntimeTaskStopped(reason),
         RelationalError::Durability(message)
         | RelationalError::Schema(message)
         | RelationalError::Constraint(message)
@@ -1520,7 +1534,7 @@ pub(crate) fn map_snapshot_error(error: RelationalRowPageSnapshotReadError) -> H
         }
         RelationalRowPageSnapshotReadError::Admission(message) => HawDBError::Execution(message),
         RelationalRowPageSnapshotReadError::Stopped(reason) => {
-            HawDBError::Execution(format!("runtime task stopped: {reason}"))
+            HawDBError::RuntimeTaskStopped(reason)
         }
         RelationalRowPageSnapshotReadError::Corrupt(message)
         | RelationalRowPageSnapshotReadError::Durability(message)

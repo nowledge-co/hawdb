@@ -139,9 +139,7 @@ pub(super) fn compact(
             let outputs: Vec<Result<spill::SpillRun>> = match merge.task {
                 Some(task) => executor
                     .map_ordered_with_context(&wave, task, execute)
-                    .map_err(|reason| {
-                        HawDBError::Execution(format!("runtime task stopped: {reason}"))
-                    })?,
+                    .map_err(HawDBError::RuntimeTaskStopped)?,
                 None => executor.map_ordered(&wave, execute),
             };
             let outputs = outputs.into_iter().collect::<Result<Vec<_>>>()?;

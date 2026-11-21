@@ -21,7 +21,7 @@ pub(crate) mod retention_allocation;
 use super::query_request::{BoundScoringRequest, ScoringPlanCacheKey};
 use super::{
     optimizer_config_from_database_config, statement_body, DatabaseConfig,
-    QueryAccessControlContext, SharedState,
+    PlanCardinalityEstimateScope, QueryAccessControlContext, SharedState,
 };
 use crate::cypher;
 use crate::error::{HawDBError, Result};
@@ -88,12 +88,13 @@ pub(super) struct OptimizedQueryPlan {
     pub(super) physical_plan: PhysicalPlan,
     pub(super) output_columns: Option<Vec<String>>,
     pub(super) trace: OptimizerTrace,
+    pub(super) cardinality_estimate_scope: PlanCardinalityEstimateScope,
     pub(super) plan_cache_lookup: PlanCacheLookup,
     pub(super) optimizer_environment: OptimizerEnvironmentKey,
     pub(super) configured_max_optimizer_groups: Option<usize>,
     pub(super) effective_max_optimizer_groups: usize,
     /// The statement clock planning observed; execution pins it.
-    pub(super) statement_clock: hawdb_core::temporal::DateTime<hawdb_core::temporal::Utc>,
+    pub(super) statement_clock: hawdb_core::temporal::OffsetDateTime,
 }
 
 impl OptimizedQueryPlan {
@@ -1064,6 +1065,10 @@ fn optimized_query_plan_for_pinned<S: crate::executor::ExecutionStore>(
                 ),
                 physical_plan,
                 trace,
+                cardinality_estimate_scope: match trace_mode {
+                    PlanTraceMode::Template => PlanCardinalityEstimateScope::TemplatePlan,
+                    PlanTraceMode::Bound => PlanCardinalityEstimateScope::BoundPlan,
+                },
                 plan_cache_lookup: PlanCacheLookup::Hit,
                 optimizer_environment: key.environment.clone(),
                 configured_max_optimizer_groups: context.config.max_optimizer_groups,
@@ -1148,9 +1153,11 @@ fn optimized_query_plan_for_pinned<S: crate::executor::ExecutionStore>(
             context.optimizer_search,
         )
         .map_err(|error| {
-            HawDBError::Execution(format!(
-                "optimizer search directive could not be honored: {error}"
-            ))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Execution(format!(
+                    "optimizer search directive could not be honored: {error}"
+                ))
+            })
         })?;
     let (physical_template, mut trace) = physical_root.into_parts();
     if binding_template_hit {
@@ -1254,6 +1261,10 @@ fn optimized_query_plan_for_pinned<S: crate::executor::ExecutionStore>(
             output_columns,
             physical_plan,
             trace,
+            cardinality_estimate_scope: match trace_mode {
+                PlanTraceMode::Template => PlanCardinalityEstimateScope::TemplatePlan,
+                PlanTraceMode::Bound => PlanCardinalityEstimateScope::BoundPlan,
+            },
             plan_cache_lookup: PlanCacheLookup::Miss,
             optimizer_environment: catalog_access.environment,
             configured_max_optimizer_groups: context.config.max_optimizer_groups,
@@ -1270,6 +1281,7 @@ fn optimized_query_plan_for_pinned<S: crate::executor::ExecutionStore>(
             output_columns,
             physical_plan,
             trace,
+            cardinality_estimate_scope: PlanCardinalityEstimateScope::BoundPlan,
             plan_cache_lookup: PlanCacheLookup::Bypass(reason),
             optimizer_environment: catalog_access.environment,
             configured_max_optimizer_groups: context.config.max_optimizer_groups,

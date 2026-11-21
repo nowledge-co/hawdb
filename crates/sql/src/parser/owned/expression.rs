@@ -589,9 +589,7 @@ impl Lowerer<'_> {
                         span,
                     ))
                 }
-                E::Function { .. } | E::Filtered { .. } if !matches!(position, PredicateScalar) => {
-                    self.function(value, position)
-                }
+                E::Function { .. } | E::Filtered { .. } => self.function(value, position),
                 _ => Err(semantic("unsupported PostgreSQL projection expression")),
             },
             Predicate | Having => match &value.kind {
@@ -745,6 +743,9 @@ impl Lowerer<'_> {
             ));
         };
         let name = self.ident(identifier);
+        if matches!(position, P::PredicateScalar) && name != "octet_length" {
+            return Err(semantic("unsupported PostgreSQL predicate function"));
+        }
         let mut span = self.span(identifier.span);
         let arguments = arguments
             .iter()

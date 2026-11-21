@@ -710,6 +710,27 @@ impl Error for CheckpointWorkError {
     }
 }
 
+impl CheckpointWorkError {
+    /// The cancellation/deadline reason carried by this work refusal, if any.
+    ///
+    /// Checkpoint callers use this before flattening an internal work error
+    /// into an admission message. Keeping the reason typed lets the public
+    /// boundary distinguish a stopped task from a capacity refusal.
+    pub(crate) const fn stop_reason(&self) -> Option<RuntimeCancellationReason> {
+        match self {
+            Self::Stopped(reason)
+            | Self::Io(RuntimeIoWaveError::Stopped(reason))
+            | Self::Memory(RuntimeMemoryError::Stopped(reason)) => Some(*reason),
+            Self::Admission(_)
+            | Self::Io(_)
+            | Self::Memory(_)
+            | Self::FileDescriptors(_)
+            | Self::Contended(_)
+            | Self::Allocation { .. } => None,
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;

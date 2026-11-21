@@ -83,7 +83,7 @@ impl Plan {
         for chunk in text.as_bytes().chunks(8192) {
             admission
                 .checkpoint()
-                .map_err(|reason| HawDBError::Execution(reason.to_string()))?;
+                .map_err(HawDBError::RuntimeTaskStopped)?;
             for &byte in chunk {
                 if byte == b'\n' {
                     largest = largest.max(line_bytes);

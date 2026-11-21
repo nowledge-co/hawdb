@@ -225,7 +225,7 @@ fn checkpoint_units_row_page_codec_preserves_ordinary_error_priority() {
 }
 
 #[test]
-fn shared_vector_row_page_borrows_payload_and_cancellation_is_admission() {
+fn shared_vector_row_page_borrows_payload_and_cancellation_is_typed_and_retryable() {
     use crate::background::CheckpointDecodeContext;
     let vector = hawdb_core::Vector::new(&vec![1.0; 32769]).unwrap();
     let row = RelationalRow::new(vec![
@@ -276,7 +276,12 @@ fn shared_vector_row_page_borrows_payload_and_cancellation_is_admission() {
             Some(&context),
         );
         assert!(
-            matches!(result, Err(RelationalRowPageError::Admission(ref reason)) if reason.contains("cancelled")),
+            matches!(
+                result,
+                Err(RelationalRowPageError::Stopped(
+                    hawdb_core::RuntimeCancellationReason::Cancelled
+                ))
+            ),
             "{result:?}"
         );
         probe.assert_released(&local);

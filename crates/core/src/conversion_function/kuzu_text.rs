@@ -8,9 +8,11 @@
 //! format below was measured against Kùzu 0.11.3; see
 //! `docs/CYPHER_LOAD_CSV.md` (type conversion functions) for the table.
 
+use crate::temporal::types::*;
+
 use std::fmt::Write;
 
-use chrono::{Datelike, NaiveDate, NaiveDateTime, Timelike};
+use crate::temporal::{Date, PlainDateTime};
 
 use crate::temporal::Duration;
 use crate::{HawDBError, Result, ValueRef};
@@ -107,7 +109,14 @@ fn write_value<W: Write>(out: &mut W, value: ValueRef<'_>) -> Result<()> {
         ValueRef::Date(date) => write_date(out, date)?,
         ValueRef::LocalDateTime(value) => write_timestamp(out, value)?,
         // Kùzu TIMESTAMP stores the UTC instant and prints it without a zone.
-        ValueRef::DateTime(value) => write_timestamp(out, value.naive_utc())?,
+        ValueRef::DateTime(value) => {
+            let utc = value
+                .checked_to_offset(crate::temporal::UtcOffset::UTC)
+                .ok_or_else(|| {
+                    HawDBError::Execution("datetime UTC value is out of range".into())
+                })?;
+            write_timestamp(out, utc_datetime(utc))?;
+        }
         ValueRef::Duration(value) => write_interval(out, value)?,
         ValueRef::Decimal(_) | ValueRef::LocalTime(_) => {
             return Err(HawDBError::Execution(format!(
@@ -152,7 +161,7 @@ fn write_blob<W: Write>(out: &mut W, bytes: &[u8]) -> Result<()> {
 }
 
 /// `YYYY-MM-DD`; years before 1 AD print as the BC year with ` (BC)`.
-fn write_date<W: Write>(out: &mut W, date: NaiveDate) -> Result<()> {
+fn write_date<W: Write>(out: &mut W, date: Date) -> Result<()> {
     let year = date.year();
     let (year, era) = if year <= 0 {
         (1 - i64::from(year), " (BC)")
@@ -161,13 +170,17 @@ fn write_date<W: Write>(out: &mut W, date: NaiveDate) -> Result<()> {
     };
     put_fmt(
         out,
-        format_args!("{year:04}-{:02}-{:02}{era}", date.month(), date.day()),
+        format_args!(
+            "{year:04}-{:02}-{:02}{era}",
+            (date.month() as u32),
+            date.day()
+        ),
     )
 }
 
 /// `YYYY-MM-DD hh:mm:ss[.ffffff]` with trailing fractional zeros removed.
 /// Kùzu TIMESTAMP holds microseconds, so finer digits are truncated.
-fn write_timestamp<W: Write>(out: &mut W, value: NaiveDateTime) -> Result<()> {
+fn write_timestamp<W: Write>(out: &mut W, value: PlainDateTime) -> Result<()> {
     write_date(out, value.date())?;
     put_fmt(
         out,

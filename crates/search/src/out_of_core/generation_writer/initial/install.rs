@@ -74,7 +74,9 @@ pub(super) fn install(
         )?)?;
     let envelope: SearchOutOfCoreManifestEnvelope =
         serde_json::from_slice(&head.bytes).map_err(|error| {
-            HawDBError::Storage(format!("invalid staged initial manifest: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!("invalid staged initial manifest: {error}"))
+            })
         })?;
     if json::checksum_with_context(&envelope.body, Some(task))? != envelope.checksum {
         return Err(HawDBError::Storage(

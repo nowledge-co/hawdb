@@ -242,9 +242,10 @@ pub struct RelationalOverflowExactGenerationRequest<'a> {
     pub task: &'a hawdb_core::RuntimeTaskContext,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum RelationalOverflowPublicationError {
     Admission(String),
+    PublishOutcomeUnknown(Box<hawdb_core::HawDBError>),
     Corrupt(String),
     Durability(String),
     FileDescriptors(hawdb_core::error::FileDescriptorError),
@@ -257,12 +258,22 @@ pub enum RelationalOverflowPublicationError {
     },
 }
 
+impl RelationalOverflowPublicationError {
+    fn from_admission(error: hawdb_core::HawDBError) -> Self {
+        match error {
+            hawdb_core::HawDBError::RuntimeTaskStopped(reason) => Self::Stopped(reason),
+            error => Self::Admission(error.to_string()),
+        }
+    }
+}
+
 impl fmt::Display for RelationalOverflowPublicationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Admission(message) => {
                 write!(formatter, "relational overflow publication admission failed: {message}")
             }
+            Self::PublishOutcomeUnknown(error) => fmt::Display::fmt(error, formatter),
             Self::Corrupt(message) => {
                 write!(formatter, "corrupt relational overflow publication: {message}")
             }
@@ -291,8 +302,11 @@ impl fmt::Display for RelationalOverflowPublicationError {
 impl std::error::Error for RelationalOverflowPublicationError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::PublishOutcomeUnknown(error) => Some(error.as_ref()),
             Self::FileDescriptors(error) => Some(error),
             Self::UnsupportedFormat(error) => Some(error),
+            // Every publisher stop is before its rename.
+            Self::Stopped(reason) => Some(reason),
             _ => None,
         }
     }

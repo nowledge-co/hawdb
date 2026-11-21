@@ -183,17 +183,23 @@ where
     {
         for line in reader.lines() {
             let line = line.map_err(|error| {
-                HawDBError::Execution(format!("failed to read shadow request: {error}"))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!("failed to read shadow request: {error}"))
+                })
             })?;
             let response = match serde_json::from_str::<serde_json::Value>(&line) {
                 Ok(request) => self.handle_request(&request),
                 Err(error) => json_error("parse", format!("invalid JSON: {error}")),
             };
             writeln!(writer, "{response}").map_err(|error| {
-                HawDBError::Execution(format!("failed to write shadow response: {error}"))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!("failed to write shadow response: {error}"))
+                })
             })?;
             writer.flush().map_err(|error| {
-                HawDBError::Execution(format!("failed to flush shadow response: {error}"))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!("failed to flush shadow response: {error}"))
+                })
             })?;
         }
         Ok(())
@@ -556,6 +562,7 @@ fn json_error_from_hawdb(error: HawDBError) -> serde_json::Value {
             });
             response
         }
+        error @ HawDBError::ReadOnly { .. } => json_error("execution", error),
         HawDBError::WalRecordLimitExceeded(cause) => {
             let mut response = json_error("execution", cause.as_ref());
             response["error"]["details"] = serde_json::json!({
@@ -564,6 +571,38 @@ fn json_error_from_hawdb(error: HawDBError) -> serde_json::Value {
                 "requested": cause.requested,
                 "maximum": cause.maximum,
                 "config_option": cause.limit.config_option(),
+            });
+            response
+        }
+        HawDBError::RuntimeTaskStopped(reason) => {
+            let mut response = json_error("execution", format!("runtime task stopped: {reason}"));
+            response["error"]["details"] = serde_json::json!({
+                "kind": "runtime_task_stopped",
+                "reason": reason.as_str(),
+            });
+            response
+        }
+        HawDBError::RuntimeAdmissionRefused(cause) => {
+            let mut response = json_error("execution", cause);
+            response["error"]["details"] = serde_json::json!({
+                "kind": "runtime_admission_refused",
+                "code": cause.code,
+                "requested": cause.requested,
+                "available": cause.available,
+                "retryable": cause.retryable,
+            });
+            response
+        }
+        error @ HawDBError::RuntimeIoWaveReservationExceeded {
+            requested_slots,
+            reserved_slots,
+        } => {
+            let mut response = json_error("execution", error);
+            response["error"]["details"] = serde_json::json!({
+                "kind": "runtime_io_wave_reservation_exceeded",
+                "requested_slots": requested_slots,
+                "reserved_slots": reserved_slots,
+                "retryable": false,
             });
             response
         }
@@ -618,6 +657,12 @@ fn json_error_from_hawdb(error: HawDBError) -> serde_json::Value {
         }
         error @ HawDBError::BranchCommandUnsupported { .. } => json_error("execution", error),
         error @ HawDBError::SearchProjectionRebuildRefused { .. } => json_error("execution", error),
+        error @ HawDBError::SearchProjectionOwnershipMarkerCorrupt { .. } => {
+            json_error("execution", error)
+        }
+        error @ HawDBError::SearchProjectionOwnershipMismatch { .. } => {
+            json_error("execution", error)
+        }
         error @ HawDBError::SearchProjectionEpochAdvanceRefused { .. } => {
             json_error("execution", error)
         }
@@ -696,7 +741,9 @@ impl ExternalShadowCommand {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let mut child = command.spawn().map_err(|error| {
-            HawDBError::Execution(format!("failed to spawn external shadow engine: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Execution(format!("failed to spawn external shadow engine: {error}"))
+            })
         })?;
         let stdin = child.stdin.take().ok_or_else(|| {
             HawDBError::Execution("external shadow engine did not expose stdin".to_string())
@@ -715,9 +762,11 @@ impl ExternalShadowCommand {
                     .write(true)
                     .open(path)
                     .map_err(|error| {
-                        HawDBError::Execution(format!(
-                            "failed to open external shadow trace: {error}"
-                        ))
+                        HawDBError::or_stop(&error, || {
+                            HawDBError::Execution(format!(
+                                "failed to open external shadow trace: {error}"
+                            ))
+                        })
                     })
             })
             .transpose()?;
@@ -764,7 +813,9 @@ impl ExternalShadowCommand {
         }
         self.trace_event(trace_sequence, "request", &request);
         let line = serde_json::to_string(&request).map_err(|error| {
-            HawDBError::Execution(format!("failed to encode shadow request: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Execution(format!("failed to encode shadow request: {error}"))
+            })
         })?;
         writeln!(self.stdin, "{line}").map_err(|error| {
             let message = format!(
@@ -974,7 +1025,9 @@ pub fn external_shadow_ready_missing_capabilities(
 
 fn summarize_external_shadow_trace(trace_path: &str) -> Result<ExternalShadowTraceSummary> {
     let file = File::open(trace_path).map_err(|error| {
-        HawDBError::Execution(format!("failed to open external shadow trace: {error}"))
+        HawDBError::or_stop(&error, || {
+            HawDBError::Execution(format!("failed to open external shadow trace: {error}"))
+        })
     })?;
     let mut summary = ExternalShadowTraceSummary::default();
     let mut request_sequences = std::collections::BTreeSet::new();
@@ -1605,11 +1658,9 @@ pub(super) fn decode_external_session_response(
             })?;
             Ok(QueryOutput {
                 rows: rows_from_json(engine_name, rows)
-                    .map_err(|error| {
-                    HawDBError::Execution(format!(
+                    .map_err(|error| HawDBError::or_stop(&error, || HawDBError::Execution(format!(
                         "shadow engine '{engine_name}' session output {index} row decoding failed: {error}"
-                    ))
-                })?
+                    ))))?
                     .into(),
             })
         })
@@ -2133,6 +2184,25 @@ mod protocol_server_tests {
                 HawDBError::Execution(_)
             ));
         }
+    }
+
+    #[test]
+    fn io_wave_reservation_refusal_has_machine_readable_external_details() {
+        let response = json_error_from_hawdb(HawDBError::RuntimeIoWaveReservationExceeded {
+            requested_slots: 3,
+            reserved_slots: 2,
+        });
+
+        assert_eq!(response["error"]["class"], "execution");
+        assert_eq!(
+            response["error"]["details"],
+            serde_json::json!({
+                "kind": "runtime_io_wave_reservation_exceeded",
+                "requested_slots": 3,
+                "reserved_slots": 2,
+                "retryable": false,
+            })
+        );
     }
 
     #[derive(Default)]

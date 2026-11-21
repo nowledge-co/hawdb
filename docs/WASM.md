@@ -134,6 +134,54 @@ bazel test //:hawdb_wasm_playground_bridge_tests //:hawdb_in_memory_portable_tes
 node --test examples/wasm-playground/worker.test.js
 ```
 
+## SIMD enabled by default
+
+Shared exact vector arithmetic selects the `simd128` kernel on `wasm32` by
+default, including external consumer packages and minimal-feature builds.
+The kernel enables SIMD on its functions, so consumers do not need global
+`RUSTFLAGS`, `+simd128`, nightly Rust, or a Cargo feature. Vectors below 16
+dimensions retain the existing scalar path. Native kernel selection is unchanged.
+
+Generated modules that retain this kernel require an engine with standard
+WebAssembly SIMD. An engine without SIMD rejects such a module during validation;
+there is no runtime scalar fallback for those engines. The small-vector scalar
+path does not remove that module requirement. Relaxed SIMD, WASM threads, shared
+memory and cross-origin isolation are not required.
+
+The kernel preserves finite-value validation, coordinate-order `f64` sums,
+distance/score bits, unaligned encoded inputs and cooperative work boundaries.
+This accelerates the existing shared scalar distance APIs and SQL/Cypher
+distance expressions; it does not enable the excluded vector-search/index backend.
+
+Run the kernel parity suite in actual WASM without global target-feature flags:
+
+```sh
+CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner \
+  cargo test --locked -p hawdb-core --target wasm32-unknown-unknown \
+    --lib vector::kernel::tests::
+```
+
+This suite uses Node.js by default. It covers default dispatch, scalar/SIMD bit
+parity, short/unaligned loads, extreme values, tails and cancellation/error
+precedence. The `in_memory_portable` browser Worker suite separately covers
+ordered scalar equality through SQL/Cypher at the dispatch and work boundaries.
+
+For a manual, serialized same-kernel-workload comparison in the repository-wide
+release profile:
+
+```sh
+CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner \
+  cargo test --locked --release -p hawdb-core --target wasm32-unknown-unknown \
+    --lib vector::kernel::measurement::wasm_kernel_measurement \
+    -- --include-ignored --nocapture
+```
+
+The probe rotates scalar/default arms after three warmups, records 11 samples
+per arm and checks exact sum checksums. It covers 3/16/32/384/768/1536/8193
+dimensions, four arithmetic modes and slice/unaligned encoded candidates.
+Report compilation separately from execution, and do not infer other engines'
+performance from one local runtime. This probe is manual and excluded from CI.
+
 ## Build
 
 Use the repository's pinned Rust toolchain and lockfile:
