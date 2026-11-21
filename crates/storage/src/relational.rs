@@ -8704,15 +8704,10 @@ fn validate_predicate(
                     "row comparison requires at least one field".into(),
                 ));
             }
-            let expected_ordering = match op {
-                RelationalComparisonOp::Eq | RelationalComparisonOp::NotEq => None,
-                RelationalComparisonOp::Lt | RelationalComparisonOp::Lte => {
-                    Some(RelationalComparisonOp::Lt)
-                }
-                RelationalComparisonOp::Gt | RelationalComparisonOp::Gte => {
-                    Some(RelationalComparisonOp::Gt)
-                }
-            };
+            let ordered = !matches!(
+                op,
+                RelationalComparisonOp::Eq | RelationalComparisonOp::NotEq
+            );
             for field in fields {
                 validate_predicate(schema, &field.equality)?;
                 if comparison_predicate_op(&field.equality) != Some(RelationalComparisonOp::Eq) {
@@ -8720,11 +8715,16 @@ fn validate_predicate(
                         "row comparison equality field has an invalid operator".into(),
                     ));
                 }
-                match (&field.ordering, expected_ordering) {
-                    (None, None) => {}
-                    (Some(ordering), Some(expected)) => {
+                match (&field.ordering, ordered) {
+                    (None, false) => {}
+                    (Some(ordering), true) => {
                         validate_predicate(schema, ordering)?;
-                        if comparison_predicate_op(ordering) != Some(expected) {
+                        // Scalar binding may swap operands and reverse the strict
+                        // operator. That field still answers the original comparison.
+                        if !matches!(
+                            comparison_predicate_op(ordering),
+                            Some(RelationalComparisonOp::Lt | RelationalComparisonOp::Gt)
+                        ) {
                             return Err(RelationalError::Schema(
                                 "row comparison ordering field has an invalid operator".into(),
                             ));

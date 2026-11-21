@@ -481,6 +481,59 @@ fn row_comparison_mutations_evaluate_fields_left_to_right() {
     std::fs::remove_dir_all(path).unwrap();
 }
 
+#[test]
+fn row_comparison_mutations_preserve_reversed_field_direction_after_replay() {
+    let path = unique_test_dir("row-comparison-reversed-fields");
+    let mut db = Database::open(&path).unwrap();
+    db.query_sql(
+        "CREATE TABLE row_cmp_reversed (\
+         id BIGINT PRIMARY KEY, a BIGINT NOT NULL, b BIGINT NOT NULL, hit BOOLEAN NOT NULL)",
+    )
+    .unwrap();
+    db.query_sql(
+        "INSERT INTO row_cmp_reversed VALUES \
+         (1, 2, -9, FALSE), (2, 1, 3, FALSE), (3, 1, 0, FALSE), (4, 0, 9, FALSE)",
+    )
+    .unwrap();
+    db.checkpoint().unwrap();
+
+    let params = [Value::Int(0)];
+    let ids = query_ids(
+        &mut db,
+        "SELECT id FROM row_cmp_reversed WHERE (1, $1) < (a, b) ORDER BY id",
+        &params,
+    );
+    assert_eq!(ids, vec![Value::Int(1), Value::Int(2)]);
+    db.query_sql_with_params(
+        "UPDATE row_cmp_reversed SET hit = TRUE WHERE (1, $1) < (a, b)",
+        &params,
+    )
+    .unwrap();
+    drop(db);
+    let mut db = Database::open(&path).unwrap();
+    assert_eq!(
+        query_ids(
+            &mut db,
+            "SELECT id FROM row_cmp_reversed WHERE hit = TRUE ORDER BY id",
+            &[]
+        ),
+        ids,
+    );
+    db.query_sql_with_params(
+        "DELETE FROM row_cmp_reversed WHERE (1, $1) < (a, b)",
+        &params,
+    )
+    .unwrap();
+    drop(db);
+    let mut db = Database::open(&path).unwrap();
+    assert_eq!(
+        query_ids(&mut db, "SELECT id FROM row_cmp_reversed ORDER BY id", &[]),
+        vec![Value::Int(3), Value::Int(4)],
+    );
+    drop(db);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
 fn seed_row_keyset(database: &mut Database, indexed: bool) {
     database
         .query_sql("CREATE TABLE row_keyset (id BIGINT PRIMARY KEY, tenant TEXT NOT NULL, bucket BIGINT NOT NULL, rank BIGINT NOT NULL)")
