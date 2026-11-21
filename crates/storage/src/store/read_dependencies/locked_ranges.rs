@@ -7,13 +7,26 @@
 
 use super::*;
 use crate::cow::CowPageWeight;
-use crate::relational::{RelationalKey, RelationalScalarType, RelationalValue};
+use crate::relational::{
+    RelationalIndexSchema, RelationalKey, RelationalScalarType, RelationalTableSchema,
+    RelationalValue,
+};
 use crate::transaction_locks::{LockNamespace, LockRequest, LockTarget};
 use std::ops::Bound;
 
 const MAX_REQUESTS: usize = 4096;
 const MAX_METADATA_BYTES: usize = 64 * 1024;
 const MAX_STAMPS: usize = 65_536;
+
+fn full_index_for_columns<'a>(
+    schema: &'a RelationalTableSchema,
+    columns: &[String],
+) -> Option<&'a RelationalIndexSchema> {
+    schema
+        .indexes
+        .iter()
+        .find(|index| index.predicate.is_none() && index.columns == columns)
+}
 
 impl GraphStore {
     /// Internal coordinator contract: register the capture at transaction begin,
@@ -66,8 +79,7 @@ impl GraphStore {
                     let index = if columns == &schema.primary_key {
                         None
                     } else {
-                        let Some(index) = schema.indexes.iter().find(|i| &i.columns == columns)
-                        else {
+                        let Some(index) = full_index_for_columns(schema, columns) else {
                             // Constraint-only indexes have no payload-sensitive
                             // prefix summaries. A table dependency is safe.
                             self.validate_table(captured, table, &mut budget)?;

@@ -370,6 +370,7 @@ fn relational_state_row_bytes_track_transactions_rollback_and_recovery() {
                     name: "events_at".to_string(),
                     columns: vec!["at".to_string()],
                     unique: false,
+                    predicate: None,
                 },
             },
         ],

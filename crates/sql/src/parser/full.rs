@@ -925,11 +925,24 @@ impl Fold<'_> {
             .collect()
     }
     fn create_index(&self, node: NodeId) -> Result<SqlStatement> {
-        if ["HawConcurrently", "HawIndexUsing", "HawIndexTail"]
+        if ["HawConcurrently", "HawIndexUsing"]
             .iter()
             .any(|name| self.has(node, name))
         {
             return Err(semantic("unsupported PostgreSQL CREATE INDEX clause"));
+        }
+        let mut predicate = None;
+        for tail in self.children(node, "HawIndexTail") {
+            let Some(selection) = self.tree.child(tail, "Where") else {
+                return Err(semantic("unsupported PostgreSQL CREATE INDEX clause"));
+            };
+            if predicate.is_some() {
+                return Err(semantic("CREATE INDEX may contain only one WHERE clause"));
+            }
+            predicate = Some(self.lowerer.lower(
+                &self.expr(self.child(selection, "Or")),
+                ExpressionPosition::Predicate,
+            )?);
         }
         let name = self
             .tree
@@ -944,6 +957,7 @@ impl Fold<'_> {
             columns: self.index_columns(self.child(node, "HawIndexColumns"))?,
             unique: self.has(node, "HawUnique"),
             if_not_exists: self.has(node, "HawIfNotExists"),
+            predicate,
         }))
     }
     fn create_search_index(&self, node: NodeId) -> Result<SqlStatement> {

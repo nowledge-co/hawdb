@@ -87,6 +87,12 @@ pub(in crate::relational) fn relational_schema_digest_with_work_context(
         output.bytes(index.name.as_bytes())?;
         output.strings(&index.columns)?;
         output.update(&[u8::from(index.unique)])?;
+        if let Some(predicate) = &index.predicate {
+            // Full-index schemas retain their legacy durable digest. Partial
+            // indexes append an explicit marker and their predicate identity.
+            output.update(&[1])?;
+            output.predicate(predicate)?;
+        }
     }
     work.checkpoint().map_err(work_error)?;
     Ok(output.hasher.finish().sha256)
@@ -212,6 +218,47 @@ impl SchemaDigest<'_> {
             drop(memory);
             unit.finish();
             self.work.checkpoint().map_err(work_error)
+        }
+    }
+
+    fn predicate(
+        &mut self,
+        predicate: &RelationalPredicate,
+    ) -> Result<(), RelationalIndexShadowError> {
+        match predicate {
+            RelationalPredicate::And(left, right) | RelationalPredicate::Or(left, right) => {
+                self.update(&[u8::from(matches!(predicate, RelationalPredicate::Or(..)))])?;
+                self.predicate(left)?;
+                self.predicate(right)
+            }
+            RelationalPredicate::Not(predicate) => {
+                self.update(&[2])?;
+                self.predicate(predicate)
+            }
+            RelationalPredicate::Compare { column, op, value } => {
+                self.update(&[3])?;
+                self.bytes(column.as_bytes())?;
+                self.update(&[match op {
+                    RelationalComparisonOp::Eq => 0,
+                    RelationalComparisonOp::NotEq => 1,
+                    RelationalComparisonOp::Lt => 2,
+                    RelationalComparisonOp::Lte => 3,
+                    RelationalComparisonOp::Gt => 4,
+                    RelationalComparisonOp::Gte => 5,
+                }])?;
+                self.value(value)
+            }
+            RelationalPredicate::IsNull { column, negated } => {
+                self.update(&[4])?;
+                self.bytes(column.as_bytes())?;
+                self.update(&[u8::from(*negated)])
+            }
+            RelationalPredicate::NumericCompare { .. }
+            | RelationalPredicate::NumericIsNull { .. } => {
+                Err(RelationalIndexShadowError::Admission(
+                    "partial-index schema contains an unsupported numeric predicate".into(),
+                ))
+            }
         }
     }
 }

@@ -3681,6 +3681,7 @@ mod tests {
                             name: "notes_body".to_string(),
                             columns: vec!["body".to_string()],
                             unique: false,
+                            predicate: None,
                         },
                     }],
                 },

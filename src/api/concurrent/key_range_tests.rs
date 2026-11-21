@@ -162,6 +162,70 @@ fn unknown_or_branch_still_requires_a_table_lock() {
     owner.rollback();
 }
 
+#[test]
+fn partial_index_does_not_narrow_the_range_lock_domain() {
+    let cache = crate::relational_sql::RelationalPlanTemplateCache::new(Some(1));
+    let prepared = cache
+        .prepare("DELETE FROM items WHERE indexed_key = 7")
+        .unwrap();
+    let SqlStatement::Delete(delete) = prepared.statement() else {
+        panic!("expected DELETE")
+    };
+    let schema = RelationalTableSchema {
+        materialized_view: None,
+        name: "items".into(),
+        columns: vec![
+            hawdb_storage::relational::RelationalColumnSchema {
+                name: "id".into(),
+                scalar_type: hawdb_storage::relational::RelationalScalarType::BigInt,
+                nullable: false,
+                default: None,
+            },
+            hawdb_storage::relational::RelationalColumnSchema {
+                name: "indexed_key".into(),
+                scalar_type: hawdb_storage::relational::RelationalScalarType::BigInt,
+                nullable: false,
+                default: None,
+            },
+            hawdb_storage::relational::RelationalColumnSchema {
+                name: "active".into(),
+                scalar_type: hawdb_storage::relational::RelationalScalarType::Boolean,
+                nullable: false,
+                default: None,
+            },
+        ],
+        primary_key: vec!["id".into()],
+        unique_constraints: Vec::new(),
+        foreign_keys: Vec::new(),
+        indexes: vec![hawdb_storage::relational::RelationalIndexSchema {
+            name: "active_key_idx".into(),
+            columns: vec!["indexed_key".into()],
+            unique: false,
+            predicate: Some(hawdb_storage::relational::RelationalPredicate::Compare {
+                column: "active".into(),
+                op: hawdb_storage::relational::RelationalComparisonOp::Eq,
+                value: RelationalValue::Boolean(true),
+            }),
+        }],
+    };
+
+    let requests = super::range_locks::target_lock_requests(
+        LockMode::Exclusive,
+        &delete.table,
+        delete.alias.as_deref(),
+        delete.selection.as_ref(),
+        &[],
+        &schema,
+    );
+    assert!(matches!(
+        requests.as_slice(),
+        [LockRequest {
+            target: LockTarget::RelationalTable { table },
+            ..
+        }] if table == "items"
+    ));
+}
+
 type KeyRanges = Option<Vec<(Bound<RelationalKey>, Bound<RelationalKey>)>>;
 
 fn derive_ranges(predicate: &str, parameters: &[Value]) -> KeyRanges {

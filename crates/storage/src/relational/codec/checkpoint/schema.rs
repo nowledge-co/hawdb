@@ -73,7 +73,30 @@ pub(crate) fn decode_schema(
     max_schema_items: usize,
     work: &CheckpointWorkContext,
 ) -> Result<RelationalTableSchema, RelationalError> {
-    decode_schema_inner(encoded, max_encoded_bytes, max_schema_items, work, None)
+    decode_schema_inner(
+        encoded,
+        max_encoded_bytes,
+        max_schema_items,
+        work,
+        None,
+        true,
+    )
+}
+
+pub(crate) fn decode_legacy_schema(
+    encoded: &[u8],
+    max_encoded_bytes: usize,
+    max_schema_items: usize,
+    work: &CheckpointWorkContext,
+) -> Result<RelationalTableSchema, RelationalError> {
+    decode_schema_inner(
+        encoded,
+        max_encoded_bytes,
+        max_schema_items,
+        work,
+        None,
+        false,
+    )
 }
 
 pub(crate) fn decode_schema_owned(
@@ -88,6 +111,7 @@ pub(crate) fn decode_schema_owned(
         max_schema_items,
         allocations,
         Some(allocations),
+        true,
     )
 }
 
@@ -97,6 +121,7 @@ fn decode_schema_inner(
     max_schema_items: usize,
     work: &CheckpointWorkContext,
     allocations: Option<&crate::background::CheckpointDecodeContext>,
+    index_predicates: bool,
 ) -> Result<RelationalTableSchema, RelationalError> {
     if encoded.len() > max_encoded_bytes {
         return Err(RelationalError::Admission(format!(
@@ -123,7 +148,7 @@ fn decode_schema_inner(
         allocations,
     };
     let mut decoder = Decoder::new(input, limits, true);
-    let schema = decoder.table_schema()?;
+    let schema = decoder.table_schema_with_index_predicates(index_predicates)?;
     decoder.finish()?;
     let scratch = allocations.map(|_| crate::background::CheckpointDecodeContext {
         work: work.clone(),

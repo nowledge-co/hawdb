@@ -265,6 +265,7 @@ fn seeded_store(target_prefix_rows: usize) -> RelationalStore {
                             name: "idx_messages_space".to_string(),
                             columns: vec!["space_id".to_string()],
                             unique: false,
+                            predicate: None,
                         },
                     },
                     RelationalWrite::CreateIndex {
@@ -278,6 +279,7 @@ fn seeded_store(target_prefix_rows: usize) -> RelationalStore {
                                 "id".to_string(),
                             ],
                             unique: false,
+                            predicate: None,
                         },
                     },
                 ],

@@ -164,6 +164,7 @@ fn seeded_state() -> RelationalState {
                             name: "messages_owner_idx".to_string(),
                             columns: vec!["owner".to_string()],
                             unique: false,
+                            predicate: None,
                         }],
                     }),
                     RelationalWrite::Insert {

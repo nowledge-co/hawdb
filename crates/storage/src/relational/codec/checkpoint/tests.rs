@@ -129,6 +129,7 @@ impl Fixture {
                 name: "flag-界".repeat(10000),
                 columns: vec!["flag".into()],
                 unique: false,
+                predicate: None,
             }],
         };
         store
@@ -593,6 +594,7 @@ fn checkpoint_units_relational_wide_schema_defaults_keys_and_foreign_metadata_pr
             name: format!("index-{id}-界"),
             columns: vec![name],
             unique: id % 2 == 0,
+            predicate: None,
         });
     }
     let mut expected = Encoder::default();

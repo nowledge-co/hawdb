@@ -91,6 +91,7 @@ fn schema() -> RelationalTableSchema {
             name: format!("index-{id}-界"),
             columns: vec![name],
             unique: id % 2 == 0,
+            predicate: None,
         });
     }
     schema

@@ -222,6 +222,60 @@ fn randomized_sql_point_prefix_and_join_dependencies_preserve_query_results() {
 }
 
 #[test]
+fn partial_index_excluded_rows_keep_table_domain_dependencies() {
+    for mutation in [
+        "DELETE FROM items WHERE id = 1",
+        "UPDATE items SET indexed_key = 8 WHERE id = 1",
+    ] {
+        let mut db = Database::new();
+        db.query_sql(
+            "CREATE TABLE items (id BIGINT PRIMARY KEY, indexed_key BIGINT NOT NULL, active BOOLEAN NOT NULL)",
+        )
+        .unwrap();
+        db.query_sql("CREATE INDEX active_key_idx ON items (indexed_key) WHERE active = TRUE")
+            .unwrap();
+        db.query_sql("INSERT INTO items (id, indexed_key, active) VALUES (1, 7, FALSE)")
+            .unwrap();
+
+        let mut read = db.begin_prepared_read(limits()).unwrap();
+        let before = read
+            .query_sql_with_params("SELECT id FROM items WHERE indexed_key = 7", &[])
+            .unwrap()
+            .rows
+            .into_rows();
+        assert_eq!(before.len(), 1, "excluded source row must remain visible");
+
+        db.query_sql(mutation).unwrap();
+        assert_eq!(
+            read.query_sql_with_params("SELECT id FROM items WHERE indexed_key = 7", &[])
+                .unwrap()
+                .rows
+                .into_rows(),
+            before,
+            "prepared read must retain its pinned source"
+        );
+        let dependencies = read.finish().unwrap();
+        assert!(
+            !dependencies.requires_unchanged_database_epoch(),
+            "relational fallback should remain scoped to the table"
+        );
+        assert!(db
+            .query_sql("SELECT id FROM items WHERE indexed_key = 7")
+            .unwrap()
+            .rows
+            .is_empty());
+        assert!(matches!(
+            db.runtime
+                .get()
+                .unwrap()
+                .store
+                .validate_read_dependencies(&dependencies.graph),
+            Err(GraphReadDependencyError::Conflict(_))
+        ));
+    }
+}
+
+#[test]
 fn reverted_index_values_still_conflict() {
     let mut accepted = 0usize;
     let mut rejected = 0usize;

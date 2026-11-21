@@ -1662,11 +1662,12 @@ mod tests {
     use hawdb_storage::{
         config::{DurabilityPolicy, WalReplayConfig},
         relational::{
-            encode_relational_checkpoint, RelationalColumnSchema, RelationalConflictAction,
-            RelationalForeignKeySchema, RelationalIndexSchema, RelationalInsertMode, RelationalKey,
-            RelationalReferentialAction, RelationalRow, RelationalScalarType, RelationalState,
-            RelationalTableSchema, RelationalTransaction, RelationalUpsertAssignment,
-            RelationalUpsertValue, RelationalValue, RelationalWrite,
+            encode_relational_checkpoint, RelationalColumnSchema, RelationalComparisonOp,
+            RelationalConflictAction, RelationalForeignKeySchema, RelationalIndexSchema,
+            RelationalInsertMode, RelationalKey, RelationalPredicate, RelationalReferentialAction,
+            RelationalRow, RelationalScalarType, RelationalState, RelationalTableSchema,
+            RelationalTransaction, RelationalUpsertAssignment, RelationalUpsertValue,
+            RelationalValue, RelationalWrite,
         },
     };
     use std::num::NonZeroUsize;
@@ -1743,6 +1744,7 @@ mod tests {
                                     name: "documents_owner_idx".to_string(),
                                     columns: vec!["owner".to_string()],
                                     unique: false,
+                                    predicate: None,
                                 }],
                             }),
                             RelationalWrite::Insert {
@@ -2399,6 +2401,7 @@ mod tests {
                                         name: "new_schema_index".into(),
                                         columns: vec!["id".into()],
                                         unique: false,
+                                        predicate: None,
                                     },
                                 }],
                             },
@@ -2867,6 +2870,101 @@ mod tests {
     }
 
     #[test]
+    fn partial_unique_qualification_skips_excluded_rows_and_unsupported_upsert_use() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "hawdb-partial-constraint-qualification-{}-{nonce}",
+            std::process::id()
+        ));
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            DurabilityPolicy::default(),
+            WalReplayConfig {
+                relational_index_mode: RelationalIndexMode::Shadow,
+                ..WalReplayConfig::default()
+            },
+        )
+        .unwrap();
+        store
+            .commit_relational_transaction(
+                &mut catalog,
+                RelationalTransaction {
+                    writes: vec![
+                        RelationalWrite::CreateTable(RelationalTableSchema {
+                            materialized_view: None,
+                            name: "items".into(),
+                            columns: vec![
+                                constraint_text_column("id", false),
+                                constraint_text_column("handle", false),
+                                RelationalColumnSchema {
+                                    name: "active".into(),
+                                    scalar_type: RelationalScalarType::Boolean,
+                                    nullable: false,
+                                    default: None,
+                                },
+                            ],
+                            primary_key: vec!["id".into()],
+                            unique_constraints: Vec::new(),
+                            foreign_keys: Vec::new(),
+                            indexes: vec![RelationalIndexSchema {
+                                name: "active_handle_idx".into(),
+                                columns: vec!["handle".into()],
+                                unique: true,
+                                predicate: Some(RelationalPredicate::Compare {
+                                    column: "active".into(),
+                                    op: RelationalComparisonOp::Eq,
+                                    value: RelationalValue::Boolean(true),
+                                }),
+                            }],
+                        }),
+                        RelationalWrite::Insert {
+                            table: "items".into(),
+                            rows: vec![RelationalRow::new(vec![
+                                RelationalValue::Text("item-1".into()),
+                                RelationalValue::Text("excluded".into()),
+                                RelationalValue::Boolean(false),
+                            ])],
+                            mode: RelationalInsertMode::Error,
+                        },
+                    ],
+                },
+            )
+            .unwrap();
+        store.checkpoint(&catalog).unwrap();
+
+        let report = store
+            .qualify_relational_constraint_read_view(
+                RelationalIndexViewQualificationOptions::default(),
+            )
+            .unwrap();
+        assert!(report.ready, "{report:?}");
+        let probes = report
+            .probes
+            .iter()
+            .filter(|probe| probe.index == "active_handle_idx")
+            .collect::<Vec<_>>();
+        assert!(!probes.is_empty());
+        assert!(probes.iter().all(|probe| {
+            probe.candidate_rows == 0
+                && probe.oracle_rows == 0
+                && probe
+                    .uses
+                    .contains(&RelationalConstraintQualificationUse::UniqueEnforcement)
+                && !probe
+                    .uses
+                    .contains(&RelationalConstraintQualificationUse::UpsertConflict)
+        }));
+
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn constraint_qualification_fails_closed_on_a_corrupt_selected_page() {
         use std::io::{Read, Seek, SeekFrom, Write};
 
@@ -2979,6 +3077,7 @@ mod tests {
                                 name: "documents_id_idx".to_string(),
                                 columns: vec!["id".to_string()],
                                 unique: false,
+                                predicate: None,
                             },
                         }],
                     },
@@ -3572,11 +3671,13 @@ mod tests {
                             name: "documents_owner_idx".to_string(),
                             columns: vec!["owner".to_string()],
                             unique: false,
+                            predicate: None,
                         },
                         RelationalIndexSchema {
                             name: "documents_owner_id_idx".to_string(),
                             columns: vec!["owner".to_string(), "id".to_string()],
                             unique: false,
+                            predicate: None,
                         },
                     ],
                 }),
@@ -4028,6 +4129,7 @@ mod tests {
                         name: "accounts_handle_idx".to_string(),
                         columns: vec!["handle".to_string()],
                         unique: true,
+                        predicate: None,
                     }],
                 }),
                 RelationalWrite::CreateTable(RelationalTableSchema {

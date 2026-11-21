@@ -51,6 +51,7 @@ fn controlled_materialized_view_recovery_matches_wal_and_releases_admission() {
                         name: "by_payload".into(),
                         columns: vec!["payload".into()],
                         unique: false,
+                        predicate: None,
                     },
                 }],
             },
@@ -97,6 +98,7 @@ fn controlled_materialized_view_recovery_matches_wal_and_releases_admission() {
                 name: "stats_payload".into(),
                 columns: vec!["payload".into()],
                 unique: false,
+                predicate: None,
             },
         },
         RelationalWrite::Insert {
@@ -303,6 +305,7 @@ fn owned_relational_wal_decode_preserves_all_write_variants_and_access_captures(
                 name: "by_id".into(),
                 columns: vec!["id".into()],
                 unique: false,
+                predicate: None,
             },
         },
         RelationalWrite::Insert {
@@ -2468,11 +2471,13 @@ fn controlled_index_definitions_match_all_roles_and_decimal_names() {
             name: "secondary".into(),
             columns: schema.primary_key.clone(),
             unique: false,
+            predicate: None,
         });
         schema.indexes.push(RelationalIndexSchema {
             name: "declared_unique".into(),
             columns: schema.primary_key.clone(),
             unique: true,
+            predicate: None,
         });
         assert_eq!(
             required_index_definitions_with_allocations(&schema, Some(&context)).unwrap(),
@@ -3186,6 +3191,7 @@ fn controlled_materialized_dml_denies_wide_directory_copy_without_source_mutatio
         name: "i".repeat(128 * 1024),
         columns: vec!["owner".into()],
         unique: false,
+        predicate: None,
     });
     let limits = RelationalMutationLimits::default();
     let overflow = RelationalOverflowConfig::default();
@@ -3306,6 +3312,7 @@ fn controlled_schema_copy_preserves_nested_metadata_and_releases_after_last_clon
         name: "by_owner".into(),
         columns: vec!["owner".into()],
         unique: false,
+        predicate: None,
     });
     let source = RelationalSchemaData::from(schema);
     for (ceiling, succeeds) in [(4096, false), (16 * 1024 * 1024, true)] {
@@ -3365,6 +3372,7 @@ fn controlled_schema_edit_admits_index_vector_growth_and_keeps_source_unchanged(
         name: "by_payload".into(),
         columns: vec!["payload".into()],
         unique: false,
+        predicate: None,
     };
     let actual = source
         .checkpoint_edit(&CheckpointWorkContext::default(), |schema, context| {
@@ -3449,6 +3457,7 @@ fn controlled_index_rebuild_denies_wide_name_before_copy_and_retains_output_inve
         name: name.clone(),
         columns: vec!["owner".into()],
         unique: false,
+        predicate: None,
     });
     let limits = RelationalMutationLimits::default();
     let overflow = RelationalOverflowConfig::default();
@@ -3926,6 +3935,7 @@ fn controlled_materialized_schema_recovery_matches_all_capture_combinations_and_
                 name: "label_index".into(),
                 columns: vec!["label".into()],
                 unique: false,
+                predicate: None,
             },
         },
     ]);
@@ -4185,6 +4195,7 @@ fn controlled_conflict_probe_admits_selected_unique_definition_before_wide_copy(
         name: "i".repeat(128 * 1024),
         columns: vec!["owner".into()],
         unique: true,
+        predicate: None,
     });
     let state = RelationalState::default()
         .stage_transaction(

@@ -32,7 +32,7 @@ use super::{
     RelationalValue, Result, SqlColumnRef, SqlNullOrder, SqlOrderDirection, SqlPredicate, Value,
 };
 use hawdb_optimizer::RelationalAccessCostContext;
-use hawdb_storage::relational::RelationalScalarType;
+use hawdb_storage::relational::{RelationalPredicate, RelationalScalarType};
 
 pub(super) struct RelationalBaseAccessPlanning<'a, R> {
     pub(super) cost_context: RelationalAccessCostContext,
@@ -186,6 +186,16 @@ pub(super) fn choose_base_access(
             }
         }
         for index in &schema.indexes {
+            if !partial_index_predicate_is_implied(
+                index.predicate.as_ref(),
+                predicate,
+                parameters,
+                schema,
+                table,
+                qualifier,
+            ) {
+                continue;
+            }
             if let Some(candidate) = index_access_candidate(
                 &planning,
                 index.name.clone(),
@@ -599,6 +609,9 @@ pub(super) fn choose_join_access(
             }
         }
         for index in &schema.indexes {
+            if index.predicate.is_some() {
+                continue;
+            }
             if let Some(candidate) = join_index_access_candidate(
                 index.name.clone(),
                 &index.columns,
@@ -629,6 +642,63 @@ pub(super) fn choose_join_access(
         .position(|candidate| candidate.descriptor == selected)
         .expect("selected relational join access path came from the candidate set");
     Ok(candidates.swap_remove(position))
+}
+
+fn partial_index_predicate_is_implied(
+    index_predicate: Option<&RelationalPredicate>,
+    query_predicate: Option<&SqlPredicate>,
+    parameters: &[Value],
+    schema: &RelationalTableSchema,
+    table: &str,
+    qualifier: &str,
+) -> bool {
+    let Some(index_predicate) = index_predicate else {
+        return true;
+    };
+    let Some(query_predicate) = query_predicate else {
+        return false;
+    };
+    let mut query_terms = Vec::new();
+    collect_sql_conjuncts(query_predicate, &mut query_terms);
+    let compiled = query_terms
+        .into_iter()
+        .filter_map(|term| {
+            crate::statement::compile_mutation_predicate(
+                term,
+                parameters,
+                schema,
+                Some(qualifier),
+                table,
+            )
+            .ok()
+        })
+        .collect::<Vec<_>>();
+    let mut required = Vec::new();
+    collect_relational_conjuncts(index_predicate, &mut required);
+    required
+        .into_iter()
+        .all(|term| compiled.iter().any(|candidate| candidate == term))
+}
+
+fn collect_sql_conjuncts<'a>(predicate: &'a SqlPredicate, output: &mut Vec<&'a SqlPredicate>) {
+    if let hawdb_sql::ExprKind::And(left, right) = &predicate.kind {
+        collect_sql_conjuncts(left, output);
+        collect_sql_conjuncts(right, output);
+    } else {
+        output.push(predicate);
+    }
+}
+
+fn collect_relational_conjuncts<'a>(
+    predicate: &'a RelationalPredicate,
+    output: &mut Vec<&'a RelationalPredicate>,
+) {
+    if let RelationalPredicate::And(left, right) = predicate {
+        collect_relational_conjuncts(left, output);
+        collect_relational_conjuncts(right, output);
+    } else {
+        output.push(predicate);
+    }
 }
 
 pub(super) fn complete_join_columns(
@@ -855,5 +925,102 @@ pub(super) fn visit_base_entries<'a>(
             })
         }
         RelationalBaseAccess::FullScan => row_runtime.visit_all(table, visit),
+    }
+}
+
+#[cfg(test)]
+mod partial_index_tests {
+    use super::*;
+    use hawdb_storage::relational::{
+        RelationalColumnSchema, RelationalComparisonOp, RelationalScalarType,
+    };
+
+    fn schema() -> RelationalTableSchema {
+        RelationalTableSchema {
+            name: "items".into(),
+            columns: vec![
+                RelationalColumnSchema {
+                    name: "tenant_id".into(),
+                    scalar_type: RelationalScalarType::BigInt,
+                    nullable: false,
+                    default: None,
+                },
+                RelationalColumnSchema {
+                    name: "active".into(),
+                    scalar_type: RelationalScalarType::Boolean,
+                    nullable: false,
+                    default: None,
+                },
+                RelationalColumnSchema {
+                    name: "deleted_at".into(),
+                    scalar_type: RelationalScalarType::BigInt,
+                    nullable: true,
+                    default: None,
+                },
+            ],
+            primary_key: vec!["tenant_id".into()],
+            unique_constraints: Vec::new(),
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+            materialized_view: None,
+        }
+    }
+
+    fn selection(sql: &str) -> SqlPredicate {
+        let statement = hawdb_sql::parse_postgres_sql(sql).expect("query syntax");
+        let hawdb_sql::SqlStatement::Select(select) = statement else {
+            panic!("expected SELECT");
+        };
+        select.selection.expect("WHERE predicate")
+    }
+
+    #[test]
+    fn planner_requires_a_conservative_partial_index_implication_proof() {
+        let predicate = RelationalPredicate::And(
+            Box::new(RelationalPredicate::Compare {
+                column: "active".into(),
+                op: RelationalComparisonOp::Eq,
+                value: RelationalValue::Boolean(true),
+            }),
+            Box::new(RelationalPredicate::IsNull {
+                column: "deleted_at".into(),
+                negated: false,
+            }),
+        );
+        let schema = schema();
+        let matching = selection(
+            "SELECT tenant_id FROM items AS i WHERE i.tenant_id = 7 AND i.active = TRUE AND i.deleted_at IS NULL",
+        );
+        assert!(partial_index_predicate_is_implied(
+            Some(&predicate),
+            Some(&matching),
+            &[],
+            &schema,
+            "items",
+            "i",
+        ));
+
+        let missing =
+            selection("SELECT tenant_id FROM items AS i WHERE i.tenant_id = 7 AND i.active = TRUE");
+        assert!(!partial_index_predicate_is_implied(
+            Some(&predicate),
+            Some(&missing),
+            &[],
+            &schema,
+            "items",
+            "i",
+        ));
+
+        let merely_related = selection(
+            "SELECT tenant_id FROM items AS i WHERE i.tenant_id = 7 AND i.active = TRUE AND i.deleted_at <= 10",
+        );
+        assert!(!partial_index_predicate_is_implied(
+            Some(&predicate),
+            Some(&merely_related),
+            &[],
+            &schema,
+            "items",
+            "i",
+        ));
     }
 }

@@ -245,6 +245,7 @@ mod tests {
                             name: "group_index".into(),
                             columns: vec!["group".into(), "id".into()],
                             unique: false,
+                            predicate: None,
                         }],
                     })],
                 },

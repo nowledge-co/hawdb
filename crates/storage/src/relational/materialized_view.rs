@@ -254,7 +254,7 @@ pub(super) fn clone_definition(
         filter: view
             .filter
             .as_ref()
-            .map(|filter| clone_filter(filter, context))
+            .map(|filter| clone_predicate(filter, context))
             .transpose()?,
         search: view
             .search
@@ -269,7 +269,7 @@ pub(super) fn clone_definition(
     }))
 }
 
-fn clone_filter(
+pub(super) fn clone_predicate(
     filter: &RelationalPredicate,
     context: &crate::background::CheckpointDecodeContext,
 ) -> Result<RelationalPredicate, RelationalError> {
@@ -277,7 +277,7 @@ fn clone_filter(
         context
             .reserve(std::mem::size_of::<RelationalPredicate>())
             .map_err(RelationalError::from_admission)?;
-        Ok::<_, RelationalError>(Box::new(clone_filter(filter, context)?))
+        Ok::<_, RelationalError>(Box::new(clone_predicate(filter, context)?))
     };
     Ok(match filter {
         RelationalPredicate::NumericCompare { left, op, right } => {
@@ -424,7 +424,7 @@ fn extrema_index<'a>(
 ) -> Result<&'a RelationalIndexSchema, RelationalError> {
     // Unique indexes omit NULL keys. A non-unique prefix is complete even for
     // nullable grouping columns and nullable suffixes.
-    source.indexes.iter().find(|index| !index.unique && index.columns.starts_with(&definition.group_by))
+    source.indexes.iter().find(|index| !index.unique && index.predicate.is_none() && index.columns.starts_with(&definition.group_by))
         .ok_or_else(|| RelationalError::Schema("materialized MIN/MAX requires a non-unique source index starting with the GROUP BY columns".into()))
 }
 

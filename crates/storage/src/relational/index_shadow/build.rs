@@ -112,7 +112,12 @@ pub(super) fn write_index_from_rows(
     );
     source.visit_rows(table, &mut |primary_key, row| {
         let index_key = row_key(row, &positions);
-        if !index_includes_key(definition, &index_key) {
+        if !index_includes_key(schema, definition, row, &index_key).map_err(|error| {
+            RelationalIndexShadowError::Corrupt(format!(
+                "cannot evaluate predicate for relational index {table}.{}: {error}",
+                definition.name
+            ))
+        })? {
             return Ok(());
         }
         sorter.push(EncodedIndexEntry {

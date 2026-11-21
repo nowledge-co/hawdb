@@ -528,18 +528,42 @@ mod peg_baseline {
         assert_eq!(count, 1005);
     }
 
+    #[test]
+    fn frozen_main_1872_partial_index_transitions_are_source_bound() {
+        let mut count = 0;
+        for line in
+            include_str!("../../fixtures/frontend_main_1872_partial_index_peg_baseline_v1.jsonl")
+                .lines()
+        {
+            let expected: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert_eq!(
+                expected["source_commit"],
+                "058085fa2d67cad32cdb47116226e7a0bf5a545d"
+            );
+            assert_case(expected["sql"].as_str().unwrap(), &expected);
+            count += 1;
+        }
+        assert_eq!(count, 15);
+    }
+
     pub(super) fn assert_case(input: &str, expected: &serde_json::Value) {
         use std::sync::OnceLock;
         static TRANSITIONS: OnceLock<std::collections::BTreeMap<String, serde_json::Value>> =
             OnceLock::new();
         let transitions = TRANSITIONS.get_or_init(|| {
-            include_str!("../../fixtures/frontend_main_1514_numeric_peg_baseline_v1.jsonl")
-                .lines()
-                .map(|line| {
-                    let case: serde_json::Value = serde_json::from_str(line).unwrap();
-                    (case["sql"].as_str().unwrap().to_owned(), case)
-                })
-                .collect()
+            [
+                include_str!("../../fixtures/frontend_main_1514_numeric_peg_baseline_v1.jsonl"),
+                include_str!(
+                    "../../fixtures/frontend_main_1872_partial_index_peg_baseline_v1.jsonl"
+                ),
+            ]
+            .into_iter()
+            .flat_map(str::lines)
+            .map(|line| {
+                let case: serde_json::Value = serde_json::from_str(line).unwrap();
+                (case["sql"].as_str().unwrap().to_owned(), case)
+            })
+            .collect()
         });
         let expected = if let Some(current) = transitions.get(input) {
             if current["kind"] != expected["kind"]

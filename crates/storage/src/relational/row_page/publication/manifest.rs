@@ -26,11 +26,13 @@ use std::path::Path;
 mod checkpoint;
 pub(super) use checkpoint::{encode_manifest_with_work_context, root_set_digest_with_work_context};
 
-/// Row-page format v2: exact-length pages packed back to back, addressed by
-/// byte offset and length (#1521). v1 (`SKRPGM01`) used fixed 1 MiB slots.
-const MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM02";
+/// Row-page format v3 adds partial-index predicates to table schema records.
+/// v2 used the same exact-length pages but had no predicate field; v1 used
+/// fixed 1 MiB slots.
+const MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM03";
+const LEGACY_V2_MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM02";
 const LEGACY_V1_MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM01";
-const ROW_PAGE_FORMAT_VERSION: u16 = 2;
+const ROW_PAGE_FORMAT_VERSION: u16 = 3;
 const MANIFEST_VERSION: u16 = 1;
 /// generation, allocated pages, allocated bytes, live pages, live bytes.
 pub(super) const PHYSICAL_GENERATION_BYTES: usize = 40;
@@ -42,7 +44,14 @@ const ARTIFACT_METADATA_BYTES: usize = 44;
 pub(super) fn root_set_digest(
     tables: &[RelationalRowPageTableRoot],
 ) -> Result<Sha256Digest, RelationalRowPagePublicationError> {
-    let payload = encode_tables(tables, None)?;
+    root_set_digest_inner(tables, false)
+}
+
+fn root_set_digest_inner(
+    tables: &[RelationalRowPageTableRoot],
+    legacy_schema: bool,
+) -> Result<Sha256Digest, RelationalRowPagePublicationError> {
+    let payload = encode_tables(tables, None, legacy_schema)?;
     let mut hasher = IntegrityHasher::new();
     hasher.update(&payload);
     Ok(hasher.finish().sha256)
@@ -60,8 +69,8 @@ fn encode_manifest_inner(
     config: RelationalRowPagePublicationConfig,
     work: Option<&crate::background::CheckpointWorkContext>,
 ) -> Result<Vec<u8>, RelationalRowPagePublicationError> {
-    validate_manifest_inner(manifest, config, ErrorClass::Admission, work)?;
-    let mut payload = encode_tables(&manifest.tables, work)?;
+    validate_manifest_inner(manifest, config, ErrorClass::Admission, work, false)?;
+    let mut payload = encode_tables(&manifest.tables, work, false)?;
     let unit = start_unit(work)?;
     let occupancy_bytes = manifest
         .physical_generations
@@ -310,8 +319,8 @@ fn decode_manifest_inner(
     work: Option<&crate::background::CheckpointWorkContext>,
 ) -> Result<RelationalRowPageRootManifest, RelationalRowPagePublicationError> {
     let unit = start_unit(work)?;
-    // A fixed-slot v1 database is an unsupported format, not corruption:
-    // hosts map `UnsupportedStorageFormat` to "recreate the database".
+    // Fixed-slot v1 is unsupported rather than corrupt. Exact-length v2 is
+    // decoded below with its legacy full-index schema shape.
     if encoded.len() >= 8 && &encoded[..8] == LEGACY_V1_MANIFEST_MAGIC {
         return Err(RelationalRowPagePublicationError::UnsupportedFormat(
             hawdb_core::error::StorageFormatError::UnsupportedVersion {
@@ -321,7 +330,8 @@ fn decode_manifest_inner(
             },
         ));
     }
-    if encoded.len() < MANIFEST_HEADER_BYTES || &encoded[..8] != MANIFEST_MAGIC {
+    let legacy_v2 = encoded.len() >= 8 && &encoded[..8] == LEGACY_V2_MANIFEST_MAGIC;
+    if encoded.len() < MANIFEST_HEADER_BYTES || (!legacy_v2 && &encoded[..8] != MANIFEST_MAGIC) {
         return Err(RelationalRowPagePublicationError::Corrupt(
             "invalid row-page manifest header".to_string(),
         ));
@@ -435,7 +445,13 @@ fn decode_manifest_inner(
             )
         })?;
     finish_unit(unit);
-    let tables = decode_tables(&payload[..generations_offset], table_count, config, work)?;
+    let tables = decode_tables(
+        &payload[..generations_offset],
+        table_count,
+        config,
+        work,
+        legacy_v2,
+    )?;
     let mut physical_generations = Vec::with_capacity(generation_count);
     for entry in payload[generations_offset..trailer_offset]
         .as_chunks::<PHYSICAL_GENERATION_BYTES>()
@@ -469,7 +485,7 @@ fn decode_manifest_inner(
         tables,
         physical_generations,
     };
-    validate_manifest_inner(&manifest, config, ErrorClass::Corrupt, work)?;
+    validate_manifest_inner(&manifest, config, ErrorClass::Corrupt, work, legacy_v2)?;
     if let Some(work) = work {
         work.checkpoint()
             .map_err(super::root::checkpoint::work_error)?;
@@ -502,6 +518,7 @@ fn validate_manifest_inner(
     config: RelationalRowPagePublicationConfig,
     class: ErrorClass,
     work: Option<&crate::background::CheckpointWorkContext>,
+    legacy_schema: bool,
 ) -> Result<(), RelationalRowPagePublicationError> {
     let unit = start_unit(work)?;
     let fail = |message| class.error(message);
@@ -732,9 +749,13 @@ fn validate_manifest_inner(
             manifest.root_page_count
         )));
     }
-    let digest = match work {
-        Some(work) => root_set_digest_with_work_context(&manifest.tables, work)?,
-        None => root_set_digest(&manifest.tables)?,
+    let digest = match (work, legacy_schema) {
+        (Some(work), true) => {
+            checkpoint::legacy_root_set_digest_with_work_context(&manifest.tables, work)?
+        }
+        (Some(work), false) => root_set_digest_with_work_context(&manifest.tables, work)?,
+        (None, true) => root_set_digest_inner(&manifest.tables, true)?,
+        (None, false) => root_set_digest(&manifest.tables)?,
     };
     if digest != manifest.root_set_digest {
         return Err(fail("row-page root-set digest mismatch".to_string()));
@@ -817,18 +838,30 @@ fn validate_occupancy(
 fn encode_tables(
     tables: &[RelationalRowPageTableRoot],
     work: Option<&crate::background::CheckpointWorkContext>,
+    legacy_schema: bool,
 ) -> Result<Vec<u8>, RelationalRowPagePublicationError> {
     let mut encoded = Vec::new();
     for table in tables {
         encode_raw_bytes(table.table.as_bytes(), &mut encoded, work)?;
-        let schema = match work {
-            Some(work) => {
+        let schema = match (work, legacy_schema) {
+            (Some(work), true) => {
+                crate::relational::codec::encode_legacy_relational_table_schema_with_work_context(
+                    &table.schema,
+                    work,
+                )
+            }
+            (Some(work), false) => {
                 crate::relational::codec::encode_relational_table_schema_with_work_context(
                     &table.schema,
                     work,
                 )
             }
-            None => crate::relational::codec::encode_relational_table_schema(&table.schema),
+            (None, true) => {
+                crate::relational::codec::encode_legacy_relational_table_schema(&table.schema)
+            }
+            (None, false) => {
+                crate::relational::codec::encode_relational_table_schema(&table.schema)
+            }
         }
         .map_err(map_schema_encode_error)?;
         encode_raw_bytes(&schema, &mut encoded, work)?;
@@ -853,6 +886,7 @@ fn decode_tables(
     table_count: usize,
     config: RelationalRowPagePublicationConfig,
     work: Option<&crate::background::CheckpointWorkContext>,
+    legacy_v2: bool,
 ) -> Result<Vec<RelationalRowPageTableRoot>, RelationalRowPagePublicationError> {
     let unit = start_unit(work)?;
     let mut tables = Vec::with_capacity(table_count);
@@ -873,8 +907,16 @@ fn decode_tables(
             "table schema",
             work,
         )?;
-        let schema = match work {
-            Some(work) => {
+        let schema = match (work, legacy_v2) {
+            (Some(work), true) => {
+                crate::relational::codec::decode_legacy_relational_table_schema_with_work_context(
+                    &schema_bytes,
+                    config.max_manifest_bytes.get(),
+                    config.page_limits.max_columns.get(),
+                    work,
+                )
+            }
+            (Some(work), false) => {
                 crate::relational::codec::decode_relational_table_schema_with_work_context(
                     &schema_bytes,
                     config.max_manifest_bytes.get(),
@@ -882,7 +924,12 @@ fn decode_tables(
                     work,
                 )
             }
-            None => crate::relational::codec::decode_relational_table_schema(
+            (None, true) => crate::relational::codec::decode_legacy_relational_table_schema(
+                &schema_bytes,
+                config.max_manifest_bytes.get(),
+                config.page_limits.max_columns.get(),
+            ),
+            (None, false) => crate::relational::codec::decode_relational_table_schema(
                 &schema_bytes,
                 config.max_manifest_bytes.get(),
                 config.page_limits.max_columns.get(),

@@ -17,10 +17,11 @@ use super::ordered_key::{
     ordered_relational_key_prefix_ends, OrderedRelationalKeyError,
 };
 use super::{
-    RelationalColumnDefault, RelationalError, RelationalForeignKeySchema, RelationalIndexRole,
-    RelationalKey, RelationalReferentialAction, RelationalScalarType, RelationalState,
-    RelationalTableSchema, RelationalValue, RELATIONAL_FOREIGN_KEY_INDEX_PREFIX,
-    RELATIONAL_PRIMARY_INDEX_NAME, RELATIONAL_UNIQUE_INDEX_PREFIX,
+    RelationalColumnDefault, RelationalComparisonOp, RelationalError, RelationalForeignKeySchema,
+    RelationalIndexRole, RelationalKey, RelationalPredicate, RelationalReferentialAction,
+    RelationalScalarType, RelationalState, RelationalTableSchema, RelationalValue,
+    RELATIONAL_FOREIGN_KEY_INDEX_PREFIX, RELATIONAL_PRIMARY_INDEX_NAME,
+    RELATIONAL_UNIQUE_INDEX_PREFIX,
 };
 use crate::cache::SegmentCacheIdentity;
 use crate::file_io::{self as fs, File, OpenOptions};
@@ -2540,8 +2541,56 @@ pub(super) fn relational_schema_digest(
         encode_bytes(&mut encoded, index.name.as_bytes())?;
         encode_string_list(&mut encoded, &index.columns)?;
         encoded.push(u8::from(index.unique));
+        if let Some(predicate) = &index.predicate {
+            // Preserve the pre-partial-index digest byte-for-byte for schemas
+            // containing only full indexes. This lets legacy row-page and
+            // bound index generations verify against the same schema identity.
+            encoded.push(1);
+            encode_index_predicate(&mut encoded, predicate)?;
+        }
     }
     Ok(integrity_digest(&encoded).sha256)
+}
+
+fn encode_index_predicate(
+    encoded: &mut Vec<u8>,
+    predicate: &RelationalPredicate,
+) -> Result<(), RelationalIndexShadowError> {
+    match predicate {
+        RelationalPredicate::And(left, right) | RelationalPredicate::Or(left, right) => {
+            encoded.push(u8::from(matches!(predicate, RelationalPredicate::Or(..))));
+            encode_index_predicate(encoded, left)?;
+            encode_index_predicate(encoded, right)
+        }
+        RelationalPredicate::Not(predicate) => {
+            encoded.push(2);
+            encode_index_predicate(encoded, predicate)
+        }
+        RelationalPredicate::Compare { column, op, value } => {
+            encoded.push(3);
+            encode_bytes(encoded, column.as_bytes())?;
+            encoded.push(match op {
+                RelationalComparisonOp::Eq => 0,
+                RelationalComparisonOp::NotEq => 1,
+                RelationalComparisonOp::Lt => 2,
+                RelationalComparisonOp::Lte => 3,
+                RelationalComparisonOp::Gt => 4,
+                RelationalComparisonOp::Gte => 5,
+            });
+            encode_ordered_relational_value(encoded, value).map_err(Into::into)
+        }
+        RelationalPredicate::IsNull { column, negated } => {
+            encoded.push(4);
+            encode_bytes(encoded, column.as_bytes())?;
+            encoded.push(u8::from(*negated));
+            Ok(())
+        }
+        RelationalPredicate::NumericCompare { .. } | RelationalPredicate::NumericIsNull { .. } => {
+            Err(RelationalIndexShadowError::Admission(
+                "partial-index schema contains an unsupported numeric predicate".into(),
+            ))
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
