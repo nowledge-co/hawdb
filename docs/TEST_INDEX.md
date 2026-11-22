@@ -3252,7 +3252,9 @@ root general owner, which runs `api::tests::graph_change_epoch`. It checks:
 - a guarded `ConcurrentDatabase` transaction commits despite a concurrent
   relational commit;
 - a concurrent graph commit refuses that transaction with a typed, retryable
-  `TransactionConflict` that writes nothing, and a retry succeeds;
+  `TransactionConflict` that writes nothing, and a retry succeeds; its key is
+  the exported `GRAPH_CHANGE_COMMIT_EPOCH_CONFLICT_KEY` and
+  `is_graph_change_conflict()` matches it;
 - an unguarded transaction is unaffected, and a transaction's own graph writes
   do not count;
 - append-only commits and an initial import without graph rows (import marker

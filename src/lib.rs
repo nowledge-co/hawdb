@@ -348,8 +348,8 @@ pub use error::{
     RelationalErrorSurface, ResourceBudgetError, ResourceBudgetKind, ResourceBudgetScope, Result,
     RuntimeAdmissionRefusal, SearchProjectionEpochAdvanceRefusal, SearchProjectionRebuildRefusal,
     StorageFormatError, TransactionRetryError, TransactionRetryReason, WalRecordLimit,
-    WalRecordLimitError, APPEND_WAL_FORMAT, LOGICAL_DUMP_FORMAT,
-    RELATIONAL_CHECKPOINT_LAYOUT_FORMAT, RELATIONAL_DURABLE_CODEC_FORMAT,
+    WalRecordLimitError, APPEND_WAL_FORMAT, GRAPH_CHANGE_COMMIT_EPOCH_CONFLICT_KEY,
+    LOGICAL_DUMP_FORMAT, RELATIONAL_CHECKPOINT_LAYOUT_FORMAT, RELATIONAL_DURABLE_CODEC_FORMAT,
     RELATIONAL_ROW_PAGE_FORMAT, RELATIONAL_SCHEMA_FORMAT, SEARCH_PROJECTION_MANIFEST_FORMAT,
     STORAGE_MANIFEST_FORMAT, WAL_FILE_FORMAT,
 };

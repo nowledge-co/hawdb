@@ -1897,9 +1897,16 @@ For compare-and-publish, read it inside the write transaction with
 at the transaction's base snapshot and makes the commit conditional on it. The
 check runs under the commit's exclusive access. If a graph-changing commit was
 published after that snapshot, the commit fails with the retryable
-`HawDBError::TransactionConflict { key: "graph_change_commit_epoch", .. }` and
-writes nothing. Concurrent relational-only commits never cause this refusal,
-and neither do the transaction's own graph writes.
+`HawDBError::TransactionConflict` whose `key` is
+`hawdb::GRAPH_CHANGE_COMMIT_EPOCH_CONFLICT_KEY` (`"graph_change_commit_epoch"`)
+and writes nothing. Concurrent relational-only commits never cause this
+refusal, and neither do the transaction's own graph writes.
+
+Hosts that must tell this refusal apart from other transaction conflicts use
+`HawDBError::is_graph_change_conflict()` or compare the key with the constant,
+not a string literal. The key value is stable. It names the conflict, not the
+`graph_change_commit_epoch` field of `EmbeddedRuntimeStatus`, which reports
+the epoch value itself.
 
 ## Relationship Locality
 
