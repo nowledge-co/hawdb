@@ -23,6 +23,8 @@ mod clauses;
 mod compatibility_tests;
 mod full;
 #[cfg(test)]
+mod mutation_returning_tests;
+#[cfg(test)]
 mod numeric_tests;
 mod owned;
 #[cfg(test)]
@@ -36,8 +38,13 @@ pub fn parse_postgres_sql(input: &str) -> Result<SqlStatement> {
     }
     let token = hawdb_sql_syntax::first_token(input)
         .map_err(|error| HawDBError::Parse(error.to_string()))?;
+    if token.is_keyword(input, "WITH") {
+        return match owned::parse(input) {
+            Ok(statement) => Ok(statement),
+            Err(select_error) => full::parse(input).or(Err(select_error)),
+        };
+    }
     if token.is_keyword(input, "SELECT")
-        || token.is_keyword(input, "WITH")
         || token.is_keyword(input, "EXPLAIN")
         || token.kind == hawdb_sql_syntax::TokenKind::LeftParen
     {

@@ -34,11 +34,13 @@ pub(super) fn heap_charge(key: &String, template: &PreparedPostgresStatement) ->
             optional(&update.alias, string),
             vector(&update.assignments, assignment),
             optional(&update.selection, expression),
+            vector(&update.returning, column),
         ]),
         SqlStatement::Delete(delete) => sum([
             table(&delete.table),
             optional(&delete.alias, string),
             optional(&delete.selection, expression),
+            vector(&delete.returning, column),
         ]),
         _ => return None,
     };

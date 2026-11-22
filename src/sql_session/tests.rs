@@ -100,6 +100,201 @@ fn sql_session_returns_committed_dml_counts_and_returning_rows() {
 }
 
 #[test]
+fn sql_session_update_delete_and_upsert_return_final_row_images() {
+    let mut database = database();
+    let mut session = database.sql_session();
+    session
+        .query(
+            "INSERT INTO pages (id, body) VALUES (1, 'old'), (2, 'remove')",
+            &[],
+        )
+        .unwrap();
+
+    let updated = session
+        .query(
+            "UPDATE pages AS p SET body = 'new' WHERE p.id = 1 RETURNING p.id, p.body",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(updated.output.rows[0]["id"], Value::Int(1));
+    assert_eq!(updated.output.rows[0]["body"], Value::String("new".into()));
+    assert_eq!(updated.mutation.unwrap().affected_rows, 1);
+
+    let deleted = session
+        .query(
+            "DELETE FROM pages AS p WHERE p.id = 2 RETURNING p.id, p.body",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(deleted.output.rows[0]["id"], Value::Int(2));
+    assert_eq!(
+        deleted.output.rows[0]["body"],
+        Value::String("remove".into())
+    );
+
+    let upserted = session
+        .query(
+            "INSERT INTO pages (id, body) VALUES (1, 'replaced'), (3, 'inserted') \
+             ON CONFLICT (id) DO UPDATE SET body = EXCLUDED.body RETURNING id, body",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(upserted.output.rows.len(), 2);
+    assert_eq!(
+        upserted.output.rows[0]["body"],
+        Value::String("replaced".into())
+    );
+    assert_eq!(
+        upserted.output.rows[1]["body"],
+        Value::String("inserted".into())
+    );
+    assert_eq!(upserted.mutation.unwrap().affected_rows, 2);
+
+    let zero = session
+        .query(
+            "UPDATE pages SET body = 'missing' WHERE id = 99 RETURNING id, body",
+            &[],
+        )
+        .unwrap();
+    assert!(zero.output.rows.is_empty());
+    assert_eq!(zero.mutation.unwrap().affected_rows, 0);
+}
+
+#[test]
+fn sql_session_data_modifying_cte_is_atomic_and_exposes_only_returning_rows() {
+    let mut database = database();
+    database
+        .sql_session()
+        .query("INSERT INTO pages (id, body) VALUES (1, 'old')", &[])
+        .unwrap();
+
+    let output = database
+        .sql_session()
+        .query(
+            "WITH changed(id, final_body) AS (\
+                 UPDATE pages SET body = 'new' WHERE id = 1 RETURNING id, body\
+             ) \
+             SELECT changed.id, changed.final_body, pages.body AS snapshot_body \
+             FROM changed INNER JOIN pages ON pages.id = changed.id",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(output.output.rows.len(), 1);
+    assert_eq!(
+        output.output.rows[0]["final_body"],
+        Value::String("new".into())
+    );
+    assert_eq!(
+        output.output.rows[0]["snapshot_body"],
+        Value::String("old".into())
+    );
+    assert!(output.mutation.is_none());
+    assert_eq!(rows(&mut database)[0]["body"], Value::String("new".into()));
+
+    let failure = database.sql_session().query(
+        "WITH changed AS (UPDATE pages SET body = 'must-rollback' WHERE id = 1 RETURNING id, body) \
+         SELECT missing FROM changed",
+        &[],
+    );
+    assert!(failure.is_err());
+    assert_eq!(rows(&mut database)[0]["body"], Value::String("new".into()));
+}
+
+#[test]
+fn autocommit_data_modifying_ctes_share_one_commit_and_fail_before_publication() {
+    let mut database = database();
+    database
+        .query_sql("CREATE TABLE archive (id BIGINT PRIMARY KEY, body TEXT)")
+        .unwrap();
+    database
+        .query_sql("INSERT INTO pages (id, body) VALUES (1, 'old')")
+        .unwrap();
+    database
+        .query_sql("INSERT INTO archive (id, body) VALUES (2, 'gone')")
+        .unwrap();
+    database
+        .query_sql(
+            "CREATE TABLE generated_items (\
+                 id BIGINT PRIMARY KEY, body TEXT NOT NULL DEFAULT 'generated'\
+             )",
+        )
+        .unwrap();
+
+    let inserted = database
+        .query_sql(
+            "WITH inserted AS (\
+                 INSERT INTO generated_items (id) VALUES (1) RETURNING id, body\
+             ) SELECT id, body FROM inserted",
+        )
+        .unwrap();
+    assert_eq!(inserted.rows[0]["id"], Value::Int(1));
+    assert_eq!(inserted.rows[0]["body"], Value::String("generated".into()));
+
+    let constraint_failure = database.query_sql(
+        "WITH page_added AS (\
+             INSERT INTO pages (id, body) VALUES (4, 'must-rollback') RETURNING id\
+         ), archive_conflict AS (\
+             INSERT INTO archive (id, body) VALUES (2, 'duplicate') RETURNING id\
+         ) SELECT id FROM page_added UNION ALL SELECT id FROM archive_conflict",
+    );
+    assert!(constraint_failure.is_err());
+    assert!(database
+        .query_sql("SELECT id FROM pages WHERE id = 4")
+        .unwrap()
+        .rows
+        .is_empty());
+
+    let sql = "WITH changed(id, body) AS (\
+                   UPDATE pages SET body = 'new' WHERE id = 1 RETURNING id, body\
+               ), removed(id, body) AS (\
+                   DELETE FROM archive WHERE id = 2 RETURNING id, body\
+               ) \
+               SELECT id, body FROM changed UNION ALL SELECT id, body FROM removed ORDER BY id";
+    let refused = database.query_sql_request(crate::SqlQueryRequest::new(sql).with_output_limits(
+        crate::QueryStreamOptions {
+            max_rows: Some(0),
+            max_payload_bytes: Some(4096),
+        },
+    ));
+    assert!(matches!(refused, Err(HawDBError::ReadBudgetExceeded(_))));
+    assert_eq!(rows(&mut database)[0]["body"], Value::String("old".into()));
+    assert_eq!(
+        database
+            .query_sql("SELECT body FROM archive WHERE id = 2")
+            .unwrap()
+            .rows[0]["body"],
+        Value::String("gone".into())
+    );
+
+    let refused = database.query_sql_request(crate::SqlQueryRequest::new(sql).with_output_limits(
+        crate::QueryStreamOptions {
+            max_rows: Some(10),
+            max_payload_bytes: Some(0),
+        },
+    ));
+    assert!(matches!(refused, Err(HawDBError::ReadBudgetExceeded(_))));
+    assert_eq!(rows(&mut database)[0]["body"], Value::String("old".into()));
+    assert_eq!(
+        database
+            .query_sql("SELECT body FROM archive WHERE id = 2")
+            .unwrap()
+            .rows[0]["body"],
+        Value::String("gone".into())
+    );
+
+    let output = database.query_sql(sql).unwrap();
+    assert_eq!(output.rows.len(), 2);
+    assert_eq!(output.rows[0]["body"], Value::String("new".into()));
+    assert_eq!(output.rows[1]["body"], Value::String("gone".into()));
+    assert_eq!(rows(&mut database)[0]["body"], Value::String("new".into()));
+    assert!(database
+        .query_sql("SELECT id FROM archive")
+        .unwrap()
+        .rows
+        .is_empty());
+}
+
+#[test]
 fn sql_session_multi_row_upsert_and_read_your_writes_commit_together() {
     let mut database = database();
     database
@@ -450,18 +645,23 @@ fn sql_session_read_only_queries_preserve_epoch_and_reject_writes() {
 }
 
 #[test]
-fn sql_session_unsupported_upsert_returning_is_not_rewritten() {
+fn sql_session_upsert_returning_commits_with_earlier_writes() {
     let mut database = database();
-    let error = database.sql_session().transaction(|transaction| {
-        transaction.query("INSERT INTO pages (id) VALUES (1)", &[])?;
-        transaction.query("INSERT INTO pages (id, body) VALUES (2, 'new') ON CONFLICT (id) DO UPDATE SET body = EXCLUDED.body RETURNING id", &[])?;
-        Ok(())
-    }).unwrap_err();
-    assert_eq!(
-        error,
-        HawDBError::Semantic("INSERT RETURNING with ON CONFLICT DO UPDATE is not supported".into())
-    );
-    assert!(rows(&mut database).is_empty());
+    database
+        .sql_session()
+        .transaction(|transaction| {
+            transaction.query("INSERT INTO pages (id, body) VALUES (1, 'old')", &[])?;
+            let result = transaction.query(
+                "INSERT INTO pages (id, body) VALUES (1, 'new') \
+                 ON CONFLICT (id) DO UPDATE SET body = EXCLUDED.body RETURNING id, body",
+                &[],
+            )?;
+            assert_eq!(result.output.rows[0]["id"], Value::Int(1));
+            assert_eq!(result.output.rows[0]["body"], Value::String("new".into()));
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(rows(&mut database)[0]["body"], Value::String("new".into()));
 }
 
 #[test]

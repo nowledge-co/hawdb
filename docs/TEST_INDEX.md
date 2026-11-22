@@ -2190,6 +2190,29 @@ replay: `cargo test --locked -p hawdb-storage --all-features --lib composite_mut
 `cargo test --locked -p hawdb-storage --all-features --lib primary_key_range::tests`,
 and `cargo test --locked -p hawdb --lib composite_mutations`.
 
+SQL mutation `RETURNING` and data-modifying CTE coverage for
+[#1862](https://github.com/nowledge-co/hawdb/issues/1862) remains in the existing
+SQL, relational and root unit owners. Parser source-bound transitions cover
+`UPDATE`/`DELETE ... RETURNING`; relational statement tests cover CTE source
+ordering. `sql_session_update_delete_and_upsert_return_final_row_images` and the
+two `data_modifying_cte` SQL-session cases cover old/new row visibility,
+zero/many rows, generated defaults, conflicts, output row/payload refusal and
+final-query failure without publication. The root execution-request contract
+applies the same payload ceilings to INSERT, UPDATE and DELETE `RETURNING`
+through session, direct-transaction and callback routes, including rollback
+after a caught refusal. Storage's
+`mutation_outcome_row_capture_is_explicit` keeps ordinary non-`RETURNING`
+mutations count-only, without hydrating or retaining changed row payloads. Root recovery adds
+`data_modifying_cte_replays_then_survives_checkpoint_reopen` for WAL replay and
+checkpoint generations, plus
+`data_modifying_cte_is_one_recoverable_wal_record_at_append_cuts`, which crashes
+a subprocess at the beginning, middle and end of the combined WAL append and
+requires neither target table to expose a partial mutation before repair. Local
+replay uses `cargo test --locked -p hawdb-sql --lib`,
+`cargo test --locked -p hawdb-relational --lib data_modifying_ctes`, and
+`cargo test --locked -p hawdb --lib data_modifying_cte -- --nocapture`. No lane,
+profile, feature matrix or timeout changes.
+
 The existing root vector API family additionally owns explicit source-capture
 capacity refusal/success, single-background-slot and held-catalog admission with
 unchanged selection and retry, no-op behavior under saturation, and

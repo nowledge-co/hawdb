@@ -59,6 +59,7 @@ pub(super) fn build() -> Result<Grammar, String> {
         (
             "HawStatement",
             c(vec![
+                r("HawDataModifyingQuery"),
                 r("HawInsert"),
                 r("HawUpdate"),
                 r("HawDelete"),
@@ -70,6 +71,28 @@ pub(super) fn build() -> Result<Grammar, String> {
                 r("HawDropSearchIndex"),
                 r("HawDrop"),
                 r("HawUnsupportedStatement"),
+            ]),
+        ),
+        (
+            "HawDataModifyingQuery",
+            s(vec![
+                k("WITH"),
+                list("HawDataModifyingCte"),
+                r("RelationalQuery"),
+            ]),
+        ),
+        (
+            "HawDataModifyingCte",
+            s(vec![
+                r("Identifier"),
+                o(r("HawNames")),
+                k("AS"),
+                group(c(vec![
+                    r("HawInsert"),
+                    r("HawUpdate"),
+                    r("HawDelete"),
+                    r("RelationalQuery"),
+                ])),
             ]),
         ),
         ("HawNames", group(list("Name"))),

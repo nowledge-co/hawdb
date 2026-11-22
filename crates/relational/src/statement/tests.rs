@@ -300,7 +300,7 @@ fn invalid_schema_and_mutation_shapes_keep_the_existing_errors() {
         ("DELETE FROM items WHERE other.id = 1", vec![], "unknown qualifier"),
         ("UPDATE items SET missing = 1 WHERE id = 1", vec![], "has no column missing"),
         ("CREATE TABLE IF NOT EXISTS t (id BIGINT PRIMARY KEY)", vec![], "must not hide drift"),
-        ("INSERT INTO items (id) VALUES (1) ON CONFLICT (id) DO UPDATE SET counter = 1 RETURNING id", vec![], "RETURNING with ON CONFLICT DO UPDATE"),
+        ("INSERT INTO items (id) VALUES (1) ON CONFLICT (id) DO UPDATE SET counter = 1 RETURNING missing", vec![], "has no column missing"),
     ] {
         let error = compile_relational_statement_sql(sql, &parameters, &state).unwrap_err();
         assert!(error.to_string().contains(message), "{sql}: {error}");
@@ -450,6 +450,38 @@ fn prepared_mutations_bind_current_schema_parameters_and_returning() {
                 .contains("requires 1 parameters")
         );
     }
+}
+
+#[test]
+fn data_modifying_ctes_preserve_source_order_visibility() {
+    let state = state();
+    let forward = hawdb_sql::prepare_postgres_sql(
+        "WITH before AS (SELECT id FROM changed), \
+         changed AS (UPDATE items SET counter = 1 WHERE id = 1 RETURNING id) \
+         SELECT id FROM before",
+    )
+    .unwrap();
+    let error = compile_prepared_data_modifying_cte_query(&forward, &[], &state).unwrap_err();
+    assert_eq!(
+        error,
+        HawDBError::Semantic(
+            "common table expression before cannot reference later data-modifying CTE changed"
+                .into()
+        )
+    );
+
+    let ordered = hawdb_sql::prepare_postgres_sql(
+        "WITH changed AS (UPDATE items SET counter = 1 WHERE id = 1 RETURNING id), \
+         after AS (SELECT id FROM changed) SELECT id FROM after",
+    )
+    .unwrap();
+    let compiled = compile_prepared_data_modifying_cte_query(&ordered, &[], &state)
+        .unwrap()
+        .expect("data-modifying CTE plan");
+    assert_eq!(compiled.ctes.len(), 1);
+    assert_eq!(compiled.ctes[0].name, "changed");
+    assert_eq!(compiled.query.with.len(), 1);
+    assert_eq!(compiled.query.with[0].name, "after");
 }
 
 #[test]

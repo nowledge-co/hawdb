@@ -79,29 +79,58 @@ impl SqlQueryStatement {
     /// and nested set-operation branches.
     pub fn visit_selects(&self, visit: &mut impl FnMut(&SelectStatement)) {
         for cte in &self.with {
-            cte.query.visit_selects(visit);
+            if let SqlCommonTableExpressionBody::Query(query) = &cte.body {
+                query.visit_selects(visit);
+            }
         }
         self.body.visit_selects(visit);
     }
 
     pub fn contains_locking_clause(&self) -> bool {
         if self.lock_strength.is_some()
-            || self
-                .with
-                .iter()
-                .any(|cte| cte.query.contains_locking_clause())
+            || self.with.iter().any(|cte| match &cte.body {
+                SqlCommonTableExpressionBody::Query(query) => query.contains_locking_clause(),
+                SqlCommonTableExpressionBody::Mutation(_) => false,
+            })
         {
             return true;
         }
         self.body.contains_locking_clause()
     }
+
+    pub fn contains_data_modifying_cte(&self) -> bool {
+        self.with.iter().any(|cte| match &cte.body {
+            SqlCommonTableExpressionBody::Query(query) => query.contains_data_modifying_cte(),
+            SqlCommonTableExpressionBody::Mutation(_) => true,
+        }) || self.body.contains_data_modifying_cte()
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SqlCommonTableExpression {
     pub name: String,
     pub columns: Vec<String>,
-    pub query: Box<SqlQueryStatement>,
+    pub body: SqlCommonTableExpressionBody,
+}
+
+impl std::fmt::Debug for SqlCommonTableExpression {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = formatter.debug_struct("SqlCommonTableExpression");
+        debug
+            .field("name", &self.name)
+            .field("columns", &self.columns);
+        match &self.body {
+            // Preserve the frozen Debug representation of ordinary query CTEs.
+            SqlCommonTableExpressionBody::Query(query) => debug.field("query", query).finish(),
+            SqlCommonTableExpressionBody::Mutation(_) => debug.field("body", &self.body).finish(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SqlCommonTableExpressionBody {
+    Query(Box<SqlQueryStatement>),
+    Mutation(Box<SqlStatement>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,6 +163,16 @@ impl SqlQueryBody {
             Self::Nested(query) => query.contains_locking_clause(),
             Self::SetOperation { left, right, .. } => {
                 left.contains_locking_clause() || right.contains_locking_clause()
+            }
+        }
+    }
+
+    pub fn contains_data_modifying_cte(&self) -> bool {
+        match self {
+            Self::Select(_) => false,
+            Self::Nested(query) => query.contains_data_modifying_cte(),
+            Self::SetOperation { left, right, .. } => {
+                left.contains_data_modifying_cte() || right.contains_data_modifying_cte()
             }
         }
     }
@@ -379,19 +418,50 @@ pub struct InsertStatement {
     pub returning: Vec<SqlColumnRef>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct UpdateStatement {
     pub table: SqlTableName,
     pub alias: Option<String>,
     pub assignments: Vec<SqlAssignment>,
     pub selection: Option<SqlPredicate>,
+    pub returning: Vec<SqlColumnRef>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl std::fmt::Debug for UpdateStatement {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut output = formatter.debug_struct("UpdateStatement");
+        output
+            .field("table", &self.table)
+            .field("alias", &self.alias)
+            .field("assignments", &self.assignments)
+            .field("selection", &self.selection);
+        if !self.returning.is_empty() {
+            output.field("returning", &self.returning);
+        }
+        output.finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub struct DeleteStatement {
     pub table: SqlTableName,
     pub alias: Option<String>,
     pub selection: Option<SqlPredicate>,
+    pub returning: Vec<SqlColumnRef>,
+}
+
+impl std::fmt::Debug for DeleteStatement {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut output = formatter.debug_struct("DeleteStatement");
+        output
+            .field("table", &self.table)
+            .field("alias", &self.alias)
+            .field("selection", &self.selection);
+        if !self.returning.is_empty() {
+            output.field("returning", &self.returning);
+        }
+        output.finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

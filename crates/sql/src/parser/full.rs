@@ -168,6 +168,7 @@ impl Fold<'_> {
     }
     fn statement(&self, node: NodeId) -> Result<SqlStatement> {
         match self.tree.nodes[node].name {
+            Some("HawDataModifyingQuery") => self.data_modifying_query(node),
             Some("HawInsert") => self.insert(node),
             Some("HawUpdate") => self.update(node),
             Some("HawDelete") => self.delete(node),
@@ -179,6 +180,60 @@ impl Fold<'_> {
             Some("HawCreateView") => self.create_view(node),
             Some("HawDrop") => self.drop_view(node),
             _ => Err(semantic("unsupported PostgreSQL statement kind")),
+        }
+    }
+    fn data_modifying_query(&self, node: NodeId) -> Result<SqlStatement> {
+        let mut has_mutation = false;
+        let mut with = Vec::new();
+        for cte in self.children(node, "HawDataModifyingCte") {
+            let name = self.ident(self.child(cte, "Identifier"));
+            let columns = self
+                .tree
+                .child(cte, "HawNames")
+                .map(|columns| self.names(columns, "CTE columns must be unqualified identifiers"))
+                .transpose()?
+                .unwrap_or_default();
+            let body = if let Some(statement) = ["HawInsert", "HawUpdate", "HawDelete"]
+                .into_iter()
+                .find_map(|name| self.tree.child(cte, name))
+            {
+                has_mutation = true;
+                SqlCommonTableExpressionBody::Mutation(Box::new(self.statement(statement)?))
+            } else {
+                let query = self.query_from_text(self.text(self.child(cte, "RelationalQuery")))?;
+                SqlCommonTableExpressionBody::Query(Box::new(query))
+            };
+            with.push(SqlCommonTableExpression {
+                name,
+                columns,
+                body,
+            });
+        }
+        if !has_mutation {
+            return Err(semantic(
+                "data-modifying CTE parser requires INSERT, UPDATE, or DELETE",
+            ));
+        }
+        let mut query = self.query_from_text(self.text(self.child(node, "RelationalQuery")))?;
+        let mut nested = query.with;
+        with.append(&mut nested);
+        query.with = with;
+        Ok(SqlStatement::Query(query))
+    }
+    fn query_from_text(&self, input: &str) -> Result<SqlQueryStatement> {
+        match super::parse_postgres_sql(input)? {
+            SqlStatement::Query(query) => Ok(query),
+            SqlStatement::Select(select) => Ok(SqlQueryStatement {
+                with: Vec::new(),
+                body: SqlQueryBody::Select(Box::new(select)),
+                order_by: Vec::new(),
+                limit: None,
+                offset: None,
+                lock_strength: None,
+            }),
+            _ => Err(semantic(
+                "data-modifying CTE must contain a relational query",
+            )),
         }
     }
     fn assignments(&self, node: NodeId) -> Result<Vec<SqlAssignment>> {
@@ -293,29 +348,7 @@ impl Fold<'_> {
             .child(node, "HawConflict")
             .map(|id| self.conflict(id))
             .transpose()?;
-        let returning = self
-            .tree
-            .child(node, "HawReturning")
-            .map(|id| {
-                self.tree
-                    .children(id)
-                    .iter()
-                    .map(|item| {
-                        if self.has(*item, "HawReturnAlias") {
-                            return Err(semantic(
-                                "INSERT RETURNING supports column references only",
-                            ));
-                        }
-                        self.lowerer
-                            .column(&self.expr(self.child(*item, "Or")))
-                            .map_err(|_| {
-                                semantic("INSERT RETURNING supports column references only")
-                            })
-                    })
-                    .collect::<Result<Vec<_>>>()
-            })
-            .transpose()?
-            .unwrap_or_default();
+        let returning = self.returning(node, "INSERT")?;
         Ok(SqlStatement::Insert(InsertStatement {
             table: self.table(self.child(node, "Name"))?,
             columns,
@@ -342,11 +375,36 @@ impl Fold<'_> {
             action,
         })
     }
+    fn returning(&self, node: NodeId, statement: &str) -> Result<Vec<SqlColumnRef>> {
+        self.tree
+            .child(node, "HawReturning")
+            .map(|id| {
+                self.tree
+                    .children(id)
+                    .iter()
+                    .map(|item| {
+                        if self.has(*item, "HawReturnAlias") {
+                            return Err(semantic(format!(
+                                "{statement} RETURNING supports column references only"
+                            )));
+                        }
+                        self.lowerer
+                            .column(&self.expr(self.child(*item, "Or")))
+                            .map_err(|_| {
+                                semantic(format!(
+                                    "{statement} RETURNING supports column references only"
+                                ))
+                            })
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })
+            .transpose()
+            .map(|returning| returning.unwrap_or_default())
+    }
     fn update(&self, node: NodeId) -> Result<SqlStatement> {
         if [
             "RelationalJoin",
             "HawMutationFrom",
-            "HawReturning",
             "Order",
             "Limit",
             "HawMutationTail",
@@ -367,18 +425,13 @@ impl Fold<'_> {
             alias,
             assignments: self.assignments(self.child(node, "HawAssignments"))?,
             selection: self.selection(node)?,
+            returning: self.returning(node, "UPDATE")?,
         }))
     }
     fn delete(&self, node: NodeId) -> Result<SqlStatement> {
-        if [
-            "HawDeleteTargets",
-            "HawUsing",
-            "HawReturning",
-            "Order",
-            "Limit",
-        ]
-        .iter()
-        .any(|name| self.has(node, name))
+        if ["HawDeleteTargets", "HawUsing", "Order", "Limit"]
+            .iter()
+            .any(|name| self.has(node, name))
         {
             return Err(semantic("unsupported PostgreSQL DELETE clause"));
         }
@@ -399,6 +452,7 @@ impl Fold<'_> {
             table: self.table(self.child(relation, "Name"))?,
             alias: self.alias(relation)?,
             selection: self.selection(node)?,
+            returning: self.returning(node, "DELETE")?,
         }))
     }
     fn table_clause(&self, node: NodeId) -> &'static str {

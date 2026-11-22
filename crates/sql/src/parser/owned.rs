@@ -187,7 +187,7 @@ impl<'a> Lowerer<'a> {
                 Ok(SqlCommonTableExpression {
                     name,
                     columns,
-                    query: Box::new(self.query(&cte.query)?),
+                    body: SqlCommonTableExpressionBody::Query(Box::new(self.query(&cte.query)?)),
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -653,6 +653,25 @@ mod peg_baseline {
         assert_eq!(count, 16);
     }
 
+    #[test]
+    fn frozen_main_1862_mutation_returning_transitions_are_source_bound() {
+        let mut count = 0;
+        for line in include_str!(
+            "../../fixtures/frontend_main_1862_mutation_returning_peg_baseline_v1.jsonl"
+        )
+        .lines()
+        {
+            let expected: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert_eq!(
+                expected["source_commit"],
+                "258fd7ac543680ef1909e225383ab796809a244a"
+            );
+            assert_case(expected["sql"].as_str().unwrap(), &expected);
+            count += 1;
+        }
+        assert_eq!(count, 6);
+    }
+
     pub(super) fn assert_case(input: &str, expected: &serde_json::Value) {
         use std::sync::OnceLock;
         type Transitions = std::collections::BTreeMap<String, Vec<serde_json::Value>>;
@@ -666,6 +685,9 @@ mod peg_baseline {
                 ),
                 include_str!(
                     "../../fixtures/frontend_main_1872_partial_index_peg_baseline_v1.jsonl"
+                ),
+                include_str!(
+                    "../../fixtures/frontend_main_1862_mutation_returning_peg_baseline_v1.jsonl"
                 ),
             ]
             .into_iter()

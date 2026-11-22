@@ -54,7 +54,8 @@ use hawdb_sql::{
 use hawdb_storage::relational::RelationalHydrationBudget;
 use hawdb_storage::relational::{
     relational_unique_index_name, RelationalIndexRangeScan, RelationalIndexScanDirection,
-    RelationalKey, RelationalScalarType, RelationalState, RelationalTableSchema, RelationalValue,
+    RelationalKey, RelationalRow, RelationalScalarType, RelationalState, RelationalTableSchema,
+    RelationalValue,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -468,6 +469,43 @@ fn execute_fromless_select(
         search_index_scan: None,
         blocking_operator_memory_reports: Vec::new(),
     })
+}
+
+#[derive(Debug, Clone)]
+pub struct RelationalEphemeralQueryTable {
+    pub schema: RelationalTableSchema,
+    pub rows: Vec<RelationalRow>,
+}
+
+pub fn execute_prepared_relational_query_with_ephemeral_tables<R: RelationalQueryStoreReader>(
+    prepared_sql: PreparedRelationalSql,
+    parameters: &[Value],
+    state: &RelationalState,
+    read_modes: RelationalQueryReadModes<'_, R>,
+    resources: RelationalQueryResourceContext<'_>,
+    tables: Vec<RelationalEphemeralQueryTable>,
+) -> Result<RelationalQueryOutput> {
+    let mut scoped_state = state.clone();
+    let mut names = BTreeSet::new();
+    for table in tables {
+        if !names.insert(table.schema.name.clone()) {
+            return Err(HawDBError::Semantic(format!(
+                "common table expression {} is specified more than once",
+                table.schema.name
+            )));
+        }
+        scoped_state
+            .attach_ephemeral_query_table(table.schema, table.rows)
+            .map_err(HawDBError::from_execution_error)?;
+    }
+    let read_modes = read_modes.with_memory_overlay(&names);
+    execute_prepared_relational_query_with_resources(
+        prepared_sql,
+        parameters,
+        &scoped_state,
+        read_modes,
+        resources,
+    )
 }
 
 pub fn execute_prepared_relational_query_with_resources<'a, R: RelationalQueryStoreReader>(

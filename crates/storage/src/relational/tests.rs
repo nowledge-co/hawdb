@@ -1791,6 +1791,68 @@ fn conflict_noop_reports_outcome_without_recording_a_row_change() {
 }
 
 #[test]
+fn mutation_outcome_row_capture_is_explicit() {
+    let seeded = RelationalState::default()
+        .stage_transaction(
+            create_upsert_table(),
+            RelationalMutationLimits::default(),
+            RelationalOverflowConfig::default(),
+        )
+        .unwrap()
+        .stage_transaction(
+            RelationalTransaction {
+                writes: vec![RelationalWrite::Insert {
+                    table: "documents".into(),
+                    rows: vec![upsert_row("id-1", "owner-1", "old")],
+                    mode: RelationalInsertMode::Error,
+                }],
+            },
+            RelationalMutationLimits::default(),
+            RelationalOverflowConfig::default(),
+        )
+        .unwrap();
+    let update = RelationalTransaction {
+        writes: vec![RelationalWrite::UpdateWhere {
+            table: "documents".into(),
+            assignments: vec![RelationalUpdateAssignment {
+                column: "payload".into(),
+                value: RelationalUpdateValue::Value(RelationalValue::Text("new".into())),
+            }],
+            predicate: RelationalPredicate::Compare {
+                column: "id".into(),
+                op: RelationalComparisonOp::Eq,
+                value: RelationalValue::Text("id-1".into()),
+            },
+        }],
+    };
+
+    let (_, counts_only) = seeded
+        .stage_transaction_with_outcomes_and_row_capture(
+            update.clone(),
+            RelationalMutationLimits::default(),
+            RelationalOverflowConfig::default(),
+            false,
+        )
+        .unwrap();
+    assert_eq!(counts_only[0].affected_rows, 1);
+    assert!(counts_only[0].rows.is_empty());
+
+    let (_, with_rows) = seeded
+        .stage_transaction_with_outcomes_and_row_capture(
+            update,
+            RelationalMutationLimits::default(),
+            RelationalOverflowConfig::default(),
+            true,
+        )
+        .unwrap();
+    assert_eq!(with_rows[0].affected_rows, 1);
+    assert_eq!(
+        with_rows[0].rows[0].values()[2],
+        RelationalValue::Text("new".into())
+    );
+}
+
+#[test]
 fn authoritative_constraint_staging_merges_foreign_key_changes() {
     let base = RelationalState::default()
         .stage_transaction(

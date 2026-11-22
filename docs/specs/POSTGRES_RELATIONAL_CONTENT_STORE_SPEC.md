@@ -86,8 +86,10 @@ The scoped grammar includes:
 - `DISTINCT`, `GROUP BY`, `COUNT`, `SUM`, `MIN`, `MAX`, `COALESCE`, and
   `OCTET_LENGTH`;
 - deterministic PostgreSQL null ordering, `LIMIT`, and `OFFSET`;
-- `INSERT`, multi-row `VALUES`, `ON CONFLICT`, column-only `RETURNING`,
-  `UPDATE`, and `DELETE`;
+- `INSERT`, multi-row `VALUES`, `ON CONFLICT`, and column-only `RETURNING` for
+  `INSERT`, `UPDATE`, and `DELETE`;
+- top-level data-modifying CTEs whose `INSERT`, `UPDATE`, or `DELETE` body has a
+  `RETURNING` clause;
 - `SELECT ... FOR SHARE` and `SELECT ... FOR UPDATE` in pessimistic concurrent
   transactions;
 - `CREATE TABLE`, primary/unique/foreign-key constraints, `CREATE INDEX`
@@ -103,6 +105,16 @@ row. The typed transaction API reports `affected_rows` and `conflict_rows` for
 the provisional statement outcome and recomputes the same result at commit.
 Only the commit result is confirmed. Result row, payload, and affected-row
 limits fail the statement before its transaction workspace is advanced.
+
+`UPDATE ... RETURNING` and `INSERT ... ON CONFLICT DO UPDATE ... RETURNING`
+return the final logical row image; `DELETE ... RETURNING` returns the removed
+logical row image. A data-modifying CTE exposes only its projected `RETURNING`
+columns. All mutation CTE bodies in one statement publish through one WAL
+transaction, while the containing query reads the pre-statement base-table
+snapshot plus statement-scoped returned-row relations. A constraint,
+projection, type, or resource refusal publishes none of the mutations. Each
+mutation CTE requires `RETURNING`; nested mutation CTEs and multiple mutation
+CTEs targeting the same table are rejected.
 
 A non-aggregate `COALESCE` projection accepts bound columns, parameters, and
 literals in scans and existing bounded joins. It evaluates arguments from left

@@ -23,9 +23,9 @@ use super::{
 };
 use hawdb_executor::{QueryMemoryClass, QueryRows, QuerySchema, Row};
 use hawdb_sql::{
-    ExprKind, SelectProjection, SelectStatement, SqlCommonTableExpression, SqlFunctionArgument,
-    SqlNullOrder, SqlOrderDirection, SqlOrderItem, SqlQueryBody, SqlQueryStatement, SqlSetOperator,
-    SqlValue,
+    ExprKind, SelectProjection, SelectStatement, SqlCommonTableExpression,
+    SqlCommonTableExpressionBody, SqlFunctionArgument, SqlNullOrder, SqlOrderDirection,
+    SqlOrderItem, SqlQueryBody, SqlQueryStatement, SqlSetOperator, SqlValue,
 };
 use hawdb_storage::relational::{
     RelationalColumnSchema, RelationalRow, RelationalScalarType, RelationalTableSchema,
@@ -188,9 +188,14 @@ fn plan_query_typed<'a, R: RelationalQueryStoreReader>(
                 )));
             }
             let planned = {
+                let SqlCommonTableExpressionBody::Query(query) = &cte.body else {
+                    return Err(HawDBError::Semantic(
+                        "data-modifying CTEs require the mutation statement executor".into(),
+                    ));
+                };
                 let cte_read_modes = read_modes.with_memory_overlay(&cte_tables);
                 plan_query_typed(
-                    &cte.query,
+                    query,
                     parameters,
                     scoped_state,
                     cte_read_modes,
@@ -417,7 +422,10 @@ fn query_plan_summary(query: &SqlQueryStatement) -> QueryPlanSummary {
         .with
         .iter()
         .filter(|cte| live_ctes.contains(&cte.name))
-        .map(|cte| query_plan_summary(&cte.query))
+        .filter_map(|cte| match &cte.body {
+            SqlCommonTableExpressionBody::Query(query) => Some(query_plan_summary(query)),
+            SqlCommonTableExpressionBody::Mutation(_) => None,
+        })
         .fold((0usize, 0usize), |(ctes, sets), summary| {
             (
                 ctes.saturating_add(summary.ctes),
@@ -454,7 +462,10 @@ fn live_cte_names(query: &SqlQueryStatement) -> BTreeSet<String> {
             continue;
         }
         live.insert(cte.name.clone());
-        let dependencies = query_external_relations(&cte.query);
+        let dependencies = match &cte.body {
+            SqlCommonTableExpressionBody::Query(query) => query_external_relations(query),
+            SqlCommonTableExpressionBody::Mutation(_) => BTreeSet::new(),
+        };
         for name in &names[..index] {
             if dependencies.contains(*name) {
                 needed.insert((*name).to_owned());
@@ -468,9 +479,11 @@ fn query_external_relations(query: &SqlQueryStatement) -> BTreeSet<String> {
     let mut external = BTreeSet::new();
     let mut local = BTreeSet::new();
     for cte in &query.with {
-        for relation in query_external_relations(&cte.query) {
-            if !local.contains(&relation) {
-                external.insert(relation);
+        if let SqlCommonTableExpressionBody::Query(query) = &cte.body {
+            for relation in query_external_relations(query) {
+                if !local.contains(&relation) {
+                    external.insert(relation);
+                }
             }
         }
         local.insert(cte.name.clone());
@@ -584,9 +597,14 @@ fn execute_query_typed<'a, R: RelationalQueryStoreReader>(
                 )));
             }
             if !live_ctes.contains(&cte.name) {
+                let SqlCommonTableExpressionBody::Query(query) = &cte.body else {
+                    return Err(HawDBError::Semantic(
+                        "data-modifying CTEs require the mutation statement executor".into(),
+                    ));
+                };
                 let cte_read_modes = read_modes.with_memory_overlay(&cte_tables);
                 let planned = plan_query_typed(
-                    &cte.query,
+                    query,
                     parameters,
                     scoped_state,
                     cte_read_modes,
@@ -600,9 +618,14 @@ fn execute_query_typed<'a, R: RelationalQueryStoreReader>(
                 cte_tables.insert(cte.name);
                 continue;
             }
+            let SqlCommonTableExpressionBody::Query(query) = &cte.body else {
+                return Err(HawDBError::Semantic(
+                    "data-modifying CTEs require the mutation statement executor".into(),
+                ));
+            };
             let cte_read_modes = read_modes.with_memory_overlay(&cte_tables);
             let cte_output = execute_query_typed(
-                *cte.query.clone(),
+                *query.clone(),
                 parameters,
                 scoped_state,
                 cte_read_modes,
