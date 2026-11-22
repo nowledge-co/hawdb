@@ -97,8 +97,12 @@ empty and NULL truth tables, lexical alias shadowing, multi-level qualified
 correlation, arity/type errors even when the outer scan is empty, CTE liveness
 through a subquery, and fail-closed row, payload, blocking-memory, and candidate
 work budgets. Focused cases pin parameterized EXISTS bounds, projection
-elision, cardinality-sensitive DISTINCT and set operations, and wildcard arity
-with CTE names that shadow catalog tables. Scalar IN tests pin the transition
+elision with bound target and ORDER BY columns, and cardinality-sensitive
+DISTINCT and set operations. CTE cases check wildcard width and qualified
+and unqualified column binding when local relations shadow catalog tables
+or outer columns, including later CTE definitions and nested membership.
+FROM-less global aggregates retain the group when their subquery predicate
+filters out the implicit input. Scalar IN tests pin the transition
 from cached scanning to hash membership under repeated costly probes, the
 tracked peak and fallback under a tighter memory limit, and NULL after
 promotion. Early hits stay on the scan and fit a candidate-work budget that

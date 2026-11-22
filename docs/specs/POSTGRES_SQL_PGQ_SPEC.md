@@ -80,7 +80,11 @@ as `FROM` items, bounded scalar expressions, `INNER`, `LEFT`, and `CROSS` joins,
 projection, filtering, grouping, ordering, limits, offsets, and locking clauses.
 The executable relational path now also recognizes statement-scoped `VALUES`,
 derived tables, and `EXISTS`/`NOT EXISTS` plus scalar or row `IN (subquery)` in
-`WHERE`. Subqueries in projection, JOIN conditions, grouping, HAVING, ordering,
+`WHERE`. Visible CTE columns bind before outer columns. Simple EXISTS binds
+its target and ordering columns before eliding their evaluation when they do
+not affect cardinality. A FROM-less WHERE subquery qualifies the implicit
+input row, and a global aggregate retains its group over empty input.
+Subqueries in projection, JOIN conditions, grouping, HAVING, ordering,
 limits, and standalone VALUES expressions remain rejected. Correlated execution
 uses a work-budgeted nested loop. Eligible deterministic uncorrelated membership
 scans a statement-scoped cached result. For same-type BIGINT, BOOLEAN, TEXT,

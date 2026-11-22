@@ -406,9 +406,9 @@ impl RelationalRowStoreReader for crate::RelationalMaterializedReader {
 
 /// Evaluates a FROM-less `SELECT` (e.g. `SELECT version();`) directly against
 /// a synthetic zero-binding row, bypassing catalog resolution, access-path
-/// selection, and join planning entirely — there is no table to resolve a
-/// path against. WHERE and its subqueries qualify the implicit row before
-/// it can be projected, and LIMIT and OFFSET can suppress its output.
+/// selection, and join planning. WHERE subqueries qualify the implicit
+/// input before projection or aggregation. A global aggregate still has one
+/// group when that input is filtered out.
 fn execute_fromless_select(
     select: &SelectStatement,
     parameters: &[Value],
@@ -422,26 +422,35 @@ fn execute_fromless_select(
         resources.execution_memory,
         resources.task_context,
     )?);
-    let account = projection_memory::copy_account(&ledger);
+    expression::validate_projection_columns(select, state)?;
+    validate_scalar_expressions(select, parameters, state)?;
     let limit = bind_bound(select.limit, parameters, "LIMIT")?;
     let offset = bind_bound(select.offset, parameters, "OFFSET")?;
     let bound = BoundRow::default();
     let mut rows = Vec::new();
-    if limit != Some(0)
-        && offset.unwrap_or_default() == 0
-        && subquery_filter.map_or(Ok(true), |filter| filter.matches(&bound))?
-    {
-        let _copies = projection_memory::admit_ordinary(
-            select,
-            &bound,
-            parameters,
-            &account,
-            usize::MAX,
-            false,
-        )?;
-        let row = expression::project_bound_row(&bound, &select.projection, parameters)?;
+    let mut reports = Vec::new();
+    if limit != Some(0) && offset.unwrap_or_default() == 0 {
+        let qualifies = subquery_filter.map_or(Ok(true), |filter| filter.matches(&bound))?;
         let mut payload_bytes = 0;
-        push_relational_output(row, &mut rows, &mut payload_bytes, resources.limits)?;
+        if select.projection.iter().any(projection_contains_aggregate) {
+            let (row, report) = aggregate::finish_fromless_group(
+                select, parameters, state, &bound, qualifies, &ledger, resources,
+            )?;
+            reports.push(report);
+            push_relational_output(row, &mut rows, &mut payload_bytes, resources.limits)?;
+        } else if qualifies {
+            let account = projection_memory::copy_account(&ledger);
+            let _copies = projection_memory::admit_ordinary(
+                select,
+                &bound,
+                parameters,
+                &account,
+                usize::MAX,
+                false,
+            )?;
+            let row = expression::project_bound_row(&bound, &select.projection, parameters)?;
+            push_relational_output(row, &mut rows, &mut payload_bytes, resources.limits)?;
+        }
     }
     let rows = QueryRows::try_from_named_rows(select_output_schema(select, state)?, rows)?;
     let access_path = RelationalAccessPathDescriptor {
@@ -478,7 +487,7 @@ fn execute_fromless_select(
             ..RelationalRowExecutionEvidence::default()
         },
         search_index_scan: None,
-        blocking_operator_memory_reports: Vec::new(),
+        blocking_operator_memory_reports: reports,
     })
 }
 

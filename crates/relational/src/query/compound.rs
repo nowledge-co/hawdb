@@ -23,6 +23,7 @@ use super::{
     RelationalRowExecutionEvidence, RelationalSqlStageTimings, RelationalState, Result, Value,
 };
 use crate::index_runtime::RelationalIndexExecutionEvidence;
+use crate::subquery_scope::cte_display_name;
 use hawdb_executor::{QueryMemoryClass, QueryRows, QuerySchema, Row};
 use hawdb_sql::{
     Expr, ExprKind, SelectProjection, SelectStatement, SqlBound, SqlCommonTableExpression,
@@ -2092,11 +2093,6 @@ fn cte_table_schema(
         indexes: Vec::new(),
         materialized_view: None,
     })
-}
-
-fn cte_display_name(name: &str) -> String {
-    name.strip_prefix("\0hawdb_derived_")
-        .map_or_else(|| name.to_string(), |source| format!("derived@{source}"))
 }
 
 fn select_output_types(

@@ -13,15 +13,15 @@
 // limitations under the License.
 
 use super::{
-    bind_bound, common_type, cte_display_name, execute_query_typed, plan_values,
-    relational_to_value, retained_bytes, select_output_types, size_of, validate_select_relations,
-    BTreeMap, Expr, ExprKind, HawDBError, OperatorMemoryTracker, QueryMemoryClass,
-    QueryMemoryLedger, QueryRows, RelationalQueryOutput, RelationalQueryReadModes,
-    RelationalQueryResourceContext, RelationalQueryStoreReader, RelationalScalarType,
-    RelationalSqlStageTimings, RelationalState, RelationalTableSchema, RelationalValue, Result,
+    bind_bound, common_type, execute_query_typed, plan_values, relational_to_value, retained_bytes,
+    select_output_types, size_of, validate_select_relations, Expr, ExprKind, HawDBError,
+    OperatorMemoryTracker, QueryMemoryClass, QueryMemoryLedger, QueryRows, RelationalQueryOutput,
+    RelationalQueryReadModes, RelationalQueryResourceContext, RelationalQueryStoreReader,
+    RelationalScalarType, RelationalSqlStageTimings, RelationalState, RelationalValue, Result,
     SelectProjection, SelectStatement, SqlBound, SqlCommonTableExpressionBody, SqlQueryBody,
     SqlQueryStatement, SqlSubqueryPredicate, SqlValue, TypedOutput, Value,
 };
+use crate::subquery_scope::{CteScope, RelationColumns};
 use std::collections::{HashMap, HashSet};
 
 struct SubqueryEvaluator<'a, R: RelationalQueryStoreReader> {
@@ -427,7 +427,6 @@ fn prepare_existence_query(
     // A simple SELECT can stop at its first surviving row. Set operations,
     // grouping and DISTINCT with an offset may depend on projected values.
     if query.with.is_empty()
-        && query.order_by.is_empty()
         && let SqlQueryBody::Select(select) = &mut query.body
         && select.table_function.is_none()
         && select.group_by.is_empty()
@@ -438,8 +437,28 @@ fn prepare_existence_query(
             .iter()
             .any(crate::field_plan::projection_contains_aggregate)
     {
+        use super::super::expression::{
+            resolve_projection_column_type, validate_projection_columns,
+            validate_scalar_expressions,
+        };
+        use crate::field_plan::{resolve_relational_order_target, RelationalOrderTarget};
+
         validate_select_relations(select, state)?;
-        select_output_types(select, parameters, state)?;
+        validate_projection_columns(select, state)?;
+        validate_scalar_expressions(select, parameters, state)?;
+        for item in &query.order_by {
+            match resolve_relational_order_target(select, item)? {
+                RelationalOrderTarget::InputColumn(column)
+                | RelationalOrderTarget::ProjectionColumn { column, .. } => {
+                    resolve_projection_column_type(select, state, column)?;
+                }
+                RelationalOrderTarget::ProjectionExpression { .. } => {}
+            }
+        }
+        // The order of surviving rows does not affect the existence of a row
+        // after OFFSET. The DISTINCT case that can affect that count stayed
+        // on the normal projection and sorting path above.
+        query.order_by.clear();
         select.distinct = false;
         select.projection = vec![SelectProjection::Expression {
             expression: Expr::value(SqlValue::Literal(Value::Int(1))),
@@ -462,7 +481,7 @@ pub(super) fn execute_select_with_subqueries<'a, R: RelationalQueryStoreReader>(
         .subquery_predicate
         .clone()
         .expect("subquery execution requires a subquery predicate");
-    validate_subquery_shapes(&predicate, &select, parameters, state)?;
+    validate_subquery_shapes(&predicate, &select, parameters, state, &CteScope::default())?;
     let ledger = QueryMemoryLedger::for_query(resources.execution_memory, resources.task_context)?;
     let tracker = OperatorMemoryTracker::with_account(
         resources.execution_memory.blocking_operator_bytes,
@@ -525,21 +544,24 @@ fn validate_subquery_shapes(
     owner: &SelectStatement,
     parameters: &[Value],
     state: &RelationalState,
+    scope: &CteScope,
 ) -> Result<()> {
     match predicate {
         SqlSubqueryPredicate::Scalar(_) => Ok(()),
         SqlSubqueryPredicate::And(left, right) | SqlSubqueryPredicate::Or(left, right) => {
-            validate_subquery_shapes(left, owner, parameters, state)?;
-            validate_subquery_shapes(right, owner, parameters, state)
+            validate_subquery_shapes(left, owner, parameters, state, scope)?;
+            validate_subquery_shapes(right, owner, parameters, state, scope)
         }
         SqlSubqueryPredicate::Not(predicate) => {
-            validate_subquery_shapes(predicate, owner, parameters, state)
+            validate_subquery_shapes(predicate, owner, parameters, state, scope)
         }
         SqlSubqueryPredicate::Exists { query } => {
-            validate_nested_subquery_shapes(query, parameters, state)
+            validate_nested_subquery_shapes(query, parameters, state, scope)
         }
         SqlSubqueryPredicate::In { left, query, .. } => {
-            if let Some(arity) = static_query_arity(query, state)?
+            if let Some(arity) = scope
+                .query_columns(query, state)?
+                .map(|columns| columns.len())
                 && arity != left.len()
             {
                 return Err(HawDBError::Semantic(format!(
@@ -547,7 +569,9 @@ fn validate_subquery_shapes(
                     left.len()
                 )));
             }
-            if let Some(right_types) = static_query_types(query, parameters, state)? {
+            if catalog_relations_only(owner, state, scope)
+                && let Some(right_types) = static_query_types(query, parameters, state, scope)?
+            {
                 for (column, (left, right)) in left.iter().zip(right_types).enumerate() {
                     let left = super::super::expression::infer_coalesce_scalar_type(
                         left, owner, parameters, state,
@@ -562,7 +586,7 @@ fn validate_subquery_shapes(
                     }
                 }
             }
-            validate_nested_subquery_shapes(query, parameters, state)
+            validate_nested_subquery_shapes(query, parameters, state, scope)
         }
     }
 }
@@ -571,42 +595,76 @@ fn validate_nested_subquery_shapes(
     query: &SqlQueryStatement,
     parameters: &[Value],
     state: &RelationalState,
+    scope: &CteScope,
 ) -> Result<()> {
-    let mut result = Ok(());
-    query.visit_selects(&mut |select| {
-        if result.is_ok()
-            && let Some(predicate) = &select.subquery_predicate
-        {
-            result = validate_subquery_shapes(predicate, select, parameters, state);
+    let mut local = scope.clone();
+    for cte in &query.with {
+        local.seed_recursive(query.recursive, cte);
+        if let SqlCommonTableExpressionBody::Query(child) = &cte.body {
+            validate_nested_subquery_shapes(child, parameters, state, &local)?;
         }
-    });
-    result
+        local.define(cte, state)?;
+    }
+    validate_nested_body_shapes(&query.body, parameters, state, &local)
+}
+
+fn validate_nested_body_shapes(
+    body: &SqlQueryBody,
+    parameters: &[Value],
+    state: &RelationalState,
+    scope: &CteScope,
+) -> Result<()> {
+    match body {
+        SqlQueryBody::Select(select) => select
+            .subquery_predicate
+            .as_ref()
+            .map_or(Ok(()), |predicate| {
+                validate_subquery_shapes(predicate, select, parameters, state, scope)
+            }),
+        SqlQueryBody::Values(_) => Ok(()),
+        SqlQueryBody::Nested(query) => {
+            validate_nested_subquery_shapes(query, parameters, state, scope)
+        }
+        SqlQueryBody::SetOperation { left, right, .. } => {
+            validate_nested_body_shapes(left, parameters, state, scope)?;
+            validate_nested_body_shapes(right, parameters, state, scope)
+        }
+    }
+}
+
+fn catalog_relations_only(
+    select: &SelectStatement,
+    state: &RelationalState,
+    scope: &CteScope,
+) -> bool {
+    select
+        .from
+        .iter()
+        .chain(select.joins.iter().map(|join| &join.table))
+        .all(|table| !scope.contains(&table.name) && state.table_schema(&table.name).is_some())
 }
 
 fn static_query_types(
     query: &SqlQueryStatement,
     parameters: &[Value],
     state: &RelationalState,
+    scope: &CteScope,
 ) -> Result<Option<Vec<Option<RelationalScalarType>>>> {
     if !query.with.is_empty() {
         return Ok(None);
     }
-    static_body_types(&query.body, parameters, state)
+    static_body_types(&query.body, parameters, state, scope)
 }
 
 fn static_body_types(
     body: &SqlQueryBody,
     parameters: &[Value],
     state: &RelationalState,
+    scope: &CteScope,
 ) -> Result<Option<Vec<Option<RelationalScalarType>>>> {
     match body {
         SqlQueryBody::Select(select) => {
-            if select
-                .from
-                .iter()
-                .chain(select.joins.iter().map(|join| &join.table))
-                .any(|table| state.table_schema(&table.name).is_none())
-            {
+            if !catalog_relations_only(select, state, scope) {
                 return Ok(None);
             }
             select_output_types(select, parameters, state).map(Some)
@@ -614,12 +672,12 @@ fn static_body_types(
         SqlQueryBody::Values(rows) => {
             plan_values(rows, parameters, state).map(|plan| Some(plan.types))
         }
-        SqlQueryBody::Nested(query) => static_query_types(query, parameters, state),
+        SqlQueryBody::Nested(query) => static_query_types(query, parameters, state, scope),
         SqlQueryBody::SetOperation { left, right, .. } => {
-            let Some(left) = static_body_types(left, parameters, state)? else {
+            let Some(left) = static_body_types(left, parameters, state, scope)? else {
                 return Ok(None);
             };
-            let Some(right) = static_body_types(right, parameters, state)? else {
+            let Some(right) = static_body_types(right, parameters, state, scope)? else {
                 return Ok(None);
             };
             if left.len() != right.len() {
@@ -652,138 +710,46 @@ fn subquery_types_comparable(left: RelationalScalarType, right: RelationalScalar
         )
 }
 
-fn static_query_arity(query: &SqlQueryStatement, state: &RelationalState) -> Result<Option<usize>> {
-    static_query_arity_in_scope(query, state, &BTreeMap::new())
-}
-
-fn static_query_arity_in_scope(
-    query: &SqlQueryStatement,
-    state: &RelationalState,
-    inherited: &BTreeMap<String, Option<usize>>,
-) -> Result<Option<usize>> {
-    let mut local = inherited.clone();
-    for cte in &query.with {
-        if query.recursive {
-            // Even an unresolved recursive binding hides a same-name table.
-            local.insert(cte.name.clone(), None);
-        }
-        let arity = match &cte.body {
-            SqlCommonTableExpressionBody::Query(query) => {
-                static_query_arity_in_scope(query, state, &local)?
-            }
-            SqlCommonTableExpressionBody::Mutation(_) => None,
-        };
-        if let Some(arity) = arity
-            && !cte.columns.is_empty()
-            && cte.columns.len() != arity
-        {
-            return Err(HawDBError::Semantic(format!(
-                "common table expression {} declares {} columns but returns {arity}",
-                cte_display_name(&cte.name),
-                cte.columns.len()
-            )));
-        }
-        local.insert(cte.name.clone(), arity);
-    }
-    static_body_arity(&query.body, state, &local)
-}
-
-fn static_body_arity(
-    body: &SqlQueryBody,
-    state: &RelationalState,
-    local: &BTreeMap<String, Option<usize>>,
-) -> Result<Option<usize>> {
-    match body {
-        SqlQueryBody::Select(select) => {
-            let mut arity = 0usize;
-            for projection in &select.projection {
-                match projection {
-                    SelectProjection::Expression { .. } => arity = arity.saturating_add(1),
-                    SelectProjection::Wildcard => {
-                        for table in select
-                            .from
-                            .iter()
-                            .chain(select.joins.iter().map(|join| &join.table))
-                        {
-                            let width = local.get(&table.name).copied().unwrap_or_else(|| {
-                                state
-                                    .table_schema(&table.name)
-                                    .map(|schema| schema.columns.len())
-                            });
-                            let Some(width) = width else {
-                                return Ok(None);
-                            };
-                            arity = arity.checked_add(width).ok_or_else(|| {
-                                HawDBError::Semantic("subquery output arity overflow".into())
-                            })?;
-                        }
-                    }
-                }
-            }
-            Ok(Some(arity))
-        }
-        SqlQueryBody::Values(rows) => {
-            let Some(first) = rows.first() else {
-                return Err(HawDBError::Semantic(
-                    "VALUES requires at least one row".into(),
-                ));
-            };
-            let arity = first.len();
-            if let Some((index, row)) = rows.iter().enumerate().find(|(_, row)| row.len() != arity)
-            {
-                return Err(HawDBError::Semantic(format!(
-                    "VALUES row {} has arity {}, expected {arity}",
-                    index + 1,
-                    row.len()
-                )));
-            }
-            Ok(Some(arity))
-        }
-        SqlQueryBody::Nested(query) => static_query_arity_in_scope(query, state, local),
-        SqlQueryBody::SetOperation { left, right, .. } => {
-            let left = static_body_arity(left, state, local)?;
-            let right = static_body_arity(right, state, local)?;
-            match (left, right) {
-                (Some(left), Some(right)) if left != right => Err(HawDBError::Semantic(format!(
-                    "set-operation inputs have arity {left} and {right}"
-                ))),
-                (Some(arity), Some(_)) => Ok(Some(arity)),
-                _ => Ok(None),
-            }
-        }
-    }
-}
-
 fn bind_outer_query_references(
     query: &mut SqlQueryStatement,
     row: &super::super::BoundRow<'_>,
     state: &RelationalState,
 ) -> Result<()> {
-    bind_outer_query_references_scoped(query, row, state, &[])
+    bind_outer_query_references_scoped(query, row, state, &CteScope::default(), &[])
 }
 
 fn bind_outer_query_references_scoped(
     query: &mut SqlQueryStatement,
     row: &super::super::BoundRow<'_>,
     state: &RelationalState,
+    scope: &CteScope,
     shadowing: &[LocalRelation<'_>],
 ) -> Result<()> {
-    for cte in &mut query.with {
-        if let SqlCommonTableExpressionBody::Query(query) = &mut cte.body {
-            bind_outer_query_references_scoped(query, row, state, shadowing)?;
-        }
+    if query.with.is_empty() {
+        return bind_outer_body_references(&mut query.body, row, state, scope, shadowing);
     }
-    bind_outer_body_references(&mut query.body, row, state, shadowing)
+    let mut local = scope.clone();
+    for cte in &mut query.with {
+        local.seed_recursive(query.recursive, cte);
+        if let SqlCommonTableExpressionBody::Query(child) = &mut cte.body {
+            bind_outer_query_references_scoped(child, row, state, &local, shadowing)?;
+        }
+        local.define(cte, state)?;
+    }
+    bind_outer_body_references(&mut query.body, row, state, &local, shadowing)
 }
 
 fn bind_outer_body_references(
     body: &mut SqlQueryBody,
     row: &super::super::BoundRow<'_>,
     state: &RelationalState,
+    scope: &CteScope,
     shadowing: &[LocalRelation<'_>],
 ) -> Result<()> {
     match body {
-        SqlQueryBody::Select(select) => bind_outer_select_references(select, row, state, shadowing),
+        SqlQueryBody::Select(select) => {
+            bind_outer_select_references(select, row, state, scope, shadowing)
+        }
         SqlQueryBody::Values(rows) => {
             for expression in rows.iter_mut().flatten() {
                 bind_outer_expression(expression, shadowing, row)?;
@@ -791,11 +757,11 @@ fn bind_outer_body_references(
             Ok(())
         }
         SqlQueryBody::Nested(query) => {
-            bind_outer_query_references_scoped(query, row, state, shadowing)
+            bind_outer_query_references_scoped(query, row, state, scope, shadowing)
         }
         SqlQueryBody::SetOperation { left, right, .. } => {
-            bind_outer_body_references(left, row, state, shadowing)?;
-            bind_outer_body_references(right, row, state, shadowing)
+            bind_outer_body_references(left, row, state, scope, shadowing)?;
+            bind_outer_body_references(right, row, state, scope, shadowing)
         }
     }
 }
@@ -804,6 +770,7 @@ fn bind_outer_select_references(
     select: &mut SelectStatement,
     row: &super::super::BoundRow<'_>,
     state: &RelationalState,
+    scope: &CteScope,
     shadowing: &[LocalRelation<'_>],
 ) -> Result<()> {
     let current = select
@@ -816,7 +783,7 @@ fn bind_outer_select_references(
                     .from_alias
                     .clone()
                     .unwrap_or_else(|| table.name.clone()),
-                state.table_schema(&table.name),
+                scope.columns(state, &table.name),
             )
         })
         .chain(select.joins.iter().map(|join| {
@@ -825,15 +792,19 @@ fn bind_outer_select_references(
                 join.alias
                     .clone()
                     .unwrap_or_else(|| join.table.name.clone()),
-                state.table_schema(&join.table.name),
+                scope.columns(state, &join.table.name),
             )
         }))
         .collect::<Vec<_>>();
     let mut local = shadowing.to_vec();
     local.extend(current);
     for projection in &mut select.projection {
-        if let SelectProjection::Expression { expression, .. } = projection {
+        if let SelectProjection::Expression { expression, alias } = projection {
+            let column_name = expression.as_column().map(|column| column.name.clone());
             bind_outer_expression(expression, &local, row)?;
+            if alias.is_none() && expression.as_column().is_none() {
+                *alias = column_name;
+            }
         }
     }
     for join in &mut select.joins {
@@ -843,7 +814,7 @@ fn bind_outer_select_references(
         bind_outer_expression(selection, &local, row)?;
     }
     if let Some(predicate) = &mut select.subquery_predicate {
-        bind_outer_predicate_expressions(predicate, &local, row, state)?;
+        bind_outer_predicate_expressions(predicate, &local, row, state, scope)?;
     }
     if let Some(having) = &mut select.having {
         bind_outer_expression(having, &local, row)?;
@@ -854,31 +825,32 @@ fn bind_outer_select_references(
     Ok(())
 }
 
-type LocalRelation<'a> = (String, String, Option<&'a RelationalTableSchema>);
+type LocalRelation<'a> = (String, String, RelationColumns<'a>);
 
 fn bind_outer_predicate_expressions(
     predicate: &mut SqlSubqueryPredicate,
     local: &[LocalRelation<'_>],
     row: &super::super::BoundRow<'_>,
     state: &RelationalState,
+    scope: &CteScope,
 ) -> Result<()> {
     match predicate {
         SqlSubqueryPredicate::Scalar(expression) => bind_outer_expression(expression, local, row),
         SqlSubqueryPredicate::And(left, right) | SqlSubqueryPredicate::Or(left, right) => {
-            bind_outer_predicate_expressions(left, local, row, state)?;
-            bind_outer_predicate_expressions(right, local, row, state)
+            bind_outer_predicate_expressions(left, local, row, state, scope)?;
+            bind_outer_predicate_expressions(right, local, row, state, scope)
         }
         SqlSubqueryPredicate::Not(predicate) => {
-            bind_outer_predicate_expressions(predicate, local, row, state)
+            bind_outer_predicate_expressions(predicate, local, row, state, scope)
         }
         SqlSubqueryPredicate::Exists { query } => {
-            bind_outer_query_references_scoped(query, row, state, local)
+            bind_outer_query_references_scoped(query, row, state, scope, local)
         }
         SqlSubqueryPredicate::In { left, query, .. } => {
             for expression in left {
                 bind_outer_expression(expression, local, row)?;
             }
-            bind_outer_query_references_scoped(query, row, state, local)
+            bind_outer_query_references_scoped(query, row, state, scope, local)
         }
     }
 }
@@ -892,15 +864,10 @@ fn bind_outer_expression(
         let ExprKind::Column(column) = &expression.kind else {
             return Ok(());
         };
-        let local_match = match column.qualifier.as_deref() {
-            Some(qualifier) => local
-                .iter()
-                .any(|(table, alias, _)| qualifier == table || qualifier == alias),
-            None => local.iter().any(|(_, _, schema)| {
-                schema.is_none_or(|schema| schema.column_position(&column.name).is_some())
-            }),
-        };
-        if local_match {
+        if local
+            .iter()
+            .any(|(table, alias, columns)| columns.matches(table, alias, column))
+        {
             return Ok(());
         }
         let bindings = row

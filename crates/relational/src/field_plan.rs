@@ -16,6 +16,7 @@
 //!
 //! This internal ownership seam does not open stores, read rows, or hydrate values.
 
+use crate::subquery_scope::{CteScope, RelationColumns};
 use hawdb_core::{HawDBError, Result};
 use hawdb_sql::{
     Expr, ExprKind, SelectProjection, SelectStatement, SqlColumnRef, SqlCommonTableExpressionBody,
@@ -579,7 +580,14 @@ fn collect_subquery_correlation_columns(
     let mut result = Ok(());
     predicate.visit_queries(&mut |query| {
         if result.is_ok() {
-            result = collect_query_correlation_columns(query, outer, state, output);
+            result = collect_query_correlation_columns(
+                query,
+                outer,
+                state,
+                &CteScope::default(),
+                &[],
+                output,
+            );
         }
     });
     result
@@ -589,38 +597,55 @@ fn collect_query_correlation_columns(
     query: &SqlQueryStatement,
     outer: &[FieldBinding<'_>],
     state: &RelationalState,
+    scope: &CteScope,
+    ancestors: &[LocalFieldBinding<'_>],
     output: &mut Vec<SqlColumnRef>,
 ) -> Result<()> {
-    for cte in &query.with {
-        if let SqlCommonTableExpressionBody::Query(query) = &cte.body {
-            collect_query_correlation_columns(query, outer, state, output)?;
-        }
+    if query.with.is_empty() {
+        return collect_body_correlation_columns(
+            &query.body,
+            outer,
+            state,
+            scope,
+            ancestors,
+            output,
+        );
     }
-    collect_body_correlation_columns(&query.body, outer, state, output)
+    let mut local = scope.clone();
+    for cte in &query.with {
+        local.seed_recursive(query.recursive, cte);
+        if let SqlCommonTableExpressionBody::Query(child) = &cte.body {
+            collect_query_correlation_columns(child, outer, state, &local, ancestors, output)?;
+        }
+        local.define(cte, state)?;
+    }
+    collect_body_correlation_columns(&query.body, outer, state, &local, ancestors, output)
 }
 
 fn collect_body_correlation_columns(
     body: &SqlQueryBody,
     outer: &[FieldBinding<'_>],
     state: &RelationalState,
+    scope: &CteScope,
+    ancestors: &[LocalFieldBinding<'_>],
     output: &mut Vec<SqlColumnRef>,
 ) -> Result<()> {
     match body {
         SqlQueryBody::Select(select) => {
-            collect_select_correlation_columns(select, outer, state, output)
+            collect_select_correlation_columns(select, outer, state, scope, ancestors, output)
         }
         SqlQueryBody::Values(rows) => {
             for expression in rows.iter().flatten() {
-                collect_expression_correlation_columns(expression, &[], outer, output)?;
+                collect_expression_correlation_columns(expression, ancestors, outer, output)?;
             }
             Ok(())
         }
         SqlQueryBody::Nested(query) => {
-            collect_query_correlation_columns(query, outer, state, output)
+            collect_query_correlation_columns(query, outer, state, scope, ancestors, output)
         }
         SqlQueryBody::SetOperation { left, right, .. } => {
-            collect_body_correlation_columns(left, outer, state, output)?;
-            collect_body_correlation_columns(right, outer, state, output)
+            collect_body_correlation_columns(left, outer, state, scope, ancestors, output)?;
+            collect_body_correlation_columns(right, outer, state, scope, ancestors, output)
         }
     }
 }
@@ -629,22 +654,26 @@ fn collect_select_correlation_columns(
     select: &SelectStatement,
     outer: &[FieldBinding<'_>],
     state: &RelationalState,
+    scope: &CteScope,
+    ancestors: &[LocalFieldBinding<'_>],
     output: &mut Vec<SqlColumnRef>,
 ) -> Result<()> {
-    let local = select
-        .from
-        .iter()
-        .map(|table| LocalFieldBinding {
-            table: table.name.as_str(),
-            qualifier: select.from_alias.as_deref().unwrap_or(&table.name),
-            schema: state.table_schema(&table.name),
-        })
-        .chain(select.joins.iter().map(|join| LocalFieldBinding {
-            table: join.table.name.as_str(),
-            qualifier: join.alias.as_deref().unwrap_or(&join.table.name),
-            schema: state.table_schema(&join.table.name),
-        }))
-        .collect::<Vec<_>>();
+    let mut local = ancestors.to_vec();
+    local.extend(
+        select
+            .from
+            .iter()
+            .map(|table| LocalFieldBinding {
+                table: table.name.as_str(),
+                qualifier: select.from_alias.as_deref().unwrap_or(&table.name),
+                columns: scope.columns(state, &table.name),
+            })
+            .chain(select.joins.iter().map(|join| LocalFieldBinding {
+                table: join.table.name.as_str(),
+                qualifier: join.alias.as_deref().unwrap_or(&join.table.name),
+                columns: scope.columns(state, &join.table.name),
+            })),
+    );
     for projection in &select.projection {
         if let SelectProjection::Expression { expression, .. } = projection {
             collect_expression_correlation_columns(expression, &local, outer, output)?;
@@ -669,7 +698,9 @@ fn collect_select_correlation_columns(
         }
         predicate.visit_queries(&mut |query| {
             if error.is_none() {
-                error = collect_query_correlation_columns(query, outer, state, output).err();
+                error =
+                    collect_query_correlation_columns(query, outer, state, scope, &local, output)
+                        .err();
             }
         });
         if let Some(error) = error.take() {
@@ -685,10 +716,11 @@ fn collect_select_correlation_columns(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
 struct LocalFieldBinding<'a> {
     table: &'a str,
     qualifier: &'a str,
-    schema: Option<&'a RelationalTableSchema>,
+    columns: RelationColumns<'a>,
 }
 
 fn collect_expression_correlation_columns(
@@ -705,17 +737,11 @@ fn collect_expression_correlation_columns(
         let ExprKind::Column(column) = &expression.kind else {
             return;
         };
-        let local_match = match column.qualifier.as_deref() {
-            Some(qualifier) => local
-                .iter()
-                .any(|binding| qualifier == binding.table || qualifier == binding.qualifier),
-            None => local.iter().any(|binding| {
-                binding
-                    .schema
-                    .is_none_or(|schema| schema.column_position(&column.name).is_some())
-            }),
-        };
-        if local_match {
+        if local.iter().any(|binding| {
+            binding
+                .columns
+                .matches(binding.table, binding.qualifier, column)
+        }) {
             return;
         }
         match resolve_optional_outer_field(column, outer) {

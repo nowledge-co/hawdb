@@ -663,6 +663,63 @@ fn exists_binds_limits_and_skips_unneeded_projection() {
 }
 
 #[test]
+fn exists_binds_discarded_projection_and_order_without_evaluating_them() {
+    let state = state();
+    let ordered = "SELECT id FROM numbers WHERE EXISTS (\
+        SELECT 1 / (id - id) FROM edges ORDER BY id\
+    ) ORDER BY id";
+    assert_eq!(
+        values(&query(&state, ordered)),
+        vec![
+            vec![Value::Int(1)],
+            vec![Value::Int(2)],
+            vec![Value::Int(3)],
+        ]
+    );
+    for (inner, error_part) in [
+        ("SELECT missing FROM edges", "column missing"),
+        ("SELECT id FROM edges ORDER BY missing", "column missing"),
+    ] {
+        let sql = format!("SELECT id FROM numbers WHERE EXISTS ({inner})");
+        let error = query_with_limits(&state, &sql, &[], batched_index_join_limits()).unwrap_err();
+        assert!(
+            matches!(error, HawDBError::Semantic(message) if message.contains(error_part)),
+            "{sql}"
+        );
+    }
+    let error = query_with_limits(
+        &state,
+        "SELECT id FROM numbers WHERE EXISTS (SELECT label + 1 FROM numbers)",
+        &[],
+        batched_index_join_limits(),
+    )
+    .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("arithmetic requires numeric operands"));
+}
+
+#[test]
+fn fromless_aggregate_subquery_filters_the_input_and_retains_the_global_group() {
+    let state = state();
+    let sql = "SELECT COUNT(*), SUM(7) WHERE EXISTS (SELECT id FROM numbers WHERE id = $1)";
+    for (id, expected) in [
+        (0, vec![Value::Int(0), Value::Null]),
+        (1, vec![Value::Int(1), Value::Int(7)]),
+    ] {
+        let output =
+            query_with_limits(&state, sql, &[Value::Int(id)], batched_index_join_limits()).unwrap();
+        assert_eq!(values(&output), vec![expected]);
+        assert!(output
+            .blocking_operator_memory_reports
+            .iter()
+            .any(|report| {
+                report.operator == "RelationalAggregateExec" && report.input_rows == id as usize
+            }));
+    }
+}
+
+#[test]
 fn in_subquery_arity_resolves_visible_ctes_before_catalog_tables() {
     let state = state();
     for query_text in [
@@ -678,6 +735,35 @@ fn in_subquery_arity_resolves_visible_ctes_before_catalog_tables() {
             values(&query(&state, query_text)),
             vec![vec![Value::Int(1)]]
         );
+    }
+}
+
+#[test]
+fn cte_columns_shadow_outer_columns_in_subquery_binding() {
+    let state = state();
+    for predicate in ["parent = 4", "numbers.parent = 4"] {
+        let sql = format!(
+            "SELECT id FROM edges WHERE id IN (\
+                WITH numbers(parent) AS (VALUES (4)) SELECT * FROM numbers WHERE {predicate}\
+            ) ORDER BY id"
+        );
+        assert_eq!(values(&query(&state, &sql)), vec![vec![Value::Int(4)]]);
+    }
+    for sql in [
+        "SELECT id FROM edges WHERE id IN (\
+            WITH numbers AS (SELECT 4 AS parent), filtered AS (\
+                SELECT * FROM numbers WHERE parent = 4\
+            ) SELECT * FROM filtered\
+        )",
+        "SELECT id FROM edges WHERE id IN (\
+            WITH numbers(wanted) AS (VALUES (4)) SELECT * FROM numbers WHERE parent = 2\
+        )",
+        "SELECT id FROM edges WHERE id IN (\
+            WITH numbers(parent) AS (VALUES (4))\
+            SELECT parent FROM numbers WHERE parent IN (SELECT * FROM numbers)\
+        )",
+    ] {
+        assert_eq!(values(&query(&state, sql)), vec![vec![Value::Int(4)]]);
     }
 }
 
