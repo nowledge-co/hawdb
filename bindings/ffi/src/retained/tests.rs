@@ -691,7 +691,9 @@ pub(super) fn constrained_embedded(config: DatabaseConfig, handles: usize) -> Ha
         config,
         Some(hawdb::RuntimeGovernorConfig {
             retained_result_handle_limit: NonZeroUsize::new(handles).unwrap(),
-            memory_budget_bytes: Some(64 * 1024 * 1024),
+            // The same owner also funds ordinary schema and mutation queries.
+            // Leave retained-result byte and handle limits unchanged.
+            memory_budget_bytes: Some(256 * 1024 * 1024),
             ..hawdb::RuntimeGovernorConfig::shared_host()
         }),
     );

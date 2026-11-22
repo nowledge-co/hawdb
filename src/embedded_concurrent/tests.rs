@@ -71,9 +71,18 @@ fn replacements_share_the_owner_governor_for_ordinary_and_retained_work() {
             "CREATE PROPERTY ON NODE TABLE Item(value) TYPE INT",
             "CREATE INDEX ON :Item(value)",
             "CREATE CONSTRAINT ON :Item(value) ASSERT UNIQUE",
-            "CREATE (:Item {value: 1})",
         ] {
             embedded.database_mut().query(query).unwrap();
+        }
+        // Retained-node reads require a point seek, not the tiny-label scan.
+        for value in 0..128 {
+            embedded
+                .database_mut()
+                .query_with_params(
+                    "CREATE (:Item {value: $value})",
+                    &BTreeMap::from([("value".into(), Value::Int(value))]),
+                )
+                .unwrap();
         }
         embedded
     }

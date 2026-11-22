@@ -1574,6 +1574,8 @@ statements and forks inside one transaction. Replacement tests saturate the
 owner governor, check both inner and outer ordinary admission and retained-node
 admission, and retain live old/replacement cursors to verify charge custody and
 full refunds. Both full-handle and database-only replacement are covered.
+The unique-lookup fixture contains 128 rows so retained-node admission uses an
+index seek rather than the optimizer's tiny-label scan.
 Administrative callbacks and replacement must also preserve visibility of live
 retained charges through the database's retained-result snapshot.
 The existing Tokio family also checks SQL clocks on worker threads and governor
@@ -1584,6 +1586,8 @@ it exercises ordinary ABI reads while the database owner is held. Retained
 numeric/node cursor ownership continues in the existing FFI retained families.
 Retained FFI fixtures configure the embedded owner's governor through typed open
 configuration, including the shared handle quota and pinned resource limits.
+Their 256 MiB ordinary memory budget also funds schema setup and mutation
+reservations; retained byte and handle limits remain independently constrained.
 The inadequate-handle-limit case proves pre-binding refusal, then transfers the
 same database into a newly configured owner before any result has been issued;
 administrative database replacement does not replace a live facade's governor.
