@@ -941,6 +941,15 @@ where
         request: SqlQueryRequest<'_>,
         prepared: crate::relational_sql::PreparedRelationalSql,
     ) -> Result<QueryOutput> {
+        self.query_sql_with_prepared_request_at_clock(request, prepared, self.sql_clock)
+    }
+
+    pub(super) fn query_sql_with_prepared_request_at_clock(
+        &self,
+        request: SqlQueryRequest<'_>,
+        prepared: crate::relational_sql::PreparedRelationalSql,
+        clock: hawdb_core::temporal::OffsetDateTime,
+    ) -> Result<QueryOutput> {
         self.store.ensure_usable()?;
         let task =
             query_request::bind_request_context(self.task_context.as_ref(), request.task_context)?;
@@ -952,17 +961,19 @@ where
             ..request
         };
         let limits = request.effective_output_limits(&self.config);
-        self.query_sql_with_prepared_params_context_and_join_planning(
-            request.sql,
-            request.parameters,
-            prepared,
-            DatabaseReadSqlOptions {
-                max_rows: limits.max_rows,
-                max_payload_bytes: limits.max_payload_bytes,
-                task_context,
-                join_planning: request.join_planning,
-            },
-        )
+        hawdb_core::temporal::with_statement_clock(clock, || {
+            self.query_sql_with_prepared_params_context_and_join_planning_at_clock(
+                request.sql,
+                request.parameters,
+                prepared,
+                DatabaseReadSqlOptions {
+                    max_rows: limits.max_rows,
+                    max_payload_bytes: limits.max_payload_bytes,
+                    task_context,
+                    join_planning: request.join_planning,
+                },
+            )
+        })
     }
 
     /// Executes one SQL statement with the statement clock pinned to the read
@@ -1083,7 +1094,7 @@ where
             );
         }
 
-        self.execute_profiled_relational_sql(
+        self.execute_profiled_relational_sql_at_clock(
             prepared,
             parameters,
             max_rows,

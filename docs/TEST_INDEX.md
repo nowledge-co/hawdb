@@ -1568,7 +1568,15 @@ before the writer releases its owner, then observe the new value after release.
 `embedded_concurrent::tests` belongs to the existing root general partition and
 covers the synchronous admitted facade, publication replacement, cold persistent
 SQL template reuse, explicit transaction refusal, mutation result-budget atomicity
-and permit refunds.
+and permit refunds. Deterministic clock regressions distinguish autocommit and
+new read-transaction start times over one unchanged publication from repeated
+statements and forks inside one transaction. Replacement tests saturate the
+owner governor, check both inner and outer ordinary admission and retained-node
+admission, and retain live old/replacement cursors to verify charge custody and
+full refunds. Both full-handle and database-only replacement are covered.
+The existing Tokio family also checks SQL clocks on worker threads and governor
+consistency after full-handle replacement; the FFI temporal family checks fresh
+SQL autocommit clocks without intervening writes. No lane or timeout changes.
 `bindings/ffi/src/concurrency_tests.rs` belongs to the existing native FFI target;
 it exercises ordinary ABI reads while the database owner is held. Retained
 numeric/node cursor ownership continues in the existing FFI retained families.

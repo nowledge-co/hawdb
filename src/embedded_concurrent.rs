@@ -38,6 +38,7 @@ impl HawDBConcurrentEmbedded {
 
     /// Exclusive administration, including context replacement and configuration.
     /// The callback must not reenter this facade or wait for another query on it.
+    /// A replacement handle is rebound to this facade's governor on return.
     pub fn with_embedded_mut<T>(&self, operation: impl FnOnce(&mut HawDBEmbedded) -> T) -> T {
         let _administration = self.owner.administration();
         operation(&mut self.owner.direct_write())

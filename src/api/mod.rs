@@ -708,7 +708,11 @@ impl DatabaseReadSnapshot {
         &self,
         task_context: Option<hawdb_core::RuntimeTaskContext>,
     ) -> Result<DatabaseReadTransaction> {
-        self.0.fork_at_same_snapshot(task_context)
+        let mut transaction = self.0.fork_at_same_snapshot(task_context)?;
+        // A publication pins data, not the start time of future transactions.
+        // Forks within an existing transaction still inherit its clock.
+        transaction.sql_clock = hawdb_core::temporal::statement_now();
+        Ok(transaction)
     }
 }
 

@@ -92,9 +92,11 @@ impl PublishedConcurrentRead {
         // SQL execution borrows its store. The caller's publication Arc keeps
         // the complete schema/data view and generation pin alive, so ordinary
         // reads need neither a second store snapshot nor observation copies.
-        self.snapshot
-            .0
-            .query_sql_with_prepared_request(request, prepared)
+        self.snapshot.0.query_sql_with_prepared_request_at_clock(
+            request,
+            prepared,
+            hawdb_core::temporal::statement_now(),
+        )
     }
 
     pub(crate) fn query_sql_observed(

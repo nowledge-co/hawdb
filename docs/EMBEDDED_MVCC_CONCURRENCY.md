@@ -30,6 +30,14 @@ the same owner implementation and published-read protocol.
   through admission and released before a refused preparation is rebuilt.
   Execution permits remain alive through commit and construction of returned
   results. Retained cursors account for their independent result lifetime.
+- Administrative replacement of an embedded handle or its database rebinds new
+  ordinary, storage and retained work to the facade's original governor. Existing
+  cursors keep their original snapshot and accounting, including cursors created
+  before a replacement was adopted. Replacement does not create a second budget
+  for facade work or change the Tokio scheduler's governor.
+- A published snapshot pins schema and data, not SQL time. Each autocommit SQL
+  execution and newly opened read transaction captures its own clock; repeated
+  statements and internal forks within one read transaction keep its start time.
 - Cold persistent admission refreshes SQL planning metadata with the admitted
   branch's template cache; read-only traffic does not retain the disabled
   pre-admission cache.

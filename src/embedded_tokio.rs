@@ -314,6 +314,8 @@ impl HawDBTokioEmbedded {
         operation(&lock_embedded(&self.embedded))
     }
 
+    /// Runs exclusive administration. Replacements inherit this runtime's
+    /// governor on return; existing retained results keep their original custody.
     pub fn with_embedded_mut<R>(&self, operation: impl FnOnce(&mut HawDBEmbedded) -> R) -> R {
         let _administration = self.embedded.administration();
         operation(&mut self.embedded.direct_write())

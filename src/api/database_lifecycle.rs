@@ -511,6 +511,17 @@ impl Database {
         Ok(self.runtime.get()?.store.storage_residency_report())
     }
 
+    pub(crate) fn rebind_embedded_runtime_governor(
+        &mut self,
+        governor: hawdb_qos::RuntimeGovernor,
+    ) {
+        // An embedded owner keeps one governor even when adopting a database
+        // that has already bound retained work elsewhere. Existing cursors keep
+        // their original custody; newly published reads use the owner's budget.
+        self.retained_runtime = Arc::new(retained_query::RetainedRuntime::default());
+        self.set_runtime_governor(governor);
+    }
+
     /// Threads the engine's runtime governor into the storage layer so
     /// background columnar-shadow work can request admission. Called by the
     /// embedding layers that own the governor (`HawDBEmbedded`,

@@ -424,6 +424,12 @@ impl HawDBEmbedded {
         &self.runtime_governor
     }
 
+    pub(crate) fn rebind_runtime_governor(&mut self, governor: RuntimeGovernor) {
+        self.database
+            .rebind_embedded_runtime_governor(governor.clone());
+        self.runtime_governor = governor;
+    }
+
     /// Refreshes host/cgroup resources unless the caller pinned the snapshot.
     ///
     /// Unlike earlier facade versions, explicit refresh also preserves a pin.

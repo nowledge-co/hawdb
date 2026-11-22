@@ -105,6 +105,57 @@ fn read(engine: &HawDBTokioEmbedded, sql: bool, id: i64) -> Value {
 }
 
 #[test]
+fn sql_autocommit_clock_advances_without_a_write_on_tokio_workers() {
+    let fixture = Fixture::new();
+    let engine = &fixture.engine;
+    let query = || {
+        engine
+            .runtime()
+            .block_on(engine.query_sql_request(OwnedSqlQueryRequest::new(
+                "SELECT CURRENT_TIMESTAMP AS t, now() AS n",
+            )))
+            .unwrap()
+            .unwrap()
+    };
+    let first = query();
+    assert_eq!(first.rows[0]["t"], first.rows[0]["n"]);
+    thread::sleep(Duration::from_millis(20));
+    let second = query();
+    assert_eq!(second.rows[0]["t"], second.rows[0]["n"]);
+    assert_ne!(first.rows[0]["t"], second.rows[0]["t"]);
+    fixture.close();
+}
+
+#[test]
+fn replacement_keeps_tokio_and_inner_admission_on_one_governor() {
+    let fixture = Fixture::new();
+    let engine = &fixture.engine;
+    engine.with_embedded_mut(|embedded| *embedded = HawDBEmbedded::open_in_memory());
+    let governor = engine.runtime().governor();
+    let permit = governor
+        .try_admit(
+            RuntimeWorkRequest::new(RuntimeWorkPriority::Foreground, RuntimeWorkKind::Control)
+                .with_cpu_slots(governor.snapshot().limits.effective_cpu_slots.get()),
+        )
+        .unwrap();
+    let result = engine.with_embedded_mut(|embedded| {
+        embedded.query_sql_request_admitted(crate::SqlQueryRequest::new("SELECT 1"))
+    });
+    assert!(
+        matches!(result, Err(crate::EmbeddedQueryError::Admission(ref error))
+        if error.code == hawdb_qos::RuntimeAdmissionCode::CpuSaturated),
+        "{result:?}"
+    );
+    drop(permit);
+    engine
+        .runtime()
+        .block_on(engine.query_sql_request(OwnedSqlQueryRequest::new("SELECT 1")))
+        .unwrap()
+        .unwrap();
+    fixture.close();
+}
+
+#[test]
 fn ordinary_sql_and_cypher_writers_overlap_with_reads_and_refund_admission() {
     for sql in [false, true] {
         let fixture = Fixture::new();

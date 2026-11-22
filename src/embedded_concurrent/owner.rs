@@ -28,13 +28,15 @@ pub(crate) struct ConcurrentRuntime {
 }
 
 impl EmbeddedOwner {
-    pub(crate) fn new(embedded: HawDBEmbedded) -> Self {
+    pub(crate) fn new(mut embedded: HawDBEmbedded) -> Self {
+        let governor = embedded.runtime_governor().clone();
+        embedded.rebind_runtime_governor(governor.clone());
         let user_transaction = embedded.transaction_active();
         Self {
             metadata: Mutex::new(Arc::new(
                 embedded.database().runtime_sql_planning_snapshot(),
             )),
-            governor: embedded.runtime_governor().clone(),
+            governor,
             state: Mutex::new(embedded),
             published: Mutex::new(None),
             failed: AtomicBool::new(false),
@@ -233,6 +235,13 @@ impl Drop for EmbeddedGuard<'_> {
         if std::thread::panicking() {
             self.owner.failed.store(true, Ordering::Release);
             return;
+        }
+        if !self.refresh {
+            // Administration can replace either the full embedded handle or
+            // its database. Keep admission, storage and new retained work on
+            // the stable governor also used by in-flight work and Tokio.
+            self.state
+                .rebind_runtime_governor(self.owner.governor.clone());
         }
         self.owner
             .user_transaction
