@@ -70,6 +70,7 @@ fn replacements_share_the_owner_governor_for_ordinary_and_retained_work() {
             "CREATE NODE TABLE Item",
             "CREATE PROPERTY ON NODE TABLE Item(value) TYPE INT",
             "CREATE INDEX ON :Item(value)",
+            "CREATE CONSTRAINT ON :Item(value) ASSERT UNIQUE",
             "CREATE (:Item {value: 1})",
         ] {
             embedded.database_mut().query(query).unwrap();
