@@ -23,6 +23,8 @@ use std::sync::Arc;
 
 pub(crate) struct PublishedConcurrentRead {
     pub(crate) snapshot: DatabaseReadSnapshot,
+    pub(crate) sql_planning: super::super::RuntimeSqlPlanningSnapshot,
+    checkpoint_control: Arc<super::super::automatic_checkpoint::Control>,
     pub(super) recorder: StatementRecorder,
     plan_cache: Arc<SharedState<PlanCache>>,
 }
@@ -38,12 +40,24 @@ impl PublishedConcurrentRead {
         runtime.store.ensure_usable()?;
         Ok(Self {
             snapshot: database.read_snapshot_without_observations()?,
+            sql_planning: database.runtime_sql_planning_snapshot(),
+            checkpoint_control: database.runtime.checkpoint_control(),
             recorder: database.statement_recorder(),
             plan_cache: Arc::clone(&runtime.plan_cache),
         })
     }
 
-    pub(super) fn begin_read_transaction(&self) -> Result<DatabaseReadTransaction> {
+    pub(crate) fn needs_checkpoint_handoff(&self) -> Result<bool> {
+        self.checkpoint_control.ensure_healthy()?;
+        Ok(self.checkpoint_control.has_pending_handoff())
+    }
+
+    pub(crate) fn adopt_checkpoint_handoff(&self, database: &mut Database) -> Result<()> {
+        database.runtime.get_read()?;
+        Ok(())
+    }
+
+    pub(crate) fn begin_read_transaction(&self) -> Result<DatabaseReadTransaction> {
         let mut snapshot = self.snapshot.fork(None)?;
         // Observation tables include reads completed since the last write.
         self.recorder.refresh_read_snapshot(&mut snapshot);
@@ -59,7 +73,7 @@ impl PublishedConcurrentRead {
         Ok(snapshot)
     }
 
-    pub(super) fn query_sql(
+    pub(crate) fn query_sql(
         &self,
         request: crate::SqlQueryRequest<'_>,
         prepared: crate::relational_sql::PreparedRelationalSql,
@@ -81,6 +95,40 @@ impl PublishedConcurrentRead {
         self.snapshot
             .0
             .query_sql_with_prepared_request(request, prepared)
+    }
+
+    pub(crate) fn query_sql_observed(
+        &self,
+        request: crate::SqlQueryRequest<'_>,
+        prepared: crate::relational_sql::PreparedRelationalSql,
+    ) -> Result<QueryOutput> {
+        let started = hawdb_core::time::Instant::now();
+        let kind = super::super::observability::sql_statement_kind(prepared.statement());
+        let result = self.query_sql(request, prepared);
+        self.recorder.record_statement_execution(
+            "sql",
+            request.sql,
+            kind,
+            started,
+            result.as_ref(),
+            super::super::StatementExecutionContext::default(),
+        );
+        result
+    }
+
+    pub(crate) fn retained_node_query(
+        &self,
+        cypher: &str,
+        parameters: &std::collections::BTreeMap<String, crate::Value>,
+        options: crate::RetainedQueryOptions,
+    ) -> std::result::Result<crate::RetainedNodeSnapshotCursor, crate::RetainedQueryError> {
+        self.begin_read_transaction()?
+            .into_retained_node_query_observed(
+                cypher,
+                parameters,
+                options,
+                Some(self.recorder.clone()),
+            )
     }
 
     pub(super) fn query_prepared_request(

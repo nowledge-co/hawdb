@@ -128,6 +128,49 @@ impl From<RuntimeAdmissionError> for EmbeddedQueryError {
     }
 }
 
+pub(crate) fn admit_prepared<T>(
+    governor: &RuntimeGovernor,
+    prepared: T,
+    request: impl Fn(hawdb_qos::RuntimeGovernorSnapshot, Option<&T>) -> hawdb_qos::RuntimeWorkRequest,
+) -> std::result::Result<(Option<T>, hawdb_qos::RuntimePermit), EmbeddedQueryError> {
+    match admit_query(governor, request(governor.snapshot(), Some(&prepared))) {
+        Ok(permit) => Ok((Some(prepared), permit)),
+        Err(_) => {
+            // Rebuild only after admission, under the execution reservation.
+            // Retained preparation must not turn a fitting query into a
+            // hard-capacity refusal or survive a synchronous busy result.
+            drop(prepared);
+            let permit = admit_query(governor, request(governor.snapshot(), None))?;
+            Ok((None, permit))
+        }
+    }
+}
+
+pub(crate) fn admit_query(
+    governor: &RuntimeGovernor,
+    request: hawdb_qos::RuntimeWorkRequest,
+) -> std::result::Result<hawdb_qos::RuntimePermit, EmbeddedQueryError> {
+    match governor.try_admit(request) {
+        Ok(permit) => Ok(permit),
+        Err(error) => {
+            if error.is_retryable() {
+                governor.record_admission_wait(request, error.code, 0);
+            }
+            Err(EmbeddedQueryError::Admission(error))
+        }
+    }
+}
+
+pub(crate) fn check_query_context(
+    governor: &RuntimeGovernor,
+    context: &RuntimeTaskContext,
+) -> std::result::Result<(), EmbeddedQueryError> {
+    context.checkpoint().map_err(|reason| {
+        governor.record_cancellation(reason);
+        EmbeddedQueryError::Stopped(reason)
+    })
+}
+
 impl HawDBEmbeddedOpenOptions {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self::for_profile(path, EmbeddedDeploymentProfile::SharedHost)
@@ -668,34 +711,14 @@ impl HawDBEmbedded {
             Option<&T>,
         ) -> hawdb_qos::RuntimeWorkRequest,
     ) -> std::result::Result<(Option<T>, hawdb_qos::RuntimePermit), EmbeddedQueryError> {
-        match self.try_admit_query(request(self.runtime_governor.snapshot(), Some(&prepared))) {
-            Ok(permit) => Ok((Some(prepared), permit)),
-            Err(_) => {
-                // Rebuild only after admission, under the execution reservation.
-                // Retained preparation must not turn a fitting query into a
-                // hard-capacity refusal or survive a synchronous busy result.
-                drop(prepared);
-                let permit =
-                    self.try_admit_query(request(self.runtime_governor.snapshot(), None))?;
-                Ok((None, permit))
-            }
-        }
+        admit_prepared(&self.runtime_governor, prepared, request)
     }
 
     fn try_admit_query(
         &self,
         request: hawdb_qos::RuntimeWorkRequest,
     ) -> std::result::Result<hawdb_qos::RuntimePermit, EmbeddedQueryError> {
-        match self.runtime_governor.try_admit(request) {
-            Ok(permit) => Ok(permit),
-            Err(error) => {
-                if error.is_retryable() {
-                    self.runtime_governor
-                        .record_admission_wait(request, error.code, 0);
-                }
-                Err(EmbeddedQueryError::Admission(error))
-            }
-        }
+        admit_query(&self.runtime_governor, request)
     }
 
     pub(crate) fn admitted_result_budget_bytes(&self) -> u64 {
@@ -709,10 +732,7 @@ impl HawDBEmbedded {
         &self,
         task_context: &RuntimeTaskContext,
     ) -> std::result::Result<(), EmbeddedQueryError> {
-        task_context.checkpoint().map_err(|reason| {
-            self.runtime_governor.record_cancellation(reason);
-            EmbeddedQueryError::Stopped(reason)
-        })
+        check_query_context(&self.runtime_governor, task_context)
     }
 
     /// Returns the raw database, whose queries bypass facade admission policies.

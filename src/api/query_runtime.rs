@@ -31,7 +31,7 @@ pub(crate) struct PreparedRuntimeQuery {
     scoring_key: Option<super::query_request::ScoringPlanCacheKey>,
 }
 
-#[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
+#[cfg(test)]
 pub(crate) struct RuntimePlanningSnapshot {
     branch_id: Option<hawdb_core::Uuid>,
     catalog: Catalog,
@@ -53,7 +53,7 @@ struct RuntimePlanningContext<'a> {
     system_variables: &'a QuerySystemVariables,
 }
 
-#[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
+#[cfg(test)]
 impl RuntimePlanningSnapshot {
     pub(crate) fn accepts_prepared(&self, prepared: &PreparedRuntimeQuery) -> bool {
         prepared.is_compatible(
@@ -358,7 +358,7 @@ impl Database {
         Ok(())
     }
 
-    #[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn runtime_planning_snapshot(&self) -> Result<RuntimePlanningSnapshot> {
         let runtime = self.runtime.get()?;
         Ok({

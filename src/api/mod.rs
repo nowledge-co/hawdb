@@ -184,6 +184,7 @@ pub use query_preparation_metrics::{query_preparation_metrics, QueryPreparationM
 mod sql_runtime;
 #[cfg(feature = "tokio-runtime")]
 pub(crate) use sql_runtime::PreparedRuntimeSql;
+pub(crate) use sql_runtime::RuntimeSqlPlanningSnapshot;
 mod retained_query;
 pub use retained_query::{
     ArrowArray, ArrowArrayStream, ArrowSchema, RetainedArrowCodeOwner, RetainedArrowExport,
@@ -230,8 +231,6 @@ pub use query_request::{
     OwnedSqlQueryRequest, QueryRequest, ReadSnapshotBudget, ReadSnapshotUsage, ScoringRequest,
     SqlQueryRequest,
 };
-#[cfg(feature = "tokio-runtime")]
-pub(crate) use query_runtime::RuntimePlanningSnapshot;
 pub(crate) use query_runtime::{runtime_result_memory_budget, PreparedRuntimeQuery};
 pub use types::*;
 

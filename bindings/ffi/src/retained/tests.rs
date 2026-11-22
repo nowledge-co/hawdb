@@ -160,9 +160,7 @@ fn fixture(config: DatabaseConfig) -> *mut HawdbDatabase {
             .query_admitted(&format!("CREATE (:Item {{score: {score}}})"))
             .unwrap();
     }
-    Box::into_raw(Box::new(HawdbDatabase {
-        inner: Mutex::new(embedded),
-    }))
+    Box::into_raw(Box::new(HawdbDatabase::new(embedded)))
 }
 pub(super) fn request(query: &str, params: &str) -> HawdbRetainedQueryV1 {
     HawdbRetainedQueryV1 {
@@ -258,7 +256,7 @@ fn selected_scores(column: HawdbRetainedColumnV1) -> Vec<i64> {
 #[test]
 fn independent_column_lifetime_identity_and_exact_final_release() {
     let db = fixture(DatabaseConfig::default());
-    let governor = unsafe { (&*db).inner.lock().unwrap().runtime_governor().clone() };
+    let governor = unsafe { (&*db).inner.runtime_governor().clone() };
     let cursor = cursor(db, QUERY, r#"{"min":2}"#);
     let first = batch(cursor);
     let scores = column(first, 0);
@@ -639,9 +637,7 @@ fn nullable_float_bits_and_node_identity_are_exposed_without_casting() {
             )
             .unwrap();
     }
-    let db = Box::into_raw(Box::new(HawdbDatabase {
-        inner: Mutex::new(embedded),
-    }));
+    let db = Box::into_raw(Box::new(HawdbDatabase::new(embedded)));
     // Input JSON accepts finite numbers; -1e300 includes all non-null fixture values.
     let mut request = request(QUERY, r#"{"min":-1e300}"#);
     request.batch_rows = 9;
@@ -713,12 +709,11 @@ fn handles_are_shared_across_cursors_and_borrowing_needs_no_additional_owner() {
     let db = fixture(DatabaseConfig::default());
     let governor = constrained_governor(5);
     unsafe {
-        (&*db)
-            .inner
-            .lock()
-            .unwrap()
-            .database_mut()
-            .set_runtime_governor(governor.clone());
+        (&*db).inner.with_embedded_mut(|embedded| {
+            embedded
+                .database_mut()
+                .set_runtime_governor(governor.clone())
+        });
     }
     let first_cursor = cursor(db, QUERY, r#"{"min":2}"#);
     let second_cursor = cursor(db, QUERY, r#"{"min":2}"#);
@@ -795,12 +790,11 @@ fn handles_are_shared_across_cursors_and_borrowing_needs_no_additional_owner() {
 fn inadequate_protocol_handle_limit_refuses_before_binding_and_can_be_corrected() {
     let db = fixture(DatabaseConfig::default());
     unsafe {
-        (&*db)
-            .inner
-            .lock()
-            .unwrap()
-            .database_mut()
-            .set_runtime_governor(constrained_governor(2));
+        (&*db).inner.with_embedded_mut(|embedded| {
+            embedded
+                .database_mut()
+                .set_runtime_governor(constrained_governor(2))
+        });
     }
     let request = request(QUERY, r#"{"min":2}"#);
     let mut out = HawdbRetainedCursorV1::default();
@@ -820,19 +814,14 @@ fn inadequate_protocol_handle_limit_refuses_before_binding_and_can_be_corrected(
     assert!(unsafe {
         (&*db)
             .inner
-            .lock()
-            .unwrap()
-            .database()
-            .retained_result_snapshot()
-            .is_none()
+            .with_embedded_mut(|embedded| embedded.database().retained_result_snapshot().is_none())
     });
     unsafe {
-        (&*db)
-            .inner
-            .lock()
-            .unwrap()
-            .database_mut()
-            .set_runtime_governor(constrained_governor(3));
+        (&*db).inner.with_embedded_mut(|embedded| {
+            embedded
+                .database_mut()
+                .set_runtime_governor(constrained_governor(3))
+        });
     }
     let cursor = cursor(db, QUERY, r#"{"min":2}"#);
     let first = batch(cursor);

@@ -11,10 +11,11 @@ fn fixture(handles: usize) -> (*mut HawdbDatabase, RuntimeGovernor) {
     let (db, governor) = indexed_fixture(handles);
     unsafe { &*db }
         .inner
-        .lock()
-        .unwrap()
-        .database_mut()
-        .query("CREATE CONSTRAINT ON :Item(id) ASSERT UNIQUE")
+        .with_embedded_mut(|embedded| {
+            embedded
+                .database_mut()
+                .query("CREATE CONSTRAINT ON :Item(id) ASSERT UNIQUE")
+        })
         .unwrap();
     (db, governor)
 }
@@ -44,12 +45,7 @@ fn indexed_fixture(handles: usize) -> (*mut HawdbDatabase, RuntimeGovernor) {
     }
     let governor = constrained_governor(handles);
     db.database_mut().set_runtime_governor(governor.clone());
-    (
-        Box::into_raw(Box::new(HawdbDatabase {
-            inner: Mutex::new(db),
-        })),
-        governor,
-    )
+    (Box::into_raw(Box::new(HawdbDatabase::new(db))), governor)
 }
 fn cursor(db: *mut HawdbDatabase, id: u64) -> HawdbRetainedCursorV1 {
     let params = format!("{{\"id\":{id}}}");
@@ -143,9 +139,9 @@ fn original_node_buffers_survive_write_and_all_parent_releases() {
     unsafe {
         (&*db)
             .inner
-            .lock()
-            .unwrap()
-            .query_admitted("MATCH (n:Item) WHERE n.id = 1 SET n.payload = 'new'")
+            .query_request_admitted(hawdb::QueryRequest::new(
+                "MATCH (n:Item) WHERE n.id = 1 SET n.payload = 'new'",
+            ))
             .unwrap();
     }
     assert_eq!(bytes(text), "old\0\u{4e16}".as_bytes());
@@ -398,12 +394,12 @@ fn shared_vector_retained_bytes_survive_database_release() {
     let vector = hawdb::Vector::new(&[1.0, -0.0]).unwrap();
     unsafe { &*db }
         .inner
-        .lock()
-        .unwrap()
-        .database_mut()
-        .query_with_params(
-            "MATCH (n:Item) WHERE n.id = 1 SET n.embedding = $embedding",
-            &BTreeMap::from([("embedding".into(), Value::Vector(vector.clone()))]),
+        .query_request_admitted(
+            hawdb::QueryRequest::new("MATCH (n:Item) WHERE n.id = 1 SET n.embedding = $embedding")
+                .with_params(&BTreeMap::from([(
+                    "embedding".into(),
+                    Value::Vector(vector.clone()),
+                )])),
         )
         .unwrap();
     let cursor = cursor(db, 1);

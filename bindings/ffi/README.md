@@ -87,8 +87,12 @@ The on-disk format carries no compatibility promise until HawDB declares one.
   Existing descriptor errors and ordinary error JSON remain unchanged. The
   [resource metadata contract](../../docs/EXECUTION_REQUEST_CONTRACT.md#resource-refusal-metadata)
   lists built-in budget origins; hosts must tolerate caller-defined origins.
-- **The handle is thread-safe**: calls on one `HawdbDatabase` are
-  serialized internally. Callers that want per-thread parallelism open
+- **The handle supports concurrent calls**: ordinary reads use immutable MVCC
+  snapshots; writers prepare concurrently and serialize durable commit and
+  publication. SQL and Cypher use the shared embedded admission governor.
+  Explicit transactions, maintenance and catalog/context changes remain exclusive.
+  Callers must finish all calls
+  before closing the handle. Callers that need independent databases open
   multiple handles.
 - **Panic containment**: every entry point runs under `catch_unwind`;
   a panic reports `{"kind": "panic"}` instead of unwinding across FFI.
