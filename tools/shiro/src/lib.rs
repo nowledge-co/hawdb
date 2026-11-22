@@ -66,6 +66,7 @@ pub use parser_oracle::{
     run_parser_fuzz_case, ParserFuzzCase, ParserFuzzObservation, PARSER_FUZZ_PROTOCOL,
 };
 pub use row_page_oracle::{run_row_page_compaction_case, ROW_PAGE_COMPACTION_PROTOCOL};
+pub use sql_oracle::plan_guidance::query_plan_guidance_cli;
 pub use sql_oracle::{
     SqlCaseReport, SqlExecutionObservation, SqlFailureReport, SqlJoinGeneratorProfile,
     SqlJoinRewriteCase, SqlJoinRewriteEvidence, SqlJoinRewriteFailureReport, SqlMutation,
