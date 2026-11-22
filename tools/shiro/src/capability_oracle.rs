@@ -5,6 +5,7 @@
 //! Inputs, rather than generated SQL, are reduced: every candidate is rebuilt in
 //! a fresh database and must reproduce the same phase and failure class.
 
+mod coddtest;
 mod cypher;
 mod functions;
 mod relational;

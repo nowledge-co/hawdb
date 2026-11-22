@@ -305,6 +305,13 @@ the trace. The bounded model is complementary to DQP/TLP and is not a general SQ
 or Cypher interpreter; SQL CASE, arbitrary temporal arithmetic, list nesting and
 mutation expressions remain outside its generated domain.
 
+The keyless replay also runs a CODDTest membership model on a pinned in-memory
+snapshot. It materializes an uncorrelated subquery once and compares the
+original `IN` and `NOT IN` to a folded parameter list or a constant for an
+empty list. A separate three-valued membership model checks both branches.
+The replay preserves duplicate and NULL RHS values, and tests multiple
+parameter bindings including an empty RHS.
+
 Capability replay uses its own `shiro-capabilities-v1` JSON format. Extract a
 case's `capabilities.case` object from a campaign report, or generate one:
 

@@ -316,6 +316,7 @@ fn bag_rows(values: &[(i64, i64)]) -> Vec<Row> {
 }
 
 pub(super) fn keyless(case: &Case, run: &mut Run) -> Result<()> {
+    super::coddtest::check(case, run)?;
     let mut fixture = Fixture::new(case, run)?;
     let mut db = fixture.open()?;
     run.sql(
