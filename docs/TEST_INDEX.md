@@ -2822,6 +2822,11 @@ versus cache hits, cold build cost and required target inventory.
   Replay with `cargo test --locked --manifest-path tools/shiro/Cargo.toml
   --lib generated_functions` or a `cypher_pipeline` capability case.
   Historical `//crates/fuzz:*` labels are compatibility wrappers only.
+- Differential Query Execution in the local Shiro library lane compares
+  result IDs and post-mutation state across SELECT, UPDATE and DELETE under
+  nullable row predicates, with and without a composite secondary index.
+  Replay with `cargo test --locked --manifest-path tools/shiro/Cargo.toml
+  --lib differential_query_execution` or a `keyless_bag` capability case.
 - A fuzz discovery belongs in CI as a small confirmed regression, not by adding
   the continuous tool or arbitrary duration-based exploration to CI.
 

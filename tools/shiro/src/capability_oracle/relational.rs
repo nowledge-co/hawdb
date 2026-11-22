@@ -408,7 +408,7 @@ pub(super) fn keyless(case: &Case, run: &mut Run) -> Result<()> {
     db = fixture.recover(db, run, READ, &expected)?;
     drop(db);
     fixture.passed = true;
-    Ok(())
+    super::dqe::check(case, run)
 }
 
 #[cfg(test)]

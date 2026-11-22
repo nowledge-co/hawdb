@@ -9,6 +9,8 @@ mod cypher;
 mod functions;
 mod relational;
 
+mod dqe;
+
 use crate::{compare_rows, error_class, row_json, typed_value_json, ResultSemantics};
 use hawdb::executor::Row;
 use hawdb::{Database, QueryOutput, Value};
