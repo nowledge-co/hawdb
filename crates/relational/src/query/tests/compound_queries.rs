@@ -682,53 +682,93 @@ fn in_subquery_arity_resolves_visible_ctes_before_catalog_tables() {
 }
 
 #[test]
-fn deterministic_scalar_in_reuses_one_bounded_hash_table_and_tracks_memory() {
+fn repeated_expensive_in_probes_promote_cached_rows_to_a_bounded_hash() {
     let state = state();
     let right = (100..132)
-        .chain([1, 2, 3, 3])
+        .chain([1, 2, 3, 4])
         .map(|value| format!("({value})"))
         .collect::<Vec<_>>()
         .join(", ");
-    let sql = format!("SELECT id FROM numbers WHERE id IN (VALUES {right}) ORDER BY id");
+    let sql = format!("SELECT id FROM edges WHERE id IN (VALUES {right}, (NULL)) ORDER BY id");
     let limits = RelationalQueryLimits {
-        // Admits 36 RHS rows, one hash build and three probes. A scan would
-        // need at least 33 candidate comparisons for each outer row.
-        max_candidate_work: 80,
+        // Admits 37 RHS rows, scans of 33 and 34 candidates, a hash build,
+        // and two probes. Four scans would use 176 units.
+        max_candidate_work: 150,
         ..batched_index_join_limits()
     };
     let output = query_with_limits(&state, &sql, &[], limits).unwrap();
-    assert_eq!(output.rows.len(), 3);
+    assert_eq!(output.rows.len(), 4);
     assert!(output.access_path.name.contains("hashed membership"));
     let report = output
         .blocking_operator_memory_reports
         .iter()
         .find(|report| report.operator == "SubqueryPredicateExec")
         .unwrap();
+    assert_eq!(report.input_rows, 144);
     assert!(report.peak_tracked_bytes > 0);
 
-    let sql = format!("SELECT id FROM numbers WHERE id = 1 AND id IN (VALUES (1), {right})");
-    let limits = RelationalQueryLimits {
-        max_candidate_work: 40,
-        ..limits
+    let memory = hawdb_executor::ExecutionMemoryConfig {
+        blocking_operator_bytes: std::num::NonZeroUsize::new(report.peak_tracked_bytes - 1)
+            .unwrap(),
+        ..hawdb_executor::ExecutionMemoryConfig::default()
     };
-    let output = query_with_limits(&state, &sql, &[], limits).unwrap();
-    assert_eq!(values(&output), vec![vec![Value::Int(1)]]);
-    assert!(!output.access_path.name.contains("hashed membership"));
+    let scan = query_with_resources(
+        &state,
+        &sql,
+        &[],
+        RelationalQueryLimits {
+            max_candidate_work: 180,
+            ..limits
+        },
+        &memory,
+    )
+    .unwrap();
+    assert_eq!(scan.rows, output.rows);
+    assert!(!scan.access_path.name.contains("hashed membership"));
+    assert!(scan
+        .blocking_operator_memory_reports
+        .iter()
+        .any(|report| { report.operator == "SubqueryPredicateExec" && report.input_rows == 176 }));
+
+    for (predicate, expected) in [
+        (
+            "id IN (VALUES (50), (51), (4), (NULL))",
+            vec![vec![Value::Int(4)]],
+        ),
+        ("id NOT IN (VALUES (50), (51), (4), (NULL))", Vec::new()),
+    ] {
+        let output = query(&state, &format!("SELECT id FROM edges WHERE {predicate}"));
+        assert!(output.access_path.name.contains("hashed membership"));
+        assert_eq!(values(&output), expected);
+    }
+}
+
+#[test]
+fn cheap_in_probes_stay_on_the_scan_and_fit_the_work_budget() {
+    let state = state();
+    let sql = "SELECT id FROM numbers WHERE n IN (VALUES (10), (20)) ORDER BY id";
+    let limits = RelationalQueryLimits {
+        // One RHS execution, two materialized rows, and 1 + 1 + 2 comparisons.
+        // Building a hash table eagerly would use eight units.
+        max_candidate_work: 7,
+        ..batched_index_join_limits()
+    };
+    for output in [
+        query_with_limits(&state, sql, &[], limits).unwrap(),
+        query(&state, sql),
+    ] {
+        assert_eq!(output.rows.len(), 3);
+        assert!(!output.access_path.name.contains("hashed membership"));
+    }
 
     for predicate in [
         "label IN (VALUES ('a'), (NULL))",
         "NOT (label NOT IN (VALUES ('a'), (NULL)))",
+        "id IN (VALUES (CAST(1 AS DOUBLE PRECISION)))",
     ] {
         let sql = format!("SELECT id FROM numbers WHERE {predicate}");
         assert_eq!(values(&query(&state, &sql)), vec![vec![Value::Int(1)]]);
     }
-    assert_eq!(
-        values(&query(
-            &state,
-            "SELECT id FROM numbers WHERE id IN (VALUES (CAST(1 AS DOUBLE PRECISION)))"
-        )),
-        vec![vec![Value::Int(1)]]
-    );
 }
 
 #[test]

@@ -90,8 +90,8 @@ impl<'a, R: RelationalQueryStoreReader> SubqueryEvaluator<'a, R> {
         row: &super::super::BoundRow<'_>,
     ) -> Result<Option<bool>> {
         let key = std::ptr::from_ref(query);
-        if let Some(cached) = self.uncorrelated_in.get(&key) {
-            return cached.matches(left, row, self.parameters, &mut self.work);
+        if let Some(cached) = self.uncorrelated_in.get_mut(&key) {
+            return cached.matches(left, row, self.parameters, &mut self.work, &mut self.memory);
         }
 
         let mut bound = query.clone();
@@ -119,38 +119,20 @@ impl<'a, R: RelationalQueryStoreReader> SubqueryEvaluator<'a, R> {
             return result;
         }
 
-        let hash_bytes = row_bytes.saturating_add(
-            rows.len()
-                .saturating_mul(4 * (size_of::<RelationalValue>() + 1)),
-        );
-        let rows = if rows.len() < self.work.remaining()
-            && let Some(kind) = hash_membership_type(left, &output.types, row)?
-            && try_charge_cache(&mut self.memory, hash_bytes)?
-        {
-            let mut keys = HashSet::new();
-            keys.try_reserve(rows.len())
-                .map_err(|_| HawDBError::Execution("could not reserve SQL IN hash table".into()))?;
-            let mut has_null = false;
-            self.work.charge(rows.len())?;
-            for values in rows.value_rows() {
-                hawdb_executor::pipeline::runtime_checkpoint(self.resources.task_context)?;
-                let value = crate::query_value::value_to_relational_as(values[0].clone(), kind)?;
-                if value == RelationalValue::Null {
-                    has_null = true;
-                } else {
-                    keys.insert(value);
-                }
-            }
-            drop(rows);
-            self.memory.release(row_bytes);
-            InRows::Hash { keys, has_null }
+        let hash_type = if rows.len() > 1 {
+            hash_membership_type(left, &output.types, row)?
         } else {
-            InRows::Scan(rows)
+            None
+        };
+        let mut rows = InRows::Scan {
+            rows,
+            hash_type,
+            extra_comparisons: 0,
         };
         self.uncorrelated_in
             .try_reserve(1)
             .map_err(|_| HawDBError::Execution("could not reserve SQL subquery cache".into()))?;
-        let result = rows.matches(left, row, self.parameters, &mut self.work)?;
+        let result = rows.matches(left, row, self.parameters, &mut self.work, &mut self.memory)?;
         self.uncorrelated_in.insert(key, rows);
         Ok(result)
     }
@@ -227,17 +209,44 @@ enum InRows {
         keys: HashSet<RelationalValue>,
         has_null: bool,
     },
-    Scan(QueryRows),
+    Scan {
+        rows: QueryRows,
+        hash_type: Option<RelationalScalarType>,
+        extra_comparisons: usize,
+    },
 }
 
 impl InRows {
     fn matches(
-        &self,
+        &mut self,
         left: &[Expr],
         row: &super::super::BoundRow<'_>,
         parameters: &[Value],
         work: &mut SubqueryWork<'_>,
+        memory: &mut OperatorMemoryTracker,
     ) -> Result<Option<bool>> {
+        if let Self::Scan {
+            rows,
+            hash_type,
+            extra_comparisons,
+        } = self
+            && let Some(kind) = *hash_type
+            && *extra_comparisons >= rows.len()
+        {
+            // Each probe would cost at least one lookup with hashing. Build
+            // only after the comparisons beyond that baseline reach the cost
+            // of visiting every RHS row once. The first probe always scans.
+            if rows.len() < work.remaining()
+                && let Some(hashed) = Self::try_build_hash(rows, kind, work, memory)?
+            {
+                *self = hashed;
+            } else {
+                // Remaining work only decreases. Keep the admitted scan if
+                // either budget cannot cover promotion.
+                *hash_type = None;
+            }
+        }
+
         match self {
             Self::Hash { keys, has_null } => {
                 work.charge(1)?;
@@ -264,8 +273,51 @@ impl InRows {
                     Some(false)
                 })
             }
-            Self::Scan(rows) => scan_in_rows(rows, left, row, parameters, work),
+            Self::Scan {
+                rows,
+                hash_type,
+                extra_comparisons,
+            } => {
+                let before = work.used;
+                let result = scan_in_rows(rows, left, row, parameters, work)?;
+                if hash_type.is_some() {
+                    *extra_comparisons += (work.used - before).saturating_sub(1);
+                }
+                Ok(result)
+            }
         }
+    }
+
+    fn try_build_hash(
+        rows: &QueryRows,
+        kind: RelationalScalarType,
+        work: &mut SubqueryWork<'_>,
+        memory: &mut OperatorMemoryTracker,
+    ) -> Result<Option<Self>> {
+        let row_bytes = retained_bytes(rows);
+        let hash_bytes = row_bytes.saturating_add(
+            rows.len()
+                .saturating_mul(4 * (size_of::<RelationalValue>() + 1)),
+        );
+        if !try_charge_cache(memory, hash_bytes)? {
+            return Ok(None);
+        }
+        let mut keys = HashSet::new();
+        keys.try_reserve(rows.len())
+            .map_err(|_| HawDBError::Execution("could not reserve SQL IN hash table".into()))?;
+        let mut has_null = false;
+        work.charge(rows.len())?;
+        for values in rows.value_rows() {
+            hawdb_executor::pipeline::runtime_checkpoint(work.task)?;
+            let value = crate::query_value::value_to_relational_as(values[0].clone(), kind)?;
+            if value == RelationalValue::Null {
+                has_null = true;
+            } else {
+                keys.insert(value);
+            }
+        }
+        memory.release(row_bytes);
+        Ok(Some(Self::Hash { keys, has_null }))
     }
 }
 

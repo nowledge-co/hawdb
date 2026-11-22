@@ -98,10 +98,12 @@ correlation, arity/type errors even when the outer scan is empty, CTE liveness
 through a subquery, and fail-closed row, payload, blocking-memory, and candidate
 work budgets. Focused cases pin parameterized EXISTS bounds, projection
 elision, cardinality-sensitive DISTINCT and set operations, and wildcard arity
-with CTE names that shadow catalog tables. The scalar IN candidate-work limit
-admits one hash build and three probes. It also checks tracked memory and
-typed comparison fallback. Plain EXPLAIN describes the bounded subquery
-strategies. EXPLAIN ANALYZE reports the executed `SubqueryPredicateExec` and
+with CTE names that shadow catalog tables. Scalar IN tests pin the transition
+from cached scanning to hash membership under repeated costly probes, the
+tracked peak and fallback under a tighter memory limit, and NULL after
+promotion. Early hits stay on the scan and fit a candidate-work budget that
+eager hashing would exceed. The suite also checks mixed-type comparisons.
+Plain EXPLAIN describes the bounded subquery strategies. EXPLAIN ANALYZE reports the executed `SubqueryPredicateExec` and
 identifies hash membership when used. Root `relational_sql::compound_queries` checkpoints,
 reopens, and re-runs parameterized derived/VALUES/subquery reads in
 Materialized/Materialized and OutOfCore/DemandPaged modes. Derived tables and

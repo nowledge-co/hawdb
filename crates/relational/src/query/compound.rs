@@ -125,7 +125,7 @@ pub(super) fn explain_query<'a, R: RelationalQueryStoreReader>(
     }
     if summary.subqueries > 0 {
         operator_info.push_str(&format!(
-            ", subqueries={}, subquery_strategy=budgeted_nested_loop, scalar_in=hash_if_eligible",
+            ", subqueries={}, subquery_strategy=budgeted_nested_loop, scalar_in=scan_with_adaptive_hash",
             summary.subqueries
         ));
     }

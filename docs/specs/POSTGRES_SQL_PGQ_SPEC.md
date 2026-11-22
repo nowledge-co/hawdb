@@ -82,10 +82,13 @@ The executable relational path now also recognizes statement-scoped `VALUES`,
 derived tables, and `EXISTS`/`NOT EXISTS` plus scalar or row `IN (subquery)` in
 `WHERE`. Subqueries in projection, JOIN conditions, grouping, HAVING, ordering,
 limits, and standalone VALUES expressions remain rejected. Correlated execution
-uses a work-budgeted nested loop. Deterministic uncorrelated scalar membership
-can use a statement-scoped hash table for BIGINT, BOOLEAN, TEXT, BYTEA and UUID
-when the comparison types agree. The hash table tracks RHS NULL separately.
-Other comparisons use typed equality. Runtime reports identify hash membership
+uses a work-budgeted nested loop. Eligible deterministic uncorrelated membership
+scans a statement-scoped cached result. For same-type BIGINT, BOOLEAN, TEXT,
+BYTEA and UUID scalar comparisons, it can promote to a hash table after
+observing enough extra comparisons to cover one pass over the right-hand
+rows, subject to work and memory admission. First-slot hits do not add to
+that threshold. The hash table tracks RHS NULL separately. Other comparisons
+use typed equality. Runtime reports identify hash membership
 and track its memory against the blocking-operator budget. The frontend still
 rejects right/full/natural joins, join `USING`,
 `DISTINCT ON`, and other unqualified shapes. The default relational SELECT and EXPLAIN SELECT paths now use the PEG
