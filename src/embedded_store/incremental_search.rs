@@ -306,7 +306,11 @@ impl EmbeddedStore {
             let delta = self
                 .graph
                 .database()
-                .build_search_projection_change_delta(batch, relational)?;
+                .build_search_projection_change_delta_excluding(
+                    batch,
+                    relational,
+                    &self.externally_owned_search_kinds,
+                )?;
             drop(snapshot);
             self.apply_incremental_search_delta(delta, permit.clone())?;
             batch_count = batch_count.saturating_add(1);

@@ -1688,8 +1688,8 @@ fn decode_page_slot_inner(
 fn has_nonzero_padding(bytes: &[u8]) -> bool {
     // Warm reads still check every padding byte. Word comparisons avoid a
     // branch per byte across most of a sparsely populated page slot.
-    let mut words = bytes.chunks_exact(8);
-    words.any(|word| word != [0; 8]) || words.remainder().iter().any(|byte| *byte != 0)
+    let (words, tail) = bytes.as_chunks::<8>();
+    words.iter().any(|word| word != &[0; 8]) || tail.iter().any(|byte| *byte != 0)
 }
 
 fn encode_key(key: StableIdentityKey) -> [u8; ENCODED_KEY_BYTES] {

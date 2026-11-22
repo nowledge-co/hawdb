@@ -21,6 +21,7 @@ pub(super) enum OrderedRelationalKeyError {
     UnsupportedVector,
     Corrupt(String),
     Admission(String),
+    Stopped(hawdb_core::RuntimeCancellationReason),
 }
 
 impl fmt::Display for OrderedRelationalKeyError {
@@ -36,11 +37,35 @@ impl fmt::Display for OrderedRelationalKeyError {
                 write!(formatter, "corrupt ordered relational key: {message}")
             }
             Self::Admission(message) => formatter.write_str(message),
+            Self::Stopped(reason) => write!(formatter, "ordered relational key stopped: {reason}"),
         }
     }
 }
 
-impl std::error::Error for OrderedRelationalKeyError {}
+impl std::error::Error for OrderedRelationalKeyError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Stopped(reason) => Some(reason),
+            _ => None,
+        }
+    }
+}
+
+impl OrderedRelationalKeyError {
+    fn from_work(error: crate::background::CheckpointWorkError) -> Self {
+        match error.stop_reason() {
+            Some(reason) => Self::Stopped(reason),
+            None => Self::Admission(error.to_string()),
+        }
+    }
+
+    fn from_admission(error: hawdb_core::HawDBError) -> Self {
+        match error {
+            hawdb_core::HawDBError::RuntimeTaskStopped(reason) => Self::Stopped(reason),
+            error => Self::Admission(error.to_string()),
+        }
+    }
+}
 
 pub(super) fn encode_ordered_relational_key(
     key: &RelationalKey,
@@ -68,7 +93,10 @@ pub(crate) use encode::CheckpointKeyEncoding;
 
 impl From<OrderedRelationalKeyError> for CheckpointKeyEncodeError {
     fn from(error: OrderedRelationalKeyError) -> Self {
-        Self::Key(super::RelationalError::Corruption(error.to_string()))
+        Self::Key(match error {
+            OrderedRelationalKeyError::Stopped(reason) => super::RelationalError::Stopped(reason),
+            error => super::RelationalError::Corruption(error.to_string()),
+        })
     }
 }
 
@@ -160,7 +188,7 @@ pub(super) fn decode_ordered_relational_key_owned(
         let value = decoder.value()?;
         allocations
             .push(&mut key.0, value)
-            .map_err(|error| OrderedRelationalKeyError::Admission(error.to_string()))?;
+            .map_err(OrderedRelationalKeyError::from_admission)?;
     }
     if key.0.is_empty() {
         return Err(OrderedRelationalKeyError::Corrupt(
@@ -169,7 +197,7 @@ pub(super) fn decode_ordered_relational_key_owned(
     }
     allocations
         .checkpoint()
-        .map_err(|error| OrderedRelationalKeyError::Admission(error.to_string()))?;
+        .map_err(OrderedRelationalKeyError::from_work)?;
     Ok(key)
 }
 
@@ -341,7 +369,15 @@ impl<'a> OrderedKeyDecoder<'a> {
 
     fn timestamp(&mut self, tag: u8) -> Result<RelationalValue, OrderedRelationalKeyError> {
         let ordered = u64::from_be_bytes(self.fixed("TIMESTAMP value")?);
-        crate::relational::decode_timestamp_value(tag, (ordered ^ (1_u64 << 63)) as i64)
+        let narrow = (ordered ^ (1_u64 << 63)) as i64;
+        let excess = if narrow == hawdb_core::sql_timestamp::EXTENDED_MICROS {
+            Some(u64::from_be_bytes(self.fixed("TIMESTAMP excess")?))
+        } else {
+            None
+        };
+        let micros = hawdb_core::sql_timestamp::join_micros(narrow, excess)
+            .map_err(|error| OrderedRelationalKeyError::Corrupt(error.to_string()))?;
+        crate::relational::decode_timestamp_value(tag, micros)
             .map_err(|error| OrderedRelationalKeyError::Corrupt(error.to_string()))
     }
 
@@ -376,7 +412,7 @@ impl<'a> OrderedKeyDecoder<'a> {
             self.offset = start;
             allocations
                 .vector_capacity(length)
-                .map_err(|error| OrderedRelationalKeyError::Admission(error.to_string()))?
+                .map_err(OrderedRelationalKeyError::from_admission)?
         } else {
             Vec::new()
         };
@@ -403,7 +439,7 @@ impl<'a> OrderedKeyDecoder<'a> {
                 .allocations
                 .map(|owned| owned.start_unit())
                 .transpose()
-                .map_err(|error| OrderedRelationalKeyError::Admission(error.to_string()))?;
+                .map_err(OrderedRelationalKeyError::from_work)?;
             let mut complete = false;
             while self.allocations.is_none() || self.offset - start < 64 * 1024 {
                 let byte = self.byte("escaped key value")?;
@@ -430,7 +466,7 @@ impl<'a> OrderedKeyDecoder<'a> {
             if let Some(owned) = self.allocations {
                 owned
                     .checkpoint()
-                    .map_err(|error| OrderedRelationalKeyError::Admission(error.to_string()))?;
+                    .map_err(OrderedRelationalKeyError::from_work)?;
             }
             if complete {
                 return Ok(());
@@ -514,15 +550,18 @@ mod tests {
             RelationalValue::Decimal("0.00".parse().unwrap()),
             RelationalValue::Decimal("0.00000000000000000000000000000000000001".parse().unwrap()),
             RelationalValue::Decimal("9007199254740993.01".parse().unwrap()),
-            RelationalValue::Timestamp(hawdb_core::sql_timestamp::min_micros()),
-            RelationalValue::Timestamp(-1),
-            RelationalValue::Timestamp(0),
-            RelationalValue::Timestamp(1),
-            RelationalValue::Timestamp(hawdb_core::sql_timestamp::max_micros()),
-            RelationalValue::TimestampTz(hawdb_core::sql_timestamp::min_micros()),
-            RelationalValue::TimestampTz(-1),
-            RelationalValue::TimestampTz(0),
-            RelationalValue::TimestampTz(hawdb_core::sql_timestamp::max_micros()),
+            RelationalValue::Timestamp(hawdb_core::sql_timestamp::min_micros().into()),
+            RelationalValue::Timestamp((-1).into()),
+            RelationalValue::Timestamp(0.into()),
+            RelationalValue::Timestamp(1.into()),
+            RelationalValue::Timestamp((i128::from(i64::MAX) - 1).into()),
+            RelationalValue::Timestamp((i128::from(i64::MAX)).into()),
+            RelationalValue::Timestamp((i128::from(i64::MAX) + 1).into()),
+            RelationalValue::Timestamp(hawdb_core::sql_timestamp::max_micros().into()),
+            RelationalValue::TimestampTz(hawdb_core::sql_timestamp::min_micros().into()),
+            RelationalValue::TimestampTz((-1).into()),
+            RelationalValue::TimestampTz(0.into()),
+            RelationalValue::TimestampTz(hawdb_core::sql_timestamp::max_micros().into()),
         ];
         assert!(values.windows(2).all(|pair| pair[0] < pair[1]));
         let keys = values
@@ -649,7 +688,12 @@ mod tests {
                 hawdb_core::sql_timestamp::min_micros() - 1,
             ] {
                 let mut encoded = vec![tag];
-                encoded.extend_from_slice(&((micros as u64) ^ (1_u64 << 63)).to_be_bytes());
+                let narrow = micros.min(i128::from(i64::MAX)) as i64;
+                encoded.extend_from_slice(&((narrow as u64) ^ (1_u64 << 63)).to_be_bytes());
+                if narrow == i64::MAX {
+                    encoded
+                        .extend_from_slice(&((micros - i128::from(narrow)) as u64).to_be_bytes());
+                }
                 let mut key =
                     encode_ordered_relational_key(&RelationalKey(vec![RelationalValue::BigInt(0)]))
                         .unwrap();

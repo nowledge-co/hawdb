@@ -302,7 +302,7 @@ fn lexical_query_context_cancellation_before_and_during_scoring_releases_every_o
             cancellation.cancel();
             Ok(true)
         });
-        assert!(matches!(result, Err(HawDBError::Execution(_))));
+        assert!(matches!(result, Err(HawDBError::RuntimeTaskStopped(_))));
         assert_eq!(calls, usize::from(!before));
         assert_eq!(ledger.snapshot().used_bytes, 0);
     }
@@ -525,7 +525,12 @@ fn lexical_query_context_cancellation_during_final_materialization_refuses_and_r
     assert_eq!(calls, 1);
     assert!(cancellation.is_cancelled(), "final allocation must cancel");
     assert!(
-        matches!(&result, Err(HawDBError::Execution(message)) if message == "lexical query cancelled"),
+        matches!(
+            &result,
+            Err(HawDBError::RuntimeTaskStopped(
+                hawdb_core::RuntimeCancellationReason::Cancelled
+            ))
+        ),
         "cancellation during final materialization must refuse the complete report"
     );
     drop(result);
@@ -782,7 +787,9 @@ fn lexical_raw_query_pre_and_mid_normalization_cancellation_refuse_and_recover()
             .expect("cancelled normalization must not return terms");
         assert!(task.cancellation().is_cancelled());
         assert!(
-            error.to_string().contains("lexical query cancelled"),
+            error
+                .to_string()
+                .contains("runtime task stopped: cancelled"),
             "{error}"
         );
         drop(error);
@@ -935,7 +942,7 @@ fn lexical_raw_query_cjk_uses_shared_root_and_retains_workspace_until_native_joi
                     error.to_string().contains(if mode == 1 {
                         "consumer stopped"
                     } else {
-                        "lexical query cancelled"
+                        "runtime task stopped: cancelled"
                     }),
                     "{error}"
                 );

@@ -76,8 +76,9 @@ impl CheckpointWalRecordCursor {
                 "captured WAL has an invalid header".into(),
             ));
         }
-        let identity = frame::decode_binary_wal_header(&header).map_err(|_| {
-            HawDBError::StorageIntegrity("captured WAL has an invalid header".into())
+        let identity = frame::decode_binary_wal_header(&header).map_err(|error| match error {
+            error @ HawDBError::UnsupportedStorageFormat(_) => error,
+            _ => HawDBError::StorageIntegrity("captured WAL has an invalid header".into()),
         })?;
         if identity != (generation, start_lsn) {
             return Err(HawDBError::StorageIntegrity(

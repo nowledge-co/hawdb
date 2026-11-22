@@ -25,6 +25,7 @@ use hawdb_core::{HawDBError, LogicalType, Result};
 pub enum SqlStatement {
     Explain(SqlExplainStatement),
     Select(SelectStatement),
+    Query(SqlQueryStatement),
     Insert(InsertStatement),
     Update(UpdateStatement),
     Delete(DeleteStatement),
@@ -39,6 +40,196 @@ pub enum SqlStatement {
     /// distinct from relational DDL: their executor operates on the durable
     /// branch catalog rather than a selected branch's schema.
     Branch(BranchSqlStatement),
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct SqlQueryStatement {
+    pub recursive: bool,
+    pub with: Vec<SqlCommonTableExpression>,
+    pub body: SqlQueryBody,
+    pub order_by: Vec<SqlOrderItem>,
+    pub limit: Option<SqlBound>,
+    pub offset: Option<SqlBound>,
+    pub lock_strength: Option<SqlLockStrength>,
+}
+
+impl std::fmt::Debug for SqlQueryStatement {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = formatter.debug_struct("SqlQueryStatement");
+        if self.recursive {
+            debug.field("recursive", &true);
+        }
+        debug
+            .field("with", &self.with)
+            .field("body", &self.body)
+            .field("order_by", &self.order_by)
+            .field("limit", &self.limit)
+            .field("offset", &self.offset)
+            .field("lock_strength", &self.lock_strength)
+            .finish()
+    }
+}
+
+impl SqlQueryStatement {
+    pub fn into_simple_select(self) -> std::result::Result<SelectStatement, Box<Self>> {
+        if !self.with.is_empty() || !matches!(&self.body, SqlQueryBody::Select(_)) {
+            return Err(Box::new(self));
+        }
+        let Self {
+            recursive: _,
+            with: _,
+            body,
+            order_by,
+            limit,
+            offset,
+            lock_strength,
+        } = self;
+        let SqlQueryBody::Select(mut select) = body else {
+            unreachable!("simple query body was checked")
+        };
+        select.order_by = order_by;
+        select.limit = limit;
+        select.offset = offset;
+        select.lock_strength = lock_strength;
+        Ok(*select)
+    }
+
+    /// Visits every base `SELECT` in lexical order, including CTE definitions
+    /// and nested set-operation branches.
+    pub fn visit_selects(&self, visit: &mut impl FnMut(&SelectStatement)) {
+        for cte in &self.with {
+            if let SqlCommonTableExpressionBody::Query(query) = &cte.body {
+                query.visit_selects(visit);
+            }
+        }
+        self.body.visit_selects(visit);
+    }
+
+    pub fn contains_locking_clause(&self) -> bool {
+        if self.lock_strength.is_some()
+            || self.with.iter().any(|cte| match &cte.body {
+                SqlCommonTableExpressionBody::Query(query) => query.contains_locking_clause(),
+                SqlCommonTableExpressionBody::Mutation(_) => false,
+            })
+        {
+            return true;
+        }
+        self.body.contains_locking_clause()
+    }
+
+    pub fn contains_data_modifying_cte(&self) -> bool {
+        self.with.iter().any(|cte| match &cte.body {
+            SqlCommonTableExpressionBody::Query(query) => query.contains_data_modifying_cte(),
+            SqlCommonTableExpressionBody::Mutation(_) => true,
+        }) || self.body.contains_data_modifying_cte()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct SqlCommonTableExpression {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub body: SqlCommonTableExpressionBody,
+}
+
+impl std::fmt::Debug for SqlCommonTableExpression {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = formatter.debug_struct("SqlCommonTableExpression");
+        debug
+            .field("name", &self.name)
+            .field("columns", &self.columns);
+        match &self.body {
+            // Preserve the frozen Debug representation of ordinary query CTEs.
+            SqlCommonTableExpressionBody::Query(query) => debug.field("query", query).finish(),
+            SqlCommonTableExpressionBody::Mutation(_) => debug.field("body", &self.body).finish(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SqlCommonTableExpressionBody {
+    Query(Box<SqlQueryStatement>),
+    Mutation(Box<SqlStatement>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SqlQueryBody {
+    Select(Box<SelectStatement>),
+    Values(Vec<Vec<SqlExpression>>),
+    Nested(Box<SqlQueryStatement>),
+    SetOperation {
+        left: Box<SqlQueryBody>,
+        operator: SqlSetOperator,
+        all: bool,
+        right: Box<SqlQueryBody>,
+    },
+}
+
+impl SqlQueryBody {
+    fn visit_selects(&self, visit: &mut impl FnMut(&SelectStatement)) {
+        match self {
+            Self::Select(select) => {
+                visit(select);
+                if let Some(predicate) = &select.subquery_predicate {
+                    predicate.visit_queries(&mut |query| query.visit_selects(visit));
+                }
+            }
+            Self::Values(_) => {}
+            Self::Nested(query) => query.visit_selects(visit),
+            Self::SetOperation { left, right, .. } => {
+                left.visit_selects(visit);
+                right.visit_selects(visit);
+            }
+        }
+    }
+
+    fn contains_locking_clause(&self) -> bool {
+        match self {
+            Self::Select(select) => {
+                if select.lock_strength.is_some() {
+                    return true;
+                }
+                let mut contains = false;
+                if let Some(predicate) = &select.subquery_predicate {
+                    predicate.visit_queries(&mut |query| {
+                        contains |= query.contains_locking_clause();
+                    });
+                }
+                contains
+            }
+            Self::Values(_) => false,
+            Self::Nested(query) => query.contains_locking_clause(),
+            Self::SetOperation { left, right, .. } => {
+                left.contains_locking_clause() || right.contains_locking_clause()
+            }
+        }
+    }
+
+    pub fn contains_data_modifying_cte(&self) -> bool {
+        match self {
+            Self::Select(select) => {
+                let mut contains = false;
+                if let Some(predicate) = &select.subquery_predicate {
+                    predicate.visit_queries(&mut |query| {
+                        contains |= query.contains_data_modifying_cte();
+                    });
+                }
+                contains
+            }
+            Self::Values(_) => false,
+            Self::Nested(query) => query.contains_data_modifying_cte(),
+            Self::SetOperation { left, right, .. } => {
+                left.contains_data_modifying_cte() || right.contains_data_modifying_cte()
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SqlSetOperator {
+    Union,
+    Intersect,
+    Except,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,6 +388,11 @@ pub struct SelectStatement {
     pub from_alias: Option<String>,
     pub joins: Vec<SqlJoin>,
     pub selection: Option<SqlPredicate>,
+    /// The complete WHERE predicate when it contains a subquery. Ordinary
+    /// scalar conjuncts that are safe to push down remain in `selection`;
+    /// this tree is evaluated after a joined row is available so correlated
+    /// references retain SQL scope and three-valued logic.
+    pub subquery_predicate: Option<Box<SqlSubqueryPredicate>>,
     pub group_by: Vec<SqlColumnRef>,
     pub having: Option<SqlPredicate>,
     pub order_by: Vec<SqlOrderItem>,
@@ -221,7 +417,11 @@ impl std::fmt::Debug for SelectStatement {
             .field("from", &self.from)
             .field("from_alias", &self.from_alias)
             .field("joins", &self.joins)
-            .field("selection", &self.selection)
+            .field("selection", &self.selection);
+        if let Some(predicate) = &self.subquery_predicate {
+            debug.field("subquery_predicate", predicate);
+        }
+        debug
             .field("group_by", &self.group_by)
             .field("having", &self.having)
             .field("order_by", &self.order_by)
@@ -229,6 +429,62 @@ impl std::fmt::Debug for SelectStatement {
             .field("offset", &self.offset)
             .field("lock_strength", &self.lock_strength)
             .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SqlSubqueryPredicate {
+    Scalar(SqlPredicate),
+    And(Box<Self>, Box<Self>),
+    Or(Box<Self>, Box<Self>),
+    Not(Box<Self>),
+    Exists {
+        query: Box<SqlQueryStatement>,
+    },
+    In {
+        left: Vec<SqlExpression>,
+        query: Box<SqlQueryStatement>,
+        negated: bool,
+    },
+}
+
+impl SqlSubqueryPredicate {
+    pub fn visit_scalar_expressions(&self, visit: &mut impl FnMut(&SqlExpression)) {
+        match self {
+            Self::Scalar(predicate) => visit(predicate),
+            Self::And(left, right) | Self::Or(left, right) => {
+                left.visit_scalar_expressions(visit);
+                right.visit_scalar_expressions(visit);
+            }
+            Self::Not(predicate) => predicate.visit_scalar_expressions(visit),
+            Self::Exists { .. } => {}
+            Self::In { left, .. } => left.iter().for_each(visit),
+        }
+    }
+
+    pub fn visit_scalar_expressions_mut(&mut self, visit: &mut impl FnMut(&mut SqlExpression)) {
+        match self {
+            Self::Scalar(predicate) => visit(predicate),
+            Self::And(left, right) | Self::Or(left, right) => {
+                left.visit_scalar_expressions_mut(visit);
+                right.visit_scalar_expressions_mut(visit);
+            }
+            Self::Not(predicate) => predicate.visit_scalar_expressions_mut(visit),
+            Self::Exists { .. } => {}
+            Self::In { left, .. } => left.iter_mut().for_each(visit),
+        }
+    }
+
+    pub fn visit_queries(&self, visit: &mut impl FnMut(&SqlQueryStatement)) {
+        match self {
+            Self::Scalar(_) => {}
+            Self::And(left, right) | Self::Or(left, right) => {
+                left.visit_queries(visit);
+                right.visit_queries(visit);
+            }
+            Self::Not(predicate) => predicate.visit_queries(visit),
+            Self::Exists { query } | Self::In { query, .. } => visit(query),
+        }
     }
 }
 
@@ -274,19 +530,50 @@ pub struct InsertStatement {
     pub returning: Vec<SqlColumnRef>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct UpdateStatement {
     pub table: SqlTableName,
     pub alias: Option<String>,
     pub assignments: Vec<SqlAssignment>,
     pub selection: Option<SqlPredicate>,
+    pub returning: Vec<SqlColumnRef>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl std::fmt::Debug for UpdateStatement {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut output = formatter.debug_struct("UpdateStatement");
+        output
+            .field("table", &self.table)
+            .field("alias", &self.alias)
+            .field("assignments", &self.assignments)
+            .field("selection", &self.selection);
+        if !self.returning.is_empty() {
+            output.field("returning", &self.returning);
+        }
+        output.finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub struct DeleteStatement {
     pub table: SqlTableName,
     pub alias: Option<String>,
     pub selection: Option<SqlPredicate>,
+    pub returning: Vec<SqlColumnRef>,
+}
+
+impl std::fmt::Debug for DeleteStatement {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut output = formatter.debug_struct("DeleteStatement");
+        output
+            .field("table", &self.table)
+            .field("alias", &self.alias)
+            .field("selection", &self.selection);
+        if !self.returning.is_empty() {
+            output.field("returning", &self.returning);
+        }
+        output.finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -440,8 +727,10 @@ pub struct CreateIndexStatement {
     pub name: String,
     pub table: SqlTableName,
     pub columns: Vec<SqlIndexColumn>,
+    pub included_columns: Vec<String>,
     pub unique: bool,
     pub if_not_exists: bool,
+    pub predicate: Option<SqlPredicate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

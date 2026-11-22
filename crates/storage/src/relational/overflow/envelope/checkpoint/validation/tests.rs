@@ -271,7 +271,10 @@ fn checkpoint_units_overflow_validation_cancels_each_actual_unit_without_consumi
                 )
                 .unwrap_err();
                 assert!(
-                    error.to_string().contains("checkpoint build stopped"),
+                    matches!(
+                        error,
+                        RelationalError::Stopped(hawdb_core::RuntimeCancellationReason::Cancelled)
+                    ),
                     "{error:?}"
                 );
                 assert_eq!(budget, initial);

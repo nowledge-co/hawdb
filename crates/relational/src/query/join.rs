@@ -130,6 +130,7 @@ pub(super) fn visit_tree_relation_entries<'a>(
                             let row = match covered_columns {
                                 Some(index_columns) => row_runtime.read_index_covered(
                                     &relation.table,
+                                    name,
                                     index_columns,
                                     index_key,
                                     key,

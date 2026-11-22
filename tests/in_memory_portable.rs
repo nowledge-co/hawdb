@@ -23,6 +23,68 @@ use wasm_bindgen_test::{wasm_bindgen_test as test, wasm_bindgen_test_configure};
 wasm_bindgen_test_configure!(run_in_dedicated_worker);
 
 #[test]
+fn vector_distances_preserve_ordered_scalar_bits_through_sql_and_cypher() {
+    use hawdb::Vector;
+
+    let mut db = Database::new();
+    for dimension in [15, 16, 17, 384, 8193] {
+        let left = (0..dimension)
+            .map(|i| (i % 19) as f32 - 9.25)
+            .collect::<Vec<_>>();
+        let right = (0..dimension)
+            .map(|i| (i % 23) as f32 / 7.0 - 1.5)
+            .collect::<Vec<_>>();
+        let (mut dot, mut left_norm, mut right_norm, mut squared) =
+            (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        for (&left, &right) in left.iter().zip(&right) {
+            let (left, right) = (f64::from(left), f64::from(right));
+            dot += left * right;
+            left_norm += left * left;
+            right_norm += right * right;
+            squared += (left - right).powi(2);
+        }
+        let expected = [
+            (
+                "cosine",
+                1.0 - (dot / (left_norm.sqrt() * right_norm.sqrt())).clamp(-1.0, 1.0),
+            ),
+            ("l2", squared.sqrt()),
+        ];
+        let left = Value::Vector(Vector::new(&left).unwrap());
+        let right = Value::Vector(Vector::new(&right).unwrap());
+        let sql = db
+            .sql_session()
+            .query(
+                "SELECT cosine_distance($1, $2) AS cosine, l2_distance($1, $2) AS l2",
+                &[left.clone(), right.clone()],
+            )
+            .unwrap()
+            .output
+            .rows;
+        let cypher = db
+            .query_with_params(
+                "UNWIND [1] AS row RETURN cosine_distance($left, $right) AS cosine, l2_distance($left, $right) AS l2",
+                &BTreeMap::from([("left".into(), left), ("right".into(), right)]),
+            )
+            .unwrap()
+            .rows;
+        for rows in [&sql, &cypher] {
+            assert_eq!(rows.len(), 1);
+            for (column, expected) in expected {
+                let Value::Float(actual) = rows[0][column] else {
+                    panic!("expected a float distance")
+                };
+                assert_eq!(
+                    actual.to_bits(),
+                    expected.to_bits(),
+                    "{column}, dimension={dimension}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn writes_parameters_traversal_and_error_recovery_share_one_database() {
     let mut db = Database::new();
     db.query_with_params(
@@ -276,6 +338,219 @@ fn json_value_distinguishes_missing_invalid_and_non_string_documents() {
 }
 
 #[test]
+fn json_string_selects_decoded_strings_before_numeric_conversion() {
+    let mut db = Database::new();
+    let cases = [
+        (Value::Null, "$.state", Value::Null),
+        (Value::String("null".into()), "$.state", Value::Null),
+        (Value::String("{}".into()), "$.state", Value::Null),
+        (
+            Value::String(r#"{"state":" active "}"#.into()),
+            "$.state",
+            Value::String(" active ".into()),
+        ),
+        (
+            Value::String(r#"{"\u0073tate":"a\n\"b\\c\u2603","nested":{"state":"nested"}}"#.into()),
+            "$.state",
+            Value::String("a\n\"b\\c\u{2603}".into()),
+        ),
+        (
+            Value::String(r#"{"state":"top","nested":{"state":"nested"}}"#.into()),
+            "$.nested.state",
+            Value::String("nested".into()),
+        ),
+        (
+            Value::String(r#"{"state":"","other":"bound"}"#.into()),
+            "$.state",
+            Value::String(String::new()),
+        ),
+        (
+            Value::String(r#"{"state":"wrong","other":"bound"}"#.into()),
+            "$.other",
+            Value::String("bound".into()),
+        ),
+    ];
+    let non_strings = [
+        "null",
+        "true",
+        "false",
+        "0",
+        "-9223372036854775808",
+        "9223372036854775807",
+        "9223372036854775808",
+        "18446744073709551615",
+        "1.25",
+        "-1.25e100",
+        "[]",
+        "{}",
+    ];
+    let cases = cases
+        .into_iter()
+        .chain(non_strings.into_iter().map(|value| {
+            (
+                Value::String(format!(r#"{{"state":{value}}}"#)),
+                "$.state",
+                Value::Null,
+            )
+        }));
+    db.query("CREATE (:Memory {id: 1})").unwrap();
+    for (metadata, path, expected) in cases {
+        db.query_with_params(
+            "MATCH (m:Memory) SET m.metadata = $metadata",
+            &BTreeMap::from([("metadata".into(), metadata.clone())]),
+        )
+        .unwrap();
+        let result = db
+            .query_with_params(
+                "MATCH (m:Memory) RETURN json_string(m.metadata, $path) AS value",
+                &BTreeMap::from([("path".into(), Value::String(path.into()))]),
+            )
+            .unwrap();
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0].get("value"),
+            Some(&expected),
+            "{metadata:?}, {path}"
+        );
+    }
+}
+
+#[test]
+fn json_string_nested_expressions_preserve_scalar_column_scope() {
+    let mut db = Database::new();
+    db.query("CREATE (:Memory {id: 1})").unwrap();
+    for (document, expected) in [
+        (r#"{"state":"active"}"#, "active"),
+        (r#"{"state":18446744073709551615}"#, "fallback"),
+        (r#"{}"#, "fallback"),
+    ] {
+        let parameters = BTreeMap::from([
+            ("document".into(), Value::String(document.into())),
+            ("path".into(), Value::String("$.state".into())),
+        ]);
+        db.query_with_params("MATCH (m:Memory) SET m.metadata = $document", &parameters)
+            .unwrap();
+        for query in [
+            "UNWIND [$document] AS doc RETURN coalesce(json_string(doc, $path), 'fallback') AS state",
+            "MATCH (m:Memory) WITH m.metadata AS doc RETURN coalesce(json_string(doc, $path), 'fallback') AS state",
+        ] {
+            let result = db.query_with_params(query, &parameters).unwrap();
+            assert_eq!(result.rows.len(), 1, "{query}");
+            assert_eq!(
+                result.rows[0].get("state"),
+                Some(&Value::String(expected.into())),
+                "{query}, {document}"
+            );
+        }
+    }
+}
+
+#[test]
+fn json_string_filters_and_aggregates_preserve_non_string_absence() {
+    let mut db = Database::new();
+    for (id, metadata) in [
+        (1, r#"{"state":"active"}"#),
+        (2, r#"{"state":18446744073709551615}"#),
+        (3, r#"{"state":[]}"#),
+        (4, r#"{"state":"archived"}"#),
+        (5, r#"{"nested":{"state":"archived"}}"#),
+    ] {
+        db.query_with_params(
+            "CREATE (:Memory {id: $id, metadata: $metadata})",
+            &BTreeMap::from([
+                ("id".into(), Value::Int(id)),
+                ("metadata".into(), Value::String(metadata.into())),
+            ]),
+        )
+        .unwrap();
+    }
+    let parameters = BTreeMap::from([("path".into(), Value::String("$.state".into()))]);
+    let filtered = db.query_with_params("MATCH (m:Memory) WHERE coalesce(json_string(m.metadata, $path), 'active') = 'active' RETURN COUNT(*) AS total", &parameters).unwrap();
+    assert_eq!(filtered.rows[0].get("total"), Some(&Value::Int(4)));
+    for aggregate in ["COUNT(*)", "COUNT(DISTINCT m.id)"] {
+        let result = db.query_with_params(&format!("MATCH (m:Memory) WITH json_string(m.metadata, $path) AS state, {aggregate} AS total RETURN state, total"), &parameters).unwrap();
+        assert_eq!(result.rows.len(), 3);
+        for (state, count) in [
+            (Value::Null, 3),
+            (Value::String("active".into()), 1),
+            (Value::String("archived".into()), 1),
+        ] {
+            let row = result
+                .rows
+                .iter()
+                .find(|row| row.get("state") == Some(&state))
+                .unwrap();
+            assert_eq!(row.get("total"), Some(&Value::Int(count)));
+        }
+    }
+    let result = db.query_with_params("MATCH (m:Memory) WHERE m.id = 2 RETURN CASE WHEN json_string(m.metadata, $path) IS NULL THEN 'absent' ELSE 'present' END AS state", &parameters).unwrap();
+    assert_eq!(
+        result.rows[0].get("state"),
+        Some(&Value::String("absent".into()))
+    );
+}
+
+#[test]
+fn json_string_preserves_strict_document_path_and_cancellation_errors() {
+    let mut db = Database::new();
+    for (metadata, expected) in [
+        (Value::String("{invalid".into()), "invalid JSON"),
+        (Value::Int(12), "string document"),
+        (
+            Value::String(format!(r#"{{"state":"{}"}}"#, "a".repeat(1024 * 1024))),
+            "1 MiB input limit",
+        ),
+    ] {
+        db.query("MATCH (m:Memory) DELETE m").unwrap();
+        db.query_with_params(
+            "CREATE (:Memory {id: 1, metadata: $metadata})",
+            &BTreeMap::from([("metadata".into(), metadata)]),
+        )
+        .unwrap();
+        for query in [
+            "MATCH (m:Memory) RETURN json_string(m.metadata, '$.state') AS value",
+            "MATCH (m:Memory) WHERE coalesce(json_string(m.metadata, '$.state'), '') = '' RETURN COUNT(*) AS total",
+            "MATCH (m:Memory) WITH json_string(m.metadata, '$.state') AS value, COUNT(*) AS total RETURN value, total",
+            "MATCH (m:Memory) WITH json_string(m.metadata, '$.state') AS value, COUNT(DISTINCT m.id) AS total RETURN value, total",
+        ] {
+            let error = db.query(query).unwrap_err();
+            assert!(matches!(&error, hawdb::HawDBError::Execution(message) if message.contains(expected)), "{query}: {error}");
+        }
+    }
+    for path in [
+        Value::Int(1),
+        Value::Null,
+        Value::String("$[0]".into()),
+        Value::String("$.".into()),
+        Value::String("$.a..b".into()),
+        Value::String(format!("$.{}", "a".repeat(255))),
+    ] {
+        let error = db
+            .query_with_params(
+                "MATCH (m:Memory) RETURN json_string(m.metadata, $path)",
+                &BTreeMap::from([("path".into(), path)]),
+            )
+            .unwrap_err();
+        assert!(matches!(error, hawdb::HawDBError::Semantic(_)), "{error}");
+    }
+    let error = db
+        .query_with_context(
+            "MATCH (m:Memory) RETURN json_string(m.metadata, '$.state')",
+            &RuntimeTaskContext::with_timeout(Duration::ZERO),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            hawdb::HawDBError::RuntimeTaskStopped(
+                hawdb::RuntimeCancellationReason::DeadlineExceeded
+            )
+        ),
+        "{error}"
+    );
+}
+
+#[test]
 fn json_value_null_on_nonscalar_maps_only_selected_arrays_and_objects_to_null() {
     let mut db = Database::new();
     for (id, metadata) in [
@@ -422,7 +697,12 @@ fn json_value_null_on_nonscalar_preserves_other_errors() {
         )
         .unwrap_err();
     assert!(
-        matches!(&cancellation, hawdb::HawDBError::Execution(message) if message.contains("runtime task stopped: deadline_exceeded")),
+        matches!(
+            &cancellation,
+            hawdb::HawDBError::RuntimeTaskStopped(
+                hawdb::RuntimeCancellationReason::DeadlineExceeded
+            )
+        ),
         "{cancellation}"
     );
 }
@@ -540,6 +820,21 @@ fn json_expression_positions_share_configured_and_runtime_memory_admission() {
         ("MATCH (m:Memory) RETURN m.id AS id ORDER BY json_value(m.metadata, $path)", "$.rank", vec![vec![Value::Int(2)], vec![Value::Int(1)]], "blocking_state"),
         ("MATCH (m:Memory) RETURN m.id AS id ORDER BY json_value(m.metadata, $path) LIMIT 1", "$.rank", vec![vec![Value::Int(2)]], "blocking_state"),
     ];
+    let cases: Vec<_> = cases
+        .into_iter()
+        .flat_map(|(query, path, expected, memory_class)| {
+            let mut variants = vec![(query.to_owned(), path, expected.clone(), memory_class)];
+            if path == "$.source" {
+                variants.push((
+                    query.replace("json_value(", "json_string("),
+                    path,
+                    expected,
+                    memory_class,
+                ));
+            }
+            variants
+        })
+        .collect();
     for (configured, runtime) in [
         (8192, None),
         (65536, Some(8192)),

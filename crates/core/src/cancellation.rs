@@ -640,9 +640,8 @@ impl RuntimeTaskContext {
         let Some(budget) = &self.work_budget else {
             return Ok(());
         };
-        self.checkpoint().map_err(|reason| {
-            crate::HawDBError::Execution(format!("runtime task stopped: {reason}"))
-        })?;
+        self.checkpoint()
+            .map_err(crate::HawDBError::RuntimeTaskStopped)?;
         budget.charge(units)
     }
 

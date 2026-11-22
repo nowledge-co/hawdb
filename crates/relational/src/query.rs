@@ -54,7 +54,8 @@ use hawdb_sql::{
 use hawdb_storage::relational::RelationalHydrationBudget;
 use hawdb_storage::relational::{
     relational_unique_index_name, RelationalIndexRangeScan, RelationalIndexScanDirection,
-    RelationalKey, RelationalScalarType, RelationalState, RelationalTableSchema, RelationalValue,
+    RelationalKey, RelationalRow, RelationalScalarType, RelationalState, RelationalTableSchema,
+    RelationalValue,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -91,6 +92,8 @@ use access::{
 mod aggregate;
 use aggregate::execute_aggregate_select;
 
+mod compound;
+
 use crate::aggregate as having;
 use crate::aggregate::{
     aggregate_group_base_memory_bytes, charge_aggregate_memory, AggregateProjectionState,
@@ -109,7 +112,7 @@ pub(crate) use expression::select_output_schema;
 use expression::{
     account_intermediate, aggregate_filter_matches, bind_bound, bind_sql_value, predicate_truth,
     project_bound_row, projection_uses_non_aggregate_scalar_function, reject_non_public_schema,
-    resolve_column, validate_non_aggregate_coalesce_projections, value_to_relational_as,
+    resolve_column, validate_scalar_expressions, value_to_relational_as,
 };
 
 mod join;
@@ -295,6 +298,24 @@ impl<'a, R: RelationalQueryStoreReader> RelationalQueryReadModes<'a, R> {
         self
     }
 
+    fn with_memory_overlay<'b>(
+        &'b self,
+        tables: &'b BTreeSet<String>,
+    ) -> RelationalQueryReadModes<'b, R>
+    where
+        'a: 'b,
+    {
+        RelationalQueryReadModes {
+            index: self.index,
+            row: RelationalRowReadMode::MemoryOverlay {
+                base: &self.row,
+                tables,
+            },
+            cost_contexts: self.cost_contexts,
+            index_runtime: self.index_runtime,
+        }
+    }
+
     fn cost_context(self, binding: BindingId) -> RelationalAccessCostContext {
         self.cost_contexts
             .map_or_else(RelationalAccessCostContext::default, |contexts| {
@@ -450,6 +471,43 @@ fn execute_fromless_select(
     })
 }
 
+#[derive(Debug, Clone)]
+pub struct RelationalEphemeralQueryTable {
+    pub schema: RelationalTableSchema,
+    pub rows: Vec<RelationalRow>,
+}
+
+pub fn execute_prepared_relational_query_with_ephemeral_tables<R: RelationalQueryStoreReader>(
+    prepared_sql: PreparedRelationalSql,
+    parameters: &[Value],
+    state: &RelationalState,
+    read_modes: RelationalQueryReadModes<'_, R>,
+    resources: RelationalQueryResourceContext<'_>,
+    tables: Vec<RelationalEphemeralQueryTable>,
+) -> Result<RelationalQueryOutput> {
+    let mut scoped_state = state.clone();
+    let mut names = BTreeSet::new();
+    for table in tables {
+        if !names.insert(table.schema.name.clone()) {
+            return Err(HawDBError::Semantic(format!(
+                "common table expression {} is specified more than once",
+                table.schema.name
+            )));
+        }
+        scoped_state
+            .attach_ephemeral_query_table(table.schema, table.rows)
+            .map_err(HawDBError::from_execution_error)?;
+    }
+    let read_modes = read_modes.with_memory_overlay(&names);
+    execute_prepared_relational_query_with_resources(
+        prepared_sql,
+        parameters,
+        &scoped_state,
+        read_modes,
+        resources,
+    )
+}
+
 pub fn execute_prepared_relational_query_with_resources<'a, R: RelationalQueryStoreReader>(
     prepared_sql: PreparedRelationalSql,
     parameters: &[Value],
@@ -473,46 +531,41 @@ pub fn execute_prepared_relational_query_with_resources<'a, R: RelationalQuerySt
         ..RelationalSqlStageTimings::default()
     };
     match prepared.statement {
-        SqlStatement::Select(mut select) => {
-            if select.text_search().is_some() {
-                crate::literal_coercion::coerce_select(&mut select, state, parameters)?;
-                return text_search::execute_text_search_select(
-                    &select,
-                    parameters,
-                    state,
-                    read_modes,
-                    resources,
-                    initial_stage_timings,
-                );
-            }
-            if select.from.is_none() {
-                crate::literal_coercion::coerce_select(&mut select, state, parameters)?;
-                return execute_fromless_select(
-                    &select,
-                    parameters,
-                    state,
-                    initial_stage_timings,
-                    resources.limits.hydration,
-                    &resources,
-                );
-            }
-            let (prepared, snapshot) = prepare_relational_select_with_snapshot(
-                select,
-                parameters,
-                state,
-                read_modes,
-                resources,
-                initial_stage_timings,
-            )?;
-            let mut execution = prepared.execution.admit(state, read_modes, resources)?;
-            execution.planning_snapshot = Some(snapshot);
-            execute_select_timed(&prepared, parameters, execution)
-        }
+        SqlStatement::Select(select) => execute_select_statement(
+            select,
+            parameters,
+            state,
+            read_modes,
+            resources,
+            initial_stage_timings,
+        ),
+        SqlStatement::Query(query) => compound::execute_query(
+            query,
+            parameters,
+            state,
+            read_modes,
+            resources,
+            initial_stage_timings,
+        ),
         SqlStatement::Explain(explain) => {
-            let SqlStatement::Select(mut select) = *explain.statement else {
-                return Err(HawDBError::Semantic(
-                    "EXPLAIN only supports relational SELECT".to_string(),
-                ));
+            let mut select = match *explain.statement {
+                SqlStatement::Query(query) => {
+                    return compound::explain_query(
+                        query,
+                        parameters,
+                        state,
+                        read_modes,
+                        resources,
+                        initial_stage_timings,
+                        explain.analyze,
+                    );
+                }
+                SqlStatement::Select(select) => select,
+                _ => {
+                    return Err(HawDBError::Semantic(
+                        "EXPLAIN only supports relational SELECT".to_string(),
+                    ));
+                }
             };
             if select.text_search().is_some() {
                 crate::literal_coercion::coerce_select(&mut select, state, parameters)?;
@@ -567,7 +620,7 @@ pub fn execute_prepared_relational_query_with_resources<'a, R: RelationalQuerySt
             }
             let mut execution = prepared.execution.admit(state, read_modes, resources)?;
             execution.planning_snapshot = Some(snapshot);
-            let output = execute_select_timed(&prepared, parameters, execution)?;
+            let output = execute_select_timed(&prepared, parameters, execution, None)?;
             format_relational_explain(
                 &prepared.statement,
                 parameters,
@@ -580,6 +633,70 @@ pub fn execute_prepared_relational_query_with_resources<'a, R: RelationalQuerySt
             "relational query entrypoint requires SELECT or EXPLAIN SELECT".to_string(),
         )),
     }
+}
+
+fn execute_select_statement<'a, R: RelationalQueryStoreReader>(
+    select: SelectStatement,
+    parameters: &[Value],
+    state: &'a RelationalState,
+    read_modes: RelationalQueryReadModes<'a, R>,
+    resources: RelationalQueryResourceContext<'_>,
+    stage_timings: RelationalSqlStageTimings,
+) -> Result<RelationalQueryOutput> {
+    execute_select_statement_with_filter(
+        select,
+        parameters,
+        state,
+        read_modes,
+        resources,
+        stage_timings,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_select_statement_with_filter<'a, R: RelationalQueryStoreReader>(
+    mut select: SelectStatement,
+    parameters: &[Value],
+    state: &'a RelationalState,
+    read_modes: RelationalQueryReadModes<'a, R>,
+    resources: RelationalQueryResourceContext<'_>,
+    stage_timings: RelationalSqlStageTimings,
+    subquery_filter: Option<&RelationalSubqueryFilter<'_>>,
+) -> Result<RelationalQueryOutput> {
+    if select.text_search().is_some() {
+        crate::literal_coercion::coerce_select(&mut select, state, parameters)?;
+        return text_search::execute_text_search_select(
+            &select,
+            parameters,
+            state,
+            read_modes,
+            resources,
+            stage_timings,
+        );
+    }
+    if select.from.is_none() {
+        crate::literal_coercion::coerce_select(&mut select, state, parameters)?;
+        return execute_fromless_select(
+            &select,
+            parameters,
+            state,
+            stage_timings,
+            resources.limits.hydration,
+            &resources,
+        );
+    }
+    let (prepared, snapshot) = prepare_relational_select_with_snapshot(
+        select,
+        parameters,
+        state,
+        read_modes,
+        resources,
+        stage_timings,
+    )?;
+    let mut execution = prepared.execution.admit(state, read_modes, resources)?;
+    execution.planning_snapshot = Some(snapshot);
+    execute_select_timed(&prepared, parameters, execution, subquery_filter)
 }
 
 #[doc(hidden)]
@@ -635,8 +752,26 @@ impl Binding<'_> {
 }
 
 #[derive(Clone, Default)]
-struct BoundRow<'a> {
+pub(super) struct BoundRow<'a> {
     bindings: Vec<Binding<'a>>,
+}
+
+type SubqueryEvaluatorFn<'a> = dyn for<'row> FnMut(&BoundRow<'row>) -> Result<Option<bool>> + 'a;
+
+pub(super) struct RelationalSubqueryFilter<'a> {
+    evaluate: RefCell<&'a mut SubqueryEvaluatorFn<'a>>,
+}
+
+impl<'a> RelationalSubqueryFilter<'a> {
+    pub(super) fn new(evaluate: &'a mut SubqueryEvaluatorFn<'a>) -> Self {
+        Self {
+            evaluate: RefCell::new(evaluate),
+        }
+    }
+
+    fn matches(&self, row: &BoundRow<'_>) -> Result<bool> {
+        Ok((self.evaluate.borrow_mut())(row)? == Some(true))
+    }
 }
 
 impl BoundRow<'_> {

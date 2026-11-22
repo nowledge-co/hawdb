@@ -226,6 +226,37 @@ pub fn format_hawdb_error(error: &HawDBError) -> PyErr {
                 attributes.err().unwrap_or(exception)
             })
         }
+        HawDBError::SearchProjectionOwnershipMarkerCorrupt {
+            projection, marker, ..
+        } => Python::attach(|py| {
+            // Not poisoning: reopen with the ownership reset to rewrite it.
+            let exception = ExecutionError::new_err(message);
+            let value = exception.value(py);
+            let attributes = (|| -> PyResult<()> {
+                value.setattr("kind", "search_projection_ownership_marker_corrupt")?;
+                value.setattr("projection", projection.display().to_string())?;
+                value.setattr("marker", marker.as_str())?;
+                value.setattr("retryable", false)
+            })();
+            attributes.err().unwrap_or(exception)
+        }),
+        HawDBError::SearchProjectionOwnershipMismatch {
+            projection,
+            recorded,
+            requested,
+        } => Python::attach(|py| {
+            // A refused open: the projection and its recorded set are unchanged.
+            let exception = ExecutionError::new_err(message);
+            let value = exception.value(py);
+            let attributes = (|| -> PyResult<()> {
+                value.setattr("kind", "search_projection_ownership_mismatch")?;
+                value.setattr("projection", projection.display().to_string())?;
+                value.setattr("recorded", recorded.clone())?;
+                value.setattr("requested", requested.clone())?;
+                value.setattr("retryable", false)
+            })();
+            attributes.err().unwrap_or(exception)
+        }),
         HawDBError::SearchProjectionEpochAdvanceRefused {
             reason,
             source_graph_commit_epoch,
@@ -240,6 +271,74 @@ pub fn format_hawdb_error(error: &HawDBError) -> PyErr {
                 value.setattr("reason", reason.as_str())?;
                 value.setattr("source_graph_commit_epoch", *source_graph_commit_epoch)?;
                 value.setattr("target_graph_commit_epoch", *target_graph_commit_epoch)?;
+                value.setattr("retryable", false)
+            })();
+            attributes.err().unwrap_or(exception)
+        }),
+        HawDBError::ReadOnly { operation } => Python::attach(|py| {
+            // A caller error: the handle is read-only and nothing was written.
+            let exception = ExecutionError::new_err(message);
+            let value = exception.value(py);
+            let attributes = (|| -> PyResult<()> {
+                value.setattr("kind", "read_only")?;
+                value.setattr("operation", *operation)?;
+                value.setattr("retryable", false)
+            })();
+            attributes.err().unwrap_or(exception)
+        }),
+        HawDBError::WalRecordLimitExceeded(limit) => Python::attach(|py| {
+            // A caller error about one transaction's size: nothing was
+            // written and the handle stays usable.
+            let exception = ExecutionError::new_err(message);
+            let value = exception.value(py);
+            let attributes = (|| -> PyResult<()> {
+                value.setattr("kind", "wal_record_limit_exceeded")?;
+                value.setattr("limit", limit.limit.as_str())?;
+                value.setattr("requested", limit.requested)?;
+                value.setattr("maximum", limit.maximum)?;
+                value.setattr("config_option", limit.limit.config_option())?;
+                value.setattr("retryable", false)
+            })();
+            attributes.err().unwrap_or(exception)
+        }),
+        HawDBError::RuntimeTaskStopped(reason) => Python::attach(|py| {
+            // The caller's deadline or cancellation stopped the work before
+            // it committed: nothing was written and the handle stays usable.
+            // A stop is a stop whichever layer raised it.
+            let exception = TaskStoppedError::new_err(message);
+            let value = exception.value(py);
+            let attributes = (|| -> PyResult<()> {
+                value.setattr("kind", "runtime_task_stopped")?;
+                value.setattr("reason", reason.as_str())?;
+                value.setattr("retryable", false)
+            })();
+            attributes.err().unwrap_or(exception)
+        }),
+        HawDBError::RuntimeAdmissionRefused(refusal) => Python::attach(|py| {
+            // The runtime governor had no capacity for this read: nothing
+            // was written, the handle stays usable, and a transient refusal
+            // can be retried once capacity frees up.
+            let exception = ExecutionError::new_err(message);
+            let value = exception.value(py);
+            let attributes = (|| -> PyResult<()> {
+                value.setattr("kind", "runtime_admission_refused")?;
+                value.setattr("code", refusal.code)?;
+                value.setattr("requested", refusal.requested)?;
+                value.setattr("available", refusal.available)?;
+                value.setattr("retryable", refusal.retryable)
+            })();
+            attributes.err().unwrap_or(exception)
+        }),
+        HawDBError::RuntimeIoWaveReservationExceeded {
+            requested_slots,
+            reserved_slots,
+        } => Python::attach(|py| {
+            let exception = ExecutionError::new_err(message);
+            let value = exception.value(py);
+            let attributes = (|| -> PyResult<()> {
+                value.setattr("kind", "runtime_io_wave_reservation_exceeded")?;
+                value.setattr("requested_slots", *requested_slots)?;
+                value.setattr("reserved_slots", *reserved_slots)?;
                 value.setattr("retryable", false)
             })();
             attributes.err().unwrap_or(exception)
@@ -675,6 +774,182 @@ mod tests {
             assert_eq!(text("reason"), "projection_changed");
             assert_eq!(number("source_graph_commit_epoch"), 4);
             assert_eq!(number("target_graph_commit_epoch"), 9);
+            assert!(!value
+                .getattr("retryable")
+                .unwrap()
+                .extract::<bool>()
+                .unwrap());
+        });
+    }
+
+    #[test]
+    fn search_projection_ownership_mismatch_is_an_execution_error_with_both_sets() {
+        Python::initialize();
+        Python::attach(|py| {
+            let error = HawDBError::SearchProjectionOwnershipMismatch {
+                projection: "/data/search".into(),
+                recorded: vec!["memory".into(), "entity".into()],
+                requested: vec!["memory".into()],
+            };
+            let exception = format_hawdb_error(&error);
+            assert!(exception.is_instance_of::<ExecutionError>(py));
+            assert!(!exception.is_instance_of::<StorageError>(py));
+            let value = exception.value(py);
+            let text = |name: &str| value.getattr(name).unwrap().extract::<String>().unwrap();
+            let list = |name: &str| {
+                value
+                    .getattr(name)
+                    .unwrap()
+                    .extract::<Vec<String>>()
+                    .unwrap()
+            };
+            assert_eq!(text("kind"), "search_projection_ownership_mismatch");
+            assert_eq!(text("projection"), "/data/search");
+            assert_eq!(list("recorded"), ["memory", "entity"]);
+            assert_eq!(list("requested"), ["memory"]);
+            assert!(!value
+                .getattr("retryable")
+                .unwrap()
+                .extract::<bool>()
+                .unwrap());
+        });
+    }
+
+    #[test]
+    fn search_projection_ownership_marker_corruption_is_a_non_poisoning_execution_error() {
+        Python::initialize();
+        Python::attach(|py| {
+            let error = HawDBError::SearchProjectionOwnershipMarkerCorrupt {
+                projection: "/data/search".into(),
+                marker: ".externally_owned_rows_required".into(),
+                message: "has no epoch".into(),
+            };
+            let exception = format_hawdb_error(&error);
+            assert!(exception.is_instance_of::<ExecutionError>(py));
+            assert!(!exception.is_instance_of::<IntegrityError>(py));
+            let value = exception.value(py);
+            let text = |name: &str| value.getattr(name).unwrap().extract::<String>().unwrap();
+            assert_eq!(text("kind"), "search_projection_ownership_marker_corrupt");
+            assert_eq!(text("projection"), "/data/search");
+            assert_eq!(text("marker"), ".externally_owned_rows_required");
+        });
+    }
+
+    #[test]
+    fn wal_record_limit_is_a_non_retryable_execution_error_with_its_limit() {
+        Python::initialize();
+        Python::attach(|py| {
+            let error = HawDBError::WalRecordLimitExceeded(Box::new(hawdb::WalRecordLimitError {
+                limit: hawdb::WalRecordLimit::RecordBytes,
+                requested: 20,
+                maximum: 16,
+            }));
+            let exception = format_hawdb_error(&error);
+            assert!(exception.is_instance_of::<ExecutionError>(py));
+            assert!(!exception.is_instance_of::<StorageError>(py));
+            let value = exception.value(py);
+            let text = |name: &str| value.getattr(name).unwrap().extract::<String>().unwrap();
+            let number = |name: &str| value.getattr(name).unwrap().extract::<u64>().unwrap();
+            assert_eq!(text("kind"), "wal_record_limit_exceeded");
+            assert_eq!(text("limit"), "record_bytes");
+            assert_eq!(text("config_option"), "DatabaseConfig.max_wal_record_bytes");
+            assert_eq!((number("requested"), number("maximum")), (20, 16));
+            assert!(!value
+                .getattr("retryable")
+                .unwrap()
+                .extract::<bool>()
+                .unwrap());
+        });
+    }
+
+    #[test]
+    fn runtime_task_stop_is_a_task_stopped_error_with_its_reason() {
+        Python::initialize();
+        Python::attach(|py| {
+            let error =
+                HawDBError::RuntimeTaskStopped(hawdb::RuntimeCancellationReason::DeadlineExceeded);
+            let exception = format_hawdb_error(&error);
+            assert!(exception.is_instance_of::<TaskStoppedError>(py));
+            assert!(!exception.is_instance_of::<ExecutionError>(py));
+            assert!(!exception.is_instance_of::<StorageError>(py));
+            let value = exception.value(py);
+            let text = |name: &str| value.getattr(name).unwrap().extract::<String>().unwrap();
+            assert_eq!(text("kind"), "runtime_task_stopped");
+            assert_eq!(text("reason"), "deadline_exceeded");
+        });
+    }
+
+    #[test]
+    fn runtime_admission_refusal_is_a_retryable_execution_error_with_its_code() {
+        Python::initialize();
+        Python::attach(|py| {
+            let error = HawDBError::RuntimeAdmissionRefused(hawdb::RuntimeAdmissionRefusal {
+                code: "memory_saturated",
+                requested: 4096,
+                available: 0,
+                retryable: true,
+            });
+            let exception = format_hawdb_error(&error);
+            assert!(exception.is_instance_of::<ExecutionError>(py));
+            assert!(!exception.is_instance_of::<StorageError>(py));
+            let value = exception.value(py);
+            let text = |name: &str| value.getattr(name).unwrap().extract::<String>().unwrap();
+            let number = |name: &str| value.getattr(name).unwrap().extract::<u64>().unwrap();
+            assert_eq!(text("kind"), "runtime_admission_refused");
+            assert_eq!(text("code"), "memory_saturated");
+            assert_eq!((number("requested"), number("available")), (4096, 0));
+            assert!(value
+                .getattr("retryable")
+                .unwrap()
+                .extract::<bool>()
+                .unwrap());
+        });
+    }
+
+    #[test]
+    fn io_wave_reservation_refusal_is_a_non_retryable_execution_error() {
+        Python::initialize();
+        Python::attach(|py| {
+            let error = HawDBError::RuntimeIoWaveReservationExceeded {
+                requested_slots: 2,
+                reserved_slots: 1,
+            };
+            let exception = format_hawdb_error(&error);
+            assert!(exception.is_instance_of::<ExecutionError>(py));
+            assert!(!exception.is_instance_of::<StorageError>(py));
+            let value = exception.value(py);
+            let text = |name: &str| value.getattr(name).unwrap().extract::<String>().unwrap();
+            let number = |name: &str| value.getattr(name).unwrap().extract::<usize>().unwrap();
+            assert_eq!(text("kind"), "runtime_io_wave_reservation_exceeded");
+            assert_eq!(
+                (number("requested_slots"), number("reserved_slots")),
+                (2, 1)
+            );
+            assert!(!value
+                .getattr("retryable")
+                .unwrap()
+                .extract::<bool>()
+                .unwrap());
+        });
+    }
+
+    #[test]
+    fn read_only_is_a_non_retryable_execution_error_with_its_operation() {
+        Python::initialize();
+        Python::attach(|py| {
+            let error = HawDBError::ReadOnly {
+                operation: "mark_search_projection_full_reindex_needed",
+            };
+            let exception = format_hawdb_error(&error);
+            assert!(exception.is_instance_of::<ExecutionError>(py));
+            assert!(!exception.is_instance_of::<StorageError>(py));
+            let value = exception.value(py);
+            let text = |name: &str| value.getattr(name).unwrap().extract::<String>().unwrap();
+            assert_eq!(text("kind"), "read_only");
+            assert_eq!(
+                text("operation"),
+                "mark_search_projection_full_reindex_needed"
+            );
             assert!(!value
                 .getattr("retryable")
                 .unwrap()

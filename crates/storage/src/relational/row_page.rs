@@ -253,8 +253,7 @@ impl RelationalProjectedRow {
                 self.fields.into_iter().map(|field| field.value).collect(),
             ));
         };
-        let admission =
-            |error: hawdb_core::HawDBError| super::RelationalError::Admission(error.to_string());
+        let admission = super::RelationalError::from_admission;
         let mut values = context
             .vector_capacity(self.fields.len())
             .map_err(admission)?;
@@ -264,7 +263,7 @@ impl RelationalProjectedRow {
         for field in self.fields {
             context
                 .checkpoint()
-                .map_err(|error| super::RelationalError::Admission(error.to_string()))?;
+                .map_err(super::RelationalError::from_work)?;
             values.push(field.value);
         }
         Ok(RelationalRow::new(values))
@@ -352,8 +351,7 @@ impl<'a> RelationalProjectedRowView<'a> {
         self,
         context: &crate::background::CheckpointDecodeContext,
     ) -> Result<RelationalProjectedRow, super::RelationalError> {
-        let admission =
-            |error: hawdb_core::HawDBError| super::RelationalError::Admission(error.to_string());
+        let admission = super::RelationalError::from_admission;
         let mut key_values = context
             .vector_capacity(self.primary_key().0.len())
             .map_err(admission)?;
@@ -395,6 +393,7 @@ impl<'a> RelationalProjectedRowView<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelationalRowPageError {
     Admission(String),
+    Stopped(hawdb_core::RuntimeCancellationReason),
     Corrupt(String),
 }
 
@@ -404,12 +403,29 @@ impl fmt::Display for RelationalRowPageError {
             Self::Admission(message) => {
                 write!(formatter, "relational row page admission failed: {message}")
             }
+            Self::Stopped(reason) => write!(formatter, "relational row page stopped: {reason}"),
             Self::Corrupt(message) => write!(formatter, "corrupt relational row page: {message}"),
         }
     }
 }
 
-impl std::error::Error for RelationalRowPageError {}
+impl std::error::Error for RelationalRowPageError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Stopped(reason) => Some(reason),
+            Self::Admission(_) | Self::Corrupt(_) => None,
+        }
+    }
+}
+
+impl RelationalRowPageError {
+    fn from_admission(error: hawdb_core::HawDBError) -> Self {
+        match error {
+            hawdb_core::HawDBError::RuntimeTaskStopped(reason) => Self::Stopped(reason),
+            error => Self::Admission(error.to_string()),
+        }
+    }
+}
 
 impl ImmutableRelationalRowPage {
     pub fn encode(
@@ -841,6 +857,9 @@ impl<'a> RelationalRowPageView<'a> {
             match error {
                 super::ordered_key::OrderedRelationalKeyError::Admission(_) => {
                     RelationalRowPageError::Admission(message)
+                }
+                super::ordered_key::OrderedRelationalKeyError::Stopped(reason) => {
+                    RelationalRowPageError::Stopped(reason)
                 }
                 _ => RelationalRowPageError::Corrupt(message),
             }

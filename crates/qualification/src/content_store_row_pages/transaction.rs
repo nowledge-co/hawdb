@@ -255,8 +255,10 @@ fn required_info_field<'a>(info: &'a str, field: &str) -> Result<&'a str> {
 fn required_info_u64(info: &str, field: &str) -> Result<u64> {
     let value = required_info_field(info, field)?;
     value.parse::<u64>().map_err(|error| {
-        HawDBError::Execution(format!(
-            "content-store transaction EXPLAIN has invalid {field}={value}: {error}"
-        ))
+        HawDBError::or_stop(&error, || {
+            HawDBError::Execution(format!(
+                "content-store transaction EXPLAIN has invalid {field}={value}: {error}"
+            ))
+        })
     })
 }

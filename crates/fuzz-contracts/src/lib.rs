@@ -167,6 +167,11 @@ pub const fn nowledge_query_fuzz_error_class(error: &HawDBError) -> &'static str
         | HawDBError::TransactionReadDependencyRefused { .. }
         | HawDBError::BranchEvidenceBudgetExceeded { .. }
         | HawDBError::ReadBudgetExceeded(_)
+        | HawDBError::WalRecordLimitExceeded(_)
+        | HawDBError::RuntimeAdmissionRefused(_)
+        | HawDBError::RuntimeIoWaveReservationExceeded { .. }
+        | HawDBError::RuntimeTaskStopped(_)
+        | HawDBError::ReadOnly { .. }
         | HawDBError::ResourceBudgetExceeded(_)
         | HawDBError::GraphExpansionCandidateLimitExceeded { .. }
         | HawDBError::GraphExpansionPayloadLimitExceeded { .. }
@@ -174,6 +179,8 @@ pub const fn nowledge_query_fuzz_error_class(error: &HawDBError) -> &'static str
         | HawDBError::TransactionRetryRequired(_)
         | HawDBError::BranchCommandUnsupported { .. }
         | HawDBError::SearchProjectionRebuildRefused { .. }
+        | HawDBError::SearchProjectionOwnershipMarkerCorrupt { .. }
+        | HawDBError::SearchProjectionOwnershipMismatch { .. }
         | HawDBError::SearchProjectionEpochAdvanceRefused { .. } => "execution",
         HawDBError::Storage(_)
         | HawDBError::Constraint {

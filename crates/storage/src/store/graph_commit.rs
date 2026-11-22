@@ -146,6 +146,7 @@ impl GraphStore {
             transaction,
             relational,
             append,
+            capture_relational_mutation_rows,
         } = inputs;
         let mut retained = None;
         let result = self.commit_prepared_transaction_parts(
@@ -153,6 +154,7 @@ impl GraphStore {
             transaction,
             relational,
             append,
+            capture_relational_mutation_rows,
             limits,
             allow_stale_rebase,
             Some(&mut retained),
@@ -164,6 +166,7 @@ impl GraphStore {
                     transaction,
                     relational: retained.relational.unwrap_or_default(),
                     append: retained.append.unwrap_or_default(),
+                    capture_relational_mutation_rows,
                 },
                 error,
             }),
@@ -214,6 +217,7 @@ impl GraphStore {
             prepared,
             relational_transaction,
             append_transaction,
+            true,
             limits,
             allow_stale_rebase,
             None,
@@ -230,6 +234,7 @@ impl GraphStore {
         prepared: PreparedGraphMutationTransaction,
         relational_transaction: RelationalTransaction,
         append_transaction: AppendTransaction,
+        capture_relational_mutation_rows: bool,
         limits: MutationLimits,
         allow_stale_rebase: bool,
         retain: Option<&mut Option<(RetainedLiveHeadroomCommit, PreparedGraphMutationTransaction)>>,
@@ -278,6 +283,7 @@ impl GraphStore {
                 limits,
                 MutationCommitOptions {
                     relational: Some(relational_transaction),
+                    capture_relational_mutation_rows: Some(capture_relational_mutation_rows),
                     append: Some(append_transaction),
                     mvcc_read_epoch,
                     prepared_wal,
@@ -294,6 +300,7 @@ impl GraphStore {
             limits,
             MutationCommitOptions {
                 relational: Some(relational_transaction),
+                capture_relational_mutation_rows: Some(capture_relational_mutation_rows),
                 append: Some(append_transaction),
                 mvcc_read_epoch,
                 prepared_wal,
@@ -1161,6 +1168,74 @@ impl GraphStore {
                         }
                     }
                 }
+                GraphMutation::SetEntityProperties(updates) => {
+                    for update in updates {
+                        ensure_additional_mutation_limits(
+                            ops.len(),
+                            rows.len(),
+                            update.assignments.len(),
+                            1,
+                            limits,
+                        )?;
+                        match update.entity {
+                            MutationEntity::Node(id) => {
+                                let assignments = update
+                                    .assignments
+                                    .into_iter()
+                                    .map(|(property, value)| NodeSetAssignment {
+                                        property,
+                                        value: NodeSetValue::Value(value),
+                                    })
+                                    .collect::<Vec<_>>();
+                                if pending_node_index(&pending_nodes, id).is_some() {
+                                    Self::apply_pending_node_assignments(
+                                        &mut ops,
+                                        &mut pending_nodes,
+                                        id,
+                                        &assignments,
+                                    )?;
+                                } else {
+                                    ops.extend(self.node_set_property_ops(&[id], &assignments)?);
+                                }
+                                rows.push(BTreeMap::from([(
+                                    "node_id".to_string(),
+                                    Value::Int(id.0 as i64),
+                                )]));
+                            }
+                            MutationEntity::Relationship(id) => {
+                                if let Some(pending) = pending_relationships
+                                    .iter_mut()
+                                    .find(|pending| pending.0 == id)
+                                {
+                                    for (property, value) in update.assignments {
+                                        pending.4.insert(property.clone(), value.clone());
+                                        apply_pending_relationship_property(
+                                            &mut ops, id, &property, value,
+                                        );
+                                    }
+                                } else {
+                                    if self.relationship_owned(id)?.is_none() {
+                                        return Err(HawDBError::Storage(format!(
+                                            "relationship {} disappeared during property update",
+                                            id.0
+                                        )));
+                                    }
+                                    ops.extend(update.assignments.into_iter().map(
+                                        |(property, value)| WalOp::SetRelationshipProperty {
+                                            id,
+                                            property,
+                                            value,
+                                        },
+                                    ));
+                                }
+                                rows.push(BTreeMap::from([(
+                                    "rel_id".to_string(),
+                                    Value::Int(id.0 as i64),
+                                )]));
+                            }
+                        }
+                    }
+                }
                 GraphMutation::SetNodeProperties {
                     label,
                     filter,
@@ -1623,6 +1698,17 @@ impl GraphStore {
                                     .map(|(id, _, _, _, _)| *id)
                             };
                             if let Some(relationship) = current.or(pending) {
+                                if !request.on_match_assignments.is_empty() {
+                                    apply_relationship_on_match_assignments(
+                                        self,
+                                        &mut ops,
+                                        &mut pending_relationships,
+                                        relationship,
+                                        current.is_some(),
+                                        &request.on_match_assignments,
+                                        limits,
+                                    )?;
+                                }
                                 rows.push(BTreeMap::from([
                                     ("source_node_id".to_string(), Value::Int(source.0 as i64)),
                                     ("target_node_id".to_string(), Value::Int(target.0 as i64)),
@@ -2111,6 +2197,7 @@ impl GraphStore {
     ) -> Result<MutationSummary> {
         let MutationCommitOptions {
             relational: relational_transaction,
+            capture_relational_mutation_rows,
             append: append_transaction,
             preserve_single_create_wal,
             mvcc_read_epoch,
@@ -2119,6 +2206,7 @@ impl GraphStore {
             retain_on_live_headroom,
             creation_clock: _,
         } = options;
+        let capture_relational_mutation_rows = capture_relational_mutation_rows.unwrap_or(true);
         self.ensure_usable()?;
         ensure_mutation_commit_limits(&ops, &rows, limits)?;
         if let Some(captured_graph_ops) = captured_graph_ops {
@@ -2199,7 +2287,7 @@ impl GraphStore {
                         &hydrated_workspace.proven_absent_primary_keys,
                     );
                 self.relational_state
-                    .stage_sparse_transaction_with_primary_key_changes(
+                    .stage_sparse_transaction_with_primary_key_changes_and_row_capture(
                         RelationalSparseLiveStage {
                             transaction: transaction.clone(),
                             hydrated_workspace: hydrated_workspace.rows,
@@ -2210,11 +2298,12 @@ impl GraphStore {
                             constraint_index: &proven_constraint_index,
                         },
                         self.search_projection_primary_key_capture_limits,
+                        capture_relational_mutation_rows,
                     )
                     .map_err(map_relational_staging_error)?
             } else {
                 self.relational_state
-                    .stage_transaction_with_primary_key_changes(
+                    .stage_transaction_with_primary_key_changes_and_row_capture(
                         transaction.clone(),
                         self.relational_mutation_limits,
                         self.relational_overflow_config,
@@ -2224,6 +2313,7 @@ impl GraphStore {
                         authoritative_index.as_ref().map(|index| {
                             index as &dyn hawdb_storage::relational::RelationalConstraintIndex
                         }),
+                        capture_relational_mutation_rows,
                     )
                     .map_err(map_relational_staging_error)?
             };
@@ -2386,6 +2476,9 @@ impl GraphStore {
         wal_result?;
         *catalog = working_catalog;
         self.install_search_projection_change(staged_projection_change);
+        // Consume the appended record's classification so it cannot outlive
+        // this commit.
+        let changes_graph = std::mem::take(&mut self.pending_commit_changes_graph);
         for op in ops {
             if matches!(op, WalOp::Relational { .. }) {
                 self.relational_state = staged_relational_state
@@ -2400,9 +2493,12 @@ impl GraphStore {
             }
         }
         self.commit_epoch = next_commit_epoch;
+        if changes_graph {
+            self.graph_change_commit_epoch = next_commit_epoch;
+        }
         self.version_index = staged_versions;
         if collapsed_read_summaries {
-            let _ = self.read_summary_collapses.fetch_update(
+            let _ = self.read_summary_collapses.try_update(
                 AtomicOrdering::Relaxed,
                 AtomicOrdering::Relaxed,
                 |value| Some(value.saturating_add(1)),
@@ -2572,6 +2668,9 @@ impl GraphStore {
     }
 
     pub(super) fn append_durable_wal_single(&mut self, op: WalOp) -> Result<()> {
+        // Only a successful append leaves a classification for its commit.
+        self.pending_commit_changes_graph = false;
+        let changes_graph = op.changes_graph();
         let rebuild =
             search_projection_capture::projection_wal_requires_rebuild(std::slice::from_ref(&op));
         let result = (|| {
@@ -2586,6 +2685,7 @@ impl GraphStore {
         })();
         self.poison_on_storage_error(&result);
         result?;
+        self.pending_commit_changes_graph = changes_graph;
         if rebuild {
             self.install_search_projection_change(
                 search_projection_capture::PreparedSearchProjectionChange::Gap(
@@ -2605,6 +2705,9 @@ impl GraphStore {
         ops: &[WalOp],
         prepared: Option<crate::wal::binary::PreparedWalBatch>,
     ) -> Result<()> {
+        // Only a successful append leaves a classification for its commit.
+        self.pending_commit_changes_graph = false;
+        let changes_graph = ops.iter().any(WalOp::changes_graph);
         let rebuild = search_projection_capture::projection_wal_requires_rebuild(ops);
         let result = (|| {
             if self.durable.is_none() {
@@ -2622,6 +2725,7 @@ impl GraphStore {
         })();
         self.poison_on_storage_error(&result);
         result?;
+        self.pending_commit_changes_graph = changes_graph;
         if rebuild {
             self.install_search_projection_change(
                 search_projection_capture::PreparedSearchProjectionChange::Gap(
@@ -2932,6 +3036,54 @@ impl GraphStore {
     }
 }
 
+/// Applies relationship `ON MATCH SET` items, in order, to a relationship a
+/// MERGE found: committed relationships receive property operations,
+/// relationships created earlier in this batch are updated in place.
+fn apply_relationship_on_match_assignments(
+    store: &GraphStore,
+    ops: &mut Vec<WalOp>,
+    pending_relationships: &mut [PendingRelationship],
+    relationship: RelId,
+    committed: bool,
+    assignments: &[NodeSetAssignment],
+    limits: MutationLimits,
+) -> Result<()> {
+    ensure_additional_mutation_limits(ops.len(), 0, assignments.len(), 0, limits)?;
+    if committed {
+        let mut properties = store
+            .relationship_owned(relationship)?
+            .ok_or_else(|| {
+                HawDBError::Storage(format!("merged relationship {} is missing", relationship.0))
+            })?
+            .properties;
+        for assignment in assignments {
+            let value = evaluate_node_set_value(&properties, assignment)?;
+            properties.insert(assignment.property.clone(), value.clone());
+            ops.push(WalOp::SetRelationshipProperty {
+                id: relationship,
+                property: assignment.property.clone(),
+                value,
+            });
+        }
+        return Ok(());
+    }
+    let (_, _, _, _, properties) = pending_relationships
+        .iter_mut()
+        .find(|(id, ..)| *id == relationship)
+        .ok_or_else(|| {
+            HawDBError::Storage(format!(
+                "pending merged relationship {} is missing",
+                relationship.0
+            ))
+        })?;
+    for assignment in assignments {
+        let value = evaluate_node_set_value(properties, assignment)?;
+        properties.insert(assignment.property.clone(), value.clone());
+        apply_pending_relationship_property(ops, relationship, &assignment.property, value);
+    }
+    Ok(())
+}
+
 fn transaction_conflict_error(read_epoch: u64, conflict: VersionConflict) -> HawDBError {
     HawDBError::TransactionConflict {
         read_epoch,
@@ -3093,6 +3245,12 @@ fn relational_predicate_primary_key(
             RelationalPredicate::And(left, right) => {
                 pending.push(right);
                 pending.push(left);
+            }
+            RelationalPredicate::RowCompare {
+                fields,
+                op: RelationalComparisonOp::Eq,
+            } => {
+                pending.extend(fields.iter().rev().map(|field| &field.equality));
             }
             RelationalPredicate::Compare {
                 column,
@@ -3383,13 +3541,13 @@ fn collect_append_version_writes(
 fn record_live_version(writes: &mut VersionWriteSet, key: VersionKey) -> Result<()> {
     writes
         .record_live(key)
-        .map_err(|error| HawDBError::Execution(error.to_string()))
+        .map_err(HawDBError::from_execution_error)
 }
 
 fn record_tombstone_version(writes: &mut VersionWriteSet, key: VersionKey) -> Result<()> {
     writes
         .record_tombstone(key)
-        .map_err(|error| HawDBError::Execution(error.to_string()))
+        .map_err(HawDBError::from_execution_error)
 }
 
 fn map_relational_staging_error(error: RelationalError) -> HawDBError {
@@ -3397,6 +3555,7 @@ fn map_relational_staging_error(error: RelationalError) -> HawDBError {
         RelationalError::UnsupportedFormat(error) => HawDBError::UnsupportedStorageFormat(error),
         RelationalError::FileDescriptors(error) => HawDBError::FileDescriptors(error),
         RelationalError::Corruption(_) => HawDBError::StorageIntegrity(error.to_string()),
+        RelationalError::Stopped(reason) => HawDBError::RuntimeTaskStopped(reason),
         RelationalError::Admission(_)
         | RelationalError::Schema(_)
         | RelationalError::Constraint(_)
@@ -3406,6 +3565,10 @@ fn map_relational_staging_error(error: RelationalError) -> HawDBError {
 
 fn map_append_staging_error(error: hawdb_storage::append_table::AppendTableError) -> HawDBError {
     match error {
+        hawdb_storage::append_table::AppendTableError::Stopped(reason) => {
+            HawDBError::RuntimeTaskStopped(reason)
+        }
+        hawdb_storage::append_table::AppendTableError::PublishOutcomeUnknown(error) => *error,
         hawdb_storage::append_table::AppendTableError::SequenceExhausted {
             table,
             watermark,
@@ -3638,7 +3801,9 @@ mod tests {
                         indexes: vec![RelationalIndexSchema {
                             name: "declared_unique".into(),
                             columns: vec!["body".into()],
+                            included_columns: Vec::new(),
                             unique: true,
+                            predicate: None,
                         }],
                     })],
                 },
@@ -3779,7 +3944,9 @@ mod tests {
         schema.indexes.push(RelationalIndexSchema {
             name: "i".repeat(4096),
             columns: vec!["body".into()],
+            included_columns: Vec::new(),
             unique: true,
+            predicate: None,
         });
         store
             .commit_relational_transaction(

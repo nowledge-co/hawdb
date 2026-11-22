@@ -478,9 +478,9 @@
 {"kind": "Semantic", "sql": "COMMIT", "id": "generated-0477", "ast_sha256": null}
 {"kind": "Semantic", "sql": "-- lead\nCOMMIT", "id": "generated-0478", "ast_sha256": null}
 {"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nCOMMIT", "id": "generated-0479", "ast_sha256": null}
-{"kind": "Semantic", "sql": "WITH q AS (SELECT 1 AS a) SELECT a FROM q", "id": "generated-0480", "ast_sha256": null}
-{"kind": "Semantic", "sql": "-- lead\nWITH q AS (SELECT 1 AS a) SELECT a FROM q", "id": "generated-0481", "ast_sha256": null}
-{"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nWITH q AS (SELECT 1 AS a) SELECT a FROM q", "id": "generated-0482", "ast_sha256": null}
+{"kind": "accept", "sql": "WITH q AS (SELECT 1 AS a) SELECT a FROM q", "id": "generated-0480", "ast_sha256": "e9501387645792006b0cb7ded068c1431547478ac97fcf6a0ed5461fe3752307"}
+{"kind": "accept", "sql": "-- lead\nWITH q AS (SELECT 1 AS a) SELECT a FROM q", "id": "generated-0481", "ast_sha256": "8d0cdb3df55641fc7a7a6265a7db6c337c97faab14103f734e6a5c1e48e4dfef"}
+{"kind": "accept", "sql": "/* 知識 /* inner */ */\nWITH q AS (SELECT 1 AS a) SELECT a FROM q", "id": "generated-0482", "ast_sha256": "8d0cdb3df55641fc7a7a6265a7db6c337c97faab14103f734e6a5c1e48e4dfef"}
 {"kind": "Semantic", "sql": "SHOW TABLES", "id": "generated-0483", "ast_sha256": null}
 {"kind": "Semantic", "sql": "-- lead\nSHOW TABLES", "id": "generated-0484", "ast_sha256": null}
 {"kind": "Semantic", "sql": "/* 知識 /* inner */ */\nSHOW TABLES", "id": "generated-0485", "ast_sha256": null}

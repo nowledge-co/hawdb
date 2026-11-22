@@ -620,7 +620,10 @@ fn visit_native_units(
             ));
         }
         let mut name = [0_u16; 255];
-        for (slot, unit) in name.iter_mut().zip(bytes[12..12 + length].chunks_exact(2)) {
+        for (slot, unit) in name
+            .iter_mut()
+            .zip(bytes[12..12 + length].as_chunks::<2>().0.iter())
+        {
             *slot = u16::from_ne_bytes([unit[0], unit[1]]);
         }
         let name = &name[..length / 2];

@@ -17,10 +17,11 @@ use super::ordered_key::{
     ordered_relational_key_prefix_ends, OrderedRelationalKeyError,
 };
 use super::{
-    RelationalColumnDefault, RelationalError, RelationalForeignKeySchema, RelationalIndexRole,
-    RelationalKey, RelationalReferentialAction, RelationalScalarType, RelationalState,
-    RelationalTableSchema, RelationalValue, RELATIONAL_FOREIGN_KEY_INDEX_PREFIX,
-    RELATIONAL_PRIMARY_INDEX_NAME, RELATIONAL_UNIQUE_INDEX_PREFIX,
+    RelationalColumnDefault, RelationalComparisonOp, RelationalError, RelationalForeignKeySchema,
+    RelationalIndexRole, RelationalKey, RelationalPredicate, RelationalReferentialAction,
+    RelationalScalarType, RelationalState, RelationalTableSchema, RelationalValue,
+    RELATIONAL_FOREIGN_KEY_INDEX_PREFIX, RELATIONAL_PRIMARY_INDEX_NAME,
+    RELATIONAL_UNIQUE_INDEX_PREFIX,
 };
 use crate::cache::SegmentCacheIdentity;
 use crate::file_io::{self as fs, File, OpenOptions};
@@ -410,7 +411,7 @@ impl RelationalIndexShadowManifest {
             })?;
         memory
             .reserve(root_bytes, work)
-            .map_err(|error| RelationalIndexShadowError::Admission(error.to_string()))?;
+            .map_err(checkpoint::work_error)?;
         let mut roots = Vec::with_capacity(root_count);
         for _ in 0..root_count {
             let (namespace, next) = decode_bytes(
@@ -462,10 +463,12 @@ impl RelationalIndexShadowManifest {
             ] {
                 memory
                     .reserve(bytes, work)
-                    .map_err(|error| RelationalIndexShadowError::Admission(error.to_string()))?;
+                    .map_err(checkpoint::work_error)?;
             }
             let leading_prefixes = statistics_bytes
-                .chunks_exact(3 * 8)
+                .as_chunks::<{ 3 * 8 }>()
+                .0
+                .iter()
                 .map(|encoded| RelationalIndexPrefixStatistics {
                     distinct_non_null_values: read_u64(&encoded[..8]),
                     non_null_rows: read_u64(&encoded[8..16]),
@@ -762,6 +765,7 @@ pub struct RelationalIndexLiveUnavailable {
 #[derive(Debug)]
 pub enum RelationalIndexShadowError {
     Admission(String),
+    Stopped(hawdb_core::RuntimeCancellationReason),
     Corrupt(String),
     Durability(String),
     FileDescriptors(hawdb_core::error::FileDescriptorError),
@@ -781,6 +785,9 @@ impl fmt::Display for RelationalIndexShadowError {
         match self {
             Self::Admission(message) => {
                 write!(formatter, "relational index shadow admission failed: {message}")
+            }
+            Self::Stopped(reason) => {
+                write!(formatter, "relational index shadow stopped: {reason}")
             }
             Self::Corrupt(message) => write!(formatter, "corrupt relational index shadow: {message}"),
             Self::FileDescriptors(error) => fmt::Display::fmt(error, formatter),
@@ -805,6 +812,7 @@ impl fmt::Display for RelationalIndexShadowError {
 impl std::error::Error for RelationalIndexShadowError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Stopped(reason) => Some(reason),
             Self::FileDescriptors(error) => Some(error),
             Self::UnsupportedFormat(error) => Some(error),
             _ => None,
@@ -1345,9 +1353,7 @@ impl RelationalIndexShadowReader {
         ));
         let mut memory = crate::background::CheckpointAllocationOwner::default();
         let mut encoded_memory = crate::background::CheckpointAllocationOwner::default();
-        let wave = work
-            .io_wave()
-            .map_err(|error| RelationalIndexShadowError::Admission(error.to_string()))?;
+        let wave = work.io_wave().map_err(checkpoint::work_error)?;
         let length = fs::metadata(&manifest_path)
             .map_err(|error| {
                 RelationalIndexShadowError::from_io("read bound index manifest metadata", error)
@@ -1365,7 +1371,7 @@ impl RelationalIndexShadowReader {
         }
         encoded_memory
             .reserve(capacity, work)
-            .map_err(|error| RelationalIndexShadowError::Admission(error.to_string()))?;
+            .map_err(checkpoint::work_error)?;
         let mut encoded = vec![0; capacity];
         let mut file = File::open(&manifest_path).map_err(|error| {
             RelationalIndexShadowError::from_io("open bound index manifest", error)
@@ -1383,9 +1389,7 @@ impl RelationalIndexShadowReader {
             ));
         }
         drop(wave);
-        let digest = work
-            .integrity(&encoded)
-            .map_err(|error| RelationalIndexShadowError::Admission(error.to_string()))?;
+        let digest = work.integrity(&encoded).map_err(checkpoint::work_error)?;
         if encoded.len() as u64 != binding.manifest_artifact.encoded_len
             || digest.crc32c.as_u64() != binding.manifest_artifact.encoded_crc32c
             || digest.sha256 != binding.manifest_artifact.encoded_sha256
@@ -1428,7 +1432,7 @@ impl RelationalIndexShadowReader {
         ] {
             memory
                 .reserve(bytes, work)
-                .map_err(|error| RelationalIndexShadowError::Admission(error.to_string()))?;
+                .map_err(checkpoint::work_error)?;
         }
         let mut reader = Self::from_manifest(directory, manifest, config, page_cache, store_id)?;
         reader._memory = memory;
@@ -1559,15 +1563,19 @@ impl RelationalIndexShadowReader {
         &self,
         state: &RelationalState,
     ) -> Result<(), RelationalIndexShadowError> {
-        let expected =
-            required_logical_roots(state, self.config.max_roots.get(), ErrorClass::Admission)?;
-        let matches = borrowed_logical_roots(&self.manifest.roots)
+        let expected = required_logical_roots(
+            state,
+            &self.manifest,
+            self.config.max_roots.get(),
+            ErrorClass::Admission,
+        )?;
+        let roots_match = borrowed_logical_roots(&self.manifest.roots)
             .eq(expected.iter().map(RootDigestEntry::from_logical));
         let expected_catalog = catalog_schema_digest(&expected, ErrorClass::Corrupt)?;
         let expected_root_set = root_set_digest(&expected);
         if self.manifest.catalog_schema_digest != expected_catalog
             || self.manifest.root_set_digest != expected_root_set
-            || !matches
+            || !roots_match
         {
             return Err(RelationalIndexShadowError::Corrupt(format!(
                 "required relational index roots do not match the pinned schema: expected {} roots with catalog/root-set {}/{}, found {} roots with {}/{}",
@@ -1965,9 +1973,9 @@ impl LeadingPrefixStatisticsBuilder {
         }
         let leading_non_null =
             ordered_relational_key_prefix_ends(key, &mut self.current_prefix_ends)?;
-        if self.current_prefix_ends.len() != self.statistics.len() {
+        if self.current_prefix_ends.len() < self.statistics.len() {
             return Err(RelationalIndexShadowError::Corrupt(format!(
-                "relational index key contains {} values, expected {}",
+                "relational index key contains {} values, expected at least {}",
                 self.current_prefix_ends.len(),
                 self.statistics.len()
             )));
@@ -2483,6 +2491,40 @@ fn encode_relational_key(key: &RelationalKey) -> Result<Vec<u8>, RelationalIndex
 pub(super) fn relational_schema_digest(
     schema: &RelationalTableSchema,
 ) -> Result<Sha256Digest, RelationalIndexShadowError> {
+    digest_with_include_metadata(schema, true)
+}
+
+/// Before covering indexes, a declared index had no INCLUDE count in its
+/// schema digest. Try that exact encoding only for a schema it can describe.
+pub(crate) fn schema_digest_for_binding(
+    schema: &RelationalTableSchema,
+    recorded: Option<Sha256Digest>,
+    work: Option<&crate::background::CheckpointWorkContext>,
+) -> Result<Sha256Digest, RelationalIndexShadowError> {
+    let digest = |include_metadata| match work {
+        Some(work) => checkpoint::digest_with_include_metadata(schema, work, include_metadata),
+        None => digest_with_include_metadata(schema, include_metadata),
+    };
+    let current = digest(true)?;
+    if recorded.is_some_and(|old| old != current)
+        && !schema.indexes.is_empty()
+        && schema
+            .indexes
+            .iter()
+            .all(|index| index.included_columns.is_empty())
+    {
+        let legacy = digest(false)?;
+        if recorded == Some(legacy) {
+            return Ok(legacy);
+        }
+    }
+    Ok(current)
+}
+
+fn digest_with_include_metadata(
+    schema: &RelationalTableSchema,
+    include_metadata: bool,
+) -> Result<Sha256Digest, RelationalIndexShadowError> {
     let mut encoded = Vec::new();
     encode_bytes(&mut encoded, schema.name.as_bytes())?;
     encode_count(&mut encoded, schema.columns.len(), "columns")?;
@@ -2536,9 +2578,60 @@ pub(super) fn relational_schema_digest(
     for index in &schema.indexes {
         encode_bytes(&mut encoded, index.name.as_bytes())?;
         encode_string_list(&mut encoded, &index.columns)?;
+        if include_metadata {
+            encode_string_list(&mut encoded, &index.included_columns)?;
+        }
         encoded.push(u8::from(index.unique));
+        if let Some(predicate) = &index.predicate {
+            // Preserve the pre-partial-index digest byte-for-byte for schemas
+            // containing only full indexes. This lets legacy row-page and
+            // bound index generations verify against the same schema identity.
+            encoded.push(1);
+            encode_index_predicate(&mut encoded, predicate)?;
+        }
     }
     Ok(integrity_digest(&encoded).sha256)
+}
+
+fn encode_index_predicate(
+    encoded: &mut Vec<u8>,
+    predicate: &RelationalPredicate,
+) -> Result<(), RelationalIndexShadowError> {
+    match predicate {
+        RelationalPredicate::And(left, right) | RelationalPredicate::Or(left, right) => {
+            encoded.push(u8::from(matches!(predicate, RelationalPredicate::Or(..))));
+            encode_index_predicate(encoded, left)?;
+            encode_index_predicate(encoded, right)
+        }
+        RelationalPredicate::Not(predicate) => {
+            encoded.push(2);
+            encode_index_predicate(encoded, predicate)
+        }
+        RelationalPredicate::Compare { column, op, value } => {
+            encoded.push(3);
+            encode_bytes(encoded, column.as_bytes())?;
+            encoded.push(match op {
+                RelationalComparisonOp::Eq => 0,
+                RelationalComparisonOp::NotEq => 1,
+                RelationalComparisonOp::Lt => 2,
+                RelationalComparisonOp::Lte => 3,
+                RelationalComparisonOp::Gt => 4,
+                RelationalComparisonOp::Gte => 5,
+            });
+            encode_ordered_relational_value(encoded, value).map_err(Into::into)
+        }
+        RelationalPredicate::IsNull { column, negated } => {
+            encoded.push(4);
+            encode_bytes(encoded, column.as_bytes())?;
+            encoded.push(u8::from(*negated));
+            Ok(())
+        }
+        RelationalPredicate::RowCompare { .. }
+        | RelationalPredicate::NumericCompare { .. }
+        | RelationalPredicate::NumericIsNull { .. } => Err(RelationalIndexShadowError::Admission(
+            "partial-index schema contains an unsupported predicate".into(),
+        )),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2581,16 +2674,21 @@ fn borrowed_logical_roots(
 
 fn required_logical_roots(
     state: &RelationalState,
+    manifest: &RelationalIndexShadowManifest,
     max_roots: usize,
     error_class: ErrorClass,
 ) -> Result<Vec<RelationalIndexLogicalRoot>, RelationalIndexShadowError> {
     let expected_count = required_root_count(state, max_roots, error_class)?;
     let mut roots = Vec::with_capacity(expected_count);
     for (table, schema) in &state.schemas {
-        let schema_digest = relational_schema_digest(schema)?;
+        let definitions = schema.required_index_definitions();
+        let recorded = definitions
+            .first()
+            .and_then(|definition| manifest.root(table, &definition.name))
+            .map(|root| root.schema_digest);
+        let schema_digest = schema_digest_for_binding(schema, recorded, None)?;
         roots.extend(
-            schema
-                .required_index_definitions()
+            definitions
                 .into_iter()
                 .map(|definition| RelationalIndexLogicalRoot {
                     identity: IndexIdentity {

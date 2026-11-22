@@ -67,9 +67,10 @@ pub use read_profile::{
 // These are internal ownership seams. Hosts continue to use the embedded facade.
 #[doc(hidden)]
 pub use statement::{
-    compile_prepared_relational_statement_with_result, compile_relational_statement_sql,
-    compile_relational_statement_sql_with_result, CompiledRelationalStatement,
-    RelationalReturningProjection,
+    compile_prepared_data_modifying_cte_query, compile_prepared_relational_statement_with_result,
+    compile_relational_statement_sql, compile_relational_statement_sql_with_result,
+    materialize_data_modifying_ctes, CompiledDataModifyingCteQuery, CompiledRelationalStatement,
+    RelationalDataModifyingCte, RelationalReturningProjection,
 };
 
 #[doc(hidden)]
@@ -370,15 +371,15 @@ pub fn coerce_relational_value(
             let micros = match value {
                 RelationalValue::Text(text) => kind.convert(&Value::String(text))?,
                 RelationalValue::Timestamp(micros) | RelationalValue::TimestampTz(micros) => {
-                    Some(precision.round(micros)?)
+                    Some(precision.round(micros.get())?)
                 }
                 _ => unreachable!("matched timestamp assignment operand"),
             }
             .expect("non-NULL timestamp assignment");
             Ok(if kind.zoned {
-                RelationalValue::TimestampTz(micros)
+                RelationalValue::TimestampTz(micros.into())
             } else {
-                RelationalValue::Timestamp(micros)
+                RelationalValue::Timestamp(micros.into())
             })
         }
         (_, value) => Ok(value),

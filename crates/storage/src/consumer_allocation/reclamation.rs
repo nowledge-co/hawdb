@@ -148,8 +148,7 @@ impl ConsumerCleanupRequest {
             report.next_after = names.last().cloned();
         }
         for name in names {
-            task.checkpoint()
-                .map_err(|e| HawDBError::Execution(e.to_string()))?;
+            task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
             if report.delete_attempts >= options.max_delete_attempts.get() {
                 report.progress_limited = true;
                 // Restart to revisit this unattempted entry; never skip work.
@@ -327,8 +326,7 @@ impl ConsumerCleanupRequest {
             .sync_all()?;
         parent.sync(&context)?;
         for child in children {
-            task.checkpoint()
-                .map_err(|e| HawDBError::Execution(e.to_string()))?;
+            task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
             if report.delete_attempts >= options.max_delete_attempts.get() {
                 directory.sync(&context)?;
                 report.progress_limited = true;

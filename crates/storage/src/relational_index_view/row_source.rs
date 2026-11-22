@@ -135,7 +135,7 @@ pub fn map_index_row_snapshot_error(
             RelationalIndexShadowError::Admission(message)
         }
         RelationalRowPageSnapshotReadError::Stopped(reason) => {
-            RelationalIndexShadowError::Admission(reason.to_string())
+            RelationalIndexShadowError::Stopped(reason)
         }
         RelationalRowPageSnapshotReadError::MissingTable(table) => {
             RelationalIndexShadowError::Corrupt(format!(

@@ -29,7 +29,10 @@ pub(super) fn parse(input: &str) -> Result<SqlStatement> {
             next = syntax::first_token(&input[offset..])
                 .map_err(|error| HawDBError::Parse(error.to_string()))?;
         }
-        if !next.is_keyword(&input[offset..], "SELECT") {
+        if !next.is_keyword(&input[offset..], "SELECT")
+            && !next.is_keyword(&input[offset..], "WITH")
+            && !next.is_keyword(&input[offset..], "VALUES")
+        {
             return Err(HawDBError::Semantic(
                 if ["UPDATE", "DELETE", "INSERT", "CREATE", "ALTER", "DROP"]
                     .iter()
@@ -53,10 +56,26 @@ pub(super) fn parse(input: &str) -> Result<SqlStatement> {
     let lowerer = Lowerer::new(input);
     match statement {
         syntax::RelationalStatementSyntax::Select(select) => lowerer.select(&select),
-        syntax::RelationalStatementSyntax::Explain { analyze, select } => {
+        syntax::RelationalStatementSyntax::Query(query) => {
+            Ok(SqlStatement::Query(lowerer.query(&query)?))
+        }
+        syntax::RelationalStatementSyntax::Explain { analyze, query } => {
+            let query = lowerer.query(&query)?;
+            let has_subquery_predicate = matches!(
+                &query.body,
+                SqlQueryBody::Select(select) if select.subquery_predicate.is_some()
+            );
+            let statement = if has_subquery_predicate {
+                SqlStatement::Query(query)
+            } else {
+                match query.into_simple_select() {
+                    Ok(select) => SqlStatement::Select(select),
+                    Err(query) => SqlStatement::Query(*query),
+                }
+            };
             Ok(SqlStatement::Explain(SqlExplainStatement {
                 analyze,
-                statement: Box::new(lowerer.select(&select)?),
+                statement: Box::new(statement),
             }))
         }
     }
@@ -133,28 +152,204 @@ impl<'a> Lowerer<'a> {
     fn relation(
         &self,
         item: &syntax::PostgresFromItemSyntax,
-    ) -> Result<(SqlTableName, Option<String>)> {
-        let syntax::PostgresFromItemSyntax::Relation(relation) = item else {
-            return Err(HawDBError::Semantic(
+    ) -> Result<(
+        SqlTableName,
+        Option<String>,
+        Option<SqlCommonTableExpression>,
+    )> {
+        match item {
+            syntax::PostgresFromItemSyntax::Relation(relation) => {
+                let alias = relation
+                    .alias
+                    .as_ref()
+                    .map(|alias| {
+                        if !alias.columns.is_empty() {
+                            return Err(HawDBError::Semantic(
+                                "PostgreSQL base-table column aliases are not supported".into(),
+                            ));
+                        }
+                        Ok(self.ident(&alias.name))
+                    })
+                    .transpose()?;
+                Ok((self.name(&relation.name)?, alias, None))
+            }
+            syntax::PostgresFromItemSyntax::Derived(derived) => {
+                // Keep derived-table materialization in an internal namespace
+                // that no SQL identifier can spell, including a quoted one.
+                // The suffix remains source-stable for diagnostics and plans.
+                let internal_name = format!(
+                    "\0hawdb_derived_{}_{}",
+                    derived.span.start, derived.span.end
+                );
+                let alias = self.ident(&derived.alias.name);
+                let columns = derived
+                    .alias
+                    .columns
+                    .iter()
+                    .map(|column| self.ident(column))
+                    .collect();
+                Ok((
+                    SqlTableName {
+                        schema: None,
+                        name: internal_name.clone(),
+                    },
+                    Some(alias),
+                    Some(SqlCommonTableExpression {
+                        name: internal_name,
+                        columns,
+                        body: SqlCommonTableExpressionBody::Query(Box::new(
+                            self.query(&derived.query)?,
+                        )),
+                    }),
+                ))
+            }
+            syntax::PostgresFromItemSyntax::GraphTable(_) => Err(HawDBError::Semantic(
                 "GRAPH_TABLE execution is not qualified".into(),
-            ));
-        };
-        let alias = relation
-            .alias
-            .as_ref()
-            .map(|alias| {
-                if !alias.columns.is_empty() {
-                    return Err(HawDBError::Semantic(
-                        "PostgreSQL table column aliases are not supported".into(),
-                    ));
-                }
-                Ok(self.ident(&alias.name))
-            })
-            .transpose()?;
-        Ok((self.name(&relation.name)?, alias))
+            )),
+        }
     }
 
     pub(super) fn select(&self, select: &syntax::PostgresSelectSyntax) -> Result<SqlStatement> {
+        let (select, with) = self.select_statement(select)?;
+        if with.is_empty() && select.subquery_predicate.is_none() {
+            Ok(SqlStatement::Select(select))
+        } else {
+            Ok(SqlStatement::Query(SqlQueryStatement {
+                recursive: false,
+                with,
+                body: SqlQueryBody::Select(Box::new(select)),
+                order_by: Vec::new(),
+                limit: None,
+                offset: None,
+                lock_strength: None,
+            }))
+        }
+    }
+
+    fn query(&self, query: &syntax::PostgresQuerySyntax) -> Result<SqlQueryStatement> {
+        if query.locking.as_ref().is_some_and(|lock| lock.nonblocking) {
+            return Err(HawDBError::Semantic(
+                "FOR UPDATE/SHARE OF, NOWAIT, and SKIP LOCKED are not supported".into(),
+            ));
+        }
+        let mut with = query
+            .with
+            .iter()
+            .map(|cte| {
+                let name = self.ident(&cte.name);
+                let columns = cte
+                    .columns
+                    .iter()
+                    .map(|column| self.ident(column))
+                    .collect();
+                Ok(SqlCommonTableExpression {
+                    name,
+                    columns,
+                    body: SqlCommonTableExpressionBody::Query(Box::new(self.query(&cte.query)?)),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let (body, derived) = self.query_body(&query.body)?;
+        with.extend(derived);
+        Ok(SqlQueryStatement {
+            recursive: query.recursive,
+            with,
+            body,
+            order_by: query
+                .order_by
+                .iter()
+                .map(|item| self.order_item(item))
+                .collect::<Result<_>>()?,
+            limit: query
+                .limit
+                .as_ref()
+                .map(|expr| self.bound(expr))
+                .transpose()?,
+            offset: query
+                .offset
+                .as_ref()
+                .map(|expr| self.bound(expr))
+                .transpose()?,
+            lock_strength: query.locking.as_ref().map(|lock| match lock.strength {
+                syntax::LockStrengthSyntax::Share => SqlLockStrength::Share,
+                syntax::LockStrengthSyntax::Update => SqlLockStrength::Update,
+            }),
+        })
+    }
+
+    fn query_body(
+        &self,
+        body: &syntax::PostgresQueryBodySyntax,
+    ) -> Result<(SqlQueryBody, Vec<SqlCommonTableExpression>)> {
+        Ok(match body {
+            syntax::PostgresQueryBodySyntax::Select(select) => {
+                let (select, derived) = self.select_statement(select)?;
+                (SqlQueryBody::Select(Box::new(select)), derived)
+            }
+            syntax::PostgresQueryBodySyntax::Values { rows, .. } => (
+                SqlQueryBody::Values(
+                    rows.iter()
+                        .map(|row| {
+                            row.iter()
+                                .map(|expression| {
+                                    self.lower(expression, ExpressionPosition::Scalar)
+                                })
+                                .collect::<Result<Vec<_>>>()
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                ),
+                Vec::new(),
+            ),
+            syntax::PostgresQueryBodySyntax::Nested(query) => (
+                SqlQueryBody::Nested(Box::new(self.query(query)?)),
+                Vec::new(),
+            ),
+            syntax::PostgresQueryBodySyntax::SetOperation {
+                left,
+                operator,
+                all,
+                right,
+                ..
+            } => {
+                let (left, mut derived) = self.query_body(left)?;
+                let (right, right_derived) = self.query_body(right)?;
+                derived.extend(right_derived);
+                (
+                    SqlQueryBody::SetOperation {
+                        left: Box::new(left),
+                        operator: match operator {
+                            syntax::PostgresSetOperator::Union => SqlSetOperator::Union,
+                            syntax::PostgresSetOperator::Intersect => SqlSetOperator::Intersect,
+                            syntax::PostgresSetOperator::Except => SqlSetOperator::Except,
+                        },
+                        all: *all,
+                        right: Box::new(right),
+                    },
+                    derived,
+                )
+            }
+        })
+    }
+
+    fn order_item(&self, item: &syntax::OrderBySyntax) -> Result<SqlOrderItem> {
+        Ok(SqlOrderItem {
+            expression: self.lower(&item.expression, ExpressionPosition::Column)?,
+            direction: match item.direction {
+                Some(syntax::OrderDirectionSyntax::Descending) => SqlOrderDirection::Desc,
+                _ => SqlOrderDirection::Asc,
+            },
+            nulls: match item.nulls {
+                Some(syntax::NullOrderSyntax::First) => SqlNullOrder::First,
+                Some(syntax::NullOrderSyntax::Last) => SqlNullOrder::Last,
+                None => SqlNullOrder::DialectDefault,
+            },
+        })
+    }
+
+    fn select_statement(
+        &self,
+        select: &syntax::PostgresSelectSyntax,
+    ) -> Result<(SelectStatement, Vec<SqlCommonTableExpression>)> {
         if select.locking.as_ref().is_some_and(|lock| lock.nonblocking) {
             return Err(HawDBError::Semantic(
                 "FOR UPDATE/SHARE OF, NOWAIT, and SKIP LOCKED are not supported".into(),
@@ -191,6 +386,7 @@ impl<'a> Lowerer<'a> {
         }
         let mut joins = Vec::new();
         let mut base = None;
+        let mut derived = Vec::new();
         for (index, from) in select.from.iter().enumerate() {
             if index > 0
                 && matches!(&from.relation, syntax::PostgresFromItemSyntax::Relation(relation) if relation.arguments.is_some())
@@ -199,16 +395,17 @@ impl<'a> Lowerer<'a> {
                     "PostgreSQL relational SQL supports base tables only".into(),
                 ));
             }
-            let relation = self.relation(&from.relation)?;
+            let (table, alias, derived_table) = self.relation(&from.relation)?;
+            derived.extend(derived_table);
             let scope = if index == 0 {
-                base = Some(relation);
+                base = Some((table, alias));
                 0
             } else {
                 let scope = joins.len() + 1;
                 joins.push(SqlJoin {
                     kind: SqlJoinKind::Inner,
-                    table: relation.0,
-                    alias: relation.1,
+                    table,
+                    alias,
                     on: crate::Expr::value(SqlValue::Literal(Value::Bool(true))),
                     on_scope_start: scope,
                 });
@@ -221,7 +418,8 @@ impl<'a> Lowerer<'a> {
                         "PostgreSQL relational SQL supports base tables only".into(),
                     ));
                 }
-                let (table, alias) = self.relation(&join.relation)?;
+                let (table, alias, derived_table) = self.relation(&join.relation)?;
+                derived.extend(derived_table);
                 joins.push(SqlJoin {
                     kind: match join.kind {
                         syntax::PostgresJoinKind::Left => SqlJoinKind::Left,
@@ -241,6 +439,18 @@ impl<'a> Lowerer<'a> {
                 });
             }
         }
+        let (selection, subquery_predicate) = match select.selection.as_ref() {
+            Some(expression) if self.contains_subquery(expression) => {
+                let predicate = self.subquery_predicate(expression)?;
+                let selection = self.pushdown_predicate(&predicate);
+                (selection, Some(Box::new(predicate)))
+            }
+            Some(expression) => (
+                Some(self.lower(expression, ExpressionPosition::Predicate)?),
+                None,
+            ),
+            None => (None, None),
+        };
         let statement = SelectStatement {
             table_function,
             projection,
@@ -248,11 +458,8 @@ impl<'a> Lowerer<'a> {
             from: base.as_ref().map(|base| base.0.clone()),
             from_alias: base.and_then(|base| base.1),
             joins,
-            selection: select
-                .selection
-                .as_ref()
-                .map(|expr| self.lower(expr, ExpressionPosition::Predicate))
-                .transpose()?,
+            selection,
+            subquery_predicate,
             group_by: select
                 .group_by
                 .iter()
@@ -266,22 +473,7 @@ impl<'a> Lowerer<'a> {
             order_by: select
                 .order_by
                 .iter()
-                .map(|item| {
-                    Ok(SqlOrderItem {
-                        expression: self.lower(&item.expression, ExpressionPosition::Column)?,
-                        direction: match item.direction {
-                            Some(syntax::OrderDirectionSyntax::Descending) => {
-                                SqlOrderDirection::Desc
-                            }
-                            _ => SqlOrderDirection::Asc,
-                        },
-                        nulls: match item.nulls {
-                            Some(syntax::NullOrderSyntax::First) => SqlNullOrder::First,
-                            Some(syntax::NullOrderSyntax::Last) => SqlNullOrder::Last,
-                            None => SqlNullOrder::DialectDefault,
-                        },
-                    })
-                })
+                .map(|item| self.order_item(item))
                 .collect::<Result<_>>()?,
             limit: select
                 .limit
@@ -300,6 +492,7 @@ impl<'a> Lowerer<'a> {
         };
         if statement.from.is_none()
             && (statement.selection.is_some()
+                || statement.subquery_predicate.is_some()
                 || !statement.group_by.is_empty()
                 || statement.having.is_some()
                 || !statement.order_by.is_empty()
@@ -309,13 +502,227 @@ impl<'a> Lowerer<'a> {
         {
             return Err(HawDBError::Semantic("PostgreSQL SELECT without FROM does not support WHERE, GROUP BY, HAVING, ORDER BY, LIMIT, OFFSET, or locking clauses".into()));
         }
-        Ok(SqlStatement::Select(statement))
+        Ok((statement, derived))
+    }
+
+    fn contains_subquery(&self, expression: &syntax::ExpressionSyntax) -> bool {
+        use syntax::ExpressionKindSyntax as E;
+        match &expression.kind {
+            E::Exists { .. } | E::InSubquery { .. } => true,
+            E::Unary { expression, .. }
+            | E::IsNull { expression, .. }
+            | E::Cast { expression, .. }
+            | E::Collate { expression, .. }
+            | E::Parenthesized(expression) => self.contains_subquery(expression),
+            E::Binary { left, right, .. } => {
+                self.contains_subquery(left) || self.contains_subquery(right)
+            }
+            E::Like {
+                expression,
+                pattern,
+                escape,
+                ..
+            } => {
+                self.contains_subquery(expression)
+                    || self.contains_subquery(pattern)
+                    || escape
+                        .as_deref()
+                        .is_some_and(|escape| self.contains_subquery(escape))
+            }
+            E::Filtered {
+                function,
+                predicate,
+            } => self.contains_subquery(function) || self.contains_subquery(predicate),
+            E::InList {
+                expression, values, ..
+            } => {
+                self.contains_subquery(expression)
+                    || values.iter().any(|value| self.contains_subquery(value))
+            }
+            E::Row(fields) => fields.iter().any(|field| self.contains_subquery(field)),
+            E::Between {
+                expression,
+                low,
+                high,
+                ..
+            } => {
+                self.contains_subquery(expression)
+                    || self.contains_subquery(low)
+                    || self.contains_subquery(high)
+            }
+            E::Function { arguments, .. } => arguments
+                .iter()
+                .any(|argument| self.contains_subquery(argument)),
+            E::Column(_)
+            | E::Wildcard(_)
+            | E::Parameter(_)
+            | E::Literal(_)
+            | E::TypedString { .. } => false,
+        }
+    }
+
+    fn subquery_predicate(
+        &self,
+        expression: &syntax::ExpressionSyntax,
+    ) -> Result<SqlSubqueryPredicate> {
+        use syntax::{
+            BinaryOperatorSyntax as B, ExpressionKindSyntax as E, UnaryOperatorSyntax as U,
+        };
+        Ok(match &expression.kind {
+            E::Parenthesized(inner) => self.subquery_predicate(inner)?,
+            E::Unary {
+                operator: U::Not,
+                expression: inner,
+            } if self.contains_subquery(inner) => {
+                SqlSubqueryPredicate::Not(Box::new(self.subquery_predicate(inner)?))
+            }
+            E::Binary {
+                left,
+                operator: B::And,
+                right,
+            } => SqlSubqueryPredicate::And(
+                Box::new(self.subquery_predicate(left)?),
+                Box::new(self.subquery_predicate(right)?),
+            ),
+            E::Binary {
+                left,
+                operator: B::Or,
+                right,
+            } => SqlSubqueryPredicate::Or(
+                Box::new(self.subquery_predicate(left)?),
+                Box::new(self.subquery_predicate(right)?),
+            ),
+            E::Exists { query } => SqlSubqueryPredicate::Exists {
+                query: Box::new(self.query(query)?),
+            },
+            E::InSubquery {
+                expression: left,
+                query,
+                negated,
+            } => {
+                let fields = match &left.kind {
+                    E::Row(fields) => fields.as_slice(),
+                    E::Parenthesized(inner) => match &inner.kind {
+                        E::Row(fields) => fields.as_slice(),
+                        _ => std::slice::from_ref(inner.as_ref()),
+                    },
+                    _ => std::slice::from_ref(left.as_ref()),
+                };
+                SqlSubqueryPredicate::In {
+                    left: fields
+                        .iter()
+                        .map(|field| self.lower(field, ExpressionPosition::PredicateScalar))
+                        .collect::<Result<Vec<_>>>()?,
+                    query: Box::new(self.query(query)?),
+                    negated: *negated,
+                }
+            }
+            _ if self.contains_subquery(expression) => {
+                return Err(HawDBError::Semantic(
+                    "subqueries are supported only as EXISTS or IN predicates combined with AND, OR, and NOT"
+                        .into(),
+                ));
+            }
+            _ => {
+                SqlSubqueryPredicate::Scalar(self.lower(expression, ExpressionPosition::Predicate)?)
+            }
+        })
+    }
+
+    fn pushdown_predicate(&self, predicate: &SqlSubqueryPredicate) -> Option<SqlPredicate> {
+        match predicate {
+            SqlSubqueryPredicate::Scalar(predicate) => Some(predicate.clone()),
+            SqlSubqueryPredicate::And(left, right) => {
+                match (
+                    self.pushdown_predicate(left),
+                    self.pushdown_predicate(right),
+                ) {
+                    (Some(left), Some(right)) => Some(crate::Expr::unspanned(ExprKind::And(
+                        Box::new(left),
+                        Box::new(right),
+                    ))),
+                    (Some(predicate), None) | (None, Some(predicate)) => Some(predicate),
+                    (None, None) => None,
+                }
+            }
+            SqlSubqueryPredicate::Or(_, _)
+            | SqlSubqueryPredicate::Not(_)
+            | SqlSubqueryPredicate::Exists { .. }
+            | SqlSubqueryPredicate::In { .. } => None,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn values_derived_tables_and_subqueries_lower_into_owned_query_ir() {
+        let prepared = crate::prepare_postgres_sql(
+            "SELECT input.id FROM (VALUES ($1), ($2)) input(id) \
+             WHERE input.id IN (SELECT id FROM numbers WHERE n = $3) \
+                OR EXISTS (SELECT 1 FROM numbers WHERE id = input.id)",
+        )
+        .unwrap();
+        assert_eq!(
+            prepared
+                .parameters
+                .iter()
+                .map(|parameter| parameter.position)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        let SqlStatement::Query(query) = prepared.statement else {
+            panic!("derived-table subquery must use statement-scoped query IR");
+        };
+        assert_eq!(query.with.len(), 1);
+        assert!(query.with[0].name.starts_with("\0hawdb_derived_"));
+        let SqlQueryBody::Select(select) = query.body else {
+            panic!("outer query must remain a SELECT");
+        };
+        assert!(matches!(
+            select.subquery_predicate.as_deref(),
+            Some(SqlSubqueryPredicate::Or(left, right))
+                if matches!(left.as_ref(), SqlSubqueryPredicate::In { .. })
+                    && matches!(right.as_ref(), SqlSubqueryPredicate::Exists { .. })
+        ));
+    }
+
+    #[test]
+    fn recursive_cte_union_and_parameters_lower_into_owned_query_ir() {
+        let prepared = crate::prepare_postgres_sql(
+            "WITH RECURSIVE walk(id) AS (\
+                 VALUES ($1) UNION ALL SELECT id + $2 FROM walk WHERE id < $3\
+             ) SELECT id FROM walk",
+        )
+        .unwrap();
+        assert_eq!(
+            prepared
+                .parameters
+                .iter()
+                .map(|parameter| parameter.position)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        let SqlStatement::Query(query) = prepared.statement else {
+            panic!("recursive query");
+        };
+        assert!(query.recursive);
+        assert_eq!(query.with.len(), 1);
+        let SqlCommonTableExpressionBody::Query(cte) = &query.with[0].body else {
+            panic!("query CTE");
+        };
+        assert!(matches!(
+            cte.body,
+            SqlQueryBody::SetOperation {
+                operator: SqlSetOperator::Union,
+                all: true,
+                ..
+            }
+        ));
+    }
+
     #[test]
     fn non_select_statement_bodies_preserve_independent_input_limits() {
         let payload = "x".repeat(syntax::LexerConfig::default().max_input_bytes + 1);
@@ -528,30 +935,104 @@ mod peg_baseline {
         assert_eq!(count, 1005);
     }
 
+    #[test]
+    fn frozen_main_1873_covering_index_transitions_are_source_bound() {
+        let mut count = 0;
+        for line in
+            include_str!("../../fixtures/frontend_main_1873_covering_index_peg_baseline_v1.jsonl")
+                .lines()
+        {
+            let expected: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert_eq!(
+                expected["source_commit"],
+                "058085fa2d67cad32cdb47116226e7a0bf5a545d"
+            );
+            assert_case(expected["sql"].as_str().unwrap(), &expected);
+            count += 1;
+        }
+        assert_eq!(count, 15);
+    }
+
+    #[test]
+    fn frozen_main_1872_partial_index_transitions_are_source_bound() {
+        let mut count = 0;
+        for line in
+            include_str!("../../fixtures/frontend_main_1872_partial_index_peg_baseline_v1.jsonl")
+                .lines()
+        {
+            let expected: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert_eq!(
+                expected["source_commit"],
+                "ebc2c9c4aa2eb737d785876eefed14432e82f0ed"
+            );
+            assert_case(expected["sql"].as_str().unwrap(), &expected);
+            count += 1;
+        }
+        assert_eq!(count, 16);
+    }
+
+    #[test]
+    fn frozen_main_1862_mutation_returning_transitions_are_source_bound() {
+        let mut count = 0;
+        for line in include_str!(
+            "../../fixtures/frontend_main_1862_mutation_returning_peg_baseline_v1.jsonl"
+        )
+        .lines()
+        {
+            let expected: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert_eq!(
+                expected["source_commit"],
+                "258fd7ac543680ef1909e225383ab796809a244a"
+            );
+            assert_case(expected["sql"].as_str().unwrap(), &expected);
+            count += 1;
+        }
+        assert_eq!(count, 6);
+    }
+
     pub(super) fn assert_case(input: &str, expected: &serde_json::Value) {
         use std::sync::OnceLock;
-        static TRANSITIONS: OnceLock<std::collections::BTreeMap<String, serde_json::Value>> =
-            OnceLock::new();
+        type Transitions = std::collections::BTreeMap<String, Vec<serde_json::Value>>;
+        static TRANSITIONS: OnceLock<Transitions> = OnceLock::new();
         let transitions = TRANSITIONS.get_or_init(|| {
-            include_str!("../../fixtures/frontend_main_1514_numeric_peg_baseline_v1.jsonl")
-                .lines()
-                .map(|line| {
-                    let case: serde_json::Value = serde_json::from_str(line).unwrap();
-                    (case["sql"].as_str().unwrap().to_owned(), case)
-                })
-                .collect()
-        });
-        let expected = if let Some(current) = transitions.get(input) {
-            if current["kind"] != expected["kind"]
-                || current["ast_sha256"] != expected["ast_sha256"]
+            let mut transitions = Transitions::new();
+            for line in [
+                include_str!("../../fixtures/frontend_main_1514_numeric_peg_baseline_v1.jsonl"),
+                include_str!(
+                    "../../fixtures/frontend_main_1873_covering_index_peg_baseline_v1.jsonl"
+                ),
+                include_str!(
+                    "../../fixtures/frontend_main_1872_partial_index_peg_baseline_v1.jsonl"
+                ),
+                include_str!(
+                    "../../fixtures/frontend_main_1862_mutation_returning_peg_baseline_v1.jsonl"
+                ),
+            ]
+            .into_iter()
+            .flat_map(str::lines)
             {
-                assert_eq!(current["previous_kind"], expected["kind"], "{input}");
-                assert_eq!(
-                    current["previous_ast_sha256"], expected["ast_sha256"],
-                    "{input}"
-                );
+                let case: serde_json::Value = serde_json::from_str(line).unwrap();
+                let input = case["sql"].as_str().unwrap();
+                let history = transitions.entry(input.to_owned()).or_default();
+                if let Some(prior) = history.last() {
+                    assert_eq!(case["previous_kind"], prior["kind"], "{input}");
+                    assert_eq!(case["previous_ast_sha256"], prior["ast_sha256"], "{input}");
+                }
+                history.push(case);
             }
-            current
+            transitions
+        });
+        let expected = if let Some(history) = transitions.get(input) {
+            assert!(
+                history.iter().any(|step| {
+                    (step["previous_kind"] == expected["kind"]
+                        && step["previous_ast_sha256"] == expected["ast_sha256"])
+                        || (step["kind"] == expected["kind"]
+                            && step["ast_sha256"] == expected["ast_sha256"])
+                }),
+                "unrecognized baseline for {input}"
+            );
+            history.last().unwrap()
         } else {
             expected
         };

@@ -68,7 +68,7 @@ jobs:
       - name: Check current advisories and licenses
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          rust-version: "1.97.1"
+          rust-version: "1.99.1"
           command: check advisories licenses
 
   vector-kernel-sanitizer:
@@ -108,7 +108,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@1.97.1
+        uses: dtolnay/rust-toolchain@1.99.1
 
       - name: Run admitted mixed workload
         id: soak
@@ -180,7 +180,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@1.97.1
+        uses: dtolnay/rust-toolchain@1.99.1
 
       - name: Capture benchmark evidence
         shell: bash
@@ -228,7 +228,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@1.97.1
+        uses: dtolnay/rust-toolchain@1.99.1
 
       - name: Install separate syscall tracing tool
         if: ${{ inputs.writer_include_captured_wal }}

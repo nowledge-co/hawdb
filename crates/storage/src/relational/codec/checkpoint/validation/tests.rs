@@ -90,7 +90,9 @@ fn schema() -> RelationalTableSchema {
         schema.indexes.push(RelationalIndexSchema {
             name: format!("index-{id}-界"),
             columns: vec![name],
+            included_columns: Vec::new(),
             unique: id % 2 == 0,
+            predicate: None,
         });
     }
     schema
@@ -261,7 +263,10 @@ fn checkpoint_units_relational_validation_cancels_schema_and_row_inner_and_final
                 validate_row_with_work_context(&schema, &row, &work).unwrap_err()
             };
             assert!(
-                matches!(error,RelationalError::Admission(ref text) if text.contains("cancelled")),
+                matches!(
+                    error,
+                    RelationalError::Stopped(hawdb_core::RuntimeCancellationReason::Cancelled)
+                ),
                 "{error:?}"
             );
             assert_eq!(probe.completed.load(Ordering::SeqCst), limit);

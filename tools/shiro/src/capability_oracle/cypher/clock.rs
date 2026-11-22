@@ -43,9 +43,9 @@ pub(super) fn bounded_order(case: &Case, run: &mut Run) -> Result<()> {
         )?;
         model.push((key, id as i64));
     }
-    let instant = hawdb::temporal::DateTime::from_timestamp(
-        1_793_361_600 + case.variant as i64 * 86_400,
-        (case.seed % 1_000) as u32,
+    let instant = hawdb::temporal::OffsetDateTime::from_unix_timestamp_nanos(
+        i128::from(1_793_361_600 + case.variant as i64 * 86_400) * 1_000_000_000
+            + i128::from(case.seed % 1_000),
     )
     .expect("bounded generated statement clock");
     let offset = (case.variant % 3) as usize;
@@ -94,7 +94,7 @@ pub(super) fn bounded_order(case: &Case, run: &mut Run) -> Result<()> {
     run.trace.push(json!({
         "phase": "clock_candidates", "query": QUERY,
         "parameters": crate::parameters_json(&parameters),
-        "statement_clock": instant.to_rfc3339(), "snapshot_epoch": candidates.snapshot_epoch,
+        "statement_clock": hawdb::temporal::format_datetime(instant), "snapshot_epoch": candidates.snapshot_epoch,
         "distinct_candidates": candidates.distinct_candidate_count,
         "candidates": candidates.candidates.iter().map(|candidate| json!({
             "kind": candidate.kind.as_str(), "same_plan_as": candidate.same_plan_as,
@@ -126,13 +126,16 @@ pub(super) fn bounded_order(case: &Case, run: &mut Run) -> Result<()> {
         .map(|(key, id)| {
             let offset = if id % 2 == 0 { 3600 } else { -19_800 };
             let zoned =
-                instant.with_timezone(&hawdb::temporal::FixedOffset::east_opt(offset).unwrap());
+                instant.to_offset(hawdb::temporal::UtcOffset::from_whole_seconds(offset).unwrap());
             row(&[
                 ("id", Value::Int(id)),
                 ("key", key.map_or(Value::Null, Value::Int)),
-                ("observed", Value::DateTime(instant.fixed_offset())),
+                ("observed", Value::DateTime(instant)),
                 ("row_clock", Value::DateTime(zoned)),
-                ("stamp", Value::Int(instant.timestamp_nanos_opt().unwrap())),
+                (
+                    "stamp",
+                    Value::Int(i64::try_from(instant.unix_timestamp_nanos()).unwrap()),
+                ),
             ])
         })
         .collect::<Vec<_>>();

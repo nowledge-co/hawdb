@@ -138,6 +138,29 @@ sh_test(
 )
 
 sh_test(
+    name = "typed_task_stops_test",
+    size = "small",
+    srcs = ["scripts/check-typed-task-stops.py"],
+    data = glob(["src/**/*.rs"]) + [
+        "//crates/core:query_limit_inventory_sources",
+        "//crates/executor:query_limit_inventory_sources",
+        "//crates/search:query_limit_inventory_sources",
+        "//crates/relational:query_limit_inventory_sources",
+        "//crates/storage:typed_task_stop_sources",
+        "//crates/analytics:typed_task_stop_sources",
+        "//crates/runtime-tokio:typed_task_stop_sources",
+        "//crates/vector-projection:query_limit_inventory_sources",
+    ],
+)
+
+sh_test(
+    name = "typed_task_stops_script_test",
+    size = "small",
+    srcs = ["scripts/check-typed-task-stops.test.py"],
+    data = ["scripts/check-typed-task-stops.py"],
+)
+
+sh_test(
     name = "publish_crates_script_test",
     size = "small",
     srcs = ["scripts/publish-crates.test.sh"],
@@ -167,11 +190,18 @@ _HAWDB_SRCS = glob(
     "//crates/compat:test_support",
 ]
 
-# Unit tests embed a pre-#1683 database fixture with include_bytes!.
-_HAWDB_COMPILE_DATA = ["tests/fixtures/pre_1683_property_descriptors.bundle"]
+# Unit tests embed database fixtures with include_bytes!.
+_HAWDB_COMPILE_DATA = [
+    "tests/fixtures/pre_1683_property_descriptors.bundle",
+    "tests/fixtures/row_root_relational_checkpoint.bundle",
+    "tests/fixtures/row_root_shadow_index_checkpoint.bundle.zst",
+    "tests/fixtures/row_root_shadow_named_index_v2.bundle.zst",
+    "tests/fixtures/standalone_create_index_wal_v3.bundle.zst",
+    "tests/fixtures/partial_index_v4.bundle.zst",
+    "tests/fixtures/covering_index_v5.bundle.zst",
+]
 
 _HAWDB_COMMON_BASE_DEPS = [
-    "@crate_index//:chrono",
     "@crate_index//:getrandom",
     "@crate_index//:serde",
     "@crate_index//:serde_json",

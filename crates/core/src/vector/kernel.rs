@@ -4,6 +4,7 @@
 //! Bounded exact arithmetic. SIMD products retain coordinate-order f64 sums.
 
 use super::{invalid, Result};
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::OnceLock;
 
 #[cfg(all(
@@ -17,6 +18,8 @@ mod measurement;
 mod neon;
 #[cfg(test)]
 mod tests;
+#[cfg(target_arch = "wasm32")]
+mod wasm;
 
 const WORK_COORDINATES: usize = 64 * 1024 / (2 * size_of::<f32>());
 
@@ -42,7 +45,12 @@ impl Input<'_> {
     }
 
     #[cfg(all(
-        any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"),
+        any(
+            target_arch = "x86",
+            target_arch = "x86_64",
+            target_arch = "aarch64",
+            target_arch = "wasm32"
+        ),
         target_endian = "little"
     ))]
     fn get(self, index: usize) -> f32 {
@@ -57,7 +65,12 @@ impl Input<'_> {
     }
 
     #[cfg(all(
-        any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"),
+        any(
+            target_arch = "x86",
+            target_arch = "x86_64",
+            target_arch = "aarch64",
+            target_arch = "wasm32"
+        ),
         target_endian = "little"
     ))]
     fn as_ptr(self) -> *const f32 {
@@ -86,13 +99,24 @@ pub(super) struct Sums {
 
 type Function = unsafe fn(Input<'_>, Input<'_>, Mode, &mut Sums) -> bool;
 
-/// A function whose CPU requirements were checked by the constructor.
+/// A function supported by the native CPU or the WASM module's required features.
 #[derive(Clone, Copy)]
 pub(super) struct Kernel(Function, pub(super) &'static str);
 
 impl Kernel {
     #[inline]
     pub(super) fn get() -> Self {
+        // WASM validates required SIMD instructions when instantiating the module.
+        // Function-level target features also cover external Cargo consumers,
+        // which do not inherit this repository's build configuration.
+        #[cfg(target_arch = "wasm32")]
+        return Self(wasm::run, "simd128");
+        #[cfg(not(target_arch = "wasm32"))]
+        Self::native()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native() -> Self {
         static KERNEL: OnceLock<Kernel> = OnceLock::new();
         *KERNEL.get_or_init(|| {
             #[cfg(all(
@@ -147,7 +171,7 @@ impl Kernel {
         for start in (0..left.len()).step_by(WORK_COORDINATES) {
             checkpoint()?;
             let end = left.len().min(start + WORK_COORDINATES);
-            // SAFETY: construction checked CPU support; blocks have equal lengths.
+            // SAFETY: CPU/module supports the kernel; blocks have equal lengths.
             // Inputs are initialized f32 or complete little-endian coordinates.
             if !unsafe {
                 (self.0)(
@@ -166,26 +190,26 @@ impl Kernel {
 }
 
 unsafe fn scalar(left: Input<'_>, right: Input<'_>, mode: Mode, sums: &mut Sums) -> bool {
-    let decode = |bytes: &[u8]| f32::from_le_bytes(bytes.try_into().expect("coordinate"));
+    let decode = |bytes: &[u8; 4]| f32::from_le_bytes(*bytes);
     match (left, right) {
         (Input::Slice(left), Input::Slice(right)) => {
             scalar_values(left.iter().copied(), right.iter().copied(), mode, sums)
         }
         (Input::Slice(left), Input::Encoded(right)) => scalar_values(
             left.iter().copied(),
-            right.chunks_exact(4).map(decode),
+            right.as_chunks::<4>().0.iter().map(decode),
             mode,
             sums,
         ),
         (Input::Encoded(left), Input::Slice(right)) => scalar_values(
-            left.chunks_exact(4).map(decode),
+            left.as_chunks::<4>().0.iter().map(decode),
             right.iter().copied(),
             mode,
             sums,
         ),
         (Input::Encoded(left), Input::Encoded(right)) => scalar_values(
-            left.chunks_exact(4).map(decode),
-            right.chunks_exact(4).map(decode),
+            left.as_chunks::<4>().0.iter().map(decode),
+            right.as_chunks::<4>().0.iter().map(decode),
             mode,
             sums,
         ),
@@ -245,7 +269,12 @@ fn scalar_values(
 }
 
 #[cfg(all(
-    any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"),
+    any(
+        target_arch = "x86",
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "wasm32"
+    ),
     target_endian = "little"
 ))]
 fn scalar_coordinate(left: f32, right: f32, mode: Mode, sums: &mut Sums) -> bool {

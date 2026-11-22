@@ -266,7 +266,33 @@ fn truth_value(truth: PredicateTruth) -> Value {
     }
 }
 
+/// The byte length of `left + right` when `+` concatenates strings: both
+/// operands are strings, or one is a string and the other `NULL`. Kùzu reads
+/// a `NULL` operand of a string concatenation as the empty string.
+fn concatenation_bytes(left: &Value, right: &Value) -> Option<usize> {
+    match (left, right) {
+        (Value::String(left), Value::String(right)) => Some(left.len().saturating_add(right.len())),
+        (Value::String(text), Value::Null) | (Value::Null, Value::String(text)) => Some(text.len()),
+        _ => None,
+    }
+}
+
+fn concatenate(left: &Value, right: &Value, bytes: usize) -> Value {
+    let mut output = String::with_capacity(bytes);
+    for value in [left, right] {
+        if let Value::String(text) = value {
+            output.push_str(text);
+        }
+    }
+    Value::String(output)
+}
+
 fn evaluate_arithmetic(left: &Value, op: ScalarBinaryOp, right: &Value) -> Result<Value> {
+    if op == ScalarBinaryOp::Add
+        && let Some(bytes) = concatenation_bytes(left, right)
+    {
+        return Ok(concatenate(left, right, bytes));
+    }
     if matches!(left, Value::Null) || matches!(right, Value::Null) {
         return Ok(Value::Null);
     }
@@ -279,7 +305,7 @@ fn evaluate_arithmetic(left: &Value, op: ScalarBinaryOp, right: &Value) -> Resul
         _ => unreachable!("arithmetic operators only"),
     };
     if let Some(result) = hawdb_core::temporal::arithmetic(left, temporal_op, right) {
-        return result.map_err(|error| HawDBError::Execution(error.to_string()));
+        return result.map_err(HawDBError::from_execution_error);
     }
     use hawdb_core::numeric::{evaluate_numeric, NumericBinaryOp};
     let op = match op {
@@ -595,6 +621,24 @@ mod arithmetic_tests {
                 Value::Null,
             ),
             (ScalarBinaryOp::Add, Value::Null, Value::Int(7), Value::Null),
+            (
+                ScalarBinaryOp::Add,
+                Value::String("ab".into()),
+                Value::String("cd".into()),
+                Value::String("abcd".into()),
+            ),
+            (
+                ScalarBinaryOp::Add,
+                Value::Null,
+                Value::String("cd".into()),
+                Value::String("cd".into()),
+            ),
+            (
+                ScalarBinaryOp::Add,
+                Value::String("ab".into()),
+                Value::Null,
+                Value::String("ab".into()),
+            ),
             (
                 ScalarBinaryOp::Add,
                 Value::Decimal("9007199254740993.01".parse().unwrap()),

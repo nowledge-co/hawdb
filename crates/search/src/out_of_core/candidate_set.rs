@@ -404,13 +404,14 @@ impl CandidateSet<'_> {
         &self,
         layer: usize,
         max_bytes: u64,
+        budget_option: &'static str,
         task_context: Option<&crate::RuntimeTaskContext>,
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<Option<Ordinals>> {
         match self {
             Self::All(_) => Ok(None),
             Self::Spilled(set) => set
-                .vector_ordinals_for_layer(layer, max_bytes, task_context, metrics)
+                .vector_ordinals_for_layer(layer, max_bytes, budget_option, task_context, metrics)
                 .map(Some),
         }
     }
@@ -596,14 +597,22 @@ impl SpilledCandidateSet<'_> {
         &self,
         layer: usize,
         max_bytes: u64,
+        budget_option: &'static str,
         task_context: Option<&crate::RuntimeTaskContext>,
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<Ordinals> {
         let (cardinality, required_working_bytes) = self.vector_allowlist_layout(layer)?;
+        // `max_bytes` is the scan's remaining working set; `budget_option`
+        // names the setting that bound it. Over budget is a resource refusal.
         if required_working_bytes > max_bytes {
-            return Err(HawDBError::Storage(format!(
-                "search vector candidate allowlist and block require {required_working_bytes} bytes, exceeding {max_bytes}"
-            )));
+            return Err(super::vector_serving::rabitq_working_budget_refusal(
+                required_working_bytes,
+                max_bytes,
+                budget_option,
+                format!(
+                    "search vector candidate allowlist and block require {required_working_bytes} bytes, exceeding {max_bytes}"
+                ),
+            ));
         }
         let mut ordinals = Ordinals {
             values: Vec::new(),
@@ -620,9 +629,9 @@ impl SpilledCandidateSet<'_> {
         }
         for block in self.blocks.iter().filter(|block| block.layer == layer) {
             if let Some(task_context) = task_context {
-                task_context.checkpoint().map_err(|reason| {
-                    HawDBError::Execution(format!("search vector task {reason}"))
-                })?;
+                task_context
+                    .checkpoint()
+                    .map_err(HawDBError::RuntimeTaskStopped)?;
             }
             if block.cardinality == 0 {
                 continue;
@@ -714,7 +723,9 @@ fn decode_candidate_entries(bytes: &[u8], expected: usize) -> Result<Vec<Candida
             HawDBError::Storage("search candidate block has a truncated id".to_string())
         })?;
         let id = String::from_utf8(raw.to_vec()).map_err(|error| {
-            HawDBError::Storage(format!("search candidate id is not UTF-8: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!("search candidate id is not UTF-8: {error}"))
+            })
         })?;
         offset = end;
         let end = offset.saturating_add(std::mem::size_of::<u64>());
@@ -761,7 +772,9 @@ fn decode_candidate_ordinals_into(
             HawDBError::Storage("search candidate block has a truncated id".to_string())
         })?)
         .map_err(|error| {
-            HawDBError::Storage(format!("search candidate id is not UTF-8: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!("search candidate id is not UTF-8: {error}"))
+            })
         })?;
         if previous_id.is_some_and(|previous| previous >= id) {
             return Err(HawDBError::Storage(

@@ -59,8 +59,11 @@ pub(super) const NESTING_RULES: &[&str] = &[
     "ParenthesizedContents",
     "ArgumentContents",
     "InContents",
+    "SubqueryContents",
     "FilterContents",
     "CastContents",
+    "RowContents",
+    "ShorthandRowContents",
 ];
 pub(super) fn rules() -> Vec<Rule> {
     vec![
@@ -101,8 +104,13 @@ pub(super) fn rules() -> Vec<Rule> {
         ("In", seq(vec![opt(r("Negated")), k("IN"), r("InValues")])),
         (
             "InValues",
-            seq(vec![t(T::LeftParen), r("InContents"), t(T::RightParen)]),
+            seq(vec![
+                t(T::LeftParen),
+                choice(vec![r("SubqueryContents"), r("InContents")]),
+                t(T::RightParen),
+            ]),
         ),
+        ("SubqueryContents", r("RelationalQuery")),
         (
             "Between",
             seq(vec![
@@ -195,6 +203,8 @@ pub(super) fn rules() -> Vec<Rule> {
         (
             "Atom",
             choice(vec![
+                r("Exists"),
+                r("RowConstructor"),
                 r("Parenthesized"),
                 r("Wildcard"),
                 r("Parameter"),
@@ -208,6 +218,41 @@ pub(super) fn rules() -> Vec<Rule> {
                 r("Function"),
                 r("QualifiedWildcard"),
                 r("Column"),
+            ]),
+        ),
+        (
+            "Exists",
+            seq(vec![
+                k("EXISTS"),
+                t(T::LeftParen),
+                r("SubqueryContents"),
+                t(T::RightParen),
+            ]),
+        ),
+        (
+            "RowConstructor",
+            choice(vec![
+                seq(vec![
+                    k("ROW"),
+                    t(T::LeftParen),
+                    r("RowContents"),
+                    t(T::RightParen),
+                ]),
+                seq(vec![
+                    t(T::LeftParen),
+                    r("ShorthandRowContents"),
+                    t(T::RightParen),
+                ]),
+            ]),
+        ),
+        ("RowContents", list("Or")),
+        (
+            "ShorthandRowContents",
+            seq(vec![
+                r("Or"),
+                t(T::Comma),
+                r("Or"),
+                rep(seq(vec![t(T::Comma), r("Or")])),
             ]),
         ),
         (
@@ -294,11 +339,12 @@ pub(super) fn rules() -> Vec<Rule> {
     ]
 }
 
-pub(crate) struct Fold<'a> {
-    pub(crate) tree: &'a ParseTree,
-    pub(crate) tokens: &'a [Token],
+pub(crate) struct Fold<'tree, 'query> {
+    pub(crate) tree: &'tree ParseTree,
+    pub(crate) tokens: &'tree [Token],
+    pub(crate) query: Option<&'query dyn Fn(NodeId) -> crate::PostgresQuerySyntax>,
 }
-impl Fold<'_> {
+impl Fold<'_, '_> {
     fn span(&self, node: NodeId) -> Span {
         self.tree.span(node, self.tokens)
     }
@@ -326,7 +372,7 @@ impl Fold<'_> {
             name if name.starts_with("Legacy") => return self.expression(self.first(node)),
             "Or" | "And" | "Concat" | "Sum" | "Product" => {
                 let mut left = self.expression(children[0]);
-                for pair in children[1..].chunks_exact(2) {
+                for pair in children[1..].as_chunks::<2>().0 {
                     let right = self.expression(pair[1]);
                     let operator = self.operator(pair[0]);
                     left = ExpressionSyntax {
@@ -397,6 +443,35 @@ impl Fold<'_> {
                 }
             }
             "Parenthesized" => Kind::Parenthesized(Box::new(self.expression(children[0]))),
+            "Exists" => {
+                let query = self.tree.required(
+                    self.tree.required(node, "SubqueryContents"),
+                    "RelationalQuery",
+                );
+                Kind::Exists {
+                    query: Box::new(self
+                        .query
+                        .expect("relational expression transformer resolves subqueries")(
+                        query
+                    )),
+                }
+            }
+            "RowConstructor" => Kind::Row(
+                if let Some(contents) = self.tree.child(node, "RowContents") {
+                    self.tree
+                        .children(contents)
+                        .iter()
+                        .map(|id| self.expression(*id))
+                        .collect()
+                } else {
+                    self.tree
+                        .children(self.tree.required(node, "ShorthandRowContents"))
+                        .iter()
+                        .filter(|id| self.tree.nodes[**id].name == Some("Or"))
+                        .map(|id| self.expression(*id))
+                        .collect()
+                },
+            ),
             "Wildcard" => Kind::Wildcard(None),
             "QualifiedWildcard" => Kind::Wildcard(Some(self.name(children[0]))),
             "Column" => Kind::Column(self.name(children[0])),
@@ -527,18 +602,29 @@ impl Fold<'_> {
                 negated,
             },
             "In" => {
-                let values = self
-                    .tree
-                    .required(self.tree.required(suffix, "InValues"), "InContents");
-                Kind::InList {
-                    expression,
-                    negated,
-                    values: self
-                        .tree
-                        .children(values)
-                        .iter()
-                        .map(|id| self.expression(*id))
-                        .collect(),
+                let values = self.tree.required(suffix, "InValues");
+                if let Some(query) = self.tree.child(values, "SubqueryContents") {
+                    Kind::InSubquery {
+                        expression,
+                        negated,
+                        query: Box::new(self
+                            .query
+                            .expect("relational expression transformer resolves subqueries")(
+                            self.tree.required(query, "RelationalQuery"),
+                        )),
+                    }
+                } else {
+                    let values = self.tree.required(values, "InContents");
+                    Kind::InList {
+                        expression,
+                        negated,
+                        values: self
+                            .tree
+                            .children(values)
+                            .iter()
+                            .map(|id| self.expression(*id))
+                            .collect(),
+                    }
                 }
             }
             "Between" => {

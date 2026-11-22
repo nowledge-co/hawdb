@@ -114,6 +114,7 @@ pub use hawdb_executor::{
     VectorSeedExecutionOutput, VectorSeedExecutionRequest, VectorSeedExecutionRow,
 };
 pub(crate) use mutation::project_staged_mutation_return_rows;
+pub(crate) use mutation::{execute_match_set, resolve_match_set};
 pub use mutation::{
     execute_mutation_with_limits, is_mutation_plan, materialize_unwind_mutations, mutation_command,
 };

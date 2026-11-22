@@ -39,6 +39,9 @@ struct MutationScope<'a> {
 impl<'a> MutationScope<'a> {
     fn for_plan(plan: &'a PhysicalPlan, catalog: &Catalog) -> Self {
         match plan {
+            // RETURN reads only the entities its mutation creates or changes,
+            // and the endpoints that mutation already protects.
+            PhysicalPlan::MutationReturn { mutation, .. } => Self::for_plan(mutation, catalog),
             PhysicalPlan::SetNodeProperty {
                 label,
                 predicate,

@@ -871,6 +871,46 @@ fn range_bounds_from_comparison(op: ComparisonOp, value: Value) -> ValueRangeBou
 mod tests {
     use super::*;
 
+    /// The planner routes a relationship mutation to row evaluation exactly
+    /// when the storage filter conversion would refuse its predicate.
+    #[test]
+    fn property_filter_conversion_agrees_with_the_planner_check() {
+        let property = |name: &str| Predicate::PropertyEq {
+            variable: "r".into(),
+            property: name.into(),
+            value: Value::Int(1),
+        };
+        let is_null = Predicate::PropertyIsNull {
+            variable: "r".into(),
+            property: "p".into(),
+        };
+        let expression = Predicate::ExpressionCompare {
+            expression: ProjectionExpression::Literal(Value::Int(1)),
+            op: ComparisonOp::Lt,
+            value: ProjectionExpression::Literal(Value::Int(2)),
+        };
+        for predicate in [
+            property("p"),
+            is_null.clone(),
+            Predicate::Or(vec![property("p"), is_null.clone()]),
+            Predicate::Not(Box::new(Predicate::And(vec![property("p"), is_null]))),
+            Predicate::ConstantBool(false),
+            Predicate::Or(vec![property("p"), Predicate::ConstantBool(true)]),
+            Predicate::And(vec![property("q"), expression.clone()]),
+            Predicate::ExpressionEq {
+                expression: ProjectionExpression::Literal(Value::Int(1)),
+                value: ProjectionExpression::Literal(Value::Int(1)),
+            },
+            expression,
+        ] {
+            assert_eq!(
+                property_filter_from_predicate(&predicate).is_ok(),
+                predicate.is_property_filter(),
+                "{predicate:?}"
+            );
+        }
+    }
+
     #[test]
     fn evaluates_nested_projection_expression_without_rebuilding_projection() {
         let expression = ProjectionExpression::Coalesce(vec![

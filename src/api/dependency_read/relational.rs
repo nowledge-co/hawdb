@@ -53,7 +53,7 @@ pub(in crate::api) fn collect_transaction(
     let record = |dependencies: &mut GraphReadDependencies, key| {
         dependencies
             .record(key)
-            .map_err(|error| HawDBError::Execution(error.to_string()))
+            .map_err(HawDBError::from_execution_error)
     };
     match statement {
         SqlStatement::Select(select) if let Some(search) = select.text_search() => {
@@ -119,6 +119,11 @@ pub(in crate::api) fn collect_transaction(
             };
             record(dependencies, key)
         }
+        // Compound queries can read several lexical scopes, including CTE
+        // definitions whose names shadow catalog tables. Retain a conservative
+        // database dependency until every query-body scope can emit exact
+        // table/range keys; this is broad but never misses a conflict.
+        SqlStatement::Query(_) => record(dependencies, VersionKey::Database),
         SqlStatement::Insert(statement) => {
             let key = VersionKey::ReadRelationalTableDomain(
                 transaction_schema(state, &statement.table)?.name.clone(),
@@ -256,7 +261,7 @@ impl PreparedRead {
                 self.dependencies
                     .graph
                     .record(key)
-                    .map_err(|error| HawDBError::Execution(error.to_string()))?;
+                    .map_err(HawDBError::from_execution_error)?;
             }
             return self
                 .read
@@ -278,7 +283,7 @@ impl PreparedRead {
         self.dependencies
             .graph
             .record(key)
-            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+            .map_err(HawDBError::from_execution_error)?;
         self.read
             .query_sql_with_prepared_params(sql, parameters, prepared)
     }
@@ -382,6 +387,12 @@ fn qualify_expression(expression: &Expr, nodes: &mut usize, depth: usize) -> Res
             qualify_expression(left, nodes, depth + 1)?;
             for value in values {
                 qualify_expression(value, nodes, depth + 1)?;
+            }
+            Ok(())
+        }
+        ExprKind::RowCompare { left, right, .. } => {
+            for expression in left.iter().chain(right) {
+                qualify_expression(expression, nodes, depth + 1)?;
             }
             Ok(())
         }

@@ -12,9 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use chrono::{DateTime, NaiveDate, NaiveDateTime};
 mod projection_scan;
 pub use projection_scan::{SearchProjectionScanBudget, SearchProjectionScanReport};
+mod projection_id_page;
+pub use projection_id_page::{
+    SearchProjectionIdBatch, SearchProjectionIdPage, SearchProjectionPageGeneration,
+};
 #[doc(hidden)]
 pub mod candidate_evidence;
 #[doc(hidden)]
@@ -104,6 +107,7 @@ mod projection_delta_contracts;
 pub mod projection_evidence;
 #[doc(hidden)]
 pub mod projection_evidence_cli;
+pub mod projection_ownership;
 mod query_control;
 mod resident_bm25;
 #[cfg(feature = "vector-search")]
@@ -118,7 +122,9 @@ mod range_io;
 mod resident_documents;
 mod resident_snapshot;
 use resident_documents::{DocumentView, ResidentDocuments};
-pub use resident_snapshot::{SearchIndexReadLease, SearchIndexReadSnapshot};
+pub use resident_snapshot::{
+    SearchIndexPublishedSnapshot, SearchIndexReadLease, SearchIndexReadSnapshot,
+};
 mod recall_validation;
 mod snapshot_writer;
 #[cfg(test)]
@@ -237,17 +243,18 @@ pub use out_of_core::{
     SearchMutationInspectionInput, SearchMutationInspectionStep, SearchMutationSortStep,
     SearchMutationSortStepLimits, SearchMutationSortStepUsage, SearchOutOfCoreBaselineComparison,
     SearchOutOfCoreCandidate, SearchOutOfCoreConfig, SearchOutOfCoreDeltaComparison,
-    SearchOutOfCoreExecutionContext, SearchOutOfCoreGenerationBuildOptions,
-    SearchOutOfCoreGenerationBuildReport, SearchOutOfCoreGenerationUpdate,
-    SearchOutOfCoreGenerationWriter, SearchOutOfCoreHydrationOutput, SearchOutOfCoreMetrics,
-    SearchOutOfCoreMutationWriter, SearchOutOfCoreOutput, SearchOutOfCorePreparedGeneration,
-    SearchOutOfCorePreparedUpdate, SearchOutOfCoreReader, SearchOutOfCoreRefreshReport,
-    SearchOutOfCoreSegmentCompaction, SearchOutOfCoreSegmentCompactionPolicy,
-    SearchOutOfCoreSegmentCompactionReport, SearchOutOfCoreSegmentCompactionStopReason,
-    SearchOutOfCoreUnorderedMutationWriter, SearchOutOfCoreUnorderedReplacementWriter,
-    SearchProjectionEpochAdvanceReport, SearchQueryError, SearchQueryResult, SearchRetainedOutput,
-    SearchStagingCleanupReport, SearchTextSeedOutput, SearchTextSeedReport,
-    SearchUnorderedMutationLimits, SearchUnorderedMutationReport, SearchVerifiedBody,
+    SearchOutOfCoreDocumentLookup, SearchOutOfCoreExecutionContext,
+    SearchOutOfCoreGenerationBuildOptions, SearchOutOfCoreGenerationBuildReport,
+    SearchOutOfCoreGenerationUpdate, SearchOutOfCoreGenerationWriter,
+    SearchOutOfCoreHydrationOutput, SearchOutOfCoreMetrics, SearchOutOfCoreMutationWriter,
+    SearchOutOfCoreOutput, SearchOutOfCorePreparedGeneration, SearchOutOfCorePreparedUpdate,
+    SearchOutOfCoreReader, SearchOutOfCoreRefreshReport, SearchOutOfCoreSegmentCompaction,
+    SearchOutOfCoreSegmentCompactionPolicy, SearchOutOfCoreSegmentCompactionReport,
+    SearchOutOfCoreSegmentCompactionStopReason, SearchOutOfCoreUnorderedMutationWriter,
+    SearchOutOfCoreUnorderedReplacementWriter, SearchProjectionEpochAdvanceReport,
+    SearchQueryError, SearchQueryResult, SearchRetainedOutput, SearchStagingCleanupReport,
+    SearchTextSeedOutput, SearchTextSeedReport, SearchUnorderedMutationLimits,
+    SearchUnorderedMutationReport, SearchVerifiedBody,
 };
 pub use resident_text_seed::SearchResidentTextSeedOutput;
 // These are internal ownership seams. Hosts continue to use the embedded facade.
@@ -318,6 +325,12 @@ const SEARCH_RABITQ_PROJECTION_PREFIX: &str = "search_rabitq.";
 const SEARCH_RABITQ_PROJECTION_SUFFIX: &str = ".hawdb";
 pub const FULL_REINDEX_MARKER: &str = ".reindex_needed";
 pub const METADATA_REPAIR_MARKER: &str = ".projection_metadata_repair_needed";
+/// Records the projection's externally owned kinds (#1814). Kept beside the
+/// selector instead of inside it so earlier readers, which refuse unknown
+/// manifest fields, still open the projection. See [`projection_ownership`].
+pub const EXTERNALLY_OWNED_KINDS_MARKER: &str = projection_ownership::MARKER;
+/// Records whether the host must resupply externally owned rows (#1814).
+pub const EXTERNALLY_OWNED_ROWS_MARKER: &str = projection_ownership::ROWS_MARKER;
 /// The BM25 constants shared with the SQL search index access path.
 use hawdb_executor::bm25::{BM25_B, BM25_K1};
 const TITLE_TERM_FREQUENCY_WEIGHT: usize = 2;
@@ -394,6 +407,19 @@ impl SearchProjectionKind {
             SearchProjectionKind::SourceChunk => "source_chunk",
             SearchProjectionKind::Community => "community",
         }
+    }
+
+    /// Parses a name produced by [`Self::as_str`].
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "memory" => SearchProjectionKind::Memory,
+            "message" => SearchProjectionKind::Message,
+            "entity" => SearchProjectionKind::Entity,
+            "source" => SearchProjectionKind::Source,
+            "source_chunk" => SearchProjectionKind::SourceChunk,
+            "community" => SearchProjectionKind::Community,
+            _ => return None,
+        })
     }
 }
 
@@ -839,19 +865,22 @@ impl SearchAccessControlContext {
         }
     }
 
+    /// Refuses a context the caller built incorrectly. These are caller
+    /// mistakes, not storage faults, so they are `Semantic` like the core
+    /// `QueryAccessControlContext::validate` (#1767).
     fn validate(&self) -> Result<()> {
         if self.policy_epoch == 0 {
-            return Err(HawDBError::Storage(
+            return Err(HawDBError::Semantic(
                 "access control context requires a non-zero policy epoch".to_string(),
             ));
         }
         if self.visibility_metadata_field.trim().is_empty() {
-            return Err(HawDBError::Storage(
+            return Err(HawDBError::Semantic(
                 "access control context requires a visibility metadata field".to_string(),
             ));
         }
         if self.allowed_visibility_values.is_empty() {
-            return Err(HawDBError::Storage(
+            return Err(HawDBError::Semantic(
                 "access control context requires at least one visibility value".to_string(),
             ));
         }
@@ -860,11 +889,51 @@ impl SearchAccessControlContext {
             .iter()
             .any(|value| value.trim().is_empty())
         {
-            return Err(HawDBError::Storage(
+            return Err(HawDBError::Semantic(
                 "access control context visibility values must be non-empty".to_string(),
             ));
         }
         Ok(())
+    }
+
+    /// Refuses search options whose own policy epoch disagrees with this
+    /// context. Both the resident and the out-of-core reader call this.
+    fn check_options_policy_epoch(&self, policy_epoch: Option<u64>) -> Result<()> {
+        match policy_epoch {
+            Some(policy_epoch) if policy_epoch != self.policy_epoch => {
+                Err(HawDBError::Semantic(format!(
+                    "search options policy epoch {policy_epoch} does not match access control policy epoch {}",
+                    self.policy_epoch
+                )))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Requests each caller check refuses: `(options policy epoch, context)`.
+    /// Shared by the resident and out-of-core reader tests (#1767).
+    #[cfg(all(test, feature = "acl", feature = "full-text-search"))]
+    pub(crate) fn invalid_requests_for_test() -> Vec<(Option<u64>, Self)> {
+        vec![
+            (Some(8), Self::visibility_scopes(7, "space_id", ["team"])),
+            (None, Self::visibility_scopes(0, "space_id", ["team"])),
+            (None, Self::visibility_scopes(7, " ", ["team"])),
+            (
+                None,
+                Self::visibility_scopes(7, "space_id", Vec::<String>::new()),
+            ),
+            (None, Self::visibility_scopes(7, "space_id", ["team", " "])),
+        ]
+    }
+
+    /// The metadata filters a query runs with under this context: `options`'
+    /// filters plus the visibility predicate, after both caller checks.
+    pub(crate) fn effective_query_filters(
+        &self,
+        options: &SearchQueryOptions,
+    ) -> Result<BTreeMap<String, String>> {
+        self.check_options_policy_epoch(options.policy_epoch)?;
+        self.effective_metadata_filters(&options.metadata_filters)
     }
 
     pub fn effective_metadata_filters(
@@ -893,9 +962,11 @@ impl SearchAccessControlContext {
                         .collect::<Vec<_>>(),
                 )
                 .map_err(|error| {
-                    HawDBError::Storage(format!(
-                        "failed to encode access control visibility predicate: {error}"
-                    ))
+                    HawDBError::or_stop(&error, || {
+                        HawDBError::Storage(format!(
+                            "failed to encode access control visibility predicate: {error}"
+                        ))
+                    })
                 })?,
             );
         }
@@ -1679,6 +1750,9 @@ pub struct SearchIndex {
     cleanup_options: SearchProjectionCleanupOptions,
     runtime_capabilities: RuntimeCapabilities,
     telemetry: Option<Arc<dyn TelemetrySink>>,
+    /// Kinds whose documents only the host writes (#1814). Runtime policy,
+    /// never persisted here; see [`Self::set_externally_owned_kinds`].
+    externally_owned_kinds: BTreeSet<SearchProjectionKind>,
 }
 
 impl SearchIndex {
@@ -2159,6 +2233,47 @@ impl SearchIndex {
         self.runtime_capabilities
     }
 
+    /// Declares kinds whose documents the host supplies itself (#1814).
+    ///
+    /// Graph changefeed catch-up applied to this index then derives no rows
+    /// for nodes of these kinds: their documents are written only by host
+    /// deltas, and are removed only when the graph node is deleted (or the
+    /// host deletes them). Graph-derived rows of other kinds and every host
+    /// delta are unaffected. A full rebuild from the graph carries the current
+    /// document of every live node of these kinds over unchanged, dropping
+    /// documents whose node no longer exists, and metadata repair leaves them
+    /// untouched. Both raise the persisted rows-required fence of a
+    /// persistent index, so the host re-pushes its rows. The set is not
+    /// persisted by the index; an embedded store records it with
+    /// `EmbeddedStoreOpenOptions::with_externally_owned_search_kinds`.
+    pub fn set_externally_owned_kinds(&mut self, kinds: BTreeSet<SearchProjectionKind>) {
+        self.externally_owned_kinds = kinds;
+    }
+
+    pub fn externally_owned_kinds(&self) -> &BTreeSet<SearchProjectionKind> {
+        &self.externally_owned_kinds
+    }
+
+    /// Raises the persisted rows-required fence before a rebuild or metadata
+    /// repair of a projection with externally owned kinds (#1814).
+    ///
+    /// Carry-over keeps the documents the index holds, but host writes that
+    /// have not reached this index (for example to another directory during
+    /// an out-of-core rebuild) cannot be proven present, so the host always
+    /// re-pushes after maintenance. Raising first keeps a failed rebuild
+    /// fail-safe. An unreadable state fails closed; if a valid state disappears
+    /// after open, the raise creates a fresh incarnation that rejects retained
+    /// acknowledgements from the removed state.
+    fn raise_externally_owned_rows_required(&self) -> Result<()> {
+        if self.externally_owned_kinds.is_empty() {
+            return Ok(());
+        }
+        let Some(path) = self.path.as_deref() else {
+            return Ok(());
+        };
+        projection_ownership::raise_rows_required(path).map(|_| ())
+    }
+
     pub fn upsert(&mut self, document: SearchDocument) -> Result<()> {
         let _consumer_mutation = self.require_owned_mutation_or_unregistered()?;
         if let Some(embedding) = &document.embedding {
@@ -2585,6 +2700,7 @@ impl SearchIndex {
         options: SearchRebuildOptions,
     ) -> Result<SearchRebuildSummary> {
         let _consumer_mutation = self.require_owned_mutation_or_unregistered()?;
+        self.raise_externally_owned_rows_required()?;
         let started = hawdb_core::time::Instant::now();
         let mut next_documents = BTreeMap::new();
         let mut scanned_nodes = 0;
@@ -2603,6 +2719,20 @@ impl SearchIndex {
                 ) else {
                     return Ok(());
                 };
+                // The host is the only writer of owned kinds: carry its
+                // current document over for a live node instead of deriving
+                // one. Documents of nodes that no longer exist are dropped.
+                let owned = self.externally_owned_kinds.contains(&row.kind);
+                let carried = owned
+                    .then(|| {
+                        self.documents
+                            .get(&format!("{}:{}", row.kind.as_str(), row.external_id))
+                            .cloned()
+                    })
+                    .flatten();
+                if owned && carried.is_none() {
+                    return Ok(());
+                }
                 if options
                     .max_rows
                     .map(|limit| next_documents.len() >= limit)
@@ -2614,7 +2744,7 @@ impl SearchIndex {
                         next_documents.len()
                     )));
                 }
-                let document = row.into_document();
+                let document = carried.unwrap_or_else(|| row.into_document());
                 next_documents.insert(document.id.clone(), document);
                 Ok(())
             })?;
@@ -2758,6 +2888,7 @@ impl SearchIndex {
         options: MetadataRepairOptions,
     ) -> Result<MetadataRepairSummary> {
         let _consumer_mutation = self.require_owned_mutation_or_unregistered()?;
+        self.raise_externally_owned_rows_required()?;
         let started = hawdb_core::time::Instant::now();
         let mut repairs = Vec::new();
         let mut scanned_nodes = 0;
@@ -2777,6 +2908,10 @@ impl SearchIndex {
                 ) else {
                     return Ok(());
                 };
+                // The host owns these documents' metadata as well.
+                if self.externally_owned_kinds.contains(&row.kind) {
+                    return Ok(());
+                }
                 let document = row.into_document();
                 if !self.documents.contains_key(&document.id) {
                     missing_documents += 1;
@@ -3002,11 +3137,10 @@ impl SearchIndex {
         let Some(path) = &self.path else {
             return Ok(SearchCheckpointReport::in_memory(self.documents.len()));
         };
-        task.checkpoint()
-            .map_err(|reason| HawDBError::Execution(format!("checkpoint {reason}")))?;
+        task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
         let _io = task
             .acquire_io_wave(NonZeroUsize::MIN)
-            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+            .map_err(HawDBError::from_execution_error)?;
         let memory = build_memory::BuildMemory::new(task)?;
         let started = hawdb_core::time::Instant::now();
         let result = (|| {
@@ -3436,7 +3570,7 @@ impl SearchIndex {
         if let Some(task_context) = vector_execution_options.task_context {
             task_context
                 .checkpoint()
-                .map_err(|reason| HawDBError::Execution(format!("vector search task {reason}")))?;
+                .map_err(HawDBError::RuntimeTaskStopped)?;
         }
         let result = self.try_search_with_options_compressed_vector_projection_mode_internal(
             query_text,
@@ -3449,7 +3583,7 @@ impl SearchIndex {
         if let Some(task_context) = vector_execution_options.task_context {
             task_context
                 .checkpoint()
-                .map_err(|reason| HawDBError::Execution(format!("vector search task {reason}")))?;
+                .map_err(HawDBError::RuntimeTaskStopped)?;
         }
         Ok(result)
     }
@@ -3979,17 +4113,7 @@ impl SearchIndex {
         let limit = options.limit;
         let document_count = self.documents.len();
         let metadata_filters = match access_control {
-            Some(access_control) => {
-                if let Some(policy_epoch) = options.policy_epoch
-                    && policy_epoch != access_control.policy_epoch
-                {
-                    return Err(HawDBError::Storage(format!(
-                        "search options policy epoch {policy_epoch} does not match access control policy epoch {}",
-                        access_control.policy_epoch
-                    )));
-                }
-                access_control.effective_metadata_filters(&options.metadata_filters)?
-            }
+            Some(access_control) => access_control.effective_query_filters(&options)?,
             None => options.metadata_filters.clone(),
         };
         let policy_epoch = access_control
@@ -5156,6 +5280,7 @@ impl Default for SearchIndex {
             cleanup_options: SearchProjectionCleanupOptions::default(),
             runtime_capabilities: crate::compiled_runtime_capabilities(),
             telemetry: None,
+            externally_owned_kinds: BTreeSet::new(),
         }
     }
 }
@@ -7483,27 +7608,7 @@ fn metadata_numeric_value(value: &str) -> Option<f64> {
 }
 
 fn metadata_timestamp_value(value: &str) -> Option<i64> {
-    let value = value.trim();
-    if value.is_empty() {
-        return None;
-    }
-    if let Ok(timestamp) = DateTime::parse_from_rfc3339(value) {
-        return Some(timestamp.timestamp_millis());
-    }
-    for format in [
-        "%Y-%m-%d %H:%M:%S%.f",
-        "%Y-%m-%dT%H:%M:%S%.f",
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%dT%H:%M:%S",
-    ] {
-        if let Ok(timestamp) = NaiveDateTime::parse_from_str(value, format) {
-            return Some(timestamp.and_utc().timestamp_millis());
-        }
-    }
-    NaiveDate::parse_from_str(value, "%Y-%m-%d")
-        .ok()
-        .and_then(|date| date.and_hms_opt(0, 0, 0))
-        .map(|timestamp| timestamp.and_utc().timestamp_millis())
+    hawdb_core::temporal::parse_metadata_millis(value)
 }
 
 fn metadata_range_gt(actual: &str, expected: &str) -> bool {
@@ -8995,8 +9100,13 @@ fn split_checksum(text: &str) -> Result<(&str, u64)> {
 
 fn encode_search_snapshot_text(text: &str) -> Result<Vec<u8>> {
     let compressed =
-        hawdb_storage::compression::encode_all(text.as_bytes(), SEARCH_COMPRESSION_LEVEL)
-            .map_err(|error| HawDBError::Storage(format!("zstd compression failed: {error}")))?;
+        hawdb_storage::compression::encode_all(text.as_bytes(), SEARCH_COMPRESSION_LEVEL).map_err(
+            |error| {
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Storage(format!("zstd compression failed: {error}"))
+                })
+            },
+        )?;
     let compressed_checksum = checksum_bytes(&compressed);
     let uncompressed_checksum = checksum_bytes(text.as_bytes());
     let header = search_snapshot_compression_header(
@@ -9107,9 +9217,11 @@ fn decode_search_snapshot_text_bounded(
     decode_search_snapshot_text_bounded_with(bytes, max_uncompressed_bytes, |payload, expected| {
         let decoder =
             hawdb_storage::compression::Decoder::new(Cursor::new(payload)).map_err(|error| {
-                HawDBError::Storage(format!(
-                    "search projection zstd decompression failed: {error}"
-                ))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Storage(format!(
+                        "search projection zstd decompression failed: {error}"
+                    ))
+                })
             })?;
         read_search_snapshot_decoder(decoder, expected)
     })
@@ -9139,9 +9251,11 @@ fn decode_search_snapshot_text_bounded_with(
         ));
     };
     let header = std::str::from_utf8(&bytes[..header_end]).map_err(|error| {
-        HawDBError::Storage(format!(
-            "search projection compressed envelope header is invalid: {error}"
-        ))
+        HawDBError::or_stop(&error, || {
+            HawDBError::Storage(format!(
+                "search projection compressed envelope header is invalid: {error}"
+            ))
+        })
     })?;
     let payload = &bytes[header_end + 2..];
     let SnapshotHeader {
@@ -9208,9 +9322,11 @@ fn decode_search_snapshot_text_bounded_with(
         )));
     }
     String::from_utf8(decoded).map_err(|error| {
-        HawDBError::Storage(format!(
-            "search projection decompressed payload is not valid UTF-8: {error}"
-        ))
+        HawDBError::or_stop(&error, || {
+            HawDBError::Storage(format!(
+                "search projection decompressed payload is not valid UTF-8: {error}"
+            ))
+        })
     })
 }
 
@@ -9221,9 +9337,11 @@ fn read_search_snapshot_decoder(decoder: impl Read, expected_len: usize) -> Resu
         .take((expected_len as u64).saturating_add(1))
         .read_to_end(&mut decoded)
         .map_err(|error| {
-            HawDBError::Storage(format!(
-                "search projection zstd decompression failed: {error}"
-            ))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!(
+                    "search projection zstd decompression failed: {error}"
+                ))
+            })
         })?;
     Ok(decoded)
 }
@@ -16554,6 +16672,61 @@ mod tests {
         assert_eq!(text.candidate_set.cardinality, 3);
         assert!(text.segmented_lexical_projection_used);
         fs::remove_dir_all(path).unwrap();
+    }
+
+    #[cfg(all(feature = "acl", feature = "full-text-search"))]
+    #[test]
+    fn resident_access_control_caller_mistakes_are_semantic_errors() {
+        let mut index = SearchIndex::in_memory();
+        index.set_runtime_capabilities(
+            RuntimeCapabilities::default().with(RuntimeCapability::AccessControl, true),
+        );
+        index
+            .upsert(SearchDocument {
+                id: "allowed".to_string(),
+                title: "Graph".to_string(),
+                content: "storage".to_string(),
+                embedding: None,
+                metadata: BTreeMap::from([("space_id".to_string(), "team".to_string())]),
+            })
+            .unwrap();
+        let options = |policy_epoch| SearchQueryOptions {
+            limit: 10,
+            offset: 0,
+            rank_window: None,
+            fusion_weights: SearchFusionWeights::default(),
+            metadata_filters: BTreeMap::new(),
+            policy_epoch,
+        };
+        // A matching epoch and a valid context still search.
+        index
+            .try_search_with_options_access_control(
+                "graph",
+                None,
+                SearchMode::Text,
+                options(Some(7)),
+                SearchAccessControlContext::visibility_scopes(7, "space_id", ["team"]),
+            )
+            .unwrap();
+        // A mismatched epoch or a malformed context is the caller's mistake,
+        // not a storage fault (#1767).
+        for (policy_epoch, access_control) in
+            SearchAccessControlContext::invalid_requests_for_test()
+        {
+            let error = index
+                .try_search_with_options_access_control(
+                    "graph",
+                    None,
+                    SearchMode::Text,
+                    options(policy_epoch),
+                    access_control.clone(),
+                )
+                .unwrap_err();
+            assert!(
+                matches!(error, HawDBError::Semantic(_)),
+                "{access_control:?}: {error:?}"
+            );
+        }
     }
 
     #[cfg(all(feature = "acl", feature = "full-text-search"))]

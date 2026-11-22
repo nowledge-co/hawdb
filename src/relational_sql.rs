@@ -14,8 +14,9 @@
 
 pub(crate) use hawdb_relational::{
     compile_prepared_append_explain_sql, compile_prepared_append_select_sql,
-    compile_prepared_append_statement_sql, compile_prepared_relational_statement_with_result,
-    format_append_explain, project_append_rows, RelationalReturningProjection,
+    compile_prepared_append_statement_sql, compile_prepared_data_modifying_cte_query,
+    compile_prepared_relational_statement_with_result, format_append_explain,
+    materialize_data_modifying_ctes, project_append_rows, RelationalReturningProjection,
 };
 
 #[cfg(test)]
@@ -28,6 +29,10 @@ mod query;
 #[cfg(test)]
 #[path = "relational_sql/postgres_compat.rs"]
 mod postgres_compat;
+
+#[cfg(test)]
+#[path = "relational_sql/compound_queries.rs"]
+mod compound_queries;
 
 #[cfg(test)]
 #[path = "relational_sql/update_arithmetic.rs"]
@@ -52,6 +57,7 @@ pub(crate) use hawdb_relational::index_access::RelationalIndexReadMode;
 #[cfg(test)]
 pub(crate) use hawdb_relational::query::execute_relational_query_sql_with_runtime;
 pub(crate) use hawdb_relational::query::{
+    execute_prepared_relational_query_with_ephemeral_tables,
     execute_prepared_relational_query_with_resources, RelationalQueryLimits, RelationalQueryOutput,
     RelationalQueryResourceContext,
 };

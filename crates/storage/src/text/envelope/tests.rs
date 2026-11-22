@@ -82,7 +82,7 @@ fn checkpoint_units_text_envelope_cancels_between_compression_blocks() {
     // The shared text API retains its existing HawDBError surface.
     assert_eq!(
         error,
-        HawDBError::Storage("checkpoint build stopped: cancelled".into())
+        HawDBError::RuntimeTaskStopped(hawdb_core::RuntimeCancellationReason::Cancelled)
     );
     assert_eq!(probe.completed.load(Ordering::SeqCst), 3);
     probe.assert_released(&scheduler);

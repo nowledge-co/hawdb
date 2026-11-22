@@ -144,8 +144,12 @@ impl RelationalPlanTemplateCache {
 fn is_cacheable_query(statement: &SqlStatement) -> bool {
     match statement {
         SqlStatement::Select(_) => true,
+        SqlStatement::Query(query) => !query.contains_data_modifying_cte(),
         SqlStatement::Explain(explain) => {
-            matches!(explain.statement.as_ref(), SqlStatement::Select(_))
+            matches!(
+                explain.statement.as_ref(),
+                SqlStatement::Select(_) | SqlStatement::Query(_)
+            )
         }
         SqlStatement::Insert(_)
         | SqlStatement::CreateMaterializedView(_)

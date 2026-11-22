@@ -341,7 +341,7 @@ fn cancelled_admission_refuses_before_hashing_or_candidate_output() {
         input.encode_to(&mut output, limits(), &task).unwrap_err(),
         MetadataView::decode(&bytes, limits(), &task).unwrap_err(),
     ] {
-        assert!(matches!(error, HawDBError::Execution(_)));
+        assert!(matches!(error, HawDBError::RuntimeTaskStopped(_)));
         assert!(error.to_string().contains("cancel"));
     }
     assert!(output.is_empty());

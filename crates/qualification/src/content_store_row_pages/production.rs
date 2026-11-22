@@ -394,9 +394,11 @@ pub fn run_production_content_store_storage_qualification(
                     .with_blocking(true),
                 )
                 .map_err(|error| {
-                    HawDBError::Execution(format!(
-                        "production Content Store read admission failed: {error}"
-                    ))
+                    HawDBError::or_stop(&error, || {
+                        HawDBError::Execution(format!(
+                            "production Content Store read admission failed: {error}"
+                        ))
+                    })
                 })?;
             let read = execute_qualified_read(
                 &mut database,
@@ -1263,7 +1265,7 @@ mod tests {
         assert!(report.initial_residency.index_artifact_exceeds_cache);
         assert!(report.initial_residency.row_index_epoch_aligned);
         assert_eq!(report.initial_residency.segment_cache_pinned_bytes, 0);
-        for runs in report.runs.chunks_exact(2) {
+        for runs in report.runs.as_chunks::<2>().0 {
             assert!(runs[0].read.cache.misses > 0);
             assert!(runs[0].read.execution.physical_pages > 0);
             assert!(runs[1].read.cache.hits > 0);

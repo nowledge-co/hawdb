@@ -109,10 +109,32 @@ fn checkpoint_units_overflow_publication_cancels_every_io_wave_and_preserves_aut
                 Some(&probe.context(local.clone())),
             )
             .unwrap_err();
-            assert!(
-                error.to_string().contains("checkpoint build I/O stopped"),
-                "{error:?}"
-            );
+            let published = [
+                relational_overflow_extent_file(2),
+                relational_overflow_descriptor_file(2),
+                relational_overflow_manifest_generation_file(2),
+            ]
+            .iter()
+            .any(|name| directory.join(name).exists());
+            if published {
+                assert!(
+                    matches!(
+                        error,
+                        RelationalOverflowPublicationError::PublishOutcomeUnknown(_)
+                    ),
+                    "{error:?}"
+                );
+            } else {
+                assert!(
+                    matches!(
+                        error,
+                        RelationalOverflowPublicationError::Stopped(
+                            hawdb_core::RuntimeCancellationReason::Cancelled
+                        )
+                    ),
+                    "{error:?}"
+                );
+            }
             assert!(probe.cancellation.is_cancelled());
             probe.assert_released(&local);
             assert_eq!(authority(&directory), before);
@@ -159,7 +181,10 @@ fn checkpoint_units_overflow_publication_cancellation_after_selection_retains_co
     let error =
         candidate(&directory, &fixture, 3, Some(&probe.context(local.clone()))).unwrap_err();
     assert!(
-        error.to_string().contains("checkpoint build stopped"),
+        matches!(
+            error,
+            RelationalOverflowPublicationError::PublishOutcomeUnknown(_)
+        ),
         "{error:?}"
     );
     probe.assert_released(&local);
@@ -217,7 +242,12 @@ fn checkpoint_units_overflow_publication_preserves_first_duplicate_and_sort_canc
             .persist_generation(&controlled, 1, 10, None, None, inputs.clone())
             .unwrap_err();
         assert!(
-            error.to_string().contains("checkpoint build stopped"),
+            matches!(
+                error,
+                RelationalOverflowPublicationError::Stopped(
+                    hawdb_core::RuntimeCancellationReason::Cancelled
+                )
+            ),
             "{error:?}"
         );
         assert!(!controlled.exists());

@@ -65,9 +65,13 @@ fn background_checkpoints_do_not_spin_on_a_deferred_schema_checkpoint() {
     }
     db.checkpoint().unwrap();
 
+    // Database open canonicalizes macOS's `/var` alias to `/private/var`.
+    // Match the durable root spelling so this per-database override applies
+    // on every supported host.
+    let publication_root = std::fs::canonicalize(&fixture.0).unwrap();
     // Three thousand rows encode to about 0.7 MiB; 64 KiB cannot hold them.
     set_relational_row_publication_config_override_for_test(
-        &fixture.0,
+        &publication_root,
         Some(RelationalRowPagePublicationConfig {
             max_dirty_bytes: NonZeroU64::new(64 * 1024).unwrap(),
             ..Default::default()
@@ -105,7 +109,7 @@ fn background_checkpoints_do_not_spin_on_a_deferred_schema_checkpoint() {
         "deferred schema checkpoint over {:?}: cpu={cpu:?} report={report:?}",
         started.elapsed()
     );
-    set_relational_row_publication_config_override_for_test(&fixture.0, None);
+    set_relational_row_publication_config_override_for_test(&publication_root, None);
 
     assert_eq!(report.completed_checkpoints, 0, "{report:?}");
     // The ordinary operation-failure circuit stops background attempts after

@@ -161,9 +161,9 @@ impl RelationalIndexReadContext {
     }
 
     fn checkpoint(&self) -> Result<(), RelationalIndexShadowError> {
-        self.task.checkpoint().map_err(|reason| {
-            RelationalIndexShadowError::Admission(format!("runtime task stopped: {reason}"))
-        })
+        self.task
+            .checkpoint()
+            .map_err(RelationalIndexShadowError::Stopped)
     }
 
     pub fn remaining_limits(

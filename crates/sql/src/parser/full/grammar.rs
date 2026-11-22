@@ -59,6 +59,7 @@ pub(super) fn build() -> Result<Grammar, String> {
         (
             "HawStatement",
             c(vec![
+                r("HawDataModifyingQuery"),
                 r("HawInsert"),
                 r("HawUpdate"),
                 r("HawDelete"),
@@ -70,6 +71,28 @@ pub(super) fn build() -> Result<Grammar, String> {
                 r("HawDropSearchIndex"),
                 r("HawDrop"),
                 r("HawUnsupportedStatement"),
+            ]),
+        ),
+        (
+            "HawDataModifyingQuery",
+            s(vec![
+                k("WITH"),
+                list("HawDataModifyingCte"),
+                r("RelationalQuery"),
+            ]),
+        ),
+        (
+            "HawDataModifyingCte",
+            s(vec![
+                r("Identifier"),
+                o(r("HawNames")),
+                k("AS"),
+                group(c(vec![
+                    r("HawInsert"),
+                    r("HawUpdate"),
+                    r("HawDelete"),
+                    r("RelationalQuery"),
+                ])),
             ]),
         ),
         ("HawNames", group(list("Name"))),
@@ -109,7 +132,7 @@ pub(super) fn build() -> Result<Grammar, String> {
             "HawInsertSource",
             c(vec![
                 r("HawValues"),
-                r("RelationalSelect"),
+                r("RelationalSelectCore"),
                 r("HawDefaultValues"),
             ]),
         ),
@@ -467,7 +490,7 @@ pub(super) fn build() -> Result<Grammar, String> {
         (
             "HawTableUnsupportedTail",
             c(vec![
-                s(vec![k("AS"), r("RelationalSelect")]),
+                s(vec![k("AS"), r("RelationalSelectCore")]),
                 s(vec![
                     k("ON"),
                     k("COMMIT"),
@@ -611,7 +634,7 @@ pub(super) fn build() -> Result<Grammar, String> {
                 o(r("HawNames")),
                 o(r("HawStorage")),
                 k("AS"),
-                r("RelationalSelect"),
+                r("RelationalSelectCore"),
                 o(r("HawViewTail")),
             ]),
         ),
@@ -652,7 +675,7 @@ pub(super) fn build() -> Result<Grammar, String> {
                 s(vec![k("TRUNCATE"), o(k("TABLE")), list("Name")]),
                 s(vec![k("SHOW"), k("TABLES")]),
                 s(vec![k("SET"), r("Name"), t(T::Equal), r("Or")]),
-                s(vec![k("WITH"), list("HawCte"), r("RelationalSelect")]),
+                s(vec![k("WITH"), list("HawCte"), r("RelationalSelectCore")]),
             ]),
         ),
         (
@@ -661,7 +684,7 @@ pub(super) fn build() -> Result<Grammar, String> {
                 r("Identifier"),
                 o(r("HawNames")),
                 k("AS"),
-                group(r("RelationalSelect")),
+                group(r("RelationalSelectCore")),
             ]),
         ),
         // Balanced lexical groups are used only for recognized unsupported

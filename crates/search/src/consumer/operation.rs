@@ -34,7 +34,7 @@ impl Authority {
     pub(super) fn acquire(self: &Arc<Self>) -> Result<ConsumerPreparationLease> {
         let previous = self
             .state
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
                 if state & (REFS | OPEN) != 0 {
                     return None;
                 }
@@ -114,7 +114,7 @@ impl Drop for ConsumerPreparationLease {
     fn drop(&mut self) {
         self.authority
             .state
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
                 if state & GENERATION != self.generation || state & REFS == 0 {
                     return None;
                 }
@@ -142,7 +142,7 @@ impl MutationPermit {
             .ok_or_else(|| invalid("consumer mutation scope has ended"))?;
         authority
             .state
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
                 if state & GENERATION != generation
                     || state & OPEN == 0
                     || state & REFS == 0
@@ -164,7 +164,7 @@ impl Drop for MutationPermit {
     fn drop(&mut self) {
         self.authority
             .state
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
                 if state & GENERATION != self.generation || state & REFS == 0 {
                     return None;
                 }

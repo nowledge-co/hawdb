@@ -223,6 +223,39 @@ fn admitted_root_cannot_convert_into_an_unguarded_public_reader() {
 }
 
 #[test]
+fn admitted_root_preserves_io_wave_reservation_refusal() {
+    let fixture = Fixture::new();
+    let governor = governor();
+    let permit = governor
+        .try_admit(RuntimeWorkRequest::background_maintenance(8 << 20).with_io_wave_slots(1))
+        .unwrap();
+    // A governed read must use the task bound to its permit. This raw task has
+    // no I/O controller, so the first native read is a permanent 1/0 contract
+    // refusal rather than transient governor saturation.
+    let task = hawdb_core::RuntimeTaskContext::default();
+    let memory = BuildMemory::new(&task).unwrap();
+    let admission = ReadAdmission {
+        memory: &memory,
+        task: &task,
+        permit: crate::build_memory::read::ReadPermit::Governed(&permit),
+    };
+    let before = governor.snapshot().admitted_memory_bytes;
+    let error = open(fixture.context(&admission))
+        .err()
+        .expect("unbound governed reader must be refused");
+    assert!(matches!(
+        error,
+        HawDBError::RuntimeIoWaveReservationExceeded {
+            requested_slots: 1,
+            reserved_slots: 0,
+        }
+    ));
+    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, before);
+    assert_eq!(governor.snapshot().active_background_io_slots, 0);
+}
+
+#[test]
 fn root_admission_counts_incoming_analyzer_capacity_before_any_path_lookup() {
     if run_allocation_child(concat!(
         module_path!(),
@@ -442,7 +475,7 @@ fn chunked_analyzer_identity_matches_legacy_bytes_and_checks_long_inputs() {
     task.cancellation().cancel();
     assert!(matches!(
         crate::lexical_projection::analyzer_digest_with_context(&analyzer, &task),
-        Err(HawDBError::Execution(_))
+        Err(HawDBError::RuntimeTaskStopped(_))
     ));
 }
 

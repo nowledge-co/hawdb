@@ -55,7 +55,7 @@ pub(crate) fn bytes<I: DecodeInput>(
         .map(|context| {
             context
                 .vector_capacity(len)
-                .map_err(|error| RelationalError::Admission(error.to_string()))
+                .map_err(RelationalError::from_admission)
         })
         .transpose()?;
     let unit = work.start_unit().map_err(work_error)?;

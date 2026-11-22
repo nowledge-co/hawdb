@@ -386,10 +386,12 @@ fn inspect_wal_tail_locked(path: &Path, options: WalDoctorOptions) -> Result<Wal
     let wal_path = boundary.wal_path(path);
     let wal_len = fs::metadata(&wal_path)
         .map_err(|error| {
-            HawDBError::Storage(format!(
-                "failed to inspect WAL generation {}: {error}",
-                boundary.wal_generation
-            ))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!(
+                    "failed to inspect WAL generation {}: {error}",
+                    boundary.wal_generation
+                ))
+            })
         })?
         .len();
     if options.max_wal_bytes.is_some_and(|limit| wal_len > limit) {
@@ -1018,7 +1020,9 @@ fn write_audit_record(path: &Path, record: &WalRepairAuditRecord) -> Result<()> 
     })?;
     repair_io("create audit directory", fs::create_dir_all(parent))?;
     let encoded = serde_json::to_vec_pretty(record).map_err(|error| {
-        HawDBError::Storage(format!("failed to encode WAL doctor audit record: {error}"))
+        HawDBError::or_stop(&error, || {
+            HawDBError::Storage(format!("failed to encode WAL doctor audit record: {error}"))
+        })
     })?;
     let temp_path = path.with_extension("json.tmp");
     {
@@ -1096,7 +1100,9 @@ fn load_audit_record(path: &Path) -> Result<WalRepairAuditRecord> {
     }
     let encoded = fs::read(path)?;
     let record = serde_json::from_slice::<WalRepairAuditRecord>(&encoded).map_err(|error| {
-        HawDBError::Storage(format!("invalid WAL doctor audit record: {error}"))
+        HawDBError::or_stop(&error, || {
+            HawDBError::Storage(format!("invalid WAL doctor audit record: {error}"))
+        })
     })?;
     if record.protocol != WAL_DOCTOR_REPAIR_PROTOCOL
         || record.plan.protocol != WAL_DOCTOR_REPAIR_PROTOCOL

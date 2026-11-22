@@ -14,9 +14,10 @@
 
 //! Temporal arithmetic, `duration.between` and truncation.
 
-use chrono::{
-    Datelike, FixedOffset, Months, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, Timelike,
-};
+use super::types::*;
+use super::Weekday;
+
+use crate::temporal::{Date, PlainDateTime, SignedDuration, Time, UtcOffset};
 
 use super::construct::{attach, kind_name, DurationBuilder, Number};
 use super::{
@@ -111,20 +112,30 @@ pub fn arithmetic(
     })
 }
 
-fn add_months(date: NaiveDate, months: i64) -> Option<NaiveDate> {
-    let magnitude = Months::new(u32::try_from(months.unsigned_abs()).ok()?);
-    if months >= 0 {
-        date.checked_add_months(magnitude)
-    } else {
-        date.checked_sub_months(magnitude)
+fn add_months(date: Date, months: i64) -> Option<Date> {
+    let index = i64::from(date.year())
+        .checked_mul(12)?
+        .checked_add(i64::from(date.month() as u8 - 1))?
+        .checked_add(months)?;
+    let year = i32::try_from(index.div_euclid(12)).ok()?;
+    let month = index.rem_euclid(12) as u32 + 1;
+    let mut day = u32::from(date.day());
+    loop {
+        if let Some(date) = date_from_ymd(year, month, day) {
+            return Some(date);
+        }
+        if day <= 28 {
+            return None;
+        }
+        day -= 1;
     }
 }
 
-fn add_to_local_datetime(value: NaiveDateTime, duration: &Duration) -> Option<NaiveDateTime> {
+fn add_to_local_datetime(value: PlainDateTime, duration: &Duration) -> Option<PlainDateTime> {
     add_months(value.date(), duration.months)?
-        .and_time(value.time())
-        .checked_add_signed(TimeDelta::try_days(duration.days)?)?
-        .checked_add_signed(duration.time)
+        .with_time(value.time())
+        .checked_add(duration_days(duration.days)?)?
+        .checked_add(duration.time)
 }
 
 /// Adds a duration: months first (clamping the day of month), then days,
@@ -136,18 +147,16 @@ fn add_duration(instant: &Value, duration: &Duration) -> TemporalResult<Value> {
             let whole_days = i64::try_from(duration.time_nanos() / NANOS_PER_DAY).ok();
             whole_days
                 .and_then(|whole_days| duration.days.checked_add(whole_days))
-                .and_then(TimeDelta::try_days)
-                .and_then(|days| add_months(*date, duration.months)?.checked_add_signed(days))
+                .and_then(duration_days)
+                .and_then(|days| add_months(*date, duration.months)?.checked_add(days))
                 .map(Value::Date)
         }
-        Value::LocalTime(time) => Some(Value::LocalTime(
-            time.overflowing_add_signed(duration.time).0,
-        )),
+        Value::LocalTime(time) => Some(Value::LocalTime(*time + duration.time)),
         Value::LocalDateTime(value) => {
             add_to_local_datetime(*value, duration).map(Value::LocalDateTime)
         }
-        Value::DateTime(value) => add_to_local_datetime(value.naive_local(), duration)
-            .and_then(|local| attach(local, *value.offset()))
+        Value::DateTime(value) => add_to_local_datetime(local_datetime(*value), duration)
+            .and_then(|local| attach(local, value.offset()))
             .map(Value::DateTime),
         _ => unreachable!("callers pass temporal instants"),
     };
@@ -229,9 +238,9 @@ pub(crate) enum BetweenMode {
 }
 
 struct Parts {
-    date: Option<NaiveDate>,
-    time: Option<NaiveTime>,
-    offset: Option<FixedOffset>,
+    date: Option<Date>,
+    time: Option<Time>,
+    offset: Option<UtcOffset>,
 }
 
 fn parts(value: &Value) -> Option<Parts> {
@@ -252,19 +261,20 @@ fn parts(value: &Value) -> Option<Parts> {
             offset: None,
         },
         Value::DateTime(value) => Parts {
-            date: Some(value.date_naive()),
+            date: Some(value.date()),
             time: Some(value.time()),
-            offset: Some(*value.offset()),
+            offset: Some(value.offset()),
         },
         _ => return None,
     })
 }
 
-fn month_difference(start: NaiveDateTime, end: NaiveDateTime) -> Option<i64> {
-    let index = |value: NaiveDateTime| i64::from(value.year()) * 12 + i64::from(value.month0());
+fn month_difference(start: PlainDateTime, end: PlainDateTime) -> Option<i64> {
+    let index =
+        |value: PlainDateTime| i64::from(value.year()) * 12 + i64::from(value.month() as u32 - 1);
     let mut months = index(end) - index(start);
-    let shifted = |months: i64| -> Option<NaiveDateTime> {
-        Some(add_months(start.date(), months)?.and_time(start.time()))
+    let shifted = |months: i64| -> Option<PlainDateTime> {
+        Some(add_months(start.date(), months)?.with_time(start.time()))
     };
     if months > 0 && shifted(months)? > end {
         months -= 1;
@@ -290,12 +300,14 @@ pub(crate) fn between(left: &Value, right: &Value, mode: BetweenMode) -> Tempora
         let local = end
             .date
             .expect("zoned values have a date")
-            .and_time(end.time.expect("zoned values have a time"));
+            .with_time(end.time.expect("zoned values have a time"));
         let shifted = local
-            .checked_sub_signed(TimeDelta::seconds(i64::from(end_offset.local_minus_utc())))
+            .checked_sub(SignedDuration::seconds(i64::from(
+                end_offset.whole_seconds(),
+            )))
             .and_then(|utc| {
-                utc.checked_add_signed(TimeDelta::seconds(i64::from(
-                    start_offset.local_minus_utc(),
+                utc.checked_add(SignedDuration::seconds(i64::from(
+                    start_offset.whole_seconds(),
                 )))
             })
             .ok_or_else(overflow)?;
@@ -304,9 +316,9 @@ pub(crate) fn between(left: &Value, right: &Value, mode: BetweenMode) -> Tempora
     }
     let zero = Duration::default();
     let (Some(start_date), Some(end_date)) = (start.date, end.date) else {
-        let start_time = start.time.unwrap_or(NaiveTime::MIN);
-        let end_time = end.time.unwrap_or(NaiveTime::MIN);
-        let nanos = delta_nanos(end_time.signed_duration_since(start_time));
+        let start_time = start.time.unwrap_or(Time::MIDNIGHT);
+        let end_time = end.time.unwrap_or(Time::MIDNIGHT);
+        let nanos = delta_nanos(end_time - start_time);
         return Ok(Value::duration(match mode {
             BetweenMode::Full | BetweenMode::Seconds => {
                 Duration::from_parts(0, 0, nanos).ok_or_else(overflow)?
@@ -314,9 +326,9 @@ pub(crate) fn between(left: &Value, right: &Value, mode: BetweenMode) -> Tempora
             BetweenMode::Months | BetweenMode::Days => zero,
         }));
     };
-    let start = start_date.and_time(start.time.unwrap_or(NaiveTime::MIN));
-    let end = end_date.and_time(end.time.unwrap_or(NaiveTime::MIN));
-    let exact = delta_nanos(end.signed_duration_since(start));
+    let start = start_date.with_time(start.time.unwrap_or(Time::MIDNIGHT));
+    let end = end_date.with_time(end.time.unwrap_or(Time::MIDNIGHT));
+    let exact = delta_nanos(end - start);
     let duration = match mode {
         BetweenMode::Seconds => Duration::from_parts(0, 0, exact),
         BetweenMode::Days => Duration::from_parts(0, (exact / NANOS_PER_DAY) as i64, 0),
@@ -327,8 +339,8 @@ pub(crate) fn between(left: &Value, right: &Value, mode: BetweenMode) -> Tempora
             } else {
                 let middle = add_months(start.date(), months)
                     .ok_or_else(overflow)?
-                    .and_time(start.time());
-                let remainder = delta_nanos(end.signed_duration_since(middle));
+                    .with_time(start.time());
+                let remainder = delta_nanos(end - middle);
                 let days = remainder / NANOS_PER_DAY;
                 Duration::from_parts(months, days as i64, remainder - days * NANOS_PER_DAY)
             }
@@ -337,40 +349,40 @@ pub(crate) fn between(left: &Value, right: &Value, mode: BetweenMode) -> Tempora
     duration.map(Value::duration).ok_or_else(overflow)
 }
 
-fn truncate_date(date: NaiveDate, unit: &str) -> Option<NaiveDate> {
-    let year_start = |year: i32| NaiveDate::from_ymd_opt(year, 1, 1);
+fn truncate_date(date: Date, unit: &str) -> Option<Date> {
+    let year_start = |year: i32| date_from_ymd(year, 1, 1);
     match unit {
         "millennium" => year_start(date.year() - date.year().rem_euclid(1000)),
         "century" => year_start(date.year() - date.year().rem_euclid(100)),
         "decade" => year_start(date.year() - date.year().rem_euclid(10)),
         "year" => year_start(date.year()),
-        "weekyear" => NaiveDate::from_isoywd_opt(date.iso_week().year(), 1, chrono::Weekday::Mon),
-        "quarter" => NaiveDate::from_ymd_opt(date.year(), date.month0() / 3 * 3 + 1, 1),
-        "month" => NaiveDate::from_ymd_opt(date.year(), date.month(), 1),
-        "week" => date.checked_sub_days(chrono::Days::new(u64::from(
-            date.weekday().num_days_from_monday(),
+        "weekyear" => date_from_iso_week(date.to_iso_week_date().0, 1, Weekday::Monday),
+        "quarter" => date_from_ymd(date.year(), (date.month() as u32 - 1) / 3 * 3 + 1, 1),
+        "month" => date_from_ymd(date.year(), date.month() as u32, 1),
+        "week" => date.checked_sub(SignedDuration::days(i64::from(
+            date.weekday().number_days_from_monday(),
         ))),
         "day" => Some(date),
         _ => None,
     }
 }
 
-fn truncate_time(time: NaiveTime, unit: &str) -> Option<NaiveTime> {
+fn truncate_time(time: Time, unit: &str) -> Option<Time> {
     let nanos = time.nanosecond();
     match unit {
-        "hour" => NaiveTime::from_hms_opt(time.hour(), 0, 0),
-        "minute" => NaiveTime::from_hms_opt(time.hour(), time.minute(), 0),
-        "second" => NaiveTime::from_hms_opt(time.hour(), time.minute(), time.second()),
-        "millisecond" => NaiveTime::from_hms_nano_opt(
-            time.hour(),
-            time.minute(),
-            time.second(),
+        "hour" => Time::from_hms(time.hour(), 0, 0).ok(),
+        "minute" => Time::from_hms(time.hour(), time.minute(), 0).ok(),
+        "second" => Time::from_hms(time.hour(), time.minute(), time.second()).ok(),
+        "millisecond" => time_from_hms_nano(
+            u32::from(time.hour()),
+            u32::from(time.minute()),
+            u32::from(time.second()),
             nanos - nanos % 1_000_000,
         ),
-        "microsecond" => NaiveTime::from_hms_nano_opt(
-            time.hour(),
-            time.minute(),
-            time.second(),
+        "microsecond" => time_from_hms_nano(
+            u32::from(time.hour()),
+            u32::from(time.minute()),
+            u32::from(time.second()),
             nanos - nanos % 1_000,
         ),
         _ => None,
@@ -419,12 +431,12 @@ pub fn truncate(kind: TemporalKind, unit: &str, value: &Value) -> TemporalResult
                 .date
                 .map(|date| truncate_date(date, &unit_lower).ok_or_else(overflow))
                 .transpose()?,
-            NaiveTime::MIN,
+            Time::MIDNIGHT,
         )
     } else if TIME_UNITS.contains(&unit_lower.as_str()) && kind.has_time() {
         (
             source.date,
-            truncate_time(source.time.unwrap_or(NaiveTime::MIN), &unit_lower)
+            truncate_time(source.time.unwrap_or(Time::MIDNIGHT), &unit_lower)
                 .ok_or_else(overflow)?,
         )
     } else {
@@ -436,13 +448,13 @@ pub fn truncate(kind: TemporalKind, unit: &str, value: &Value) -> TemporalResult
         TemporalKind::Date => Value::Date(date.expect("date kinds have a date")),
         TemporalKind::LocalTime => Value::LocalTime(time),
         TemporalKind::LocalDateTime => {
-            Value::LocalDateTime(date.expect("date kinds have a date").and_time(time))
+            Value::LocalDateTime(date.expect("date kinds have a date").with_time(time))
         }
         TemporalKind::DateTime => attach(
-            date.expect("date kinds have a date").and_time(time),
+            date.expect("date kinds have a date").with_time(time),
             source
                 .offset
-                .unwrap_or_else(|| FixedOffset::east_opt(0).expect("UTC offset")),
+                .unwrap_or_else(|| offset_from_seconds(0).expect("UTC offset")),
         )
         .map(Value::DateTime)
         .ok_or_else(overflow)?,

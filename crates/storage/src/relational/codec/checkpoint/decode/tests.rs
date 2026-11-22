@@ -297,7 +297,12 @@ fn schema() -> RelationalTableSchema {
             schema.indexes.push(RelationalIndexSchema {
                 name: format!("index-{id}"),
                 columns: vec![name],
+                included_columns: Vec::new(),
                 unique: id % 2 == 0,
+                predicate: (id == 1).then(|| RelationalPredicate::IsNull {
+                    column: "column-1".into(),
+                    negated: true,
+                }),
             });
         }
     }
@@ -438,7 +443,10 @@ fn checkpoint_units_relational_decode_overflow_hash_and_retention_match_ordinary
                 .err()
                 .expect("overflow decode must be stopped");
             assert!(
-                matches!(error,RelationalError::Admission(ref text) if text.contains("stopped")),
+                matches!(
+                    error,
+                    RelationalError::Stopped(hawdb_core::RuntimeCancellationReason::Cancelled)
+                ),
                 "{error:?}"
             );
             probe.assert_released(&local);
@@ -487,7 +495,10 @@ fn checkpoint_units_relational_decode_cancellation_preserves_source_and_retries_
             );
             let error = run(&mut controlled, phase).unwrap_err();
             assert!(
-                matches!(error,RelationalError::Admission(ref text) if text.contains("stopped")),
+                matches!(
+                    error,
+                    RelationalError::Stopped(hawdb_core::RuntimeCancellationReason::Cancelled)
+                ),
                 "{error:?}"
             );
             probe.assert_released(&local);

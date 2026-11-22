@@ -22,7 +22,9 @@ pub(super) struct PublishedCanonicalRead {
     pub(super) view: Arc<crate::api::PublishedConcurrentRead>,
     pub(super) governor: RuntimeGovernor,
     pub(super) mode: GraphMode,
-    pub(super) resident_projection: Option<crate::search::SearchIndexReadSnapshot>,
+    // The publication funds the generation it holds: pinning it reserves
+    // nothing new; leases that outlive it are charged when it is retired.
+    pub(super) resident_projection: Option<crate::search::SearchIndexPublishedSnapshot>,
     pub(super) external_seed_io_slots: usize,
     pub(super) retrieval_projection_advisor: RetrievalProjectionAdvisor,
     pub(super) out_of_core_projection: Option<OutOfCoreSearchProjection>,
@@ -40,7 +42,7 @@ impl PublishedCanonicalRead {
             resident_projection: store
                 .search_projection
                 .as_ref()
-                .map(|projection| projection.index().read_snapshot()),
+                .map(|projection| projection.index().read_snapshot().publish()),
             external_seed_io_slots: store.external_seed_io_slots(),
             retrieval_projection_advisor: store.retrieval_projection_advisor.clone(),
             out_of_core_projection: store
@@ -271,6 +273,113 @@ impl<'a> EmbeddedReadSnapshot<'a> {
         }
     }
 
+    /// Looks up search projection documents by id in the projection this
+    /// snapshot pinned, without refusing ids it does not contain.
+    ///
+    /// This is the non-erroring counterpart of
+    /// [`EmbeddedStoreHandle::search_projection_documents`], for hosts that
+    /// verify a projection against its source. Each requested id appears
+    /// exactly once in the result: as a document in `documents` or in
+    /// `missing_document_ids`, both in request order. It works the same on
+    /// the resident and the out-of-core projection.
+    ///
+    /// An id is missing when the pinned projection does not contain it: it
+    /// was never published, or it was deleted. The lookup takes no access
+    /// control context, like hydration by id; it does not apply search
+    /// access-control filtering, so a document is reported present whatever
+    /// policy would hide it from a filtered search.
+    ///
+    /// Errors:
+    /// - duplicate ids are `HawDBError::Semantic`;
+    /// - more ids than this snapshot's remaining `max_rows` is
+    ///   `ReadBudgetExceeded` (rows), checked before any read, and found
+    ///   documents are charged to the snapshot's rows and payload bytes;
+    /// - on the out-of-core path, more ids than
+    ///   `SearchOutOfCoreConfig.max_hydrated_documents` is
+    ///   `ResourceBudgetExceeded` naming that option, and documents over
+    ///   `SearchOutOfCoreConfig.max_hydrated_bytes` are refused as in
+    ///   hydration by id;
+    /// - an id the projection's index lists whose document cannot be read or
+    ///   verified is `HawDBError::Storage`, never reported missing.
+    pub fn lookup_search_projection_documents(
+        &mut self,
+        document_ids: &[String],
+    ) -> Result<SearchProjectionDocumentLookup> {
+        self.task_context
+            .checkpoint()
+            .map_err(HawDBError::RuntimeTaskStopped)?;
+        if document_ids.iter().collect::<BTreeSet<_>>().len() != document_ids.len() {
+            return Err(HawDBError::Semantic(
+                "search projection document lookup ids must be unique".to_string(),
+            ));
+        }
+        // Every id may be present, so the request must fit the rows left.
+        let usage = self.transaction.usage();
+        let remaining_rows = self.budget.max_rows.saturating_sub(usage.output_rows);
+        if document_ids.len() > remaining_rows {
+            return Err(HawDBError::read_budget_exceeded(
+                ReadBudgetResource::Rows,
+                self.budget.max_rows,
+                format!(
+                    "search projection document lookup requested {} ids, but the bounded read snapshot has {remaining_rows} rows left",
+                    document_ids.len()
+                ),
+            ));
+        }
+        let remaining_payload_bytes = self
+            .budget
+            .max_payload_bytes
+            .saturating_sub(usage.output_payload_bytes);
+        let (documents, missing_document_ids, out_of_core_metrics) = match (
+            self.external.projection,
+            self.external.out_of_core_projection,
+        ) {
+            (Some(projection), None) => {
+                let mut documents = Vec::new();
+                let mut missing_document_ids = Vec::new();
+                let mut payload_bytes = 0usize;
+                for id in document_ids {
+                    let Some(document) = projection.document(id) else {
+                        missing_document_ids.push(id.clone());
+                        continue;
+                    };
+                    // Refuse before copying past the snapshot's payload.
+                    payload_bytes =
+                        payload_bytes.saturating_add(search_document_payload_bytes(document));
+                    if payload_bytes > remaining_payload_bytes {
+                        return Err(HawDBError::read_budget_exceeded(
+                            ReadBudgetResource::PayloadBytes,
+                            self.budget.max_payload_bytes,
+                            "bounded read snapshot exhausted max_payload_bytes",
+                        ));
+                    }
+                    documents.push(document.clone());
+                }
+                (documents, missing_document_ids, None)
+            }
+            (None, Some(projection)) => {
+                let output = projection.lookup_documents(document_ids)?;
+                (
+                    output.documents,
+                    output.missing_document_ids,
+                    Some(output.metrics),
+                )
+            }
+            (None, None) => return Err(missing_search_projection_error()),
+            (Some(_), Some(_)) => return Err(ambiguous_search_projection_error()),
+        };
+        let payload_bytes = documents
+            .iter()
+            .map(search_document_payload_bytes)
+            .fold(0usize, usize::saturating_add);
+        self.consume(documents.len(), payload_bytes)?;
+        Ok(SearchProjectionDocumentLookup {
+            documents,
+            missing_document_ids,
+            out_of_core_metrics,
+        })
+    }
+
     fn admitted_working_bytes(&self) -> Result<usize> {
         self.task_context
             .memory_reservation()
@@ -290,7 +399,7 @@ impl<'a> EmbeddedReadSnapshot<'a> {
     ) -> Result<SearchCandidateOutput> {
         self.task_context
             .checkpoint()
-            .map_err(|reason| HawDBError::Execution(format!("runtime task {reason}")))?;
+            .map_err(HawDBError::RuntimeTaskStopped)?;
         let _ = self.statement_row_budget(request.limit.max(1))?;
         let _ = self.remaining_payload_bytes()?;
         let max_working_bytes = self.admitted_working_bytes()?;
@@ -697,6 +806,10 @@ impl EmbeddedStoreHandle {
     /// Candidate search intentionally returns compact identities. Embedded
     /// hosts use this method for projection-owned payloads, such as source
     /// chunks, that have no authoritative graph node to hydrate from.
+    ///
+    /// Documents return in request order, one per id. An id the projection
+    /// does not contain refuses the whole request with `HawDBError::Semantic`
+    /// on both the resident and the out-of-core projection.
     pub fn search_projection_documents(
         &self,
         document_ids: &[String],
@@ -720,6 +833,176 @@ impl EmbeddedStoreHandle {
         }
         self.with_admitted_search(|read| read.hydrate(document_ids))
     }
+
+    /// Lists one ordered page of Search projection document IDs for the
+    /// requested kinds without retaining the projection across calls.
+    ///
+    /// `after` is exclusive. A caller must compare `page.generation()` on every
+    /// page and restart from `None` if it changes. The returned page retains a
+    /// runtime memory charge for its ID/cursor bytes only; resident generations
+    /// are read under the short publication lock, and out-of-core generations
+    /// are pinned only for this call while decoding their ID mappings.
+    pub fn list_search_projection_ids(
+        &self,
+        kinds: &BTreeSet<SearchProjectionKind>,
+        after: Option<&str>,
+        limit: usize,
+        task_context: &RuntimeTaskContext,
+    ) -> Result<crate::search::SearchProjectionIdPage> {
+        if limit == 0 {
+            return Err(HawDBError::Execution(
+                "search projection ID page limit must be greater than zero".into(),
+            ));
+        }
+        task_context
+            .checkpoint()
+            .map_err(HawDBError::RuntimeTaskStopped)?;
+
+        let (governor, request, expected_generation, result_limit) = {
+            let published = self.lock_published_read()?;
+            let published = published.as_ref().ok_or_else(|| {
+                HawDBError::Execution(
+                    "search projection publication changed; retry the page".into(),
+                )
+            })?;
+            published.view.snapshot.ensure_usable()?;
+            let config = published.view.snapshot.config();
+            if let Some(configured) = config.read_result_row_limit()
+                && limit > configured
+            {
+                return Err(HawDBError::Execution(format!(
+                    "search projection ID page limit {limit} exceeds configured row limit {configured}"
+                )));
+            }
+            let result_limit = config.max_read_result_payload_bytes.unwrap_or(usize::MAX);
+            let control_bytes = limit
+                .checked_add(1)
+                .and_then(|rows| {
+                    rows.checked_mul(
+                        size_of::<String>()
+                            .saturating_add(size_of::<hawdb_qos::RuntimeRetainedMemory>())
+                            .saturating_mul(2),
+                    )
+                })
+                .ok_or_else(|| {
+                    HawDBError::Execution("search projection ID page capacity overflow".into())
+                })?;
+            let (generation, working_bytes, io_slots) = match (
+                &published.resident_projection,
+                &published.out_of_core_projection,
+            ) {
+                (Some(projection), None) => {
+                    (projection.snapshot().page_generation(), control_bytes, 0)
+                }
+                (None, Some(projection)) => (
+                    projection.reader().page_generation(),
+                    projection
+                        .reader()
+                        .projection_id_page_working_memory_bytes(limit)?,
+                    published.external_seed_io_slots,
+                ),
+                (None, None) => return Err(missing_search_projection_error()),
+                (Some(_), Some(_)) => return Err(ambiguous_search_projection_error()),
+            };
+            let working_bytes = u64::try_from(working_bytes).unwrap_or(u64::MAX);
+            (
+                published.governor.clone(),
+                RuntimeWorkRequest::foreground_query(working_bytes, 0)
+                    .with_io_slots(io_slots)
+                    .with_blocking(true),
+                generation,
+                result_limit,
+            )
+        };
+
+        let permit = try_admit_runtime(&governor, request)?;
+        let task = permit.bind_task_context(task_context.clone());
+        enum Source {
+            Resident(crate::search::SearchProjectionIdBatch),
+            OutOfCore(Arc<crate::search::SearchOutOfCoreReader>),
+        }
+        let source = {
+            let published = self.lock_published_read()?;
+            let published = published.as_ref().ok_or_else(|| {
+                HawDBError::Execution(
+                    "search projection publication changed; retry the page".into(),
+                )
+            })?;
+            let generation = match (
+                &published.resident_projection,
+                &published.out_of_core_projection,
+            ) {
+                (Some(projection), None) => projection.snapshot().page_generation(),
+                (None, Some(projection)) => projection.reader().page_generation(),
+                (None, None) => return Err(missing_search_projection_error()),
+                (Some(_), Some(_)) => return Err(ambiguous_search_projection_error()),
+            };
+            if generation != expected_generation {
+                return Err(HawDBError::Execution(
+                    "search projection changed while admitting an ID page; retry the page".into(),
+                ));
+            }
+            match (
+                &published.resident_projection,
+                &published.out_of_core_projection,
+            ) {
+                (Some(projection), None) => Source::Resident(
+                    projection
+                        .snapshot()
+                        .list_projection_ids(kinds, after, limit, &task, &permit)?,
+                ),
+                (None, Some(projection)) => Source::OutOfCore(Arc::clone(&projection.reader)),
+                _ => unreachable!("validated exactly one projection source"),
+            }
+        };
+        let batch = match source {
+            Source::Resident(batch) => batch,
+            Source::OutOfCore(projection) => {
+                projection.list_projection_ids(kinds, after, limit, &task, &permit)?
+            }
+        };
+        task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
+        let next = if batch.has_more {
+            let last = batch.ids.last().expect("nonempty continued page");
+            let memory = permit
+                .reserve_retained_memory(u64::try_from(last.len()).unwrap_or(u64::MAX))
+                .map_err(HawDBError::from)?;
+            Some((last.clone(), memory))
+        } else {
+            None
+        };
+        let retained_id_bytes = batch
+            .ids
+            .iter()
+            .try_fold(0u64, |bytes, id| {
+                bytes.checked_add(u64::try_from(id.len()).unwrap_or(u64::MAX))
+            })
+            .and_then(|bytes| {
+                next.as_ref().map_or(Some(bytes), |(next, _)| {
+                    bytes.checked_add(u64::try_from(next.len()).unwrap_or(u64::MAX))
+                })
+            })
+            .ok_or_else(|| HawDBError::Execution("projection ID page size overflow".into()))?;
+        if retained_id_bytes > u64::try_from(result_limit).unwrap_or(u64::MAX) {
+            return Err(HawDBError::read_budget_exceeded(
+                ReadBudgetResource::PayloadBytes,
+                result_limit,
+                "search projection ID page exceeds max_read_result_payload_bytes",
+            ));
+        }
+        let (next, cursor_memory) =
+            next.map_or((None, None), |(next, memory)| (Some(next), Some(memory)));
+        self.finish_canonical_read(Ok(
+            crate::search::SearchProjectionIdPage::from_admitted_ids(
+                batch.ids,
+                next,
+                expected_generation,
+                retained_id_bytes,
+                batch.memory,
+                cursor_memory,
+            ),
+        ))
+    }
 }
 
 impl EmbeddedStoreHandle {
@@ -727,17 +1010,34 @@ impl EmbeddedStoreHandle {
         &self,
         statements: &[NowledgeGraphStatement],
     ) -> Result<crate::NowledgeGraphTransactionOutput> {
+        self.transaction_context(&RuntimeTaskContext::default(), statements)
+    }
+
+    /// Runs [`Self::transaction`] under the caller's deadline and
+    /// cancellation; see [`Self::with_transaction_context`] for where they
+    /// are honored and the commit boundary.
+    pub fn transaction_context(
+        &self,
+        task_context: &RuntimeTaskContext,
+        statements: &[NowledgeGraphStatement],
+    ) -> Result<crate::NowledgeGraphTransactionOutput> {
+        task_context.checkpoint()?;
         let permit = self.admit_transaction(statements)?;
         let _unwind = concurrent_owner::PublicationUnwindGuard(&self.read_publication_failed);
         let mut transaction = self.concurrent.begin_admitted_transaction(
             crate::ConcurrentTransactionOptions::default(),
             permit,
-            RuntimeTaskContext::default(),
+            task_context.clone(),
         )?;
         let mut statement_outputs = Vec::with_capacity(statements.len());
         for statement in statements {
-            statement_outputs
-                .push(transaction.query_with_params(&statement.cypher, &statement.parameters)?);
+            match transaction.query_with_params(&statement.cypher, &statement.parameters) {
+                Ok(output) => statement_outputs.push(output),
+                Err(error) => {
+                    transaction.rollback();
+                    return Err(error);
+                }
+            }
         }
         let commit_output = transaction.commit()?;
         Ok(crate::NowledgeGraphTransactionOutput {
@@ -756,12 +1056,32 @@ impl EmbeddedStoreHandle {
         &self,
         operation: impl FnOnce(&mut crate::ConcurrentDatabaseTransaction) -> Result<T>,
     ) -> Result<T> {
+        self.with_transaction_context(&RuntimeTaskContext::default(), operation)
+    }
+
+    /// Runs [`Self::with_transaction`] under the caller's deadline and
+    /// cancellation.
+    ///
+    /// They are honored up to the commit boundary: before runtime admission,
+    /// while waiting for another writer's locks, during each statement, when
+    /// the commit is about to run, and while a commit waits for live-overlay
+    /// headroom before retrying. A stop there returns the typed, non-poisoning
+    /// `HawDBError::RuntimeTaskStopped`, rolls back every staged statement and
+    /// leaves the handle usable. Once the commit has started its WAL append it
+    /// is never interrupted: a deadline that passes then does not fail or undo
+    /// it. A lock wait also still ends at the transaction's own lock timeout.
+    pub fn with_transaction_context<T>(
+        &self,
+        task_context: &RuntimeTaskContext,
+        operation: impl FnOnce(&mut crate::ConcurrentDatabaseTransaction) -> Result<T>,
+    ) -> Result<T> {
+        task_context.checkpoint()?;
         let permit = self.admit_typed_transaction()?;
         let _unwind = concurrent_owner::PublicationUnwindGuard(&self.read_publication_failed);
         let mut transaction = self.concurrent.begin_admitted_transaction(
             crate::ConcurrentTransactionOptions::default(),
             permit,
-            RuntimeTaskContext::default(),
+            task_context.clone(),
         )?;
         match operation(&mut transaction) {
             Ok(output) => transaction.commit().map(|_| output),
@@ -882,7 +1202,10 @@ impl EmbeddedStoreHandle {
             (
                 Arc::clone(&current.view),
                 current.instance_identity.clone(),
-                current.resident_projection.clone(),
+                current
+                    .resident_projection
+                    .as_ref()
+                    .map(|published| published.snapshot().clone()),
                 current
                     .out_of_core_projection
                     .as_ref()
@@ -1429,6 +1752,22 @@ impl EmbeddedStoreHandle {
         Ok(self.write_store()?.query_runtime_preflight_json(probes))
     }
 
+    /// See [`EmbeddedStore::externally_owned_rows_required`].
+    pub fn externally_owned_rows_required(&self) -> Result<Option<ExternallyOwnedRowsToken>> {
+        self.read_store()?.externally_owned_rows_required()
+    }
+
+    /// Acknowledges that the host re-pushed its externally owned rows for
+    /// `token`. See [`EmbeddedStore::acknowledge_externally_owned_rows_restored`]:
+    /// a stale token returns `Ok(false)` and changes nothing.
+    pub fn acknowledge_externally_owned_rows_restored(
+        &self,
+        token: ExternallyOwnedRowsToken,
+    ) -> Result<bool> {
+        self.write_store()?
+            .acknowledge_externally_owned_rows_restored(token)
+    }
+
     pub fn catch_up_search_projection(
         &self,
         max_operations_per_batch: usize,
@@ -1762,7 +2101,7 @@ impl EmbeddedStoreHandle {
             if error.is_retryable() {
                 governor.record_admission_wait(request, error.code, 0);
             }
-            HawDBError::Execution(error.to_string())
+            HawDBError::from(error)
         })?;
         // Capture after admission so a write completed during admission is visible.
         // Snapshot construction and observation refresh run after unlocking.
@@ -1903,7 +2242,7 @@ pub(super) fn try_admit_runtime(
         if error.is_retryable() {
             governor.record_admission_wait(request, error.code, 0);
         }
-        HawDBError::Execution(error.to_string())
+        HawDBError::from(error)
     })
 }
 

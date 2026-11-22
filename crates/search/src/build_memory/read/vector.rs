@@ -30,7 +30,8 @@ impl ProjectionReadAdmission for ReadAdmission<'_> {
     fn acquire_io(&self) -> hawdb_vector_projection::Result<Self::Io> {
         self.io().map_err(|error| match error {
             hawdb_core::RuntimeIoWaveError::Stopped(reason) => ProjectionError::Cancelled(reason),
-            error => ProjectionError::Admission(HawDBError::Execution(error.to_string())),
+            // A reservation overflow stays an execution error.
+            error => ProjectionError::Admission(HawDBError::from(error)),
         })
     }
     fn checkpoint(&self) -> hawdb_vector_projection::Result<()> {

@@ -359,9 +359,13 @@ fn writable_metadata_only_transaction_checkpoints_rows_and_indexes() {
     };
 
     let incompatible = Database::open(&path).unwrap().commit_epoch().unwrap_err();
+    let HawDBError::UnsupportedStorageFormat(format) = &incompatible else {
+        panic!("expected a typed layout refusal, got {incompatible:?}");
+    };
+    assert_eq!(format.format(), crate::RELATIONAL_CHECKPOINT_LAYOUT_FORMAT);
     assert!(incompatible
         .to_string()
-        .contains("reopen requires OutOfCore residency with Authoritative relational indexes"));
+        .contains("reopen with OutOfCore residency and Authoritative relational indexes"));
 
     let mut reopened = Database::open_with_config(&path, config).unwrap();
     assert_eq!(reopened.commit_epoch().unwrap(), committed_epoch);

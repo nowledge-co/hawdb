@@ -497,8 +497,7 @@ fn overflow() -> HawDBError {
     HawDBError::Execution("vector source admission size overflow".into())
 }
 fn checkpoint(task: &RuntimeTaskContext) -> Result<()> {
-    task.checkpoint()
-        .map_err(|reason| HawDBError::Execution(reason.to_string()))
+    task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)
 }
 
 impl VectorIndexBuildOptions {

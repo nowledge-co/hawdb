@@ -58,16 +58,23 @@ and its owned children.
 ## Execution and index selection
 
 Sargability extraction lives in `hawdb_optimizer::relational_sargability` and
-recognizes the existing bare-column/value equalities, column join equalities,
-and strict two-column keyset cursor. Arbitrary expressions remain residuals;
-OR/NOT boundaries, duplicate constraints and null-order checks are preserved.
-Lock planning retains its independent AND intersection and OR union rules.
+recognizes bare-column/value equalities, column join equalities, the legacy
+expanded two-column keyset predicate, and strict row-constructor keyset cursors
+of arbitrary arity. A row cursor is native only when its columns exactly match
+the uniformly ordered suffix and its values complete the composite index key.
+Arbitrary expressions remain residuals; OR/NOT boundaries, duplicate
+constraints and null-order checks are preserved. Lock planning retains its
+independent AND intersection and OR union rules.
 
-The shared tree does not merge execution semantics: relational predicates keep
-three-valued logic and existing type coercion; system predicates keep their
-existing boolean behavior. Mutation compilation still rejects column-to-column
-comparisons and LIKE/ILIKE. Null-rejection proofs remain a separate abstract
-optimizer representation, not an executable expression tree.
+The shared tree does not merge execution semantics: relational scalar and row
+predicates keep three-valued logic and existing type coercion; system predicates
+keep their existing boolean behavior. Row equality tests every field and can be
+decided by any unequal non-null pair; row ordering compares fields left to right
+and stops at the first unequal or null pair, matching PostgreSQL. Mutation
+compilation accepts row comparisons by lowering them to the equivalent scalar
+boolean expression, while its existing scalar column-to-column and LIKE/ILIKE
+restrictions remain. Null-rejection proofs remain a separate abstract optimizer
+representation, not an executable expression tree.
 
 ## Verification contract
 

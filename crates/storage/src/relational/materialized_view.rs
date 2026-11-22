@@ -218,7 +218,7 @@ pub(super) fn clone_definition(
 ) -> Result<Box<MaterializedViewDefinition>, RelationalError> {
     context
         .reserve(std::mem::size_of::<MaterializedViewDefinition>())
-        .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        .map_err(RelationalError::from_admission)?;
     let name = |value: &str| clone_string_with_allocations(value, Some(context));
     let columns = collect_results_with_allocations(
         view.columns.iter().map(|column| {
@@ -254,7 +254,7 @@ pub(super) fn clone_definition(
         filter: view
             .filter
             .as_ref()
-            .map(|filter| clone_filter(filter, context))
+            .map(|filter| clone_predicate(filter, context))
             .transpose()?,
         search: view
             .search
@@ -269,15 +269,15 @@ pub(super) fn clone_definition(
     }))
 }
 
-fn clone_filter(
+pub(super) fn clone_predicate(
     filter: &RelationalPredicate,
     context: &crate::background::CheckpointDecodeContext,
 ) -> Result<RelationalPredicate, RelationalError> {
     let boxed = |filter: &RelationalPredicate| {
         context
             .reserve(std::mem::size_of::<RelationalPredicate>())
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
-        Ok::<_, RelationalError>(Box::new(clone_filter(filter, context)?))
+            .map_err(RelationalError::from_admission)?;
+        Ok::<_, RelationalError>(Box::new(clone_predicate(filter, context)?))
     };
     Ok(match filter {
         RelationalPredicate::NumericCompare { left, op, right } => {
@@ -294,6 +294,25 @@ fn clone_filter(
             expression: expression.clone_with_allocations(context)?,
             negated: *negated,
         },
+        RelationalPredicate::RowCompare { fields, op } => {
+            let mut cloned = context
+                .vector_capacity(fields.len())
+                .map_err(RelationalError::from_admission)?;
+            for field in fields {
+                cloned.push(RelationalRowComparisonField {
+                    equality: clone_predicate(&field.equality, context)?,
+                    ordering: field
+                        .ordering
+                        .as_ref()
+                        .map(|ordering| clone_predicate(ordering, context))
+                        .transpose()?,
+                });
+            }
+            RelationalPredicate::RowCompare {
+                fields: cloned,
+                op: *op,
+            }
+        }
         RelationalPredicate::And(left, right) => {
             RelationalPredicate::And(boxed(left)?, boxed(right)?)
         }
@@ -424,7 +443,7 @@ fn extrema_index<'a>(
 ) -> Result<&'a RelationalIndexSchema, RelationalError> {
     // Unique indexes omit NULL keys. A non-unique prefix is complete even for
     // nullable grouping columns and nullable suffixes.
-    source.indexes.iter().find(|index| !index.unique && index.columns.starts_with(&definition.group_by))
+    source.indexes.iter().find(|index| !index.unique && index.predicate.is_none() && index.columns.starts_with(&definition.group_by))
         .ok_or_else(|| RelationalError::Schema("materialized MIN/MAX requires a non-unique source index starting with the GROUP BY columns".into()))
 }
 
@@ -487,10 +506,8 @@ impl<'a> MaintenanceBudget<'a> {
                 .reserve(
                     bytes.saturating_add(rows.saturating_mul(std::mem::size_of::<RelationalRow>())),
                 )
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
-            context
-                .checkpoint()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                .map_err(RelationalError::from_admission)?;
+            context.checkpoint().map_err(RelationalError::from_work)?;
         }
         Ok(())
     }

@@ -1,6 +1,7 @@
 # Single-column sort-key preparation controls
 
-Status: source qualification in progress; no performance acceptance is claimed.
+Status: performance qualification incomplete. The current-head failure
+disposition is recorded in [PR #1235](https://github.com/nowledge-co/hawdb/pull/1235).
 This is an internal allocation change under `SortExec`, not a new ordering
 operator. The original tuple allowance, row charge, cancellation points, stable
 ordinal ties, typed `Value` ordering and spill format remain the contracts.
@@ -35,9 +36,12 @@ cargo bench --locked --bench concurrent_writers -- --sort-key-control
 bazel run --config=release //:hawdb_bench_concurrent_writers -- --sort-key-control
 ```
 
-`measure-sort-key-controls.py` consumes the two already built binaries and a
-complete fixed writer-matrix receipt. It retains one process warmup pair and
-40 measured pairs in alternating revision order. Each native process executes
+`measure-sort-key-controls.py` verifies the two binaries against the writer
+build receipt, including the candidate commit and pinned toolchain. It runs
+after the writer step, even when an incomplete writer matrix prevents a writer
+acceptance result. The protocol records whether writer timing completed. It
+retains one process warmup pair and 40 measured pairs in alternating revision
+order. Each native process executes
 all ten cases. Raw stdout, stderr, process status, checksums, source/binary
 identity, load and every query sample are retained, including native errors.
 Thirty predeclared latency endpoints use conservative simultaneous sign-test

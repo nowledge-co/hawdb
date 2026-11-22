@@ -236,9 +236,9 @@ impl SharedPoolMorselScheduler {
         F: Fn(Morsel) -> Result<T> + Sync,
     {
         if admission.morsel_count() == 0 {
-            context.checkpoint().map_err(|reason| {
-                HawDBError::Execution(format!("runtime task stopped: {reason}"))
-            })?;
+            context
+                .checkpoint()
+                .map_err(HawDBError::RuntimeTaskStopped)?;
             return Ok(Vec::new());
         }
         let max_workers = NonZeroUsize::new(admission.max_workers()).ok_or_else(|| {
@@ -267,7 +267,7 @@ impl SharedPoolMorselScheduler {
             return Err(error);
         }
         outputs
-            .map_err(|reason| HawDBError::Execution(format!("runtime task stopped: {reason}")))?
+            .map_err(HawDBError::RuntimeTaskStopped)?
             .into_iter()
             .collect()
     }
@@ -298,9 +298,9 @@ impl SharedPoolMorselScheduler {
     {
         if admission.morsel_count() == 0 {
             if let Some(context) = resources.task_context {
-                context.checkpoint().map_err(|reason| {
-                    HawDBError::Execution(format!("runtime task stopped: {reason}"))
-                })?;
+                context
+                    .checkpoint()
+                    .map_err(HawDBError::RuntimeTaskStopped)?;
             }
             return Ok(MorselStreamReport::default());
         }

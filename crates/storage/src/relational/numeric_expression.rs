@@ -147,7 +147,7 @@ impl RelationalNumericExpression {
 }
 
 fn admission(error: hawdb_core::HawDBError) -> RelationalError {
-    RelationalError::Admission(error.to_string())
+    RelationalError::from_admission(error)
 }
 fn execution(error: hawdb_core::HawDBError) -> RelationalError {
     RelationalError::Constraint(error.to_string())

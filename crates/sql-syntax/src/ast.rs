@@ -22,10 +22,99 @@ pub enum PgqStatement {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelationalStatementSyntax {
     Select(Box<PostgresSelectSyntax>),
+    Query(Box<PostgresQuerySyntax>),
     Explain {
         analyze: bool,
-        select: Box<PostgresSelectSyntax>,
+        query: Box<PostgresQuerySyntax>,
     },
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct PostgresQuerySyntax {
+    pub recursive: bool,
+    pub with: Vec<PostgresCommonTableExpressionSyntax>,
+    pub body: PostgresQueryBodySyntax,
+    pub order_by: Vec<OrderBySyntax>,
+    pub limit: Option<ExpressionSyntax>,
+    pub offset: Option<ExpressionSyntax>,
+    pub locking: Option<LockingClauseSyntax>,
+    pub span: Span,
+}
+
+impl std::fmt::Debug for PostgresQuerySyntax {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = formatter.debug_struct("PostgresQuerySyntax");
+        if self.recursive {
+            debug.field("recursive", &true);
+        }
+        debug
+            .field("with", &self.with)
+            .field("body", &self.body)
+            .field("order_by", &self.order_by)
+            .field("limit", &self.limit)
+            .field("offset", &self.offset)
+            .field("locking", &self.locking)
+            .field("span", &self.span)
+            .finish()
+    }
+}
+
+impl PostgresQuerySyntax {
+    pub fn into_simple_select(self) -> Result<PostgresSelectSyntax, Box<Self>> {
+        if !self.with.is_empty() || !matches!(&self.body, PostgresQueryBodySyntax::Select(_)) {
+            return Err(Box::new(self));
+        }
+        let Self {
+            recursive: _,
+            with: _,
+            body,
+            order_by,
+            limit,
+            offset,
+            locking,
+            span: _,
+        } = self;
+        let PostgresQueryBodySyntax::Select(mut select) = body else {
+            unreachable!("simple query body was checked")
+        };
+        select.order_by = order_by;
+        select.limit = limit;
+        select.offset = offset;
+        select.locking = locking;
+        Ok(*select)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PostgresCommonTableExpressionSyntax {
+    pub name: Identifier,
+    pub columns: Vec<Identifier>,
+    pub query: Box<PostgresQuerySyntax>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PostgresQueryBodySyntax {
+    Select(Box<PostgresSelectSyntax>),
+    Values {
+        rows: Vec<Vec<ExpressionSyntax>>,
+        span: Span,
+    },
+    Nested(Box<PostgresQuerySyntax>),
+    SetOperation {
+        left: Box<PostgresQueryBodySyntax>,
+        operator: PostgresSetOperator,
+        all: bool,
+        right: Box<PostgresQueryBodySyntax>,
+        span: Span,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostgresSetOperator {
+    Union,
+    Intersect,
+    Except,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,7 +148,15 @@ pub struct PostgresFromSyntax {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PostgresFromItemSyntax {
     Relation(RelationTableSyntax),
+    Derived(DerivedTableSyntax),
     GraphTable(GraphTable),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DerivedTableSyntax {
+    pub query: Box<PostgresQuerySyntax>,
+    pub alias: TableAlias,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -333,6 +430,19 @@ pub enum ExpressionKindSyntax {
         values: Vec<ExpressionSyntax>,
         negated: bool,
     },
+    Exists {
+        query: Box<PostgresQuerySyntax>,
+    },
+    InSubquery {
+        expression: Box<ExpressionSyntax>,
+        query: Box<PostgresQuerySyntax>,
+        negated: bool,
+    },
+    /// `ROW(a, b, ...)` or the PostgreSQL shorthand `(a, b, ...)`.
+    ///
+    /// A single parenthesized expression remains `Parenthesized`; the
+    /// shorthand row form therefore always contains at least two fields.
+    Row(Vec<ExpressionSyntax>),
     Between {
         expression: Box<ExpressionSyntax>,
         low: Box<ExpressionSyntax>,

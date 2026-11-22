@@ -376,7 +376,8 @@ pub(super) fn bind_relationship_copy_on_create_set_properties(
             | SetValueExpression::DecrementFloorZero { .. }
             | SetValueExpression::PreserveNewerExisting { .. }
             | SetValueExpression::PreserveOlderExisting { .. }
-            | SetValueExpression::CoalescePropertyAdd { .. } => {
+            | SetValueExpression::CoalescePropertyAdd { .. }
+            | SetValueExpression::Expression(_) => {
                 return Err(HawDBError::Semantic(
                     "relationship-copy MERGE ON CREATE SET supports only values and matched relationship properties"
                         .to_string(),
@@ -675,9 +676,11 @@ pub(super) fn bind_value(
 /// clock read in one statement observes the same instant.
 pub(super) fn current_timestamp_value() -> Value {
     let now = hawdb_core::temporal::statement_now();
-    let nanos = now
-        .timestamp_nanos_opt()
-        .unwrap_or(if now.timestamp() < 0 { 0 } else { i64::MAX });
+    let nanos = i64::try_from(now.unix_timestamp_nanos()).unwrap_or(if now.unix_timestamp() < 0 {
+        0
+    } else {
+        i64::MAX
+    });
     Value::Int(nanos.max(0))
 }
 
@@ -1502,7 +1505,8 @@ pub(super) fn collect_scalar_expression_variables(
             }
         }
         ScalarExpressionKind::Left { expression, .. }
-        | ScalarExpressionKind::JsonValue { expression, .. } => {
+        | ScalarExpressionKind::JsonValue { expression, .. }
+        | ScalarExpressionKind::JsonString { expression, .. } => {
             collect_scalar_expression_variables(expression, variables);
         }
         ScalarExpressionKind::VectorDistance { left, right, .. } => {

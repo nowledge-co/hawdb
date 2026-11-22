@@ -37,7 +37,7 @@ pub(super) fn function<'a>(
         .collect::<Vec<_>>();
     hawdb_core::temporal::evaluate(function, &owned, hawdb_core::temporal::statement_now())
         .map(ProjectedValue::scalar)
-        .map_err(|error| HawDBError::Execution(error.to_string()))
+        .map_err(HawDBError::from_execution_error)
 }
 
 /// `value.key`: a temporal component, a map entry, or NULL for NULL.
@@ -73,8 +73,7 @@ pub(super) fn scalar_property(
     match value {
         Value::Null => Ok(Value::Null),
         value if hawdb_core::temporal::is_temporal(value) => {
-            hawdb_core::temporal::component(value, key)
-                .map_err(|error| HawDBError::Execution(error.to_string()))
+            hawdb_core::temporal::component(value, key).map_err(HawDBError::from_execution_error)
         }
         value => Err(HawDBError::Execution(format!(
             "property access '.{key}' requires a map or temporal value, got {:?}",

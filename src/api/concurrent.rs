@@ -90,6 +90,18 @@ fn set_graph_commit_preparation_hook(hook: Box<dyn FnOnce()>) {
     GRAPH_COMMIT_PREPARATION_HOOK.with(|slot| *slot.borrow_mut() = Some(hook));
 }
 
+#[cfg(test)]
+thread_local! {
+    static COMMIT_BOUNDARY_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Runs `hook` on this thread once a transaction commit has passed its last
+/// task check, just before the commit is applied.
+#[cfg(test)]
+pub(crate) fn set_commit_boundary_hook(hook: Box<dyn FnOnce()>) {
+    COMMIT_BOUNDARY_HOOK.with(|slot| *slot.borrow_mut() = Some(hook));
+}
+
 pub const DEFAULT_PESSIMISTIC_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -252,6 +264,12 @@ impl ConcurrentDatabase {
     /// Returns the last completed publication, without waiting for an active writer.
     pub fn commit_epoch(&self) -> Result<u64> {
         Ok(self.published_read_view()?.visible_commit_epoch())
+    }
+
+    /// Returns the newest commit epoch that changed graph data or schema; see
+    /// [`Database::graph_change_commit_epoch`]. Waits for an active writer.
+    pub fn graph_change_commit_epoch(&self) -> Result<u64> {
+        self.inner.commits.lock()?.graph_change_commit_epoch()
     }
 
     /// Includes the physical generation refreshed by completed checkpoints.
@@ -743,6 +761,21 @@ impl ConcurrentDatabaseTransaction {
         self.base_commit_epoch
     }
 
+    /// Returns the graph change commit epoch of this transaction's base
+    /// snapshot (see [`Database::graph_change_commit_epoch`]) and makes the
+    /// commit conditional on it, for compare-and-publish. If a commit that
+    /// changed graph data or schema is published after the base snapshot, this
+    /// transaction's commit fails with the retryable
+    /// `HawDBError::TransactionConflict` (key `graph_change_commit_epoch`) and
+    /// writes nothing. Relational-only commits never cause that refusal. The
+    /// transaction's own graph writes do not count. Refused with the storage
+    /// error if the database is poisoned, for example after a failed group
+    /// commit durability barrier.
+    pub fn graph_change_commit_epoch(&mut self) -> Result<u64> {
+        self.inner.commits.lock()?.graph_change_commit_epoch()?;
+        Ok(self.state.guard_graph_change_commit_epoch())
+    }
+
     pub fn mode(&self) -> ConcurrentTransactionMode {
         self.options.mode
     }
@@ -966,11 +999,12 @@ impl ConcurrentDatabaseTransaction {
         }
         let started = Instant::now();
         if self.options.mode == ConcurrentTransactionMode::Optimistic
-            && let Err(error) = self.inner.locks.acquire(
+            && let Err(error) = self.inner.locks.acquire_with_task(
                 self.transaction_id,
                 &[LockRequest::database(LockMode::OptimisticCommit)],
                 started,
                 self.options.lock_timeout,
+                self.task_context.as_ref(),
             )
         {
             self.finished = true;
@@ -1016,6 +1050,12 @@ impl ConcurrentDatabaseTransaction {
                     // Cancellation before the commit boundary rejects without WAL.
                     // Never turn a durable success into cancellation afterward.
                     super::query_runtime::query_runtime_checkpoint(task_context.as_ref())?;
+                    #[cfg(test)]
+                    COMMIT_BOUNDARY_HOOK.with(|hook| {
+                        if let Some(hook) = hook.borrow_mut().take() {
+                            hook();
+                        }
+                    });
                     let result = commit_prepared_database_transaction_state(
                         database,
                         &mut state,
@@ -1056,11 +1096,12 @@ impl ConcurrentDatabaseTransaction {
         let started = Instant::now();
         let inner = Arc::clone(&self.inner);
         let requests_already_covered = inner.locks.covers_all(self.transaction_id, requests)?;
-        if let Err(error) = inner.locks.acquire(
+        if let Err(error) = inner.locks.acquire_with_task(
             self.transaction_id,
             requests,
             started,
             self.options.lock_timeout,
+            self.task_context.as_ref(),
         ) {
             let error: HawDBError = error.into();
             self.abort_after_lock_failure(&error);
@@ -1087,7 +1128,10 @@ impl ConcurrentDatabaseTransaction {
                 // history lease or changing any part of the transaction view.
                 let dependencies = capture_lock_dependencies(&database, self.options)?;
                 let runtime = DatabaseTransactionRuntime::from_database(&database)?;
-                let state = DatabaseTransactionState::from_database(&database)?;
+                let mut state = DatabaseTransactionState::from_database(&database)?;
+                // A graph change epoch the caller already read stays the
+                // commit condition; the refreshed snapshot must not reset it.
+                state.keep_graph_change_guard(&self.state);
                 self.base_commit_epoch = current_epoch;
                 self.runtime = runtime;
                 self.state = state;
@@ -1135,11 +1179,12 @@ impl ConcurrentDatabaseTransaction {
         let started = Instant::now();
         let inner = Arc::clone(&self.inner);
         let requests_already_covered = inner.locks.covers_all(self.transaction_id, requests)?;
-        if let Err(error) = inner.locks.acquire(
+        if let Err(error) = inner.locks.acquire_with_task(
             self.transaction_id,
             requests,
             started,
             self.options.lock_timeout,
+            self.task_context.as_ref(),
         ) {
             let abort_transaction = error.aborts_transaction();
             let error: HawDBError = error.into();
@@ -1250,9 +1295,12 @@ fn reject_optimistic_locking_select(
 ) -> Result<()> {
     let locking_select = match prepared.statement() {
         SqlStatement::Select(select) => select.lock_strength.is_some(),
-        SqlStatement::Explain(explain) => {
-            matches!(explain.statement.as_ref(), SqlStatement::Select(select) if select.lock_strength.is_some())
-        }
+        SqlStatement::Query(query) => query.contains_locking_clause(),
+        SqlStatement::Explain(explain) => match explain.statement.as_ref() {
+            SqlStatement::Select(select) => select.lock_strength.is_some(),
+            SqlStatement::Query(query) => query.contains_locking_clause(),
+            _ => false,
+        },
         _ => false,
     };
     if locking_select {
@@ -1266,6 +1314,7 @@ fn reject_optimistic_locking_select(
 pub(super) fn sql_statement_uses_snapshot(statement: &SqlStatement) -> bool {
     match statement {
         SqlStatement::Select(select) => select.lock_strength.is_none(),
+        SqlStatement::Query(query) => !query.contains_locking_clause(),
         SqlStatement::Explain(explain) => sql_statement_uses_snapshot(&explain.statement),
         SqlStatement::Insert(_)
         | SqlStatement::CreateMaterializedView(_)
@@ -1402,19 +1451,37 @@ fn sql_lock_requests(
         {
             Some(LockMode::Shared)
         }
-        SqlStatement::Explain(explain)
-            if explain.analyze
-                && matches!(
-                    explain.statement.as_ref(),
-                    SqlStatement::Select(select)
-                        if select
-                            .from
-                            .as_ref()
-                            .is_some_and(|from| append_state.schema(&from.name).is_some())
-                ) =>
-        {
-            Some(LockMode::Shared)
+        SqlStatement::Query(query) => {
+            let mut uses_append_table = false;
+            query.visit_selects(&mut |select| {
+                uses_append_table |= select
+                    .from
+                    .as_ref()
+                    .is_some_and(|from| append_state.schema(&from.name).is_some());
+            });
+            uses_append_table.then_some(LockMode::Shared)
         }
+        SqlStatement::Explain(explain) if explain.analyze => match explain.statement.as_ref() {
+            SqlStatement::Select(select)
+                if select
+                    .from
+                    .as_ref()
+                    .is_some_and(|from| append_state.schema(&from.name).is_some()) =>
+            {
+                Some(LockMode::Shared)
+            }
+            SqlStatement::Query(query) => {
+                let mut uses_append_table = false;
+                query.visit_selects(&mut |select| {
+                    uses_append_table |= select
+                        .from
+                        .as_ref()
+                        .is_some_and(|from| append_state.schema(&from.name).is_some());
+                });
+                uses_append_table.then_some(LockMode::Shared)
+            }
+            _ => None,
+        },
         SqlStatement::Insert(insert) if append_state.schema(&insert.table.name).is_some() => {
             Some(LockMode::Exclusive)
         }
@@ -1454,14 +1521,28 @@ fn sql_lock_requests(
             }
             Ok(select_lock_requests(select, parameters, state))
         }
+        SqlStatement::Query(query) => {
+            if query.contains_locking_clause() {
+                return Err(HawDBError::Semantic(
+                    "locking clauses are not supported on CTE or set-operation queries".to_string(),
+                ));
+            }
+            Ok(Vec::new())
+        }
         SqlStatement::Explain(explain) => {
             if !explain.analyze {
                 return Ok(Vec::new());
             }
-            let SqlStatement::Select(select) = explain.statement.as_ref() else {
-                return Ok(Vec::new());
-            };
-            Ok(select_lock_requests(select, parameters, state))
+            match explain.statement.as_ref() {
+                SqlStatement::Select(select) => Ok(select_lock_requests(select, parameters, state)),
+                SqlStatement::Query(query) if query.contains_locking_clause() => {
+                    Err(HawDBError::Semantic(
+                        "locking clauses are not supported on CTE or set-operation queries"
+                            .to_string(),
+                    ))
+                }
+                _ => Ok(Vec::new()),
+            }
         }
         SqlStatement::Insert(_) => {
             let compiled =
@@ -1764,8 +1845,8 @@ fn upsert_update_can_use_insert_locks(write: &RelationalWrite, state: &Relationa
         let absent = match conflict_index.role {
             RelationalIndexRole::Primary => state.row(table, &conflict_key).is_none(),
             _ => state
-                .index_lookup(table, &conflict_index.name, &conflict_key)
-                .is_none_or(|postings| postings.is_empty()),
+                .index_prefix_cardinality_at_most(table, &conflict_index.name, &conflict_key, 1)
+                .is_none_or(|count| count == 0),
         };
         // A later row in the same batch could update an earlier insertion into
         // an index key assembled from both row images, not either insert key.

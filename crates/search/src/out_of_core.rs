@@ -32,12 +32,14 @@ use super::{
 };
 use crate::bounded_file::{read_bound_file, read_bounded_file};
 use crate::error::{HawDBError, Result};
+use crate::projection_id_page;
 use crate::resident_documents::DocumentView;
 #[cfg(test)]
 use crate::{decode_search_segment_documents_bounded, validate_search_segment_documents};
 use crate::{
     RuntimeCapabilities, RuntimeCapability, SearchLexicalSourcePolicy, SearchLexicalTermPolicy,
 };
+use crate::{SearchProjectionIdBatch, SearchProjectionKind, SearchProjectionPageGeneration};
 use hawdb_core::{ResourceBudgetError, ResourceBudgetKind, ResourceBudgetScope};
 use hawdb_storage::durability::durable_replace_file;
 use hawdb_storage::file_io::{self as fs, File, OpenOptions};
@@ -49,6 +51,12 @@ use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+
+static OUT_OF_CORE_READER_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+fn next_out_of_core_reader_id() -> u64 {
+    OUT_OF_CORE_READER_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+}
 
 mod admitted_root;
 mod candidate_set;
@@ -84,6 +92,58 @@ fn hydrated_documents_refusal(
         message,
     }
     .into()
+}
+
+/// Who asked [`SearchOutOfCoreReader::load_document_targets`] for documents.
+///
+/// The request names the budget owner and decides what an id the published
+/// projection does not contain means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DocumentTargetRequest {
+    /// Hits produced by this reader's own index. A hit without a visible
+    /// document route is index damage.
+    SearchHits,
+    /// Ids named by the caller of [`SearchOutOfCoreReader::hydrate_documents`].
+    /// An id that is absent or deleted is the caller's mistake.
+    ById,
+    /// Ids named by the caller of [`SearchOutOfCoreReader::lookup_documents`].
+    /// An id that is absent or deleted is reported missing, not refused.
+    LookupById,
+    /// Ids a mutation writer derived against this reader (test-only today).
+    /// A missing one means the index disagrees with that writer's source.
+    #[cfg(test)]
+    MutationTargets,
+}
+
+impl DocumentTargetRequest {
+    /// The operation named in messages; the budget owner is `search {operation}`.
+    fn operation(self) -> &'static str {
+        match self {
+            Self::SearchHits => "hydration",
+            Self::ById => "hydration by id",
+            Self::LookupById => "lookup by id",
+            #[cfg(test)]
+            Self::MutationTargets => "mutation target resolution",
+        }
+    }
+
+    /// What an id without a visible document route means: `None` when the
+    /// caller asked which ids are present, otherwise the refusal.
+    fn unknown_document(self, id: &str) -> Option<HawDBError> {
+        match self {
+            Self::ById => Some(HawDBError::Semantic(format!(
+                "search hydration by id requested document {id}, which the published search projection does not contain"
+            ))),
+            Self::LookupById => None,
+            Self::SearchHits => Some(HawDBError::Storage(format!(
+                "search document {id} is outside the published document ranges"
+            ))),
+            #[cfg(test)]
+            Self::MutationTargets => Some(HawDBError::Storage(format!(
+                "search document {id} is outside the published document ranges"
+            ))),
+        }
+    }
 }
 
 pub(crate) struct CandidateQuery<'a> {
@@ -267,7 +327,7 @@ pub(crate) fn open_stationary_candidate(
         .ok_or_else(|| HawDBError::Execution("shared candidate allocation overflows".into()))?;
     let memory = permit
         .reserve_retained_memory(shared_bytes as u64)
-        .map_err(|error| HawDBError::Execution(error.to_string()))?;
+        .map_err(HawDBError::from_execution_error)?;
     Ok(CandidateView(Arc::new(SharedCandidateView {
         opened,
         _memory: memory,
@@ -342,6 +402,7 @@ pub struct SearchOutOfCoreConfig {
     /// Caller-selected encoded size bound for one mutation-run artifact.
     pub max_mutation_run_bytes: NonZeroU64,
     /// Aggregate mutation-run buffers, decoded ownership and validation indexes.
+    /// A refusal is typed `ResourceBudgetExceeded` and names this option.
     /// Content artifacts and one-target hydration/analysis use their own limits.
     pub max_mutation_working_bytes: NonZeroU64,
     /// Total transient memory available for exact old-version reanalysis.
@@ -475,6 +536,20 @@ pub struct SearchOutOfCoreHydrationOutput {
     pub metrics: SearchOutOfCoreMetrics,
 }
 
+/// The result of [`SearchOutOfCoreReader::lookup_documents`].
+///
+/// Every requested id appears exactly once: either as a document in
+/// `documents` or in `missing_document_ids`. Both lists follow request order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SearchOutOfCoreDocumentLookup {
+    /// The requested documents the published projection contains.
+    pub documents: Vec<SearchDocument>,
+    /// The requested ids the published projection does not contain, including
+    /// deleted ones.
+    pub missing_document_ids: Vec<String>,
+    pub metrics: SearchOutOfCoreMetrics,
+}
+
 /// A current document together with the immutable content segment that owns it.
 ///
 /// Mutation preparation uses this identity to rewrite the affected content
@@ -485,6 +560,7 @@ pub(crate) struct SearchOutOfCoreMutationTarget {
     pub(crate) document: SearchDocument,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SearchOutOfCoreMutationTargetOutput {
     pub(crate) targets: BTreeMap<String, SearchOutOfCoreMutationTarget>,
@@ -493,6 +569,7 @@ pub(crate) struct SearchOutOfCoreMutationTargetOutput {
 
 #[derive(Debug)]
 pub struct SearchOutOfCoreReader {
+    reader_id: u64,
     root: PathBuf,
     _project_files: hawdb_storage::file_descriptors::ProjectFileDescriptors,
     config: SearchOutOfCoreConfig,
@@ -794,18 +871,22 @@ impl SearchOutOfCoreManifestBody {
         manifest.stamp_reader_version();
         manifest.validate_names()?;
         let body = serde_json::to_vec(&manifest).map_err(|error| {
-            HawDBError::Storage(format!(
-                "failed to encode search out-of-core manifest: {error}"
-            ))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!(
+                    "failed to encode search out-of-core manifest: {error}"
+                ))
+            })
         })?;
         serde_json::to_vec(&SearchOutOfCoreManifestEnvelope {
             body: manifest,
             checksum: checksum_bytes(&body),
         })
         .map_err(|error| {
-            HawDBError::Storage(format!(
-                "failed to encode search out-of-core manifest envelope: {error}"
-            ))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!(
+                    "failed to encode search out-of-core manifest envelope: {error}"
+                ))
+            })
         })
     }
 
@@ -831,7 +912,9 @@ impl SearchOutOfCoreManifestBody {
         let envelope = serde_json::from_slice::<SearchOutOfCoreManifestEnvelope>(bytes);
         task.map_or(Ok(()), crate::build_control::checkpoint)?;
         let envelope = envelope.map_err(|error| {
-            HawDBError::Storage(format!("invalid search out-of-core manifest: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!("invalid search out-of-core manifest: {error}"))
+            })
         })?;
         if crate::build_control::json::checksum_with_context(&envelope.body, task)?
             != envelope.checksum
@@ -1245,18 +1328,22 @@ impl<S: AsRef<str>> SearchOutOfCoreSegmentManifest<S> {
 impl SearchOutOfCoreLayoutBody {
     fn encode(&self) -> Result<Vec<u8>> {
         let body = serde_json::to_vec(self).map_err(|error| {
-            HawDBError::Storage(format!(
-                "failed to encode search out-of-core layout: {error}"
-            ))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!(
+                    "failed to encode search out-of-core layout: {error}"
+                ))
+            })
         })?;
         serde_json::to_vec(&SearchOutOfCoreLayoutEnvelope {
             body: self.clone(),
             checksum: checksum_bytes(&body),
         })
         .map_err(|error| {
-            HawDBError::Storage(format!(
-                "failed to encode search out-of-core layout envelope: {error}"
-            ))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!(
+                    "failed to encode search out-of-core layout envelope: {error}"
+                ))
+            })
         })
     }
 
@@ -1272,7 +1359,9 @@ impl SearchOutOfCoreLayoutBody {
         let envelope = serde_json::from_slice::<SearchOutOfCoreLayoutEnvelope>(bytes);
         task.map_or(Ok(()), crate::build_control::checkpoint)?;
         let envelope = envelope.map_err(|error| {
-            HawDBError::Storage(format!("invalid search out-of-core layout: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!("invalid search out-of-core layout: {error}"))
+            })
         })?;
         let checksum = crate::build_control::json::checksum_with_context(&envelope.body, task);
         // CheckedWriter reports cancellation through serde's I/O error. Keep
@@ -1572,7 +1661,9 @@ impl SearchOutOfCoreSegmentReader {
             )?),
         };
         let descriptor_text = std::str::from_utf8(&descriptor_bytes).map_err(|error| {
-            HawDBError::Storage(format!("search segment descriptor is not UTF-8: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!("search segment descriptor is not UTF-8: {error}"))
+            })
         })?;
         let descriptor =
             crate::document_encoding::DecodedDescriptor::decode(descriptor_text, admission)?;
@@ -2208,6 +2299,99 @@ impl SearchOutOfCoreReader {
         self.manifest.generation
     }
 
+    /// Process-local identity for detecting an out-of-core source replacement
+    /// or generation advance between independently acquired ID pages.
+    #[doc(hidden)]
+    pub fn page_generation(&self) -> SearchProjectionPageGeneration {
+        SearchProjectionPageGeneration::OutOfCore {
+            reader: self.reader_id,
+            generation: self.generation(),
+        }
+    }
+
+    /// Working-memory admission for one sequential ID-block decode and the
+    /// bounded candidate/page control structures. ID bytes receive separate
+    /// retained-memory reservations before they are copied.
+    #[doc(hidden)]
+    pub fn projection_id_page_working_memory_bytes(&self, limit: usize) -> Result<usize> {
+        let block = self.segments.iter().try_fold(0usize, |largest, segment| {
+            Ok::<_, HawDBError>(
+                largest.max(segment.lexical_projection.document_id_page_memory_bytes()?),
+            )
+        })?;
+        let entry_bytes = std::mem::size_of::<String>()
+            .checked_add(std::mem::size_of::<hawdb_qos::RuntimeRetainedMemory>())
+            .ok_or_else(|| HawDBError::Execution("projection ID page capacity overflow".into()))?;
+        let candidates = limit
+            .saturating_add(1)
+            .checked_mul(entry_bytes + crate::build_memory::SET_ENTRY_BYTES)
+            .ok_or_else(|| HawDBError::Execution("projection ID page capacity overflow".into()))?;
+        let page_vectors = limit
+            .saturating_add(1)
+            .checked_mul(entry_bytes)
+            .ok_or_else(|| HawDBError::Execution("projection ID page capacity overflow".into()))?;
+        block
+            .checked_add(candidates)
+            .and_then(|bytes| bytes.checked_add(page_vectors))
+            .ok_or_else(|| HawDBError::Execution("projection ID page capacity overflow".into()))
+    }
+
+    /// Lists a globally ordered page using only per-segment lexical document
+    /// mappings. Content, metadata, and vector payload files are not read.
+    #[doc(hidden)]
+    pub fn list_projection_ids(
+        &self,
+        kinds: &BTreeSet<SearchProjectionKind>,
+        after: Option<&str>,
+        limit: usize,
+        task: &hawdb_core::RuntimeTaskContext,
+        permit: &hawdb_qos::RuntimePermit,
+    ) -> Result<SearchProjectionIdBatch> {
+        task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
+        let wanted = limit.saturating_add(1);
+        let mut ids = BTreeMap::<String, hawdb_qos::RuntimeRetainedMemory>::new();
+        for segment in &self.segments {
+            task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
+            segment.lexical_projection.visit_document_ids_with_task(
+                kinds,
+                after,
+                task,
+                &mut |id| {
+                    if ids.len() == wanted
+                        && ids
+                            .last_key_value()
+                            .is_some_and(|(largest, _)| id > largest)
+                    {
+                        return Ok(false);
+                    }
+                    if !self.visibility.is_visible(segment.content_segment_id, id)
+                        || !projection_id_page::requested_kind(id, kinds)
+                    {
+                        return Ok(true);
+                    }
+                    if ids.contains_key(id) {
+                        return Err(HawDBError::Storage(format!(
+                            "search out-of-core segment set has duplicate document {id}"
+                        )));
+                    }
+                    let memory = permit
+                        .reserve_retained_memory(u64::try_from(id.len()).unwrap_or(u64::MAX))
+                        .map_err(HawDBError::from)?;
+                    ids.insert(id.to_string(), memory);
+                    if ids.len() > wanted {
+                        ids.pop_last();
+                    }
+                    Ok(true)
+                },
+            )?;
+        }
+        task.checkpoint().map_err(HawDBError::RuntimeTaskStopped)?;
+        Ok(projection_id_page::finish_ids(
+            ids.into_iter().collect(),
+            limit,
+        ))
+    }
+
     /// Attaches a newer durable head, sharing unchanged immutable content handles.
     ///
     /// Retained content paths and lengths are checked before their handles are
@@ -2233,6 +2417,7 @@ impl SearchOutOfCoreReader {
         let (closure, report) = reader.prepare_refresh()?;
         if let Some(closure) = closure {
             let next = Self {
+                reader_id: reader.reader_id,
                 root: reader.root.clone(),
                 _project_files: reader._project_files.clone(),
                 config: reader.config.clone(),
@@ -2519,6 +2704,52 @@ impl SearchOutOfCoreReader {
         self.runtime_capabilities
     }
 
+    /// Durably records that this projection needs a full reindex, under the
+    /// same `.reindex_needed` marker the resident projection uses. Repeating a
+    /// reason is a no-op; a different reason is appended. Only a full rebuild,
+    /// which publishes a new projection directory, clears it.
+    pub fn mark_full_reindex_needed(&self, reason: &str) -> Result<()> {
+        self.write_control_marker(FULL_REINDEX_MARKER, reason, true)
+    }
+
+    /// Durably records that this projection's metadata needs repair. The
+    /// marker holds the latest reason, as on the resident projection.
+    pub fn mark_metadata_repair_needed(&self, reason: &str) -> Result<()> {
+        self.write_control_marker(METADATA_REPAIR_MARKER, reason, false)
+    }
+
+    fn write_control_marker(&self, name: &str, reason: &str, append: bool) -> Result<()> {
+        let path = self.root.join(name);
+        let existing = read_marker_lines_bounded(&path, MAX_MARKER_BYTES)?;
+        let lines = if append {
+            if existing.iter().any(|line| line == reason) {
+                return Ok(());
+            }
+            let mut lines = existing;
+            lines.push(reason.to_string());
+            lines
+        } else {
+            if existing == [reason] {
+                return Ok(());
+            }
+            vec![reason.to_string()]
+        };
+        let content = lines.join("\n");
+        if content.len() as u64 > MAX_MARKER_BYTES {
+            return Err(HawDBError::Semantic(format!(
+                "search marker {name} would exceed {MAX_MARKER_BYTES} bytes"
+            )));
+        }
+        let temporary = self.root.join(format!("{name}.tmp"));
+        {
+            let mut file = File::create(&temporary)?;
+            std::io::Write::write_all(&mut file, content.as_bytes())?;
+            file.sync_all()?;
+        }
+        hawdb_storage::durability::durable_replace_file(&temporary, &path)?;
+        Ok(())
+    }
+
     pub fn projection_freshness(&self) -> SearchProjectionFreshness {
         let read_marker = |name| {
             read_marker_lines_bounded(&self.root.join(name), MAX_MARKER_BYTES)
@@ -2799,6 +3030,13 @@ impl SearchOutOfCoreReader {
         )
     }
 
+    /// Hydrates the named documents in request order.
+    ///
+    /// The request is all-or-nothing. Duplicate ids and an id the published
+    /// projection does not contain (including a deleted one) are
+    /// `HawDBError::Semantic`; more ids than
+    /// `SearchOutOfCoreConfig.max_hydrated_documents` is
+    /// `ResourceBudgetExceeded` with owner `search hydration by id`.
     pub fn hydrate_documents(
         &self,
         document_ids: &[String],
@@ -2810,25 +3048,68 @@ impl SearchOutOfCoreReader {
                 "search hydration document ids must be unique".to_string(),
             ));
         }
-        let targets = self.resolve_mutation_targets(&requested)?;
-        let mut metrics = targets.metrics;
-        let mut hydrated = targets
-            .targets
-            .into_iter()
-            .map(|(id, target)| (id, target.document))
-            .collect::<BTreeMap<_, _>>();
+        let mut metrics = SearchOutOfCoreMetrics::default();
+        let mut hydrated =
+            self.load_document_targets(&requested, &mut metrics, DocumentTargetRequest::ById)?;
         let documents = document_ids
             .iter()
             .map(|id| {
-                hydrated.remove(id).ok_or_else(|| {
-                    HawDBError::Storage(format!(
-                        "search document {id} was not found during bounded hydration"
-                    ))
-                })
+                hydrated
+                    .remove(id)
+                    .map(|target| target.document)
+                    .ok_or_else(|| {
+                        HawDBError::Storage(format!(
+                            "search document {id} was not found during bounded hydration"
+                        ))
+                    })
             })
             .collect::<Result<Vec<_>>>()?;
         metrics.hydrated_documents = documents.len();
         Ok(SearchOutOfCoreHydrationOutput { documents, metrics })
+    }
+
+    /// Hydrates the named documents the published projection contains and
+    /// reports the rest as missing, both in request order.
+    ///
+    /// Unlike [`Self::hydrate_documents`], an id the projection does not
+    /// contain is not an error: an id that was never published and one hidden
+    /// by deletion visibility are both reported in `missing_document_ids`.
+    /// Duplicate ids are `HawDBError::Semantic`, and more ids than
+    /// `SearchOutOfCoreConfig.max_hydrated_documents` is
+    /// `ResourceBudgetExceeded` with owner `search lookup by id`. Absence is
+    /// decided by the published document routes alone; an id they list whose
+    /// document cannot be read or verified is still `HawDBError::Storage`.
+    pub fn lookup_documents(
+        &self,
+        document_ids: &[String],
+    ) -> Result<SearchOutOfCoreDocumentLookup> {
+        let requested = document_ids.iter().cloned().collect::<BTreeSet<_>>();
+        // A repeated id is a malformed request, as in hydration by id.
+        if requested.len() != document_ids.len() {
+            return Err(HawDBError::Semantic(
+                "search lookup document ids must be unique".to_string(),
+            ));
+        }
+        let mut metrics = SearchOutOfCoreMetrics::default();
+        let mut found = self.load_document_targets(
+            &requested,
+            &mut metrics,
+            DocumentTargetRequest::LookupById,
+        )?;
+        let mut documents = Vec::with_capacity(found.len());
+        let mut missing_document_ids = Vec::new();
+        for id in document_ids {
+            match found.remove(id) {
+                Some(target) => documents.push(target.document),
+                None => missing_document_ids.push(id.clone()),
+            }
+        }
+        metrics.hydrated_documents = documents.len();
+        Ok(SearchOutOfCoreDocumentLookup {
+            documents,
+            missing_document_ids,
+            metrics,
+        })
     }
 
     /// Resolves the current content segment for each requested document.
@@ -2837,12 +3118,21 @@ impl SearchOutOfCoreReader {
     /// deterministic document-id order. Resolution performs the same bounded
     /// physical hydration as serving, while retaining the manifest segment
     /// identity required for a segment-local replacement or delete.
+    ///
+    /// No production caller resolves mutation targets yet: segment-local
+    /// delta writes route through [`Self::resolve_mutation_segment`]. Public
+    /// hydration by id shares the loader under its own budget owner.
+    #[cfg(test)]
     pub(crate) fn resolve_mutation_targets(
         &self,
         document_ids: &BTreeSet<String>,
     ) -> Result<SearchOutOfCoreMutationTargetOutput> {
         let mut metrics = SearchOutOfCoreMetrics::default();
-        let targets = self.load_mutation_targets(document_ids, &mut metrics)?;
+        let targets = self.load_document_targets(
+            document_ids,
+            &mut metrics,
+            DocumentTargetRequest::MutationTargets,
+        )?;
         metrics.hydrated_documents = targets.len();
         Ok(SearchOutOfCoreMutationTargetOutput { targets, metrics })
     }
@@ -3050,9 +3340,9 @@ impl SearchOutOfCoreReader {
             .get_or_insert(self.config.default_navigation_beam);
         let task_context = vector_execution_options.task_context;
         if let Some(task_context) = task_context {
-            task_context.checkpoint().map_err(|reason| {
-                HawDBError::Execution(format!("search out-of-core task {reason}"))
-            })?;
+            task_context
+                .checkpoint()
+                .map_err(HawDBError::RuntimeTaskStopped)?;
         }
         if access_control.is_some() {
             self.runtime_capabilities
@@ -3093,17 +3383,7 @@ impl SearchOutOfCoreReader {
         }
 
         let metadata_filters = match access_control {
-            Some(access_control) => {
-                if let Some(policy_epoch) = options.policy_epoch
-                    && policy_epoch != access_control.policy_epoch
-                {
-                    return Err(HawDBError::Storage(format!(
-                        "search options policy epoch {policy_epoch} does not match access control policy epoch {}",
-                        access_control.policy_epoch
-                    )));
-                }
-                access_control.effective_metadata_filters(&options.metadata_filters)?
-            }
+            Some(access_control) => access_control.effective_query_filters(&options)?,
             None => output_memory.map(&options.metadata_filters)?,
         };
         let policy_epoch = access_control
@@ -3718,26 +3998,19 @@ impl SearchOutOfCoreReader {
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<BTreeMap<String, SearchDocument>> {
         Ok(self
-            .load_document_targets(document_ids, metrics, "hydration")?
+            .load_document_targets(document_ids, metrics, DocumentTargetRequest::SearchHits)?
             .into_iter()
             .map(|(id, target)| (id, target.document))
             .collect())
-    }
-
-    fn load_mutation_targets(
-        &self,
-        document_ids: &BTreeSet<String>,
-        metrics: &mut SearchOutOfCoreMetrics,
-    ) -> Result<BTreeMap<String, SearchOutOfCoreMutationTarget>> {
-        self.load_document_targets(document_ids, metrics, "mutation target resolution")
     }
 
     fn load_document_targets(
         &self,
         document_ids: &BTreeSet<String>,
         metrics: &mut SearchOutOfCoreMetrics,
-        operation: &str,
+        request: DocumentTargetRequest,
     ) -> Result<BTreeMap<String, SearchOutOfCoreMutationTarget>> {
+        let operation = request.operation();
         if document_ids.len() > self.config.max_hydrated_documents.get() {
             return Err(hydrated_documents_refusal(
                 &format!("search {operation}"),
@@ -3751,12 +4024,16 @@ impl SearchOutOfCoreReader {
             ));
         }
         let mut segment_documents = BTreeMap::<(usize, u64), BTreeSet<String>>::new();
+        // Every id with a visible route must load, whoever asked for it.
+        let mut routed_documents = 0usize;
         for id in document_ids {
-            let route = self.segment_for_document(id)?.ok_or_else(|| {
-                HawDBError::Storage(format!(
-                    "search document {id} is outside the published document ranges"
-                ))
-            })?;
+            let Some(route) = self.segment_for_document(id)? else {
+                match request.unknown_document(id) {
+                    Some(error) => return Err(error),
+                    None => continue,
+                }
+            };
+            routed_documents += 1;
             if route.lexical_document_bytes_read > 0 {
                 metrics.lexical_document_block_reads =
                     metrics.lexical_document_block_reads.saturating_add(1);
@@ -3827,11 +4104,10 @@ impl SearchOutOfCoreReader {
                 }
             }
         }
-        if targets.len() != document_ids.len() {
+        if targets.len() != routed_documents {
             return Err(HawDBError::Storage(format!(
-                "search {operation} found {} of {} requested documents",
+                "search {operation} found {} of {routed_documents} routed documents",
                 targets.len(),
-                document_ids.len()
             )));
         }
         metrics.hydrated_bytes = hydrated_bytes;
@@ -4399,7 +4675,9 @@ fn load_artifact_closure_with_context(
         segments
             .try_reserve_exact(manifest.segments.len())
             .map_err(|error| {
-                HawDBError::Execution(format!("reader segment list allocation failed: {error}"))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!("reader segment list allocation failed: {error}"))
+                })
             })?;
         if segments.capacity() > manifest.segments.len() {
             return Err(HawDBError::Execution(
@@ -4857,7 +5135,7 @@ pub(super) fn captured_artifact_generations(
             }
             let _io = task
                 .acquire_io_wave(std::num::NonZeroUsize::MIN)
-                .map_err(|error| HawDBError::Execution(error.to_string()))?;
+                .map_err(HawDBError::from_execution_error)?;
             let Some(bytes) = source.head()? else {
                 source.prove_no_projection_files(root_label, None)?;
                 return Ok(CapturedGenerations {
@@ -5092,10 +5370,8 @@ fn publish_out_of_core_projection(
             (SEARCH_SEGMENT_PAYLOAD_FILE, &payload_file),
             (MANIFEST_FILE, &lexical_manifest_file),
         ] {
-            bytes_written = bytes_written.saturating_add(publish_generation_link(
-                &root.join(current),
-                &root.join(generation_file),
-            )?);
+            bytes_written = bytes_written
+                .saturating_add(io.link(&root.join(current), &root.join(generation_file))?);
         }
     }
 
@@ -5309,10 +5585,8 @@ fn publish_out_of_core_projection(
         #[cfg(test)]
         resident_checkpoint_fault(ResidentCheckpointStep::AfterSelector)?;
         for (current, generation_file) in resident_aliases(generation) {
-            bytes_written = bytes_written.saturating_add(publish_generation_link(
-                &root.join(generation_file),
-                &root.join(current),
-            )?);
+            bytes_written = bytes_written
+                .saturating_add(io.link(&root.join(generation_file), &root.join(current))?);
             #[cfg(test)]
             resident_checkpoint_fault(ResidentCheckpointStep::AfterAlias(current))?;
         }
@@ -5451,6 +5725,9 @@ pub(super) fn recover_resident_aliases(root: &Path) -> Result<()> {
         segment.objects.descriptor,
         segment.objects.lexical_manifest,
     ];
+    let task = hawdb_core::RuntimeTaskContext::default();
+    let memory = crate::build_memory::BuildMemory::new(&task)?;
+    let io = generation_writer::io::GenerationIo::new(&memory, &task);
     for (index, ((current, generation_file), object)) in aliases.iter().zip(objects).enumerate() {
         let source = root.join(generation_file);
         let target = root.join(current);
@@ -5472,7 +5749,7 @@ pub(super) fn recover_resident_aliases(root: &Path) -> Result<()> {
             }
             continue;
         }
-        publish_generation_link(&source, &target)?;
+        io.link(&source, &target)?;
     }
     Ok(())
 }
@@ -5527,7 +5804,7 @@ fn sweep_resident_scratch(root: &Path) {
 }
 
 #[cfg(unix)]
-fn same_file(left: &Path, right: &Path) -> Result<bool> {
+pub(super) fn same_file(left: &Path, right: &Path) -> Result<bool> {
     use std::os::unix::fs::MetadataExt;
     let left = fs::metadata(left)?;
     let right = match fs::metadata(right) {
@@ -5538,10 +5815,20 @@ fn same_file(left: &Path, right: &Path) -> Result<bool> {
     Ok(left.dev() == right.dev() && left.ino() == right.ino())
 }
 
-#[cfg(not(unix))]
-fn same_file(_source: &Path, _target: &Path) -> Result<bool> {
-    // Stable std exposes no file identity on Windows (`file_index` is
-    // unstable). The caller then hashes each current name once per reopen.
+#[cfg(windows)]
+pub(super) fn same_file(left: &Path, right: &Path) -> Result<bool> {
+    let left = File::open(left)?;
+    match left.matches_native_path(right) {
+        Ok(same) => Ok(same),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(super) fn same_file(_left: &Path, _right: &Path) -> Result<bool> {
+    // Keep content verification as the conservative fallback on targets
+    // without a native file identity implementation.
     Ok(false)
 }
 
@@ -5987,8 +6274,11 @@ fn read_marker_lines_bounded(path: &Path, max_bytes: u64) -> Result<Vec<String>>
         Err(error) => return Err(error.into()),
     }
     let bytes = read_bounded_file(path, max_bytes)?;
-    let content = std::str::from_utf8(&bytes)
-        .map_err(|error| HawDBError::Storage(format!("search marker is not UTF-8: {error}")))?;
+    let content = std::str::from_utf8(&bytes).map_err(|error| {
+        HawDBError::or_stop(&error, || {
+            HawDBError::Storage(format!("search marker is not UTF-8: {error}"))
+        })
+    })?;
     Ok(content
         .lines()
         .map(str::trim)
@@ -6037,22 +6327,6 @@ fn latest_recoverable_lexical_generation(root: &Path, max_manifest_bytes: u64) -
         }
     }
     Ok(latest)
-}
-
-fn publish_generation_link(source: &Path, target: &Path) -> Result<u64> {
-    let tmp = temporary_artifact_path(target);
-    let mut guard = CandidateFileGuard::new(tmp.clone());
-    let bytes_written = match fs::hard_link(source, &tmp) {
-        Ok(()) => 0,
-        Err(_) => {
-            let copied = fs::copy(source, &tmp)?;
-            File::open(&tmp)?.sync_all()?;
-            copied
-        }
-    };
-    durable_replace_file(&tmp, target)?;
-    guard.disarm();
-    Ok(bytes_written)
 }
 
 fn write_generation_artifact(target: &Path, bytes: &[u8]) -> Result<u64> {
@@ -6798,6 +7072,50 @@ mod tests {
             assert_eq!(actual.matched_spans, expected.matched_spans);
         }
         assert_eq!(actual.result.candidate_set.filtered_out_count, 1);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[cfg(all(feature = "acl", feature = "full-text-search"))]
+    #[test]
+    fn out_of_core_access_control_caller_mistakes_are_semantic_errors() {
+        let path = test_dir("acl-caller-mistakes");
+        let mut index = SearchIndex::open(&path).unwrap();
+        index.upsert(document(0, "team")).unwrap();
+        index.checkpoint().unwrap();
+        let mut reader = SearchOutOfCoreReader::open(&path).unwrap();
+        reader.set_runtime_capabilities(
+            RuntimeCapabilities::default().with(RuntimeCapability::AccessControl, true),
+        );
+        let search = |policy_epoch, access_control| {
+            reader.search_with_options_access_control(
+                "graph",
+                None,
+                SearchMode::Text,
+                SearchQueryOptions {
+                    policy_epoch,
+                    ..options(10, None)
+                },
+                access_control,
+            )
+        };
+        // A matching epoch and a valid context still search.
+        search(
+            Some(7),
+            SearchAccessControlContext::visibility_scopes(7, "space_id", ["team"]),
+        )
+        .unwrap();
+        // A mismatched epoch or a malformed context is the caller's mistake,
+        // not a storage fault (#1767).
+        for (policy_epoch, access_control) in
+            SearchAccessControlContext::invalid_requests_for_test()
+        {
+            let error = search(policy_epoch, access_control.clone()).unwrap_err();
+            assert!(
+                matches!(error, HawDBError::Semantic(_)),
+                "{access_control:?}: {error:?}"
+            );
+        }
+        drop(reader);
         fs::remove_dir_all(path).unwrap();
     }
 
@@ -8075,13 +8393,37 @@ mod tests {
             )
         };
         let expected = search(&reader, CompressedVectorSearchMode::Disabled).unwrap();
-        let error = search(&reader, CompressedVectorSearchMode::Required).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("candidate allowlist and block require"),
-            "{error}"
+        // The allowlist working set is a resource refusal naming the option
+        // that bound it, not a storage fault (#1767).
+        let assert_allowlist_refusal = |error: HawDBError, budget_option: &str| match error {
+            HawDBError::ResourceBudgetExceeded(details) => {
+                assert_eq!(details.resource, ResourceBudgetKind::MemoryBytes);
+                assert_eq!(details.budget_option, budget_option, "{details:?}");
+                assert!(details.requested > details.budget, "{details:?}");
+            }
+            other => panic!("{other:?}"),
+        };
+        assert_allowlist_refusal(
+            search(&reader, CompressedVectorSearchMode::Required).unwrap_err(),
+            "SearchOutOfCoreConfig.max_vector_search_working_bytes",
         );
+        // With a roomy reader cap, the per-query admission binds instead.
+        let mut roomy = mutation_reader_for_test(&path);
+        roomy.config.max_vector_candidates = NonZeroUsize::new(4).unwrap();
+        assert_allowlist_refusal(
+            roomy
+                .search_with_options_compressed_vector_projection_execution_options(
+                    "",
+                    Some(&[1.0, 16.0]),
+                    SearchMode::Vector,
+                    options(1, None),
+                    CompressedVectorSearchMode::Required,
+                    VectorSearchExecutionOptions::bounded(NonZeroUsize::MIN, budget, None),
+                )
+                .unwrap_err(),
+            "VectorSearchExecutionOptions.max_working_bytes",
+        );
+        drop(roomy);
         let actual = search(&reader, CompressedVectorSearchMode::Preferred).unwrap();
         assert_search_parity(&expected.result, &actual.result);
         assert!(actual
@@ -8235,10 +8577,29 @@ mod tests {
                     .documents,
                 vec![live.clone()]
             );
+            // The deleted id is hidden by the mutation run's visibility, not
+            // removed from its content segment.
+            // A replacement keeps the id, so it is requested once.
+            let mut ids = vec![live.id.clone()];
             if !replace {
-                assert!(reader
+                ids.push(old.id.clone());
+            }
+            ids.push("memory:never".to_string());
+            let lookup = reader.lookup_documents(&ids).unwrap();
+            assert_eq!(lookup.documents, vec![live.clone()]);
+            if replace {
+                assert_eq!(lookup.missing_document_ids, vec!["memory:never"]);
+            } else {
+                // Hydration by id refuses a deleted id as a caller mistake
+                // (#1767); lookup reports it missing (#1786).
+                let deleted = reader
                     .hydrate_documents(std::slice::from_ref(&old.id))
-                    .is_err());
+                    .unwrap_err();
+                assert!(matches!(deleted, HawDBError::Semantic(_)), "{deleted:?}");
+                assert_eq!(
+                    lookup.missing_document_ids,
+                    vec![old.id.clone(), "memory:never".to_string()]
+                );
             }
             let mut modes = vec![SearchMode::Text];
             #[cfg(feature = "vector-search")]
@@ -8737,7 +9098,12 @@ mod tests {
         install_delete_mutation_run(&path, &document, 0, 2);
         let error = SearchOutOfCoreReader::open_with_config(&path, config).unwrap_err();
         assert!(
-            error.to_string().contains("mutation-run working set"),
+            matches!(&error, HawDBError::ResourceBudgetExceeded(cause)
+                if cause.resource == hawdb_core::ResourceBudgetKind::MemoryBytes
+                    && cause.scope == hawdb_core::ResourceBudgetScope::Operator
+                    && cause.owner == "search mutation-run reader"
+                    && cause.budget == 1
+                    && cause.budget_option == "SearchOutOfCoreConfig.max_mutation_working_bytes"),
             "{error}"
         );
         fs::remove_dir_all(path).unwrap();

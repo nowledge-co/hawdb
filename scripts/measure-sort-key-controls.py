@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import os
+import re
 from pathlib import Path
 import statistics
 import subprocess
@@ -73,31 +74,43 @@ def main():
     evidence = args.writer_evidence.resolve()
     output = args.output.resolve()
     build = json.loads((evidence / "build-protocol.json").read_text())
-    matrix = json.loads((evidence / "matrix-receipt.json").read_text())
-    assert matrix["timing_complete"], "Earlier native qualification is incomplete"
+    matrix_path = evidence / "matrix-receipt.json"
+    matrix = json.loads(matrix_path.read_text()) if matrix_path.is_file() else {}
+    writer_timing_complete = matrix.get("timing_complete") is True
     head = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=source, text=True
     ).strip()
     assert head == build["candidate"]
+    clean_diff = hashlib.sha256(b"").hexdigest()
+    assert build["candidate_diff_sha256"] == clean_diff, "Writer binaries used tracked edits"
     assert not subprocess.check_output(["git", "diff", "HEAD"], cwd=source)
     binaries = {
         revision: evidence / (revision + "-concurrent-writers")
         for revision in ["baseline", "candidate"]
     }
-    assert all(path.is_file() for path in binaries.values())
-    output.mkdir(parents=True, exist_ok=False)
+    expected_hashes = build.get("binary_sha256")
+    assert expected_hashes is not None, "Writer build receipt is incomplete"
+    binary_hashes = {key: digest(path) for key, path in binaries.items()}
+    assert binary_hashes == expected_hashes, "Writer binaries differ from the build receipt"
     ranks = interval_ranks(len(CASES) * 3)
     toolchain = subprocess.check_output(
         ["rustc", "--version"], cwd=source, text=True
     ).strip()
-    assert toolchain.startswith("rustc 1.97.1 ")
+    pinned = re.search(
+        r'^channel = "([^"]+)"$', (source / "rust-toolchain.toml").read_text(), re.MULTILINE
+    )
+    assert pinned and toolchain.startswith(f"rustc {pinned[1]} ")
+    assert toolchain == build["toolchain"], "Current toolchain differs from the build receipt"
+    output.mkdir(parents=True, exist_ok=False)
     protocol = {
         "schema": "paired-sort-key-controls-v1",
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "source": head,
         "baseline": build["baseline"],
         "build_protocol_sha256": digest(evidence / "build-protocol.json"),
-        "binary_sha256": {key: digest(path) for key, path in binaries.items()},
+        "binary_sha256": binary_hashes,
+        "writer_timing_complete": writer_timing_complete,
+        "writer_matrix_sha256": digest(matrix_path) if writer_timing_complete else None,
         "script_sha256": digest(Path(__file__)),
         "harness_sha256": digest(source / "benches/concurrent_writers.rs"),
         "control_sha256": digest(source / "benches/concurrent_writers/sort_control.rs"),
@@ -201,6 +214,7 @@ def main():
             "endpoints": endpoints,
             "dispositions": dict(Counter(row["disposition"] for row in endpoints)),
             "strict_zero_increase_passed": passed,
+            "writer_timing_complete": writer_timing_complete,
             "complete_concurrent_acceptance": False,
         },
     )

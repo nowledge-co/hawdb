@@ -173,3 +173,9 @@ cargo test -p hawdb-sql tests::frontend_corpus::frontend_corpus_differential_cam
 bazel test //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests //:hawdb_linux_ci_fuzz_smoke_test
 bazel test //:hawdb_unit_fast_tests //:hawdb_unit_storage_crash_matrix_tests //:hawdb_storage_crash_recovery_tests
 ```
+
+The OCTET_LENGTH scalar slice (https://github.com/nowledge-co/hawdb/issues/1835)
+re-audits the `tests.rs` pin after adding only `mod octet_length;` at the end.
+Existing SQL literals, provenance lines, corpus outcomes and waivers are unchanged.
+The new predicate-lowering regression lives in `tests/octet_length.rs`; embedded
+and relational execution regressions qualify byte counts and metadata-only reads.

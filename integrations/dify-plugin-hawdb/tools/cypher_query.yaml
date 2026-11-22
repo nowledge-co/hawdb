@@ -1,0 +1,37 @@
+identity:
+  name: cypher_query
+  author: nowledge
+  label:
+    en_US: Run Cypher
+    zh_Hans: 执行 Cypher
+description:
+  human:
+    en_US: Run one parameterized Cypher statement against the HawDB database and return its rows as JSON.
+    zh_Hans: 对 HawDB 数据库执行一条参数化 Cypher 语句，并以 JSON 返回结果行。
+  llm: Run one Cypher statement against the HawDB graph database. Put values in the parameters JSON object and refer to them as $name in the statement instead of writing them into the statement text. Returns {"columns", "rows"}.
+parameters:
+  - name: statement
+    type: string
+    required: true
+    label:
+      en_US: Cypher statement
+      zh_Hans: Cypher 语句
+    human_description:
+      en_US: One Cypher statement. Refer to parameter values as $name.
+      zh_Hans: 一条 Cypher 语句，用 $name 引用参数值。
+    llm_description: 'One Cypher statement, such as MATCH (p:Person {name: $name}) RETURN p.name AS name. Refer to values as $name parameters.'
+    form: llm
+  - name: parameters
+    type: string
+    required: false
+    label:
+      en_US: Parameters
+      zh_Hans: 参数
+    human_description:
+      en_US: 'A JSON object of the $name values, such as {"name": "Ada"}.'
+      zh_Hans: '由 $name 参数值组成的 JSON 对象，例如 {"name": "Ada"}。'
+    llm_description: 'A JSON object mapping each $name in the statement to its value, such as {"name": "Ada"}. Omit it when the statement has no parameters.'
+    form: llm
+extra:
+  python:
+    source: tools/cypher_query.py

@@ -3,7 +3,10 @@
 [![Website](https://img.shields.io/badge/website-hawdb.ai-111111?style=flat)](https://hawdb.ai)
 [![License](https://img.shields.io/github/license/nowledge-co/hawdb?style=flat)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/nowledge-co/hawdb?style=flat)](https://github.com/nowledge-co/hawdb/releases/latest)
-[![Rust](https://img.shields.io/badge/rust-1.97.1-dea584?style=flat&logo=rust&logoColor=white)](rust-toolchain.toml)
+[![crates.io](https://img.shields.io/crates/v/hawdb?style=flat&logo=rust)](https://crates.io/crates/hawdb)
+[![PyPI](https://img.shields.io/pypi/v/hawdb?style=flat&logo=pypi&logoColor=white)](https://pypi.org/project/hawdb/)
+[![npm (Bun)](https://img.shields.io/npm/v/%40nowledge%2Fhawdb-bun?style=flat&logo=bun&label=npm%20%28Bun%29)](https://www.npmjs.com/package/@nowledge/hawdb-bun)
+[![Rust](https://img.shields.io/badge/rust-1.99.1-dea584?style=flat&logo=rust&logoColor=white)](rust-toolchain.toml)
 
 HawDB is an AI-native embedded database for agents. It keeps the facts an agent reasons over — entities, relationships, documents, and events — in one crash-safe process, returns them as bounded context, and gives each agent its own durable branch to work in.
 
@@ -18,13 +21,19 @@ The site and in-browser playground are at [hawdb.ai](https://hawdb.ai). Their so
 For synchronous SQL materialized views, see [the materialized view guide](docs/MATERIALIZED_VIEWS.md).
 For BM25 full-text search over SQL rows, see [the SQL search index guide](docs/SQL_SEARCH_INDEXES.md).
 
+Embed HawDB from Rust, Python, Go, JavaScript/TypeScript, Swift, C/C++, or
+MoonBit. See [Language bindings](#language-bindings) for packages, source builds,
+and the experimental browser runtime.
+
 ## Install
 
-HawDB is a Rust library. Published releases are on crates.io. The repository pins Rust 1.97.1.
+The Rust library is published as [`hawdb` on crates.io](https://crates.io/crates/hawdb).
+The repository pins Rust 1.99.1. Other languages have their own installation
+paths in [Language bindings](#language-bindings).
 
 ```toml
 [dependencies]
-hawdb = "0.33"
+hawdb = "0.37.0"
 ```
 
 To follow the repository tip instead of a release:
@@ -41,7 +50,35 @@ cargo build --locked -p hawdb
 
 The default build includes full-text search, vector search, graph analytics, background maintenance, and the Tokio adapter. A capability left out of the build cannot be turned back on at runtime. See [Build](#build).
 
-Python bindings live in-tree and are distributed as `hawdb` on PyPI. See [Python](#python).
+## Language bindings
+
+All bindings embed the engine in the host process. Choose the package or source
+integration for your runtime; API coverage and platform requirements are
+documented in each guide.
+
+| Language / runtime | Package or installation path | Guide |
+| --- | --- | --- |
+| Rust | [`hawdb`](https://crates.io/crates/hawdb) on crates.io: `cargo add hawdb` | [Install](#install) · [API reference](https://docs.rs/hawdb) |
+| Python | [`hawdb`](https://pypi.org/project/hawdb/) on PyPI: `python -m pip install hawdb` (CPython 3.11+) | [Python binding](bindings/python/README.md) |
+| JavaScript / TypeScript — Bun | [`@nowledge/hawdb-bun`](https://www.npmjs.com/package/@nowledge/hawdb-bun) on npm: `bun add @nowledge/hawdb-bun`; includes the matching platform library | [Bun binding](bindings/bun/README.md) |
+| JavaScript / TypeScript — Node.js / Electron | Source build of `@nowledge/hawdb-node` (Node-API 8, Node.js 22.16+); not yet published on npm | [Node.js / Electron binding](bindings/node/README.md) |
+| Go | Module `github.com/nowledge-co/hawdb/bindings/go`; load a matching C ABI library with `LoadLibrary(path)`, with cgo disabled | [Go binding](bindings/go/README.md) · [Native libraries](docs/PREBUILT_LIBRARIES.md) |
+| Swift | SwiftPM `HawDB` product plus a matching C ABI library; build the static XCFramework package for iOS/iPadOS | [Swift binding](bindings/swift/README.md) |
+| C / C++ | [Release archives](https://github.com/nowledge-co/hawdb/releases/latest) with `hawdb_ffi.h` and native libraries, or build from source | [C ABI](bindings/ffi/README.md) · [Platforms and linking](docs/PREBUILT_LIBRARIES.md) |
+| MoonBit | In-tree native binding built from the checkout; no separately published SDK | [MoonBit binding](bindings/moonbit/README.md) |
+| WebAssembly / browser | Experimental in-memory Rust/WASM runtime with a wasm-bindgen example; no persistent browser storage or published browser SDK | [Browser runtime](docs/WASM.md) · [Playground](https://hawdb.ai) |
+
+Native C ABI release archives cover macOS arm64/x86-64, Linux glibc
+arm64/x86-64, and Windows x86-64. Go and Swift hosts supply a matching native
+library; the Bun package selects it automatically. iOS XCFrameworks are built
+from source or obtained from the Swift Apple workflow's CI artifacts, rather
+than the desktop release archives. See the
+[platform matrix](docs/PREBUILT_LIBRARIES.md#platform-matrix) and binding guides
+for minimum OS versions and linking requirements.
+
+HawDB's on-disk format carries no compatibility promise until HawDB declares
+one. When the persistent format changes, export with the old engine and import
+with the new engine; see [logical dumps](docs/LOGICAL_DUMP.md).
 
 ## Open a database
 
@@ -176,7 +213,7 @@ Within those clauses:
 - `count`, `sum`, `min`, `max`, `avg`, and `collect` accept a scalar-expression argument, with optional `DISTINCT`.
 - List comprehensions, `size`, `head`, `last`, `tail`, `reverse`, `range`, indexing, slicing, and three-valued `IN` are supported. [`docs/CYPHER_LIST_FUNCTIONS.md`](docs/CYPHER_LIST_FUNCTIONS.md) lists their semantics and the remaining differences from openCypher.
 
-Application relational work is PostgreSQL-dialect SQL through `query_sql` and `query_sql_with_params`. Idempotent ingestion uses `INSERT ... ON CONFLICT (...) DO NOTHING RETURNING ...`. Provisional row counts are available before commit; `commit_with_result` recomputes them at the durable boundary. The SQL/PGQ binder in `hawdb-sql` (`CREATE PROPERTY GRAPH`, `GRAPH_TABLE`) is specified in [`docs/specs/POSTGRES_SQL_PGQ_SPEC.md`](docs/specs/POSTGRES_SQL_PGQ_SPEC.md).
+Application relational work is PostgreSQL-dialect SQL through `query_sql` and `query_sql_with_params`. Idempotent ingestion uses `INSERT ... ON CONFLICT (...) DO NOTHING RETURNING ...`; column-only mutation `RETURNING` and top-level data-modifying CTEs compose bounded writes with a containing query. Provisional row counts are available before commit; `commit_with_result` recomputes them at the durable boundary. The SQL/PGQ binder in `hawdb-sql` (`CREATE PROPERTY GRAPH`, `GRAPH_TABLE`) is specified in [`docs/specs/POSTGRES_SQL_PGQ_SPEC.md`](docs/specs/POSTGRES_SQL_PGQ_SPEC.md).
 
 `Database::sql_session()` runs parameterized SQL with native rows and mutation counts, and `session.transaction(|transaction| ...)` makes several statements atomic. A statement failure aborts the whole callback, even if its error is caught. See [the SQL session contract](docs/SQL_SESSION.md) for examples, result provenance, and the supported PostgreSQL subset.
 
@@ -275,7 +312,7 @@ bazel build //:hawdb
 bazel test --test_output=errors //...
 ```
 
-`//:hawdb_graph_text` matches `cargo build -p hawdb --no-default-features --features full-text-search`: graph and SQL plus full-text search, without vector search. Bazel uses a hermetic JDK 21, so `JAVA_HOME` is unnecessary for the TLA+ rules. On macOS the repository keeps Rust proc-macros unstripped to avoid a Mach-O alignment bug in the pinned 1.97.1 toolchain.
+`//:hawdb_graph_text` matches `cargo build -p hawdb --no-default-features --features full-text-search`: graph and SQL plus full-text search, without vector search. Bazel uses a hermetic JDK 21, so `JAVA_HOME` is unnecessary for the TLA+ rules. On macOS the repository keeps Rust proc-macros unstripped to avoid a Mach-O alignment bug observed with Rust 1.97.1.
 
 The experimental in-memory browser build is documented in [`docs/WASM.md`](docs/WASM.md). The public playground is built from [nowledge-co/hawdb-website](https://github.com/nowledge-co/hawdb-website).
 

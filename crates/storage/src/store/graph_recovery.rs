@@ -398,9 +398,16 @@ impl GraphStore {
             let overflow = durable.open_bound_relational_overflow()?;
             let rows = durable.open_bound_relational_row_pages(&overflow)?;
             if !rows.manifest().tables.is_empty() {
-                return Err(HawDBError::Storage(
-                    "checkpoint stores canonical metadata-only relational rows; reopen requires OutOfCore residency with Authoritative relational indexes"
-                        .to_string(),
+                // A layout/configuration mismatch, not corruption: the row
+                // root is intact but this reader serves resident rows only
+                // from a full-row relational file. Newer releases write none
+                // (#1737). Refuse with a typed error and change nothing.
+                return Err(HawDBError::UnsupportedStorageFormat(
+                    hawdb_core::StorageFormatError::UnsupportedFeature {
+                        format: hawdb_core::RELATIONAL_CHECKPOINT_LAYOUT_FORMAT,
+                        feature: "relational rows stored only in the canonical row-page root, without a full-row relational checkpoint file (written by a newer HawDB or by OutOfCore residency with Authoritative relational indexes); reopen with OutOfCore residency and Authoritative relational indexes, or with a newer HawDB",
+                        tag: rows.manifest().generation,
+                    },
                 ));
             }
         }
@@ -411,6 +418,12 @@ impl GraphStore {
         if let Some(commit_epoch) = decoded.commit_epoch {
             self.commit_epoch = commit_epoch;
         }
+        // The checkpoint does not record the graph change epoch (no format
+        // change). Its commit epoch is a conservative upper bound of the last
+        // graph change of the surviving history; WAL replay then advances it
+        // exactly. It may advance once across a reopen. Commits lost by a
+        // crash under SyncOnCheckpoint are not part of that history.
+        self.graph_change_commit_epoch = self.commit_epoch;
         if let Some(start_epoch) = decoded.search_projection_change_log_start_epoch {
             self.search_projection_change_log_start_epoch = start_epoch;
         }
@@ -1002,6 +1015,7 @@ impl GraphStore {
             WalOp::Batch(operations) => operations.as_slice(),
             operation => std::slice::from_ref(operation),
         };
+        let changes_graph = operation.changes_graph();
         if let Some(work) = work {
             work.checkpoint().map_err(HawDBError::from_storage_error)?;
         }
@@ -1099,6 +1113,9 @@ impl GraphStore {
             }
         }
         self.commit_epoch = epoch;
+        if changes_graph {
+            self.graph_change_commit_epoch = epoch;
+        }
         self.advance_relational_row_recovery_epoch(epoch);
         Ok(())
     }

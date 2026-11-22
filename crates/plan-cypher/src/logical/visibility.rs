@@ -237,6 +237,32 @@ pub fn apply_node_visibility_predicates(
         LogicalPlan::Distinct { input } => LogicalPlan::Distinct {
             input: Box::new(apply_node_visibility_predicates(*input, predicate_for)),
         },
+        LogicalPlan::MatchSet(mut set) => {
+            for assignment in &mut set.assignments {
+                if let MatchSetValue::Expression(expression) = &mut assignment.value {
+                    restrict_expression(expression, predicate_for);
+                }
+            }
+            if let Some(relationship) = &mut set.relationship {
+                for (_, expression) in relationship
+                    .properties
+                    .iter_mut()
+                    .chain(relationship.on_create.iter_mut())
+                {
+                    restrict_expression(expression, predicate_for);
+                }
+            }
+            if let Some(returns) = &mut set.returns {
+                restrict_projections(&mut returns.items, predicate_for);
+                for item in &mut returns.order_by {
+                    if let SortKey::Expression(expression) = &mut item.key {
+                        restrict_expression(expression, predicate_for);
+                    }
+                }
+            }
+            set.input = apply_node_visibility_predicates(set.input, predicate_for);
+            LogicalPlan::MatchSet(set)
+        }
         LogicalPlan::Sort { mut items, input } => {
             for item in &mut items {
                 if let SortKey::Expression(expression) = &mut item.key {
@@ -257,6 +283,18 @@ pub fn apply_node_visibility_predicates(
             limit,
             input: Box::new(apply_node_visibility_predicates(*input, predicate_for)),
         },
+        LogicalPlan::MutationReturn {
+            mutation,
+            mut returns,
+        } => {
+            if let SetNodePropertiesReturnMode::Project(items) = &mut returns.mode {
+                restrict_projections(items, predicate_for);
+            }
+            LogicalPlan::MutationReturn {
+                mutation: Box::new(apply_node_visibility_predicates(*mutation, predicate_for)),
+                returns,
+            }
+        }
         mut other => {
             // Mutation WHERE predicates may hold pattern expressions.
             for predicate in mutation_predicates(&mut other) {
@@ -539,6 +577,37 @@ pub fn validate_node_visibility_predicates(
         LogicalPlan::Project { items, input } => {
             expressions.extend(items.iter().map(|item| &item.expression));
             children.push(input);
+        }
+        LogicalPlan::MatchSet(set) => {
+            expressions.extend(set.assignments.iter().filter_map(|assignment| {
+                match &assignment.value {
+                    MatchSetValue::Expression(expression) => Some(expression),
+                    MatchSetValue::Local(_) => None,
+                }
+            }));
+            if let Some(relationship) = &set.relationship {
+                expressions.extend(
+                    relationship
+                        .properties
+                        .iter()
+                        .chain(&relationship.on_create)
+                        .map(|(_, expression)| expression),
+                );
+            }
+            if let Some(returns) = &set.returns {
+                expressions.extend(returns.items.iter().map(|item| &item.expression));
+                expressions.extend(returns.order_by.iter().filter_map(|item| match &item.key {
+                    SortKey::Expression(expression) => Some(expression),
+                    _ => None,
+                }));
+            }
+            children.push(&set.input);
+        }
+        LogicalPlan::MutationReturn { mutation, returns } => {
+            if let SetNodePropertiesReturnMode::Project(items) = &returns.mode {
+                expressions.extend(items.iter().map(|item| &item.expression));
+            }
+            children.push(mutation);
         }
         LogicalPlan::Aggregate {
             group_keys,

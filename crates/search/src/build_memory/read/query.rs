@@ -48,7 +48,7 @@ impl<'a> QueryIoScope<'a> {
         crate::query_control::checkpoint(task)?;
         let permit = task
             .acquire_io_wave(NonZeroUsize::MIN)
-            .map_err(|error| HawDBError::Execution(error.to_string()))?
+            .map_err(HawDBError::from_execution_error)?
             .ok_or_else(|| HawDBError::Execution("query requires I/O admission".into()))?;
         Ok(Self {
             task,
@@ -118,7 +118,7 @@ fn read_at(
         context
             .task
             .acquire_io_wave(NonZeroUsize::MIN)
-            .map_err(|error| HawDBError::Execution(error.to_string()))?
+            .map_err(HawDBError::from_execution_error)?
     };
     if range.require_execution && _io.is_none() && _scope.is_none() {
         return Err(HawDBError::Execution(

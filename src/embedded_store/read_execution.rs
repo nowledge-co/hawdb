@@ -66,7 +66,7 @@ impl EmbeddedStoreHandle {
     ) -> Result<PreparedRuntimeQuery> {
         task_context
             .checkpoint()
-            .map_err(|reason| HawDBError::Execution(format!("runtime task {reason}")))?;
+            .map_err(HawDBError::RuntimeTaskStopped)?;
         let planning = try_admit_runtime(
             &source.governor,
             crate::api::runtime_planning_request(cypher.len(), RuntimeWorkPriority::Foreground),
@@ -121,7 +121,7 @@ impl EmbeddedStoreHandle {
         let result = (|| {
             task_context
                 .checkpoint()
-                .map_err(|reason| HawDBError::Execution(format!("runtime task {reason}")))?;
+                .map_err(HawDBError::RuntimeTaskStopped)?;
             let limits = QueryStreamOptions {
                 max_rows: options.max_rows,
                 max_payload_bytes: Some(admitted_result_bytes(&source.config, governor, options)?),
@@ -207,7 +207,12 @@ impl EmbeddedStoreHandle {
                             Arc::clone(&publication.view),
                             publication.mode,
                             uses_external_seed
-                                .then(|| publication.resident_projection.clone())
+                                .then(|| {
+                                    publication
+                                        .resident_projection
+                                        .as_ref()
+                                        .map(|published| published.snapshot().clone())
+                                })
                                 .flatten(),
                             publication
                                 .out_of_core_projection
@@ -289,12 +294,13 @@ impl EmbeddedStoreHandle {
             if !is_mutation {
                 context
                     .checkpoint()
-                    .map_err(|reason| HawDBError::Execution(format!("runtime task {reason}")))?;
+                    .map_err(HawDBError::RuntimeTaskStopped)?;
             }
             let report = embedded_query_report(EmbeddedQueryReportInput {
                 mode,
                 statement: &trace.statement,
                 trace: trace.optimizer_trace.as_ref(),
+                optimizer_cardinality_estimate_scope: trace.optimizer_cardinality_estimate_scope,
                 plan_cache_lookup: trace.plan_cache_lookup,
                 execution_profile: trace.execution_profile.as_ref(),
                 output: &output,

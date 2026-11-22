@@ -517,7 +517,9 @@ fn public_analytics_identity_output_uses_query_budget_above_retained_state_cap()
         assert_eq!(identity.len(), 1024 * 1024);
         assert!(identity
             .as_bytes()
-            .chunks_exact(8)
+            .as_chunks::<8>()
+            .0
+            .iter()
             .all(|part| part == b"large-id"));
         assert_eq!(rows[0]["node_label"], Value::String("Oversized".into()));
         assert!(
@@ -1474,7 +1476,9 @@ fn assert_host_row_ceiling(error: hawdb::HawDBError) {
         matches!(&error, hawdb::HawDBError::ReadBudgetExceeded(cause)
             if cause.resource == hawdb::ReadBudgetResource::Rows && cause.limit == 2)
             || matches!(&error, hawdb::HawDBError::Execution(message)
-                if message.contains("max_mutation_result_rows 2")),
+                if message.contains("max_mutation_result_rows 2"))
+            || matches!(&error, hawdb::HawDBError::ResourceBudgetExceeded(cause)
+                if cause.budget_option == "MutationLimits.max_result_rows" && cause.budget == 2),
         "unexpected host-ceiling refusal: {error}"
     );
 }
@@ -1780,7 +1784,7 @@ fn native_sql_returning_payload_control(route: &str, mutation: &str) {
         .into_iter()
         .flat_map(|ceiling| [false, true].map(|admitted| (ceiling, admitted)))
     {
-        let allowed = ceiling == 4096 && mutation == "insert";
+        let allowed = ceiling == 4096;
         let directory = IdentityDirectory::new();
         let path = directory.0.join("returning-payload");
         let mut database = hawdb::Database::open(&path).unwrap();
@@ -1882,22 +1886,11 @@ fn native_sql_returning_payload_control(route: &str, mutation: &str) {
             }
             assert!(observed_epoch > epoch, "{route}/{mutation}/{ceiling}");
         } else {
-            if mutation == "insert" {
-                assert!(
-                    matches!(result, Err(hawdb::HawDBError::ReadBudgetExceeded(ref cause))
-                    if cause.resource == hawdb::ReadBudgetResource::PayloadBytes && cause.limit == ceiling),
-                    "{route}/{mutation}/{ceiling}: result={result:?}, epochs={epoch}->{observed_epoch}, stored={stored:?}"
-                );
-            } else {
-                // UPDATE/DELETE RETURNING are outside the current SQL
-                // fragment. Preserve their fail-closed semantic refusal;
-                // do not add new SQL capability to repair a result budget.
-                assert!(
-                    matches!(result, Err(hawdb::HawDBError::Semantic(ref message))
-                    if message.contains("unsupported PostgreSQL")),
-                    "{route}/{mutation}/{ceiling}: {result:?}"
-                );
-            }
+            assert!(
+                matches!(result, Err(hawdb::HawDBError::ReadBudgetExceeded(ref cause))
+                if cause.resource == hawdb::ReadBudgetResource::PayloadBytes && cause.limit == ceiling),
+                "{route}/{mutation}/{ceiling}: result={result:?}, epochs={epoch}->{observed_epoch}, stored={stored:?}"
+            );
             assert_eq!(observed_epoch, epoch, "{route}/{mutation}/{ceiling}");
         }
         assert_eq!(stored, expected, "{route}/{mutation}/{ceiling}");

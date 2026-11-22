@@ -162,9 +162,7 @@ pub(super) fn externalize_row_with_allocations(
     }
     let values = Arc::get_mut(&mut row.values).expect("externalization has unique row backing");
     for (position, value) in values.iter_mut().enumerate() {
-        let unit = context
-            .start_unit()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        let unit = context.start_unit().map_err(work_error)?;
         let input = if protected.contains(&position) {
             None
         } else {
@@ -195,17 +193,15 @@ pub(super) fn externalize_row_with_allocations(
                     Sha256Digest,
                     RelationalOverflowSegment,
                 >())
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                .map_err(RelationalError::from_admission)?;
             // Transfer node ownership before allocating the map entry. Refusal
             // during transfer cannot leave a live node without its inventory.
             let mut memory = node_context.memory.into_inner();
             state
                 ._metadata_memory
                 .append_retained(&mut memory, &context.work)
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
-            let unit = context
-                .start_unit()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                .map_err(work_error)?;
+            let unit = context.start_unit().map_err(work_error)?;
             state.overflow_segments.insert(
                 digest,
                 RelationalOverflowSegment::CheckpointInline(encoded.bytes),
@@ -214,9 +210,7 @@ pub(super) fn externalize_row_with_allocations(
         }
         *value = RelationalValue::Overflow(encoded.reference);
     }
-    context
-        .checkpoint()
-        .map_err(|error| RelationalError::Admission(error.to_string()))?;
+    context.checkpoint().map_err(work_error)?;
     Ok(())
 }
 
@@ -235,7 +229,12 @@ fn protected_column_positions_with_allocations(
                 .iter()
                 .flat_map(|key| key.columns.iter()),
         )
-        .chain(schema.indexes.iter().flat_map(|index| index.columns.iter()))
+        .chain(
+            schema
+                .indexes
+                .iter()
+                .flat_map(|index| index.columns.iter().chain(index.included_columns.iter())),
+        )
     {
         let position = schema.column_position(name).ok_or_else(|| {
             RelationalError::Schema(format!(
@@ -245,15 +244,55 @@ fn protected_column_positions_with_allocations(
         if !positions.contains(&position) {
             context
                 .reserve(crate::cow::checkpoint_tree_node_bytes::<usize, ()>())
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                .map_err(RelationalError::from_admission)?;
         }
-        let unit = context
-            .start_unit()
-            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+        let unit = context.start_unit().map_err(work_error)?;
         positions.insert(position);
         unit.finish();
     }
+    for index in &schema.indexes {
+        if let Some(predicate) = &index.predicate {
+            visit_predicate_columns(predicate, &mut |name| {
+                let position = schema.column_position(name).ok_or_else(|| {
+                    RelationalError::Schema(format!(
+                        "overflow protection references unknown column {name}"
+                    ))
+                })?;
+                if !positions.contains(&position) {
+                    context
+                        .reserve(crate::cow::checkpoint_tree_node_bytes::<usize, ()>())
+                        .map_err(RelationalError::from_admission)?;
+                }
+                let unit = context.start_unit().map_err(work_error)?;
+                positions.insert(position);
+                unit.finish();
+                Ok(())
+            })?;
+        }
+    }
     Ok(positions)
+}
+
+fn visit_predicate_columns(
+    predicate: &crate::relational::RelationalPredicate,
+    visit: &mut impl FnMut(&str) -> Result<(), RelationalError>,
+) -> Result<(), RelationalError> {
+    use crate::relational::RelationalPredicate;
+    match predicate {
+        RelationalPredicate::And(left, right) | RelationalPredicate::Or(left, right) => {
+            visit_predicate_columns(left, visit)?;
+            visit_predicate_columns(right, visit)
+        }
+        RelationalPredicate::Not(predicate) => visit_predicate_columns(predicate, visit),
+        RelationalPredicate::Compare { column, .. } => visit(column),
+        RelationalPredicate::IsNull { .. } => Ok(()),
+        RelationalPredicate::RowCompare { .. } => Err(RelationalError::Schema(
+            "partial indexes do not support row comparisons".into(),
+        )),
+        RelationalPredicate::NumericCompare { .. } | RelationalPredicate::NumericIsNull { .. } => {
+            Ok(())
+        }
+    }
 }
 
 pub(super) fn hydrate_row(
@@ -465,9 +504,7 @@ fn runtime_checkpoint(
     task_context: Option<&hawdb_core::RuntimeTaskContext>,
 ) -> Result<(), RelationalError> {
     task_context.map_or(Ok(()), |context| {
-        context.checkpoint().map_err(|reason| {
-            RelationalError::Admission(format!("relational hydration stopped: {reason}"))
-        })
+        context.checkpoint().map_err(RelationalError::Stopped)
     })
 }
 
@@ -559,8 +596,11 @@ pub(super) fn prune_unreachable_segments_after_changes(
     Ok(())
 }
 
-fn admission(error: impl ToString) -> RelationalError {
-    RelationalError::Admission(error.to_string())
+fn work_error(error: crate::background::CheckpointWorkError) -> RelationalError {
+    match error.stop_reason() {
+        Some(reason) => RelationalError::Stopped(reason),
+        None => RelationalError::Admission(error.to_string()),
+    }
 }
 
 fn prune_changed_segments(
@@ -578,7 +618,7 @@ fn prune_changed_segments(
     });
     let charge_unit = || -> Result<(), RelationalError> {
         if let Some(scratch) = &scratch {
-            scratch.start_unit().map_err(admission)?.finish();
+            scratch.start_unit().map_err(work_error)?.finish();
         }
         Ok(())
     };
@@ -589,7 +629,7 @@ fn prune_changed_segments(
             {
                 scratch
                     .reserve(crate::cow::checkpoint_tree_node_bytes::<Sha256Digest, ()>())
-                    .map_err(admission)?;
+                    .map_err(RelationalError::from_admission)?;
             }
             set.insert(digest);
             Ok(())
@@ -668,7 +708,7 @@ fn prune_changed_segments(
         next.overflow_segments.remove(digest);
     }
     if let Some(scratch) = &scratch {
-        scratch.checkpoint().map_err(admission)?;
+        scratch.checkpoint().map_err(work_error)?;
     }
     Ok(())
 }
@@ -724,11 +764,9 @@ pub(super) fn prune_unreachable_segments_with_allocations(
                 {
                     scratch
                         .reserve(crate::cow::checkpoint_tree_node_bytes::<Sha256Digest, ()>())
-                        .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                        .map_err(RelationalError::from_admission)?;
                 }
-                let unit = scratch
-                    .start_unit()
-                    .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                let unit = scratch.start_unit().map_err(work_error)?;
                 if let RelationalValue::Overflow(reference) = value {
                     reachable.insert(reference.digest);
                 }
@@ -754,18 +792,16 @@ pub(super) fn prune_unreachable_segments_with_allocations(
         }
     });
     if let Some(error) = refusal {
-        return Err(RelationalError::Admission(error.to_string()));
+        return Err(work_error(error));
     }
-    scratch
-        .checkpoint()
-        .map_err(|error| RelationalError::Admission(error.to_string()))?;
+    scratch.checkpoint().map_err(work_error)?;
     Ok(())
 }
 
 fn protected_column_positions(
     schema: &RelationalTableSchema,
 ) -> Result<BTreeSet<usize>, RelationalError> {
-    let names = schema
+    let mut positions = schema
         .primary_key
         .iter()
         .chain(schema.unique_constraints.iter().flatten())
@@ -775,10 +811,12 @@ fn protected_column_positions(
                 .iter()
                 .flat_map(|key| key.columns.iter()),
         )
-        .chain(schema.indexes.iter().flat_map(|index| index.columns.iter()))
-        .collect::<BTreeSet<_>>();
-    names
-        .into_iter()
+        .chain(
+            schema
+                .indexes
+                .iter()
+                .flat_map(|index| index.columns.iter().chain(index.included_columns.iter())),
+        )
         .map(|name| {
             schema.column_position(name).ok_or_else(|| {
                 RelationalError::Schema(format!(
@@ -786,5 +824,19 @@ fn protected_column_positions(
                 ))
             })
         })
-        .collect()
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    for index in &schema.indexes {
+        if let Some(predicate) = &index.predicate {
+            visit_predicate_columns(predicate, &mut |name| {
+                let position = schema.column_position(name).ok_or_else(|| {
+                    RelationalError::Schema(format!(
+                        "overflow protection references unknown column {name}"
+                    ))
+                })?;
+                positions.insert(position);
+                Ok(())
+            })?;
+        }
+    }
+    Ok(positions)
 }

@@ -156,3 +156,85 @@ fn newer_search_projection_manifest_reports_unsupported_storage_format() {
         expected
     );
 }
+
+#[test]
+fn newer_relational_checkpoint_layout_reports_unsupported_storage_format() {
+    let error =
+        HawDBError::UnsupportedStorageFormat(hawdb::StorageFormatError::UnsupportedFeature {
+            format: hawdb::RELATIONAL_CHECKPOINT_LAYOUT_FORMAT,
+            feature: "row-root relational checkpoint",
+            tag: 5,
+        });
+    let expected = json!({
+        "kind": "unsupported_storage_format",
+        "message": "unsupported relational checkpoint layout feature row-root relational checkpoint tag 5",
+    });
+    assert_eq!(delivered(FfiError::open(&error)), expected);
+    assert_eq!(
+        delivered(FfiError::query(&EmbeddedQueryError::Database(error))),
+        expected
+    );
+}
+
+#[test]
+fn wal_record_limit_is_delivered_as_its_own_kind() {
+    let error = HawDBError::WalRecordLimitExceeded(Box::new(hawdb::WalRecordLimitError {
+        limit: hawdb::WalRecordLimit::RecordBytes,
+        requested: 20,
+        maximum: 16,
+    }));
+    let delivered = delivered(FfiError::open(&error));
+    assert_eq!(
+        delivered["kind"], "wal_record_limit_exceeded",
+        "{delivered}"
+    );
+    assert_eq!(delivered["message"], error.to_string());
+}
+
+#[test]
+fn read_only_is_delivered_as_its_own_kind() {
+    let error = HawDBError::ReadOnly {
+        operation: "mark_search_projection_full_reindex_needed",
+    };
+    let delivered = delivered(FfiError::open(&error));
+    assert_eq!(delivered["kind"], "read_only", "{delivered}");
+    assert_eq!(delivered["message"], error.to_string());
+}
+
+#[test]
+fn runtime_admission_refusal_is_delivered_as_its_own_kind() {
+    let error = HawDBError::RuntimeAdmissionRefused(hawdb::RuntimeAdmissionRefusal {
+        code: "memory_saturated",
+        requested: 4096,
+        available: 0,
+        retryable: true,
+    });
+    let delivered = delivered(FfiError::open(&error));
+    assert_eq!(
+        delivered["kind"], "runtime_admission_refused",
+        "{delivered}"
+    );
+    assert_eq!(delivered["message"], error.to_string());
+}
+
+#[test]
+fn io_wave_reservation_refusal_is_delivered_as_its_own_kind() {
+    let error = HawDBError::RuntimeIoWaveReservationExceeded {
+        requested_slots: 2,
+        reserved_slots: 1,
+    };
+    let delivered = delivered(FfiError::open(&error));
+    assert_eq!(
+        delivered["kind"], "runtime_io_wave_reservation_exceeded",
+        "{delivered}"
+    );
+    assert_eq!(delivered["message"], error.to_string());
+}
+
+#[test]
+fn runtime_task_stop_is_delivered_as_its_own_kind() {
+    let error = HawDBError::RuntimeTaskStopped(hawdb::RuntimeCancellationReason::Cancelled);
+    let delivered = delivered(FfiError::open(&error));
+    assert_eq!(delivered["kind"], "runtime_task_stopped", "{delivered}");
+    assert_eq!(delivered["message"], error.to_string());
+}

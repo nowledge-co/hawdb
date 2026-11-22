@@ -128,7 +128,9 @@ impl Fixture {
             indexes: vec![RelationalIndexSchema {
                 name: "flag-界".repeat(10000),
                 columns: vec!["flag".into()],
+                included_columns: Vec::new(),
                 unique: false,
+                predicate: None,
             }],
         };
         store
@@ -468,7 +470,10 @@ fn checkpoint_units_relational_image_cancels_each_read_wave_and_cpu_then_retries
         )
         .unwrap_err();
         assert!(
-            matches!(error,RelationalError::Admission(ref text) if text.contains("cancelled")),
+            matches!(
+                error,
+                RelationalError::Stopped(hawdb_core::RuntimeCancellationReason::Cancelled)
+            ),
             "{error:?}"
         );
         assert_eq!(probe.io_waves.load(Ordering::SeqCst), wave);
@@ -491,7 +496,10 @@ fn checkpoint_units_relational_image_cancels_each_read_wave_and_cpu_then_retries
         )
         .unwrap_err();
         assert!(
-            matches!(error,RelationalError::Admission(ref text) if text.contains("cancelled")),
+            matches!(
+                error,
+                RelationalError::Stopped(hawdb_core::RuntimeCancellationReason::Cancelled)
+            ),
             "{error:?}"
         );
         assert_eq!(probe.completed.load(Ordering::SeqCst), limit);
@@ -586,7 +594,9 @@ fn checkpoint_units_relational_wide_schema_defaults_keys_and_foreign_metadata_pr
         schema.indexes.push(RelationalIndexSchema {
             name: format!("index-{id}-界"),
             columns: vec![name],
+            included_columns: Vec::new(),
             unique: id % 2 == 0,
+            predicate: None,
         });
     }
     let mut expected = Encoder::default();
@@ -699,7 +709,10 @@ fn checkpoint_units_relational_mount_cancels_each_io_and_cpu_then_reopens_comple
         )
         .unwrap_err();
         assert!(
-            matches!(error, RelationalError::Admission(ref text) if text.contains("cancelled")),
+            matches!(
+                error,
+                RelationalError::Stopped(hawdb_core::RuntimeCancellationReason::Cancelled)
+            ),
             "{error:?}"
         );
         assert_eq!(probe.io_waves.load(Ordering::SeqCst), wave);
@@ -717,7 +730,10 @@ fn checkpoint_units_relational_mount_cancels_each_io_and_cpu_then_reopens_comple
         )
         .unwrap_err();
         assert!(
-            matches!(error, RelationalError::Admission(ref text) if text.contains("cancelled")),
+            matches!(
+                error,
+                RelationalError::Stopped(hawdb_core::RuntimeCancellationReason::Cancelled)
+            ),
             "{error:?}"
         );
         assert_eq!(probe.completed.load(Ordering::SeqCst), limit);
@@ -1091,7 +1107,10 @@ fn checkpoint_buffered_payload_observes_cancellation_at_every_unit() {
         );
         let error = result.unwrap_err();
         assert!(
-            matches!(error, RelationalError::Admission(ref text) if text.contains("cancelled")),
+            matches!(
+                error,
+                RelationalError::Stopped(hawdb_core::RuntimeCancellationReason::Cancelled)
+            ),
             "cut {limit}: {error:?}"
         );
         assert_eq!(probe.completed.load(Ordering::SeqCst), limit);

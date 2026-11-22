@@ -68,6 +68,13 @@ fn union(left: SqlSourceSpan, right: SqlSourceSpan) -> SqlSourceSpan {
 fn expression(kind: ExprKind, span: SqlSourceSpan) -> crate::Expr {
     crate::Expr { kind, span }
 }
+fn row_fields(value: &S) -> Option<&[S]> {
+    match &value.kind {
+        E::Row(fields) => Some(fields),
+        E::Parenthesized(inner) => row_fields(inner),
+        _ => None,
+    }
+}
 impl Lowerer<'_> {
     pub(in crate::parser) fn ident(&self, ident: &syntax::Identifier) -> String {
         let raw = &self.input[ident.span.start..ident.span.end];
@@ -589,9 +596,7 @@ impl Lowerer<'_> {
                         span,
                     ))
                 }
-                E::Function { .. } | E::Filtered { .. } if !matches!(position, PredicateScalar) => {
-                    self.function(value, position)
-                }
+                E::Function { .. } | E::Filtered { .. } => self.function(value, position),
                 _ => Err(semantic("unsupported PostgreSQL projection expression")),
             },
             Predicate | Having => match &value.kind {
@@ -630,6 +635,33 @@ impl Lowerer<'_> {
                         B::GreaterOrEqual => SqlComparisonOp::Gte,
                         _ => return Err(semantic("unsupported PostgreSQL predicate operator")),
                     };
+                    match (row_fields(left), row_fields(right)) {
+                        (Some(left_fields), Some(right_fields)) => {
+                            if left_fields.len() != right_fields.len() {
+                                return Err(semantic(
+                                    "row comparison requires the same number of fields on both sides",
+                                ));
+                            }
+                            let left = left_fields
+                                .iter()
+                                .map(|field| self.lower(field, operand))
+                                .collect::<Result<Vec<_>>>()?;
+                            let right = right_fields
+                                .iter()
+                                .map(|field| self.lower(field, operand))
+                                .collect::<Result<Vec<_>>>()?;
+                            return Ok(expression(
+                                ExprKind::RowCompare { left, op, right },
+                                self.span(value.span),
+                            ));
+                        }
+                        (Some(_), None) | (None, Some(_)) => {
+                            return Err(semantic(
+                                "row comparison requires row constructors on both sides",
+                            ));
+                        }
+                        (None, None) => {}
+                    }
                     let left = self.lower(left, operand)?;
                     let right = self.lower(right, operand)?;
                     let span = union(left.span, right.span);
@@ -745,6 +777,9 @@ impl Lowerer<'_> {
             ));
         };
         let name = self.ident(identifier);
+        if matches!(position, P::PredicateScalar) && name != "octet_length" {
+            return Err(semantic("unsupported PostgreSQL predicate function"));
+        }
         let mut span = self.span(identifier.span);
         let arguments = arguments
             .iter()

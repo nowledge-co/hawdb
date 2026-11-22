@@ -87,7 +87,7 @@ fn discovery_resource_failure_and_cancellation_never_reuse_a_generation() {
             }
             let error = next(&fixture.0, u64::MAX, &memory, &task).unwrap_err();
             if cancel {
-                assert!(matches!(error, HawDBError::Execution(_)));
+                assert!(matches!(error, HawDBError::RuntimeTaskStopped(_)));
             } else {
                 assert!(matches!(error, HawDBError::ResourceBudgetExceeded(_)));
             }

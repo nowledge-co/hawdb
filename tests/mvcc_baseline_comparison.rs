@@ -287,7 +287,7 @@ fn baseline_complete_hot_cold_mapping_remains_at_c_across_later_writes() {
         assert_eq!(result.report().reserved_lookups, 3);
         assert_eq!(g.snapshot().active_background_tasks, 0);
         assert_eq!(g.snapshot().admitted_memory_bytes, 0);
-        assert!(result.mapping_usage().queries >= 4);
+        assert_eq!(result.mapping_usage().queries, 3);
         unchanged(&root, &reader);
     }
 }
@@ -553,7 +553,7 @@ fn baseline_cold_pages_keep_one_database_dependency_slot() {
     let matched = session.finish().unwrap();
     assert_eq!(matched.report().compared_documents, 523);
     assert_eq!(matched.report().reserved_lookups, 523);
-    assert!(matched.mapping_usage().queries >= 524);
+    assert_eq!(matched.mapping_usage().queries, 523);
     assert_eq!(g.snapshot().active_background_tasks, 0);
 }
 

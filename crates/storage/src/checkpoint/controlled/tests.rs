@@ -340,7 +340,7 @@ fn checkpoint_units_metadata_predicates_match_complete_bytes_and_cancel_each_uni
         .unwrap_err();
         assert_eq!(
             error.to_string(),
-            "storage error: checkpoint build stopped: cancelled"
+            "execution error: runtime task stopped: cancelled"
         );
         assert_eq!(cancelled.completed.load(Ordering::SeqCst), limit);
         cancelled.assert_released(&local);
@@ -386,7 +386,7 @@ fn checkpoint_units_metadata_body_cancels_inner_fields_and_final_completion_then
         .unwrap_err();
         assert_eq!(
             error.to_string(),
-            "storage error: checkpoint build stopped: cancelled"
+            "execution error: runtime task stopped: cancelled"
         );
         assert_eq!(probe.completed.load(Ordering::SeqCst), limit);
         probe.assert_released(&local);

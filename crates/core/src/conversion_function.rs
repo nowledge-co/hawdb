@@ -365,13 +365,11 @@ mod tests {
 
     #[test]
     fn to_string_renders_temporal_values_in_iso_8601() {
-        use crate::temporal::{FixedOffset, NaiveDate, NaiveTime};
-        let date = NaiveDate::from_ymd_opt(2026, 10, 30).unwrap();
-        let time = NaiveTime::from_hms_milli_opt(12, 34, 56, 789).unwrap();
-        let local = date.and_time(time);
-        let zoned = local
-            .and_local_timezone(FixedOffset::east_opt(3_600).unwrap())
-            .unwrap();
+        use crate::temporal::{Time, UtcOffset};
+        let date = crate::temporal::types::date_from_ymd(2026, 10, 30).unwrap();
+        let time = Time::from_hms_milli(12, 34, 56, 789).unwrap();
+        let local = date.with_time(time);
+        let zoned = local.assume_offset(UtcOffset::from_whole_seconds(3_600).unwrap());
         assert_eq!(apply(ToString, Value::Date(date)), string("2026-10-30"));
         assert_eq!(
             apply(ToString, Value::LocalTime(time)),
@@ -385,7 +383,9 @@ mod tests {
             apply(ToString, Value::DateTime(zoned)),
             string("2026-10-30T12:34:56.789+01:00")
         );
-        let duration = crate::temporal::Duration::new(14, 3, crate::temporal::TimeDelta::hours(5));
+        let duration =
+            crate::temporal::Duration::new(14, 3, crate::temporal::SignedDuration::hours(5))
+                .unwrap();
         assert_eq!(
             apply(ToString, Value::duration(duration)),
             string("P1Y2M3DT5H")
@@ -398,7 +398,7 @@ mod tests {
 
     fn timestamp(text: &str) -> Value {
         Value::LocalDateTime(
-            crate::temporal::NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S%.f").unwrap(),
+            crate::temporal::parse_local_datetime(&text.replace(' ', "T")).unwrap(),
         )
     }
 
@@ -412,13 +412,8 @@ mod tests {
     /// (issue #1682 table plus the edge cases listed in its PR).
     #[test]
     fn kuzu_string_matches_kuzu_0_11_text() {
-        use crate::temporal::{FixedOffset, NaiveDate};
-        let date = |y, m, d| NaiveDate::from_ymd_opt(y, m, d).unwrap();
-        let zoned = |text: &str| {
-            Value::DateTime(
-                crate::temporal::DateTime::<FixedOffset>::parse_from_rfc3339(text).unwrap(),
-            )
-        };
+        let date = |y, m, d| crate::temporal::types::date_from_ymd(y, m, d).unwrap();
+        let zoned = |text: &str| Value::DateTime(crate::temporal::parse_datetime(text).unwrap());
         let map = |entries: &[(&str, Value)]| {
             Value::Map(
                 entries
@@ -448,13 +443,13 @@ mod tests {
             ),
             (timestamp("0099-01-02 03:04:05"), "0099-01-02 03:04:05"),
             (
-                Value::LocalDateTime(date(10_000, 1, 2).and_hms_opt(3, 4, 5).unwrap()),
+                Value::LocalDateTime(date(10_000, 1, 2).with_hms(3, 4, 5).unwrap()),
                 "10000-01-02 03:04:05",
             ),
             (zoned("2024-01-02T03:04:05Z"), "2024-01-02 03:04:05"),
             (zoned("2024-01-02T03:04:05+02:00"), "2024-01-02 01:04:05"),
             (
-                Value::LocalDateTime(date(0, 12, 31).and_hms_opt(0, 0, 0).unwrap()),
+                Value::LocalDateTime(date(0, 12, 31).with_hms(0, 0, 0).unwrap()),
                 "0001-12-31 (BC) 00:00:00",
             ),
             // Dates.
@@ -664,7 +659,7 @@ mod tests {
         // toString keeps its Neo4j text.
         assert_eq!(apply(ToString, Value::Float(1.0)), string("1.0"));
         assert_eq!(apply(ToString, Value::Bool(true)), string("true"));
-        let time = crate::temporal::NaiveTime::from_hms_opt(1, 2, 3).unwrap();
+        let time = crate::temporal::Time::from_hms(1, 2, 3).unwrap();
         for value in [
             Value::LocalTime(time),
             Value::Decimal("1.50".parse().unwrap()),

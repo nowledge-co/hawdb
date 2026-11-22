@@ -726,8 +726,8 @@ fn append_value_to_value(value: &RelationalValue) -> Result<Value> {
         RelationalValue::Bytea(value) => Ok(Value::Binary(value.clone())),
         RelationalValue::Uuid(value) => Ok(Value::Uuid(*value)),
         RelationalValue::Vector(value) => Ok(Value::Vector(value.clone())),
-        RelationalValue::Timestamp(value) => hawdb_core::sql_timestamp::local_value(*value),
-        RelationalValue::TimestampTz(value) => hawdb_core::sql_timestamp::zoned_value(*value),
+        RelationalValue::Timestamp(value) => hawdb_core::sql_timestamp::local_value(value.get()),
+        RelationalValue::TimestampTz(value) => hawdb_core::sql_timestamp::zoned_value(value.get()),
         RelationalValue::Overflow(_) => Err(HawDBError::StorageIntegrity(
             "strict append row contains an overflow reference".to_string(),
         )),

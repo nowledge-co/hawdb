@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::index::{BatchRead, Index, Layout, Previous, Rows, View};
+use crate::storage::{BfTreeStorage, Storage};
 use hawdb_storage::wal::frame::{
     decode_binary_wal_header, encode_binary_wal_header, frame_binary_wal_record,
     BinaryWalReadEvent, BinaryWalReader, WAL_BINARY_FILE_HEADER_BYTES,
@@ -46,7 +47,7 @@ impl fmt::Display for Error {
         match self {
             Self::Io(e) => write!(f, "journal I/O: {e}"),
             Self::Invalid(e) => write!(f, "invalid request: {e}"),
-            Self::Index(e) => write!(f, "Bf-Tree: {e}"),
+            Self::Index(e) => write!(f, "index storage: {e}"),
             Self::Journal(e) => write!(f, "invalid experiment journal: {e}"),
             Self::Conflict(key) => write!(f, "write conflict on {key:?}"),
             Self::Budget(e) => write!(f, "budget exceeded: {e}"),
@@ -313,8 +314,8 @@ impl Drop for Journal {
     }
 }
 
-struct Inner {
-    index: RwLock<Index>,
+struct Inner<S: Storage> {
+    index: RwLock<Index<S>>,
     snapshots: Mutex<BTreeMap<u64, usize>>,
     index_generation: AtomicU64,
     recovery: maintenance::RecoveryReport,
@@ -323,15 +324,14 @@ struct Inner {
     poisoned: AtomicBool,
     journal: Mutex<Journal>,
 }
-#[derive(Clone)]
-pub struct Store(Arc<Inner>);
-pub struct ReadTxn {
-    inner: Arc<Inner>,
+pub struct Store<S: Storage = BfTreeStorage>(Arc<Inner<S>>);
+pub struct ReadTxn<S: Storage = BfTreeStorage> {
+    inner: Arc<Inner<S>>,
     epoch: u64,
-    view: View,
+    view: View<S>,
 }
-pub struct WriteTxn {
-    read: ReadTxn,
+pub struct WriteTxn<S: Storage = BfTreeStorage> {
+    read: ReadTxn<S>,
     writes: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -352,11 +352,25 @@ impl Drop for Uncertain<'_> {
     }
 }
 
-impl Store {
+impl<S: Storage> Clone for Store<S> {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
+
+impl Store<BfTreeStorage> {
     pub fn open(path: &Path) -> Result<Self> {
         Self::open_layout(path, Layout::Hybrid)
     }
     pub fn open_layout(path: &Path, layout: Layout) -> Result<Self> {
+        Self::open_with_storage(path, layout)
+    }
+}
+
+impl<S: Storage> Store<S> {
+    /// Select S for the versioned and hybrid layouts. The COW reference
+    /// layout uses its own immutable map snapshots.
+    pub fn open_with_storage(path: &Path, layout: Layout) -> Result<Self> {
         let mut file = OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -416,7 +430,7 @@ impl Store {
             journal: Mutex::new(journal),
         })))
     }
-    pub fn begin_read(&self) -> Result<ReadTxn> {
+    pub fn begin_read(&self) -> Result<ReadTxn<S>> {
         self.0.usable()?;
         // Collection uses this same gate while choosing a horizon. Register
         // before releasing it, so no snapshot is captured but unprotected.
@@ -438,7 +452,7 @@ impl Store {
             view,
         })
     }
-    pub fn begin_write(&self) -> Result<WriteTxn> {
+    pub fn begin_write(&self) -> Result<WriteTxn<S>> {
         Ok(WriteTxn {
             read: self.begin_read()?,
             writes: BTreeMap::new(),
@@ -448,7 +462,7 @@ impl Store {
         Ok(self.0.journal.lock().map_err(|_| Error::NeedsRecovery)?.len)
     }
 }
-impl Inner {
+impl<S: Storage> Inner<S> {
     fn usable(&self) -> Result<()> {
         if self.poisoned.load(Ordering::Acquire)
             || self.journal.is_poisoned()
@@ -461,7 +475,7 @@ impl Inner {
         }
     }
 }
-impl Drop for ReadTxn {
+impl<S: Storage> Drop for ReadTxn<S> {
     fn drop(&mut self) {
         let Ok(mut snapshots) = self.inner.snapshots.lock() else {
             self.inner.poisoned.store(true, Ordering::Release);
@@ -477,7 +491,7 @@ impl Drop for ReadTxn {
         }
     }
 }
-impl ReadTxn {
+impl<S: Storage> ReadTxn<S> {
     pub fn get_many(&self, keys: &[&[u8]]) -> Result<BatchRead> {
         if keys.len() > MAX_BATCH_LOOKUPS || keys.iter().any(|key| key.len() > MAX_KEY) {
             return Err(Error::Budget("batch lookup keys"));
@@ -509,7 +523,7 @@ impl ReadTxn {
         Ok(rows)
     }
 }
-impl WriteTxn {
+impl<S: Storage> WriteTxn<S> {
     pub fn put(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
         if value.len() > MAX_VALUE {
             return Err(Error::Budget("value bytes"));

@@ -596,9 +596,11 @@ fn verify_cases(
                     .with_blocking(true),
                 )
                 .map_err(|error| {
-                    HawDBError::Execution(format!(
-                        "production overflow compaction verification admission failed: {error}"
-                    ))
+                    HawDBError::or_stop(&error, || {
+                        HawDBError::Execution(format!(
+                            "production overflow compaction verification admission failed: {error}"
+                        ))
+                    })
                 })?;
             let read = execute_qualified_read(
                 database,
