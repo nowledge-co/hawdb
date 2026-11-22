@@ -139,7 +139,7 @@ impl Fold<'_> {
             .collect()
     }
     fn expr(&self, node: NodeId) -> syntax::ExpressionSyntax {
-        syntax::peg::sql_expression(self.tree, self.tokens, node)
+        syntax::peg::sql_expression(self.input, self.tree, self.tokens, node)
     }
     fn alias(&self, node: NodeId) -> Result<Option<String>> {
         self.tree

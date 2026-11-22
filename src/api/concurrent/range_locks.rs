@@ -401,6 +401,7 @@ impl ConcurrentDatabaseTransaction {
             from_alias: source.alias.map(str::to_owned),
             joins: Vec::new(),
             selection: source.selection.cloned(),
+            subquery_predicate: None,
             group_by: Vec::new(),
             having: None,
             order_by: Vec::new(),

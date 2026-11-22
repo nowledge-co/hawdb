@@ -31,6 +31,7 @@ pub(super) fn parse(input: &str) -> Result<SqlStatement> {
         }
         if !next.is_keyword(&input[offset..], "SELECT")
             && !next.is_keyword(&input[offset..], "WITH")
+            && !next.is_keyword(&input[offset..], "VALUES")
         {
             return Err(HawDBError::Semantic(
                 if ["UPDATE", "DELETE", "INSERT", "CREATE", "ALTER", "DROP"]
@@ -60,9 +61,17 @@ pub(super) fn parse(input: &str) -> Result<SqlStatement> {
         }
         syntax::RelationalStatementSyntax::Explain { analyze, query } => {
             let query = lowerer.query(&query)?;
-            let statement = match query.into_simple_select() {
-                Ok(select) => SqlStatement::Select(select),
-                Err(query) => SqlStatement::Query(*query),
+            let has_subquery_predicate = matches!(
+                &query.body,
+                SqlQueryBody::Select(select) if select.subquery_predicate.is_some()
+            );
+            let statement = if has_subquery_predicate {
+                SqlStatement::Query(query)
+            } else {
+                match query.into_simple_select() {
+                    Ok(select) => SqlStatement::Select(select),
+                    Err(query) => SqlStatement::Query(*query),
+                }
             };
             Ok(SqlStatement::Explain(SqlExplainStatement {
                 analyze,
@@ -143,29 +152,77 @@ impl<'a> Lowerer<'a> {
     fn relation(
         &self,
         item: &syntax::PostgresFromItemSyntax,
-    ) -> Result<(SqlTableName, Option<String>)> {
-        let syntax::PostgresFromItemSyntax::Relation(relation) = item else {
-            return Err(HawDBError::Semantic(
+    ) -> Result<(
+        SqlTableName,
+        Option<String>,
+        Option<SqlCommonTableExpression>,
+    )> {
+        match item {
+            syntax::PostgresFromItemSyntax::Relation(relation) => {
+                let alias = relation
+                    .alias
+                    .as_ref()
+                    .map(|alias| {
+                        if !alias.columns.is_empty() {
+                            return Err(HawDBError::Semantic(
+                                "PostgreSQL base-table column aliases are not supported".into(),
+                            ));
+                        }
+                        Ok(self.ident(&alias.name))
+                    })
+                    .transpose()?;
+                Ok((self.name(&relation.name)?, alias, None))
+            }
+            syntax::PostgresFromItemSyntax::Derived(derived) => {
+                // Keep derived-table materialization in an internal namespace
+                // that no SQL identifier can spell, including a quoted one.
+                // The suffix remains source-stable for diagnostics and plans.
+                let internal_name = format!(
+                    "\0hawdb_derived_{}_{}",
+                    derived.span.start, derived.span.end
+                );
+                let alias = self.ident(&derived.alias.name);
+                let columns = derived
+                    .alias
+                    .columns
+                    .iter()
+                    .map(|column| self.ident(column))
+                    .collect();
+                Ok((
+                    SqlTableName {
+                        schema: None,
+                        name: internal_name.clone(),
+                    },
+                    Some(alias),
+                    Some(SqlCommonTableExpression {
+                        name: internal_name,
+                        columns,
+                        body: SqlCommonTableExpressionBody::Query(Box::new(
+                            self.query(&derived.query)?,
+                        )),
+                    }),
+                ))
+            }
+            syntax::PostgresFromItemSyntax::GraphTable(_) => Err(HawDBError::Semantic(
                 "GRAPH_TABLE execution is not qualified".into(),
-            ));
-        };
-        let alias = relation
-            .alias
-            .as_ref()
-            .map(|alias| {
-                if !alias.columns.is_empty() {
-                    return Err(HawDBError::Semantic(
-                        "PostgreSQL table column aliases are not supported".into(),
-                    ));
-                }
-                Ok(self.ident(&alias.name))
-            })
-            .transpose()?;
-        Ok((self.name(&relation.name)?, alias))
+            )),
+        }
     }
 
     pub(super) fn select(&self, select: &syntax::PostgresSelectSyntax) -> Result<SqlStatement> {
-        self.select_statement(select).map(SqlStatement::Select)
+        let (select, with) = self.select_statement(select)?;
+        if with.is_empty() && select.subquery_predicate.is_none() {
+            Ok(SqlStatement::Select(select))
+        } else {
+            Ok(SqlStatement::Query(SqlQueryStatement {
+                with,
+                body: SqlQueryBody::Select(Box::new(select)),
+                order_by: Vec::new(),
+                limit: None,
+                offset: None,
+                lock_strength: None,
+            }))
+        }
     }
 
     fn query(&self, query: &syntax::PostgresQuerySyntax) -> Result<SqlQueryStatement> {
@@ -174,7 +231,7 @@ impl<'a> Lowerer<'a> {
                 "FOR UPDATE/SHARE OF, NOWAIT, and SKIP LOCKED are not supported".into(),
             ));
         }
-        let with = query
+        let mut with = query
             .with
             .iter()
             .map(|cte| {
@@ -191,9 +248,11 @@ impl<'a> Lowerer<'a> {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
+        let (body, derived) = self.query_body(&query.body)?;
+        with.extend(derived);
         Ok(SqlQueryStatement {
             with,
-            body: self.query_body(&query.body)?,
+            body,
             order_by: query
                 .order_by
                 .iter()
@@ -216,30 +275,57 @@ impl<'a> Lowerer<'a> {
         })
     }
 
-    fn query_body(&self, body: &syntax::PostgresQueryBodySyntax) -> Result<SqlQueryBody> {
+    fn query_body(
+        &self,
+        body: &syntax::PostgresQueryBodySyntax,
+    ) -> Result<(SqlQueryBody, Vec<SqlCommonTableExpression>)> {
         Ok(match body {
             syntax::PostgresQueryBodySyntax::Select(select) => {
-                SqlQueryBody::Select(Box::new(self.select_statement(select)?))
+                let (select, derived) = self.select_statement(select)?;
+                (SqlQueryBody::Select(Box::new(select)), derived)
             }
-            syntax::PostgresQueryBodySyntax::Nested(query) => {
-                SqlQueryBody::Nested(Box::new(self.query(query)?))
-            }
+            syntax::PostgresQueryBodySyntax::Values { rows, .. } => (
+                SqlQueryBody::Values(
+                    rows.iter()
+                        .map(|row| {
+                            row.iter()
+                                .map(|expression| {
+                                    self.lower(expression, ExpressionPosition::Scalar)
+                                })
+                                .collect::<Result<Vec<_>>>()
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                ),
+                Vec::new(),
+            ),
+            syntax::PostgresQueryBodySyntax::Nested(query) => (
+                SqlQueryBody::Nested(Box::new(self.query(query)?)),
+                Vec::new(),
+            ),
             syntax::PostgresQueryBodySyntax::SetOperation {
                 left,
                 operator,
                 all,
                 right,
                 ..
-            } => SqlQueryBody::SetOperation {
-                left: Box::new(self.query_body(left)?),
-                operator: match operator {
-                    syntax::PostgresSetOperator::Union => SqlSetOperator::Union,
-                    syntax::PostgresSetOperator::Intersect => SqlSetOperator::Intersect,
-                    syntax::PostgresSetOperator::Except => SqlSetOperator::Except,
-                },
-                all: *all,
-                right: Box::new(self.query_body(right)?),
-            },
+            } => {
+                let (left, mut derived) = self.query_body(left)?;
+                let (right, right_derived) = self.query_body(right)?;
+                derived.extend(right_derived);
+                (
+                    SqlQueryBody::SetOperation {
+                        left: Box::new(left),
+                        operator: match operator {
+                            syntax::PostgresSetOperator::Union => SqlSetOperator::Union,
+                            syntax::PostgresSetOperator::Intersect => SqlSetOperator::Intersect,
+                            syntax::PostgresSetOperator::Except => SqlSetOperator::Except,
+                        },
+                        all: *all,
+                        right: Box::new(right),
+                    },
+                    derived,
+                )
+            }
         })
     }
 
@@ -258,7 +344,10 @@ impl<'a> Lowerer<'a> {
         })
     }
 
-    fn select_statement(&self, select: &syntax::PostgresSelectSyntax) -> Result<SelectStatement> {
+    fn select_statement(
+        &self,
+        select: &syntax::PostgresSelectSyntax,
+    ) -> Result<(SelectStatement, Vec<SqlCommonTableExpression>)> {
         if select.locking.as_ref().is_some_and(|lock| lock.nonblocking) {
             return Err(HawDBError::Semantic(
                 "FOR UPDATE/SHARE OF, NOWAIT, and SKIP LOCKED are not supported".into(),
@@ -295,6 +384,7 @@ impl<'a> Lowerer<'a> {
         }
         let mut joins = Vec::new();
         let mut base = None;
+        let mut derived = Vec::new();
         for (index, from) in select.from.iter().enumerate() {
             if index > 0
                 && matches!(&from.relation, syntax::PostgresFromItemSyntax::Relation(relation) if relation.arguments.is_some())
@@ -303,16 +393,17 @@ impl<'a> Lowerer<'a> {
                     "PostgreSQL relational SQL supports base tables only".into(),
                 ));
             }
-            let relation = self.relation(&from.relation)?;
+            let (table, alias, derived_table) = self.relation(&from.relation)?;
+            derived.extend(derived_table);
             let scope = if index == 0 {
-                base = Some(relation);
+                base = Some((table, alias));
                 0
             } else {
                 let scope = joins.len() + 1;
                 joins.push(SqlJoin {
                     kind: SqlJoinKind::Inner,
-                    table: relation.0,
-                    alias: relation.1,
+                    table,
+                    alias,
                     on: crate::Expr::value(SqlValue::Literal(Value::Bool(true))),
                     on_scope_start: scope,
                 });
@@ -325,7 +416,8 @@ impl<'a> Lowerer<'a> {
                         "PostgreSQL relational SQL supports base tables only".into(),
                     ));
                 }
-                let (table, alias) = self.relation(&join.relation)?;
+                let (table, alias, derived_table) = self.relation(&join.relation)?;
+                derived.extend(derived_table);
                 joins.push(SqlJoin {
                     kind: match join.kind {
                         syntax::PostgresJoinKind::Left => SqlJoinKind::Left,
@@ -345,6 +437,18 @@ impl<'a> Lowerer<'a> {
                 });
             }
         }
+        let (selection, subquery_predicate) = match select.selection.as_ref() {
+            Some(expression) if self.contains_subquery(expression) => {
+                let predicate = self.subquery_predicate(expression)?;
+                let selection = self.pushdown_predicate(&predicate);
+                (selection, Some(Box::new(predicate)))
+            }
+            Some(expression) => (
+                Some(self.lower(expression, ExpressionPosition::Predicate)?),
+                None,
+            ),
+            None => (None, None),
+        };
         let statement = SelectStatement {
             table_function,
             projection,
@@ -352,11 +456,8 @@ impl<'a> Lowerer<'a> {
             from: base.as_ref().map(|base| base.0.clone()),
             from_alias: base.and_then(|base| base.1),
             joins,
-            selection: select
-                .selection
-                .as_ref()
-                .map(|expr| self.lower(expr, ExpressionPosition::Predicate))
-                .transpose()?,
+            selection,
+            subquery_predicate,
             group_by: select
                 .group_by
                 .iter()
@@ -389,6 +490,7 @@ impl<'a> Lowerer<'a> {
         };
         if statement.from.is_none()
             && (statement.selection.is_some()
+                || statement.subquery_predicate.is_some()
                 || !statement.group_by.is_empty()
                 || statement.having.is_some()
                 || !statement.order_by.is_empty()
@@ -398,13 +500,193 @@ impl<'a> Lowerer<'a> {
         {
             return Err(HawDBError::Semantic("PostgreSQL SELECT without FROM does not support WHERE, GROUP BY, HAVING, ORDER BY, LIMIT, OFFSET, or locking clauses".into()));
         }
-        Ok(statement)
+        Ok((statement, derived))
+    }
+
+    fn contains_subquery(&self, expression: &syntax::ExpressionSyntax) -> bool {
+        use syntax::ExpressionKindSyntax as E;
+        match &expression.kind {
+            E::Exists { .. } | E::InSubquery { .. } => true,
+            E::Unary { expression, .. }
+            | E::IsNull { expression, .. }
+            | E::Cast { expression, .. }
+            | E::Collate { expression, .. }
+            | E::Parenthesized(expression) => self.contains_subquery(expression),
+            E::Binary { left, right, .. } => {
+                self.contains_subquery(left) || self.contains_subquery(right)
+            }
+            E::Like {
+                expression,
+                pattern,
+                escape,
+                ..
+            } => {
+                self.contains_subquery(expression)
+                    || self.contains_subquery(pattern)
+                    || escape
+                        .as_deref()
+                        .is_some_and(|escape| self.contains_subquery(escape))
+            }
+            E::Filtered {
+                function,
+                predicate,
+            } => self.contains_subquery(function) || self.contains_subquery(predicate),
+            E::InList {
+                expression, values, ..
+            } => {
+                self.contains_subquery(expression)
+                    || values.iter().any(|value| self.contains_subquery(value))
+            }
+            E::Row(fields) => fields.iter().any(|field| self.contains_subquery(field)),
+            E::Between {
+                expression,
+                low,
+                high,
+                ..
+            } => {
+                self.contains_subquery(expression)
+                    || self.contains_subquery(low)
+                    || self.contains_subquery(high)
+            }
+            E::Function { arguments, .. } => arguments
+                .iter()
+                .any(|argument| self.contains_subquery(argument)),
+            E::Column(_)
+            | E::Wildcard(_)
+            | E::Parameter(_)
+            | E::Literal(_)
+            | E::TypedString { .. } => false,
+        }
+    }
+
+    fn subquery_predicate(
+        &self,
+        expression: &syntax::ExpressionSyntax,
+    ) -> Result<SqlSubqueryPredicate> {
+        use syntax::{
+            BinaryOperatorSyntax as B, ExpressionKindSyntax as E, UnaryOperatorSyntax as U,
+        };
+        Ok(match &expression.kind {
+            E::Parenthesized(inner) => self.subquery_predicate(inner)?,
+            E::Unary {
+                operator: U::Not,
+                expression: inner,
+            } if self.contains_subquery(inner) => {
+                SqlSubqueryPredicate::Not(Box::new(self.subquery_predicate(inner)?))
+            }
+            E::Binary {
+                left,
+                operator: B::And,
+                right,
+            } => SqlSubqueryPredicate::And(
+                Box::new(self.subquery_predicate(left)?),
+                Box::new(self.subquery_predicate(right)?),
+            ),
+            E::Binary {
+                left,
+                operator: B::Or,
+                right,
+            } => SqlSubqueryPredicate::Or(
+                Box::new(self.subquery_predicate(left)?),
+                Box::new(self.subquery_predicate(right)?),
+            ),
+            E::Exists { query } => SqlSubqueryPredicate::Exists {
+                query: Box::new(self.query(query)?),
+            },
+            E::InSubquery {
+                expression: left,
+                query,
+                negated,
+            } => {
+                let fields = match &left.kind {
+                    E::Row(fields) => fields.as_slice(),
+                    E::Parenthesized(inner) => match &inner.kind {
+                        E::Row(fields) => fields.as_slice(),
+                        _ => std::slice::from_ref(inner.as_ref()),
+                    },
+                    _ => std::slice::from_ref(left.as_ref()),
+                };
+                SqlSubqueryPredicate::In {
+                    left: fields
+                        .iter()
+                        .map(|field| self.lower(field, ExpressionPosition::PredicateScalar))
+                        .collect::<Result<Vec<_>>>()?,
+                    query: Box::new(self.query(query)?),
+                    negated: *negated,
+                }
+            }
+            _ if self.contains_subquery(expression) => {
+                return Err(HawDBError::Semantic(
+                    "subqueries are supported only as EXISTS or IN predicates combined with AND, OR, and NOT"
+                        .into(),
+                ));
+            }
+            _ => {
+                SqlSubqueryPredicate::Scalar(self.lower(expression, ExpressionPosition::Predicate)?)
+            }
+        })
+    }
+
+    fn pushdown_predicate(&self, predicate: &SqlSubqueryPredicate) -> Option<SqlPredicate> {
+        match predicate {
+            SqlSubqueryPredicate::Scalar(predicate) => Some(predicate.clone()),
+            SqlSubqueryPredicate::And(left, right) => {
+                match (
+                    self.pushdown_predicate(left),
+                    self.pushdown_predicate(right),
+                ) {
+                    (Some(left), Some(right)) => Some(crate::Expr::unspanned(ExprKind::And(
+                        Box::new(left),
+                        Box::new(right),
+                    ))),
+                    (Some(predicate), None) | (None, Some(predicate)) => Some(predicate),
+                    (None, None) => None,
+                }
+            }
+            SqlSubqueryPredicate::Or(_, _)
+            | SqlSubqueryPredicate::Not(_)
+            | SqlSubqueryPredicate::Exists { .. }
+            | SqlSubqueryPredicate::In { .. } => None,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn values_derived_tables_and_subqueries_lower_into_owned_query_ir() {
+        let prepared = crate::prepare_postgres_sql(
+            "SELECT input.id FROM (VALUES ($1), ($2)) input(id) \
+             WHERE input.id IN (SELECT id FROM numbers WHERE n = $3) \
+                OR EXISTS (SELECT 1 FROM numbers WHERE id = input.id)",
+        )
+        .unwrap();
+        assert_eq!(
+            prepared
+                .parameters
+                .iter()
+                .map(|parameter| parameter.position)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        let SqlStatement::Query(query) = prepared.statement else {
+            panic!("derived-table subquery must use statement-scoped query IR");
+        };
+        assert_eq!(query.with.len(), 1);
+        assert!(query.with[0].name.starts_with("\0hawdb_derived_"));
+        let SqlQueryBody::Select(select) = query.body else {
+            panic!("outer query must remain a SELECT");
+        };
+        assert!(matches!(
+            select.subquery_predicate.as_deref(),
+            Some(SqlSubqueryPredicate::Or(left, right))
+                if matches!(left.as_ref(), SqlSubqueryPredicate::In { .. })
+                    && matches!(right.as_ref(), SqlSubqueryPredicate::Exists { .. })
+        ));
+    }
+
     #[test]
     fn non_select_statement_bodies_preserve_independent_input_limits() {
         let payload = "x".repeat(syntax::LexerConfig::default().max_input_bytes + 1);

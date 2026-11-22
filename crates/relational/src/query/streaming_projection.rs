@@ -42,7 +42,13 @@ pub(super) fn execute_ordered_index_projection<'a>(
     limits: RelationalQueryLimits,
     execution_memory: &hawdb_executor::ExecutionMemoryConfig,
     memory_ledger: &QueryMemoryLedger,
+    subquery_filter: Option<&super::RelationalSubqueryFilter<'_>>,
 ) -> Result<StreamingProjectionOutput> {
+    if subquery_filter.is_some() {
+        return Err(HawDBError::Execution(
+            "subquery predicates cannot use ordered-index projection".into(),
+        ));
+    }
     let RelationalBaseAccess::Index { name, scan } = base_access else {
         return Err(HawDBError::Execution(
             "ordered relational projection requires an index range access".to_string(),
@@ -199,8 +205,10 @@ pub(super) fn execute_streaming_projection<'a>(
     row_runtime: &RelationalRowRuntime<'a>,
     limits: RelationalQueryLimits,
     memory_ledger: &QueryMemoryLedger,
+    subquery_filter: Option<&super::RelationalSubqueryFilter<'_>>,
 ) -> Result<StreamingProjectionOutput> {
-    if tree_execution.is_none_or(|execution| execution.tree.root.relation_count() == 1)
+    if subquery_filter.is_none()
+        && tree_execution.is_none_or(|execution| execution.tree.root.relation_count() == 1)
         && joins.is_empty()
         && matches!(base_access, RelationalBaseAccess::FullScan)
         && !projection_uses_non_aggregate_scalar_function(&select.projection)
@@ -254,6 +262,7 @@ pub(super) fn execute_streaming_projection<'a>(
             pipeline,
             index_runtime,
             row_runtime,
+            subquery_filter,
             &mut |row| {
                 if offset != 0 {
                     offset -= 1;

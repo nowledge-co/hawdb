@@ -170,6 +170,7 @@ fn assert_accepted_alias(
         assert!(select.limit.is_some());
         let alias = match &select.from[0].relation {
             PostgresFromItemSyntax::Relation(table) => table.alias.as_ref(),
+            PostgresFromItemSyntax::Derived(table) => Some(&table.alias),
             PostgresFromItemSyntax::GraphTable(table) => table.alias.as_ref(),
         };
         assert_alias(

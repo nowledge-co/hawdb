@@ -62,18 +62,29 @@ pub(super) fn execute_select_timed<'state>(
     prepared: &'state PreparedRelationalSelect,
     parameters: &[Value],
     execution: AdmittedRelationalExecution<'state, '_, impl RelationalQueryStoreReader>,
+    subquery_filter: Option<&super::RelationalSubqueryFilter<'_>>,
 ) -> Result<RelationalQueryOutput> {
     let started = Instant::now();
-    let mut output = execute_select(prepared, parameters, execution)?;
+    let mut output = execute_select_with_filter(prepared, parameters, execution, subquery_filter)?;
     output.stage_timings = prepared.stage_timings;
     output.stage_timings.execute_nanos = elapsed_nanos(started);
     Ok(output)
 }
 
+#[cfg(test)]
 pub(super) fn execute_select<'state>(
     prepared: &'state PreparedRelationalSelect,
     parameters: &[Value],
     execution: AdmittedRelationalExecution<'state, '_, impl RelationalQueryStoreReader>,
+) -> Result<RelationalQueryOutput> {
+    execute_select_with_filter(prepared, parameters, execution, None)
+}
+
+fn execute_select_with_filter<'state>(
+    prepared: &'state PreparedRelationalSelect,
+    parameters: &[Value],
+    execution: AdmittedRelationalExecution<'state, '_, impl RelationalQueryStoreReader>,
+    subquery_filter: Option<&super::RelationalSubqueryFilter<'_>>,
 ) -> Result<RelationalQueryOutput> {
     let select = &prepared.statement;
     let output_schema = &prepared.output_schema;
@@ -198,6 +209,7 @@ pub(super) fn execute_select<'state>(
             limits,
             execution_memory,
             &memory_ledger,
+            subquery_filter,
         )?;
         pipeline.finish()?;
         return Ok(RelationalQueryOutput {
@@ -231,6 +243,7 @@ pub(super) fn execute_select<'state>(
             &row_runtime,
             limits,
             &memory_ledger,
+            subquery_filter,
         )?;
         output
             .blocking_operator_memory_reports
@@ -272,6 +285,7 @@ pub(super) fn execute_select<'state>(
             access_path,
             join_access_paths,
             join_planning,
+            subquery_filter,
         )?;
         output
             .blocking_operator_memory_reports
@@ -295,6 +309,7 @@ pub(super) fn execute_select<'state>(
         limits,
         execution_memory,
         &memory_ledger,
+        subquery_filter,
     )?;
     output
         .blocking_operator_memory_reports

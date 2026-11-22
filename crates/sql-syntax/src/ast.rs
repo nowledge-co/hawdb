@@ -76,6 +76,10 @@ pub struct PostgresCommonTableExpressionSyntax {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PostgresQueryBodySyntax {
     Select(Box<PostgresSelectSyntax>),
+    Values {
+        rows: Vec<Vec<ExpressionSyntax>>,
+        span: Span,
+    },
     Nested(Box<PostgresQuerySyntax>),
     SetOperation {
         left: Box<PostgresQueryBodySyntax>,
@@ -124,7 +128,15 @@ pub struct PostgresFromSyntax {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PostgresFromItemSyntax {
     Relation(RelationTableSyntax),
+    Derived(DerivedTableSyntax),
     GraphTable(GraphTable),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DerivedTableSyntax {
+    pub query: Box<PostgresQuerySyntax>,
+    pub alias: TableAlias,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -396,6 +408,14 @@ pub enum ExpressionKindSyntax {
     InList {
         expression: Box<ExpressionSyntax>,
         values: Vec<ExpressionSyntax>,
+        negated: bool,
+    },
+    Exists {
+        query: Box<PostgresQuerySyntax>,
+    },
+    InSubquery {
+        expression: Box<ExpressionSyntax>,
+        query: Box<PostgresQuerySyntax>,
         negated: bool,
     },
     /// `ROW(a, b, ...)` or the PostgreSQL shorthand `(a, b, ...)`.

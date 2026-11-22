@@ -1145,6 +1145,7 @@ impl PreparedRelationalExecutionDescriptor {
             select.having.is_some() || select.projection.iter().any(projection_contains_aggregate);
         let access_order_by = resolved_access_order_by(select)?;
         let ordered_index_projection = !select.order_by.is_empty()
+            && select.subquery_predicate.is_none()
             && access_order_by.len() == select.order_by.len()
             && access_plan.base_access.descriptor.order_prefix_len == access_order_by.len()
             && select.joins.is_empty()

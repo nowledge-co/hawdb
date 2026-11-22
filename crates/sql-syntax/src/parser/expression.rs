@@ -59,6 +59,7 @@ pub(super) const NESTING_RULES: &[&str] = &[
     "ParenthesizedContents",
     "ArgumentContents",
     "InContents",
+    "SubqueryContents",
     "FilterContents",
     "CastContents",
     "RowContents",
@@ -103,8 +104,13 @@ pub(super) fn rules() -> Vec<Rule> {
         ("In", seq(vec![opt(r("Negated")), k("IN"), r("InValues")])),
         (
             "InValues",
-            seq(vec![t(T::LeftParen), r("InContents"), t(T::RightParen)]),
+            seq(vec![
+                t(T::LeftParen),
+                choice(vec![r("SubqueryContents"), r("InContents")]),
+                t(T::RightParen),
+            ]),
         ),
+        ("SubqueryContents", r("RelationalQuery")),
         (
             "Between",
             seq(vec![
@@ -197,6 +203,7 @@ pub(super) fn rules() -> Vec<Rule> {
         (
             "Atom",
             choice(vec![
+                r("Exists"),
                 r("RowConstructor"),
                 r("Parenthesized"),
                 r("Wildcard"),
@@ -211,6 +218,15 @@ pub(super) fn rules() -> Vec<Rule> {
                 r("Function"),
                 r("QualifiedWildcard"),
                 r("Column"),
+            ]),
+        ),
+        (
+            "Exists",
+            seq(vec![
+                k("EXISTS"),
+                t(T::LeftParen),
+                r("SubqueryContents"),
+                t(T::RightParen),
             ]),
         ),
         (
@@ -323,11 +339,12 @@ pub(super) fn rules() -> Vec<Rule> {
     ]
 }
 
-pub(crate) struct Fold<'a> {
-    pub(crate) tree: &'a ParseTree,
-    pub(crate) tokens: &'a [Token],
+pub(crate) struct Fold<'tree, 'query> {
+    pub(crate) tree: &'tree ParseTree,
+    pub(crate) tokens: &'tree [Token],
+    pub(crate) query: Option<&'query dyn Fn(NodeId) -> crate::PostgresQuerySyntax>,
 }
-impl Fold<'_> {
+impl Fold<'_, '_> {
     fn span(&self, node: NodeId) -> Span {
         self.tree.span(node, self.tokens)
     }
@@ -426,6 +443,19 @@ impl Fold<'_> {
                 }
             }
             "Parenthesized" => Kind::Parenthesized(Box::new(self.expression(children[0]))),
+            "Exists" => {
+                let query = self.tree.required(
+                    self.tree.required(node, "SubqueryContents"),
+                    "RelationalQuery",
+                );
+                Kind::Exists {
+                    query: Box::new(self
+                        .query
+                        .expect("relational expression transformer resolves subqueries")(
+                        query
+                    )),
+                }
+            }
             "RowConstructor" => Kind::Row(
                 if let Some(contents) = self.tree.child(node, "RowContents") {
                     self.tree
@@ -572,18 +602,29 @@ impl Fold<'_> {
                 negated,
             },
             "In" => {
-                let values = self
-                    .tree
-                    .required(self.tree.required(suffix, "InValues"), "InContents");
-                Kind::InList {
-                    expression,
-                    negated,
-                    values: self
-                        .tree
-                        .children(values)
-                        .iter()
-                        .map(|id| self.expression(*id))
-                        .collect(),
+                let values = self.tree.required(suffix, "InValues");
+                if let Some(query) = self.tree.child(values, "SubqueryContents") {
+                    Kind::InSubquery {
+                        expression,
+                        negated,
+                        query: Box::new(self
+                            .query
+                            .expect("relational expression transformer resolves subqueries")(
+                            self.tree.required(query, "RelationalQuery"),
+                        )),
+                    }
+                } else {
+                    let values = self.tree.required(values, "InContents");
+                    Kind::InList {
+                        expression,
+                        negated,
+                        values: self
+                            .tree
+                            .children(values)
+                            .iter()
+                            .map(|id| self.expression(*id))
+                            .collect(),
+                    }
                 }
             }
             "Between" => {

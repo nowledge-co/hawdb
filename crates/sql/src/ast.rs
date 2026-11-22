@@ -136,6 +136,7 @@ pub enum SqlCommonTableExpressionBody {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SqlQueryBody {
     Select(Box<SelectStatement>),
+    Values(Vec<Vec<SqlExpression>>),
     Nested(Box<SqlQueryStatement>),
     SetOperation {
         left: Box<SqlQueryBody>,
@@ -148,7 +149,13 @@ pub enum SqlQueryBody {
 impl SqlQueryBody {
     fn visit_selects(&self, visit: &mut impl FnMut(&SelectStatement)) {
         match self {
-            Self::Select(select) => visit(select),
+            Self::Select(select) => {
+                visit(select);
+                if let Some(predicate) = &select.subquery_predicate {
+                    predicate.visit_queries(&mut |query| query.visit_selects(visit));
+                }
+            }
+            Self::Values(_) => {}
             Self::Nested(query) => query.visit_selects(visit),
             Self::SetOperation { left, right, .. } => {
                 left.visit_selects(visit);
@@ -159,7 +166,19 @@ impl SqlQueryBody {
 
     fn contains_locking_clause(&self) -> bool {
         match self {
-            Self::Select(select) => select.lock_strength.is_some(),
+            Self::Select(select) => {
+                if select.lock_strength.is_some() {
+                    return true;
+                }
+                let mut contains = false;
+                if let Some(predicate) = &select.subquery_predicate {
+                    predicate.visit_queries(&mut |query| {
+                        contains |= query.contains_locking_clause();
+                    });
+                }
+                contains
+            }
+            Self::Values(_) => false,
             Self::Nested(query) => query.contains_locking_clause(),
             Self::SetOperation { left, right, .. } => {
                 left.contains_locking_clause() || right.contains_locking_clause()
@@ -169,7 +188,16 @@ impl SqlQueryBody {
 
     pub fn contains_data_modifying_cte(&self) -> bool {
         match self {
-            Self::Select(_) => false,
+            Self::Select(select) => {
+                let mut contains = false;
+                if let Some(predicate) = &select.subquery_predicate {
+                    predicate.visit_queries(&mut |query| {
+                        contains |= query.contains_data_modifying_cte();
+                    });
+                }
+                contains
+            }
+            Self::Values(_) => false,
             Self::Nested(query) => query.contains_data_modifying_cte(),
             Self::SetOperation { left, right, .. } => {
                 left.contains_data_modifying_cte() || right.contains_data_modifying_cte()
@@ -341,6 +369,11 @@ pub struct SelectStatement {
     pub from_alias: Option<String>,
     pub joins: Vec<SqlJoin>,
     pub selection: Option<SqlPredicate>,
+    /// The complete WHERE predicate when it contains a subquery. Ordinary
+    /// scalar conjuncts that are safe to push down remain in `selection`;
+    /// this tree is evaluated after a joined row is available so correlated
+    /// references retain SQL scope and three-valued logic.
+    pub subquery_predicate: Option<Box<SqlSubqueryPredicate>>,
     pub group_by: Vec<SqlColumnRef>,
     pub having: Option<SqlPredicate>,
     pub order_by: Vec<SqlOrderItem>,
@@ -365,7 +398,11 @@ impl std::fmt::Debug for SelectStatement {
             .field("from", &self.from)
             .field("from_alias", &self.from_alias)
             .field("joins", &self.joins)
-            .field("selection", &self.selection)
+            .field("selection", &self.selection);
+        if let Some(predicate) = &self.subquery_predicate {
+            debug.field("subquery_predicate", predicate);
+        }
+        debug
             .field("group_by", &self.group_by)
             .field("having", &self.having)
             .field("order_by", &self.order_by)
@@ -373,6 +410,62 @@ impl std::fmt::Debug for SelectStatement {
             .field("offset", &self.offset)
             .field("lock_strength", &self.lock_strength)
             .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SqlSubqueryPredicate {
+    Scalar(SqlPredicate),
+    And(Box<Self>, Box<Self>),
+    Or(Box<Self>, Box<Self>),
+    Not(Box<Self>),
+    Exists {
+        query: Box<SqlQueryStatement>,
+    },
+    In {
+        left: Vec<SqlExpression>,
+        query: Box<SqlQueryStatement>,
+        negated: bool,
+    },
+}
+
+impl SqlSubqueryPredicate {
+    pub fn visit_scalar_expressions(&self, visit: &mut impl FnMut(&SqlExpression)) {
+        match self {
+            Self::Scalar(predicate) => visit(predicate),
+            Self::And(left, right) | Self::Or(left, right) => {
+                left.visit_scalar_expressions(visit);
+                right.visit_scalar_expressions(visit);
+            }
+            Self::Not(predicate) => predicate.visit_scalar_expressions(visit),
+            Self::Exists { .. } => {}
+            Self::In { left, .. } => left.iter().for_each(visit),
+        }
+    }
+
+    pub fn visit_scalar_expressions_mut(&mut self, visit: &mut impl FnMut(&mut SqlExpression)) {
+        match self {
+            Self::Scalar(predicate) => visit(predicate),
+            Self::And(left, right) | Self::Or(left, right) => {
+                left.visit_scalar_expressions_mut(visit);
+                right.visit_scalar_expressions_mut(visit);
+            }
+            Self::Not(predicate) => predicate.visit_scalar_expressions_mut(visit),
+            Self::Exists { .. } => {}
+            Self::In { left, .. } => left.iter_mut().for_each(visit),
+        }
+    }
+
+    pub fn visit_queries(&self, visit: &mut impl FnMut(&SqlQueryStatement)) {
+        match self {
+            Self::Scalar(_) => {}
+            Self::And(left, right) | Self::Or(left, right) => {
+                left.visit_queries(visit);
+                right.visit_queries(visit);
+            }
+            Self::Not(predicate) => predicate.visit_queries(visit),
+            Self::Exists { query } | Self::In { query, .. } => visit(query),
+        }
     }
 }
 
