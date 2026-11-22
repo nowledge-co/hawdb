@@ -1,9 +1,9 @@
 // Copyright 2026 Nowledge
 // SPDX-License-Identifier: Apache-2.0
 
-use super::super::tests::{constrained_governor, release, request, size, state};
+use super::super::tests::{constrained_embedded, release, request, size, state};
 use super::*;
-use hawdb::{HawDBEmbedded, RuntimeGovernor};
+use hawdb::RuntimeGovernor;
 use std::collections::BTreeMap;
 
 const QUERY: &str = "MATCH (n:Item) WHERE n.id = $id RETURN n";
@@ -20,7 +20,7 @@ fn fixture(handles: usize) -> (*mut HawdbDatabase, RuntimeGovernor) {
     (db, governor)
 }
 fn indexed_fixture(handles: usize) -> (*mut HawdbDatabase, RuntimeGovernor) {
-    let mut db = HawDBEmbedded::open_in_memory();
+    let mut db = constrained_embedded(hawdb::DatabaseConfig::default(), handles);
     db.query_admitted("CREATE NODE TABLE Item").unwrap();
     db.query_admitted("CREATE PROPERTY ON NODE TABLE Item(id) TYPE INT")
         .unwrap();
@@ -43,8 +43,7 @@ fn indexed_fixture(handles: usize) -> (*mut HawdbDatabase, RuntimeGovernor) {
             )
             .unwrap();
     }
-    let governor = constrained_governor(handles);
-    db.database_mut().set_runtime_governor(governor.clone());
+    let governor = db.runtime_governor().clone();
     (Box::into_raw(Box::new(HawdbDatabase::new(db))), governor)
 }
 fn cursor(db: *mut HawdbDatabase, id: u64) -> HawdbRetainedCursorV1 {

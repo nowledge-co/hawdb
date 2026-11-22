@@ -1580,6 +1580,11 @@ SQL autocommit clocks without intervening writes. No lane or timeout changes.
 `bindings/ffi/src/concurrency_tests.rs` belongs to the existing native FFI target;
 it exercises ordinary ABI reads while the database owner is held. Retained
 numeric/node cursor ownership continues in the existing FFI retained families.
+Retained FFI fixtures configure the embedded owner's governor through typed open
+configuration, including the shared handle quota and pinned resource limits.
+The inadequate-handle-limit case proves pre-binding refusal, then transfers the
+same database into a newly configured owner before any result has been issued;
+administrative database replacement does not replace a live facade's governor.
 The manual `embedded_mvcc_bench` example compares serialized and MVCC admitted
 entrypoints in the same process with alternating order, one/four workers,
 read-only/90:10 workloads, per-operation latency and exact final write counts.
