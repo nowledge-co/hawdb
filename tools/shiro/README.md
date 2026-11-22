@@ -285,6 +285,11 @@ phase-specific failure signatures.
   this generator.
 - Keyless SQL: duplicate-preserving bag state, implicit/default inserts, index
   backfill, aliased updates/deletes, indexed ranges, rollback and pinned reads.
+  The same replay also checks Differential Query Execution (DQE) over a
+  separate table with stable row IDs. SELECT, UPDATE RETURNING and DELETE
+  RETURNING start with identical rows. Each mutating trial rolls back after
+  verifying its effects. A lexicographic SQL NULL model checks the selected
+  IDs across indexed and unindexed fixtures.
 
 Decimal and keyless cases rotate memory, file Shadow and file DemandPaged index
 profiles. WAL reopen and checkpoint reopen compare to independent pre-close model
