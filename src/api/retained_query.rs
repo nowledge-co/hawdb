@@ -155,6 +155,27 @@ pub(super) struct RetainedRuntime {
     configured: Mutex<Option<RuntimeGovernor>>,
     bound: OnceLock<RuntimeGovernor>,
 }
+
+/// One stable admission and retained-result binding for an embedded owner,
+/// including databases adopted by later administrative callbacks.
+#[derive(Debug)]
+pub(crate) struct EmbeddedRuntimeBinding {
+    governor: RuntimeGovernor,
+    pub(super) retained: Arc<RetainedRuntime>,
+}
+
+impl EmbeddedRuntimeBinding {
+    pub(crate) fn new(governor: RuntimeGovernor) -> Self {
+        let retained = Arc::new(RetainedRuntime::default());
+        retained.configure(governor.clone());
+        Self { governor, retained }
+    }
+
+    pub(crate) fn governor(&self) -> &RuntimeGovernor {
+        &self.governor
+    }
+}
+
 impl RetainedRuntime {
     pub(super) fn configure(&self, governor: RuntimeGovernor) {
         *self

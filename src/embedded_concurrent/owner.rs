@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuar
 pub(crate) struct EmbeddedOwner {
     state: Mutex<HawDBEmbedded>,
     metadata: Mutex<Arc<crate::api::RuntimeSqlPlanningSnapshot>>,
-    governor: crate::RuntimeGovernor,
+    runtime_binding: crate::api::EmbeddedRuntimeBinding,
     published: Mutex<Option<Arc<PublishedConcurrentRead>>>,
     failed: AtomicBool,
     user_transaction: AtomicBool,
@@ -29,14 +29,15 @@ pub(crate) struct ConcurrentRuntime {
 
 impl EmbeddedOwner {
     pub(crate) fn new(mut embedded: HawDBEmbedded) -> Self {
-        let governor = embedded.runtime_governor().clone();
-        embedded.rebind_runtime_governor(governor.clone());
+        let runtime_binding =
+            crate::api::EmbeddedRuntimeBinding::new(embedded.runtime_governor().clone());
+        embedded.bind_runtime(&runtime_binding);
         let user_transaction = embedded.transaction_active();
         Self {
             metadata: Mutex::new(Arc::new(
                 embedded.database().runtime_sql_planning_snapshot(),
             )),
-            governor,
+            runtime_binding,
             state: Mutex::new(embedded),
             published: Mutex::new(None),
             failed: AtomicBool::new(false),
@@ -100,7 +101,7 @@ impl EmbeddedOwner {
     }
 
     pub(crate) fn governor(&self) -> &crate::RuntimeGovernor {
-        &self.governor
+        self.runtime_binding.governor()
     }
 
     pub(crate) fn sql_planning(&self) -> Result<Arc<crate::api::RuntimeSqlPlanningSnapshot>> {
@@ -240,8 +241,7 @@ impl Drop for EmbeddedGuard<'_> {
             // Administration can replace either the full embedded handle or
             // its database. Keep admission, storage and new retained work on
             // the stable governor also used by in-flight work and Tokio.
-            self.state
-                .rebind_runtime_governor(self.owner.governor.clone());
+            self.state.bind_runtime(&self.owner.runtime_binding);
         }
         self.owner
             .user_transaction

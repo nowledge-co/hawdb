@@ -1574,6 +1574,8 @@ statements and forks inside one transaction. Replacement tests saturate the
 owner governor, check both inner and outer ordinary admission and retained-node
 admission, and retain live old/replacement cursors to verify charge custody and
 full refunds. Both full-handle and database-only replacement are covered.
+Administrative callbacks and replacement must also preserve visibility of live
+retained charges through the database's retained-result snapshot.
 The existing Tokio family also checks SQL clocks on worker threads and governor
 consistency after full-handle replacement; the FFI temporal family checks fresh
 SQL autocommit clocks without intervening writes. No lane or timeout changes.

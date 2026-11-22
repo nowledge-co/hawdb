@@ -186,6 +186,7 @@ mod sql_runtime;
 pub(crate) use sql_runtime::PreparedRuntimeSql;
 pub(crate) use sql_runtime::RuntimeSqlPlanningSnapshot;
 mod retained_query;
+pub(crate) use retained_query::EmbeddedRuntimeBinding;
 pub use retained_query::{
     ArrowArray, ArrowArrayStream, ArrowSchema, RetainedArrowCodeOwner, RetainedArrowExport,
     RetainedArrowSchema, RetainedArrowStream, RetainedColumnRole, RetainedColumnSchema,

@@ -88,6 +88,12 @@ fn replacements_share_the_owner_governor_for_ordinary_and_retained_work() {
             .unwrap();
         let owner_charge = governor.retained_result_snapshot().retained_bytes;
         assert!(owner_charge > 0);
+        for _ in 0..2 {
+            let observed = engine.with_embedded_mut(|embedded| {
+                embedded.database().retained_result_snapshot().unwrap()
+            });
+            assert_eq!(observed.retained_bytes, owner_charge);
+        }
 
         let mut replacement = fixture();
         let foreign_governor = replacement.runtime_governor().clone();
@@ -107,6 +113,9 @@ fn replacements_share_the_owner_governor_for_ordinary_and_retained_work() {
                     std::mem::replace(replacement.database_mut(), crate::Database::new());
             }
         });
+        let adopted = engine
+            .with_embedded_mut(|embedded| embedded.database().retained_result_snapshot().unwrap());
+        assert_eq!(adopted.retained_bytes, owner_charge);
 
         let permit = governor
             .try_admit(

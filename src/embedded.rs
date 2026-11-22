@@ -424,10 +424,9 @@ impl HawDBEmbedded {
         &self.runtime_governor
     }
 
-    pub(crate) fn rebind_runtime_governor(&mut self, governor: RuntimeGovernor) {
-        self.database
-            .rebind_embedded_runtime_governor(governor.clone());
-        self.runtime_governor = governor;
+    pub(crate) fn bind_runtime(&mut self, binding: &crate::api::EmbeddedRuntimeBinding) {
+        self.database.bind_embedded_runtime(binding);
+        self.runtime_governor = binding.governor().clone();
     }
 
     /// Refreshes host/cgroup resources unless the caller pinned the snapshot.
