@@ -51,8 +51,12 @@ Files:
   resident in proportion to the spill block count.
 - `wal.<generation>.hawdb`: append-only committed mutation records beginning at
   the replay LSN published by the manifest. The only v1 encoding uses binary
-  fragment framing with the `SKWALB01` file header. Text WAL bytes and unknown
-  headers fail closed rather than entering a compatibility or upgrade path.
+  fragment framing with the `SKWALB01` file header. A header naming a newer
+  binary WAL version (`SKWALB02` and later) is refused as
+  `UnsupportedStorageFormat` with `WAL_FILE_FORMAT` before any record is read
+  or any torn-tail repair is considered. Text WAL bytes and other unknown
+  headers fail closed as corruption rather than entering a compatibility or
+  upgrade path.
 - `projected_graphs.hawdb`: checksummed, checkpoint-generated CSR/CSC
   projection artifacts derived from persisted projected graph definitions,
   written through the default zstd compression envelope.
@@ -79,7 +83,8 @@ is always one of the constants exported from `hawdb` and `hawdb_core`:
 `STORAGE_MANIFEST_FORMAT`, `RELATIONAL_DURABLE_CODEC_FORMAT`,
 `RELATIONAL_SCHEMA_FORMAT`, `RELATIONAL_ROW_PAGE_FORMAT`,
 `RELATIONAL_CHECKPOINT_LAYOUT_FORMAT`, `APPEND_WAL_FORMAT`,
-`LOGICAL_DUMP_FORMAT` or `SEARCH_PROJECTION_MANIFEST_FORMAT`. Hosts compare
+`LOGICAL_DUMP_FORMAT`, `SEARCH_PROJECTION_MANIFEST_FORMAT` or
+`WAL_FILE_FORMAT`. Hosts compare
 against these constants instead of matching message text. They are recorded in
 `docs/persistent-format.lock`. Relational schema tags 0 through 5 represent
 column, COUNT(*), COUNT(column), SUM, MIN, and MAX. Codec v6 and row-page
@@ -87,6 +92,20 @@ format v5 (`SKRPGM05`) record both covering columns and partial-index
 predicates. Readers decode full-index codec v3 / row-page v2, partial-index
 v4 / v3, and covering-index v5 / v4 using their original field layouts.
 Fixed-slot row-page v1 receives a typed unsupported-version error.
+Row-page manifest magics are `SKRPGM` followed by the row-page format version
+as two ASCII digits. A manifest naming a newer version than this reader
+supports (for example `SKRPGM06` read by a v5 reader) returns
+`UnsupportedVersion { format: RELATIONAL_ROW_PAGE_FORMAT, found, supported }`
+before its body is interpreted; it is not reported as `StorageIntegrity`, and
+the open does not quarantine or rewrite database files. Only a header outside
+that family, a non-digit version or version 0 is corrupt.
+
+Row-page formats are not backward compatible. HawDB 0.37 writes row-page
+format v5 on its next row-page publication, which 0.36.x (row-page v2 only)
+cannot read. Releases before this classification report a newer manifest
+magic as corruption; 0.36.x therefore reports a database checkpointed by 0.37
+as corrupt rather than unsupported. Do not downgrade to 0.36.x after a 0.37
+checkpoint; carry data across with a logical dump instead.
 
 `RELATIONAL_CHECKPOINT_LAYOUT_FORMAT` refuses intact checkpoints this reader
 cannot serve in the requested configuration, with `UnsupportedFeature` whose

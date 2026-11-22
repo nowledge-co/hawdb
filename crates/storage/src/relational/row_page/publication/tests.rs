@@ -919,6 +919,74 @@ fn row_page_manifest_authenticates_legacy_layout_magic() {
 }
 
 #[test]
+fn newer_row_page_manifest_is_unsupported_not_corrupt() {
+    let directory = unique_test_dir("future-manifest");
+    let config = RelationalRowPagePublicationConfig::default();
+    RelationalRowPagePublisher::new(config)
+        .publish(
+            &directory,
+            1,
+            10,
+            None,
+            vec![table_delta("documents", vec![page(1, 1, 10, 1, 2)])],
+        )
+        .unwrap();
+    let path = directory.join(RELATIONAL_ROW_PAGE_MANIFEST_FILE);
+    let mut encoded = fs::read(&path).unwrap();
+    // A manifest written by a newer release is refused before its body is
+    // interpreted: its layout, length and digest may all differ.
+    for (magic, found) in [(b"SKRPGM06", 6), (b"SKRPGM99", 99)] {
+        let mut future = encoded.clone();
+        future[..8].copy_from_slice(magic);
+        future.truncate(40);
+        fs::write(&path, &future).unwrap();
+        let error = RelationalRowPageRootReader::open_latest(&directory, config).unwrap_err();
+        let expected = hawdb_core::error::StorageFormatError::UnsupportedVersion {
+            format: hawdb_core::RELATIONAL_ROW_PAGE_FORMAT,
+            found,
+            supported: 5,
+        };
+        assert!(
+            matches!(
+                &error,
+                RelationalRowPagePublicationError::UnsupportedFormat(refusal)
+                    if *refusal == expected
+            ),
+            "{error:?}"
+        );
+        assert_eq!(
+            hawdb_core::HawDBError::from_storage_error(error),
+            hawdb_core::HawDBError::UnsupportedStorageFormat(expected)
+        );
+    }
+    // Headers outside the `SKRPGM` + two-digit family stay corruption.
+    for magic in [
+        b"SKRPGM00",
+        b"SKRPGM0x",
+        b"SKRPGM 6",
+        b"SKRPGX06",
+        b"\0\0\0\0\0\0\0\0",
+    ] {
+        encoded[..8].copy_from_slice(magic);
+        fs::write(&path, &encoded).unwrap();
+        assert!(
+            matches!(
+                RelationalRowPageRootReader::open_latest(&directory, config),
+                Err(RelationalRowPagePublicationError::Corrupt(message))
+                    if message == "invalid row-page manifest header"
+            ),
+            "{magic:?}"
+        );
+    }
+    fs::write(&path, &encoded[..5]).unwrap();
+    assert!(matches!(
+        RelationalRowPageRootReader::open_latest(&directory, config),
+        Err(RelationalRowPagePublicationError::Corrupt(_))
+    ));
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn stale_publication_is_rejected_before_creating_a_candidate() {
     let directory = unique_test_dir("stale");
     let config = RelationalRowPagePublicationConfig::default();
