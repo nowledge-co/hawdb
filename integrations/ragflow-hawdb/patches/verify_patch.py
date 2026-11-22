@@ -46,9 +46,15 @@ It then builds graphs as RAGFlow's GraphRAG task does and checks that:
 - an import that stops after committing some of its documents holds no graph:
   the next task starts it over, and once the dataset has no graph left in the
   document engine, the next task discards it;
-- when another process merges a document into a new dataset's store after the
-  check that it holds no graph, the refused import is ignored and the
-  document stays;
+- when another process merges a document into a new or a cleared dataset's
+  store after the check that it holds no graph, the refused import is
+  ignored, the document stays and the store is ready;
+- a wipe of a dataset's graph (``wipe_graph``, which both graph wipes of
+  ``dataset_api_service.py`` call) leaves the graph in neither the store nor
+  the document engine when a process using the dataset for the first time
+  read the old chunks before the wipe and imports after it, or imports
+  between the deletion of the chunks and the wipe's second clear; and a wipe
+  whose store fails keeps the chunks;
 - with HawDB turned off again, RAGFlow rebuilds the graph from the subgraph
   chunks instead of reading the view as the whole graph;
 - on random subgraphs, the store merges as RAGFlow's own ``graph_merge`` does
@@ -68,6 +74,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import types
 import uuid
 
@@ -562,7 +569,139 @@ def check_chunks(kb, store):
     return graph
 
 
-async def scenarios(root, utils, index):
+# The chunks both graph wipes in dataset_api_service.py delete.
+GRAPH_CHUNKS = {
+    "knowledge_graph_kwd": [
+        "graph",
+        "subgraph",
+        "entity",
+        "relation",
+        "community_report",
+    ]
+}
+
+
+async def wipes(root, hawdb_store, utils, index, store_of):
+    # A wipe of a dataset's graph, interleaved with a process that uses the
+    # dataset for the first time and imports its graph from the chunks.
+    from ragflow_hawdb import HawDBGraphStore
+
+    read_graph = utils._get_graph_from_doc_store
+
+    def delete_chunks(kb):
+        return lambda: DOCS.delete(GRAPH_CHUNKS, None, kb)
+
+    def wiped(kb, store):
+        return store.get_graph() is None and not DOCS.select(
+            {**GRAPH_CHUNKS, "kb_id": kb}
+        )
+
+    # The first use reads the chunks of a dataset built without HawDB, and the
+    # whole wipe runs before it imports them.
+    use_hawdb(None)
+    early = "kb-wipe-early"
+    await build(
+        index, early, [subgraph("w1", ["ALICE", "BOB"], [("ALICE", "BOB", 1.0)])]
+    )
+    use_hawdb(root)
+
+    async def read_then_wipe(tenant_id, kb_id, exclude_rebuild=None):
+        graph = await read_graph(tenant_id, kb_id, exclude_rebuild)
+        check(graph is not None, "the first use read no graph")
+        hawdb_store.wipe_graph(TENANT, kb_id, delete_chunks(kb_id))
+        return graph
+
+    utils._get_graph_from_doc_store = read_then_wipe
+    try:
+        store = await utils.hawdb_graph_store(TENANT, early)
+    finally:
+        utils._get_graph_from_doc_store = read_graph
+    check(wiped(early, store), "the wiped graph came back after the wipe")
+    check(
+        store.path not in utils._HAWDB_STORES_READY,
+        "a refused import marked the store as ready",
+    )
+    store = await utils.hawdb_graph_store(TENANT, early)
+    check(
+        store.path in utils._HAWDB_STORES_READY and wiped(early, store),
+        "the next use found a graph",
+    )
+    print("a wipe after the first use read the chunks: its import is refused")
+
+    # The first use reads the generation after the wipe's first clear and the
+    # chunks before the wipe deletes them, and imports before the second clear.
+    between = "kb-wipe-between"
+    await build(
+        index, between, [subgraph("w2", ["ALICE", "CAROL"], [("ALICE", "CAROL", 2.0)])]
+    )
+    utils._HAWDB_STORES_READY.discard(store_of(between).path)
+    cleared, read, deleted, imported = (threading.Event() for _ in range(4))
+    failures = []
+
+    def delete_after_the_read():
+        cleared.set()
+        check(read.wait(60), "the first use did not read the chunks")
+        delete_chunks(between)()
+        deleted.set()
+        check(imported.wait(60), "the first use did not import")
+
+    def wipe():
+        try:
+            hawdb_store.wipe_graph(TENANT, between, delete_after_the_read)
+        except BaseException as error:
+            failures.append(error)
+            deleted.set()
+
+    async def read_then_wait(tenant_id, kb_id, exclude_rebuild=None):
+        graph = await read_graph(tenant_id, kb_id, exclude_rebuild)
+        read.set()
+        check(deleted.wait(60), "the wipe did not delete the chunks")
+        return graph
+
+    wiper = threading.Thread(target=wipe)
+    wiper.start()
+    try:
+        check(cleared.wait(60), "the wipe did not clear the store")
+        utils._get_graph_from_doc_store = read_then_wait
+        try:
+            store = await utils.hawdb_graph_store(TENANT, between)
+        finally:
+            utils._get_graph_from_doc_store = read_graph
+        check(store.holds_graph(), "the import before the second clear was refused")
+    finally:
+        imported.set()
+        wiper.join(60)
+    check(not wiper.is_alive() and not failures, f"the wipe failed: {failures}")
+    check(wiped(between, store), "the graph imported during the wipe was left")
+    print("a wipe while the first use imports: its second clear deletes the import")
+
+    # A wipe whose store fails deletes no chunk.
+    clear = HawDBGraphStore.clear
+
+    def fail(self):
+        raise RuntimeError("injected failure of clear")
+
+    failing = "kb-wipe-failing"
+    await build(
+        index, failing, [subgraph("w3", ["DAVE", "ERIN"], [("DAVE", "ERIN", 1.0)])]
+    )
+    HawDBGraphStore.clear = fail
+    try:
+        hawdb_store.wipe_graph(TENANT, failing, delete_chunks(failing))
+    except RuntimeError:
+        pass
+    else:
+        check(False, "the failed clear was not reported")
+    finally:
+        HawDBGraphStore.clear = clear
+    check(
+        store_of(failing).holds_graph() and len(kind(failing, "graph")) == 1,
+        "a wipe whose store failed deleted the chunks",
+    )
+    print("a wipe whose store fails: the graph and its chunks stay")
+
+
+async def scenarios(root, hawdb_store, utils, index):
     from ragflow_hawdb import HawDBGraphStore
     from ragflow_hawdb.ragflow import is_view_graph
 
@@ -735,30 +874,46 @@ async def scenarios(root, utils, index):
     )
     print("an import stopped after some documents: discarded once the graph is gone")
 
-    # Another process merges a document into a new dataset's store after this
-    # process found that it holds no graph: the import of the empty graph is
-    # refused, and the store keeps the document.
-    race = "kb-race"
-    holds_graph = HawDBGraphStore.holds_graph
-    raced = []
+    async def race_with_a_merge(race):
+        # Another process merges a document into the dataset's store after
+        # this process found that it holds no graph: the import of the empty
+        # graph is refused, the store keeps the document and is ready.
+        holds_graph = HawDBGraphStore.holds_graph
+        raced = []
 
-    def merged_meanwhile(self):
-        held = holds_graph(self)
-        if not raced and self.path and os.path.basename(self.path) == race:
-            raced.append(held)
-            store_of(race).merge_subgraph(subgraph("r1", ["ALICE"], []))
-        return held
+        def merged_meanwhile(self):
+            held = holds_graph(self)
+            if not raced and self.path and os.path.basename(self.path) == race:
+                raced.append(held)
+                store_of(race).merge_subgraph(subgraph("r1", ["ALICE"], []))
+            return held
 
-    HawDBGraphStore.holds_graph = merged_meanwhile
-    try:
-        store = await utils.hawdb_graph_store(TENANT, race)
-    finally:
-        HawDBGraphStore.holds_graph = holds_graph
-    check(
-        raced == [False] and store.document_ids() == ["r1"],
-        f"the import raced with a merge: {raced}, {store.document_ids()}",
+        HawDBGraphStore.holds_graph = merged_meanwhile
+        try:
+            store = await utils.hawdb_graph_store(TENANT, race)
+        finally:
+            HawDBGraphStore.holds_graph = holds_graph
+        check(
+            raced == [False]
+            and store.document_ids() == ["r1"]
+            and store.path in utils._HAWDB_STORES_READY,
+            f"the import raced with a merge into {race}: {raced}, "
+            f"{store.document_ids()}",
+        )
+
+    # A new dataset: the merge creates the store, which refuses the import as
+    # stale.
+    await race_with_a_merge("kb-race")
+    # A dataset whose graph was deleted: the store refuses the import because
+    # it holds a document.
+    store_of("kb-race-cleared").clear()
+    await race_with_a_merge("kb-race-cleared")
+    print(
+        "a merge by another process before the first import into a new or a "
+        "cleared store: the import is skipped"
     )
-    print("a merge by another process before the first import: the import is skipped")
+
+    await wipes(root, hawdb_store, utils, index, store_of)
 
     # With HawDB turned off, get_graph rebuilds the graph from the subgraph
     # chunks rather than read the view in the graph chunk as the whole graph.
@@ -974,12 +1129,14 @@ def main():
     sys.dont_write_bytecode = True
     sys.path.insert(0, PACKAGE)
     install_stand_ins()
-    load(ragflow, "rag.graphrag.hawdb_store", "rag/graphrag/hawdb_store.py")
+    hawdb_store = load(
+        ragflow, "rag.graphrag.hawdb_store", "rag/graphrag/hawdb_store.py"
+    )
     utils = load(ragflow, "rag.graphrag.utils", "rag/graphrag/utils.py")
     index = load(ragflow, "rag.graphrag.general.index", "rag/graphrag/general/index.py")
     root = tempfile.mkdtemp(prefix="ragflow-hawdb-verify-")
     try:
-        asyncio.run(scenarios(root, utils, index))
+        asyncio.run(scenarios(root, hawdb_store, utils, index))
         random_parity(root, utils, args.seeds)
     finally:
         shutil.rmtree(root, ignore_errors=True)

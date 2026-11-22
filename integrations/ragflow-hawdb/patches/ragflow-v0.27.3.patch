@@ -12,7 +12,7 @@ Then install ragflow-hawdb and set hawdb_graph.path in conf/service_conf.yaml.
 Without that setting, the patched RAGFlow keeps the graph in its document engine.
 
 diff --git a/api/apps/services/dataset_api_service.py b/api/apps/services/dataset_api_service.py
-index adb3ea3..63a9683 100644
+index adb3ea3..3915fc1 100644
 --- a/api/apps/services/dataset_api_service.py
 +++ b/api/apps/services/dataset_api_service.py
 @@ -184,6 +184,17 @@ def _delete_datasets_sync(tenant_id: str, ids: list = None, delete_all: bool = F
@@ -33,36 +33,33 @@ index adb3ea3..63a9683 100644
          for doc in DocumentService.query(kb_id=kb_id):
              if not DocumentService.remove_document(doc, tenant_id):
                  errors.append(f"Remove document '{doc.id}' error for dataset '{kb_id}'")
-@@ -570,9 +581,15 @@ def delete_knowledge_graph(dataset_id: str, tenant_id: str):
+@@ -570,10 +581,12 @@ def delete_knowledge_graph(dataset_id: str, tenant_id: str):
      if not KnowledgebaseService.accessible(dataset_id, tenant_id):
          return False, "no authorization"
      _, kb = KnowledgebaseService.get_by_id(dataset_id)
-+    from rag.graphrag.hawdb_store import graph_store_for
++    from rag.graphrag.hawdb_store import wipe_graph
      from rag.graphrag.phase_markers import clear_phase_markers
      from rag.nlp import search
  
-+    # The dataset's HawDB graph store deletes the graph first, so that if it
-+    # fails, the chunks that name the graph stay as well.
-+    store = graph_store_for(kb.tenant_id, dataset_id)
-+    if store is not None:
-+        store.clear()
-     settings.docStoreConn.delete({"knowledge_graph_kwd": ["graph", "subgraph", "entity", "relation", "community_report"]}, search.index_name(kb.tenant_id), dataset_id)
+-    settings.docStoreConn.delete({"knowledge_graph_kwd": ["graph", "subgraph", "entity", "relation", "community_report"]}, search.index_name(kb.tenant_id), dataset_id)
++    # With a HawDB graph store, the graph is deleted from the store as well.
++    wipe_graph(kb.tenant_id, dataset_id, lambda: settings.docStoreConn.delete({"knowledge_graph_kwd": ["graph", "subgraph", "entity", "relation", "community_report"]}, search.index_name(kb.tenant_id), dataset_id))
      # Wiping the graph invalidates any phase-completion markers used to
      # short-circuit resolution / community detection on resume.
-@@ -959,9 +976,13 @@ def delete_index(dataset_id: str, tenant_id: str, index_type: str, wipe: bool =
+     clear_phase_markers(dataset_id)
+@@ -959,10 +972,11 @@ def delete_index(dataset_id: str, tenant_id: str, index_type: str, wipe: bool =
          TaskService.delete_by_id(task_id)
  
      if wipe and index_type == "graph":
-+        from rag.graphrag.hawdb_store import graph_store_for
++        from rag.graphrag.hawdb_store import wipe_graph
          from rag.graphrag.phase_markers import clear_phase_markers
          from rag.nlp import search
  
-+        store = graph_store_for(kb.tenant_id, dataset_id)
-+        if store is not None:
-+            store.clear()
-         settings.docStoreConn.delete({"knowledge_graph_kwd": ["graph", "subgraph", "entity", "relation", "community_report"]}, search.index_name(kb.tenant_id), dataset_id)
+-        settings.docStoreConn.delete({"knowledge_graph_kwd": ["graph", "subgraph", "entity", "relation", "community_report"]}, search.index_name(kb.tenant_id), dataset_id)
++        wipe_graph(kb.tenant_id, dataset_id, lambda: settings.docStoreConn.delete({"knowledge_graph_kwd": ["graph", "subgraph", "entity", "relation", "community_report"]}, search.index_name(kb.tenant_id), dataset_id))
          # Wiping the graph invalidates any phase-completion markers used to
          # short-circuit resolution / community detection on resume.
+         clear_phase_markers(dataset_id)
 diff --git a/api/db/services/document_service.py b/api/db/services/document_service.py
 index cdc1953..6d77f76 100644
 --- a/api/db/services/document_service.py
@@ -172,10 +169,10 @@ index 199a0bb..a70cecd 100644
      now = asyncio.get_running_loop().time()
 diff --git a/rag/graphrag/hawdb_store.py b/rag/graphrag/hawdb_store.py
 new file mode 100644
-index 0000000..7749e74
+index 0000000..6d81ff5
 --- /dev/null
 +++ b/rag/graphrag/hawdb_store.py
-@@ -0,0 +1,63 @@
+@@ -0,0 +1,81 @@
 +#
 +#  Copyright 2026 Nowledge
 +#
@@ -229,6 +226,24 @@ index 0000000..7749e74
 +    )
 +
 +
++def wipe_graph(tenant_id, kb_id, delete_chunks):
++    """Delete the graph of *kb_id*: from its HawDB store, if it has one, and with *delete_chunks* from the document engine.
++
++    The store is cleared first, so that if that fails, the chunks stay as well,
++    and again once *delete_chunks* returns: a process that opens the dataset's
++    store for the first time imports the graph from the chunks, and may have
++    read them before they were deleted. Every clear changes the store's
++    generation, so the store refuses such an import after the second clear,
++    and the second clear deletes one written before it.
++    """
++    store = graph_store_for(tenant_id, kb_id)
++    if store is not None:
++        store.clear()
++    delete_chunks()
++    if store is not None:
++        store.clear()
++
++
 +def graph_view(graph):
 +    """Return the part of *graph* the knowledge-graph view shows, marked as a view."""
 +    from ragflow_hawdb.ragflow import view_graph
@@ -240,7 +255,7 @@ index 0000000..7749e74
 +    """Return True if *graph* came from a graph chunk the HawDB path wrote."""
 +    return graph.graph.get(_VIEW_MARKER[0]) == _VIEW_MARKER[1]
 diff --git a/rag/graphrag/utils.py b/rag/graphrag/utils.py
-index 42b2251..96f868a 100644
+index 42b2251..e3a8d6a 100644
 --- a/rag/graphrag/utils.py
 +++ b/rag/graphrag/utils.py
 @@ -34,6 +34,7 @@ from rag.nlp import rag_tokenizer, search
@@ -251,7 +266,7 @@ index 42b2251..96f868a 100644
  
  GRAPH_FIELD_SEP = "<SEP>"
  
-@@ -527,8 +528,58 @@ async def get_graph_doc_ids(tenant_id, kb_id) -> list[str]:
+@@ -527,8 +528,72 @@ async def get_graph_doc_ids(tenant_id, kb_id) -> list[str]:
      return doc_ids
  
  
@@ -278,15 +293,29 @@ index 42b2251..96f868a 100644
 +    The first time a process opens a store that holds no graph, it imports the
 +    graph the document store keeps for the dataset, if there is one. A store
 +    whose import stopped partway holds no graph either: importing again starts
-+    the import over, and importing an empty graph discards it.
++    the import over, and importing an empty graph discards it. The store
++    refuses the import if another process cleared, dropped or created it after
++    this process read its generation: the graph read from the document store
++    may be the one a wipe deleted, and a store another process created holds
++    that process's graph.
 +    """
 +    store = graph_store_for(tenant_id, kb_id)
 +    if store is None or store.path in _HAWDB_STORES_READY:
 +        return store
++    generation = await thread_pool_exec(store.generation)
 +    if not await thread_pool_exec(store.holds_graph):
++        from ragflow_hawdb import StaleImportError
++
 +        graph = await _get_graph_from_doc_store(tenant_id, kb_id, exclude_rebuild)
 +        try:
-+            await thread_pool_exec(store.import_graph, nx.Graph() if graph is None else graph)
++            await thread_pool_exec(store.import_graph, nx.Graph() if graph is None else graph, generation=generation)
++        except StaleImportError:
++            # Another process cleared, dropped or created the store meanwhile.
++            # One that holds no graph, as a wipe leaves it, stays so, and the
++            # next call imports what the document store holds then.
++            if not await thread_pool_exec(store.holds_graph):
++                logging.info(f"The HawDB store at {store.path} was cleared, dropped or created by another process while this process read the knowledge graph of dataset {kb_id}; did not import it")
++                return store
 +        except ValueError:
 +            # Another process imported the graph or merged a document first.
 +            if not await thread_pool_exec(store.holds_graph):
@@ -310,7 +339,7 @@ index 42b2251..96f868a 100644
      conds = {"fields": ["content_with_weight", "removed_kwd", "source_id"], "size": 1, "knowledge_graph_kwd": ["graph"]}
      res = await settings.retriever.search(conds, search.index_name(tenant_id), [kb_id])
      if not res.total == 0:
-@@ -538,7 +589,8 @@ async def get_graph(tenant_id, kb_id, exclude_rebuild=None):
+@@ -538,7 +603,8 @@ async def get_graph(tenant_id, kb_id, exclude_rebuild=None):
                      g = json_graph.node_link_graph(json.loads(res.field[id]["content_with_weight"]), edges="edges")
                      if "source_id" not in g.graph:
                          g.graph["source_id"] = res.field[id]["source_id"]
@@ -320,7 +349,7 @@ index 42b2251..96f868a 100644
                      g = await rebuild_graph(tenant_id, kb_id, exclude_rebuild)
                  return g
              except Exception:
-@@ -556,6 +608,10 @@ async def set_graph(tenant_id: str, kb_id: str, embd_mdl, graph: nx.Graph, chang
+@@ -556,6 +622,10 @@ async def set_graph(tenant_id: str, kb_id: str, embd_mdl, graph: nx.Graph, chang
      """
      global chat_limiter
      start = asyncio.get_running_loop().time()
@@ -331,7 +360,7 @@ index 42b2251..96f868a 100644
  
      # Build all new chunks first (graph, subgraphs, node/edge embeddings) before
      # deleting anything.  This ensures that if embedding generation or any other
-@@ -564,7 +620,7 @@ async def set_graph(tenant_id: str, kb_id: str, embd_mdl, graph: nx.Graph, chang
+@@ -564,7 +634,7 @@ async def set_graph(tenant_id: str, kb_id: str, embd_mdl, graph: nx.Graph, chang
      chunks = [
          {
              "id": get_uuid(),
@@ -340,7 +369,7 @@ index 42b2251..96f868a 100644
              "knowledge_graph_kwd": "graph",
              "kb_id": kb_id,
              "source_id": graph.graph.get("source_id", []),
-@@ -574,7 +630,7 @@ async def set_graph(tenant_id: str, kb_id: str, embd_mdl, graph: nx.Graph, chang
+@@ -574,7 +644,7 @@ async def set_graph(tenant_id: str, kb_id: str, embd_mdl, graph: nx.Graph, chang
      ]
  
      # generate updated subgraphs
@@ -349,7 +378,7 @@ index 42b2251..96f868a 100644
          subgraph = graph.subgraph([n for n in graph.nodes if source in graph.nodes[n]["source_id"]]).copy()
          subgraph.graph["source_id"] = [source]
          for n in subgraph.nodes:
-@@ -624,10 +680,11 @@ async def set_graph(tenant_id: str, kb_id: str, embd_mdl, graph: nx.Graph, chang
+@@ -624,10 +694,11 @@ async def set_graph(tenant_id: str, kb_id: str, embd_mdl, graph: nx.Graph, chang
              callback(msg=f"Batch-embedded {len(_uncached_node_names)} entity names ({(len(_uncached_node_names) + _INSERT_BULK_SIZE - 1) // _INSERT_BULK_SIZE} batches of {_INSERT_BULK_SIZE}).")
      # ── end batch pre-warm ──────────────────────────────────────────────────────
  
@@ -362,7 +391,7 @@ index 42b2251..96f868a 100644
          tasks.append(asyncio.create_task(graph_node_to_chunk(kb_id, embd_mdl, node, node_attrs, chunks, nhop_neighbors)))
          if ii % 100 == 9 and callback:
              callback(msg=f"Get embedding of nodes: {ii}/{len(change.added_updated_nodes)}")
-@@ -703,7 +760,10 @@ async def set_graph(tenant_id: str, kb_id: str, embd_mdl, graph: nx.Graph, chang
+@@ -703,7 +774,10 @@ async def set_graph(tenant_id: str, kb_id: str, embd_mdl, graph: nx.Graph, chang
      # All new chunks are ready.  Now delete old data and insert the new data.
      # Deleting only after chunks are built ensures that a crash during embedding
      # generation above does not destroy the old graph/subgraph checkpoints.
@@ -374,7 +403,7 @@ index 42b2251..96f868a 100644
  
      if change.removed_nodes:
          BATCH_SIZE = 100
-@@ -749,7 +809,15 @@ async def set_graph(tenant_id: str, kb_id: str, embd_mdl, graph: nx.Graph, chang
+@@ -749,7 +823,15 @@ async def set_graph(tenant_id: str, kb_id: str, embd_mdl, graph: nx.Graph, chang
          callback(msg=f"set_graph removed {len(change.removed_nodes)} nodes and {len(change.removed_edges)} edges from index in {del_now - start:.2f}s.")
      start = del_now
  

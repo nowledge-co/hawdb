@@ -22,6 +22,8 @@ compares the store with RAGFlow's own functions instead.
 import contextlib
 import copy
 import gc
+import glob
+import json
 import logging
 import os
 import random
@@ -45,6 +47,7 @@ from ragflow_hawdb import (
     MAX_RELATION_BYTES,
     GraphChange,
     HawDBGraphStore,
+    StaleImportError,
     StoreBusyError,
     StoreFormatError,
     WrongThreadError,
@@ -749,10 +752,13 @@ def test_a_store_on_a_missing_path_reads_empty_and_creates_nothing(tmp_path):
     assert store.document_change(["doc1"]) == GraphChange()
     assert store.remove_document("doc1") == GraphChange()
     assert store.holds_graph() is False
+    assert store.generation() == ""
     store.import_graph(nx.Graph())
-    store.clear()
+    store.import_graph(nx.Graph(), generation="")
     store.drop()
 
+    # clear() is the one call that creates a database there; see
+    # test_clear_on_a_missing_path_creates_the_database_to_record_its_generation.
     assert not path.parent.exists()
 
 
@@ -1081,6 +1087,19 @@ def test_an_import_that_stops_while_starting_over_finishes_on_retry(store, monke
     assert "CHECKPOINT" in recorder.statements("autocommit")
 
 
+def test_importing_an_empty_graph_into_an_empty_database_writes_nothing(store):
+    # A database that holds nothing yet, as one opened with hawdb.open, gets
+    # no bookkeeping node, so its generation stays "".
+    if store.path is not None:
+        os.makedirs(os.path.dirname(store.path), exist_ok=True)
+    write_cypher(store, "MATCH (n) RETURN count(n) AS nodes")
+    store.import_graph(nx.Graph())
+
+    assert meta(store) is None
+    assert store.generation() == ""
+    assert store.holds_graph() is False
+
+
 def test_importing_an_empty_graph_discards_an_unfinished_import(store, monkeypatch):
     graph = subgraph("doc1", ["A", "B", "C"], [("A", "B", 1.0), ("B", "C", 1.0)])
     graph.graph["source_id"] = ["doc1", "doc2"]
@@ -1089,9 +1108,17 @@ def test_importing_an_empty_graph_discards_an_unfinished_import(store, monkeypat
         store.import_graph(graph)
     assert store.holds_graph() is False
 
+    generation = store.generation()
     store.import_graph(nx.Graph())
 
-    assert meta(store) is None
+    after = meta(store)
+    assert (after["importing"], after["clearing"], after["next_seq"]) == (
+        False,
+        False,
+        0,
+    )
+    # Discarding the import is no clear: the generation stays.
+    assert store.generation() == generation
     assert store.get_graph() is None
     assert store.holds_graph() is False
     store.merge_subgraph(subgraph("doc3", ["X"]))
@@ -1124,15 +1151,128 @@ def test_holds_graph_once_a_document_is_merged_or_imported(store):
 
 def test_clear_deletes_the_graph_and_the_store_starts_over(store):
     store.merge_subgraph(subgraph("doc1", ["A", "B"], [("A", "B", 1.0)]))
+    before = store.generation()
 
     store.clear()
 
     assert store.get_graph() is None
     assert store.document_ids() == []
-    assert meta(store) is None
+    assert cypher(store, "MATCH (n) RETURN count(n) AS nodes") == [{"nodes": 1}]
+    after = meta(store)
+    assert (after["next_seq"], after["clearing"], after["importing"]) == (
+        0,
+        False,
+        False,
+    )
+    assert before and store.generation() not in ("", before)
     store.merge_subgraph(subgraph("doc1", ["A"]))
     assert store.document_ids() == ["doc1"]
     assert store.get_graph().nodes["A"]["description"] == "A in doc1"
+
+
+def test_a_graph_read_before_a_clear_is_not_imported_after_it(store):
+    # RAGFlow's first use of a dataset in a process, interleaved with a wipe of
+    # the dataset's graph. The first use reads the store's generation, finds no
+    # graph in the store, reads the graph the document engine holds, and
+    # imports it; the wipe clears the store, deletes the chunks and clears the
+    # store again.
+    old = subgraph("doc1", ["A", "B"], [("A", "B", 1.0)])
+
+    # The first use read the old graph before the wipe, and imports after it.
+    generation = store.generation()
+    assert store.holds_graph() is False
+    store.clear()
+    store.clear()
+    with pytest.raises(StaleImportError, match="cleared, dropped or created"):
+        store.import_graph(old, generation=generation)
+    assert store.get_graph() is None
+    assert store.holds_graph() is False
+
+    # It read the generation after the first clear and imported before the
+    # second, which deletes the graph.
+    generation = store.generation()
+    store.import_graph(old, generation=generation)
+    assert store.document_ids() == ["doc1"]
+    store.clear()
+    assert store.get_graph() is None
+    with pytest.raises(StaleImportError):
+        store.import_graph(old, generation=generation)
+
+    # One that starts after the wipe finds no graph in the document engine,
+    # and an import read in the current generation is written.
+    store.import_graph(nx.Graph(), generation=store.generation())
+    assert store.holds_graph() is False
+    store.import_graph(old, generation=store.generation())
+    assert store.document_ids() == ["doc1"]
+    with pytest.raises(TypeError):
+        store.import_graph(nx.Graph(), generation=7)
+
+
+@path_only
+def test_clear_on_a_missing_path_creates_the_database_to_record_its_generation(store):
+    assert store.generation() == ""
+
+    store.clear()
+
+    assert os.path.isfile(os.path.join(store.path, "manifest.hawdb"))
+    assert store.generation() != ""
+    assert store.get_graph() is None
+    # An import of a graph read before the clear, while there was no database.
+    with pytest.raises(StaleImportError):
+        store.import_graph(subgraph("doc1", ["A"]), generation="")
+    assert store.document_ids() == []
+
+
+@path_only
+def test_an_import_after_a_drop_is_refused_and_creates_nothing(store):
+    store.merge_subgraph(subgraph("doc1", ["A"]))
+    generation = store.generation()
+    store.drop()
+
+    for graph in (subgraph("doc2", ["B"]), nx.Graph()):
+        with pytest.raises(StaleImportError):
+            store.import_graph(graph, generation=generation)
+
+    assert os.listdir(os.path.dirname(store.path)) == []
+
+
+def test_an_import_is_refused_once_another_call_created_the_store(store):
+    # RAGFlow's first use of a new dataset reads the generation of a store
+    # that holds nothing yet, and another process merges the first document
+    # before the import.
+    generation = store.generation()
+    assert generation == ""
+    store.merge_subgraph(subgraph("doc1", ["A"]))
+    assert store.generation() != ""
+
+    for graph in (subgraph("doc2", ["B"]), nx.Graph()):
+        with pytest.raises(StaleImportError, match="created"):
+            store.import_graph(graph, generation=generation)
+
+    assert store.document_ids() == ["doc1"]
+
+
+def test_an_import_that_starts_over_keeps_the_generation(store, monkeypatch):
+    graph = subgraph("doc1", ["A", "B", "C"], [("A", "B", 1.0), ("B", "C", 1.0)])
+    graph.graph["source_id"] = ["doc1", "doc2"]
+    monkeypatch.setattr(store_module, "_TRANSACTION_ROWS", 4)
+    with failing_before_transaction(2), pytest.raises(HawDBError, match="injected"):
+        store.import_graph(graph, generation=store.generation())
+    # The stopped import created the store's metadata, with a generation.
+    generation = store.generation()
+    assert generation != "" and store.holds_graph() is False
+
+    # A stale generation is refused before the unfinished import is deleted.
+    with pytest.raises(StaleImportError):
+        store.import_graph(graph, generation="")
+    assert meta(store)["importing"] is True
+    assert cypher(store, "MATCH (n:Entity) RETURN n.name AS name")
+
+    store.import_graph(graph, generation=generation)
+
+    assert store.generation() == generation
+    assert store.document_ids() == ["doc1", "doc2"]
+    assert snapshot(store.get_graph()) == snapshot(graph)
 
 
 @path_only
@@ -1188,6 +1328,8 @@ def test_a_database_with_another_layout_is_refused(store):
         lambda: store.merge_subgraph(subgraph("doc2", ["B"])),
         lambda: store.remove_document("doc1"),
         lambda: store.import_graph(subgraph("doc3", ["C"])),
+        lambda: store.import_graph(subgraph("doc3", ["C"]), generation=""),
+        store.generation,
         store.clear,
     ]
     for call in calls:
@@ -1304,32 +1446,164 @@ def test_drop_deletes_only_a_hawdb_database(tmp_path):
     assert not (tmp_path / "link.lock").exists()
 
 
+def renamed_by_drops(store):
+    return glob.glob(glob.escape(store.path) + ".dropping-*")
+
+
+def lock_file_text(store):
+    return Path(store.path + ".lock").read_text(encoding="utf-8")
+
+
+@contextlib.contextmanager
+def drops_stopping_after_the_rename(monkeypatch, *, delete_manifest=False):
+    # Makes a drop stop after it renamed the database, as a process killed
+    # while it deletes the files would, optionally after deleting one.
+    def rmtree_partly(path, *args, **kwargs):
+        if delete_manifest:
+            os.remove(os.path.join(path, "manifest.hawdb"))
+        raise OSError("injected failure while deleting")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(shutil, "rmtree", rmtree_partly)
+        yield
+
+
 @path_only
 def test_a_drop_that_stops_partway_leaves_nothing_at_the_path(store, monkeypatch):
     store.merge_subgraph(subgraph("doc1", ["A"]))
-    dropping = store.path + ".dropping"
-    rmtree = shutil.rmtree
 
-    def rmtree_partly(path, *args, **kwargs):
-        # Deletes a file and stops, as a process killed while deleting would.
-        os.remove(os.path.join(path, "manifest.hawdb"))
-        raise OSError("injected failure while deleting")
-
-    monkeypatch.setattr(shutil, "rmtree", rmtree_partly)
-    with pytest.raises(OSError, match="injected"):
+    with (
+        drops_stopping_after_the_rename(monkeypatch, delete_manifest=True),
+        pytest.raises(OSError, match="injected"),
+    ):
         store.drop()
-    monkeypatch.setattr(shutil, "rmtree", rmtree)
 
     assert not os.path.exists(store.path)
-    assert os.path.isdir(dropping)
+    [renamed] = renamed_by_drops(store)
+    assert not os.path.exists(os.path.join(renamed, "manifest.hawdb"))
+    # The lock file records the directory the drop renamed.
+    record = json.loads(lock_file_text(store))
+    assert record["renamed_to"] == os.path.basename(renamed)
+    identity = os.lstat(renamed)
+    assert (record["device"], record["inode"]) == (identity.st_dev, identity.st_ino)
     assert store.get_graph() is None
     store.merge_subgraph(subgraph("doc2", ["B"]))
     assert store.document_ids() == ["doc2"]
 
-    # The next drop deletes what the stopped one left, and the new database.
+    # The next drop deletes what the stopped one left, although it no longer
+    # holds a manifest, and then the new database.
     store.drop()
 
     assert os.listdir(os.path.dirname(store.path)) == []
+
+
+@path_only
+def test_drop_deletes_no_directory_it_did_not_rename(store):
+    parent = Path(store.path).parent
+    store.merge_subgraph(subgraph("doc1", ["A"]))
+    # Directories named like the ones drops rename, which no drop renamed.
+    others = sorted(["kb.dropping", "kb.dropping-" + "0" * 32, "kb.dropping-x"])
+    for name in others:
+        (parent / name / "keep").mkdir(parents=True)
+        (parent / name / "keep" / "notes.txt").write_text("keep")
+
+    store.drop()
+
+    assert sorted(os.listdir(parent)) == others
+    for name in others:
+        assert (parent / name / "keep" / "notes.txt").read_text() == "keep"
+
+
+@path_only
+def test_drop_deletes_no_other_directory_at_a_recorded_name(store, monkeypatch):
+    parent = Path(store.path).parent
+    store.merge_subgraph(subgraph("doc1", ["A"]))
+    with (
+        drops_stopping_after_the_rename(monkeypatch),
+        pytest.raises(OSError, match="injected"),
+    ):
+        store.drop()
+    [renamed] = renamed_by_drops(store)
+    # The renamed database moves away, which keeps its identity in use, and
+    # another directory, and then a link to the database, takes the name.
+    moved = renamed + "-moved"
+    os.rename(renamed, moved)
+    os.makedirs(os.path.join(renamed, "keep"))
+    store.merge_subgraph(subgraph("doc2", ["B"]))
+    for replace in (None, lambda: os.symlink(moved, renamed, target_is_directory=True)):
+        if replace is not None:
+            shutil.rmtree(renamed)
+            replace()
+        before = files_under(parent)
+        with pytest.raises(StoreFormatError, match="is not the directory a drop"):
+            store.drop()
+        assert files_under(parent) == before
+        assert store.document_ids() == ["doc2"]
+
+
+@path_only
+def test_drop_stops_when_the_new_name_is_taken(store, monkeypatch):
+    parent = Path(store.path).parent
+    store.merge_subgraph(subgraph("doc1", ["A"]))
+    monkeypatch.setattr(store_module, "_new_token", lambda: "0" * 32)
+    # An empty directory, which a rename would replace on POSIX systems.
+    taken = parent / ("kb.dropping-" + "0" * 32)
+    taken.mkdir()
+
+    with pytest.raises(StoreFormatError, match="exists already"):
+        store.drop()
+
+    # The drop's statement may add files to the database, as any read does,
+    # but nothing was renamed or deleted.
+    assert sorted(os.listdir(parent)) == ["kb", "kb.dropping-" + "0" * 32, "kb.lock"]
+    assert os.listdir(taken) == []
+    assert lock_file_text(store) == ""
+    assert store.document_ids() == ["doc1"]
+
+
+@path_only
+def test_drop_refuses_a_lock_file_that_holds_something_else(store):
+    store.merge_subgraph(subgraph("doc1", ["A"]))
+    others = [
+        "the lock of another program",
+        # A record that would name a directory no drop of this store renames.
+        json.dumps({"renamed_to": "../elsewhere", "device": 1, "inode": 2}),
+        json.dumps({"renamed_to": "kb.dropping-" + "0" * 31, "device": 1, "inode": 2}),
+        json.dumps(
+            {"renamed_to": "kb.dropping-" + "0" * 32, "device": True, "inode": 2}
+        ),
+        # Nested deeper than the JSON decoder of Python 3.11 recurses, though
+        # 3.13's parses it, and a record longer than the store reads.
+        "[" * 2000 + "]" * 2000,
+        json.dumps({"renamed_to": "kb.dropping-" + "0" * 32, "device": 1, "inode": 2})
+        + " " * 5000,
+    ]
+    for text in others:
+        Path(store.path + ".lock").write_text(text, encoding="utf-8")
+        with pytest.raises(StoreFormatError, match="holds something other"):
+            store.drop()
+        assert lock_file_text(store) == text
+        # Other calls only lock the file.
+        assert store.document_ids() == ["doc1"]
+
+
+@path_only
+def test_a_drop_the_system_refuses_to_rename_deletes_nothing(store, monkeypatch):
+    parent = Path(store.path).parent
+    store.merge_subgraph(subgraph("doc1", ["A"]))
+
+    def refuse(source, target):
+        raise PermissionError(f"injected refusal to rename {source}")
+
+    # As Windows may refuse to rename the directory of an open database.
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "rename", refuse)
+        with pytest.raises(PermissionError, match="injected"):
+            store.drop()
+
+    assert sorted(os.listdir(parent)) == ["kb", "kb.lock"]
+    assert lock_file_text(store) == ""
+    assert store.document_ids() == ["doc1"]
 
 
 def test_only_a_store_on_a_path_drops_its_database():
@@ -1610,6 +1884,32 @@ def held(path):
     return in_another_process(HOLDER, path)
 
 
+# Opens a database with hawdb.open, as a program that uses no store does, and
+# reports whether a statement took it.
+GRAB = """
+import sys
+import hawdb
+try:
+    database = hawdb.open(sys.argv[1], read_only=True)
+    database.execute("MATCH (n:Entity) RETURN count(n) AS entities").fetchall()
+except Exception as error:
+    print(f"refused: {error}")
+else:
+    print("took it")
+    database.close()
+"""
+
+
+def grab(path):
+    return subprocess.run(
+        [sys.executable, "-c", GRAB, os.fspath(path)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    ).stdout.strip()
+
+
 def locked(path):
     return in_another_process(LOCKER, path)
 
@@ -1677,6 +1977,65 @@ def test_drop_waits_for_another_process_to_close_the_database(tmp_path):
         release.join()
 
     assert waited >= 0.4
+    assert os.listdir(tmp_path) == []
+
+
+def test_drop_waits_while_a_handle_in_this_process_holds_the_database(tmp_path):
+    store = HawDBGraphStore(tmp_path / "kb", busy_timeout=0.3)
+    store.merge_subgraph(subgraph("doc1", ["A"]))
+    holder = hawdb.open(store.path, read_only=True)
+    holder.execute("MATCH (n:Entity) RETURN count(n) AS entities").fetchall()
+    before = files_under(tmp_path)
+
+    with pytest.raises(StoreBusyError):
+        store.drop()
+
+    assert files_under(tmp_path) == before
+    holder.close()
+    del holder
+    store.drop()
+    assert os.listdir(tmp_path) == []
+
+
+def test_drop_renames_and_deletes_the_database_while_it_holds_it(tmp_path, monkeypatch):
+    store = HawDBGraphStore(tmp_path / "kb", busy_timeout=0.3)
+    store.merge_subgraph(subgraph("doc1", ["A"]))
+    # Opened with hawdb.open before the drop, but not yet taken, since a
+    # handle takes a database at its first statement.
+    early = hawdb.open(store.path)
+    rename = os.rename
+    rmtree = shutil.rmtree
+    seen = []
+
+    def rename_while_others_try(source, target):
+        # Another process tries to take the database at the moment the drop
+        # retires the path: before the rename, after it at the path, and
+        # after it at the new name.
+        seen.append(grab(source))
+        rename(source, target)
+        seen.append(grab(source))
+        seen.append(grab(target))
+
+    def delete_while_others_try(target, *args, **kwargs):
+        # And once more at the new name when the drop starts deleting it.
+        seen.append(grab(target))
+        rmtree(target, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "rename", rename_while_others_try)
+        patch.setattr(shutil, "rmtree", delete_while_others_try)
+        store.drop()
+
+    assert len(seen) == 4, seen
+    assert seen[0].startswith("refused: branch is busy"), seen
+    assert seen[1].startswith("refused:") and "does not exist" in seen[1], seen
+    assert seen[2].startswith("refused: branch is busy"), seen
+    assert seen[3].startswith("refused: branch is busy"), seen
+    # The handle opened before the drop finds no database to take.
+    with pytest.raises(HawDBError, match="No such file or directory"):
+        early.execute("MATCH (n:Entity) RETURN count(n) AS entities").fetchall()
+    early.close()
+    del early
     assert os.listdir(tmp_path) == []
 
 
@@ -1853,10 +2212,18 @@ def test_the_patch_records_its_ragflow_revision_and_calls_this_package():
     assert {
         "merge_subgraph",
         "apply_change",
+        "generation",
         "holds_graph",
         "import_graph",
         "n_hop_paths",
         "remove_document",
+        "clear",
         "drop",
     } <= called
     assert called <= set(dir(HawDBGraphStore))
+    # The first use imports in the generation it read before the chunks, and
+    # both graph wipes clear the store before and after deleting the chunks.
+    assert "store.import_graph, nx.Graph() if graph is None else graph, " in added
+    assert "generation=generation)" in added
+    assert added.count("wipe_graph(kb.tenant_id, dataset_id, lambda: ") == 2
+    assert added.count("store.clear()") == 2

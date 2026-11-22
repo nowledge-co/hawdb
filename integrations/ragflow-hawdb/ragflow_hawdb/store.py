@@ -24,7 +24,8 @@ graph in HawDB instead::
     -[:RELATION {seq, weight, description, keywords, source_id, attributes,
                  stored_bytes}]->(:Entity)
     (:Document {doc_id, seq})
-    (:RAGFlowGraph {key, version, next_seq, written, clearing, importing})
+    (:RAGFlowGraph {key, version, next_seq, written, clearing, importing,
+                    generation})
 
 ``name`` is the NetworkX node, which RAGFlow keys by entity name. A graph edge
 is undirected, so the store keeps one relationship per pair of entities,
@@ -40,7 +41,10 @@ graph holds, in merge order, as RAGFlow's ``graph.graph["source_id"]``.
 ``stored_bytes`` estimates a row's stored text, for paging. ``written``
 estimates the bytes written since the last checkpoint. ``clearing`` and
 ``importing`` mark a ``clear`` or an ``import_graph`` that spans several
-transactions and has not finished.
+transactions and has not finished. ``generation`` is a random value that the
+store's first write sets and every ``clear`` replaces, so that
+``import_graph`` can refuse a graph read from elsewhere before the store was
+created or cleared.
 
 Chunk text, chunk embeddings and the entity and relation chunks RAGFlow
 retrieves stay in RAGFlow's document engine.
@@ -72,7 +76,10 @@ finds the database held by another process retries until ``busy_timeout``.
 Every call also holds an advisory lock on the file ``<path>.lock`` next to
 the database while it uses the database, and ``drop`` holds it while it
 deletes the database, so that no store in another process opens or creates a
-database that is being deleted.
+database that is being deleted. ``drop`` renames and deletes the database
+directory while it holds the database, so that a handle opened with
+``hawdb.open`` instead of a store cannot take it once ``drop`` has checked
+that none holds it.
 Each open loads the graph and replays the WAL written since the last
 checkpoint, so such a store runs ``CHECKPOINT`` after it has written about
 ``_CHECKPOINT_BYTES`` since the last one, and after ``clear``.
@@ -86,7 +93,10 @@ import json
 import logging
 import math
 import os
+import re
+import secrets
 import shutil
+import stat
 import threading
 import time
 import traceback
@@ -184,10 +194,15 @@ _DATABASE_FILE = "manifest.hawdb"
 # file lies outside the database directory, so it guards the deletion too.
 _LOCK_SUFFIX = ".lock"
 
-# drop() renames the database directory to the path plus this suffix before
-# it deletes the files, so that a drop that stops partway leaves no partly
-# deleted database at the path. The next drop deletes what is left.
-_DROPPING_SUFFIX = ".dropping"
+# drop() renames the database directory to the path plus this suffix and a
+# random token before it deletes the files, so that a drop that stops partway
+# leaves no partly deleted database at the path. Before the rename, it records
+# the token and the directory's identity in the lock file, and the next drop
+# deletes the directory it recorded and nothing else.
+_DROPPING_SUFFIX = ".dropping-"
+_TOKEN = re.compile(r"[0-9a-f]{32}")
+# The lock file holds nothing, or the record of a drop, which is far shorter.
+_RECORD_LIMIT = 4096
 
 _CONSTRAINTS = ((ENTITY_LABEL, "name"), (DOCUMENT_LABEL, "doc_id"), (META_LABEL, "key"))
 _SQL_UNIQUE = (
@@ -202,21 +217,30 @@ _SQL_INDEXES = (
 _META = (
     "MATCH (g:RAGFlowGraph {key: 'graph'}) "
     "RETURN g.version AS version, g.next_seq AS next_seq, g.written AS written, "
-    "g.clearing AS clearing, g.importing AS importing"
+    "g.clearing AS clearing, g.importing AS importing, "
+    "g.generation AS generation"
 )
 _CREATE_META = (
     "CREATE (:RAGFlowGraph {key: 'graph', version: $version, "
     "next_seq: $next_seq, written: $written, clearing: $clearing, "
-    "importing: $importing})"
+    "importing: $importing, generation: $generation})"
 )
 _SET_META = (
     "MATCH (g:RAGFlowGraph {key: 'graph'}) "
     "SET g.next_seq = $next_seq, g.written = $written, g.importing = $importing"
 )
-_SET_CLEARING = "MATCH (g:RAGFlowGraph {key: 'graph'}) SET g.clearing = $clearing"
+_START_CLEARING = (
+    "MATCH (g:RAGFlowGraph {key: 'graph'}) "
+    "SET g.clearing = true, g.generation = $generation"
+)
+# Keeps written, the bytes written since the last checkpoint, and the
+# generation.
+_FINISH_CLEARING = (
+    "MATCH (g:RAGFlowGraph {key: 'graph'}) "
+    "SET g.next_seq = 0, g.clearing = false, g.importing = false"
+)
 _SET_IMPORTING = "MATCH (g:RAGFlowGraph {key: 'graph'}) SET g.importing = $importing"
 _RESET_WRITTEN = "MATCH (g:RAGFlowGraph {key: 'graph'}) SET g.written = 0"
-_DELETE_META = "MATCH (g:RAGFlowGraph) DELETE g"
 _CHECKPOINT = "CHECKPOINT"
 
 _DOCUMENTS = "MATCH (d:Document) RETURN d.doc_id AS doc_id, d.seq AS seq"
@@ -405,6 +429,15 @@ class StoreFormatError(RuntimeError):
 
     An unfinished edit is a ``clear`` or an ``import_graph`` that stopped
     partway; calling it again finishes it.
+    """
+
+
+class StaleImportError(RuntimeError):
+    """``import_graph`` was given a generation that the store no longer has.
+
+    The store was cleared, dropped or created after ``generation`` returned
+    it, so a graph read from elsewhere before then may be one that was deleted
+    since, or the store may now hold a graph that another call wrote.
     """
 
 
@@ -605,7 +638,7 @@ class HawDBGraphStore:
             documents=None,
         )
 
-    def import_graph(self, graph: nx.Graph) -> None:
+    def import_graph(self, graph: nx.Graph, *, generation: str | None = None) -> None:
         """Write a whole RAGFlow graph, such as one kept in RAGFlow's document engine.
 
         The store must not hold any document yet. Nodes and edges without a
@@ -613,6 +646,11 @@ class HawDBGraphStore:
         ``tidy_graph`` purges them before a merge, and so are those whose
         ``source_id`` is empty, as RAGFlow deletes their chunks when it next
         removes a document.
+
+        ``generation`` is what ``generation()`` returned before the graph was
+        read. If the store has been cleared, dropped or created since, the
+        call raises ``StaleImportError`` and writes nothing, and on a missing
+        path it creates no database. None imports without that check.
 
         An import that fits commits in one transaction. A larger one commits
         in several, and the store marks the graph as being imported until the
@@ -624,6 +662,8 @@ class HawDBGraphStore:
         Importing a graph without nodes or documents writes nothing, except
         that it discards an unfinished import.
         """
+        if generation is not None and not isinstance(generation, str):
+            raise TypeError("generation must be a string generation() returned")
         documents = list(
             dict.fromkeys(
                 _string_list(
@@ -660,6 +700,7 @@ class HawDBGraphStore:
             set(_names(tidy.nodes, "graph nodes")),
             {_pair(source, target) for source, target in tidy.edges},
             documents=documents,
+            generation=generation,
         )
 
     def n_hop_paths(
@@ -777,6 +818,24 @@ class HawDBGraphStore:
 
         return self._read(read, empty=lambda: False)
 
+    def generation(self) -> str:
+        """The store's generation, a random value that every ``clear`` replaces.
+
+        The store's first write sets it. A process that imports a graph read
+        from elsewhere, as RAGFlow does from its document engine, reads the
+        generation before it reads the graph, and passes it to
+        ``import_graph``, which refuses the graph if the store has been
+        cleared, dropped or created since. A store without a database, or one
+        never written, has the generation "".
+        """
+
+        def read(snapshot: Any) -> str:
+            meta = _meta(snapshot)
+            _check_version(meta)
+            return _generation_of(meta)
+
+        return self._read(read, empty=lambda: "")
+
     def contains_document(self, doc_id: str) -> bool:
         """Whether the graph holds ``doc_id``, as RAGFlow's ``does_graph_contains``."""
         _check_text(doc_id, "doc_id")
@@ -888,14 +947,19 @@ class HawDBGraphStore:
         call raises ``StoreFormatError`` instead of reading or extending a
         partly deleted graph. Clearing also discards an unfinished
         ``import_graph``.
+
+        Every clear gives the store a new ``generation``. A store on a missing
+        path creates its database to record it, so that an import of a graph
+        read before the clear is refused there too.
         """
 
         def write(database: hawdb.Database) -> tuple[None, int]:
             # Checkpoint after deleting a graph, so that later opens do not
             # replay the deletes.
-            return None, _CHECKPOINT_BYTES if _delete_graph(database) else 0
+            deleted = _delete_graph(database, generation=_new_token())
+            return None, _CHECKPOINT_BYTES if deleted else 0
 
-        self._write(write, if_missing=lambda: None)
+        self._write(write)
 
     def drop(self) -> None:
         """Delete the database on the store's path, with every file in it.
@@ -903,34 +967,46 @@ class HawDBGraphStore:
         RAGFlow drops a dataset's store when it deletes the dataset, whereas
         ``clear`` deletes the graph and keeps the database. The store deletes
         only a directory that holds the ``manifest.hawdb`` file of a HawDB
-        database, and only while no other process holds the database: it
-        waits up to ``busy_timeout`` for one to close it, and then raises
-        ``StoreBusyError`` without deleting anything. It holds the lock file
-        of the path meanwhile, so no store in another process opens or creates
-        the database while it is deleted. It renames the directory before it
-        deletes the files, so a drop that stops partway leaves nothing at the
-        path, and the next drop deletes what is left.
+        database, and only while no other handle, in this process or another,
+        holds the database: it waits up to ``busy_timeout`` for one to close
+        it, and then raises ``StoreBusyError`` without deleting anything. It
+        holds the lock file of the path meanwhile, so no store in another
+        process opens or creates the database while it is deleted.
+
+        The store takes the database itself and, while it holds it, renames
+        the directory to ``<path>.dropping-<random hex>`` and deletes that
+        directory; then it closes the database. HawDB finds a database by its
+        path when a handle takes it, so a handle that had not taken the
+        database before the rename, such as one opened with ``hawdb.open``
+        instead of a store, cannot take it afterwards. On a system that
+        refuses to rename the directory of an open database, as Windows may,
+        the call raises that ``OSError`` and deletes nothing.
+
+        Before the rename, the store records the new name and the identity of
+        the directory in the lock file. A drop that stops after the rename
+        leaves nothing at the path, and the next drop deletes the directory
+        the record names, if it is still the same directory, and nothing else.
+        The call raises ``StoreFormatError`` and deletes nothing if the lock
+        file holds anything but such a record, if the new name is taken, or if
+        the directory at a recorded name is another one.
         """
         if self._path is None:
             raise TypeError("only a store opened on a path can drop its database")
         path = self._path
-        dropping = path + _DROPPING_SUFFIX
         # Refuse a path that is no database before creating its lock file.
         if os.path.lexists(path):
             _check_database_directory(path)
 
         def attempt(lock: _LifecycleLock) -> None:
-            if os.path.lexists(dropping):
-                _delete_dropped(dropping)
+            record = lock.read_drop()
+            if record is not None:
+                # An earlier drop stopped after renaming the database.
+                _delete_renamed(path, record)
+                lock.record_drop(None)
             if os.path.lexists(path):
                 _check_database_directory(path)
-                # A process that has run a statement on the database holds it
-                # until it closes it, so this statement raises BranchError
-                # while one does. No store can open the database while this
-                # call holds the lock.
-                _call_on(path, True, _take_database)
-                os.rename(path, dropping)
-                _delete_dropped(dropping)
+                _call_on(path, True, lambda database: _retire(database, path, lock))
+                lock.record_drop(None)
             lock.delete_on_release = True
 
         self._locked(attempt, create=False, absent=lambda: None)
@@ -942,7 +1018,10 @@ class HawDBGraphStore:
         pairs: set[tuple[str, str]],
         *,
         documents: list[str] | None,
+        generation: str | None = None,
     ) -> None:
+        # documents is None for apply_change, and the graph's documents for
+        # import_graph, which generation fences.
         upsert_names = sorted(name for name in names if graph.has_node(name))
         delete_names = sorted(name for name in names if not graph.has_node(name))
         incident = {
@@ -963,12 +1042,17 @@ class HawDBGraphStore:
         def write(database: hawdb.Database) -> tuple[None, int]:
             deleted = 0
             if documents is not None:
+                # Nothing else writes the database while this call holds it, so
+                # the generation checked here before an unfinished import is
+                # deleted is still the stored one when the graph is written.
                 with database.read_transaction() as snapshot:
-                    unfinished = _import_unfinished(_meta(snapshot))
+                    meta = _meta(snapshot)
+                    unfinished = _import_unfinished(meta)
+                    _check_generation(meta, generation)
                 if unfinished:
                     # An earlier import stopped partway: delete what it wrote
-                    # and start over.
-                    deleted = _delete_graph(database)
+                    # and start over, in the same generation.
+                    deleted = _delete_graph(database, generation=None)
             # Checkpoint after deleting what an unfinished import wrote.
             restart = _CHECKPOINT_BYTES if deleted else 0
             with database.transaction() as tx:
@@ -1081,9 +1165,14 @@ class HawDBGraphStore:
                         tx.execute(_SET_IMPORTING, {"importing": False})
             return None, written + restart
 
-        # An empty import creates no database on a missing path.
-        empty = documents is not None and not (documents or names or pairs)
-        self._write(write, if_missing=(lambda: None) if empty else None)
+        if_missing: Callable[[], None] | None = None
+        if documents is not None and generation:
+            # A store that had a generation was dropped since.
+            if_missing = _refuse_stale_import
+        elif documents is not None and not (documents or names or pairs):
+            # An empty import creates no database on a missing path.
+            if_missing = _write_nothing
+        self._write(write, if_missing=if_missing)
 
     def _write(
         self,
@@ -1244,7 +1333,9 @@ class _LifecycleLock:
     Every store on the path holds it while it uses the database, and
     ``drop`` while it deletes the database. An advisory file lock excludes
     other processes and other open files of the same process, and the system
-    releases it when a process exits.
+    releases it when a process exits. The file is empty, except while a drop
+    that renamed the database has not finished: then it holds the record of
+    that rename.
     """
 
     def __init__(self, path: str) -> None:
@@ -1307,6 +1398,63 @@ class _LifecycleLock:
             # waits for the lock keeps the file.
             with contextlib.suppress(OSError):
                 os.unlink(self._path)
+
+    def read_drop(self) -> dict[str, Any] | None:
+        """The record of a drop that renamed the database and did not finish, or None.
+
+        Raises ``StoreFormatError`` if the lock file holds anything else, such
+        as a file of that name that some other program wrote.
+        """
+        assert self._fd is not None
+        os.lseek(self._fd, 0, os.SEEK_SET)
+        data = b""
+        while len(data) <= _RECORD_LIMIT:
+            chunk = os.read(self._fd, _RECORD_LIMIT + 1 - len(data))
+            if not chunk:
+                break
+            data += chunk
+        if not data:
+            return None
+        record = None
+        if len(data) <= _RECORD_LIMIT:
+            with contextlib.suppress(ValueError, RecursionError):
+                record = json.loads(data.decode("utf-8"))
+        if not self._is_drop_record(record):
+            raise StoreFormatError(
+                f"{self._path} holds something other than the record of a drop "
+                "of this store, so the store does not drop the database"
+            )
+        return record
+
+    def record_drop(self, record: dict[str, Any] | None) -> None:
+        """Replace what the lock file holds with ``record``, or nothing, and sync it."""
+        assert self._fd is not None
+        data = b"" if record is None else json.dumps(record, sort_keys=True).encode()
+        os.ftruncate(self._fd, 0)
+        os.lseek(self._fd, 0, os.SEEK_SET)
+        written = 0
+        while written < len(data):
+            written += os.write(self._fd, data[written:])
+        os.fsync(self._fd)
+
+    def _is_drop_record(self, record: Any) -> bool:
+        if not isinstance(record, dict) or set(record) != {
+            "renamed_to",
+            "device",
+            "inode",
+        }:
+            return False
+        prefix = os.path.basename(self._database) + _DROPPING_SUFFIX
+        renamed_to = record["renamed_to"]
+        return (
+            isinstance(renamed_to, str)
+            and renamed_to.startswith(prefix)
+            and _TOKEN.fullmatch(renamed_to[len(prefix) :]) is not None
+            and all(
+                isinstance(record[key], int) and not isinstance(record[key], bool)
+                for key in ("device", "inode")
+            )
+        )
 
     def _open(self, create: bool) -> int | None:
         flags = os.O_RDWR | os.O_CREAT
@@ -1372,14 +1520,73 @@ def _check_database_directory(path: str) -> None:
         )
 
 
-def _delete_dropped(dropping: str) -> None:
-    # Deletes a database directory a drop renamed, now or before it stopped.
-    if os.path.islink(dropping) or not os.path.isdir(dropping):
+def _retire(database: hawdb.Database, path: str, lock: _LifecycleLock) -> None:
+    # Takes the database, which raises BranchError while another handle holds
+    # it, and renames and deletes its directory while this handle holds it:
+    # HawDB finds a database by its path when a handle takes it, so a handle
+    # that takes it by the old path afterwards finds nothing there, and one
+    # that opens the new name is refused until the directory is gone. The
+    # lock file holds the record of the rename from before the rename until
+    # the drop has deleted the renamed directory.
+    _take_database(database)
+    identity = os.lstat(path)
+    renamed_to = os.path.basename(path) + _DROPPING_SUFFIX + _new_token()
+    renamed = os.path.join(os.path.dirname(path), renamed_to)
+    if os.path.lexists(renamed):
         raise StoreFormatError(
-            f"{dropping} is not a database a drop renamed, "
+            f"{renamed} exists already, so the store does not rename {path} to it"
+        )
+    record = {
+        "renamed_to": renamed_to,
+        "device": identity.st_dev,
+        "inode": identity.st_ino,
+    }
+    lock.record_drop(record)
+    try:
+        os.rename(path, renamed)
+    except OSError:
+        # Nothing was renamed, so a later drop has nothing to finish.
+        lock.record_drop(None)
+        raise
+    _sync_directory(os.path.dirname(path))
+    _delete_renamed(path, record)
+
+
+def _delete_renamed(path: str, record: dict[str, Any]) -> None:
+    # Deletes the directory a drop of path renamed, now or before it stopped,
+    # if it is still there and is still the directory the drop renamed.
+    renamed = os.path.join(os.path.dirname(path), record["renamed_to"])
+    try:
+        found = os.lstat(renamed)
+    except FileNotFoundError:
+        return
+    if not stat.S_ISDIR(found.st_mode) or (found.st_dev, found.st_ino) != (
+        record["device"],
+        record["inode"],
+    ):
+        raise StoreFormatError(
+            f"{renamed} is not the directory a drop of {path} renamed, "
             "so the store does not delete it"
         )
-    shutil.rmtree(dropping)
+    shutil.rmtree(renamed)
+    _sync_directory(os.path.dirname(path))
+
+
+def _sync_directory(directory: str) -> None:
+    # Makes a rename or a deletion in the directory durable. As SQLite does,
+    # this ignores a system or file system that cannot sync a directory.
+    if os.name == "nt":
+        return
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
 
 def _ensure_schema(database: hawdb.Database) -> None:
@@ -1403,11 +1610,18 @@ def _meta(tx: Any) -> dict[str, Any] | None:
     return rows[0] if rows else None
 
 
+def _check_version(meta: dict[str, Any] | None) -> None:
+    if meta is not None and meta["version"] != FORMAT_VERSION:
+        raise StoreFormatError(
+            f"the database holds RAGFlow graph layout {meta['version']!r}; "
+            f"this store reads layout {FORMAT_VERSION}"
+        )
+
+
 def _check_meta(meta: dict[str, Any] | None) -> None:
     if meta is None:
         return
-    if meta["version"] != FORMAT_VERSION:
-        raise StoreFormatError(_version_message(meta["version"]))
+    _check_version(meta)
     if meta["importing"]:
         raise StoreFormatError(
             "an earlier import_graph() into this store did not finish; call "
@@ -1422,18 +1636,34 @@ def _check_meta(meta: dict[str, Any] | None) -> None:
 def _import_unfinished(meta: dict[str, Any] | None) -> bool:
     # Whether an import_graph stopped partway, including while it deleted what
     # an earlier one wrote.
-    if meta is None or not meta["importing"]:
-        return False
-    if meta["version"] != FORMAT_VERSION:
-        raise StoreFormatError(_version_message(meta["version"]))
-    return True
+    _check_version(meta)
+    return meta is not None and bool(meta["importing"])
 
 
-def _version_message(version: Any) -> str:
-    return (
-        f"the database holds RAGFlow graph layout {version!r}; "
-        f"this store reads layout {FORMAT_VERSION}"
+def _generation_of(meta: dict[str, Any] | None) -> str:
+    generation = None if meta is None else meta["generation"]
+    return generation if isinstance(generation, str) else ""
+
+
+def _check_generation(meta: dict[str, Any] | None, expected: str | None) -> None:
+    if expected is not None and expected != _generation_of(meta):
+        _refuse_stale_import()
+
+
+def _refuse_stale_import() -> None:
+    raise StaleImportError(
+        "the store was cleared, dropped or created after generation() "
+        "returned the generation given, so import_graph() wrote nothing"
     )
+
+
+def _write_nothing() -> None:
+    return None
+
+
+def _new_token() -> str:
+    # A random generation, or the token of a drop's new directory name.
+    return secrets.token_hex(16)
 
 
 def _update_meta(
@@ -1457,6 +1687,7 @@ def _update_meta(
                 "written": total,
                 "clearing": False,
                 "importing": importing,
+                "generation": _new_token(),
             },
         )
     else:
@@ -1466,14 +1697,16 @@ def _update_meta(
     return total
 
 
-def _delete_graph(database: hawdb.Database) -> int:
-    # Deletes every relation, entity and document over several transactions,
-    # and then the meta node, which marks the graph as being cleared until
-    # then. Returns how many it deleted.
+def _delete_graph(database: hawdb.Database, *, generation: str | None) -> int:
+    # Deletes every relation, entity and document over several transactions.
+    # The meta node marks the graph as being cleared until the last one, and
+    # takes the generation given in the first; None keeps the generation, as
+    # an import that starts over does. Returns how many it deleted.
     with database.transaction() as tx:
         meta = _meta(tx)
-        if meta is not None and meta["version"] != FORMAT_VERSION:
-            raise StoreFormatError(_version_message(meta["version"]))
+        _check_version(meta)
+        if generation is None:
+            generation = _new_token() if meta is None else meta["generation"]
         if meta is None:
             tx.execute(
                 _CREATE_META,
@@ -1483,10 +1716,11 @@ def _delete_graph(database: hawdb.Database) -> int:
                     "written": 0,
                     "clearing": True,
                     "importing": False,
+                    "generation": generation,
                 },
             )
-        elif not meta["clearing"]:
-            tx.execute(_SET_CLEARING, {"clearing": True})
+        else:
+            tx.execute(_START_CLEARING, {"generation": generation})
         relations = sorted(tx.execute(_RELATION_LISTING).fetchall(), key=_seq)
         entities = sorted(tx.execute(_ENTITY_LISTING).fetchall(), key=_seq)
         documents = sorted(tx.execute(_DOCUMENTS).fetchall(), key=_seq)
@@ -1499,7 +1733,7 @@ def _delete_graph(database: hawdb.Database) -> int:
             with database.transaction() as tx:
                 tx.execute(statement, {"low": low, "high": high})
     with database.transaction() as tx:
-        tx.execute(_DELETE_META)
+        tx.execute(_FINISH_CLEARING)
     return len(relations) + len(entities) + len(documents)
 
 

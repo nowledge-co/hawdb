@@ -55,20 +55,22 @@ patched RAGFlow keeps the graph in its document engine as before.
 
 The patch changes five files:
 
-- `rag/graphrag/hawdb_store.py` (new) reads `hawdb_graph` and opens a
-  dataset's store.
+- `rag/graphrag/hawdb_store.py` (new) reads `hawdb_graph`, opens a dataset's
+  store, and deletes a dataset's graph from the store and the document engine
+  together.
 - `rag/graphrag/general/index.py` merges each document's extracted subgraph
   into the store in one transaction, and writes the change of an entity
   resolution to it.
 - `rag/graphrag/utils.py` reads the graph from the store, imports a graph the
   document engine holds on first use, starting over an import that stopped
-  partway, and takes each entity's n-hop paths from the store when it writes
-  the entity and relation chunks.
+  partway and leaving out one whose graph was deleted meanwhile, and takes
+  each entity's n-hop paths from the store when it writes the entity and
+  relation chunks.
 - `api/db/services/document_service.py` removes a deleted document from the
   store.
 - `api/apps/services/dataset_api_service.py` drops the store of a deleted
-  dataset, and clears it when the knowledge graph or the graph index is
-  deleted.
+  dataset, and deletes the graph from the store as well as the document engine
+  when the knowledge graph or the graph index is deleted.
 
 Chunk text, embeddings, extraction, the entity and relation chunks, community
 reports and retrieval stay as they are. RAGFlow's `KGSearch` still reads
@@ -143,14 +145,15 @@ print(graph.nodes["ACME"]["source_id"])
 | --- | --- |
 | `merge_subgraph(subgraph)` | Merges one extracted subgraph in one transaction and returns RAGFlow's `GraphChange`; a subgraph whose documents the store holds is skipped. |
 | `apply_change(graph, change)` | Writes a change made to the whole graph, such as entity resolution. |
-| `import_graph(graph)` | Writes a whole graph into a store that holds no document, or starts over an import that stopped partway. |
+| `import_graph(graph, generation=None)` | Writes a whole graph into a store that holds no document, or starts over an import that stopped partway. Given a `generation`, it raises `StaleImportError` and writes nothing if the store no longer has that generation. |
+| `generation()` | A random value that the store's first write sets and every `clear` replaces, or `""` before the first write. |
 | `holds_graph()` | Whether the store holds a graph: a document, and no unfinished import. |
 | `n_hop_paths(names, n_hop=2, max_paths=None)` | The paths RAGFlow's `n_neighbor` walks, with a bounded Cypher traversal. |
 | `get_graph()` | The whole graph, or None. |
 | `document_ids()`, `contains_document(doc_id)` | The documents the graph holds, in merge order. |
 | `document_change(doc_ids)` | Every entity and relation that names the documents. |
 | `remove_document(doc_id)` | Removes one document in one transaction. |
-| `clear()`, `drop()` | Deletes the graph, or the whole database once no other process holds it. |
+| `clear()`, `drop()` | Deletes the graph and replaces the generation, creating the database if it is missing; or deletes the whole database once no other handle holds it. |
 
 `ragflow_hawdb.ragflow` holds what the patch calls besides the store:
 `store_for(root, tenant_id, kb_id)`, which checks the ids and opens the store
@@ -162,7 +165,7 @@ of one dataset, and `view_graph(graph)`.
 (:Entity {name, seq, entity_type, description, source_id, attributes, stored_bytes})
   -[:RELATION {seq, weight, description, keywords, source_id, attributes, stored_bytes}]->(:Entity)
 (:Document {doc_id, seq})
-(:RAGFlowGraph {key, version, next_seq, written, clearing, importing})
+(:RAGFlowGraph {key, version, next_seq, written, clearing, importing, generation})
 ```
 
 `name` is the NetworkX node, which RAGFlow keys by entity name, and is unique.
@@ -177,7 +180,10 @@ record the graph's documents in merge order. `seq` keeps the order in which
 entities, relations and documents were added. `RAGFlowGraph` records the
 layout version and the store's own bookkeeping, including `clearing` and
 `importing`, which mark a `clear` or an `import_graph` that spans several
-transactions until it finishes.
+transactions until it finishes, and `generation`, a random value that the
+first write sets and every `clear` replaces, so that `import_graph` can refuse
+a graph read from the document engine before the store was created or
+cleared.
 
 Every statement is parameterized: names, ids and values are bound as
 parameters, and statement text comes only from constants in
@@ -199,12 +205,23 @@ before it opens the database until after it closes it, and waits up to
 database. Before deleting anything, it opens the database and runs one
 statement, which fails while any other handle holds the database, in this
 process or another; it retries until `busy_timeout`, then raises
-`StoreBusyError` and deletes nothing. It then renames the directory to
-`<path>.dropping` and deletes that, so a drop that stops partway leaves
-nothing at the path, and the next drop deletes what is left. A process that
-opens the database with `hawdb.open` rather than through a store takes no
-lock: `drop` waits while such a process holds the database, but nothing stops
-one from opening it after `drop` has checked.
+`StoreBusyError` and deletes nothing. While its own handle still holds the
+database, it renames the directory to `<path>.dropping-<random hex>` and
+deletes that directory, and only then closes the database. HawDB finds a
+database by its path when a handle takes it, so once `drop` has checked, no
+other handle takes the dropped database, even one opened with `hawdb.open`
+rather than through a store, which takes no lock, or opened before the drop:
+at the path it finds nothing, and the renamed directory is refused to it while
+`drop` deletes it. On a system that refuses to rename the directory of an open
+database, as Windows may, `drop` raises that error and deletes nothing.
+
+Before the rename, `drop` writes the new name and the directory's device and
+inode numbers to `<path>.lock` and syncs the file. A drop that stops after
+the rename leaves nothing at the path, and the next drop deletes the recorded
+directory if it is still a directory with those numbers. It deletes no other
+directory: it raises `StoreFormatError` and deletes nothing if the new name
+is taken, if the recorded name holds another directory or a link, or if
+`<path>.lock` holds anything but such a record.
 
 A store can also wrap an open `hawdb.Database`, as in the tests. It then runs
 only on the thread that opened the database and raises `WrongThreadError`
@@ -229,6 +246,19 @@ graph while it has no document or an unfinished import, so an import that
 stopped partway, for instance because its process was killed, starts over the
 next time a process uses the store, and is discarded if the document engine
 no longer holds a graph.
+
+Deleting a dataset's knowledge graph or its graph index clears the store,
+deletes the graph's chunks from the document engine, and clears the store
+again. Every `clear` replaces the store's generation, and a process that uses
+the store for the first time reads the generation before it checks the store
+and reads the graph from the document engine, and passes it to
+`import_graph`. An import of chunks read before they were deleted is
+therefore either written before the second clear, which deletes it, or
+refused, because that clear replaced the generation it read; the store is
+then left for its next use to import what the document engine holds by then.
+If the store fails to clear, no chunk is deleted. An import is refused as well
+when another process created the store or merged into it first, and the store
+keeps what that process wrote.
 
 The `subgraph` chunks stay in the document engine as extraction wrote them. If
 `hawdb_graph.path` is removed again, RAGFlow finds a `graph` chunk that holds a
@@ -324,9 +354,9 @@ RAGFlow or document engine.
 checkout. It loads the patched `rag/graphrag` modules with in-memory stand-ins
 for the document engine, Redis and the models, builds graphs as RAGFlow's
 GraphRAG task does, including failed and retried merges, entity resolution, a
-dataset moving into HawDB, an import that stopped partway and HawDB turned off
-again, and compares random merges with RAGFlow's own `graph_merge` and
-`n_neighbor`. From the repository
+dataset moving into HawDB, an import that stopped partway, a wipe of the graph
+while a process imports it and HawDB turned off again, and compares random
+merges with RAGFlow's own `graph_merge` and `n_neighbor`. From the repository
 root, with a RAGFlow checkout next to it:
 
 ```bash
@@ -346,4 +376,4 @@ python integrations/ragflow-hawdb/patches/verify_patch.py ../ragflow
 ```
 
 It needs Python 3.13, with `hawdb` and `networkx` installed, and takes about
-30 seconds. It is not run in CI.
+45 seconds. It is not run in CI.
