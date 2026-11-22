@@ -592,6 +592,12 @@ impl RetainedNodeSnapshotCursor {
         self.cursor.close();
         self.context = None;
     }
+
+    /// A failed foreign handoff cannot complete provisional views at EOF.
+    pub fn abort_delivery(&mut self) {
+        self.cursor.abort_delivery();
+        self.context = None;
+    }
 }
 
 impl DatabaseReadTransaction {
@@ -604,6 +610,16 @@ impl DatabaseReadTransaction {
         cypher: &str,
         parameters: &BTreeMap<String, Value>,
         options: RetainedQueryOptions,
+    ) -> Result<RetainedNodeSnapshotCursor> {
+        self.into_retained_node_query_observed(cypher, parameters, options, None)
+    }
+
+    pub(in crate::api) fn into_retained_node_query_observed(
+        self,
+        cypher: &str,
+        parameters: &BTreeMap<String, Value>,
+        options: RetainedQueryOptions,
+        recorder: Option<super::super::observability::StatementRecorder>,
     ) -> Result<RetainedNodeSnapshotCursor> {
         let context = self.task_context.clone();
         if let Some(context) = context.as_ref() {
@@ -638,9 +654,9 @@ impl DatabaseReadTransaction {
                 cursor_metadata_bytes: std::mem::size_of::<RetainedNodeSnapshotCursor>()
                     - std::mem::size_of::<RetainedNodeCursor>(),
                 observation: NodeObservationRequest {
-                    // Snapshot reads do not publish into the live database's
-                    // statement recorder, matching ordinary snapshot queries.
-                    recorder: None,
+                    // Standalone snapshots have no live recorder. Shared host
+                    // facades supply one without retaining their mutable owner.
+                    recorder,
                     cypher,
                     statement_kind: super::super::statement_kind(&prepared.statement),
                     started: prepared.statement_started.unwrap_or(execution_started),

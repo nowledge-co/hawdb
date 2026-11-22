@@ -42,13 +42,13 @@ use std::ffi::{c_char, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::ptr;
-use std::sync::Mutex;
+use std::sync::{RwLock, RwLockReadGuard};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use hawdb::{
-    EmbeddedQueryError, HawDBEmbedded, HawDBEmbeddedOpenOptions, HawDBError, QueryOutput, Uuid,
-    Value,
+    EmbeddedQueryError, HawDBConcurrentEmbedded, HawDBEmbedded, HawDBEmbeddedOpenOptions,
+    HawDBError, QueryOutput, Uuid, Value,
 };
 use serde_json::json;
 
@@ -62,6 +62,8 @@ pub use maintenance::*;
 pub use retained::*;
 pub use transaction::*;
 
+#[cfg(test)]
+mod concurrency_tests;
 #[cfg(test)]
 mod dump_tests;
 #[cfg(test)]
@@ -95,14 +97,46 @@ pub unsafe extern "C" fn hawdb_boundary_profile_snapshot(out: *mut BoundaryProfi
 
 /// An open HawDB database handle. Opaque to C callers.
 pub struct HawdbDatabase {
-    inner: Mutex<HawDBEmbedded>,
+    inner: HawDBConcurrentEmbedded,
+    // Queries share this gate; only explicit transaction transitions and
+    // administrative operations take its exclusive side.
+    transaction_active: RwLock<bool>,
 }
 
 impl HawdbDatabase {
-    fn lock(&self) -> Result<std::sync::MutexGuard<'_, HawDBEmbedded>, FfiError> {
-        self.inner
-            .lock()
-            .map_err(|_| FfiError::invalid("hawdb: database mutex poisoned"))
+    fn new(embedded: HawDBEmbedded) -> Self {
+        Self {
+            transaction_active: RwLock::new(embedded.transaction_active()),
+            inner: HawDBConcurrentEmbedded::new(embedded),
+        }
+    }
+
+    fn autocommit(&self) -> Result<RwLockReadGuard<'_, bool>, FfiError> {
+        let state = self
+            .transaction_active
+            .read()
+            .map_err(|_| FfiError::invalid("hawdb: database administration poisoned"))?;
+        if *state {
+            return Err(FfiError::transaction_open(
+                "hawdb: a transaction is open on this database; commit or roll back first",
+            ));
+        }
+        Ok(state)
+    }
+
+    fn with_embedded_mut<T>(
+        &self,
+        action: impl FnOnce(&mut HawDBEmbedded) -> Result<T, FfiError>,
+    ) -> Result<T, FfiError> {
+        let mut state = self
+            .transaction_active
+            .write()
+            .map_err(|_| FfiError::invalid("hawdb: database administration poisoned"))?;
+        self.inner.with_embedded_mut(|embedded| {
+            let result = action(embedded);
+            *state = embedded.transaction_active();
+            result
+        })
     }
 }
 
@@ -534,9 +568,7 @@ unsafe fn hawdb_open_inner(
     }
     let database =
         HawDBEmbedded::open_with_options(options).map_err(|error| FfiError::open(&error))?;
-    Ok(Box::into_raw(Box::new(HawdbDatabase {
-        inner: Mutex::new(database),
-    })))
+    Ok(Box::into_raw(Box::new(HawdbDatabase::new(database))))
 }
 
 /// Open an independent in-memory database using the embedded facade defaults.
@@ -549,9 +581,7 @@ unsafe fn hawdb_open_inner(
 pub unsafe extern "C" fn hawdb_open_in_memory(err_out: *mut HawdbBuffer) -> *mut HawdbDatabase {
     unsafe { clear_buffer(err_out) };
     match catch_unwind(AssertUnwindSafe(HawDBEmbedded::open_in_memory)) {
-        Ok(database) => Box::into_raw(Box::new(HawdbDatabase {
-            inner: Mutex::new(database),
-        })),
+        Ok(database) => Box::into_raw(Box::new(HawdbDatabase::new(database))),
         Err(_) => {
             unsafe { set_error(err_out, FfiError::panic()) };
             ptr::null_mut()
@@ -685,29 +715,38 @@ unsafe fn query_impl(
             let params = parse_sql_params(params_json)?;
             #[cfg(feature = "boundary-profiling")]
             let _engine = boundary_profile::PhaseTimer::start(boundary_profile::Phase::Engine);
-            let mut inner = database.lock()?;
             if transaction {
-                transaction::ensure_open(&inner)?;
-                inner.transaction_query_sql_with_params(text, &params)
+                database.with_embedded_mut(|inner| {
+                    transaction::ensure_open(inner)?;
+                    inner
+                        .transaction_query_sql_with_params(text, &params)
+                        .map_err(|error| FfiError::open(&error))
+                })
             } else {
-                transaction::ensure_none(&inner)?;
-                inner.database_mut().query_sql_with_params(text, &params)
+                let _autocommit = database.autocommit()?;
+                database
+                    .inner
+                    .query_sql_request_admitted(
+                        hawdb::SqlQueryRequest::new(text).with_params(&params),
+                    )
+                    .map_err(|error| FfiError::query(&error))
             }
-            .map_err(|error| FfiError::open(&error))
         } else {
             let params = parse_cypher_params(params_json)?;
             #[cfg(feature = "boundary-profiling")]
             let _engine = boundary_profile::PhaseTimer::start(boundary_profile::Phase::Engine);
-            let mut inner = database.lock()?;
             if transaction {
-                transaction::ensure_open(&inner)?;
-                inner
-                    .transaction_query_with_params(text, &params)
-                    .map_err(|error| FfiError::open(&error))
+                database.with_embedded_mut(|inner| {
+                    transaction::ensure_open(inner)?;
+                    inner
+                        .transaction_query_with_params(text, &params)
+                        .map_err(|error| FfiError::open(&error))
+                })
             } else {
-                transaction::ensure_none(&inner)?;
-                inner
-                    .query_with_params_admitted(text, &params)
+                let _autocommit = database.autocommit()?;
+                database
+                    .inner
+                    .query_request_admitted(hawdb::QueryRequest::new(text).with_params(&params))
                     .map_err(|error| FfiError::query(&error))
             }
         }

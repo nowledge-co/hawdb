@@ -184,7 +184,9 @@ pub use query_preparation_metrics::{query_preparation_metrics, QueryPreparationM
 mod sql_runtime;
 #[cfg(feature = "tokio-runtime")]
 pub(crate) use sql_runtime::PreparedRuntimeSql;
+pub(crate) use sql_runtime::RuntimeSqlPlanningSnapshot;
 mod retained_query;
+pub(crate) use retained_query::EmbeddedRuntimeBinding;
 pub use retained_query::{
     ArrowArray, ArrowArrayStream, ArrowSchema, RetainedArrowCodeOwner, RetainedArrowExport,
     RetainedArrowSchema, RetainedArrowStream, RetainedColumnRole, RetainedColumnSchema,
@@ -230,8 +232,6 @@ pub use query_request::{
     OwnedSqlQueryRequest, QueryRequest, ReadSnapshotBudget, ReadSnapshotUsage, ScoringRequest,
     SqlQueryRequest,
 };
-#[cfg(feature = "tokio-runtime")]
-pub(crate) use query_runtime::RuntimePlanningSnapshot;
 pub(crate) use query_runtime::{runtime_result_memory_budget, PreparedRuntimeQuery};
 pub use types::*;
 
@@ -709,7 +709,11 @@ impl DatabaseReadSnapshot {
         &self,
         task_context: Option<hawdb_core::RuntimeTaskContext>,
     ) -> Result<DatabaseReadTransaction> {
-        self.0.fork_at_same_snapshot(task_context)
+        let mut transaction = self.0.fork_at_same_snapshot(task_context)?;
+        // A publication pins data, not the start time of future transactions.
+        // Forks within an existing transaction still inherit its clock.
+        transaction.sql_clock = hawdb_core::temporal::statement_now();
+        Ok(transaction)
     }
 }
 

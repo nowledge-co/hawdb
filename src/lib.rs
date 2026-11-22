@@ -30,6 +30,7 @@ pub mod compat;
 mod compatibility_facades;
 mod compiled_capabilities;
 pub mod embedded;
+pub mod embedded_concurrent;
 pub mod embedded_store;
 #[cfg(feature = "tokio-runtime")]
 pub mod embedded_tokio;
@@ -286,6 +287,7 @@ pub use embedded::{
     EmbeddedDeploymentProfile, EmbeddedQueryError, EmbeddedRuntimeResources, HawDBEmbedded,
     HawDBEmbeddedOpenOptions,
 };
+pub use embedded_concurrent::HawDBConcurrentEmbedded;
 pub use embedded_store::{
     bounded_read_evidence_json, bounded_read_evidence_json_with_route_readiness,
     bounded_read_evidence_json_with_routes, graph_config, graph_config_with_search_mode,

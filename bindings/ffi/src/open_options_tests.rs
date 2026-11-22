@@ -100,11 +100,7 @@ fn sql(
 fn config(db: *mut HawdbDatabase) -> DatabaseConfig {
     unsafe { &*db }
         .inner
-        .lock()
-        .unwrap()
-        .database()
-        .config()
-        .clone()
+        .with_embedded_mut(|embedded| embedded.database().config().clone())
 }
 
 fn applied(options: serde_json::Value) -> Result<HawDBEmbeddedOpenOptions, FfiError> {

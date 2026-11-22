@@ -141,6 +141,23 @@ jobs:
       - name: Verify the same addon on the supported Node 22 line
         working-directory: bindings/node
         run: npm test
+      - name: Install the pinned Electron runtime
+        working-directory: bindings/node
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if node node_modules/electron/install.js; then
+              break
+            fi
+            if [[ "$attempt" == 3 ]]; then
+              echo "::error::Electron runtime installation failed after 3 attempts."
+              exit 1
+            fi
+            delay=$((attempt * 5))
+            echo "::warning::Electron runtime installation failed (attempt $attempt/3); retrying in ${delay}s."
+            sleep "$delay"
+          done
       - name: Install the headless Electron runtime dependencies
         if: runner.os == 'Linux'
         run: |
