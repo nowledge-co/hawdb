@@ -2806,6 +2806,12 @@ versus cache hits, cold build cost and required target inventory.
 - A fuzz discovery belongs in CI as a small confirmed regression, not by adding
   the continuous tool or arbitrary duration-based exploration to CI.
 
+The local Shiro library lane runs CODDTest coverage for constant uncorrelated
+SQL `IN` and `NOT IN` on pinned snapshots, with an independent three-valued
+model and exact folded SQL and parameters. Replay with `cargo test --locked
+--manifest-path tools/shiro/Cargo.toml --lib coddtest` or a `keyless_bag`
+capability case.
+
 Python capsule destructor regressions (`cargo test --manifest-path bindings/python/Cargo.toml --lib destructor_tests`)
 run locally and in the Python Bindings Cargo release-profile lane after wheel
 construction. They cover a pending `PanicException` and a panicking release callback. No Rust unwind
