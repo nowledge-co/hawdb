@@ -1,6 +1,6 @@
 {
   "base_revision": "ff5c98903fdff3804865a3153a0ed1948293cda7",
-  "source_description": "Isolated PR source based on main; modified source hashes below plus the base revision identify the measured code. Subsequent documentation and PR metadata do not change the executable.",
+  "source_description": "Isolated PR source based on main. The measured revision and source hashes identify the executable sources. Runtime source is unchanged by the test-fixture follow-up; test source hashes record the measured revision.",
   "source_sha256": {
     ".cargo/config.toml": "06c7ca26d39223bd90a6412acd8609c380ce2d1650a72b70c90171656ca89819",
     "Cargo.lock": "fcdb20a735f8c2d9ac36040896bd2362a6406c1f8fd978cf972fdead2f508728",
@@ -75,5 +75,6 @@
       "block_output_operations": 0,
       "peak_memory_footprint": 31539752
     }
-  }
+  },
+  "measured_revision": "d8a2317df17a6ef2ede589215bb141b0a8c0ac77"
 }

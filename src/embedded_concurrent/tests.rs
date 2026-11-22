@@ -48,7 +48,7 @@ fn admitted_reads_complete_while_commit_owner_is_held() {
         .query_sql_request_admitted(SqlQueryRequest::new("CREATE TABLE items (value BIGINT)"))
         .unwrap();
     engine
-        .query_sql_request_admitted(SqlQueryRequest::new("INSERT INTO items VALUES (1)"))
+        .query_sql_request_admitted(SqlQueryRequest::new("INSERT INTO items (value) VALUES (1)"))
         .unwrap();
     let concurrent = engine.concurrent().unwrap();
     let (held, acquired) = mpsc::channel();
@@ -100,6 +100,7 @@ fn admitted_reads_complete_while_commit_owner_is_held() {
 
 #[test]
 fn replacement_and_open_user_transaction_do_not_reuse_old_publication() {
+    let query = QueryRequest::new("MATCH (n) RETURN count(n) AS total");
     let engine = HawDBConcurrentEmbedded::new(HawDBEmbedded::open_in_memory());
     engine
         .query_request_admitted(QueryRequest::new("CREATE (:Old)"))
@@ -109,22 +110,16 @@ fn replacement_and_open_user_transaction_do_not_reuse_old_publication() {
         replacement.set_runtime_governor(embedded.runtime_governor().clone());
         *embedded.database_mut() = replacement;
     });
-    let output = engine
-        .query_request_admitted(QueryRequest::new("MATCH (n) RETURN count(n) AS total"))
-        .unwrap();
+    let output = engine.query_request_admitted(query).unwrap();
     assert_eq!(output.rows[0]["total"], Value::Int(0));
     engine.with_embedded_mut(|embedded| embedded.begin_transaction().unwrap());
-    assert!(engine
-        .query_request_admitted(QueryRequest::new("RETURN 1"))
-        .is_err());
+    assert!(engine.query_request_admitted(query).is_err());
     assert!(engine
         .query_sql_request_admitted(SqlQueryRequest::new("SELECT 1"))
         .is_err());
     assert!(engine.begin_read_transaction().is_err());
     engine.with_embedded_mut(|embedded| embedded.rollback_transaction().unwrap());
-    engine
-        .query_request_admitted(QueryRequest::new("RETURN 1"))
-        .unwrap();
+    engine.query_request_admitted(query).unwrap();
 }
 
 #[test]
@@ -139,17 +134,24 @@ fn failed_returning_budget_keeps_both_languages_atomic() {
         max_rows: Some(0),
         max_payload_bytes: Some(0),
     };
-    assert!(engine
-        .query_sql_request_admitted(
-            SqlQueryRequest::new("INSERT INTO items VALUES (1) RETURNING id")
-                .with_output_limits(limits)
-        )
-        .is_err());
-    assert!(engine
-        .query_request_admitted(
-            QueryRequest::new("CREATE (n:Item) RETURN n").with_output_limits(limits)
-        )
-        .is_err());
+    let sql = engine.query_sql_request_admitted(
+        SqlQueryRequest::new("INSERT INTO items (id) VALUES (1) RETURNING id")
+            .with_output_limits(limits),
+    );
+    let graph = engine.query_request_admitted(
+        QueryRequest::new("CREATE (n:Item) RETURN n").with_output_limits(limits),
+    );
+    for result in [sql, graph] {
+        assert!(
+            matches!(
+                result,
+                Err(EmbeddedQueryError::Database(
+                    HawDBError::ReadBudgetExceeded(_)
+                ))
+            ),
+            "{result:?}",
+        );
+    }
     assert_eq!(
         engine
             .query_sql_request_admitted(SqlQueryRequest::new("SELECT count(*) AS total FROM items"))

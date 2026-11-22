@@ -5,11 +5,11 @@ use super::*;
 use std::sync::mpsc;
 use std::time::Duration;
 
-fn execute(db: *mut HawdbDatabase, sql: bool) -> bool {
+fn execute(db: *mut HawdbDatabase, sql: bool) -> Result<(), String> {
     let text = if sql {
         "SELECT 1 AS value"
     } else {
-        "RETURN 1 AS value"
+        "MATCH (n:Item) RETURN n.value AS value LIMIT 1"
     };
     let mut result = HawdbBuffer {
         ptr: ptr::null_mut(),
@@ -35,7 +35,7 @@ fn execute(db: *mut HawdbDatabase, sql: bool) -> bool {
             &mut result,
             &mut error,
         );
-        if ok {
+        let outcome = if ok {
             let value: serde_json::Value = serde_json::from_slice(std::slice::from_raw_parts(
                 result.ptr.cast::<u8>(),
                 result.len,
@@ -43,19 +43,30 @@ fn execute(db: *mut HawdbDatabase, sql: bool) -> bool {
             .unwrap();
             assert_eq!(value["columns"][0], "value");
             assert_eq!(value["rows"][0][0], 1);
-        }
+            Ok(())
+        } else if error.ptr.is_null() {
+            Err("FFI query failed without an error buffer".to_string())
+        } else {
+            Err(String::from_utf8_lossy(std::slice::from_raw_parts(
+                error.ptr.cast::<u8>(),
+                error.len,
+            ))
+            .into_owned())
+        };
         hawdb_buffer_free(&mut result);
         hawdb_buffer_free(&mut error);
-        ok
+        outcome
     }
 }
 
 #[test]
 fn ordinary_ffi_reads_bypass_database_owner_and_overlap() {
-    let database = Box::into_raw(Box::new(
-        HawdbDatabase::new(HawDBEmbedded::open_in_memory()),
-    ));
-    assert!(execute(database, false));
+    let mut embedded = HawDBEmbedded::open_in_memory();
+    embedded
+        .query_admitted("CREATE (:Item {value: 1})")
+        .unwrap();
+    let database = Box::into_raw(Box::new(HawdbDatabase::new(embedded)));
+    execute(database, false).unwrap();
     let address = database as usize;
     let (held, acquired) = mpsc::channel();
     let (release, resume) = mpsc::channel();
@@ -85,6 +96,6 @@ fn ordinary_ffi_reads_bypass_database_owner_and_overlap() {
         reader.join().unwrap();
     }
     unsafe { hawdb_close(database) };
-    assert!(first.unwrap());
-    assert!(second.unwrap());
+    first.unwrap().unwrap();
+    second.unwrap().unwrap();
 }
