@@ -83,3 +83,74 @@ fn ctes_and_set_operations_read_persistent_snapshots_after_reopen() {
         std::fs::remove_dir_all(path).unwrap();
     }
 }
+
+#[test]
+fn subqueries_values_and_derived_tables_read_persistent_snapshots_after_reopen() {
+    for (residency, index) in [
+        (
+            StorageResidencyMode::Materialized,
+            RelationalIndexMode::Materialized,
+        ),
+        (
+            StorageResidencyMode::OutOfCore,
+            RelationalIndexMode::DemandPaged,
+        ),
+    ] {
+        let path = std::env::temp_dir().join(format!(
+            "hawdb-subquery-values-{}",
+            hawdb_core::generate_uuidv7().unwrap()
+        ));
+        let config = DatabaseConfig {
+            storage_residency_mode: residency,
+            relational_index_mode: index,
+            ..Default::default()
+        };
+        {
+            let mut database = Database::open_with_config(&path, config.clone()).unwrap();
+            database
+                .query_sql("CREATE TABLE numbers (id BIGINT PRIMARY KEY, n BIGINT)")
+                .unwrap();
+            database
+                .query_sql("INSERT INTO numbers VALUES (1, 10), (2, 10), (3, 20)")
+                .unwrap();
+            let output = database
+                .query_sql(
+                    "SELECT outer_row.id FROM numbers AS outer_row \
+                     WHERE EXISTS (SELECT 1 FROM numbers AS inner_row \
+                                   WHERE inner_row.n = outer_row.n \
+                                     AND inner_row.id <> outer_row.id) \
+                     ORDER BY outer_row.id",
+                )
+                .unwrap();
+            assert_eq!(
+                output
+                    .rows
+                    .iter()
+                    .map(|row| row["id"].clone())
+                    .collect::<Vec<_>>(),
+                vec![Value::Int(1), Value::Int(2)]
+            );
+            database.checkpoint().unwrap();
+        }
+        {
+            let mut database = Database::open_with_config(&path, config).unwrap();
+            let output = database
+                .query_sql_with_params(
+                    "WITH selected(v) AS (SELECT id FROM numbers WHERE n >= $1) \
+                     SELECT input.id FROM (VALUES ($2), ($3), ($2)) input(id) \
+                     WHERE input.id IN (SELECT v FROM selected) ORDER BY id",
+                    &[Value::Int(10), Value::Int(1), Value::Int(3)],
+                )
+                .unwrap();
+            assert_eq!(
+                output
+                    .rows
+                    .iter()
+                    .map(|row| row["id"].clone())
+                    .collect::<Vec<_>>(),
+                vec![Value::Int(1), Value::Int(1), Value::Int(3)]
+            );
+        }
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}

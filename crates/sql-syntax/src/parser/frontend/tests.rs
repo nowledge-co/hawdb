@@ -14,9 +14,56 @@
 
 use crate::{
     parse_graph_table, parse_postgres_select, parse_postgres_statement, parse_relational_statement,
-    PostgresFromItemSyntax, PostgresQueryBodySyntax, PostgresSetOperator,
+    ExpressionKindSyntax, PostgresFromItemSyntax, PostgresQueryBodySyntax, PostgresSetOperator,
     RelationalStatementSyntax, Span, SyntaxErrorCode,
 };
+
+#[test]
+fn values_derived_tables_and_subquery_predicates_keep_query_spans() {
+    let sql = "SELECT input.id FROM (VALUES ($1, 'a'), ($2, NULL)) AS input(id, label) \
+               WHERE EXISTS (SELECT 1 FROM owners o WHERE o.id = input.id) \
+               AND (input.id, input.label) NOT IN \
+                   (SELECT owner_id, label FROM blocked)";
+    let RelationalStatementSyntax::Select(select) = parse_relational_statement(sql).unwrap() else {
+        panic!("query syntax")
+    };
+    let PostgresFromItemSyntax::Derived(derived) = &select.from[0].relation else {
+        panic!("derived table")
+    };
+    assert_eq!(derived.alias.columns.len(), 2);
+    assert!(matches!(
+        derived.query.body,
+        PostgresQueryBodySyntax::Values { ref rows, .. } if rows.len() == 2 && rows[0].len() == 2
+    ));
+    let ExpressionKindSyntax::Binary { left, right, .. } =
+        &select.selection.as_ref().expect("WHERE").kind
+    else {
+        panic!("conjunction")
+    };
+    let ExpressionKindSyntax::Exists { query } = &left.kind else {
+        panic!("EXISTS")
+    };
+    assert!(sql[query.span.start..query.span.end].starts_with("SELECT 1"));
+    let ExpressionKindSyntax::InSubquery { query, negated, .. } = &right.kind else {
+        panic!("row NOT IN")
+    };
+    assert!(*negated);
+    assert!(sql[query.span.start..query.span.end].starts_with("SELECT owner_id"));
+}
+
+#[test]
+fn relational_subqueries_remain_confined_to_where_predicates() {
+    for sql in [
+        "SELECT EXISTS (SELECT 1 FROM owners) FROM owners",
+        "SELECT owner FROM owners HAVING EXISTS (SELECT 1 FROM owners)",
+        "SELECT owner FROM owners ORDER BY EXISTS (SELECT 1 FROM owners)",
+        "SELECT owner FROM owners JOIN blocked ON EXISTS (SELECT 1 FROM blocked)",
+        "VALUES (EXISTS (SELECT 1 FROM owners))",
+    ] {
+        let error = parse_relational_statement(sql).unwrap_err();
+        assert_eq!(error.code, SyntaxErrorCode::UnexpectedToken, "{sql}");
+    }
+}
 
 #[test]
 fn relational_ctes_and_set_operations_preserve_precedence_and_branch_tails() {

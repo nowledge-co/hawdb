@@ -550,6 +550,7 @@ pub(super) fn visit_relational_rows<'a>(
         impl crate::index_runtime::RelationalIndexStoreReader,
     >,
     row_runtime: &RelationalRowRuntime<'a>,
+    subquery_filter: Option<&super::RelationalSubqueryFilter<'_>>,
     visit: &mut dyn FnMut(BoundRow<'a>) -> Result<bool>,
 ) -> Result<bool> {
     pipeline.begin_operator_pipeline();
@@ -574,6 +575,11 @@ pub(super) fn visit_relational_rows<'a>(
                         .map(|selection| predicate_truth(selection, &row, parameters))
                         .transpose()?
                         .is_some_and(|truth| truth != Some(true))
+                    {
+                        return Ok(true);
+                    }
+                    if let Some(filter) = subquery_filter
+                        && !filter.matches(&row)?
                     {
                         return Ok(true);
                     }
@@ -611,6 +617,7 @@ pub(super) fn visit_relational_rows<'a>(
                 pipeline,
                 index_runtime,
                 row_runtime,
+                subquery_filter,
                 visit,
             )
         },
@@ -633,6 +640,7 @@ pub(super) fn visit_joined_row<'a>(
         impl crate::index_runtime::RelationalIndexStoreReader,
     >,
     row_runtime: &RelationalRowRuntime<'a>,
+    subquery_filter: Option<&super::RelationalSubqueryFilter<'_>>,
     visit: &mut dyn FnMut(BoundRow<'a>) -> Result<bool>,
 ) -> Result<bool> {
     let Some(planned) = joins.get(join_index) else {
@@ -642,6 +650,11 @@ pub(super) fn visit_joined_row<'a>(
             .map(|selection| predicate_truth(selection, &row, parameters))
             .transpose()?
             .is_some_and(|truth| truth != Some(true))
+        {
+            return Ok(true);
+        }
+        if let Some(filter) = subquery_filter
+            && !filter.matches(&row)?
         {
             return Ok(true);
         }
@@ -683,6 +696,7 @@ pub(super) fn visit_joined_row<'a>(
                 pipeline,
                 index_runtime,
                 row_runtime,
+                subquery_filter,
                 visit,
             )
         },
@@ -712,6 +726,7 @@ pub(super) fn visit_joined_row<'a>(
             pipeline,
             index_runtime,
             row_runtime,
+            subquery_filter,
             visit,
         );
     }

@@ -27,14 +27,21 @@ impl Transformer<'_> {
     fn child(&self, node: NodeId, name: &str) -> NodeId {
         self.tree.required(node, name)
     }
-    fn fold(&self) -> Fold<'_> {
+    fn fold(&self) -> Fold<'_, '_> {
         Fold {
             tree: self.tree,
             tokens: self.tokens,
+            query: None,
         }
     }
     fn expr(&self, node: NodeId) -> ExpressionSyntax {
-        self.fold().expression(node)
+        let query = |node| self.query(node);
+        Fold {
+            tree: self.tree,
+            tokens: self.tokens,
+            query: Some(&query),
+        }
+        .expression(node)
     }
     fn name(&self, node: NodeId) -> QualifiedName {
         self.fold().name(node)
@@ -105,7 +112,7 @@ impl Transformer<'_> {
                 }
             })
     }
-    fn query(&self, node: NodeId) -> PostgresQuerySyntax {
+    pub(super) fn query(&self, node: NodeId) -> PostgresQuerySyntax {
         let with = self
             .tree
             .child(node, "RelationalWith")
@@ -227,6 +234,23 @@ impl Transformer<'_> {
     fn query_primary(&self, node: NodeId) -> PostgresQueryBodySyntax {
         if let Some(select) = self.tree.child(node, "RelationalSelectCore") {
             PostgresQueryBodySyntax::Select(Box::new(self.select(select)))
+        } else if let Some(values) = self.tree.child(node, "RelationalValues") {
+            PostgresQueryBodySyntax::Values {
+                rows: self
+                    .tree
+                    .children(values)
+                    .iter()
+                    .filter(|id| self.tree.nodes[**id].name == Some("RelationalValueRow"))
+                    .map(|row| {
+                        self.tree
+                            .children(*row)
+                            .iter()
+                            .map(|id| self.expr(*id))
+                            .collect()
+                    })
+                    .collect(),
+                span: self.span(values),
+            }
         } else {
             PostgresQueryBodySyntax::Nested(Box::new(
                 self.query(self.child(node, "RelationalQuery")),
@@ -236,6 +260,7 @@ impl Transformer<'_> {
     fn body_span(&self, body: &PostgresQueryBodySyntax) -> Span {
         match body {
             PostgresQueryBodySyntax::Select(select) => select.span,
+            PostgresQueryBodySyntax::Values { span, .. } => *span,
             PostgresQueryBodySyntax::Nested(query) => query.span,
             PostgresQueryBodySyntax::SetOperation { span, .. } => *span,
         }
@@ -333,6 +358,15 @@ impl Transformer<'_> {
         let node = self.first(node);
         if self.tree.nodes[node].name == Some("GraphTable") {
             return PostgresFromItemSyntax::GraphTable(self.graph_table(node));
+        }
+        if self.tree.nodes[node].name == Some("RelationalDerived") {
+            return PostgresFromItemSyntax::Derived(DerivedTableSyntax {
+                query: Box::new(self.query(self.child(node, "RelationalQuery"))),
+                alias: self
+                    .alias(node)
+                    .expect("derived-table grammar requires an alias"),
+                span: self.span(node),
+            });
         }
         let args = self.tree.child(node, "TableArguments").map(|id| {
             self.tree

@@ -45,6 +45,7 @@ pub fn parse_postgres_sql(input: &str) -> Result<SqlStatement> {
         };
     }
     if token.is_keyword(input, "SELECT")
+        || token.is_keyword(input, "VALUES")
         || token.is_keyword(input, "EXPLAIN")
         || token.kind == hawdb_sql_syntax::TokenKind::LeftParen
     {

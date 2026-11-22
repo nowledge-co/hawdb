@@ -362,6 +362,8 @@ impl Binder<'_> {
             }
             Syntax::Like { .. }
             | Syntax::Filtered { .. }
+            | Syntax::Exists { .. }
+            | Syntax::InSubquery { .. }
             | Syntax::Row(_)
             | Syntax::Wildcard(_)
             | Syntax::Parameter(_)

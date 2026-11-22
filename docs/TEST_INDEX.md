@@ -79,6 +79,34 @@ enter WAL, checkpoint or publication state. Replay with
 `cargo test --locked -p hawdb --lib compound_queries`. No new CI lane, fixture
 amplification, profile or timeout is introduced.
 
+PostgreSQL `VALUES`, derived-table, and bounded subquery compatibility
+([#1864](https://github.com/nowledge-co/hawdb/issues/1864)) remains in the
+existing SQL-syntax, SQL-lowering, relational-query, and root general-test
+owners. Syntax tests pin VALUES query bodies, mandatory derived-table aliases
+with optional column aliases, bare or `AS` aliases, and byte spans for
+`EXISTS` and scalar/row `IN (subquery)`; non-WHERE subquery positions retain
+their prior rejection class. The source-bound frontend manifest is re-audited
+only for the exhaustive alias-boundary match arm; its SQL inventory and frozen
+outcomes are unchanged. SQL lowering tests own dense parameters, internal
+collision-free derived-table names, complete predicate trees, and nested query
+visitation. `query::tests::compound_queries` covers VALUES type unification,
+NULLs and duplicate multiplicity, derived aliases and catalog-name collision,
+correlated and uncorrelated EXISTS/NOT EXISTS, scalar and row IN/NOT IN,
+empty and NULL truth tables, lexical alias shadowing, multi-level qualified
+correlation, arity/type errors even when the outer scan is empty, CTE liveness
+through a subquery, and fail-closed row, payload, blocking-memory, and candidate
+work budgets. Plain EXPLAIN reports `subquery_strategy=budgeted_nested_loop`
+without execution; EXPLAIN ANALYZE reports the executed
+`SubqueryPredicateExec`. Root `relational_sql::compound_queries` checkpoints,
+reopens, and re-runs parameterized derived/VALUES/subquery reads in
+Materialized/Materialized and OutOfCore/DemandPaged modes. Derived tables and
+subquery results are statement-scoped only and never enter WAL, catalog, or
+checkpoint state. Replay with `cargo test --locked -p hawdb-sql-syntax --lib`,
+`cargo test --locked -p hawdb-sql --lib`, `cargo test --locked -p
+hawdb-relational compound_queries --lib`, and `cargo test --locked -p hawdb
+--lib compound_queries`. No new CI lane, profile, fixture amplification, or
+timeout is introduced.
+
 Checked candidate exhaustion ([#1713](https://github.com/nowledge-co/hawdb/issues/1713))
 is owned by `candidate_evidence::consumption::tests` in the existing Search unit
 feature matrix, including `//crates/search:hawdb_search_tests`. Text cases

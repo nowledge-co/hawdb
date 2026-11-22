@@ -473,7 +473,7 @@
     },
     {
       "path": "crates/sql-syntax/tests/support/alias_boundaries.rs",
-      "sha256": "ef29d81926328cfd3aa78aeba2ba6bfc6b9ff90b2ed59c9bcef6c4031e579c6f",
+      "sha256": "76850cfa0fc82664e93372b4c30061be584ba6a9e034c323622f9aa4d80a2ce6",
       "case_ids": [
         "case-0420",
         "case-0421",

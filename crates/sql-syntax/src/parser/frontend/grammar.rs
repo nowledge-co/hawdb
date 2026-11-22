@@ -157,12 +157,21 @@ pub(crate) fn build_with_rules(
             "RelationalQueryPrimary",
             c(vec![
                 r("RelationalSelectCore"),
+                r("RelationalValues"),
                 s(vec![
                     t(T::LeftParen),
                     r("RelationalQuery"),
                     t(T::RightParen),
                 ]),
             ]),
+        ),
+        (
+            "RelationalValues",
+            s(vec![k("VALUES"), list("RelationalValueRow")]),
+        ),
+        (
+            "RelationalValueRow",
+            s(vec![t(T::LeftParen), list("Or"), t(T::RightParen)]),
         ),
         (
             "Select",
@@ -260,7 +269,19 @@ pub(crate) fn build_with_rules(
             s(vec![r("RelationalFromItem"), many(r("RelationalJoin"))]),
         ),
         ("FromItem", c(vec![r("GraphTable"), r("Relation")])),
-        ("RelationalFromItem", r("RelationalRelation")),
+        (
+            "RelationalFromItem",
+            c(vec![r("RelationalDerived"), r("RelationalRelation")]),
+        ),
+        (
+            "RelationalDerived",
+            s(vec![
+                t(T::LeftParen),
+                r("RelationalQuery"),
+                t(T::RightParen),
+                c(vec![r("RelationalAsAlias"), r("Alias")]),
+            ]),
+        ),
         (
             "Relation",
             s(vec![

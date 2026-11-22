@@ -620,7 +620,7 @@ pub fn execute_prepared_relational_query_with_resources<'a, R: RelationalQuerySt
             }
             let mut execution = prepared.execution.admit(state, read_modes, resources)?;
             execution.planning_snapshot = Some(snapshot);
-            let output = execute_select_timed(&prepared, parameters, execution)?;
+            let output = execute_select_timed(&prepared, parameters, execution, None)?;
             format_relational_explain(
                 &prepared.statement,
                 parameters,
@@ -636,12 +636,33 @@ pub fn execute_prepared_relational_query_with_resources<'a, R: RelationalQuerySt
 }
 
 fn execute_select_statement<'a, R: RelationalQueryStoreReader>(
+    select: SelectStatement,
+    parameters: &[Value],
+    state: &'a RelationalState,
+    read_modes: RelationalQueryReadModes<'a, R>,
+    resources: RelationalQueryResourceContext<'_>,
+    stage_timings: RelationalSqlStageTimings,
+) -> Result<RelationalQueryOutput> {
+    execute_select_statement_with_filter(
+        select,
+        parameters,
+        state,
+        read_modes,
+        resources,
+        stage_timings,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_select_statement_with_filter<'a, R: RelationalQueryStoreReader>(
     mut select: SelectStatement,
     parameters: &[Value],
     state: &'a RelationalState,
     read_modes: RelationalQueryReadModes<'a, R>,
     resources: RelationalQueryResourceContext<'_>,
     stage_timings: RelationalSqlStageTimings,
+    subquery_filter: Option<&RelationalSubqueryFilter<'_>>,
 ) -> Result<RelationalQueryOutput> {
     if select.text_search().is_some() {
         crate::literal_coercion::coerce_select(&mut select, state, parameters)?;
@@ -675,7 +696,7 @@ fn execute_select_statement<'a, R: RelationalQueryStoreReader>(
     )?;
     let mut execution = prepared.execution.admit(state, read_modes, resources)?;
     execution.planning_snapshot = Some(snapshot);
-    execute_select_timed(&prepared, parameters, execution)
+    execute_select_timed(&prepared, parameters, execution, subquery_filter)
 }
 
 #[doc(hidden)]
@@ -731,8 +752,26 @@ impl Binding<'_> {
 }
 
 #[derive(Clone, Default)]
-struct BoundRow<'a> {
+pub(super) struct BoundRow<'a> {
     bindings: Vec<Binding<'a>>,
+}
+
+type SubqueryEvaluatorFn<'a> = dyn for<'row> FnMut(&BoundRow<'row>) -> Result<Option<bool>> + 'a;
+
+pub(super) struct RelationalSubqueryFilter<'a> {
+    evaluate: RefCell<&'a mut SubqueryEvaluatorFn<'a>>,
+}
+
+impl<'a> RelationalSubqueryFilter<'a> {
+    pub(super) fn new(evaluate: &'a mut SubqueryEvaluatorFn<'a>) -> Self {
+        Self {
+            evaluate: RefCell::new(evaluate),
+        }
+    }
+
+    fn matches(&self, row: &BoundRow<'_>) -> Result<bool> {
+        Ok((self.evaluate.borrow_mut())(row)? == Some(true))
+    }
 }
 
 impl BoundRow<'_> {

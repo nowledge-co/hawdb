@@ -120,6 +120,11 @@ fn collect_query_parameters(query: &SqlQueryStatement, positions: &mut BTreeSet<
 fn collect_query_body_parameters(body: &SqlQueryBody, positions: &mut BTreeSet<usize>) {
     match body {
         SqlQueryBody::Select(select) => collect_select_parameters(select, positions),
+        SqlQueryBody::Values(rows) => {
+            for expression in rows.iter().flatten() {
+                collect_expression_parameters(expression, positions);
+            }
+        }
         SqlQueryBody::Nested(query) => collect_query_parameters(query, positions),
         SqlQueryBody::SetOperation { left, right, .. } => {
             collect_query_body_parameters(left, positions);
@@ -202,6 +207,9 @@ fn collect_select_parameters(select: &SelectStatement, positions: &mut BTreeSet<
     if let Some(predicate) = &select.selection {
         collect_expression_parameters(predicate, positions);
     }
+    if let Some(predicate) = &select.subquery_predicate {
+        collect_subquery_predicate_parameters(predicate, positions);
+    }
     if let Some(predicate) = &select.having {
         collect_expression_parameters(predicate, positions);
     }
@@ -210,6 +218,32 @@ fn collect_select_parameters(select: &SelectStatement, positions: &mut BTreeSet<
     }
     collect_bound_parameter(select.limit, positions);
     collect_bound_parameter(select.offset, positions);
+}
+
+fn collect_subquery_predicate_parameters(
+    predicate: &crate::SqlSubqueryPredicate,
+    positions: &mut BTreeSet<usize>,
+) {
+    match predicate {
+        crate::SqlSubqueryPredicate::Scalar(expression) => {
+            collect_expression_parameters(expression, positions)
+        }
+        crate::SqlSubqueryPredicate::And(left, right)
+        | crate::SqlSubqueryPredicate::Or(left, right) => {
+            collect_subquery_predicate_parameters(left, positions);
+            collect_subquery_predicate_parameters(right, positions);
+        }
+        crate::SqlSubqueryPredicate::Not(predicate) => {
+            collect_subquery_predicate_parameters(predicate, positions)
+        }
+        crate::SqlSubqueryPredicate::Exists { query } => collect_query_parameters(query, positions),
+        crate::SqlSubqueryPredicate::In { left, query, .. } => {
+            for expression in left {
+                collect_expression_parameters(expression, positions);
+            }
+            collect_query_parameters(query, positions);
+        }
+    }
 }
 
 fn collect_insert_parameters(insert: &InsertStatement, positions: &mut BTreeSet<usize>) {

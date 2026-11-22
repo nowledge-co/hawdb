@@ -75,10 +75,15 @@ parser has equivalent positive and negative corpus coverage. Parser selection
 MUST be explicit by statement family; retrying another parser after a syntax or
 semantic failure is forbidden.
 
-The first owned `SELECT` slice recognizes `GRAPH_TABLE` and qualified relations
+The first owned `SELECT` slice recognized `GRAPH_TABLE` and qualified relations
 as `FROM` items, bounded scalar expressions, `INNER`, `LEFT`, and `CROSS` joins,
 projection, filtering, grouping, ordering, limits, offsets, and locking clauses.
-It deliberately rejects subqueries, right/full/natural joins, join `USING`,
+The executable relational path now also recognizes statement-scoped `VALUES`,
+derived tables, and `EXISTS`/`NOT EXISTS` plus scalar or row `IN (subquery)` in
+`WHERE`. Subqueries in projection, JOIN conditions, grouping, HAVING, ordering,
+limits, and standalone VALUES expressions remain rejected. Correlated execution
+is a visibly reported, work-budgeted nested-loop fallback; it is not an optimizer
+claim of a decorrelated semi/anti join. The frontend still rejects right/full/natural joins, join `USING`,
 `DISTINCT ON`, and other unqualified shapes. The default relational SELECT and EXPLAIN SELECT paths now use the PEG
 relational entry and lower into the existing relational IR, including constants,
 vector search, aggregate FILTER and LIKE/ILIKE. Supported DDL/DML and

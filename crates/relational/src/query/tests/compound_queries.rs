@@ -78,6 +78,254 @@ fn values(output: &RelationalQueryOutput) -> Vec<Vec<Value>> {
 }
 
 #[test]
+fn values_and_derived_tables_preserve_types_nulls_duplicates_aliases_and_budgets() {
+    let state = state();
+    let output = query_with_limits(
+        &state,
+        "VALUES ($1, 'a'), ($2, NULL), ($1, 'a') ORDER BY column1, column2 NULLS FIRST",
+        &[Value::Int(2), Value::Int(1)],
+        batched_index_join_limits(),
+    )
+    .unwrap();
+    assert_eq!(
+        values(&output),
+        vec![
+            vec![Value::Int(1), Value::Null],
+            vec![Value::Int(2), Value::String("a".into())],
+            vec![Value::Int(2), Value::String("a".into())],
+        ]
+    );
+    assert!(output
+        .blocking_operator_memory_reports
+        .iter()
+        .any(|report| report.operator == "ValuesExec"));
+
+    let output = query(
+        &state,
+        "SELECT input.id, input.label FROM \
+         (VALUES (2, 'b'), (1, 'a'), (1, 'a')) input(id, label) \
+         ORDER BY input.id, input.label",
+    );
+    assert_eq!(
+        values(&output),
+        vec![
+            vec![Value::Int(1), Value::String("a".into())],
+            vec![Value::Int(1), Value::String("a".into())],
+            vec![Value::Int(2), Value::String("b".into())],
+        ]
+    );
+    assert!(output.access_path.name.contains("CTE Materialize"));
+
+    assert_eq!(
+        values(&query(
+            &state,
+            "WITH __hawdb_derived_0_100(v) AS (VALUES (99)) \
+             SELECT input.id FROM (VALUES (2), (1)) AS input(id) ORDER BY id"
+        )),
+        vec![vec![Value::Int(1)], vec![Value::Int(2)]]
+    );
+
+    let error = query_with_limits(
+        &state,
+        "VALUES (1), (2)",
+        &[],
+        RelationalQueryLimits {
+            max_candidate_work: 1,
+            ..batched_index_join_limits()
+        },
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("max_candidate_work"));
+
+    let error = query_with_limits(
+        &state,
+        "VALUES (1), (2)",
+        &[],
+        RelationalQueryLimits {
+            max_intermediate_rows: 1,
+            ..batched_index_join_limits()
+        },
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("max_intermediate_rows"));
+}
+
+#[test]
+fn exists_and_in_subqueries_preserve_correlation_rows_duplicates_and_null_truth() {
+    let state = state();
+    assert_eq!(
+        values(&query(
+            &state,
+            "SELECT outer_row.id FROM numbers AS outer_row \
+             WHERE EXISTS (SELECT 1 FROM numbers AS inner_row \
+                           WHERE inner_row.n = outer_row.n \
+                             AND inner_row.id <> outer_row.id) \
+             ORDER BY outer_row.id"
+        )),
+        vec![vec![Value::Int(1)], vec![Value::Int(2)]]
+    );
+    assert_eq!(
+        values(&query(
+            &state,
+            "SELECT outer_row.id FROM numbers AS outer_row \
+             WHERE NOT EXISTS (SELECT 1 FROM numbers AS inner_row \
+                               WHERE inner_row.n = outer_row.n \
+                                 AND inner_row.id <> outer_row.id) \
+             ORDER BY outer_row.id"
+        )),
+        vec![vec![Value::Int(3)]]
+    );
+
+    let output = query_with_limits(
+        &state,
+        "SELECT id FROM numbers WHERE id IN \
+         (SELECT id FROM numbers WHERE n = $1 UNION ALL SELECT id FROM numbers WHERE n = $1) \
+         ORDER BY id",
+        &[Value::Int(10)],
+        batched_index_join_limits(),
+    )
+    .unwrap();
+    assert_eq!(
+        values(&output),
+        vec![vec![Value::Int(1)], vec![Value::Int(2)]]
+    );
+    assert!(output.access_path.name.contains("SubqueryPredicateExec"));
+    assert!(output
+        .blocking_operator_memory_reports
+        .iter()
+        .any(|report| report.operator == "SubqueryPredicateExec"));
+
+    assert_eq!(
+        values(&query(
+            &state,
+            "SELECT id FROM numbers WHERE (n, label) IN \
+             (SELECT n, label FROM numbers WHERE id <= 2) ORDER BY id"
+        )),
+        vec![vec![Value::Int(1)], vec![Value::Int(2)]]
+    );
+    assert!(query(
+        &state,
+        "SELECT id FROM numbers WHERE id NOT IN (VALUES (NULL))"
+    )
+    .rows
+    .is_empty());
+
+    assert_eq!(
+        values(&query(
+            &state,
+            "SELECT outer_row.id FROM numbers AS outer_row \
+             WHERE outer_row.id = 1 OR EXISTS \
+                   (SELECT 1 FROM numbers AS inner_row \
+                    WHERE inner_row.id = outer_row.id AND inner_row.label IS NULL) \
+             ORDER BY outer_row.id"
+        )),
+        vec![vec![Value::Int(1)], vec![Value::Int(3)]]
+    );
+
+    assert!(query(
+        &state,
+        "SELECT id FROM numbers WHERE EXISTS (SELECT 1 FROM numbers WHERE id = 99)"
+    )
+    .rows
+    .is_empty());
+    assert_eq!(
+        values(&query(
+            &state,
+            "SELECT id FROM numbers WHERE id NOT IN \
+             (SELECT id FROM numbers WHERE id = 99) ORDER BY id"
+        )),
+        vec![
+            vec![Value::Int(1)],
+            vec![Value::Int(2)],
+            vec![Value::Int(3)]
+        ]
+    );
+    assert_eq!(
+        values(&query(
+            &state,
+            "SELECT outer_row.id FROM numbers AS outer_row \
+             WHERE EXISTS (SELECT 1 FROM numbers AS outer_row WHERE outer_row.id = 3) \
+             ORDER BY outer_row.id"
+        )),
+        vec![
+            vec![Value::Int(1)],
+            vec![Value::Int(2)],
+            vec![Value::Int(3)]
+        ]
+    );
+    assert_eq!(
+        values(&query(
+            &state,
+            "SELECT outer_row.id FROM numbers AS outer_row \
+             WHERE EXISTS (SELECT 1 FROM numbers AS middle_row \
+                           WHERE EXISTS (SELECT 1 FROM numbers AS inner_row \
+                                         WHERE inner_row.id = middle_row.id \
+                                           AND outer_row.id = 1)) \
+             ORDER BY outer_row.id"
+        )),
+        vec![vec![Value::Int(1)]]
+    );
+
+    let arity = query_with_limits(
+        &state,
+        "SELECT id FROM numbers WHERE id < 0 AND (id, label) IN (SELECT id FROM numbers)",
+        &[],
+        batched_index_join_limits(),
+    )
+    .unwrap_err();
+    assert!(arity.to_string().contains("left row has arity 2"));
+
+    let incompatible = query_with_limits(
+        &state,
+        "SELECT id FROM numbers WHERE id IN (VALUES ('not-a-number'))",
+        &[],
+        batched_index_join_limits(),
+    )
+    .unwrap_err();
+    assert!(incompatible.to_string().contains("incompatible types"));
+
+    let work = query_with_limits(
+        &state,
+        "SELECT outer_row.id FROM numbers AS outer_row \
+         WHERE EXISTS (SELECT 1 FROM numbers AS inner_row \
+                       WHERE inner_row.n = outer_row.n)",
+        &[],
+        RelationalQueryLimits {
+            max_candidate_work: 4,
+            ..batched_index_join_limits()
+        },
+    )
+    .unwrap_err();
+    assert!(work.to_string().contains("max_candidate_work"));
+
+    let row_limit = query_with_limits(
+        &state,
+        "SELECT id FROM numbers WHERE id IN (VALUES (1), (2)) ORDER BY id",
+        &[],
+        RelationalQueryLimits {
+            max_output_rows: 1,
+            ..batched_index_join_limits()
+        },
+    )
+    .unwrap_err();
+    assert!(row_limit.to_string().contains("max_output_rows 1"));
+
+    let memory = hawdb_executor::ExecutionMemoryConfig {
+        blocking_operator_bytes: NonZeroUsize::MIN,
+        ..hawdb_executor::ExecutionMemoryConfig::default()
+    };
+    let memory_error = query_with_resources(
+        &state,
+        "SELECT id FROM numbers WHERE id IN (VALUES (1), (2))",
+        &[],
+        batched_index_join_limits(),
+        &memory,
+    )
+    .unwrap_err();
+    assert_blocking_memory_refusal(&memory_error, "relational VALUES materialization");
+}
+
+#[test]
 fn set_operations_preserve_duplicates_nulls_precedence_and_branch_tails() {
     let state = state();
     assert_eq!(
@@ -396,6 +644,38 @@ fn compound_explain_is_observable_and_plain_explain_does_not_execute() {
         output.rows.row(0).unwrap().get("operator info"),
         Some(Value::String(info)) if info.contains("ctes=2")
             && info.contains("set_operations=1")
+    ));
+
+    let output = query(
+        &state,
+        "EXPLAIN SELECT outer_row.id FROM numbers AS outer_row \
+         WHERE EXISTS (SELECT 1 FROM numbers AS inner_row \
+                       WHERE inner_row.n = outer_row.n)",
+    );
+    assert_eq!(
+        output.rows.row(0).unwrap().get("id"),
+        Some(&Value::String("SubqueryPredicateExec".into()))
+    );
+    assert!(matches!(
+        output.rows.row(0).unwrap().get("operator info"),
+        Some(Value::String(info)) if info.contains("subqueries=1")
+            && info.contains("subquery_strategy=budgeted_nested_loop")
+    ));
+    assert_eq!(output.row_execution_evidence.runtime_path, "not_executed");
+
+    let output = query(
+        &state,
+        "EXPLAIN ANALYZE SELECT outer_row.id FROM numbers AS outer_row \
+         WHERE EXISTS (SELECT 1 FROM numbers AS inner_row \
+                       WHERE inner_row.n = outer_row.n)",
+    );
+    assert_eq!(
+        output.rows.row(0).unwrap().get("actRows"),
+        Some(&Value::Int(3))
+    );
+    assert!(matches!(
+        output.rows.row(0).unwrap().get("access object"),
+        Some(Value::String(name)) if name.contains("SubqueryPredicateExec")
     ));
 
     let output = query(
