@@ -2802,6 +2802,11 @@ versus cache hits, cold build cost and required target inventory.
   focused deterministic regression. See [tools/mvcc-fuzz](../tools/mvcc-fuzz/README.md).
 - Local deterministic fuzz verification:
   `bazel test //tools/shiro:shiro_tests //tools/shiro:shiro_cli_tests //:hawdb_linux_ci_fuzz_smoke_test`.
+- Typed function generation in the existing local Shiro library lane
+  covers SQL text/binary byte lengths, nullable projections and filtered
+  aggregates, and Cypher JSON and label results against typed host models.
+  Replay with `cargo test --locked --manifest-path tools/shiro/Cargo.toml
+  --lib generated_functions` or a `cypher_pipeline` capability case.
   Historical `//crates/fuzz:*` labels are compatibility wrappers only.
 - A fuzz discovery belongs in CI as a small confirmed regression, not by adding
   the continuous tool or arbitrary duration-based exploration to CI.
