@@ -1752,7 +1752,7 @@ pub(super) fn commit_database_transaction_state_inner(
             return Err(HawDBError::TransactionConflict {
                 read_epoch: expected,
                 committed_epoch: current,
-                key: "graph_change_commit_epoch".to_string(),
+                key: crate::GRAPH_CHANGE_COMMIT_EPOCH_CONFLICT_KEY.to_string(),
             });
         }
     }
@@ -1825,8 +1825,10 @@ impl DatabaseTransaction<'_> {
     /// snapshot (see [`Database::graph_change_commit_epoch`]) and makes the
     /// commit conditional on it. If a commit that changed graph data or schema
     /// is published after the base snapshot, this transaction's commit fails
-    /// with `HawDBError::TransactionConflict` (key `graph_change_commit_epoch`)
-    /// and writes nothing. The transaction's own graph writes do not count.
+    /// with `HawDBError::TransactionConflict` whose key is
+    /// [`crate::GRAPH_CHANGE_COMMIT_EPOCH_CONFLICT_KEY`] (matched by
+    /// `HawDBError::is_graph_change_conflict`) and writes nothing. The
+    /// transaction's own graph writes do not count.
     /// Refused with the storage error if the database is poisoned.
     pub fn graph_change_commit_epoch(&mut self) -> Result<u64> {
         self.db.graph_change_commit_epoch()?;

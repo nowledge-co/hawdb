@@ -766,8 +766,10 @@ impl ConcurrentDatabaseTransaction {
     /// commit conditional on it, for compare-and-publish. If a commit that
     /// changed graph data or schema is published after the base snapshot, this
     /// transaction's commit fails with the retryable
-    /// `HawDBError::TransactionConflict` (key `graph_change_commit_epoch`) and
-    /// writes nothing. Relational-only commits never cause that refusal. The
+    /// `HawDBError::TransactionConflict` whose key is
+    /// [`crate::GRAPH_CHANGE_COMMIT_EPOCH_CONFLICT_KEY`] (matched by
+    /// `HawDBError::is_graph_change_conflict`) and writes nothing.
+    /// Relational-only commits never cause that refusal. The
     /// transaction's own graph writes do not count. Refused with the storage
     /// error if the database is poisoned, for example after a failed group
     /// commit durability barrier.

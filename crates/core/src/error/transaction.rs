@@ -14,6 +14,13 @@
 
 use std::fmt::{Display, Formatter};
 
+/// The `key` of the retryable `HawDBError::TransactionConflict` returned when a
+/// transaction that read `graph_change_commit_epoch()` for compare-and-publish
+/// commits after a graph-changing commit was published past its snapshot.
+/// The value is stable; embedded hosts match on it (or use
+/// `HawDBError::is_graph_change_conflict`) instead of a hard-coded string.
+pub const GRAPH_CHANGE_COMMIT_EPOCH_CONFLICT_KEY: &str = "graph_change_commit_epoch";
+
 /// A condition that requires retrying the complete transaction with a fresh snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransactionRetryReason {
@@ -94,6 +101,23 @@ mod tests {
             key: "row".into(),
         }
         .is_retryable_transaction_conflict());
+        let graph_change = HawDBError::TransactionConflict {
+            read_epoch: 1,
+            committed_epoch: 2,
+            key: GRAPH_CHANGE_COMMIT_EPOCH_CONFLICT_KEY.into(),
+        };
+        assert_eq!(
+            GRAPH_CHANGE_COMMIT_EPOCH_CONFLICT_KEY,
+            "graph_change_commit_epoch"
+        );
+        assert!(graph_change.is_graph_change_conflict());
+        assert!(graph_change.is_retryable_transaction_conflict());
+        assert!(!HawDBError::TransactionConflict {
+            read_epoch: 1,
+            committed_epoch: 2,
+            key: "row".into(),
+        }
+        .is_graph_change_conflict());
         for error in [
             HawDBError::Execution("deadlock detected; retry the transaction".into()),
             HawDBError::Execution("transaction lock wait timed out".into()),

@@ -203,10 +203,12 @@ fn a_transaction_reads_it_and_commits_only_while_it_is_current() {
     else {
         panic!("expected a graph change conflict, got {error:?}");
     };
-    assert_eq!(key, "graph_change_commit_epoch");
+    assert_eq!(key, crate::GRAPH_CHANGE_COMMIT_EPOCH_CONFLICT_KEY);
+    assert_eq!(key, "graph_change_commit_epoch", "the key value is stable");
     assert_eq!(*read_epoch, graph);
     assert!(*committed_epoch > graph);
     assert!(error.is_retryable_transaction_conflict());
+    assert!(error.is_graph_change_conflict());
     assert_eq!(published(), Value::Int(1));
 
     // A retry sees the new epoch and publishes.

@@ -18,7 +18,9 @@ use std::fmt::{Display, Formatter};
 mod resource;
 pub use resource::{ResourceBudgetError, ResourceBudgetKind, ResourceBudgetScope};
 mod transaction;
-pub use transaction::{TransactionRetryError, TransactionRetryReason};
+pub use transaction::{
+    TransactionRetryError, TransactionRetryReason, GRAPH_CHANGE_COMMIT_EPOCH_CONFLICT_KEY,
+};
 mod storage_format;
 pub use storage_format::{
     StorageFormatError, APPEND_WAL_FORMAT, LOGICAL_DUMP_FORMAT,
@@ -604,6 +606,16 @@ impl HawDBError {
         matches!(
             self,
             Self::TransactionConflict { .. } | Self::TransactionRetryRequired(_)
+        )
+    }
+
+    /// A graph-changing commit was published after the snapshot of a
+    /// transaction that read `graph_change_commit_epoch()` for
+    /// compare-and-publish. Implies `is_retryable_transaction_conflict`.
+    pub fn is_graph_change_conflict(&self) -> bool {
+        matches!(
+            self,
+            Self::TransactionConflict { key, .. } if key == GRAPH_CHANGE_COMMIT_EPOCH_CONFLICT_KEY
         )
     }
 }
