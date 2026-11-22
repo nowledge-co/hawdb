@@ -19,6 +19,8 @@ fn state() -> RelationalState {
     for sql in [
         "CREATE TABLE numbers (id BIGINT PRIMARY KEY, n BIGINT, label TEXT)",
         "INSERT INTO numbers (id, n, label) VALUES (1, 10, 'a'), (2, 10, 'b'), (3, 20, NULL)",
+        "CREATE TABLE edges (id BIGINT PRIMARY KEY, parent BIGINT, child BIGINT)",
+        "INSERT INTO edges (id, parent, child) VALUES (1, 1, 2), (2, 2, 3), (3, 3, 1), (4, 2, 4)",
     ] {
         let transaction = compile_relational_statement_sql(sql, &[], &state).unwrap();
         state = state
@@ -30,6 +32,300 @@ fn state() -> RelationalState {
             .unwrap();
     }
     state
+}
+
+#[test]
+fn recursive_ctes_iterate_working_tables_and_preserve_union_semantics() {
+    let state = state();
+    let output = query_with_limits(
+        &state,
+        "WITH RECURSIVE walk(n) AS (\
+             VALUES ($1) UNION ALL SELECT n + 1 FROM walk WHERE n < $2\
+         ) SELECT n FROM walk ORDER BY n",
+        &[Value::Int(1), Value::Int(4)],
+        batched_index_join_limits(),
+    )
+    .unwrap();
+    assert_eq!(
+        values(&output),
+        vec![
+            vec![Value::Int(1)],
+            vec![Value::Int(2)],
+            vec![Value::Int(3)],
+            vec![Value::Int(4)]
+        ]
+    );
+    assert_eq!(output.row_execution_evidence.recursive_working_rows_peak, 1);
+    assert_eq!(output.row_execution_evidence.recursive_rows_emitted, 4);
+    assert!(output.row_execution_evidence.recursive_iterations >= 4);
+    assert!(output
+        .blocking_operator_memory_reports
+        .iter()
+        .any(|report| report.operator == "RecursiveUnionExec"));
+
+    assert_eq!(
+        values(&query(
+            &state,
+            "WITH RECURSIVE reach(id) AS (\
+                 VALUES (1) UNION \
+                 SELECT edges.child FROM edges JOIN reach ON edges.parent = reach.id\
+             ) SELECT id FROM reach ORDER BY id"
+        )),
+        vec![
+            vec![Value::Int(1)],
+            vec![Value::Int(2)],
+            vec![Value::Int(3)],
+            vec![Value::Int(4)]
+        ]
+    );
+
+    assert_eq!(
+        values(&query(
+            &state,
+            "WITH RECURSIVE duplicate(n) AS (\
+                 VALUES (1), (1) UNION ALL SELECT n + 1 FROM duplicate WHERE n < 2\
+             ) SELECT n FROM duplicate ORDER BY n"
+        )),
+        vec![
+            vec![Value::Int(1)],
+            vec![Value::Int(1)],
+            vec![Value::Int(2)],
+            vec![Value::Int(2)]
+        ]
+    );
+
+    assert_eq!(
+        values(&query(
+            &state,
+            "WITH RECURSIVE nullable(n) AS (\
+                 VALUES (CAST(NULL AS BIGINT)) UNION SELECT n FROM nullable\
+             ) SELECT n FROM nullable"
+        )),
+        vec![vec![Value::Null]]
+    );
+    assert_eq!(
+        values(&query(
+            &state,
+            "WITH RECURSIVE start(n) AS (VALUES (1)), walk(n) AS (\
+                 SELECT n FROM start UNION ALL SELECT n + 1 FROM walk WHERE n < 3\
+             ) SELECT n FROM walk ORDER BY n"
+        )),
+        vec![
+            vec![Value::Int(1)],
+            vec![Value::Int(2)],
+            vec![Value::Int(3)]
+        ]
+    );
+    let empty = query(
+        &state,
+        "WITH RECURSIVE empty(n) AS (\
+             SELECT id FROM numbers WHERE id < 0 UNION ALL SELECT n + 1 FROM empty\
+         ) SELECT n FROM empty",
+    );
+    assert!(empty.rows.is_empty());
+    assert_eq!(empty.row_execution_evidence.recursive_iterations, 0);
+}
+
+#[test]
+fn recursive_ctes_fail_closed_on_shape_work_iteration_output_and_memory_caps() {
+    let state = state();
+    for (sql, expected) in [
+        (
+            "WITH walk(n) AS (VALUES (1) UNION ALL SELECT n + 1 FROM walk) SELECT n FROM walk",
+            "unknown relational table walk",
+        ),
+        (
+            "WITH RECURSIVE walk(n) AS (SELECT n FROM walk) SELECT n FROM walk",
+            "requires seed UNION [ALL] recursive term",
+        ),
+        (
+            "WITH RECURSIVE walk(n) AS (SELECT n FROM walk UNION ALL VALUES (1)) SELECT n FROM walk",
+            "not allowed in the non-recursive seed",
+        ),
+        (
+            "WITH RECURSIVE walk(n) AS (VALUES (1) UNION ALL SELECT n AS a, n AS b FROM walk) SELECT n FROM walk",
+            "seed arity 1 and recursive-term arity 2",
+        ),
+        (
+            "WITH RECURSIVE walk(n) AS (VALUES (1) UNION ALL SELECT 'text' FROM walk) SELECT n FROM walk",
+            "incompatible types",
+        ),
+    ] {
+        let error = query_with_limits(&state, sql, &[], batched_index_join_limits()).unwrap_err();
+        assert!(
+            error.to_string().contains(expected),
+            "unexpected error for {sql}: {error}"
+        );
+    }
+
+    let total_work = query_with_limits(
+        &state,
+        "WITH RECURSIVE walk(n) AS (\
+             VALUES (1) UNION ALL SELECT n + 1 FROM walk WHERE n < 3\
+         ) SELECT n FROM walk",
+        &[],
+        RelationalQueryLimits {
+            max_candidate_work: 3,
+            ..batched_index_join_limits()
+        },
+    )
+    .unwrap_err();
+    assert!(total_work
+        .to_string()
+        .contains("recursive_total_work(max_candidate_work)"));
+
+    let working_rows = query_with_limits(
+        &state,
+        "WITH RECURSIVE fanout(n) AS (\
+             VALUES (1) UNION ALL \
+             SELECT numbers.id FROM numbers JOIN fanout ON fanout.n = 1 WHERE numbers.id <= 2\
+         ) SELECT n FROM fanout",
+        &[],
+        RelationalQueryLimits {
+            max_intermediate_rows: 1,
+            ..batched_index_join_limits()
+        },
+    )
+    .unwrap_err();
+    assert!(
+        working_rows.to_string().contains("max_intermediate_rows"),
+        "unexpected working-row refusal: {working_rows}"
+    );
+
+    let iteration = query_with_limits(
+        &state,
+        "WITH RECURSIVE forever(n) AS (\
+             VALUES (1) UNION ALL SELECT n FROM forever\
+         ) SELECT n FROM forever",
+        &[],
+        RelationalQueryLimits {
+            max_output_rows: 2_048,
+            max_output_payload_bytes: 1024 * 1024,
+            max_intermediate_rows: 2_048,
+            max_candidate_work: 1_000_000,
+            ..batched_index_join_limits()
+        },
+    )
+    .unwrap_err();
+    assert!(iteration
+        .to_string()
+        .contains("recursive_iteration_limit 1024"));
+
+    let output_rows = query_with_limits(
+        &state,
+        "WITH RECURSIVE walk(n) AS (\
+             VALUES (1) UNION ALL SELECT n + 1 FROM walk WHERE n < 3\
+         ) SELECT n FROM walk",
+        &[],
+        RelationalQueryLimits {
+            max_output_rows: 2,
+            ..batched_index_join_limits()
+        },
+    )
+    .unwrap_err();
+    assert!(output_rows.to_string().contains("max_output_rows 2"));
+
+    let output_payload = query_with_limits(
+        &state,
+        "WITH RECURSIVE wide(v, n) AS (\
+             VALUES ('wide', 1) UNION ALL SELECT v, n + 1 FROM wide WHERE n < 2\
+         ) SELECT v FROM wide",
+        &[],
+        RelationalQueryLimits {
+            max_output_payload_bytes: 1,
+            ..batched_index_join_limits()
+        },
+    )
+    .unwrap_err();
+    assert!(output_payload
+        .to_string()
+        .contains("max_output_payload_bytes 1"));
+
+    let cumulative_row_reads = query_with_limits(
+        &state,
+        "WITH RECURSIVE reach(id) AS (\
+             VALUES (1) UNION \
+             SELECT edges.child FROM edges JOIN reach ON edges.parent = reach.id\
+         ) SELECT id FROM reach",
+        &[],
+        RelationalQueryLimits {
+            row_read: hawdb_storage::relational::RelationalRowPageSnapshotReadLimits {
+                demand: hawdb_storage::relational::RelationalRowPageDemandReadLimits {
+                    max_rows: NonZeroUsize::new(4).unwrap(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..batched_index_join_limits()
+        },
+    )
+    .unwrap_err();
+    assert!(
+        cumulative_row_reads
+            .to_string()
+            .contains("row scan exceeds row limit"),
+        "recursive iterations reset the cumulative row-read limit: {cumulative_row_reads}"
+    );
+
+    let memory = hawdb_executor::ExecutionMemoryConfig {
+        blocking_operator_bytes: NonZeroUsize::new(100).unwrap(),
+        ..hawdb_executor::ExecutionMemoryConfig::default()
+    };
+    let memory_error = query_with_resources(
+        &state,
+        "WITH RECURSIVE walk(n) AS (\
+             VALUES (1) UNION ALL SELECT n + 1 FROM walk WHERE n < 3\
+         ) SELECT n FROM walk",
+        &[],
+        batched_index_join_limits(),
+        &memory,
+    )
+    .unwrap_err();
+    let HawDBError::ResourceBudgetExceeded(cause) = memory_error else {
+        panic!("recursive union lost its typed memory refusal: {memory_error}");
+    };
+    assert_eq!(cause.resource, hawdb_core::ResourceBudgetKind::MemoryBytes);
+    assert_eq!(cause.scope, hawdb_core::ResourceBudgetScope::Operator);
+    assert_eq!(cause.owner, "relational recursive union");
+    assert_eq!(cause.memory_class, Some("blocking_state"));
+    assert_eq!(cause.budget, 100);
+    assert!(cause.used.saturating_add(cause.requested) > cause.budget);
+}
+
+#[test]
+fn recursive_cte_explain_reports_plan_and_actual_work() {
+    let state = state();
+    let output = query(
+        &state,
+        "EXPLAIN WITH RECURSIVE walk(n) AS (\
+             VALUES (1) UNION ALL SELECT n + 1 FROM walk WHERE n < 3\
+         ) SELECT n FROM walk",
+    );
+    assert_eq!(
+        output.rows.row(0).unwrap().get("id"),
+        Some(&Value::String("RecursiveUnionExec".into()))
+    );
+    assert!(matches!(
+        output.rows.row(0).unwrap().get("operator info"),
+        Some(Value::String(info)) if info.contains("recursive_ctes=1")
+            && info.contains("recursive_strategy=working_table")
+            && info.contains("recursive_iteration_limit=1024")
+    ));
+    assert_eq!(output.row_execution_evidence.runtime_path, "not_executed");
+
+    let analyzed = query(
+        &state,
+        "EXPLAIN ANALYZE WITH RECURSIVE walk(n) AS (\
+             VALUES (1) UNION ALL SELECT n + 1 FROM walk WHERE n < 3\
+         ) SELECT n FROM walk",
+    );
+    assert!(matches!(
+        analyzed.rows.row(0).unwrap().get("execution info"),
+        Some(Value::String(info)) if info.contains("recursive_iterations=3")
+            && info.contains("recursive_working_rows_peak=1")
+            && info.contains("recursive_rows_emitted=3")
+            && info.contains("recursive_work=")
+    ));
 }
 
 fn query_with_limits(

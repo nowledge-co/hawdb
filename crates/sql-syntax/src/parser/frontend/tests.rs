@@ -114,12 +114,24 @@ fn relational_ctes_and_set_operations_preserve_precedence_and_branch_tails() {
 }
 
 #[test]
-fn recursive_cte_keyword_is_not_admitted_by_the_nonrecursive_query_grammar() {
-    let error = parse_relational_statement(
-        "WITH RECURSIVE walk(id) AS (SELECT id FROM nodes) SELECT id FROM walk",
+fn recursive_cte_keyword_and_union_shape_are_preserved() {
+    let RelationalStatementSyntax::Query(query) = parse_relational_statement(
+        "WITH RECURSIVE walk(id) AS (VALUES (1) UNION ALL SELECT id + 1 FROM walk WHERE id < $1) SELECT id FROM walk",
     )
-    .unwrap_err();
-    assert_eq!(error.code, SyntaxErrorCode::UnexpectedToken);
+    .unwrap()
+    else {
+        panic!("recursive query syntax")
+    };
+    assert!(query.recursive);
+    assert_eq!(query.with.len(), 1);
+    assert!(matches!(
+        query.with[0].query.body,
+        PostgresQueryBodySyntax::SetOperation {
+            operator: PostgresSetOperator::Union,
+            all: true,
+            ..
+        }
+    ));
 }
 
 #[test]

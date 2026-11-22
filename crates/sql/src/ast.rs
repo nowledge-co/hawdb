@@ -42,8 +42,9 @@ pub enum SqlStatement {
     Branch(BranchSqlStatement),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SqlQueryStatement {
+    pub recursive: bool,
     pub with: Vec<SqlCommonTableExpression>,
     pub body: SqlQueryBody,
     pub order_by: Vec<SqlOrderItem>,
@@ -52,12 +53,30 @@ pub struct SqlQueryStatement {
     pub lock_strength: Option<SqlLockStrength>,
 }
 
+impl std::fmt::Debug for SqlQueryStatement {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = formatter.debug_struct("SqlQueryStatement");
+        if self.recursive {
+            debug.field("recursive", &true);
+        }
+        debug
+            .field("with", &self.with)
+            .field("body", &self.body)
+            .field("order_by", &self.order_by)
+            .field("limit", &self.limit)
+            .field("offset", &self.offset)
+            .field("lock_strength", &self.lock_strength)
+            .finish()
+    }
+}
+
 impl SqlQueryStatement {
     pub fn into_simple_select(self) -> std::result::Result<SelectStatement, Box<Self>> {
         if !self.with.is_empty() || !matches!(&self.body, SqlQueryBody::Select(_)) {
             return Err(Box::new(self));
         }
         let Self {
+            recursive: _,
             with: _,
             body,
             order_by,

@@ -114,11 +114,18 @@ pub(crate) fn build_with_rules(
                 o(r("RelationalLocking")),
             ]),
         ),
-        ("RelationalWith", s(vec![k("WITH"), list("RelationalCte")])),
+        (
+            "RelationalWith",
+            s(vec![
+                k("WITH"),
+                o(r("RelationalRecursive")),
+                list("RelationalCte"),
+            ]),
+        ),
+        ("RelationalRecursive", k("RECURSIVE")),
         (
             "RelationalCte",
             s(vec![
-                not(k("RECURSIVE"), "a non-recursive CTE name"),
                 r("Identifier"),
                 o(r("Identifiers")),
                 k("AS"),
