@@ -153,6 +153,7 @@ fn retained_result_work_bytes(capacity: usize, view_metadata: usize) -> Result<u
 #[derive(Debug, Default)]
 pub(super) struct RetainedRuntime {
     configured: Mutex<Option<RuntimeGovernor>>,
+    fixed_governor: Option<RuntimeGovernor>,
     bound: OnceLock<RuntimeGovernor>,
 }
 
@@ -166,8 +167,10 @@ pub(crate) struct EmbeddedRuntimeBinding {
 
 impl EmbeddedRuntimeBinding {
     pub(crate) fn new(governor: RuntimeGovernor) -> Self {
-        let retained = Arc::new(RetainedRuntime::default());
-        retained.configure(governor.clone());
+        let retained = Arc::new(RetainedRuntime {
+            fixed_governor: Some(governor.clone()),
+            ..RetainedRuntime::default()
+        });
         Self { governor, retained }
     }
 
@@ -178,6 +181,11 @@ impl EmbeddedRuntimeBinding {
 
 impl RetainedRuntime {
     pub(super) fn configure(&self, governor: RuntimeGovernor) {
+        // A removed database can still share an owner's retained binding.
+        // Reconfiguring that database must not redirect the owner's first read.
+        if self.fixed_governor.is_some() {
+            return;
+        }
         *self
             .configured
             .lock()
@@ -195,13 +203,17 @@ impl RetainedRuntime {
             .configured
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let candidate = configured.clone().unwrap_or_else(|| {
-            RuntimeGovernor::new(
-                RuntimeGovernorConfig::shared_host(),
-                RuntimeResourceSnapshot::detect(),
-                IoConcurrencyBudget::new(2, 1),
-            )
-        });
+        let candidate = self
+            .fixed_governor
+            .clone()
+            .or_else(|| configured.clone())
+            .unwrap_or_else(|| {
+                RuntimeGovernor::new(
+                    RuntimeGovernorConfig::shared_host(),
+                    RuntimeResourceSnapshot::detect(),
+                    IoConcurrencyBudget::new(2, 1),
+                )
+            });
         // The control owner and first batch each require a handle. Reject an
         // unusable configuration before binding so the host can correct it.
         if candidate.retained_result_snapshot().handle_limit < minimum_handles {

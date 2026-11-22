@@ -1573,7 +1573,10 @@ new read-transaction start times over one unchanged publication from repeated
 statements and forks inside one transaction. Replacement tests saturate the
 owner governor, check both inner and outer ordinary admission and retained-node
 admission, and retain live old/replacement cursors to verify charge custody and
-full refunds. Both full-handle and database-only replacement are covered.
+full refunds. Both full-handle and database-only replacement are covered, with
+and without a prior retained read. The removed database is adopted by a separate
+`EmbeddedGraph` before the next facade cursor; its governor must receive no
+charges from that cursor, including when the shared binding is still cold.
 The unique-lookup fixture contains 128 rows so retained-node admission uses an
 index seek rather than the optimizer's tiny-label scan.
 Administrative callbacks and replacement must also preserve visibility of live

@@ -89,19 +89,30 @@ fn replacements_share_the_owner_governor_for_ordinary_and_retained_work() {
 
     const QUERY: &str = "MATCH (n:Item {value: $key}) RETURN n AS node";
     let parameters = BTreeMap::from([("key".into(), Value::Int(1))]);
-    for replace_handle in [false, true] {
+    for (replace_handle, warm_retained) in
+        [(false, false), (true, false), (false, true), (true, true)]
+    {
         let engine = HawDBConcurrentEmbedded::new(fixture());
         let governor = engine.runtime_governor().clone();
-        let old_cursor = engine
-            .query_with_params_retained_node(QUERY, &parameters, RetainedQueryOptions::default())
-            .unwrap();
+        let old_cursor = warm_retained.then(|| {
+            engine
+                .query_with_params_retained_node(
+                    QUERY,
+                    &parameters,
+                    RetainedQueryOptions::default(),
+                )
+                .unwrap()
+        });
         let owner_charge = governor.retained_result_snapshot().retained_bytes;
-        assert!(owner_charge > 0);
+        assert_eq!(owner_charge > 0, warm_retained);
         for _ in 0..2 {
-            let observed = engine.with_embedded_mut(|embedded| {
-                embedded.database().retained_result_snapshot().unwrap()
-            });
-            assert_eq!(observed.retained_bytes, owner_charge);
+            let observed =
+                engine.with_embedded_mut(|embedded| embedded.database().retained_result_snapshot());
+            assert_eq!(observed.is_some(), warm_retained);
+            assert_eq!(
+                observed.map_or(0, |snapshot| snapshot.retained_bytes),
+                owner_charge
+            );
         }
 
         let mut replacement = fixture();
@@ -114,17 +125,43 @@ fn replacements_share_the_owner_governor_for_ordinary_and_retained_work() {
             .unwrap();
         let foreign_charge = foreign_governor.retained_result_snapshot().retained_bytes;
         assert!(foreign_charge > 0);
-        engine.with_embedded_mut(|embedded| {
+        let removed = engine.with_embedded_mut(|embedded| {
             if replace_handle {
-                *embedded = replacement;
+                std::mem::replace(embedded, replacement).into_database()
             } else {
-                *embedded.database_mut() =
-                    std::mem::replace(replacement.database_mut(), crate::Database::new());
+                std::mem::replace(
+                    embedded.database_mut(),
+                    std::mem::replace(replacement.database_mut(), crate::Database::new()),
+                )
             }
         });
-        let adopted = engine
-            .with_embedded_mut(|embedded| embedded.database().retained_result_snapshot().unwrap());
-        assert_eq!(adopted.retained_bytes, owner_charge);
+        let adopted =
+            engine.with_embedded_mut(|embedded| embedded.database().retained_result_snapshot());
+        assert_eq!(adopted.is_some(), warm_retained);
+        assert_eq!(
+            adopted.map_or(0, |snapshot| snapshot.retained_bytes),
+            owner_charge
+        );
+        // Do not run another administrative callback before this first read:
+        // reapplying the owner governor would hide a redirected cold candidate.
+        let graph = crate::EmbeddedGraph::from_database(removed, crate::GraphMode::WritableCutover);
+        let mut first = engine
+            .query_with_params_retained_node(QUERY, &parameters, RetainedQueryOptions::default())
+            .unwrap();
+        let first_node = first.next_node().unwrap().unwrap();
+        assert!(governor.retained_result_snapshot().retained_bytes > owner_charge);
+        assert_eq!(
+            graph
+                .runtime_governor()
+                .retained_result_snapshot()
+                .retained_bytes,
+            0
+        );
+        drop((first, first_node));
+        assert_eq!(
+            governor.retained_result_snapshot().retained_bytes,
+            owner_charge
+        );
 
         let permit = governor
             .try_admit(
@@ -166,6 +203,13 @@ fn replacements_share_the_owner_governor_for_ordinary_and_retained_work() {
         let node = current.next_node().unwrap().unwrap();
         assert!(governor.retained_result_snapshot().retained_bytes > owner_charge);
         assert_eq!(
+            graph
+                .runtime_governor()
+                .retained_result_snapshot()
+                .retained_bytes,
+            0
+        );
+        assert_eq!(
             foreign_governor.retained_result_snapshot().retained_bytes,
             foreign_charge
         );
@@ -182,6 +226,13 @@ fn replacements_share_the_owner_governor_for_ordinary_and_retained_work() {
         );
         assert_eq!(governor.snapshot().active_cpu_slots, 0);
         assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+        assert_eq!(
+            graph
+                .runtime_governor()
+                .retained_result_snapshot()
+                .retained_bytes,
+            0
+        );
     }
 }
 

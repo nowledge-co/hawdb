@@ -34,7 +34,9 @@ the same owner implementation and published-read protocol.
   ordinary, storage and retained work to the facade's original governor. Existing
   cursors keep their original snapshot and accounting, including cursors created
   before a replacement was adopted. Replacement does not create a second budget
-  for facade work or change the Tokio scheduler's governor.
+  for facade work or change the Tokio scheduler's governor. The owner's retained
+  governor candidate is fixed before the first retained read, so configuring an
+  escaped database in another host cannot redirect future facade charges.
 - A published snapshot pins schema and data, not SQL time. Each autocommit SQL
   execution and newly opened read transaction captures its own clock; repeated
   statements and internal forks within one read transaction keep its start time.
