@@ -43,6 +43,12 @@ It then builds graphs as RAGFlow's GraphRAG task does and checks that:
 - a document already merged is skipped;
 - entity resolution reaches the store and the chunks;
 - a dataset built without HawDB moves into it on first use;
+- an import that stops after committing some of its documents holds no graph:
+  the next task starts it over, and once the dataset has no graph left in the
+  document engine, the next task discards it;
+- when another process merges a document into a new dataset's store after the
+  check that it holds no graph, the refused import is ignored and the
+  document stays;
 - with HawDB turned off again, RAGFlow rebuilds the graph from the subgraph
   chunks instead of reading the view as the whole graph;
 - on random subgraphs, the store merges as RAGFlow's own ``graph_merge`` does
@@ -54,6 +60,7 @@ It then builds graphs as RAGFlow's GraphRAG task does and checks that:
 import argparse
 import asyncio
 import concurrent.futures
+import contextlib
 import hashlib
 import importlib.util
 import json
@@ -451,6 +458,51 @@ def graph_chunk(kb):
     )
 
 
+@contextlib.contextmanager
+def import_stopped_after(rows):
+    # Makes an import commit a first transaction of at most rows entities,
+    # relations and documents, and then fail before the next one.
+    from ragflow_hawdb import store as store_module
+
+    limit, run_steps = store_module._TRANSACTION_ROWS, store_module._run_steps
+    calls = []
+
+    def fail_second(tx, steps):
+        calls.append(steps)
+        if len(calls) == 2:
+            raise RuntimeError("injected failure before an import's second transaction")
+        run_steps(tx, steps)
+
+    store_module._TRANSACTION_ROWS, store_module._run_steps = rows, fail_second
+    try:
+        yield
+    finally:
+        store_module._TRANSACTION_ROWS, store_module._run_steps = limit, run_steps
+
+
+async def stop_import(utils, kb, graph):
+    # Starts moving the dataset into HawDB, stopping after all but its last
+    # document, and returns the documents the store then holds.
+    import hawdb
+
+    elements = graph.number_of_nodes() + graph.number_of_edges()
+    with import_stopped_after(elements + len(graph.graph["source_id"]) - 1):
+        try:
+            await utils.hawdb_graph_store(TENANT, kb)
+        except RuntimeError:
+            pass
+        else:
+            check(False, "the import did not stop")
+    path = os.path.join(CONFIG["hawdb_graph"]["path"], TENANT, kb)
+    database = hawdb.open(path, read_only=True)
+    try:
+        rows = database.execute("MATCH (d:Document) RETURN d.doc_id AS doc").fetchall()
+    finally:
+        database.close()
+        del database
+    return sorted(row["doc"] for row in rows)
+
+
 def log(msg=None, **_kwargs):
     LOG.append(msg or "")
 
@@ -635,6 +687,78 @@ async def scenarios(root, utils, index):
         "the imported and merged graph differs from graph_merge",
     )
     print("dataset built without HawDB: imported into HawDB, then merged")
+
+    # An import that stops after committing some of its documents holds no
+    # graph, so the next task starts it over.
+    use_hawdb(None)
+    partial = "kb-partial"
+    first = subgraph("p1", ["ALICE", "BOB"], [("ALICE", "BOB", 1.0)])
+    second = subgraph("p2", ["BOB", "CAROL"], [("BOB", "CAROL", 2.0)])
+    await build(index, partial, [first, second])
+    _, before = graph_chunk(partial)
+    use_hawdb(root)
+    held = await stop_import(utils, partial, before)
+    check(
+        held == ["p1"] and not store_of(partial).holds_graph(),
+        f"the stopped import holds {held} and counts as a graph",
+    )
+    third = subgraph("p3", ["CAROL", "DAVE"], [("CAROL", "DAVE", 1.0)])
+    await build(index, partial, [third])
+    resumed = check_chunks(partial, store_of(partial))
+    expected = utils.graph_merge(before.copy(), third, utils.GraphChange())
+    check(
+        comparable(resumed) == comparable(expected),
+        "the import started over and merged differs from graph_merge",
+    )
+    print("an import stopped after some documents: started over by the next task")
+
+    # Once the dataset has no graph left in the document engine, as after
+    # RAGFlow removed its last document, the next task discards such an import.
+    use_hawdb(None)
+    gone = "kb-gone"
+    first = subgraph("g1", ["ALICE", "BOB"], [("ALICE", "BOB", 1.0)])
+    second = subgraph("g2", ["BOB", "CAROL"], [("BOB", "CAROL", 2.0)])
+    await build(index, gone, [first, second])
+    _, before = graph_chunk(gone)
+    use_hawdb(root)
+    held = await stop_import(utils, gone, before)
+    check(held == ["g1"], f"the stopped import holds {held}")
+    DOCS.delete(
+        {"knowledge_graph_kwd": ["graph", "subgraph", "entity", "relation"]},
+        None,
+        gone,
+    )
+    store = await utils.hawdb_graph_store(TENANT, gone)
+    check(
+        not store.holds_graph() and store.get_graph() is None,
+        "the stopped import was not discarded",
+    )
+    print("an import stopped after some documents: discarded once the graph is gone")
+
+    # Another process merges a document into a new dataset's store after this
+    # process found that it holds no graph: the import of the empty graph is
+    # refused, and the store keeps the document.
+    race = "kb-race"
+    holds_graph = HawDBGraphStore.holds_graph
+    raced = []
+
+    def merged_meanwhile(self):
+        held = holds_graph(self)
+        if not raced and self.path and os.path.basename(self.path) == race:
+            raced.append(held)
+            store_of(race).merge_subgraph(subgraph("r1", ["ALICE"], []))
+        return held
+
+    HawDBGraphStore.holds_graph = merged_meanwhile
+    try:
+        store = await utils.hawdb_graph_store(TENANT, race)
+    finally:
+        HawDBGraphStore.holds_graph = holds_graph
+    check(
+        raced == [False] and store.document_ids() == ["r1"],
+        f"the import raced with a merge: {raced}, {store.document_ids()}",
+    )
+    print("a merge by another process before the first import: the import is skipped")
 
     # With HawDB turned off, get_graph rebuilds the graph from the subgraph
     # chunks rather than read the view in the graph chunk as the whole graph.

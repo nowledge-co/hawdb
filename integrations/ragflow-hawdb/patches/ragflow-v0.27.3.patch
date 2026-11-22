@@ -240,7 +240,7 @@ index 0000000..7749e74
 +    """Return True if *graph* came from a graph chunk the HawDB path wrote."""
 +    return graph.graph.get(_VIEW_MARKER[0]) == _VIEW_MARKER[1]
 diff --git a/rag/graphrag/utils.py b/rag/graphrag/utils.py
-index 42b2251..6f62b01 100644
+index 42b2251..96f868a 100644
 --- a/rag/graphrag/utils.py
 +++ b/rag/graphrag/utils.py
 @@ -34,6 +34,7 @@ from rag.nlp import rag_tokenizer, search
@@ -251,7 +251,7 @@ index 42b2251..6f62b01 100644
  
  GRAPH_FIELD_SEP = "<SEP>"
  
-@@ -527,8 +528,55 @@ async def get_graph_doc_ids(tenant_id, kb_id) -> list[str]:
+@@ -527,8 +528,58 @@ async def get_graph_doc_ids(tenant_id, kb_id) -> list[str]:
      return doc_ids
  
  
@@ -275,22 +275,25 @@ index 42b2251..6f62b01 100644
 +async def hawdb_graph_store(tenant_id, kb_id, exclude_rebuild=None):
 +    """Return the HawDB store of the graph of *kb_id*, or None if the document store keeps the graph.
 +
-+    The first time a process opens a store that holds no document, it imports
-+    the graph the document store keeps for the dataset, if there is one.
++    The first time a process opens a store that holds no graph, it imports the
++    graph the document store keeps for the dataset, if there is one. A store
++    whose import stopped partway holds no graph either: importing again starts
++    the import over, and importing an empty graph discards it.
 +    """
 +    store = graph_store_for(tenant_id, kb_id)
 +    if store is None or store.path in _HAWDB_STORES_READY:
 +        return store
-+    if not await thread_pool_exec(store.document_ids):
++    if not await thread_pool_exec(store.holds_graph):
 +        graph = await _get_graph_from_doc_store(tenant_id, kb_id, exclude_rebuild)
-+        if graph is not None:
-+            try:
-+                await thread_pool_exec(store.import_graph, graph)
-+            except ValueError:
-+                # Another process imported the graph first.
-+                if not await thread_pool_exec(store.document_ids):
-+                    raise
-+            logging.info(f"Imported the knowledge graph of dataset {kb_id} into the HawDB store at {store.path}")
++        try:
++            await thread_pool_exec(store.import_graph, nx.Graph() if graph is None else graph)
++        except ValueError:
++            # Another process imported the graph or merged a document first.
++            if not await thread_pool_exec(store.holds_graph):
++                raise
++        else:
++            if graph is not None:
++                logging.info(f"Imported the knowledge graph of dataset {kb_id} into the HawDB store at {store.path}")
 +    _HAWDB_STORES_READY.add(store.path)
 +    return store
 +
@@ -307,7 +310,7 @@ index 42b2251..6f62b01 100644
      conds = {"fields": ["content_with_weight", "removed_kwd", "source_id"], "size": 1, "knowledge_graph_kwd": ["graph"]}
      res = await settings.retriever.search(conds, search.index_name(tenant_id), [kb_id])
      if not res.total == 0:
-@@ -538,7 +586,8 @@ async def get_graph(tenant_id, kb_id, exclude_rebuild=None):
+@@ -538,7 +589,8 @@ async def get_graph(tenant_id, kb_id, exclude_rebuild=None):
                      g = json_graph.node_link_graph(json.loads(res.field[id]["content_with_weight"]), edges="edges")
                      if "source_id" not in g.graph:
                          g.graph["source_id"] = res.field[id]["source_id"]
@@ -317,7 +320,7 @@ index 42b2251..6f62b01 100644
                      g = await rebuild_graph(tenant_id, kb_id, exclude_rebuild)
                  return g
              except Exception:
-@@ -556,6 +605,10 @@ async def set_graph(tenant_id: str, kb_id: str, embd_mdl, graph: nx.Graph, chang
+@@ -556,6 +608,10 @@ async def set_graph(tenant_id: str, kb_id: str, embd_mdl, graph: nx.Graph, chang
      """
      global chat_limiter
      start = asyncio.get_running_loop().time()
@@ -328,7 +331,7 @@ index 42b2251..6f62b01 100644
  
      # Build all new chunks first (graph, subgraphs, node/edge embeddings) before
      # deleting anything.  This ensures that if embedding generation or any other
-@@ -564,7 +617,7 @@ async def set_graph(tenant_id: str, kb_id: str, embd_mdl, graph: nx.Graph, chang
+@@ -564,7 +620,7 @@ async def set_graph(tenant_id: str, kb_id: str, embd_mdl, graph: nx.Graph, chang
      chunks = [
          {
              "id": get_uuid(),
@@ -337,7 +340,7 @@ index 42b2251..6f62b01 100644
              "knowledge_graph_kwd": "graph",
              "kb_id": kb_id,
              "source_id": graph.graph.get("source_id", []),
-@@ -574,7 +627,7 @@ async def set_graph(tenant_id: str, kb_id: str, embd_mdl, graph: nx.Graph, chang
+@@ -574,7 +630,7 @@ async def set_graph(tenant_id: str, kb_id: str, embd_mdl, graph: nx.Graph, chang
      ]
  
      # generate updated subgraphs
@@ -346,7 +349,7 @@ index 42b2251..6f62b01 100644
          subgraph = graph.subgraph([n for n in graph.nodes if source in graph.nodes[n]["source_id"]]).copy()
          subgraph.graph["source_id"] = [source]
          for n in subgraph.nodes:
-@@ -624,10 +677,11 @@ async def set_graph(tenant_id: str, kb_id: str, embd_mdl, graph: nx.Graph, chang
+@@ -624,10 +680,11 @@ async def set_graph(tenant_id: str, kb_id: str, embd_mdl, graph: nx.Graph, chang
              callback(msg=f"Batch-embedded {len(_uncached_node_names)} entity names ({(len(_uncached_node_names) + _INSERT_BULK_SIZE - 1) // _INSERT_BULK_SIZE} batches of {_INSERT_BULK_SIZE}).")
      # ── end batch pre-warm ──────────────────────────────────────────────────────
  
@@ -359,7 +362,7 @@ index 42b2251..6f62b01 100644
          tasks.append(asyncio.create_task(graph_node_to_chunk(kb_id, embd_mdl, node, node_attrs, chunks, nhop_neighbors)))
          if ii % 100 == 9 and callback:
              callback(msg=f"Get embedding of nodes: {ii}/{len(change.added_updated_nodes)}")
-@@ -703,7 +757,10 @@ async def set_graph(tenant_id: str, kb_id: str, embd_mdl, graph: nx.Graph, chang
+@@ -703,7 +760,10 @@ async def set_graph(tenant_id: str, kb_id: str, embd_mdl, graph: nx.Graph, chang
      # All new chunks are ready.  Now delete old data and insert the new data.
      # Deleting only after chunks are built ensures that a crash during embedding
      # generation above does not destroy the old graph/subgraph checkpoints.
@@ -371,7 +374,7 @@ index 42b2251..6f62b01 100644
  
      if change.removed_nodes:
          BATCH_SIZE = 100
-@@ -749,7 +806,15 @@ async def set_graph(tenant_id: str, kb_id: str, embd_mdl, graph: nx.Graph, chang
+@@ -749,7 +809,15 @@ async def set_graph(tenant_id: str, kb_id: str, embd_mdl, graph: nx.Graph, chang
          callback(msg=f"set_graph removed {len(change.removed_nodes)} nodes and {len(change.removed_edges)} edges from index in {del_now - start:.2f}s.")
      start = del_now
  

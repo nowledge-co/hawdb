@@ -24,7 +24,7 @@ graph in HawDB instead::
     -[:RELATION {seq, weight, description, keywords, source_id, attributes,
                  stored_bytes}]->(:Entity)
     (:Document {doc_id, seq})
-    (:RAGFlowGraph {key, version, next_seq, written, clearing})
+    (:RAGFlowGraph {key, version, next_seq, written, clearing, importing})
 
 ``name`` is the NetworkX node, which RAGFlow keys by entity name. A graph edge
 is undirected, so the store keeps one relationship per pair of entities,
@@ -38,7 +38,9 @@ degree as RAGFlow's merge does. ``Document`` nodes record which documents the
 graph holds, in merge order, as RAGFlow's ``graph.graph["source_id"]``.
 ``seq`` keeps the order entities, relations and documents were added in.
 ``stored_bytes`` estimates a row's stored text, for paging. ``written``
-estimates the bytes written since the last checkpoint.
+estimates the bytes written since the last checkpoint. ``clearing`` and
+``importing`` mark a ``clear`` or an ``import_graph`` that spans several
+transactions and has not finished.
 
 Chunk text, chunk embeddings and the entity and relation chunks RAGFlow
 retrieves stay in RAGFlow's document engine.
@@ -67,6 +69,10 @@ thread, and closes it before returning, so RAGFlow's thread pool and its API
 and task executor processes can share one database. A process that has run a
 statement on a HawDB database holds it until it closes it, so a call that
 finds the database held by another process retries until ``busy_timeout``.
+Every call also holds an advisory lock on the file ``<path>.lock`` next to
+the database while it uses the database, and ``drop`` holds it while it
+deletes the database, so that no store in another process opens or creates a
+database that is being deleted.
 Each open loads the graph and replays the WAL written since the last
 checkpoint, so such a store runs ``CHECKPOINT`` after it has written about
 ``_CHECKPOINT_BYTES`` since the last one, and after ``clear``.
@@ -74,6 +80,7 @@ checkpoint, so such a store runs ``CHECKPOINT`` after it has written about
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import json
 import logging
@@ -90,6 +97,11 @@ import hawdb
 import networkx as nx
 from hawdb.exceptions import BranchError
 from hawdb.exceptions import Error as HawDBError
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +128,7 @@ MAX_RELATION_BYTES = 1 << 20
 DEFAULT_MAX_PATHS = 1000
 
 # A call on a path waits at most this many seconds for another process to
-# close the database.
+# finish with the database.
 DEFAULT_BUSY_TIMEOUT = 60.0
 
 # RAGFlow recomputes these node attributes from the whole graph.
@@ -167,6 +179,16 @@ _ROW_WRITE_BYTES = 256
 # that holds it.
 _DATABASE_FILE = "manifest.hawdb"
 
+# Every store on a path holds an advisory lock on the file at the path plus
+# this suffix while it uses the database, and drop() while it deletes it. The
+# file lies outside the database directory, so it guards the deletion too.
+_LOCK_SUFFIX = ".lock"
+
+# drop() renames the database directory to the path plus this suffix before
+# it deletes the files, so that a drop that stops partway leaves no partly
+# deleted database at the path. The next drop deletes what is left.
+_DROPPING_SUFFIX = ".dropping"
+
 _CONSTRAINTS = ((ENTITY_LABEL, "name"), (DOCUMENT_LABEL, "doc_id"), (META_LABEL, "key"))
 _SQL_UNIQUE = (
     "SELECT property_name FROM system.constraints WHERE subject_kind = 'node' "
@@ -180,22 +202,25 @@ _SQL_INDEXES = (
 _META = (
     "MATCH (g:RAGFlowGraph {key: 'graph'}) "
     "RETURN g.version AS version, g.next_seq AS next_seq, g.written AS written, "
-    "g.clearing AS clearing"
+    "g.clearing AS clearing, g.importing AS importing"
 )
 _CREATE_META = (
     "CREATE (:RAGFlowGraph {key: 'graph', version: $version, "
-    "next_seq: $next_seq, written: $written, clearing: $clearing})"
+    "next_seq: $next_seq, written: $written, clearing: $clearing, "
+    "importing: $importing})"
 )
 _SET_META = (
     "MATCH (g:RAGFlowGraph {key: 'graph'}) "
-    "SET g.next_seq = $next_seq, g.written = $written"
+    "SET g.next_seq = $next_seq, g.written = $written, g.importing = $importing"
 )
 _SET_CLEARING = "MATCH (g:RAGFlowGraph {key: 'graph'}) SET g.clearing = $clearing"
+_SET_IMPORTING = "MATCH (g:RAGFlowGraph {key: 'graph'}) SET g.importing = $importing"
 _RESET_WRITTEN = "MATCH (g:RAGFlowGraph {key: 'graph'}) SET g.written = 0"
 _DELETE_META = "MATCH (g:RAGFlowGraph) DELETE g"
 _CHECKPOINT = "CHECKPOINT"
 
 _DOCUMENTS = "MATCH (d:Document) RETURN d.doc_id AS doc_id, d.seq AS seq"
+_ANY_DOCUMENT = "MATCH (d:Document) RETURN d.doc_id AS doc_id LIMIT 1"
 _DOCUMENTS_IN = (
     "MATCH (d:Document) WHERE d.doc_id IN $doc_ids RETURN d.doc_id AS doc_id"
 )
@@ -372,11 +397,15 @@ class WrongThreadError(RuntimeError):
 
 
 class StoreBusyError(TimeoutError):
-    """Another process held the database for longer than ``busy_timeout``."""
+    """Another process held the database or its lock file past ``busy_timeout``."""
 
 
 class StoreFormatError(RuntimeError):
-    """The database holds a layout this store does not read, or an unfinished clear."""
+    """The database holds a layout this store does not read, or an unfinished edit.
+
+    An unfinished edit is a ``clear`` or an ``import_graph`` that stopped
+    partway; calling it again finishes it.
+    """
 
 
 @dataclasses.dataclass
@@ -404,7 +433,8 @@ class HawDBGraphStore:
 
     ``max_paths`` bounds the paths ``n_hop_paths`` returns for one entity.
     ``busy_timeout`` is how long a call on a path waits for another process to
-    close the database.
+    finish with the database: to close it, and to release the lock file next
+    to it.
     """
 
     def __init__(
@@ -582,9 +612,17 @@ class HawDBGraphStore:
         ``description`` or a ``source_id`` are skipped, as RAGFlow's
         ``tidy_graph`` purges them before a merge, and so are those whose
         ``source_id`` is empty, as RAGFlow deletes their chunks when it next
-        removes a document. The documents in
-        ``graph.graph["source_id"]`` are written last, so an import that
-        stops early holds no document, and importing again completes it.
+        removes a document.
+
+        An import that fits commits in one transaction. A larger one commits
+        in several, and the store marks the graph as being imported until the
+        last of them, which writes the last documents of
+        ``graph.graph["source_id"]``. While an import is unfinished,
+        ``holds_graph`` returns False and every other call except ``clear``
+        and ``drop`` raises ``StoreFormatError``; calling ``import_graph``
+        again deletes what the unfinished import wrote and starts over.
+        Importing a graph without nodes or documents writes nothing, except
+        that it discards an unfinished import.
         """
         documents = list(
             dict.fromkeys(
@@ -721,6 +759,24 @@ class HawDBGraphStore:
 
         return self._read(read, empty=list)
 
+    def holds_graph(self) -> bool:
+        """Whether the store holds a graph: a document, and no unfinished import.
+
+        RAGFlow imports a dataset's graph into a store that holds none. An
+        ``import_graph`` that stopped partway holds no graph until
+        ``import_graph`` runs again, whereas a foreign layout or an unfinished
+        ``clear`` raises ``StoreFormatError``, as in every other call.
+        """
+
+        def read(snapshot: Any) -> bool:
+            meta = _meta(snapshot)
+            if _import_unfinished(meta):
+                return False
+            _check_meta(meta)
+            return bool(snapshot.execute(_ANY_DOCUMENT).fetchall())
+
+        return self._read(read, empty=lambda: False)
+
     def contains_document(self, doc_id: str) -> bool:
         """Whether the graph holds ``doc_id``, as RAGFlow's ``does_graph_contains``."""
         _check_text(doc_id, "doc_id")
@@ -821,9 +877,7 @@ class HawDBGraphStore:
                 )
             return change, written
 
-        if self._path is not None and not os.path.exists(self._path):
-            return GraphChange()
-        return self._write(write)
+        return self._write(write, if_missing=GraphChange)
 
     def clear(self) -> None:
         """Delete the whole graph.
@@ -832,70 +886,54 @@ class HawDBGraphStore:
         then entities, then documents. The store first marks the graph as
         being cleared, so until a later call to ``clear`` finishes, every other
         call raises ``StoreFormatError`` instead of reading or extending a
-        partly deleted graph.
+        partly deleted graph. Clearing also discards an unfinished
+        ``import_graph``.
         """
 
         def write(database: hawdb.Database) -> tuple[None, int]:
-            with database.transaction() as tx:
-                meta = _meta(tx)
-                if meta is not None and meta["version"] != FORMAT_VERSION:
-                    raise StoreFormatError(_version_message(meta["version"]))
-                if meta is None:
-                    tx.execute(
-                        _CREATE_META,
-                        {
-                            "version": FORMAT_VERSION,
-                            "next_seq": 0,
-                            "written": 0,
-                            "clearing": True,
-                        },
-                    )
-                elif not meta["clearing"]:
-                    tx.execute(_SET_CLEARING, {"clearing": True})
-                relations = sorted(tx.execute(_RELATION_LISTING).fetchall(), key=_seq)
-                entities = sorted(tx.execute(_ENTITY_LISTING).fetchall(), key=_seq)
-                documents = sorted(tx.execute(_DOCUMENTS).fetchall(), key=_seq)
-            for listing, statement in (
-                (relations, _DELETE_RELATION_RANGE),
-                (entities, _DELETE_ENTITY_RANGE),
-                (documents, _DELETE_DOCUMENT_RANGE),
-            ):
-                for low, high in _seq_ranges(listing, _DELETE_ROWS, None):
-                    with database.transaction() as tx:
-                        tx.execute(statement, {"low": low, "high": high})
-            with database.transaction() as tx:
-                tx.execute(_DELETE_META)
             # Checkpoint after deleting a graph, so that later opens do not
             # replay the deletes.
-            deleted = len(relations) + len(entities) + len(documents)
-            return None, _CHECKPOINT_BYTES if deleted else 0
+            return None, _CHECKPOINT_BYTES if _delete_graph(database) else 0
 
-        if self._path is not None and not os.path.exists(self._path):
-            return
-        self._write(write)
+        self._write(write, if_missing=lambda: None)
 
     def drop(self) -> None:
         """Delete the database on the store's path, with every file in it.
 
         RAGFlow drops a dataset's store when it deletes the dataset, whereas
-        ``clear`` deletes the graph and keeps the database. A process that
-        still has the database open fails on its next call. The store deletes
+        ``clear`` deletes the graph and keeps the database. The store deletes
         only a directory that holds the ``manifest.hawdb`` file of a HawDB
-        database.
+        database, and only while no other process holds the database: it
+        waits up to ``busy_timeout`` for one to close it, and then raises
+        ``StoreBusyError`` without deleting anything. It holds the lock file
+        of the path meanwhile, so no store in another process opens or creates
+        the database while it is deleted. It renames the directory before it
+        deletes the files, so a drop that stops partway leaves nothing at the
+        path, and the next drop deletes what is left.
         """
         if self._path is None:
             raise TypeError("only a store opened on a path can drop its database")
-        with _path_lock(self._path):
-            if not os.path.lexists(self._path):
-                return
-            if os.path.islink(self._path) or not os.path.isfile(
-                os.path.join(self._path, _DATABASE_FILE)
-            ):
-                raise StoreFormatError(
-                    f"{self._path} is not a HawDB database, "
-                    "so the store does not delete it"
-                )
-            shutil.rmtree(self._path)
+        path = self._path
+        dropping = path + _DROPPING_SUFFIX
+        # Refuse a path that is no database before creating its lock file.
+        if os.path.lexists(path):
+            _check_database_directory(path)
+
+        def attempt(lock: _LifecycleLock) -> None:
+            if os.path.lexists(dropping):
+                _delete_dropped(dropping)
+            if os.path.lexists(path):
+                _check_database_directory(path)
+                # A process that has run a statement on the database holds it
+                # until it closes it, so this statement raises BranchError
+                # while one does. No store can open the database while this
+                # call holds the lock.
+                _call_on(path, True, _take_database)
+                os.rename(path, dropping)
+                _delete_dropped(dropping)
+            lock.delete_on_release = True
+
+        self._locked(attempt, create=False, absent=lambda: None)
 
     def _apply(
         self,
@@ -923,10 +961,20 @@ class HawDBGraphStore:
         }
 
         def write(database: hawdb.Database) -> tuple[None, int]:
+            deleted = 0
+            if documents is not None:
+                with database.read_transaction() as snapshot:
+                    unfinished = _import_unfinished(_meta(snapshot))
+                if unfinished:
+                    # An earlier import stopped partway: delete what it wrote
+                    # and start over.
+                    deleted = _delete_graph(database)
+            # Checkpoint after deleting what an unfinished import wrote.
+            restart = _CHECKPOINT_BYTES if deleted else 0
             with database.transaction() as tx:
                 meta = _meta(tx)
                 _check_meta(meta)
-                if documents is not None and _document_ids(tx):
+                if documents is not None and tx.execute(_ANY_DOCUMENT).fetchall():
                     raise ValueError(
                         "import_graph needs a store that holds no document"
                     )
@@ -1011,22 +1059,43 @@ class HawDBGraphStore:
                         rows.append({"doc_id": doc, "seq": next_seq})
                         next_seq += 1
                     steps.append((_CREATE_DOCUMENTS, rows))
-                written = _update_meta(
-                    tx, meta, next_seq, sum(_written(items) for _, items in steps)
-                )
                 batches = _transaction_batches(steps)
+                if documents is not None and not any(items for _, items in steps):
+                    # Importing an empty graph writes nothing.
+                    return None, restart
+                # An import over several transactions is unfinished until the
+                # last of them, which writes the last documents.
+                importing = documents is not None and len(batches) > 1
+                written = _update_meta(
+                    tx,
+                    meta,
+                    next_seq,
+                    sum(_written(items) for _, items in steps),
+                    importing=importing,
+                )
                 _run_steps(tx, batches[0])
-            for batch in batches[1:]:
+            for number, batch in enumerate(batches[1:], start=2):
                 with database.transaction() as tx:
                     _run_steps(tx, batch)
-            return None, written
+                    if importing and number == len(batches):
+                        tx.execute(_SET_IMPORTING, {"importing": False})
+            return None, written + restart
 
-        self._write(write)
+        # An empty import creates no database on a missing path.
+        empty = documents is not None and not (documents or names or pairs)
+        self._write(write, if_missing=(lambda: None) if empty else None)
 
-    def _write(self, operation: Callable[[hawdb.Database], tuple[_T, int]]) -> _T:
+    def _write(
+        self,
+        operation: Callable[[hawdb.Database], tuple[_T, int]],
+        *,
+        if_missing: Callable[[], _T] | None = None,
+    ) -> _T:
         # operation returns its result and the bytes written since the last
         # checkpoint. A store over an open database leaves checkpoints to
-        # HawDB, which checkpoints a database that stays open by itself.
+        # HawDB, which checkpoints a database that stays open by itself. On a
+        # missing path, if_missing() is the result if it is given, and
+        # otherwise the call creates the database.
         if self._database is not None:
             self._check_thread()
             if not self._schema_ready:
@@ -1046,7 +1115,9 @@ class HawDBGraphStore:
                     logger.warning("CHECKPOINT of %s failed: %s", self._path, error)
             return result
 
-        return self._with_file(write_then_checkpoint, read_only=False, empty=None)
+        return self._with_file(
+            write_then_checkpoint, read_only=False, if_missing=if_missing
+        )
 
     def _read(self, operation: Callable[[Any], _T], *, empty: Callable[[], _T]) -> _T:
         def in_snapshot(database: hawdb.Database) -> _T:
@@ -1056,42 +1127,76 @@ class HawDBGraphStore:
         if self._database is not None:
             self._check_thread()
             return in_snapshot(self._database)
-        return self._with_file(in_snapshot, read_only=True, empty=empty)
+        return self._with_file(in_snapshot, read_only=True, if_missing=empty)
 
     def _with_file(
         self,
         operation: Callable[[hawdb.Database], _T],
         *,
         read_only: bool,
-        empty: Callable[[], _T] | None,
+        if_missing: Callable[[], _T] | None,
     ) -> _T:
+        # Runs operation on the database at the path, or returns if_missing()
+        # if there is none and if_missing is given.
         assert self._path is not None
+        path = self._path
+
+        def attempt(_lock: _LifecycleLock) -> _T:
+            if not os.path.exists(path):
+                if if_missing is not None:
+                    return if_missing()
+                # Another process may have dropped the database, so the one
+                # this call creates needs its schema.
+                _SCHEMA_READY.discard(path)
+            return _call_on(path, read_only, operation)
+
+        return self._locked(attempt, create=if_missing is None, absent=if_missing)
+
+    def _locked(
+        self,
+        attempt: Callable[[_LifecycleLock], _T],
+        *,
+        create: bool,
+        absent: Callable[[], _T] | None,
+    ) -> _T:
+        # Runs attempt while holding the lock file of the path, and runs it
+        # again while it raises BranchError because another process holds the
+        # database, until busy_timeout. Unless create is set, the lock file is
+        # created only next to a database, and a path with neither returns
+        # absent() without locking.
+        assert self._path is not None
+        lock = _LifecycleLock(self._path)
         deadline = time.monotonic() + self._busy_timeout
         delay = 0.01
         with _path_lock(self._path):
             while True:
-                if read_only and not os.path.exists(self._path):
-                    assert empty is not None
-                    return empty()
-                if not read_only:
-                    if not os.path.exists(self._path):
-                        # Another process may have dropped the database, so
-                        # the one this call creates needs its schema.
-                        _SCHEMA_READY.discard(self._path)
-                    os.makedirs(os.path.dirname(self._path), exist_ok=True)
                 try:
-                    return _call_on(self._path, read_only, operation)
+                    locked = lock.acquire(deadline, create=create)
+                except _LockTimeout:
+                    raise self._busy_error() from None
+                if not locked:
+                    assert absent is not None
+                    return absent()
+                busy = None
+                try:
+                    return attempt(lock)
                 except BranchError as error:
                     if not str(error).startswith("branch is busy"):
                         raise
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise StoreBusyError(
-                            f"another process held {self._path} for more than "
-                            f"{self._busy_timeout:g} seconds"
-                        ) from error
+                    busy = error
+                finally:
+                    lock.release()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise self._busy_error() from busy
                 time.sleep(min(delay, remaining))
                 delay = min(delay * 2, 1.0)
+
+    def _busy_error(self) -> StoreBusyError:
+        return StoreBusyError(
+            f"another process held {self._path} for more than "
+            f"{self._busy_timeout:g} seconds"
+        )
 
     def _check_thread(self) -> None:
         if not getattr(self._owner, "created_here", False):
@@ -1129,6 +1234,154 @@ def _path_lock(path: str) -> threading.Lock:
         return _PATH_LOCKS.setdefault(path, threading.Lock())
 
 
+class _LockTimeout(Exception):
+    """The lock file stayed locked until the deadline."""
+
+
+class _LifecycleLock:
+    """The advisory lock on the lock file next to a database.
+
+    Every store on the path holds it while it uses the database, and
+    ``drop`` while it deletes the database. An advisory file lock excludes
+    other processes and other open files of the same process, and the system
+    releases it when a process exits.
+    """
+
+    def __init__(self, path: str) -> None:
+        self._database = path
+        self._path = path + _LOCK_SUFFIX
+        self._fd: int | None = None
+        # Set by drop once it has deleted the database, so that releasing the
+        # lock also deletes the lock file.
+        self.delete_on_release = False
+
+    def acquire(self, deadline: float, *, create: bool) -> bool:
+        """Lock the lock file, and return False if there is nothing to lock.
+
+        Unless ``create`` is set, a lock file is created only next to a
+        database, and a path with neither returns False. Raises
+        ``_LockTimeout`` if the file stays locked until ``deadline``.
+        """
+        delay = 0.01
+        while True:
+            fd = self._open(create)
+            if fd is None:
+                return False
+            try:
+                locked = _try_lock(fd)
+                if locked and _is_file_at(fd, self._path):
+                    self._fd, fd = fd, None
+                    self.delete_on_release = False
+                    return True
+                if locked:
+                    # A drop deleted the lock file while this call waited for
+                    # it, so lock the file now at the path.
+                    _unlock(fd)
+                    continue
+            finally:
+                # Closes the file unless this call now holds its lock.
+                if fd is not None:
+                    os.close(fd)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise _LockTimeout
+            time.sleep(min(delay, remaining))
+            delay = min(delay * 2, 1.0)
+
+    def release(self) -> None:
+        fd, self._fd = self._fd, None
+        assert fd is not None
+        delete = self.delete_on_release
+        try:
+            if delete and os.name != "nt":
+                # A call that then locks the file it opened earlier finds that
+                # it is no longer at the path.
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(self._path)
+            _unlock(fd)
+        finally:
+            # Closing the file releases the lock even if a step above failed.
+            os.close(fd)
+        if delete and os.name == "nt":
+            # Windows deletes no file another process has open; a call that
+            # waits for the lock keeps the file.
+            with contextlib.suppress(OSError):
+                os.unlink(self._path)
+
+    def _open(self, create: bool) -> int | None:
+        flags = os.O_RDWR | os.O_CREAT
+        if create:
+            os.makedirs(os.path.dirname(self._path), exist_ok=True)
+            return os.open(self._path, flags, 0o644)
+        try:
+            return os.open(self._path, os.O_RDWR)
+        except FileNotFoundError:
+            if not os.path.lexists(self._database):
+                return None
+        # A database without a lock file yet, such as one only HawDB opened.
+        return os.open(self._path, flags, 0o644)
+
+
+if os.name == "nt":
+
+    def _try_lock(fd: int) -> bool:
+        os.lseek(fd, 0, os.SEEK_SET)
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        except OSError:
+            return False
+        return True
+
+    def _unlock(fd: int) -> None:
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+
+else:
+
+    def _try_lock(fd: int) -> bool:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        return True
+
+    def _unlock(fd: int) -> None:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+def _is_file_at(fd: int, path: str) -> bool:
+    try:
+        named = os.stat(path)
+    except FileNotFoundError:
+        return False
+    held = os.fstat(fd)
+    return (named.st_dev, named.st_ino) == (held.st_dev, held.st_ino)
+
+
+def _take_database(database: hawdb.Database) -> None:
+    # Any statement takes the database for this handle until it closes it,
+    # and raises BranchError while another handle, in this process or
+    # another, holds it.
+    database.execute(_META).fetchall()
+
+
+def _check_database_directory(path: str) -> None:
+    if os.path.islink(path) or not os.path.isfile(os.path.join(path, _DATABASE_FILE)):
+        raise StoreFormatError(
+            f"{path} is not a HawDB database, so the store does not delete it"
+        )
+
+
+def _delete_dropped(dropping: str) -> None:
+    # Deletes a database directory a drop renamed, now or before it stopped.
+    if os.path.islink(dropping) or not os.path.isdir(dropping):
+        raise StoreFormatError(
+            f"{dropping} is not a database a drop renamed, "
+            "so the store does not delete it"
+        )
+    shutil.rmtree(dropping)
+
+
 def _ensure_schema(database: hawdb.Database) -> None:
     for label, key in _CONSTRAINTS:
         unique = {
@@ -1155,10 +1408,25 @@ def _check_meta(meta: dict[str, Any] | None) -> None:
         return
     if meta["version"] != FORMAT_VERSION:
         raise StoreFormatError(_version_message(meta["version"]))
+    if meta["importing"]:
+        raise StoreFormatError(
+            "an earlier import_graph() into this store did not finish; call "
+            "import_graph() again to start it over, or clear()"
+        )
     if meta["clearing"]:
         raise StoreFormatError(
             "an earlier clear() of this graph did not finish; call clear() again"
         )
+
+
+def _import_unfinished(meta: dict[str, Any] | None) -> bool:
+    # Whether an import_graph stopped partway, including while it deleted what
+    # an earlier one wrote.
+    if meta is None or not meta["importing"]:
+        return False
+    if meta["version"] != FORMAT_VERSION:
+        raise StoreFormatError(_version_message(meta["version"]))
+    return True
 
 
 def _version_message(version: Any) -> str:
@@ -1169,10 +1437,15 @@ def _version_message(version: Any) -> str:
 
 
 def _update_meta(
-    tx: Any, meta: dict[str, Any] | None, next_seq: int, written: int
+    tx: Any,
+    meta: dict[str, Any] | None,
+    next_seq: int,
+    written: int,
+    *,
+    importing: bool = False,
 ) -> int:
-    # Records the next seq and the bytes written since the last checkpoint,
-    # and returns the latter.
+    # Records the next seq, the bytes written since the last checkpoint and
+    # whether an import is under way, and returns the bytes.
     _check_meta(meta)
     total = written + ((meta["written"] or 0) if meta else 0)
     if meta is None:
@@ -1183,11 +1456,51 @@ def _update_meta(
                 "next_seq": next_seq,
                 "written": total,
                 "clearing": False,
+                "importing": importing,
             },
         )
     else:
-        tx.execute(_SET_META, {"next_seq": next_seq, "written": total})
+        tx.execute(
+            _SET_META, {"next_seq": next_seq, "written": total, "importing": importing}
+        )
     return total
+
+
+def _delete_graph(database: hawdb.Database) -> int:
+    # Deletes every relation, entity and document over several transactions,
+    # and then the meta node, which marks the graph as being cleared until
+    # then. Returns how many it deleted.
+    with database.transaction() as tx:
+        meta = _meta(tx)
+        if meta is not None and meta["version"] != FORMAT_VERSION:
+            raise StoreFormatError(_version_message(meta["version"]))
+        if meta is None:
+            tx.execute(
+                _CREATE_META,
+                {
+                    "version": FORMAT_VERSION,
+                    "next_seq": 0,
+                    "written": 0,
+                    "clearing": True,
+                    "importing": False,
+                },
+            )
+        elif not meta["clearing"]:
+            tx.execute(_SET_CLEARING, {"clearing": True})
+        relations = sorted(tx.execute(_RELATION_LISTING).fetchall(), key=_seq)
+        entities = sorted(tx.execute(_ENTITY_LISTING).fetchall(), key=_seq)
+        documents = sorted(tx.execute(_DOCUMENTS).fetchall(), key=_seq)
+    for listing, statement in (
+        (relations, _DELETE_RELATION_RANGE),
+        (entities, _DELETE_ENTITY_RANGE),
+        (documents, _DELETE_DOCUMENT_RANGE),
+    ):
+        for low, high in _seq_ranges(listing, _DELETE_ROWS, None):
+            with database.transaction() as tx:
+                tx.execute(statement, {"low": low, "high": high})
+    with database.transaction() as tx:
+        tx.execute(_DELETE_META)
+    return len(relations) + len(entities) + len(documents)
 
 
 def _written(rows: list[dict[str, Any]]) -> int:

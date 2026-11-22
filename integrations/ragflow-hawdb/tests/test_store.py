@@ -748,6 +748,8 @@ def test_a_store_on_a_missing_path_reads_empty_and_creates_nothing(tmp_path):
     assert store.n_hop_paths(["A"]) == {"A": []}
     assert store.document_change(["doc1"]) == GraphChange()
     assert store.remove_document("doc1") == GraphChange()
+    assert store.holds_graph() is False
+    store.import_graph(nx.Graph())
     store.clear()
     store.drop()
 
@@ -969,27 +971,155 @@ def test_import_graph_needs_a_store_without_documents(store):
     assert store.document_ids() == ["doc1"]
 
 
+@contextlib.contextmanager
+def failing_before_transaction(number):
+    # Makes an edit over several transactions fail before it runs the steps of
+    # its transaction number, after the earlier ones committed.
+    run_steps = store_module._run_steps
+    calls = 0
+
+    def failing(tx, steps):
+        nonlocal calls
+        calls += 1
+        if calls == number:
+            raise HawDBError(f"injected failure before transaction {number}")
+        run_steps(tx, steps)
+
+    store_module._run_steps = failing
+    try:
+        yield
+    finally:
+        store_module._run_steps = run_steps
+
+
+UNFINISHED_IMPORT = r"import_graph\(\) into this store did not finish"
+
+
+def test_an_import_stopped_after_some_documents_starts_over(store):
+    # With the default limits, 5,001 documents take two transactions, and the
+    # second one fails after the first committed 4,997 of them.
+    documents = [f"doc{i:05}" for i in range(5001)]
+    graph = nx.Graph()
+    graph.add_node("HUB", entity_type="T", description="hub", source_id=documents)
+    graph.add_node(
+        "LEAF", entity_type="T", description="leaf", source_id=documents[-1:]
+    )
+    graph.add_edge(
+        "HUB",
+        "LEAF",
+        description="d",
+        keywords=[],
+        weight=1.0,
+        source_id=documents[-1:],
+    )
+    graph.graph["source_id"] = documents
+
+    with failing_before_transaction(2), pytest.raises(HawDBError, match="injected"):
+        store.import_graph(graph)
+
+    committed = [row["doc_id"] for row in cypher(store, store_module._DOCUMENTS)]
+    assert 0 < len(committed) < len(documents)
+    assert meta(store)["importing"] is True
+    assert store.holds_graph() is False
+    # Nothing reads the partial graph or adds to it, so a document whose record
+    # the import has not written yet cannot be merged into what it wrote.
+    calls = [
+        store.get_graph,
+        store.document_ids,
+        lambda: store.contains_document(documents[0]),
+        lambda: store.n_hop_paths(["HUB"]),
+        lambda: store.document_change(documents[:1]),
+        lambda: store.merge_subgraph(subgraph(documents[-1], ["HUB"])),
+        lambda: store.remove_document(documents[0]),
+        lambda: store.apply_change(graph, GraphChange(added_updated_nodes={"HUB"})),
+    ]
+    for call in calls:
+        with pytest.raises(StoreFormatError, match=UNFINISHED_IMPORT):
+            call()
+
+    store.import_graph(graph)
+
+    assert store.holds_graph() is True
+    assert meta(store)["importing"] is False
+    assert store.document_ids() == documents
+    assert snapshot(store.get_graph()) == snapshot(graph)
+    # Every document was merged once: merging one of them again is skipped.
+    assert store.merge_subgraph(subgraph(documents[-1], ["HUB"])) == GraphChange()
+    assert store.get_graph().nodes["HUB"]["description"] == "hub"
+
+
 @path_only
-def test_an_interrupted_import_holds_no_document_and_completes_on_retry(
-    store, monkeypatch
-):
+def test_an_import_that_stops_while_starting_over_finishes_on_retry(store, monkeypatch):
     names = [f"N{i:02}" for i in range(15)]
     graph = subgraph("doc1", names, [(a, b, 1.0) for a, b in pairwise(names)])
     graph.graph["source_id"] = ["doc1", "doc2"]
     monkeypatch.setattr(store_module, "_TRANSACTION_ROWS", 4)
-    recorder = Recorder(monkeypatch)
-    recorder.fail = lambda statement: statement == store_module._CREATE_DOCUMENTS
+    with failing_before_transaction(3), pytest.raises(HawDBError, match="injected"):
+        store.import_graph(graph)
+    assert cypher(store, store_module._DOCUMENTS) == []
+    assert cypher(store, "MATCH (n:Entity) RETURN n.name AS name")
 
+    # Starting over deletes what the import wrote, and that stops too.
+    monkeypatch.setattr(store_module, "_DELETE_ROWS", 2)
+    recorder = Recorder(monkeypatch)
+    recorder.fail = lambda statement: statement == store_module._DELETE_ENTITY_RANGE
     with pytest.raises(HawDBError, match="injected"):
         store.import_graph(graph)
-
     recorder.fail = None
-    assert store.document_ids() == []
-    assert store.get_graph().number_of_nodes() > 0
+    assert meta(store)["importing"] is True and meta(store)["clearing"] is True
+    assert store.holds_graph() is False
+    with pytest.raises(StoreFormatError, match=UNFINISHED_IMPORT):
+        store.get_graph()
+
     recorder.events.clear()
     store.import_graph(graph)
+
     assert recorder.transactions() > 1
+    assert store.document_ids() == ["doc1", "doc2"]
     assert snapshot(store.get_graph()) == snapshot(graph)
+    # Starting over deleted rows, so the call checkpointed.
+    assert "CHECKPOINT" in recorder.statements("autocommit")
+
+
+def test_importing_an_empty_graph_discards_an_unfinished_import(store, monkeypatch):
+    graph = subgraph("doc1", ["A", "B", "C"], [("A", "B", 1.0), ("B", "C", 1.0)])
+    graph.graph["source_id"] = ["doc1", "doc2"]
+    monkeypatch.setattr(store_module, "_TRANSACTION_ROWS", 4)
+    with failing_before_transaction(2), pytest.raises(HawDBError, match="injected"):
+        store.import_graph(graph)
+    assert store.holds_graph() is False
+
+    store.import_graph(nx.Graph())
+
+    assert meta(store) is None
+    assert store.get_graph() is None
+    assert store.holds_graph() is False
+    store.merge_subgraph(subgraph("doc3", ["X"]))
+    assert store.document_ids() == ["doc3"]
+
+
+@path_only
+def test_an_import_that_fits_one_transaction_never_marks_the_graph(store, monkeypatch):
+    recorder = Recorder(monkeypatch)
+
+    store.import_graph(subgraph("doc1", ["A", "B"], [("A", "B", 1.0)]))
+
+    assert recorder.transactions() == 1
+    assert store_module._SET_IMPORTING not in recorder.statements("write")
+    assert meta(store)["importing"] is False
+    assert store.holds_graph() is True
+
+
+def test_holds_graph_once_a_document_is_merged_or_imported(store):
+    assert store.holds_graph() is False
+    store.merge_subgraph(subgraph("doc1", ["A"]))
+    assert store.holds_graph() is True
+    store.remove_document("doc1")
+    assert store.holds_graph() is False
+    store.import_graph(subgraph("doc2", ["B"]))
+    assert store.holds_graph() is True
+    store.clear()
+    assert store.holds_graph() is False
 
 
 def test_clear_deletes_the_graph_and_the_store_starts_over(store):
@@ -1022,6 +1152,7 @@ def test_an_interrupted_clear_fails_every_call_until_clear_finishes(store, monke
     calls = [
         store.get_graph,
         store.document_ids,
+        store.holds_graph,
         lambda: store.contains_document("doc1"),
         lambda: store.n_hop_paths(["N01"]),
         lambda: store.document_change(["doc1"]),
@@ -1050,11 +1181,13 @@ def test_a_database_with_another_layout_is_refused(store):
     calls = [
         store.get_graph,
         store.document_ids,
+        store.holds_graph,
         lambda: store.contains_document("doc1"),
         lambda: store.n_hop_paths(["A"]),
         lambda: store.document_change(["doc1"]),
         lambda: store.merge_subgraph(subgraph("doc2", ["B"])),
         lambda: store.remove_document("doc1"),
+        lambda: store.import_graph(subgraph("doc3", ["C"])),
         store.clear,
     ]
     for call in calls:
@@ -1107,7 +1240,8 @@ def test_drop_deletes_the_database_and_a_later_write_creates_it_again(store):
 
     store.drop()
 
-    assert not os.path.exists(store.path)
+    # Neither the database, its lock file nor the renamed directory is left.
+    assert os.listdir(os.path.dirname(store.path)) == []
     assert store.get_graph() is None
     store.drop()
     store.merge_subgraph(subgraph("doc2", ["A"]))
@@ -1158,6 +1292,7 @@ def test_drop_deletes_only_a_hawdb_database(tmp_path):
     with pytest.raises(StoreFormatError, match="not a HawDB database"):
         HawDBGraphStore(other).drop()
     assert (other / "notes.txt").read_text() == "keep"
+    assert os.listdir(other.parent) == ["kb"]
 
     real = tmp_path / "real"
     HawDBGraphStore(real).merge_subgraph(subgraph("doc1", ["A"]))
@@ -1166,6 +1301,35 @@ def test_drop_deletes_only_a_hawdb_database(tmp_path):
     with pytest.raises(StoreFormatError, match="not a HawDB database"):
         HawDBGraphStore(link).drop()
     assert HawDBGraphStore(real).document_ids() == ["doc1"]
+    assert not (tmp_path / "link.lock").exists()
+
+
+@path_only
+def test_a_drop_that_stops_partway_leaves_nothing_at_the_path(store, monkeypatch):
+    store.merge_subgraph(subgraph("doc1", ["A"]))
+    dropping = store.path + ".dropping"
+    rmtree = shutil.rmtree
+
+    def rmtree_partly(path, *args, **kwargs):
+        # Deletes a file and stops, as a process killed while deleting would.
+        os.remove(os.path.join(path, "manifest.hawdb"))
+        raise OSError("injected failure while deleting")
+
+    monkeypatch.setattr(shutil, "rmtree", rmtree_partly)
+    with pytest.raises(OSError, match="injected"):
+        store.drop()
+    monkeypatch.setattr(shutil, "rmtree", rmtree)
+
+    assert not os.path.exists(store.path)
+    assert os.path.isdir(dropping)
+    assert store.get_graph() is None
+    store.merge_subgraph(subgraph("doc2", ["B"]))
+    assert store.document_ids() == ["doc2"]
+
+    # The next drop deletes what the stopped one left, and the new database.
+    store.drop()
+
+    assert os.listdir(os.path.dirname(store.path)) == []
 
 
 def test_only_a_store_on_a_path_drops_its_database():
@@ -1405,13 +1569,32 @@ database.close()
 """
 
 
+# Holds the lock file of a database the way a store in another process does
+# while it uses the database, including before it has run a statement on it.
+LOCKER = """
+import sys
+import time
+from ragflow_hawdb import store
+lock = store._LifecycleLock(sys.argv[1])
+assert lock.acquire(time.monotonic() + 60, create=True)
+print("holding", flush=True)
+sys.stdin.read()
+lock.release()
+"""
+
+# The directory this module imported ragflow_hawdb from, for other processes.
+PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(store_module.__file__)))
+
+
 @contextlib.contextmanager
-def held(path):
+def in_another_process(script, path):
+    paths = [PACKAGE_ROOT, os.environ.get("PYTHONPATH", "")]
     holder = subprocess.Popen(
-        [sys.executable, "-c", HOLDER, os.fspath(path)],
+        [sys.executable, "-c", script, os.fspath(path)],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         text=True,
+        env={**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, paths))},
     )
     try:
         assert holder.stdout.readline().strip() == "holding"
@@ -1421,6 +1604,22 @@ def held(path):
             holder.stdin.close()
         holder.wait(timeout=60)
         holder.stdout.close()
+
+
+def held(path):
+    return in_another_process(HOLDER, path)
+
+
+def locked(path):
+    return in_another_process(LOCKER, path)
+
+
+def files_under(path):
+    return sorted(
+        os.path.relpath(os.path.join(root, name), path)
+        for root, directories, files in os.walk(path)
+        for name in directories + files
+    )
 
 
 def test_a_call_gives_up_on_a_database_another_process_holds(tmp_path):
@@ -1453,6 +1652,111 @@ def test_a_call_proceeds_once_the_other_process_closes_the_database(tmp_path):
 
     assert waited >= 0.4
     assert store.document_ids() == ["doc1", "doc2"]
+
+
+def test_drop_waits_for_another_process_to_close_the_database(tmp_path):
+    store = HawDBGraphStore(tmp_path / "kb", busy_timeout=0.3)
+    store.merge_subgraph(subgraph("doc1", ["A"]))
+
+    with held(store.path) as holder:
+        before = files_under(tmp_path)
+        start = time.monotonic()
+        with pytest.raises(StoreBusyError):
+            store.drop()
+        assert time.monotonic() - start >= 0.3
+        # Nothing was deleted, renamed or created.
+        assert files_under(tmp_path) == before
+
+        # A drop that waits deletes the database once the other process
+        # closes it.
+        release = threading.Timer(0.5, holder.stdin.close)
+        release.start()
+        start = time.monotonic()
+        reopened(store, busy_timeout=60).drop()
+        waited = time.monotonic() - start
+        release.join()
+
+    assert waited >= 0.4
+    assert os.listdir(tmp_path) == []
+
+
+def test_a_store_in_another_process_keeps_drop_and_other_calls_waiting(tmp_path):
+    store = HawDBGraphStore(tmp_path / "kb", busy_timeout=0.3)
+    store.merge_subgraph(subgraph("doc1", ["A"]))
+
+    # The other process holds the lock file, as a store does from before it
+    # opens the database until after it closes it.
+    with locked(store.path) as locker:
+        before = files_under(tmp_path)
+        calls = [
+            store.drop,
+            store.get_graph,
+            lambda: store.merge_subgraph(subgraph("doc2", ["B"])),
+        ]
+        for call in calls:
+            with pytest.raises(StoreBusyError):
+                call()
+        assert files_under(tmp_path) == before
+
+        release = threading.Timer(0.5, locker.stdin.close)
+        release.start()
+        start = time.monotonic()
+        reopened(store, busy_timeout=60).drop()
+        waited = time.monotonic() - start
+        release.join()
+
+    assert waited >= 0.4
+    assert os.listdir(tmp_path) == []
+
+
+def test_the_lock_file_is_unlocked_even_if_deleting_it_fails(tmp_path, monkeypatch):
+    path = os.fspath(tmp_path / "kb")
+    lock = store_module._LifecycleLock(path)
+    assert lock.acquire(time.monotonic(), create=True)
+    lock.delete_on_release = True
+
+    def refuse(target, *args, **kwargs):
+        raise PermissionError(f"injected refusal to delete {target}")
+
+    monkeypatch.setattr(os, "unlink", refuse)
+    with contextlib.suppress(PermissionError):
+        lock.release()
+    monkeypatch.undo()
+
+    # The file is still there, and nothing holds it: another lock on it, which
+    # gives up at once if it is held, takes it.
+    again = store_module._LifecycleLock(path)
+    assert again.acquire(time.monotonic(), create=False)
+    again.release()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows deletes no file that is open")
+def test_a_lock_on_a_lock_file_a_drop_deleted_is_taken_again(tmp_path, monkeypatch):
+    path = os.fspath(tmp_path / "kb")
+    dropping = store_module._LifecycleLock(path)
+    assert dropping.acquire(time.monotonic(), create=True)
+    dropping.delete_on_release = True
+    try_lock = store_module._try_lock
+    tried = []
+
+    def released_meanwhile(fd):
+        # The drop deletes the lock file and unlocks it after this call opened
+        # the file and before it locks it.
+        if not tried:
+            dropping.release()
+        tried.append(fd)
+        return try_lock(fd)
+
+    monkeypatch.setattr(store_module, "_try_lock", released_meanwhile)
+    waiter = store_module._LifecycleLock(path)
+    assert waiter.acquire(time.monotonic() + 10, create=True)
+
+    # It locked the file it had opened, found that the drop had deleted it, and
+    # locked the file now at the path. (Inode numbers are not compared: a file
+    # system may give the new file the number of the deleted one.)
+    assert len(tried) == 2
+    assert store_module._is_file_at(waiter._fd, path + ".lock")
+    waiter.release()
 
 
 def test_view_graph_keeps_what_the_knowledge_graph_view_shows():
@@ -1549,6 +1853,7 @@ def test_the_patch_records_its_ragflow_revision_and_calls_this_package():
     assert {
         "merge_subgraph",
         "apply_change",
+        "holds_graph",
         "import_graph",
         "n_hop_paths",
         "remove_document",

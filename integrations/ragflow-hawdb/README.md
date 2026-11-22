@@ -45,10 +45,10 @@ hawdb_graph:
 
 Each dataset then keeps its graph at `<path>/<tenant id>/<dataset id>`.
 `max_paths_per_entity` bounds the paths stored with each entity, and
-`busy_timeout` is how many seconds a call waits for another process to close a
-database. Every RAGFlow process that builds, retrieves or deletes graphs, the
-API server and each task executor, must see the same directory. In RAGFlow's
-Docker setup, `conf/service_conf.yaml` is rendered from
+`busy_timeout` is how many seconds a call waits for another process to finish
+with a database. Every RAGFlow process that builds, retrieves or deletes
+graphs, the API server and each task executor, must see the same directory.
+In RAGFlow's Docker setup, `conf/service_conf.yaml` is rendered from
 `docker/service_conf.yaml.template` when the container starts, so add the
 section there and mount a volume at the path. Without `hawdb_graph.path`, the
 patched RAGFlow keeps the graph in its document engine as before.
@@ -61,8 +61,9 @@ The patch changes five files:
   into the store in one transaction, and writes the change of an entity
   resolution to it.
 - `rag/graphrag/utils.py` reads the graph from the store, imports a graph the
-  document engine holds on first use, and takes each entity's n-hop paths from
-  the store when it writes the entity and relation chunks.
+  document engine holds on first use, starting over an import that stopped
+  partway, and takes each entity's n-hop paths from the store when it writes
+  the entity and relation chunks.
 - `api/db/services/document_service.py` removes a deleted document from the
   store.
 - `api/apps/services/dataset_api_service.py` drops the store of a deleted
@@ -142,13 +143,14 @@ print(graph.nodes["ACME"]["source_id"])
 | --- | --- |
 | `merge_subgraph(subgraph)` | Merges one extracted subgraph in one transaction and returns RAGFlow's `GraphChange`; a subgraph whose documents the store holds is skipped. |
 | `apply_change(graph, change)` | Writes a change made to the whole graph, such as entity resolution. |
-| `import_graph(graph)` | Writes a whole graph into a store that holds no document. |
+| `import_graph(graph)` | Writes a whole graph into a store that holds no document, or starts over an import that stopped partway. |
+| `holds_graph()` | Whether the store holds a graph: a document, and no unfinished import. |
 | `n_hop_paths(names, n_hop=2, max_paths=None)` | The paths RAGFlow's `n_neighbor` walks, with a bounded Cypher traversal. |
 | `get_graph()` | The whole graph, or None. |
 | `document_ids()`, `contains_document(doc_id)` | The documents the graph holds, in merge order. |
 | `document_change(doc_ids)` | Every entity and relation that names the documents. |
 | `remove_document(doc_id)` | Removes one document in one transaction. |
-| `clear()`, `drop()` | Deletes the graph, or the whole database. |
+| `clear()`, `drop()` | Deletes the graph, or the whole database once no other process holds it. |
 
 `ragflow_hawdb.ragflow` holds what the patch calls besides the store:
 `store_for(root, tenant_id, kb_id)`, which checks the ids and opens the store
@@ -160,7 +162,7 @@ of one dataset, and `view_graph(graph)`.
 (:Entity {name, seq, entity_type, description, source_id, attributes, stored_bytes})
   -[:RELATION {seq, weight, description, keywords, source_id, attributes, stored_bytes}]->(:Entity)
 (:Document {doc_id, seq})
-(:RAGFlowGraph {key, version, next_seq, written, clearing})
+(:RAGFlowGraph {key, version, next_seq, written, clearing, importing})
 ```
 
 `name` is the NetworkX node, which RAGFlow keys by entity name, and is unique.
@@ -173,7 +175,9 @@ RAGFlow derives them from the whole graph, so the store keeps neither and
 `get_graph` sets `rank` to the degree as `graph_merge` does. `Document` nodes
 record the graph's documents in merge order. `seq` keeps the order in which
 entities, relations and documents were added. `RAGFlowGraph` records the
-layout version and the store's own bookkeeping.
+layout version and the store's own bookkeeping, including `clearing` and
+`importing`, which mark a `clear` or an `import_graph` that spans several
+transactions until it finishes.
 
 Every statement is parameterized: names, ids and values are bound as
 parameters, and statement text comes only from constants in
@@ -187,6 +191,20 @@ share a database. Calls on one path in a process take turns. Across processes,
 a process that has run a statement on a HawDB database holds it until it closes
 it, so a call that finds the database held retries until `busy_timeout`, then
 raises `StoreBusyError`, a `TimeoutError`.
+
+HawDB takes a database only at a handle's first statement, so each call also
+holds an advisory lock on `<path>.lock`, a file next to the database, from
+before it opens the database until after it closes it, and waits up to
+`busy_timeout` for it as well. `drop` holds the lock while it deletes the
+database. Before deleting anything, it opens the database and runs one
+statement, which fails while any other handle holds the database, in this
+process or another; it retries until `busy_timeout`, then raises
+`StoreBusyError` and deletes nothing. It then renames the directory to
+`<path>.dropping` and deletes that, so a drop that stops partway leaves
+nothing at the path, and the next drop deletes what is left. A process that
+opens the database with `hawdb.open` rather than through a store takes no
+lock: `drop` waits while such a process holds the database, but nothing stops
+one from opening it after `drop` has checked.
 
 A store can also wrap an open `hawdb.Database`, as in the tests. It then runs
 only on the thread that opened the database and raises `WrongThreadError`
@@ -204,9 +222,13 @@ right after one.
 
 ## Moving in and out
 
-The first time a process uses a dataset's store, a store without documents
+The first time a process uses a dataset's store, a store that holds no graph
 imports the graph the document engine holds, if there is one, so an existing
-dataset moves into HawDB on first use without re-extraction.
+dataset moves into HawDB on first use without re-extraction. A store holds no
+graph while it has no document or an unfinished import, so an import that
+stopped partway, for instance because its process was killed, starts over the
+next time a process uses the store, and is discarded if the document engine
+no longer holds a graph.
 
 The `subgraph` chunks stay in the document engine as extraction wrote them. If
 `hawdb_graph.path` is removed again, RAGFlow finds a `graph` chunk that holds a
@@ -227,9 +249,13 @@ it, and entity resolution is lost until it runs again.
   more than 100,000 version entries. A merge, a document removal, or a single
   entity or relation edit that needs more fails without writing anything.
   `apply_change`, which writes entity resolution, `import_graph` and `clear`
-  split a larger edit over several transactions: calling `apply_change` or
-  `import_graph` again with the same arguments completes it, and until a
-  `clear` finishes, every other call raises `StoreFormatError`.
+  split a larger edit over several transactions. Calling `apply_change` again
+  with the same arguments completes it. An import that stops partway is
+  started over by the next `import_graph`, which first deletes what it wrote,
+  or discarded by `clear`; a clear that stops partway is finished by the next
+  `clear`. Until then, `holds_graph()` is False after an unfinished import, and
+  every other call except `drop` raises `StoreFormatError` instead of reading
+  or extending a partial graph.
 - An entity or relation must name at least one document: the store refuses an
   empty `source_id`, and `import_graph` skips such entities and relations and
   those without a description, as RAGFlow's `tidy_graph` purges them.
@@ -291,15 +317,16 @@ pytest integrations/ragflow-hawdb/tests
 ```
 
 The tests use in-memory and file-backed databases, start a second Python
-process to hold a database, and need no network access, RAGFlow or document
-engine.
+process to hold a database or its lock file, and need no network access,
+RAGFlow or document engine.
 
 `patches/verify_patch.py` is a manual check of the patch against a RAGFlow
 checkout. It loads the patched `rag/graphrag` modules with in-memory stand-ins
 for the document engine, Redis and the models, builds graphs as RAGFlow's
 GraphRAG task does, including failed and retried merges, entity resolution, a
-dataset moving into HawDB and HawDB turned off again, and compares random
-merges with RAGFlow's own `graph_merge` and `n_neighbor`. From the repository
+dataset moving into HawDB, an import that stopped partway and HawDB turned off
+again, and compares random merges with RAGFlow's own `graph_merge` and
+`n_neighbor`. From the repository
 root, with a RAGFlow checkout next to it:
 
 ```bash
