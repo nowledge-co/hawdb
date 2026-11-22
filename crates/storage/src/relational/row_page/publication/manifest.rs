@@ -27,11 +27,12 @@ mod checkpoint;
 pub(super) use checkpoint::{encode_manifest_with_work_context, root_set_digest_with_work_context};
 
 use crate::relational::codec::IndexSchemaLayout;
+/// Every row-page manifest magic is this prefix followed by the row-page
+/// format version as two ASCII digits (`SKRPGM05`). Readers parse the version
+/// so a manifest from a newer release is refused as an unsupported format
+/// rather than reported as corruption (#1901).
+const MANIFEST_MAGIC_PREFIX: &[u8; 6] = b"SKRPGM";
 const MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM05";
-const LEGACY_V4_MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM04";
-const LEGACY_V3_MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM03";
-const LEGACY_V2_MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM02";
-const LEGACY_V1_MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM01";
 const ROW_PAGE_FORMAT_VERSION: u16 = 5;
 const MANIFEST_VERSION: u16 = 1;
 /// generation, allocated pages, allocated bytes, live pages, live bytes.
@@ -319,22 +320,40 @@ fn decode_manifest(
     decode_manifest_inner(encoded, config, None)
 }
 
+/// The row-page format version named by a manifest magic, or `None` when the
+/// header is not a row-page manifest magic at all (wrong prefix, non-digit
+/// version, or version 0).
+fn manifest_format_version(encoded: &[u8]) -> Option<u16> {
+    let magic = encoded.get(..8)?;
+    if &magic[..6] != MANIFEST_MAGIC_PREFIX {
+        return None;
+    }
+    let (tens, ones) = (magic[6], magic[7]);
+    if !tens.is_ascii_digit() || !ones.is_ascii_digit() {
+        return None;
+    }
+    let version = u16::from(tens - b'0') * 10 + u16::from(ones - b'0');
+    (version != 0).then_some(version)
+}
+
 fn decode_manifest_inner(
     encoded: &[u8],
     config: RelationalRowPagePublicationConfig,
     work: Option<&crate::background::CheckpointWorkContext>,
 ) -> Result<RelationalRowPageRootManifest, RelationalRowPagePublicationError> {
     let unit = start_unit(work)?;
-    let layout = match encoded.get(..8) {
-        Some(magic) if magic == MANIFEST_MAGIC => IndexSchemaLayout::Combined,
-        Some(magic) if magic == LEGACY_V4_MANIFEST_MAGIC => IndexSchemaLayout::Include,
-        Some(magic) if magic == LEGACY_V3_MANIFEST_MAGIC => IndexSchemaLayout::Predicate,
-        Some(magic) if magic == LEGACY_V2_MANIFEST_MAGIC => IndexSchemaLayout::Full,
-        Some(magic) if magic == LEGACY_V1_MANIFEST_MAGIC => {
+    let layout = match manifest_format_version(encoded) {
+        Some(ROW_PAGE_FORMAT_VERSION) => IndexSchemaLayout::Combined,
+        Some(4) => IndexSchemaLayout::Include,
+        Some(3) => IndexSchemaLayout::Predicate,
+        Some(2) => IndexSchemaLayout::Full,
+        // Fixed-slot v1 databases must be recreated; a newer release's
+        // manifest needs a newer reader. Neither is corruption.
+        Some(found) if found == 1 || found > ROW_PAGE_FORMAT_VERSION => {
             return Err(RelationalRowPagePublicationError::UnsupportedFormat(
                 hawdb_core::error::StorageFormatError::UnsupportedVersion {
                     format: hawdb_core::RELATIONAL_ROW_PAGE_FORMAT,
-                    found: 1,
+                    found,
                     supported: ROW_PAGE_FORMAT_VERSION,
                 },
             ))

@@ -4124,6 +4124,21 @@ Focused replays: `cargo test --locked -p hawdb-storage compatibility_tests`,
 `cargo test --locked -p hawdb-storage append_wal_versions`, and
 `cargo test --locked -p hawdb --test branch_project_open storage_format`.
 
+Newer-than-supported headers (#1901) extend the same owners. Storage units
+`relational::row_page::publication::tests::newer_row_page_manifest_is_unsupported_not_corrupt`
+and `wal::frame::tests::newer_wal_header_is_unsupported_format_not_corruption`
+pin that `SKRPGM06`/`SKRPGM99` and `SKWALB02`/`SKWALB99` are typed
+`UnsupportedVersion` refusals (whatever the rest of the header holds), while
+version 0, non-digit versions and other prefixes stay corruption.
+`branch_project_open` `storage_format::newer_row_page_manifest_is_unsupported_format_not_corruption`
+and `storage_format::newer_wal_file_header_is_unsupported_format_without_repair`
+assert the public `HawDBError::UnsupportedStorageFormat` from strict and
+torn-tail-repair opens (writable and read-only), readiness and doctor
+planning, with every database file byte-for-byte unchanged. No lane, fixture,
+feature matrix or deadline changes. Replay with
+`cargo test --locked -p hawdb-storage --lib newer_` and
+`cargo test --locked -p hawdb --test branch_project_open newer_`.
+
 
 ### Full Cypher PEG continuation
 

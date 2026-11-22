@@ -420,3 +420,134 @@ fn unsupported_full_checkpoint_preserves_recovery_files() {
         assert_eq!(files(&project.0), before);
     }
 }
+
+#[test]
+fn newer_row_page_manifest_is_unsupported_format_not_corruption() {
+    let project = Project::new();
+    let mut catalog = hawdb_core::Catalog::default();
+    let mut store = GraphStore::open(&project.0, &mut catalog).unwrap();
+    store
+        .commit_relational_transaction(&mut catalog, view_transaction())
+        .unwrap();
+    store.checkpoint(&catalog).unwrap();
+    drop(store);
+    let manifest_path = project.0.join("manifest.hawdb");
+    let mut manifest =
+        hawdb_storage::durable_manifest::DurableManifest::load(&manifest_path).unwrap();
+    let binding = manifest
+        .relational_row_generation_artifacts
+        .as_mut()
+        .unwrap();
+    let path = project.0.join(
+        hawdb_storage::relational::relational_row_page_manifest_generation_file(binding.generation),
+    );
+    // A later release (#1901) writes `SKRPGM06`; the durable manifest binds
+    // its exact bytes, so only the row-page reader can refuse it.
+    let mut encoded = std::fs::read(&path).unwrap();
+    encoded[..8].copy_from_slice(b"SKRPGM06");
+    let digest = hawdb_integrity::integrity_digest(&encoded);
+    binding.manifest_artifact.encoded_crc32c = digest.crc32c.get();
+    binding.manifest_artifact.encoded_sha256 = digest.sha256;
+    std::fs::write(path, encoded).unwrap();
+    manifest.write(&manifest_path).unwrap();
+    seed_unpublished_recovery_evidence(&project.0);
+    let before = files(&project.0);
+    let expected = StorageFormatError::UnsupportedVersion {
+        format: hawdb::RELATIONAL_ROW_PAGE_FORMAT,
+        found: 6,
+        supported: 5,
+    };
+    assert_refusal(
+        DatabaseDoctor::plan_wal_tail_repair(&project.0, WalDoctorOptions::default()).unwrap_err(),
+        &expected,
+    );
+    assert_eq!(files(&project.0), before);
+    // Every open mode reports the typed refusal, never a storage-integrity
+    // failure, and none quarantines, repairs or rewrites the database: a
+    // retry, or a newer reader, still finds it intact.
+    for (recovery_mode, read_only) in [
+        (hawdb::RecoveryMode::Strict, false),
+        (hawdb::RecoveryMode::Strict, true),
+        (hawdb::RecoveryMode::AutoRepairTornTail, false),
+    ] {
+        assert_refusal(
+            Database::open_with_config(
+                &project.0,
+                DatabaseConfig {
+                    read_only,
+                    recovery_mode,
+                    ..Default::default()
+                },
+            )
+            .unwrap_err(),
+            &expected,
+        );
+        assert_eq!(files(&project.0), before);
+    }
+}
+
+#[test]
+fn newer_wal_file_header_is_unsupported_format_without_repair() {
+    let project = Project::new();
+    let mut database = Database::open(&project.0).unwrap();
+    database
+        .query_sql("CREATE TABLE retained (id BIGINT PRIMARY KEY)")
+        .unwrap();
+    let main = main_id(&database);
+    drop(database);
+    let directory = project.0.join("branches").join(main.to_string());
+    let head_path = directory.join("branch.head");
+    let mut head = hawdb_storage::branch_head::read_branch_head(&head_path).unwrap();
+    let wal = directory.join(hawdb_storage::artifact_files::wal_generation_file(
+        head.active_wal.generation,
+    ));
+    // A later release writes `SKWALB02` and authenticates that prefix in the
+    // branch head it publishes; the header checksum is intact, so only the
+    // format version distinguishes it from the current WAL.
+    let mut encoded = std::fs::read(&wal).unwrap();
+    encoded[..8].copy_from_slice(b"SKWALB02");
+    let checksum = hawdb_integrity::crc32c(&encoded[..24]).get();
+    encoded[24..28].copy_from_slice(&checksum.to_le_bytes());
+    let prefix = usize::try_from(head.active_wal.byte_length).unwrap();
+    head.active_wal.sha256 = hawdb_integrity::integrity_digest(&encoded[..prefix]).sha256;
+    std::fs::write(&wal, encoded).unwrap();
+    std::fs::write(&head_path, head.encode().unwrap()).unwrap();
+    let before = files(&project.0);
+    let expected = StorageFormatError::UnsupportedVersion {
+        format: hawdb::WAL_FILE_FORMAT,
+        found: 2,
+        supported: 1,
+    };
+    // Neither strict recovery nor torn-tail repair treats the newer header as
+    // damage to quarantine, truncate or rewrite.
+    for (recovery_mode, read_only) in [
+        (hawdb::RecoveryMode::Strict, false),
+        (hawdb::RecoveryMode::Strict, true),
+        (hawdb::RecoveryMode::AutoRepairTornTail, false),
+    ] {
+        let error = match Database::open_with_config(
+            &project.0,
+            DatabaseConfig {
+                read_only,
+                recovery_mode,
+                ..Default::default()
+            },
+        ) {
+            Ok(mut database) => database.query_sql("SELECT * FROM retained").unwrap_err(),
+            Err(error) => error,
+        };
+        assert_refusal(error, &expected);
+        assert_eq!(files(&project.0), before);
+    }
+    let options =
+        hawdb::EmbeddedStoreOpenOptions::graph_only(&project.0, hawdb::GraphMode::WritableCutover);
+    let Err(error) = hawdb::EmbeddedStore::open_with_options(options) else {
+        panic!("readiness accepted incompatible storage");
+    };
+    assert_refusal(error, &expected);
+    assert_refusal(
+        DatabaseDoctor::plan_wal_tail_repair(&project.0, WalDoctorOptions::default()).unwrap_err(),
+        &expected,
+    );
+    assert_eq!(files(&project.0), before);
+}

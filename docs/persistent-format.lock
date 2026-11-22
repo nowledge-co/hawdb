@@ -63,11 +63,8 @@ crates/storage/src/relational/overflow/publication/manifest.rs const MANIFEST_VE
 crates/storage/src/relational/row_page/delta/codec.rs const MANIFEST_MAGIC: &[u8; 8] = b"SKRDMF01";
 crates/storage/src/relational/row_page/delta/codec.rs const RUN_MAGIC: &[u8; 8] = b"SKRDLT01";
 crates/storage/src/relational/row_page/delta/codec.rs const FORMAT_VERSION: u16 = 2;
+crates/storage/src/relational/row_page/publication/manifest.rs const MANIFEST_MAGIC_PREFIX: &[u8; 6] = b"SKRPGM";
 crates/storage/src/relational/row_page/publication/manifest.rs const MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM05";
-crates/storage/src/relational/row_page/publication/manifest.rs const LEGACY_V4_MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM04";
-crates/storage/src/relational/row_page/publication/manifest.rs const LEGACY_V3_MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM03";
-crates/storage/src/relational/row_page/publication/manifest.rs const LEGACY_V2_MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM02";
-crates/storage/src/relational/row_page/publication/manifest.rs const LEGACY_V1_MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM01";
 crates/storage/src/relational/row_page/publication/manifest.rs const ROW_PAGE_FORMAT_VERSION: u16 = 5;
 crates/storage/src/relational/row_page/publication/manifest.rs const MANIFEST_VERSION: u16 = 1;
 crates/storage/src/relational/row_page.rs const ROW_PAGE_MAGIC: &[u8; 8] = b"SKINROW1";
@@ -79,6 +76,8 @@ crates/storage/src/stable_identity.rs const SELECTOR_MAGIC: &[u8; 8] = b"SKSIDSL
 crates/storage/src/stable_identity.rs const FORMAT_VERSION: u16 = 1;
 crates/storage/src/store/wal_fence.rs const MAGIC: &[u8; 8] = b"HAWFENC1";
 crates/storage/src/wal/frame.rs pub const WAL_BINARY_MAGIC: &[u8; 8] = b"SKWALB01";
+crates/storage/src/wal/frame.rs pub const WAL_BINARY_FORMAT_VERSION: u16 = 1;
+crates/storage/src/wal/frame.rs const WAL_BINARY_MAGIC_PREFIX: &[u8; 6] = b"SKWALB";
 crates/search/src/cjk_tokenizer.rs pub(super) const ANALYZER_FORMAT_VERSION: &[u8] = b"hawdb-search-analyzer-v3-jieba-0.11.0-search-han-ngrams";
 crates/search/src/consumer/generation_metadata.rs const MAGIC: &[u8; 8] = b"HAWCGM02";
 crates/search/src/lexical_readiness.rs pub const SEARCH_LEXICAL_QUALIFICATION_PROTOCOL_VERSION: u64 = 2;
@@ -107,3 +106,4 @@ crates/core/src/error/storage_format.rs pub const RELATIONAL_CHECKPOINT_LAYOUT_F
 crates/core/src/error/storage_format.rs pub const APPEND_WAL_FORMAT: &str = "append WAL";
 crates/core/src/error/storage_format.rs pub const LOGICAL_DUMP_FORMAT: &str = "logical dump";
 crates/core/src/error/storage_format.rs pub const SEARCH_PROJECTION_MANIFEST_FORMAT: &str = "search projection manifest";
+crates/core/src/error/storage_format.rs pub const WAL_FILE_FORMAT: &str = "WAL file";

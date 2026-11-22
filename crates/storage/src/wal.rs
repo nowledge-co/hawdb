@@ -292,6 +292,11 @@ impl WalRecordCursor {
         if filled == 0 {
             return Ok(WalOpenOutcome::MissingHeader);
         }
+        // A newer WAL format is not damage: refuse it before the torn or
+        // corrupt header outcomes, which recovery and the doctor may repair.
+        if let Some(refusal) = frame::binary_wal_header_format_refusal(&header[..filled]) {
+            return Err(refusal);
+        }
         if filled < header.len() {
             return Ok(WalOpenOutcome::HeaderTorn {
                 reason: "binary WAL file header is truncated".to_string(),
