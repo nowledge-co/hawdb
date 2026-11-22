@@ -264,6 +264,24 @@ The companion executables are `shiro-storage`, `shiro-append`, and `shiro-parser
 are manual/local only. Neither tool belongs in CI or scheduled workflows; the
 normal CI smoke dependency graph excludes the local fuzz executables.
 
+### Guided SQL access plans
+
+`shiro qpg --seed 7 --cases 12` runs a SQLancer-inspired query plan guidance
+experiment. Both schedules run the same seeded SQL and parameters with the
+same query budget. The fixed schedule rotates fixtures every eight queries.
+The guided schedule mutates schema or data after two consecutive executions
+without a new physical access pattern. Fixtures cover an unindexed scan,
+secondary and covering indexes, and skewed nullable keys.
+
+Novelty uses only operators observed in a completed execution and their
+covering and row-fetch flags. Each result is checked against the independent
+fixture model before its plan contributes to the inventory. Reports include
+the selected fixtures, statements, typed parameters, and exact failing setup.
+Replay by rerunning the same seed and budget. The experiment measures physical
+access patterns on this query family. See [SQLancer Query Plan Guidance](https://github.com/sqlancer/sqlancer/blob/main/docs/QueryPlanGuidance.md).
+
+### Capability models and replay
+
 The `capabilities` oracle rotates five bounded generated models through every
 ordinary query campaign. `capability_coverage` counts executed and successfully
 verified families; a generated family name alone is not a passing observation.

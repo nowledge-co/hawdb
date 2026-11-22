@@ -2791,6 +2791,10 @@ versus cache hits, cold build cost and required target inventory.
   scratch is cleaned. Replay indexes 1/2 for the disk modes. Source rows remain
   resident as required by materialized views; this is file recovery evidence,
   not out-of-core view support or crash/power-loss qualification.
+- Local opt-in SQL query plan guidance compares typed results and executed
+  access pattern novelty under equal guided and fixed query budgets.
+  Replay with `cargo test --locked --manifest-path tools/shiro/Cargo.toml
+  --lib plan_guidance` or `shiro qpg --seed 7 --cases 12`.
 - MVCC: `make mvcc-fuzz` defaults to 30 seconds of local transaction histories.
   `MVCC_FUZZ_ARGS="--mode pessimistic"` instead runs two pessimistic
   transactions on worker threads and also checks lock waits, deadlock victims,
