@@ -346,6 +346,7 @@ pub(super) fn keyless(case: &Case, run: &mut Run) -> Result<()> {
         &[],
     )?;
     const READ: &str = "SELECT bucket, score, note FROM events";
+    super::compound::check(case, run)?;
     let before = bag_rows(&model);
     let actual = run.sql(&mut db, "initial_bag", READ, &[])?;
     run.equal("initial_bag", &actual, &before, false)?;

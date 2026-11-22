@@ -330,6 +330,13 @@ same failure signature. Passing cases cannot be shrunk. A reproduced mismatch
 returns exit 1; malformed/unsupported replay returns exit 2. Legacy campaign
 seed/index replay remains available; v5 progress cannot resume as v6 coverage.
 
+Keyless capability cases also check SQL compound queries with independent
+Rust models. The set-operation model counts nullable keys for UNION,
+INTERSECT and EXCEPT, including their ALL forms. Recursive UNION uses a
+visited set to verify reachability through cycles. Bounded recursive UNION
+ALL keeps every walk through duplicate edges and compares its depth and
+endpoint as a bag. Exact statements and parameters are retained for replay.
+
 The parser byte campaign uses a corpus derived from the Cypher, relational SQL, and SQL/PGQ test
 suites. It keeps the non-ASCII keyword-probe and excessive-nesting regressions as exact seeds, then
 alternates arbitrary byte strings with deterministic byte mutations of the corpus. Every input is

@@ -2786,6 +2786,11 @@ versus cache hits, cold build cost and required target inventory.
   oracle fails; `SHIRO_SECONDS=30` adds a local time budget. Explicit `--cases`
   and `--case-index` support finite verification/replay. See
   [tools/shiro](../tools/shiro/README.md).
+- The local Shiro library lane models compound SQL queries with nullable bags
+  and bounded Rust graph traversal. It covers distinct and ALL set operations,
+  recursive UNION over cycles, and recursive UNION ALL with path multiplicity.
+  Replay with `cargo test --locked --manifest-path tools/shiro/Cargo.toml
+  --lib compound_query_models` or a `keyless_bag` capability case.
 - SQL maintenance and ranges: every Shiro case compares backfilled projection,
   grouped/global COUNT/SUM/BIGINT-and-TEXT extrema and indexed view reads with an
   unindexed reference after random INSERT/UPSERT/UPDATE/DELETE, commit, rollback,
