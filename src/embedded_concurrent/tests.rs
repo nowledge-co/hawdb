@@ -55,14 +55,20 @@ fn admitted_reads_complete_while_commit_owner_is_held() {
     let (release, resume) = mpsc::channel();
     let writer = std::thread::spawn(move || {
         concurrent.with_autocommit_exclusive(|database| {
-            database.query("MATCH (n:Item) SET n.value = 2")?;
-            database.query_sql("UPDATE items SET value = 2")?;
-            held.send(()).unwrap();
+            let staged = database
+                .query("MATCH (n:Item) SET n.value = 2")
+                .and_then(|_| database.query_sql("UPDATE items SET value = 2 WHERE value = 1"));
+            held.send(staged.as_ref().map(|_| ()).map_err(ToString::to_string))
+                .unwrap();
+            staged?;
             resume.recv().unwrap();
             database.query_sql("SELECT value FROM items")
         })
     });
-    acquired.recv_timeout(Duration::from_secs(10)).unwrap();
+    acquired
+        .recv_timeout(Duration::from_secs(10))
+        .unwrap()
+        .unwrap();
     let reader = engine.clone();
     let (done, completed) = mpsc::channel();
     let read = std::thread::spawn(move || {
