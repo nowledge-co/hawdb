@@ -120,6 +120,14 @@ its seed/variant and compares ordinary, TopN and Sort-plus-Limit results with
 an independent model covering runtime timezone reads, NULL/duplicate sort
 keys, reversed candidate order, pagination and empty results. Matching errors
 still fail differential qualification rather than count as plan agreement.
+
+Use `shiro qualify bounded-order --seed 7 --case-index 1` to generate a
+Cypher pagination case and execute ordinary, TopN, and Sort-plus-Limit plans.
+Cases vary ties, NULL keys, offsets, and empty inputs. Each variant receives
+the same parameters, snapshot and statement clock. The report retains the
+fixture, statement and variant settings. A successful run must include a
+different executable plan with identical ordered results. It reports
+same-plan agreements separately.
 Plan-fingerprint novelty is reported as coverage telemetry and never changes a correctness verdict.
 The differential reducer first minimizes graph mutations and then typed query AST nodes. It accepts
 a candidate only when the same failure signature still triggers, so a setup, parse, or execution

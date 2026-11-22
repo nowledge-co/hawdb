@@ -3995,6 +3995,13 @@ coverage. The manual workload prerequisite now has concrete owners:
   --lib temporal_candidate_models` and `--lib clock_reading_variants`.
   No existing case mapping, feature, profile, timeout or lane is removed.
 
+  The local Shiro optimizer qualification lane also checks generated
+  bounded-order cases with ties, NULLs, pagination and empty inputs, and
+  requires a different executed plan on the same pinned snapshot.
+  Replay with `cargo test --locked --manifest-path tools/shiro/Cargo.toml
+  --lib generated_bounded_order` or `shiro qualify bounded-order --seed 7
+  --case-index 1`.
+
 All three are included in local `//tools/shiro:shiro_tests`; no ordinary CI,
 schedule, profile override or performance gate is added. Cargo replay uses
 `cargo test --locked --manifest-path tools/query-workloads/Cargo.toml` and
