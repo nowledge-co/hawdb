@@ -14,6 +14,8 @@ use hawdb::{Database, QueryOutput, Value};
 use serde_json::{json, Value as Json};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod compound;
+
 pub const PROTOCOL: &str = "shiro-capabilities-v1";
 pub const FAMILIES: &[&str] = &[
     "decimal_arithmetic",
