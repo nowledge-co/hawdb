@@ -43,13 +43,14 @@ struct ExpectedError {
 #[serde(rename_all = "snake_case")]
 enum Kind {
     Int,
+    NullableInt,
     Text,
 }
 
 // Only the bounded integer/ASCII-word fixtures selected below use this decoder.
 // Aligned psql output cannot distinguish blank strings from NULL, or preserve
 // arbitrary surrounding text whitespace. Do not extend this decoder to those
-// cases; blank and interior-whitespace cells are rejected below.
+// text cases. Only an explicitly nullable integer can decode a blank cell.
 fn expected_table(text: &str, kinds: &[Kind]) -> (Vec<String>, Vec<Vec<Value>>) {
     let mut lines = text.lines();
     let columns = lines
@@ -74,7 +75,10 @@ fn expected_table(text: &str, kinds: &[Kind]) -> (Vec<String>, Vec<Vec<Value>>) 
                 .iter()
                 .zip(kinds)
                 .map(|(cell, kind)| match kind {
-                    Kind::Int => Value::Int(cell.parse().expect("expected integer cell")),
+                    Kind::NullableInt if cell.is_empty() => Value::Null,
+                    Kind::Int | Kind::NullableInt => {
+                        Value::Int(cell.parse().expect("expected integer cell"))
+                    }
                     Kind::Text => {
                         assert!(!cell.is_empty() && cell.bytes().all(|c| c.is_ascii_alphabetic()));
                         Value::String((*cell).to_owned())
@@ -95,7 +99,7 @@ fn upstream_case(id: &str) {
     let expectations: Expectations =
         serde_json::from_slice(&fs::read(root.join("data/hawdb-expectations.json")).unwrap())
             .unwrap();
-    assert_eq!(expectations.cases.len(), 19);
+    assert_eq!(expectations.cases.len(), 29);
     let expected = expectations
         .cases
         .iter()
@@ -196,3 +200,20 @@ regression!(
     non_projected_order_key,
     "adapted/select_implicit/non-projected-order-key"
 );
+
+regression!(fromless_in_match, "subselect/fromless-in-match");
+regression!(fromless_not_in_match, "subselect/fromless-not-in-match");
+regression!(fromless_in_miss, "subselect/fromless-in-miss");
+regression!(subselect_constant, "adapted/subselect/constant-membership");
+regression!(
+    subselect_uncorrelated,
+    "adapted/subselect/uncorrelated-membership"
+);
+regression!(subselect_nested, "adapted/subselect/nested-membership");
+regression!(
+    subselect_correlated,
+    "adapted/subselect/correlated-membership"
+);
+regression!(recursive_with_sum, "with/recursive-sum");
+regression!(subselect_row_null, "adapted/subselect/row-not-in-null");
+regression!(subselect_empty_null, "adapted/subselect/empty-not-in-null");

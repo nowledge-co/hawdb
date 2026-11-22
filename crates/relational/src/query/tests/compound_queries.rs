@@ -622,6 +622,116 @@ fn exists_and_in_subqueries_preserve_correlation_rows_duplicates_and_null_truth(
 }
 
 #[test]
+fn exists_binds_limits_and_skips_unneeded_projection() {
+    let state = state();
+    let sql = "SELECT id FROM numbers WHERE EXISTS (\
+                   SELECT 1 / (id - id) FROM numbers LIMIT $1 OFFSET $2\
+               ) ORDER BY id";
+    for (limit, offset, expected) in [(0, 0, 0), (2, 1, 3), (2, 3, 0)] {
+        let output = query_with_limits(
+            &state,
+            sql,
+            &[Value::Int(limit), Value::Int(offset)],
+            batched_index_join_limits(),
+        )
+        .unwrap();
+        assert_eq!(output.rows.len(), expected, "LIMIT {limit} OFFSET {offset}");
+    }
+    assert!(query(
+        &state,
+        "SELECT id FROM numbers WHERE EXISTS (SELECT DISTINCT n FROM numbers OFFSET 2)"
+    )
+    .rows
+    .is_empty());
+    assert!(query(
+        &state,
+        "SELECT id FROM numbers WHERE EXISTS (\
+             SELECT 1 FROM numbers INTERSECT SELECT 2 FROM numbers\
+         )"
+    )
+    .rows
+    .is_empty());
+    assert_eq!(
+        query(
+            &state,
+            "SELECT id FROM numbers WHERE EXISTS (SELECT COUNT(*) FROM numbers WHERE id = 99)"
+        )
+        .rows
+        .len(),
+        3
+    );
+}
+
+#[test]
+fn in_subquery_arity_resolves_visible_ctes_before_catalog_tables() {
+    let state = state();
+    for query_text in [
+        "SELECT id FROM numbers WHERE id IN (\
+             WITH numbers(wanted) AS (VALUES (1)) SELECT * FROM numbers\
+         )",
+        "SELECT id FROM numbers WHERE id IN (\
+             WITH numbers(wanted) AS (VALUES (1)), copy AS (SELECT * FROM numbers)\
+             SELECT * FROM copy\
+         )",
+    ] {
+        assert_eq!(
+            values(&query(&state, query_text)),
+            vec![vec![Value::Int(1)]]
+        );
+    }
+}
+
+#[test]
+fn deterministic_scalar_in_reuses_one_bounded_hash_table_and_tracks_memory() {
+    let state = state();
+    let right = (100..132)
+        .chain([1, 2, 3, 3])
+        .map(|value| format!("({value})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!("SELECT id FROM numbers WHERE id IN (VALUES {right}) ORDER BY id");
+    let limits = RelationalQueryLimits {
+        // Admits 36 RHS rows, one hash build and three probes. A scan would
+        // need at least 33 candidate comparisons for each outer row.
+        max_candidate_work: 80,
+        ..batched_index_join_limits()
+    };
+    let output = query_with_limits(&state, &sql, &[], limits).unwrap();
+    assert_eq!(output.rows.len(), 3);
+    assert!(output.access_path.name.contains("hashed membership"));
+    let report = output
+        .blocking_operator_memory_reports
+        .iter()
+        .find(|report| report.operator == "SubqueryPredicateExec")
+        .unwrap();
+    assert!(report.peak_tracked_bytes > 0);
+
+    let sql = format!("SELECT id FROM numbers WHERE id = 1 AND id IN (VALUES (1), {right})");
+    let limits = RelationalQueryLimits {
+        max_candidate_work: 40,
+        ..limits
+    };
+    let output = query_with_limits(&state, &sql, &[], limits).unwrap();
+    assert_eq!(values(&output), vec![vec![Value::Int(1)]]);
+    assert!(!output.access_path.name.contains("hashed membership"));
+
+    for predicate in [
+        "label IN (VALUES ('a'), (NULL))",
+        "NOT (label NOT IN (VALUES ('a'), (NULL)))",
+    ] {
+        let sql = format!("SELECT id FROM numbers WHERE {predicate}");
+        assert_eq!(values(&query(&state, &sql)), vec![vec![Value::Int(1)]]);
+    }
+    assert_eq!(
+        values(&query(
+            &state,
+            "SELECT id FROM numbers WHERE id IN (VALUES (CAST(1 AS DOUBLE PRECISION)))"
+        )),
+        vec![vec![Value::Int(1)]]
+    );
+}
+
+#[test]
 fn set_operations_preserve_duplicates_nulls_precedence_and_branch_tails() {
     let state = state();
     assert_eq!(

@@ -42,7 +42,7 @@ Separately named `adapted/` cases may attach explicit fixture-only `execute_sql`
 to a source step. Both backends execute that same SQL; the report retains its
 original/effective SQL and adaptation reason. Raw upstream failures remain.
 
-### Existing SQL selection
+### HawDB-only SQL selection
 
 The additional selection keeps the upstream query text unchanged:
 
@@ -60,6 +60,16 @@ The additional selection keeps the upstream query text unchanged:
   the same setup and syntax. The optional CLI retains SQLSTATE `42803` mapping.
 - `adapted/select_implicit/non-projected-order-key`: ordering by an input column
   omitted from the projection, preserving both result order and duplicate rows.
+- `subselect/`: three stock queries for matching and nonmatching scalar
+  membership on a FROM-less implicit row.
+- `adapted/subselect/`: six stock queries for constant, uncorrelated, nested
+  and correlated membership, row `NOT IN` with partial NULLs, and scalar
+  `NOT IN` over an empty result with a nullable left operand. The eight-row
+  fixture stores the unused `f3` column as BIGINT to preserve the integer
+  INSERTs. The two NULL cases use ordinary CREATE TABLE inside their isolated
+  schemas in place of CREATE TEMP TABLE.
+- `with/recursive-sum`: the stock recursive CTE that sums the integers from 1
+  through 100.
 
 The latter two fixtures use the original, already unique `a` column as a BIGINT
 primary key, BIGINT for `b`, TEXT for CHAR columns and explicit INSERT targets.
@@ -72,19 +82,14 @@ not counted as passes.
 Each expected-output range must echo the exact selected query and belong to a
 checksum-verified source. Assertions preserve column names, value kinds,
 duplicate counts and explicit ordering. The small expected-output decoder is
-limited to these integer and known ASCII-word text fixtures. It rejects blank
-and interior-whitespace cells and other scalar kinds. Aligned output cannot
-recover arbitrary surrounding text whitespace or distinguish empty strings
-from NULL, so this selection does not claim those cases.
-
-This is a regression-only selection: it does not expand the engine's accepted
-SQL surface. Unselected queries, including literal-left int8 comparisons,
-casts, arithmetic and repeated output names, are not coverage. Grouping with
-ORDER BY remains unsupported; no ordering clause is removed to make a case pass.
+limited to these integer and known ASCII-word text fixtures. A blank cell means
+NULL only in a column explicitly declared nullable and integer. Arbitrary text
+whitespace and empty-string semantics are outside the selected output formats.
+The manifest retains the source query and any ordering clause verbatim.
 
 ## Run locally
 
-Run all 19 migrated cases on HawDB alone with the pinned Rust toolchain:
+Run all 29 migrated cases on HawDB alone with the pinned Rust toolchain:
 
 ```bash
 make pg-regress-hawdb
@@ -93,7 +98,7 @@ cargo test --locked --manifest-path tests/pg-regress/Cargo.toml --no-default-fea
 ```
 
 Cargo also runs two existing checksum/selection controls imported from the suite
-loader. Those controls are separate from the 19 migrated PostgreSQL cases.
+loader. Those controls are separate from the 29 migrated PostgreSQL cases.
 
 ### Optional live comparisons
 

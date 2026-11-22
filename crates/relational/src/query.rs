@@ -407,9 +407,8 @@ impl RelationalRowStoreReader for crate::RelationalMaterializedReader {
 /// Evaluates a FROM-less `SELECT` (e.g. `SELECT version();`) directly against
 /// a synthetic zero-binding row, bypassing catalog resolution, access-path
 /// selection, and join planning entirely — there is no table to resolve a
-/// path against. Reuses `expression::project_bound_row` unchanged, so a
-/// FROM-less projection that references a column fails exactly the way it
-/// would against a real table with no matching binding.
+/// path against. WHERE and its subqueries qualify the implicit row before
+/// it can be projected, and LIMIT and OFFSET can suppress its output.
 fn execute_fromless_select(
     select: &SelectStatement,
     parameters: &[Value],
@@ -417,22 +416,34 @@ fn execute_fromless_select(
     stage_timings: RelationalSqlStageTimings,
     hydration: RelationalHydrationBudget,
     resources: &RelationalQueryResourceContext<'_>,
+    subquery_filter: Option<&RelationalSubqueryFilter<'_>>,
 ) -> Result<RelationalQueryOutput> {
     let ledger = QueryMemoryLedger::new(hawdb_executor::memory::enforced_query_memory_budget(
         resources.execution_memory,
         resources.task_context,
     )?);
     let account = projection_memory::copy_account(&ledger);
-    let _copies = projection_memory::admit_ordinary(
-        select,
-        &BoundRow::default(),
-        parameters,
-        &account,
-        usize::MAX,
-        false,
-    )?;
-    let row = expression::project_bound_row(&BoundRow::default(), &select.projection, parameters)?;
-    let rows = QueryRows::try_from_named_rows(select_output_schema(select, state)?, vec![row])?;
+    let limit = bind_bound(select.limit, parameters, "LIMIT")?;
+    let offset = bind_bound(select.offset, parameters, "OFFSET")?;
+    let bound = BoundRow::default();
+    let mut rows = Vec::new();
+    if limit != Some(0)
+        && offset.unwrap_or_default() == 0
+        && subquery_filter.map_or(Ok(true), |filter| filter.matches(&bound))?
+    {
+        let _copies = projection_memory::admit_ordinary(
+            select,
+            &bound,
+            parameters,
+            &account,
+            usize::MAX,
+            false,
+        )?;
+        let row = expression::project_bound_row(&bound, &select.projection, parameters)?;
+        let mut payload_bytes = 0;
+        push_relational_output(row, &mut rows, &mut payload_bytes, resources.limits)?;
+    }
+    let rows = QueryRows::try_from_named_rows(select_output_schema(select, state)?, rows)?;
     let access_path = RelationalAccessPathDescriptor {
         kind: RelationalAccessPathKind::FullScan,
         name: "(no table)".to_string(),
@@ -684,6 +695,7 @@ fn execute_select_statement_with_filter<'a, R: RelationalQueryStoreReader>(
             stage_timings,
             resources.limits.hydration,
             &resources,
+            subquery_filter,
         );
     }
     let (prepared, snapshot) = prepare_relational_select_with_snapshot(

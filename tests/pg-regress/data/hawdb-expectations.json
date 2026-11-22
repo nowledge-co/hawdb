@@ -236,6 +236,118 @@
       "kinds": [
         "text"
       ]
+    },
+    {
+      "id": "subselect/fromless-in-match",
+      "source": {
+        "file": "data/expected/subselect.out",
+        "first_line": 4,
+        "last_line": 8
+      },
+      "kinds": [
+        "int"
+      ]
+    },
+    {
+      "id": "subselect/fromless-not-in-match",
+      "source": {
+        "file": "data/expected/subselect.out",
+        "first_line": 10,
+        "last_line": 13
+      },
+      "kinds": [
+        "int"
+      ]
+    },
+    {
+      "id": "subselect/fromless-in-miss",
+      "source": {
+        "file": "data/expected/subselect.out",
+        "first_line": 15,
+        "last_line": 18
+      },
+      "kinds": [
+        "int"
+      ]
+    },
+    {
+      "id": "adapted/subselect/constant-membership",
+      "source": {
+        "file": "data/expected/subselect.out",
+        "first_line": 109,
+        "last_line": 115
+      },
+      "kinds": [
+        "int"
+      ]
+    },
+    {
+      "id": "adapted/subselect/uncorrelated-membership",
+      "source": {
+        "file": "data/expected/subselect.out",
+        "first_line": 117,
+        "last_line": 127
+      },
+      "kinds": [
+        "int"
+      ]
+    },
+    {
+      "id": "adapted/subselect/nested-membership",
+      "source": {
+        "file": "data/expected/subselect.out",
+        "first_line": 129,
+        "last_line": 140
+      },
+      "kinds": [
+        "int"
+      ]
+    },
+    {
+      "id": "adapted/subselect/correlated-membership",
+      "source": {
+        "file": "data/expected/subselect.out",
+        "first_line": 154,
+        "last_line": 165
+      },
+      "kinds": [
+        "int",
+        "int"
+      ]
+    },
+    {
+      "id": "with/recursive-sum",
+      "source": {
+        "file": "data/expected/with.out",
+        "first_line": 26,
+        "last_line": 35
+      },
+      "kinds": [
+        "int"
+      ]
+    },
+    {
+      "id": "adapted/subselect/row-not-in-null",
+      "source": {
+        "file": "data/expected/subselect.out",
+        "first_line": 880,
+        "last_line": 885
+      },
+      "kinds": [
+        "int",
+        "nullable_int"
+      ]
+    },
+    {
+      "id": "adapted/subselect/empty-not-in-null",
+      "source": {
+        "file": "data/expected/subselect.out",
+        "first_line": 1376,
+        "last_line": 1381
+      },
+      "kinds": [
+        "nullable_int"
+      ]
     }
   ]
 }

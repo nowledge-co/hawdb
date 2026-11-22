@@ -96,9 +96,13 @@ correlated and uncorrelated EXISTS/NOT EXISTS, scalar and row IN/NOT IN,
 empty and NULL truth tables, lexical alias shadowing, multi-level qualified
 correlation, arity/type errors even when the outer scan is empty, CTE liveness
 through a subquery, and fail-closed row, payload, blocking-memory, and candidate
-work budgets. Plain EXPLAIN reports `subquery_strategy=budgeted_nested_loop`
-without execution; EXPLAIN ANALYZE reports the executed
-`SubqueryPredicateExec`. Root `relational_sql::compound_queries` checkpoints,
+work budgets. Focused cases pin parameterized EXISTS bounds, projection
+elision, cardinality-sensitive DISTINCT and set operations, and wildcard arity
+with CTE names that shadow catalog tables. The scalar IN candidate-work limit
+admits one hash build and three probes. It also checks tracked memory and
+typed comparison fallback. Plain EXPLAIN describes the bounded subquery
+strategies. EXPLAIN ANALYZE reports the executed `SubqueryPredicateExec` and
+identifies hash membership when used. Root `relational_sql::compound_queries` checkpoints,
 reopens, and re-runs parameterized derived/VALUES/subquery reads in
 Materialized/Materialized and OutOfCore/DemandPaged modes. Derived tables and
 subquery results are statement-scoped only and never enter WAL, catalog, or
@@ -2818,8 +2822,8 @@ part of the existing Search Consumer unit target; no new CI job is required.
 
 | Family | Purpose and owner | Lane and known limits |
 | --- | --- | --- |
-| PostgreSQL regressions on HawDB alone | [`tests/pg-regress/tests/upstream_sql.rs`](../tests/pg-regress/tests/upstream_sql.rs), `make pg-regress-hawdb`; 19 unchanged upstream queries with exact source/output ranges and checked checksums | Manual Cargo integration test, `--no-default-features --test upstream_sql`; no PostgreSQL server or libpq. Covers column-left int8 comparisons, ungrouped HAVING and ordering by a non-projected input column. Original output supplies integer/ASCII-word expected rows; typed error mapping and fixture-only adaptations are explicit. Unselected syntax and ambiguous psql cells are not coverage. |
-| PostgreSQL upstream SQL comparison | Same independent project, `make pg-regress`; Rust `libpq` reference client; typed rows, NULL, duplicate multiplicity, ordering and DML counts against a real 18.0 server | Optional manual path; pinned selected Boolean/int8 and adapted SELECT cases; unsupported source statements are not coverage. Stock expected files are provenance for this live-comparison CLI. |
+| PostgreSQL regressions on HawDB alone | [`tests/pg-regress/tests/upstream_sql.rs`](../tests/pg-regress/tests/upstream_sql.rs), `make pg-regress-hawdb`; 29 unchanged upstream queries with exact source/output ranges and checked checksums | Manual Cargo integration test, `--no-default-features --test upstream_sql`. Covers column-left int8 comparisons, ungrouped HAVING, ordering by a non-projected input column, scalar and row membership including correlation and NULL/empty inputs, and a recursive CTE sum. Original output supplies integer, nullable integer and ASCII-word expected rows. Typed error mappings and fixture-only adaptations are explicit. Unselected syntax and ambiguous psql cells are not coverage. |
+| PostgreSQL upstream SQL comparison | Same independent project, `make pg-regress`; Rust `libpq` reference client; typed rows, NULL, duplicate multiplicity, ordering and DML counts against a real 18.0 server | Optional manual path; pinned selected Boolean, int8, SELECT, subselect and WITH cases; unsupported source statements are not coverage. Stock expected files are provenance for this live-comparison CLI. |
 | PostgreSQL isolation schedules | Same runner and embedded transaction worker; selected `simple-write-skew.spec` step permutations with explicit Serializable options and first-statement snapshot capture | Manual only; synchronous nonblocking steps. SSI victim/timing divergence is reported as a strict comparison mismatch, not proof of a HawDB isolation defect. Lock-wait scheduling, numeric fixtures and full PG equivalence remain outside this slice. |
 | Harness negative controls | `cargo test --locked --manifest-path tests/pg-regress/Cargo.toml --all-targets --all-features` | Local comparator/provenance controls; no production CI registration. Independent Rust fmt/Clippy and actual PG 18.0 execution remain additional evidence. |
 

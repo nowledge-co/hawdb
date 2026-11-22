@@ -272,6 +272,32 @@ fn compare_predicate_expressions<'a>(
     compare_values(left_value.as_ref(), right_value.as_ref(), op)
 }
 
+/// Compare a bound membership row without turning projected values into SQL
+/// expressions. Keep row equality's left-to-right SQL three-valued logic and
+/// the same column-directed coercion as a literal comparison.
+pub(crate) fn compare_subquery_row<'a>(
+    left: &[Expr],
+    right: &[Value],
+    parameters: &[Value],
+    resolve: &impl Fn(&SqlColumnRef) -> Result<(&'a RelationalValue, RelationalScalarType)>,
+) -> Result<Option<bool>> {
+    compare_row_fields(left.len(), right.len(), SqlComparisonOp::Eq, |index, op| {
+        let (left, right) = if let Some(column) = left[index].as_column() {
+            let (value, scalar_type) = resolve(column)?;
+            (
+                std::borrow::Cow::Borrowed(value),
+                value_to_relational_as(right[index].clone(), scalar_type)?,
+            )
+        } else {
+            (
+                predicate_expression(&left[index], parameters, resolve)?,
+                crate::query_value::value_to_relational(right[index].clone())?,
+            )
+        };
+        compare_values(left.as_ref(), &right, op)
+    })
+}
+
 #[cfg(test)]
 mod tests;
 
