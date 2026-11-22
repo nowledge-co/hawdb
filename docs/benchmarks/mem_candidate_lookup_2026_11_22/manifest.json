@@ -1,0 +1,167 @@
+{
+  "base": "f80136d41d9ade2ae8ad02f9bfc1f73cf4b3ba51",
+  "mem_query_source": "bc7a7b8eea681633bab0cb3324c1128cdcea0061",
+  "host": {
+    "cpu": "Apple M5 Max",
+    "ram_bytes": 38654705664,
+    "os": "macOS 27.0.1 (26A434)",
+    "architecture": "aarch64",
+    "toolchain": "1.99.1",
+    "conditions": "shared developer desktop; unrelated processes and compilation observed; not a dedicated host"
+  },
+  "receipts": {
+    "baseline-release": {
+      "label": "baseline-release",
+      "executable_sha256": "1bed9a303711ad65d0c7635fd8f907b94c2bac2a05335f5eba5d55a28d29960d",
+      "head": "f80136d41d9ade2ae8ad02f9bfc1f73cf4b3ba51",
+      "features": [
+        "background-maintenance",
+        "default",
+        "full-text-search",
+        "graph-analytics",
+        "tokio-runtime",
+        "vector-search"
+      ],
+      "profile": {
+        "opt_level": "3",
+        "debuginfo": 0,
+        "debug_assertions": false,
+        "overflow_checks": false,
+        "test": true
+      },
+      "source_sha256": {
+        "benches/mem_query_resources.rs": "0f06f86d2b167fcfb79038434727a5eb3a57541d4f51a8a2386f57954649dc02",
+        "crates/executor/src/expression/value/borrowed.rs": "564cc31c637f214bb24b7d4dd339428ff8175accc9270e8a94a15fb1d2cb68a3",
+        "crates/executor/src/expression/value/borrowed/list.rs": "ad44266920b819d0f928292ab750c179186b9324c6f98f93a5b655000ff3299e",
+        "crates/optimizer-graph/src/graph/logical_rewrite.rs": "195c7488b63c1533fd8f0cff6c66d02f9ef07cc4807b771cf497cce5f4478fa3",
+        "crates/optimizer-graph/src/graph/logical_rewrite/constant_list_lookup.rs": null
+      }
+    },
+    "lookup-release": {
+      "label": "lookup-release",
+      "executable_sha256": "c5013657c024c48b440004584c0ba6c3556951fd782acf186bf0a9a12d605783",
+      "head": "f80136d41d9ade2ae8ad02f9bfc1f73cf4b3ba51",
+      "features": [
+        "background-maintenance",
+        "default",
+        "full-text-search",
+        "graph-analytics",
+        "tokio-runtime",
+        "vector-search"
+      ],
+      "profile": {
+        "opt_level": "3",
+        "debuginfo": 0,
+        "debug_assertions": false,
+        "overflow_checks": false,
+        "test": true
+      },
+      "source_sha256": {
+        "benches/mem_query_resources.rs": "0f06f86d2b167fcfb79038434727a5eb3a57541d4f51a8a2386f57954649dc02",
+        "crates/executor/src/expression/value/borrowed.rs": "564cc31c637f214bb24b7d4dd339428ff8175accc9270e8a94a15fb1d2cb68a3",
+        "crates/executor/src/expression/value/borrowed/list.rs": "ad44266920b819d0f928292ab750c179186b9324c6f98f93a5b655000ff3299e",
+        "crates/optimizer-graph/src/graph/logical_rewrite.rs": "7a8c5bba6cdaa2d6e842cb16686af850c20f6bf9976e83cddf845dd81147641d",
+        "crates/optimizer-graph/src/graph/logical_rewrite/constant_list_lookup.rs": "456eb4c8f5a4e5930c20617a95d8c190385c2be2ab0df70a2b22224e6494a65b"
+      }
+    },
+    "baseline-alloc": {
+      "label": "baseline-alloc",
+      "executable_sha256": "ccb42072cb4630eb968c5634b0bee3d7569727ffed42cdacc297fdc32fb0fb2b",
+      "head": "f80136d41d9ade2ae8ad02f9bfc1f73cf4b3ba51",
+      "features": [
+        "background-maintenance",
+        "default",
+        "full-text-search",
+        "graph-analytics",
+        "qualification",
+        "tokio-runtime",
+        "vector-search"
+      ],
+      "profile": {
+        "opt_level": "3",
+        "debuginfo": 0,
+        "debug_assertions": false,
+        "overflow_checks": false,
+        "test": true
+      },
+      "source_sha256": {
+        "benches/mem_query_resources.rs": "0f06f86d2b167fcfb79038434727a5eb3a57541d4f51a8a2386f57954649dc02",
+        "crates/executor/src/expression/value/borrowed.rs": "564cc31c637f214bb24b7d4dd339428ff8175accc9270e8a94a15fb1d2cb68a3",
+        "crates/executor/src/expression/value/borrowed/list.rs": "ad44266920b819d0f928292ab750c179186b9324c6f98f93a5b655000ff3299e",
+        "crates/optimizer-graph/src/graph/logical_rewrite.rs": "195c7488b63c1533fd8f0cff6c66d02f9ef07cc4807b771cf497cce5f4478fa3",
+        "crates/optimizer-graph/src/graph/logical_rewrite/constant_list_lookup.rs": null
+      }
+    },
+    "lookup-alloc": {
+      "label": "lookup-alloc",
+      "executable_sha256": "98d4598892866bb6d1599a39c211d43ae3191b210d2a1b6ad2d11c603f7b5828",
+      "head": "f80136d41d9ade2ae8ad02f9bfc1f73cf4b3ba51",
+      "features": [
+        "background-maintenance",
+        "default",
+        "full-text-search",
+        "graph-analytics",
+        "qualification",
+        "tokio-runtime",
+        "vector-search"
+      ],
+      "profile": {
+        "opt_level": "3",
+        "debuginfo": 0,
+        "debug_assertions": false,
+        "overflow_checks": false,
+        "test": true
+      },
+      "source_sha256": {
+        "benches/mem_query_resources.rs": "0f06f86d2b167fcfb79038434727a5eb3a57541d4f51a8a2386f57954649dc02",
+        "crates/executor/src/expression/value/borrowed.rs": "564cc31c637f214bb24b7d4dd339428ff8175accc9270e8a94a15fb1d2cb68a3",
+        "crates/executor/src/expression/value/borrowed/list.rs": "ad44266920b819d0f928292ab750c179186b9324c6f98f93a5b655000ff3299e",
+        "crates/optimizer-graph/src/graph/logical_rewrite.rs": "7a8c5bba6cdaa2d6e842cb16686af850c20f6bf9976e83cddf845dd81147641d",
+        "crates/optimizer-graph/src/graph/logical_rewrite/constant_list_lookup.rs": "456eb4c8f5a4e5930c20617a95d8c190385c2be2ab0df70a2b22224e6494a65b"
+      }
+    }
+  },
+  "release_cells": 30,
+  "release_reads": 900,
+  "allocation_cells": 6,
+  "allocation_reads": 60,
+  "allocation_summary": [
+    {
+      "candidates": 20,
+      "before_bytes_per_read": 1334605.0,
+      "before_allocations_per_read": 10429.6,
+      "after_bytes_per_read": 1356520.8,
+      "after_allocations_per_read": 10527.7
+    },
+    {
+      "candidates": 100,
+      "before_bytes_per_read": 5740389.0,
+      "before_allocations_per_read": 38783.6,
+      "after_bytes_per_read": 5611984.8,
+      "after_allocations_per_read": 39361.7
+    },
+    {
+      "candidates": 512,
+      "before_bytes_per_read": 39228134.0,
+      "before_allocations_per_read": 175214.8,
+      "after_bytes_per_read": 31838977.0,
+      "after_allocations_per_read": 178264.8
+    }
+  ],
+  "raw_sha256": "882e9bcf35d45b54458b26edcde45c2c6e46b512ce75da83dad6d26fdb3d0f2d",
+  "production_patch_sha256": "fe72229ce6f145c9ed13fb0ead5dfd5b85b7e3fae86b1c297f43f1a208fd4b53",
+  "build_seconds": {
+    "baseline_alloc_first_worktree_build": 414,
+    "baseline_release": 287,
+    "lookup_release_final_frozen_source": 335,
+    "lookup_allocation_final_frozen_source": 294
+  },
+  "baseline_note": "The same committed harness was added to otherwise unchanged base production sources. No source compatibility patch was needed. Executables were copied and hashed after successful builds, before rebuilding another variant.",
+  "runtime_source_sha256": {
+    "crates/optimizer-graph/src/graph/logical_rewrite/constant_list_lookup.rs": "bfe6f13b8b3662d370b24b6ef36ccbd41b964a78524eda81f93611f1d52d4f87"
+  },
+  "final_test_source_sha256": {
+    "crates/optimizer-graph/src/graph/logical_rewrite/constant_list_lookup.rs": "a70da001b7fd764d167eef6284298606bb6b2260673d02dce0b9afcea8d6b409"
+  },
+  "post_capture_change": "Only a cfg(test) Box-content assignment was changed for strict Clippy; the benchmark and optimizer runtime definitions remain byte-identical."
+}

@@ -1235,6 +1235,20 @@ owner discovers all cases through `:hawdb_executor_tests`; replay with
 `cargo test --locked -p hawdb-executor --lib bounded_index_projection`.
 The existing `hawdb_projection_allocation_tests` owner retains before-copy
 payload-admission coverage. No test lane, timeout or feature scope changes.
+Constant-map list lookups (`constant_list_lookup`) are covered by the existing
+optimizer-graph unit owner and the root `simple_case_dispatch` family. They
+cover safe CASE lowering, first-duplicate ordering, idempotence, bounded and
+unsafe-shape refusal, eager-reference comparison, NULL/missing keys, repeated
+parameter rebinding, output budgets and trailing errors after a successful
+match. Value-sensitive guards also rebind index 0/1/-1 and string/NULL/numeric
+keys through the same read transaction, compared with an eager identity
+projection. Default/minimal root general CI and optimizer-graph CI retain ownership.
+Replay with `cargo test --locked -p hawdb-optimizer-graph constant_list_lookup`
+and `cargo test --locked -p hawdb --lib constant_list_lookup`.
+The manual `mem_query_resources` benchmark's `current-mem-ranking` workload
+replays the fixed-text candidate association query at 20/100/512 candidates,
+including score rebinding and complete ranking-field checks. See
+[the manual benchmark contract](MEM_QUERY_RESOURCES.md); it adds no CI job.
 Root `api::tests::query_execution::bounded_scalar_index_queries_rebind_in_and_union_parameters`
 also checks ordinary parameterized Cypher equality/IN/OR, fused projection plans,
 ordered output and parameter rebinding under a 64-unit task budget. Its existing

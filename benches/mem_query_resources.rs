@@ -133,6 +133,61 @@ fn mem_ranking(job: &Job) -> (String, Parameters) {
     )
 }
 
+/// Mem bc7a7b8eea681633bab0cb3324c1128cdcea0061 search ranking query.
+/// Keep the legacy CASE workloads above for comparison with historical reports.
+fn current_mem_ranking(job: &Job) -> (String, Parameters) {
+    let candidates = (0..job.candidates)
+        .map(|index| {
+            Value::Map(BTreeMap::from([
+                ("id".into(), Value::String(format!("memory-{index:08}"))),
+                (
+                    "score".into(),
+                    Value::Float(index as f64 / job.candidates as f64),
+                ),
+                ("reason".into(), Value::String("evidence".into())),
+                ("ordinal".into(), Value::Int(index as i64)),
+                (
+                    "confidence".into(),
+                    if index % 5 == 0 {
+                        Value::Null
+                    } else {
+                        Value::Float(0.8)
+                    },
+                ),
+                ("temporal_boost".into(), Value::Float(1.0)),
+            ]))
+        })
+        .collect();
+    let params = BTreeMap::from([
+        ("candidates".into(), Value::List(candidates)),
+        (
+            "candidate_ids".into(),
+            Value::List(
+                (0..job.candidates)
+                    .map(|index| Value::String(format!("memory-{index:08}")))
+                    .collect(),
+            ),
+        ),
+        ("cross_space".into(), Value::Bool(false)),
+        (
+            "space_ids".into(),
+            Value::List(vec![Value::String("default".into())]),
+        ),
+        ("default_space_requested".into(), Value::Bool(true)),
+    ]);
+    let query = "MATCH (m:Memory) WHERE m.id IN $candidate_ids \
+         AND ($cross_space = true OR m.space_id IN $space_ids OR \
+              ($default_space_requested = true AND (m.space_id IS NULL OR m.space_id = ''))) \
+         WITH m.id AS id, m.importance AS importance, m.pagerank_score AS pagerank_score, \
+              m.last_accessed_at AS last_accessed_at, m.access_count AS access_count, \
+              [candidate IN $candidates WHERE candidate.id = m.id][0] AS candidate \
+         RETURN id, importance, pagerank_score, last_accessed_at, access_count, \
+                candidate.score AS score, candidate.reason AS reason, candidate.ordinal AS ordinal, \
+                candidate.confidence AS confidence, candidate.temporal_boost AS temporal_boost \
+         ORDER BY ordinal ASC";
+    (query.into(), params)
+}
+
 fn expand_setup(db: &mut Database, job: &Job) -> hawdb::Result<()> {
     for index in 0..job.candidates {
         db.query_with_params(
@@ -256,6 +311,10 @@ fn measure(
             if let Some(value) = params.get_mut("input_0_0") {
                 *value = if matches!(value, Value::Float(_)) { Value::Float(iteration as f64 / 100.0) } else { Value::Int(iteration as i64) };
             }
+            if let Some(Value::List(candidates)) = params.get_mut("candidates") {
+                let Value::Map(candidate) = &mut candidates[0] else { unreachable!() };
+                candidate.insert("score".into(), Value::Float(iteration as f64 / 100.0));
+            }
             let start = Instant::now();
             let output = db.begin_read_transaction()?.query_with_params_bounded_profile(query, params, Some(job.candidates.max(20)))?;
             let elapsed_ns = start.elapsed().as_nanos();
@@ -271,6 +330,16 @@ fn measure(
             actual_ids.sort();
             let expected_ids = (0..expected_rows).map(|i| Value::String(format!("memory-{i:08}"))).collect::<Vec<_>>();
             assert_eq!(actual_ids, expected_ids, "benchmark must retain the complete candidate cohort");
+            if params.contains_key("candidates") {
+                assert_eq!(ids, expected_ids, "ranking must preserve candidate order");
+                for (index, row) in output.output.rows.iter().enumerate() {
+                    assert_eq!(row["ordinal"], Value::Int(index as i64));
+                    assert_eq!(row["score"], Value::Float(if index == 0 { iteration as f64 / 100.0 } else { index as f64 / job.candidates as f64 }));
+                    assert_eq!(row["reason"], Value::String("evidence".into()));
+                    assert_eq!(row["confidence"], if index % 5 == 0 { Value::Null } else { Value::Float(0.8) });
+                    assert_eq!(row["temporal_boost"], Value::Float(1.0));
+                }
+            }
             Ok(json!({"elapsed_ns": elapsed_ns, "rows": ids.len(),
                 "query_peak_bytes": memory.query_memory_peak_bytes,
                 "query_completion_bytes": memory.query_memory_completion_bytes,
@@ -387,12 +456,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     if !(5..=6).contains(&args.len()) {
         return Err(
-            "expected candidates space_rows body_bytes repeats background(0|1) [ranking|expand|mem-ranking|mixed-ranking]"
+            "expected candidates space_rows body_bytes repeats background(0|1) [ranking|expand|mem-ranking|mixed-ranking|current-mem-ranking]"
                 .into(),
         );
     }
     let workload = args.get(5).map(String::as_str).unwrap_or("ranking");
-    if !["ranking", "expand", "mem-ranking", "mixed-ranking"].contains(&workload) {
+    if ![
+        "ranking",
+        "expand",
+        "mem-ranking",
+        "mixed-ranking",
+        "current-mem-ranking",
+    ]
+    .contains(&workload)
+    {
         return Err("invalid workload".into());
     }
     let job = Job {
@@ -421,7 +498,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         expand_setup(&mut database, &job)?;
     }
     let database = ConcurrentDatabase::new(database);
-    let (query, mut params) = if workload == "expand" {
+    let (query, mut params) = if workload == "current-mem-ranking" {
+        current_mem_ranking(&job)
+    } else if workload == "expand" {
         expand()
     } else if ["mem-ranking", "mixed-ranking"].contains(&workload) {
         mem_ranking(&job)

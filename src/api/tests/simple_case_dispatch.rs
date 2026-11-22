@@ -4,6 +4,157 @@
 use super::*;
 
 #[test]
+fn constant_list_lookup_rebinds_and_matches_eager_comprehension() {
+    let mut db = Database::new();
+    db.query("UNWIND ['key-0', 'key-1', 'absent', null, 1] AS key CREATE (:Lookup {key: key})")
+        .unwrap();
+    let query = "MATCH (n:Lookup) RETURN n.key AS key, [c IN $candidates WHERE c.id = n.key][0] AS candidate";
+    // An explicit identity projection retains the general eager evaluator.
+    let reference = "MATCH (n:Lookup) RETURN n.key AS key, [c IN $candidates WHERE c.id = n.key | c][0] AS candidate";
+    let mut read = db.begin_read_transaction().unwrap();
+    for (count, score) in [(20, 0), (12, 77), (20, -3)] {
+        let mut candidates = (0..count)
+            .map(|index| {
+                Value::Map(BTreeMap::from([
+                    ("id".into(), Value::String(format!("key-{}", index % 10))),
+                    (
+                        "score".into(),
+                        if index == 1 {
+                            Value::Null
+                        } else {
+                            Value::Int(score + index)
+                        },
+                    ),
+                ]))
+            })
+            .collect::<Vec<_>>();
+        candidates.extend([
+            Value::Null,
+            Value::Map(BTreeMap::new()),
+            Value::Map(BTreeMap::from([("id".into(), Value::Null)])),
+        ]);
+        let parameters = BTreeMap::from([("candidates".into(), Value::List(candidates))]);
+        let reference_output = read
+            .query_with_params_bounded_profile(reference, &parameters, Some(5))
+            .unwrap();
+        assert_eq!(
+            reference_output
+                .execution_profile
+                .pipeline_memory_report
+                .simple_case_dispatch_tables,
+            0
+        );
+        let expected = reference_output.output;
+        for _ in 0..2 {
+            let mut rows = Vec::new();
+            let output = read
+                .query_with_params_streaming(
+                    query,
+                    &parameters,
+                    QueryStreamOptions {
+                        max_rows: Some(5),
+                        max_payload_bytes: Some(8192),
+                    },
+                    |row| {
+                        rows.push(row);
+                        Ok(())
+                    },
+                )
+                .unwrap();
+            assert_eq!(rows, expected.rows);
+            let memory = output.execution_profile.pipeline_memory_report;
+            assert_eq!(memory.simple_case_dispatch_tables, 1);
+            assert_eq!(memory.simple_case_dispatch_lookups, 4);
+            assert_eq!(memory.query_memory_completion_bytes, 0);
+        }
+        let error = read
+            .query_with_params_streaming(
+                query,
+                &parameters,
+                QueryStreamOptions {
+                    max_rows: Some(0),
+                    max_payload_bytes: Some(1024),
+                },
+                |_| panic!("refused output must not be delivered"),
+            )
+            .unwrap_err();
+        assert!(matches!(error, HawDBError::ReadBudgetExceeded(_)));
+    }
+}
+
+#[test]
+fn constant_list_lookup_keeps_trailing_errors_visible_after_a_match() {
+    let mut db = Database::new();
+    db.query("CREATE (:Lookup {key: 'key-0'})").unwrap();
+    let query = "MATCH (n:Lookup) RETURN [c IN $candidates WHERE c.id = n.key][0] AS candidate";
+    let mut candidates = (0..20)
+        .map(|index| {
+            Value::Map(BTreeMap::from([(
+                "id".into(),
+                Value::String(format!("key-{index}")),
+            )]))
+        })
+        .collect::<Vec<_>>();
+    let mut read = db.begin_read_transaction().unwrap();
+    for value in [Value::String("invalid".into()), Value::Int(7)] {
+        candidates.push(value);
+        let parameters = BTreeMap::from([("candidates".into(), Value::List(candidates.clone()))]);
+        let error = read
+            .query_with_params(query, &parameters)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("requires a map value"), "{error}");
+        candidates.pop();
+    }
+    let parameters = BTreeMap::from([("candidates".into(), Value::List(candidates))]);
+    assert_eq!(
+        read.query_with_params(query, &parameters)
+            .unwrap()
+            .rows
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn constant_list_lookup_rechecks_value_sensitive_rewrite_guards() {
+    let mut db = Database::new();
+    db.query("CREATE (:Lookup {key: 'key-0'})").unwrap();
+    let query =
+        "MATCH (n:Lookup) RETURN [c IN $candidates WHERE c.id = n.key][$position] AS candidate";
+    let reference =
+        "MATCH (n:Lookup) RETURN [c IN $candidates WHERE c.id = n.key | c][$position] AS candidate";
+    let mut read = db.begin_read_transaction().unwrap();
+    for position in [0, 1, -1, 0] {
+        for first_key in [Value::String("key-0".into()), Value::Null, Value::Int(0)] {
+            let mut candidates = (0..20)
+                .map(|index| {
+                    Value::Map(BTreeMap::from([
+                        ("id".into(), Value::String(format!("key-{}", index % 10))),
+                        ("score".into(), Value::Int(index)),
+                    ]))
+                })
+                .collect::<Vec<_>>();
+            let Value::Map(first) = &mut candidates[0] else {
+                unreachable!()
+            };
+            first.insert("id".into(), first_key);
+            let parameters = BTreeMap::from([
+                ("candidates".into(), Value::List(candidates)),
+                ("position".into(), Value::Int(position)),
+            ]);
+            let expected = read.query_with_params(reference, &parameters).unwrap();
+            for _ in 0..2 {
+                assert_eq!(
+                    read.query_with_params(query, &parameters).unwrap().rows,
+                    expected.rows
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn binding_template_replans_folded_guards_that_are_also_projected() {
     let mut db = Database::new();
     db.query("CREATE (:Item {id: 0, flag: false})").unwrap();
