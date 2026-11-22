@@ -278,6 +278,12 @@ phase-specific failure signatures.
   `regexp_replace`/`LOWER` grouping, and scalar-expression regex matching against a small host
   reference. Literal/parameter patterns, invalid regexes, non-string patterns, and non-string
   evaluated left operands are checked with phase- and class-specific refusals.
+  The same replay family also generates typed SQL text and binary inputs for
+  `OCTET_LENGTH`, nested `COALESCE`, and filtered `COUNT`, `SUM`, `MIN`, and
+  `MAX`. Its Cypher function model checks `json_string`, `json_value`,
+  `label`, and `labels` using generated Unicode strings, integers, booleans,
+  missing fields, NULL and nonscalar JSON values. Each check records typed
+  expected and actual results, including empty input.
 - Cypher mutations: distinct/aliased/missing bindings in multi-binding `SET`,
   assignment ordering, Unicode whitespace `trim` and `CASE` isolation.
 - Temporal: typed date min/max `CASE SET`, NULL preservation, parameter rebinding

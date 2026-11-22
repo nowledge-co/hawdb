@@ -6,6 +6,7 @@
 //! a fresh database and must reproduce the same phase and failure class.
 
 mod cypher;
+mod functions;
 mod relational;
 
 use crate::{compare_rows, error_class, row_json, typed_value_json, ResultSemantics};
@@ -290,7 +291,7 @@ fn run(case: &Case) -> (Run, Option<Failure>) {
     let mut run = Run::default();
     let result = match case.family {
         0 => relational::decimal(case, &mut run),
-        1 => cypher::pipeline(case, &mut run),
+        1 => cypher::pipeline(case, &mut run).and_then(|()| functions::check(case, &mut run)),
         2 => cypher::binding_set(case, &mut run),
         3 => cypher::temporal(case, &mut run),
         4 => relational::keyless(case, &mut run),
