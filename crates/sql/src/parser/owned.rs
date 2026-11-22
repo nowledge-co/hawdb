@@ -215,6 +215,7 @@ impl<'a> Lowerer<'a> {
             Ok(SqlStatement::Select(select))
         } else {
             Ok(SqlStatement::Query(SqlQueryStatement {
+                recursive: false,
                 with,
                 body: SqlQueryBody::Select(Box::new(select)),
                 order_by: Vec::new(),
@@ -251,6 +252,7 @@ impl<'a> Lowerer<'a> {
         let (body, derived) = self.query_body(&query.body)?;
         with.extend(derived);
         Ok(SqlQueryStatement {
+            recursive: query.recursive,
             with,
             body,
             order_by: query
@@ -684,6 +686,40 @@ mod tests {
             Some(SqlSubqueryPredicate::Or(left, right))
                 if matches!(left.as_ref(), SqlSubqueryPredicate::In { .. })
                     && matches!(right.as_ref(), SqlSubqueryPredicate::Exists { .. })
+        ));
+    }
+
+    #[test]
+    fn recursive_cte_union_and_parameters_lower_into_owned_query_ir() {
+        let prepared = crate::prepare_postgres_sql(
+            "WITH RECURSIVE walk(id) AS (\
+                 VALUES ($1) UNION ALL SELECT id + $2 FROM walk WHERE id < $3\
+             ) SELECT id FROM walk",
+        )
+        .unwrap();
+        assert_eq!(
+            prepared
+                .parameters
+                .iter()
+                .map(|parameter| parameter.position)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        let SqlStatement::Query(query) = prepared.statement else {
+            panic!("recursive query");
+        };
+        assert!(query.recursive);
+        assert_eq!(query.with.len(), 1);
+        let SqlCommonTableExpressionBody::Query(cte) = &query.with[0].body else {
+            panic!("query CTE");
+        };
+        assert!(matches!(
+            cte.body,
+            SqlQueryBody::SetOperation {
+                operator: SqlSetOperator::Union,
+                all: true,
+                ..
+            }
         ));
     }
 

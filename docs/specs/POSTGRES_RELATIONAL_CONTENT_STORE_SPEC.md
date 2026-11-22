@@ -86,6 +86,10 @@ The scoped grammar includes:
 - `DISTINCT`, `GROUP BY`, `COUNT`, `SUM`, `MIN`, `MAX`, `COALESCE`, and
   `OCTET_LENGTH`;
 - deterministic PostgreSQL null ordering, `LIMIT`, and `OFFSET`;
+- statement-scoped query CTEs, `VALUES`, derived tables, and
+  `UNION`/`INTERSECT`/`EXCEPT` with `DISTINCT` or `ALL`;
+- bounded `WITH RECURSIVE` CTEs with a non-recursive seed and top-level
+  `UNION` or `UNION ALL` recursive term;
 - `INSERT`, multi-row `VALUES`, `ON CONFLICT`, and column-only `RETURNING` for
   `INSERT`, `UPDATE`, and `DELETE`;
 - top-level data-modifying CTEs whose `INSERT`, `UPDATE`, or `DELETE` body has a
@@ -98,6 +102,22 @@ The scoped grammar includes:
 
 Unsupported syntax MUST fail during parse or binding. It MUST NOT silently use
 different semantics.
+
+A recursive CTE follows the
+[PostgreSQL 18 working-table algorithm](https://www.postgresql.org/docs/18/queries-with.html#QUERIES-WITH-RECURSIVE):
+it evaluates its seed once, then repeatedly exposes only the previous
+iteration's working rows to the recursive term. `UNION` removes seed
+duplicates and rows seen in any earlier iteration, so ordinary cyclic closures
+terminate; `UNION ALL` preserves every duplicate. Recursive execution retains
+the statement's pinned relational snapshot and enforces independent hard
+checks for at most 1,024 recursive-term evaluations, peak working rows,
+cumulative work, retained bytes, hydration, row/index reads, and output
+row/payload limits across every iteration. Any exceeded limit fails the
+statement instead of returning a partial closure. Query reports identify
+`RecursiveUnionExec` and expose actual iteration, peak-working-row,
+retained-row, and work counters. `SEARCH`, `CYCLE`, mutual recursion,
+body-local CTE/derived relations, and a query tail directly on the recursive
+CTE body are outside this profile.
 
 `INSERT ... ON CONFLICT (...) DO NOTHING RETURNING ...` returns only rows
 inserted by that statement. A rejected candidate never contributes a returned

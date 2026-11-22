@@ -29,8 +29,9 @@ pub enum RelationalStatementSyntax {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PostgresQuerySyntax {
+    pub recursive: bool,
     pub with: Vec<PostgresCommonTableExpressionSyntax>,
     pub body: PostgresQueryBodySyntax,
     pub order_by: Vec<OrderBySyntax>,
@@ -40,12 +41,31 @@ pub struct PostgresQuerySyntax {
     pub span: Span,
 }
 
+impl std::fmt::Debug for PostgresQuerySyntax {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = formatter.debug_struct("PostgresQuerySyntax");
+        if self.recursive {
+            debug.field("recursive", &true);
+        }
+        debug
+            .field("with", &self.with)
+            .field("body", &self.body)
+            .field("order_by", &self.order_by)
+            .field("limit", &self.limit)
+            .field("offset", &self.offset)
+            .field("locking", &self.locking)
+            .field("span", &self.span)
+            .finish()
+    }
+}
+
 impl PostgresQuerySyntax {
     pub fn into_simple_select(self) -> Result<PostgresSelectSyntax, Box<Self>> {
         if !self.with.is_empty() || !matches!(&self.body, PostgresQueryBodySyntax::Select(_)) {
             return Err(Box::new(self));
         }
         let Self {
+            recursive: _,
             with: _,
             body,
             order_by,

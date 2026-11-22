@@ -71,6 +71,14 @@ pub struct RelationalRowExecutionEvidence {
     pub posting_blocks_skipped: usize,
     pub overlay_entries: usize,
     pub overlay_resident_bytes: usize,
+    /// Recursive-term evaluations completed by bounded recursive unions.
+    pub recursive_iterations: usize,
+    /// Largest statement-scoped working table exposed to a recursive term.
+    pub recursive_working_rows_peak: usize,
+    /// Rows retained by recursive unions before the outer query tail.
+    pub recursive_rows_emitted: usize,
+    /// Cumulative recursive seed/term work admitted by the hard work ceiling.
+    pub recursive_work: usize,
     pub projection_generation: Option<String>,
     pub projection_source_watermark: Option<u64>,
     pub projection_version: Option<u64>,

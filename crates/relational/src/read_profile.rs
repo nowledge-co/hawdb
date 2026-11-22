@@ -88,4 +88,12 @@ pub struct RelationalSqlRowReadProfile {
     pub rows_visited: usize,
     pub overlay_entries: usize,
     pub overlay_resident_bytes: usize,
+    /// Recursive-term evaluations completed by this statement.
+    pub recursive_iterations: usize,
+    /// Largest recursive working-table cardinality.
+    pub recursive_working_rows_peak: usize,
+    /// Rows retained by recursive unions before the outer query tail.
+    pub recursive_rows_emitted: usize,
+    /// Cumulative admitted seed and recursive-term work.
+    pub recursive_work: usize,
 }

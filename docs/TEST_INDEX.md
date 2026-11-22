@@ -59,7 +59,8 @@ PostgreSQL non-recursive CTE and set-operation compatibility
 SQL syntax, SQL lowering, relational-query and root general-test owners. Syntax
 and lowering tests pin statement-scoped `WITH`, explicit CTE column aliases,
 `UNION`/`INTERSECT`/`EXCEPT` `DISTINCT` and `ALL`, PostgreSQL precedence,
-parenthesized branch tails, parameters and rejection of `WITH RECURSIVE`.
+parenthesized branch tails and parameters; recursive execution is owned by the
+separate #1865 family below.
 The existing alias-boundary differential campaign keeps set operators out of
 bare and explicit table aliases while recognizing them as query boundaries.
 `query::tests::compound_queries` covers duplicate multiplicity, NULL equality,
@@ -106,6 +107,31 @@ checkpoint state. Replay with `cargo test --locked -p hawdb-sql-syntax --lib`,
 hawdb-relational compound_queries --lib`, and `cargo test --locked -p hawdb
 --lib compound_queries`. No new CI lane, profile, fixture amplification, or
 timeout is introduced.
+
+PostgreSQL bounded recursive CTE compatibility
+([#1865](https://github.com/nowledge-co/hawdb/issues/1865)) remains in the
+existing SQL-syntax, SQL-lowering, relational-query, and root general-test
+owners. Syntax and owned-IR tests preserve `WITH RECURSIVE`, dense parameters,
+the non-recursive seed, and top-level `UNION`/`UNION ALL` recursive term without
+reparsing. `query::tests::compound_queries` covers working-table iteration,
+user depth predicates, cyclic graph closure, `UNION` global deduplication,
+`UNION ALL` duplicate preservation, NULL equality, empty seeds, preceding
+non-recursive CTEs, arity/type/shape errors, and fail-closed iteration,
+working-row, cumulative-work, cumulative row-read, result-row/payload, and
+blocking-memory limits. Recursive rounds carry forward hydration and
+row/index-read allowances instead of resetting the statement budgets.
+Plain `EXPLAIN` reports `RecursiveUnionExec`, the working-table strategy, and
+the 1,024-iteration hard ceiling without executing; `EXPLAIN ANALYZE` and the
+typed read profile report actual iterations, peak working rows, retained output
+rows, and cumulative work. Root `relational_sql::compound_queries` checkpoints,
+reopens, and re-runs recursive graph and parameterized depth reads in
+Materialized/Materialized and OutOfCore/DemandPaged modes. The working and seen
+relations remain statement-scoped and never enter WAL, catalog, checkpoint, or
+publication state. Replay with `cargo test --locked -p hawdb-sql-syntax --lib`,
+`cargo test --locked -p hawdb-sql --lib`, `cargo test --locked -p
+hawdb-relational recursive_cte --lib`, and `cargo test --locked -p hawdb --lib
+recursive_ctes_read_persistent_snapshots_after_reopen`. No new CI lane, profile,
+fixture amplification, or timeout is introduced.
 
 Checked candidate exhaustion ([#1713](https://github.com/nowledge-co/hawdb/issues/1713))
 is owned by `candidate_evidence::consumption::tests` in the existing Search unit

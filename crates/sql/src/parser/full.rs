@@ -224,6 +224,7 @@ impl Fold<'_> {
         match super::parse_postgres_sql(input)? {
             SqlStatement::Query(query) => Ok(query),
             SqlStatement::Select(select) => Ok(SqlQueryStatement {
+                recursive: false,
                 with: Vec::new(),
                 body: SqlQueryBody::Select(Box::new(select)),
                 order_by: Vec::new(),

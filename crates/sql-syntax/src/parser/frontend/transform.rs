@@ -113,17 +113,17 @@ impl Transformer<'_> {
             })
     }
     pub(super) fn query(&self, node: NodeId) -> PostgresQuerySyntax {
-        let with = self
-            .tree
-            .child(node, "RelationalWith")
-            .map_or_else(Vec::new, |with| {
-                self.tree
-                    .children(with)
-                    .iter()
-                    .filter(|id| self.tree.nodes[**id].name == Some("RelationalCte"))
-                    .map(|id| self.cte(*id))
-                    .collect()
-            });
+        let with_node = self.tree.child(node, "RelationalWith");
+        let recursive =
+            with_node.is_some_and(|with| self.tree.child(with, "RelationalRecursive").is_some());
+        let with = with_node.map_or_else(Vec::new, |with| {
+            self.tree
+                .children(with)
+                .iter()
+                .filter(|id| self.tree.nodes[**id].name == Some("RelationalCte"))
+                .map(|id| self.cte(*id))
+                .collect()
+        });
         let order_by = self.tree.child(node, "Order").map_or_else(Vec::new, |id| {
             self.tree
                 .children(id)
@@ -132,6 +132,7 @@ impl Transformer<'_> {
                 .collect()
         });
         PostgresQuerySyntax {
+            recursive,
             with,
             body: self.query_union_except(self.child(node, "RelationalUnionExcept")),
             order_by,
