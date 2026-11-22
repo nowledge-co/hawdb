@@ -1577,6 +1577,10 @@ full refunds. Both full-handle and database-only replacement are covered, with
 and without a prior retained read. The removed database is adopted by a separate
 `EmbeddedGraph` before the next facade cursor; its governor must receive no
 charges from that cursor, including when the shared binding is still cold.
+Both first-read orders are covered: new graph cursors charge only the graph,
+including node views that outlive their cursor; new facade cursors charge only
+the facade. A snapshot captured before transfer opens its first retained cursor
+after adoption and still charges and refunds the original governor.
 The unique-lookup fixture contains 128 rows so retained-node admission uses an
 index seek rather than the optimizer's tiny-label scan.
 Administrative callbacks and replacement must also preserve visibility of live

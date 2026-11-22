@@ -37,6 +37,11 @@ the same owner implementation and published-read protocol.
   for facade work or change the Tokio scheduler's governor. The owner's retained
   governor candidate is fixed before the first retained read, so configuring an
   escaped database in another host cannot redirect future facade charges.
+  When `EmbeddedGraph` adopts a database, future retained reads use a separate
+  binding to the graph governor. Snapshots and cursors captured before that
+  transfer continue to charge and refund their original governor, even if the
+  snapshot opens its first retained cursor after the transfer. Ordinary governor
+  reconfiguration does not reset an already bound retained allowance.
 - A published snapshot pins schema and data, not SQL time. Each autocommit SQL
   execution and newly opened read transaction captures its own clock; repeated
   statements and internal forks within one read transaction keep its start time.

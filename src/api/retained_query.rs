@@ -148,8 +148,8 @@ fn retained_result_work_bytes(capacity: usize, view_metadata: usize) -> Result<u
         .ok_or(RetainedQueryError::SizeOverflow)
 }
 
-/// One admission binding per database, shared by all snapshots/cursors. Late
-/// ordinary-governor replacement cannot multiply retained-result allowances.
+/// One admission binding per database ownership scope, shared by its snapshots
+/// and cursors. Late ordinary-governor replacement cannot multiply allowances.
 #[derive(Debug, Default)]
 pub(super) struct RetainedRuntime {
     configured: Mutex<Option<RuntimeGovernor>>,

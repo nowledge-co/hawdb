@@ -978,7 +978,7 @@ impl EmbeddedGraph {
         mode: GraphMode,
         runtime_governor: RuntimeGovernor,
     ) -> Self {
-        db.set_runtime_governor(runtime_governor.clone());
+        db.adopt_runtime_governor(runtime_governor.clone());
         Self {
             db,
             mode,

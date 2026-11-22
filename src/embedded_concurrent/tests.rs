@@ -89,9 +89,16 @@ fn replacements_share_the_owner_governor_for_ordinary_and_retained_work() {
 
     const QUERY: &str = "MATCH (n:Item {value: $key}) RETURN n AS node";
     let parameters = BTreeMap::from([("key".into(), Value::Int(1))]);
-    for (replace_handle, warm_retained) in
-        [(false, false), (true, false), (false, true), (true, true)]
-    {
+    for (replace_handle, warm_retained, graph_first) in [
+        (false, false, false),
+        (true, false, false),
+        (false, true, false),
+        (true, true, false),
+        (false, false, true),
+        (true, false, true),
+        (false, true, true),
+        (true, true, true),
+    ] {
         let engine = HawDBConcurrentEmbedded::new(fixture());
         let governor = engine.runtime_governor().clone();
         let old_cursor = warm_retained.then(|| {
@@ -105,6 +112,7 @@ fn replacements_share_the_owner_governor_for_ordinary_and_retained_work() {
         });
         let owner_charge = governor.retained_result_snapshot().retained_bytes;
         assert_eq!(owner_charge > 0, warm_retained);
+        let old_snapshot = engine.begin_read_transaction().unwrap();
         for _ in 0..2 {
             let observed =
                 engine.with_embedded_mut(|embedded| embedded.database().retained_result_snapshot());
@@ -145,19 +153,65 @@ fn replacements_share_the_owner_governor_for_ordinary_and_retained_work() {
         // Do not run another administrative callback before this first read:
         // reapplying the owner governor would hide a redirected cold candidate.
         let graph = crate::EmbeddedGraph::from_database(removed, crate::GraphMode::WritableCutover);
-        let mut first = engine
-            .query_with_params_retained_node(QUERY, &parameters, RetainedQueryOptions::default())
+        let graph_governor = graph.runtime_governor();
+        graph_governor.pin_resources();
+        let check_facade = || {
+            let mut cursor = engine
+                .query_with_params_retained_node(
+                    QUERY,
+                    &parameters,
+                    RetainedQueryOptions::default(),
+                )
+                .unwrap();
+            let node = cursor.next_node().unwrap().unwrap();
+            assert!(governor.retained_result_snapshot().retained_bytes > owner_charge);
+            assert_eq!(graph_governor.retained_result_snapshot().retained_bytes, 0);
+            drop((cursor, node));
+            assert_eq!(
+                governor.retained_result_snapshot().retained_bytes,
+                owner_charge
+            );
+        };
+        let check_graph = || {
+            let mut cursor = graph
+                .database()
+                .query_with_params_retained_node(
+                    QUERY,
+                    &parameters,
+                    RetainedQueryOptions::default(),
+                )
+                .unwrap();
+            let node = cursor.next_node().unwrap().unwrap();
+            assert!(graph_governor.retained_result_snapshot().retained_bytes > 0);
+            assert_eq!(
+                governor.retained_result_snapshot().retained_bytes,
+                owner_charge
+            );
+            assert_eq!(
+                foreign_governor.retained_result_snapshot().retained_bytes,
+                foreign_charge
+            );
+            drop(cursor);
+            assert!(graph_governor.retained_result_snapshot().retained_bytes > 0);
+            drop(node);
+            assert_eq!(graph_governor.retained_result_snapshot().retained_bytes, 0);
+        };
+        if graph_first {
+            check_graph();
+            check_facade();
+        } else {
+            check_facade();
+            check_graph();
+        }
+        // A snapshot captured before transfer must keep the original binding,
+        // even if it had not opened a retained cursor until after adoption.
+        let mut pinned_cursor = old_snapshot
+            .into_retained_node_query(QUERY, &parameters, RetainedQueryOptions::default())
             .unwrap();
-        let first_node = first.next_node().unwrap().unwrap();
+        let pinned_node = pinned_cursor.next_node().unwrap().unwrap();
         assert!(governor.retained_result_snapshot().retained_bytes > owner_charge);
-        assert_eq!(
-            graph
-                .runtime_governor()
-                .retained_result_snapshot()
-                .retained_bytes,
-            0
-        );
-        drop((first, first_node));
+        assert_eq!(graph_governor.retained_result_snapshot().retained_bytes, 0);
+        drop((pinned_cursor, pinned_node));
         assert_eq!(
             governor.retained_result_snapshot().retained_bytes,
             owner_charge
