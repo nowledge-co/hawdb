@@ -6,8 +6,19 @@ use super::*;
 #[test]
 fn constant_list_lookup_rebinds_and_matches_eager_comprehension() {
     let mut db = Database::new();
-    db.query("UNWIND ['key-0', 'key-1', 'absent', null, 1] AS key CREATE (:Lookup {key: key})")
+    for key in [
+        Value::String("key-0".into()),
+        Value::String("key-1".into()),
+        Value::String("absent".into()),
+        Value::Null,
+        Value::Int(1),
+    ] {
+        db.query_with_params(
+            "CREATE (:Lookup {key: $key})",
+            &BTreeMap::from([("key".into(), key)]),
+        )
         .unwrap();
+    }
     let query = "MATCH (n:Lookup) RETURN n.key AS key, [c IN $candidates WHERE c.id = n.key][0] AS candidate";
     // An explicit identity projection retains the general eager evaluator.
     let reference = "MATCH (n:Lookup) RETURN n.key AS key, [c IN $candidates WHERE c.id = n.key | c][0] AS candidate";

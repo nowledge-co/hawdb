@@ -43,6 +43,8 @@ checksums. Each successful build's executable was copied before another build
 could reuse the shared Cargo target directory.
 
 After capture, a test-only Box assignment was changed for strict Clippy.
+CI also identified an unsupported row-bound CREATE in an API test fixture;
+that fixture now uses individual parameterized inserts with the same values.
 [validation-only.patch](validation-only.patch) records that change; the manifest
 checks that the optimizer runtime definitions before `cfg(test)` and the
 benchmark remain byte-identical, and records the final test-source hash.

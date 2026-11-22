@@ -163,5 +163,5 @@
   "final_test_source_sha256": {
     "crates/optimizer-graph/src/graph/logical_rewrite/constant_list_lookup.rs": "a70da001b7fd764d167eef6284298606bb6b2260673d02dce0b9afcea8d6b409"
   },
-  "post_capture_change": "Only a cfg(test) Box-content assignment was changed for strict Clippy; the benchmark and optimizer runtime definitions remain byte-identical."
+  "post_capture_change": "A cfg(test) Box-content assignment was changed for strict Clippy, and an API test fixture was corrected to use supported parameterized inserts. The benchmark and optimizer runtime definitions remain byte-identical."
 }
