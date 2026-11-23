@@ -825,7 +825,14 @@ impl GraphExecutionWrite for GraphStore {
         // the mutated state, and nothing is published unless it succeeds.
         let mut transaction = self.begin_mutation_transaction(catalog);
         let summary = transaction.stage_mutation_without_commit_rows(mutation, limits)?;
-        let rows = project(transaction.catalog(), transaction.store(), &summary)?;
+        let rows = project(
+            transaction.catalog(),
+            crate::store::MutationReturnStores {
+                before: self,
+                after: transaction.store(),
+            },
+            &summary,
+        )?;
         self.commit_mutation_transaction_and_relational(
             catalog,
             transaction,

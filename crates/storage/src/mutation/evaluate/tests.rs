@@ -274,12 +274,10 @@ fn minimum_preservation_handles_null_replacement_and_disabled_preservation() {
 
 #[test]
 fn range_preservation_uses_the_same_zoned_order_as_predicates() {
-    let utc = Value::DateTime(
-        hawdb_core::temporal::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z").unwrap(),
-    );
-    let east = Value::DateTime(
-        hawdb_core::temporal::DateTime::parse_from_rfc3339("2026-01-01T01:00:00+01:00").unwrap(),
-    );
+    let utc =
+        Value::DateTime(hawdb_core::temporal::parse_datetime("2026-01-01T00:00:00Z").unwrap());
+    let east =
+        Value::DateTime(hawdb_core::temporal::parse_datetime("2026-01-01T01:00:00+01:00").unwrap());
     assert_eq!(
         hawdb_core::temporal::comparable_ordering(&utc, &east),
         Some(Ordering::Less)

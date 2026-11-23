@@ -73,10 +73,21 @@ impl MutationRunBudget {
     fn check(&self, additional: u64) -> Result<u64> {
         let total = add(self.retained, additional)?;
         if total > self.limit {
-            return Err(HawDBError::Storage(format!(
-                "search mutation-run working set requires {total} bytes, exceeding {}",
-                self.limit,
-            )));
+            return Err(hawdb_core::ResourceBudgetError {
+                resource: hawdb_core::ResourceBudgetKind::MemoryBytes,
+                scope: hawdb_core::ResourceBudgetScope::Operator,
+                owner: "search mutation-run reader".into(),
+                memory_class: None,
+                requested: additional,
+                used: self.retained,
+                budget: self.limit,
+                budget_option: "SearchOutOfCoreConfig.max_mutation_working_bytes",
+                message: format!(
+                    "search mutation-run working set requires {total} bytes, exceeding {}",
+                    self.limit,
+                ),
+            }
+            .into());
         }
         Ok(total)
     }
@@ -377,16 +388,20 @@ impl SearchMutationRunBody {
     pub(super) fn encode(&self) -> Result<Vec<u8>> {
         self.validate()?;
         let body = serde_json::to_vec(self).map_err(|error| {
-            HawDBError::Storage(format!("failed to encode search mutation run: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!("failed to encode search mutation run: {error}"))
+            })
         })?;
         serde_json::to_vec(&SearchMutationRunEnvelope {
             body: self.clone(),
             checksum: checksum_bytes(&body),
         })
         .map_err(|error| {
-            HawDBError::Storage(format!(
-                "failed to encode search mutation-run envelope: {error}"
-            ))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!(
+                    "failed to encode search mutation-run envelope: {error}"
+                ))
+            })
         })
     }
 
@@ -779,7 +794,7 @@ pub(super) fn validate_targets_with_admission<'a>(
         let _io = admission
             .map(|(admission, _)| admission.io())
             .transpose()
-            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+            .map_err(HawDBError::from_execution_error)?;
         Some(directory.create(&path)?)
     } else {
         None
@@ -826,7 +841,7 @@ pub(super) fn validate_targets_with_admission<'a>(
                 let _io = admission
                     .map(|(admission, _)| admission.io())
                     .transpose()
-                    .map_err(|error| HawDBError::Execution(error.to_string()))?;
+                    .map_err(HawDBError::from_execution_error)?;
                 if let Some(body) = &mut captured_body {
                     use std::io::{Seek, SeekFrom};
                     body.set_len(0)?;
@@ -1073,7 +1088,17 @@ mod tests {
         let (error, rejected_peak) = allocation::measure(|| {
             SearchMutationRun::open(&path, &manifests[0], u64::MAX, 5, &mut rejected).unwrap_err()
         });
-        assert!(error.to_string().contains("mutation-run working set"));
+        assert!(
+            matches!(&error, HawDBError::ResourceBudgetExceeded(cause)
+                if cause.resource == hawdb_core::ResourceBudgetKind::MemoryBytes
+                    && cause.scope == hawdb_core::ResourceBudgetScope::Operator
+                    && cause.owner == "search mutation-run reader"
+                    && cause.requested == phases[0]
+                    && cause.used == base
+                    && cause.budget == first_limit - 1
+                    && cause.budget_option == "SearchOutOfCoreConfig.max_mutation_working_bytes"),
+            "{error:?}"
+        );
         assert_eq!(rejected.retained, base);
         drop(error);
         // Rejected decoding scanned fixed blocks without retaining the term array.
@@ -1097,7 +1122,16 @@ mod tests {
         let (error, peak) = allocation::measure(|| {
             SearchMutationRun::open(&path, &manifests[1], u64::MAX, 5, &mut budget).unwrap_err()
         });
-        assert!(error.to_string().contains("mutation-run working set"));
+        assert!(
+            matches!(&error, HawDBError::ResourceBudgetExceeded(cause)
+                if cause.resource == hawdb_core::ResourceBudgetKind::MemoryBytes
+                    && cause.scope == hawdb_core::ResourceBudgetScope::Operator
+                    && cause.owner == "search mutation-run reader"
+                    && cause.used == retained
+                    && cause.budget == limit
+                    && cause.budget_option == "SearchOutOfCoreConfig.max_mutation_working_bytes"),
+            "{error:?}"
+        );
         assert!(peak as u64 <= limit);
         assert_eq!(budget.retained, retained);
         drop(error);

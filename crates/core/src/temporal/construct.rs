@@ -15,9 +15,12 @@
 //! Constructors: strings, maps, conversions between temporal kinds, the
 //! statement clock and epoch values.
 
+use super::types::*;
+use super::SignedDuration;
+
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, Datelike, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use crate::temporal::{Date, OffsetDateTime, PlainDateTime, Time, UtcOffset};
 
 use super::parse::{parse_offset, weekday_from_number};
 use super::{
@@ -27,8 +30,8 @@ use super::{
 };
 use crate::Value;
 
-fn utc() -> FixedOffset {
-    FixedOffset::east_opt(0).expect("UTC offset")
+fn utc() -> UtcOffset {
+    offset_from_seconds(0).expect("UTC offset")
 }
 
 /// A numeric duration component.
@@ -230,10 +233,10 @@ pub(crate) fn kind_name(value: &Value) -> &'static str {
 pub fn construct(
     kind: TemporalKind,
     argument: Option<&Value>,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> TemporalResult<Value> {
     match argument {
-        None => Ok(from_datetime(kind, now.fixed_offset())),
+        None => Ok(from_datetime(kind, now)),
         Some(Value::Null) => Ok(Value::Null),
         Some(Value::String(text)) => match kind {
             TemporalKind::Date => parse_date(text).map(Value::Date),
@@ -246,11 +249,11 @@ pub fn construct(
     }
 }
 
-fn from_datetime(kind: TemporalKind, value: DateTime<FixedOffset>) -> Value {
+fn from_datetime(kind: TemporalKind, value: OffsetDateTime) -> Value {
     match kind {
-        TemporalKind::Date => Value::Date(value.date_naive()),
+        TemporalKind::Date => Value::Date(value.date()),
         TemporalKind::LocalTime => Value::LocalTime(value.time()),
-        TemporalKind::LocalDateTime => Value::LocalDateTime(value.naive_local()),
+        TemporalKind::LocalDateTime => Value::LocalDateTime(local_datetime(value)),
         TemporalKind::DateTime => Value::DateTime(value),
     }
 }
@@ -261,7 +264,7 @@ pub(crate) fn convert(kind: TemporalKind, value: &Value) -> TemporalResult<Value
     let converted = match (kind, value) {
         (TemporalKind::Date, Value::Date(date)) => Some(Value::Date(*date)),
         (TemporalKind::Date, Value::LocalDateTime(value)) => Some(Value::Date(value.date())),
-        (TemporalKind::Date, Value::DateTime(value)) => Some(Value::Date(value.date_naive())),
+        (TemporalKind::Date, Value::DateTime(value)) => Some(Value::Date(value.date())),
         (TemporalKind::LocalTime, Value::LocalTime(time)) => Some(Value::LocalTime(*time)),
         (TemporalKind::LocalTime, Value::LocalDateTime(value)) => {
             Some(Value::LocalTime(value.time()))
@@ -271,17 +274,17 @@ pub(crate) fn convert(kind: TemporalKind, value: &Value) -> TemporalResult<Value
             Some(Value::LocalDateTime(*value))
         }
         (TemporalKind::LocalDateTime, Value::DateTime(value)) => {
-            Some(Value::LocalDateTime(value.naive_local()))
+            Some(Value::LocalDateTime(local_datetime(*value)))
         }
         (TemporalKind::LocalDateTime, Value::Date(date)) => {
-            Some(Value::LocalDateTime(date.and_time(NaiveTime::MIN)))
+            Some(Value::LocalDateTime(date.with_time(Time::MIDNIGHT)))
         }
         (TemporalKind::DateTime, Value::DateTime(value)) => Some(Value::DateTime(*value)),
         (TemporalKind::DateTime, Value::LocalDateTime(value)) => {
             attach(*value, utc()).map(Value::DateTime)
         }
         (TemporalKind::DateTime, Value::Date(date)) => {
-            attach(date.and_time(NaiveTime::MIN), utc()).map(Value::DateTime)
+            attach(date.with_time(Time::MIDNIGHT), utc()).map(Value::DateTime)
         }
         _ => None,
     };
@@ -294,8 +297,11 @@ pub(crate) fn convert(kind: TemporalKind, value: &Value) -> TemporalResult<Value
     })
 }
 
-pub(crate) fn attach(value: NaiveDateTime, offset: FixedOffset) -> Option<DateTime<FixedOffset>> {
-    value.and_local_timezone(offset).single()
+pub(crate) fn attach(value: PlainDateTime, offset: UtcOffset) -> Option<OffsetDateTime> {
+    value
+        .assume_offset(offset)
+        .checked_to_utc()
+        .map(|_| value.assume_offset(offset))
 }
 
 /// Case-insensitive view of a constructor map. NULL entries are absent.
@@ -392,7 +398,7 @@ const TIME_KEYS: [&str; 6] = [
     "nanosecond",
 ];
 
-fn date_fields(fields: &Fields<'_>, base: Option<NaiveDate>) -> TemporalResult<Option<NaiveDate>> {
+fn date_fields(fields: &Fields<'_>, base: Option<Date>) -> TemporalResult<Option<Date>> {
     if !DATE_KEYS.iter().any(|key| fields.has(key)) {
         return Ok(base);
     }
@@ -430,10 +436,10 @@ fn date_fields(fields: &Fields<'_>, base: Option<NaiveDate>) -> TemporalResult<O
                 fields.function
             )));
         }
-        return NaiveDate::from_ymd_opt(
+        return date_from_ymd(
             year.unwrap_or(base.year()),
-            month.unwrap_or(base.month()),
-            day.unwrap_or(base.day()),
+            month.unwrap_or(base.month() as u32),
+            day.unwrap_or(u32::from(base.day())),
         )
         .map(Some)
         .ok_or_else(|| fields.invalid());
@@ -449,9 +455,9 @@ fn date_fields(fields: &Fields<'_>, base: Option<NaiveDate>) -> TemporalResult<O
             TemporalError::new(format!("{}() 'dayOfWeek' requires 'week'", fields.function))
         })?;
         weekday_from_number(day_of_week.unwrap_or(1))
-            .and_then(|weekday| NaiveDate::from_isoywd_opt(year, week, weekday))
+            .and_then(|weekday| date_from_iso_week(year, week, weekday))
     } else if let Some(ordinal) = ordinal {
-        NaiveDate::from_yo_opt(year, ordinal)
+        date_from_ordinal(year, ordinal)
     } else if quarter.is_some() || day_of_quarter.is_some() {
         let quarter = quarter.ok_or_else(|| {
             TemporalError::new(format!(
@@ -462,12 +468,12 @@ fn date_fields(fields: &Fields<'_>, base: Option<NaiveDate>) -> TemporalResult<O
         if !(1..=4).contains(&quarter) {
             return Err(fields.invalid());
         }
-        let start = NaiveDate::from_ymd_opt(year, (quarter - 1) * 3 + 1, 1);
+        let start = date_from_ymd(year, (quarter - 1) * 3 + 1, 1);
         let offset = day_of_quarter.unwrap_or(1);
         start
             .filter(|_| offset >= 1)
-            .and_then(|start| start.checked_add_days(chrono::Days::new(u64::from(offset - 1))))
-            .filter(|date| (date.month() - 1) / 3 + 1 == quarter && date.year() == year)
+            .and_then(|start| start.checked_add(SignedDuration::days(i64::from(offset - 1))))
+            .filter(|date| ((date.month() as u32) - 1) / 3 + 1 == quarter && date.year() == year)
     } else {
         if day.is_some() && month.is_none() {
             return Err(TemporalError::new(format!(
@@ -475,13 +481,12 @@ fn date_fields(fields: &Fields<'_>, base: Option<NaiveDate>) -> TemporalResult<O
                 fields.function
             )));
         }
-        NaiveDate::from_ymd_opt(year, month.unwrap_or(1), day.unwrap_or(1))
+        date_from_ymd(year, month.unwrap_or(1), day.unwrap_or(1))
     };
     date.map(Some).ok_or_else(|| fields.invalid())
 }
 
-fn time_fields(fields: &Fields<'_>, base: Option<NaiveTime>) -> TemporalResult<Option<NaiveTime>> {
-    use chrono::Timelike;
+fn time_fields(fields: &Fields<'_>, base: Option<Time>) -> TemporalResult<Option<Time>> {
     if !TIME_KEYS.iter().any(|key| fields.has(key)) {
         return Ok(base);
     }
@@ -506,9 +511,9 @@ fn time_fields(fields: &Fields<'_>, base: Option<NaiveTime>) -> TemporalResult<O
     }
     let (hour, minute, second, nanos) = match base {
         Some(base) => (
-            hour.unwrap_or(base.hour()),
-            minute.unwrap_or(base.minute()),
-            second.unwrap_or(base.second()),
+            hour.unwrap_or(u32::from(base.hour())),
+            minute.unwrap_or(u32::from(base.minute())),
+            second.unwrap_or(u32::from(base.second())),
             if has_fraction {
                 fraction as u32
             } else {
@@ -539,17 +544,17 @@ fn time_fields(fields: &Fields<'_>, base: Option<NaiveTime>) -> TemporalResult<O
     if second > 59 || nanos >= 1_000_000_000 {
         return Err(fields.invalid());
     }
-    NaiveTime::from_hms_nano_opt(hour, minute, second, nanos)
+    time_from_hms_nano(hour, minute, second, nanos)
         .map(Some)
         .ok_or_else(|| fields.invalid())
 }
 
-fn base_date(fields: &Fields<'_>) -> TemporalResult<Option<NaiveDate>> {
+fn base_date(fields: &Fields<'_>) -> TemporalResult<Option<Date>> {
     match fields.value("date") {
         None => Ok(None),
         Some(Value::Date(date)) => Ok(Some(*date)),
         Some(Value::LocalDateTime(value)) => Ok(Some(value.date())),
-        Some(Value::DateTime(value)) => Ok(Some(value.date_naive())),
+        Some(Value::DateTime(value)) => Ok(Some(value.date())),
         Some(value) => Err(TemporalError::new(format!(
             "{}() map key 'date' must be a temporal value with a date, got {}",
             fields.function,
@@ -558,12 +563,12 @@ fn base_date(fields: &Fields<'_>) -> TemporalResult<Option<NaiveDate>> {
     }
 }
 
-fn base_time(fields: &Fields<'_>) -> TemporalResult<(Option<NaiveTime>, Option<FixedOffset>)> {
+fn base_time(fields: &Fields<'_>) -> TemporalResult<(Option<Time>, Option<UtcOffset>)> {
     match fields.value("time") {
         None => Ok((None, None)),
         Some(Value::LocalTime(time)) => Ok((Some(*time), None)),
         Some(Value::LocalDateTime(value)) => Ok((Some(value.time()), None)),
-        Some(Value::DateTime(value)) => Ok((Some(value.time()), Some(*value.offset()))),
+        Some(Value::DateTime(value)) => Ok((Some(value.time()), Some(value.offset()))),
         Some(value) => Err(TemporalError::new(format!(
             "{}() map key 'time' must be a temporal value with a time, got {}",
             fields.function,
@@ -574,12 +579,12 @@ fn base_time(fields: &Fields<'_>) -> TemporalResult<(Option<NaiveTime>, Option<F
 
 fn base_datetime(
     fields: &Fields<'_>,
-) -> TemporalResult<Option<(NaiveDateTime, Option<FixedOffset>)>> {
+) -> TemporalResult<Option<(PlainDateTime, Option<UtcOffset>)>> {
     match fields.value("datetime") {
         None => Ok(None),
         Some(Value::LocalDateTime(value)) => Ok(Some((*value, None))),
-        Some(Value::DateTime(value)) => Ok(Some((value.naive_local(), Some(*value.offset())))),
-        Some(Value::Date(date)) => Ok(Some((date.and_time(NaiveTime::MIN), None))),
+        Some(Value::DateTime(value)) => Ok(Some((local_datetime(*value), Some(value.offset())))),
+        Some(Value::Date(date)) => Ok(Some((date.with_time(Time::MIDNIGHT), None))),
         Some(value) => Err(TemporalError::new(format!(
             "{}() map key 'datetime' must be a temporal value with a date, got {}",
             fields.function,
@@ -588,7 +593,7 @@ fn base_datetime(
     }
 }
 
-fn timezone(fields: &Fields<'_>) -> TemporalResult<Option<FixedOffset>> {
+fn timezone(fields: &Fields<'_>) -> TemporalResult<Option<UtcOffset>> {
     match fields.value("timezone") {
         None => Ok(None),
         Some(Value::String(text)) => parse_offset(text).map(Some),
@@ -602,7 +607,7 @@ fn timezone(fields: &Fields<'_>) -> TemporalResult<Option<FixedOffset>> {
 fn from_map(
     kind: TemporalKind,
     map: &BTreeMap<String, Value>,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> TemporalResult<Value> {
     let function = kind.function_name();
     let mut allowed: Vec<&str> = vec!["timezone"];
@@ -626,7 +631,8 @@ fn from_map(
         // `date({timezone: '+01:00'})`: the statement clock in that offset.
         return Ok(from_datetime(
             kind,
-            now.with_timezone(&zone.unwrap_or_else(utc)),
+            now.checked_to_offset(zone.unwrap_or_else(utc))
+                .ok_or_else(|| fields.invalid())?,
         ));
     }
     if kind == TemporalKind::DateTime && (fields.has("epochMillis") || fields.has("epochSeconds")) {
@@ -668,8 +674,8 @@ fn from_map(
             };
             let date = date_fields(&fields, date_base)?
                 .ok_or_else(|| TemporalError::new(format!("{function}() map requires a date")))?;
-            let time = time_fields(&fields, time_base)?.unwrap_or(NaiveTime::MIN);
-            let local = date.and_time(time);
+            let time = time_fields(&fields, time_base)?.unwrap_or(Time::MIDNIGHT);
+            let local = date.with_time(time);
             if kind == TemporalKind::LocalDateTime {
                 return Ok(Value::LocalDateTime(local));
             }
@@ -684,7 +690,8 @@ fn from_map(
                         .any(|key| fields.has(key)) =>
                 {
                     attach(local, offset)
-                        .map(|value| Value::DateTime(value.with_timezone(&zone)))
+                        .and_then(|value| value.checked_to_offset(zone))
+                        .map(Value::DateTime)
                         .ok_or_else(|| fields.invalid())
                 }
                 _ => attach(local, zone.or(base_offset).unwrap_or_else(utc))
@@ -695,7 +702,7 @@ fn from_map(
     }
 }
 
-fn epoch_from_map(fields: &Fields<'_>, zone: Option<FixedOffset>) -> TemporalResult<Value> {
+fn epoch_from_map(fields: &Fields<'_>, zone: Option<UtcOffset>) -> TemporalResult<Value> {
     if fields.has("epochMillis") && fields.has("epochSeconds") {
         return Err(TemporalError::new(
             "datetime() map cannot combine 'epochMillis' and 'epochSeconds'",
@@ -720,17 +727,18 @@ fn epoch_from_map(fields: &Fields<'_>, zone: Option<FixedOffset>) -> TemporalRes
         + i128::from(fields.int("nanosecond")?.unwrap_or(0));
     let value = epoch_nanos(base + fraction)?;
     Ok(Value::DateTime(
-        value.with_timezone(&zone.unwrap_or_else(utc)),
+        value
+            .checked_to_offset(zone.unwrap_or_else(utc))
+            .ok_or_else(|| fields.invalid())?,
     ))
 }
 
-fn epoch_nanos(nanos: i128) -> TemporalResult<DateTime<FixedOffset>> {
+fn epoch_nanos(nanos: i128) -> TemporalResult<OffsetDateTime> {
     let seconds = i64::try_from(nanos.div_euclid(NANOS_PER_SECOND));
     let subsecond = nanos.rem_euclid(NANOS_PER_SECOND) as u32;
     seconds
         .ok()
-        .and_then(|seconds| DateTime::from_timestamp(seconds, subsecond))
-        .map(|value| value.fixed_offset())
+        .and_then(|seconds| datetime_from_timestamp(seconds, subsecond))
         .ok_or_else(|| TemporalError::new("epoch value is out of the supported datetime range"))
 }
 

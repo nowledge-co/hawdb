@@ -110,7 +110,12 @@ fn live_state(count: i64) -> AppendState {
 
 fn assert_stopped<T: std::fmt::Debug>(result: Result<T, AppendTableError>) {
     assert!(
-        matches!(&result, Err(AppendTableError::Admission(message)) if message.contains("checkpoint build stopped")),
+        matches!(
+            &result,
+            Err(AppendTableError::Stopped(
+                hawdb_core::RuntimeCancellationReason::Cancelled
+            ))
+        ),
         "{result:?}"
     );
 }

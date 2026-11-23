@@ -27,7 +27,9 @@
 //! | zoned datetime  | 16    | UTC date + UTC time + `i32` offset seconds east     |
 //! | duration        | 28    | `i64` months, `i64` days, `i64` seconds, `u32` nanos|
 
-use chrono::{DateTime, Datelike, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
+use super::types::*;
+
+use crate::temporal::{Date, OffsetDateTime, PlainDateTime, Time};
 
 use super::{Duration, TemporalError, TemporalResult};
 use crate::Value;
@@ -87,19 +89,21 @@ fn corrupt(kind: TemporalValueKind, detail: &str) -> TemporalError {
     TemporalError::new(format!("corrupt {kind:?} temporal payload: {detail}"))
 }
 
-fn date_days(date: NaiveDate) -> i32 {
-    date.num_days_from_ce()
+fn date_days(date: Date) -> i32 {
+    date.to_julian_day() - 1_721_425
 }
 
-fn time_nanos(time: NaiveTime) -> u64 {
-    u64::from(time.num_seconds_from_midnight()) * 1_000_000_000 + u64::from(time.nanosecond())
+fn time_nanos(time: Time) -> u64 {
+    (u64::from(time.hour()) * 3_600 + u64::from(time.minute()) * 60 + u64::from(time.second()))
+        * 1_000_000_000
+        + u64::from(time.nanosecond())
 }
 
-fn write_date(date: NaiveDate, out: &mut Vec<u8>) {
+fn write_date(date: Date, out: &mut Vec<u8>) {
     out.extend_from_slice(&date_days(date).to_le_bytes());
 }
 
-fn write_time(time: NaiveTime, out: &mut Vec<u8>) {
+fn write_time(time: Time, out: &mut Vec<u8>) {
     out.extend_from_slice(&time_nanos(time).to_le_bytes());
 }
 
@@ -114,10 +118,13 @@ pub fn encode_payload(value: &Value, out: &mut Vec<u8>) -> Option<TemporalValueK
             write_time(value.time(), out);
         }
         Value::DateTime(value) => {
-            let utc = value.naive_utc();
-            write_date(utc.date(), out);
-            write_time(utc.time(), out);
-            out.extend_from_slice(&value.offset().local_minus_utc().to_le_bytes());
+            // OffsetDateTime guarantees the local date's range. Its UTC date
+            // may be just outside that range at an extreme fixed offset.
+            let nanos = value.unix_timestamp_nanos();
+            let day = (nanos.div_euclid(super::NANOS_PER_DAY) + 719_163) as i32;
+            out.extend_from_slice(&day.to_le_bytes());
+            out.extend_from_slice(&(nanos.rem_euclid(super::NANOS_PER_DAY) as u64).to_le_bytes());
+            out.extend_from_slice(&value.offset().whole_seconds().to_le_bytes());
         }
         Value::Duration(duration) => {
             out.extend_from_slice(&duration.months.to_le_bytes());
@@ -142,18 +149,22 @@ fn read_array<const N: usize>(bytes: &[u8], at: usize) -> [u8; N] {
         .expect("payload length checked")
 }
 
-fn read_date(kind: TemporalValueKind, bytes: &[u8], at: usize) -> TemporalResult<NaiveDate> {
-    NaiveDate::from_num_days_from_ce_opt(i32::from_le_bytes(read_array(bytes, at)))
+fn read_date(kind: TemporalValueKind, bytes: &[u8], at: usize) -> TemporalResult<Date> {
+    i32::from_le_bytes(read_array(bytes, at))
+        .checked_add(1_721_425)
+        .and_then(|day| Date::from_julian_day(day).ok())
         .ok_or_else(|| corrupt(kind, "day number is out of range"))
 }
 
-fn read_time(kind: TemporalValueKind, bytes: &[u8], at: usize) -> TemporalResult<NaiveTime> {
+fn read_time(kind: TemporalValueKind, bytes: &[u8], at: usize) -> TemporalResult<Time> {
     let nanos = u64::from_le_bytes(read_array(bytes, at));
     if nanos >= 86_400 * 1_000_000_000 {
         return Err(corrupt(kind, "time of day is out of range"));
     }
-    NaiveTime::from_num_seconds_from_midnight_opt(
-        (nanos / 1_000_000_000) as u32,
+    time_from_hms_nano(
+        (nanos / 3_600_000_000_000) as u32,
+        (nanos / 60_000_000_000 % 60) as u32,
+        (nanos / 1_000_000_000 % 60) as u32,
         (nanos % 1_000_000_000) as u32,
     )
     .ok_or_else(|| corrupt(kind, "time of day is out of range"))
@@ -175,18 +186,23 @@ pub fn decode_payload(kind: TemporalValueKind, bytes: &[u8]) -> TemporalResult<V
     Ok(match kind {
         TemporalValueKind::Date => Value::Date(read_date(kind, bytes, 0)?),
         TemporalValueKind::LocalTime => Value::LocalTime(read_time(kind, bytes, 0)?),
-        TemporalValueKind::LocalDateTime => Value::LocalDateTime(NaiveDateTime::new(
+        TemporalValueKind::LocalDateTime => Value::LocalDateTime(PlainDateTime::new(
             read_date(kind, bytes, 0)?,
             read_time(kind, bytes, 4)?,
         )),
         TemporalValueKind::DateTime => {
-            let utc = NaiveDateTime::new(read_date(kind, bytes, 0)?, read_time(kind, bytes, 4)?);
-            let offset = FixedOffset::east_opt(i32::from_le_bytes(read_array(bytes, 12)))
+            let days = i32::from_le_bytes(read_array(bytes, 0));
+            let time = read_time(kind, bytes, 4)?;
+            let offset = offset_from_seconds(i32::from_le_bytes(read_array(bytes, 12)))
                 .ok_or_else(|| corrupt(kind, "offset is out of range"))?;
-            // Reject instants whose local representation leaves chrono's range.
-            utc.checked_add_offset(offset)
+            let local_nanos = (i128::from(days) - 719_163) * super::NANOS_PER_DAY
+                + i128::from(time_nanos(time))
+                + i128::from(offset.whole_seconds()) * super::NANOS_PER_SECOND;
+            let local = OffsetDateTime::from_unix_timestamp_nanos(local_nanos)
+                .ok()
+                .map(local_datetime)
                 .ok_or_else(|| corrupt(kind, "local datetime is out of range"))?;
-            Value::DateTime(DateTime::from_naive_utc_and_offset(utc, offset))
+            Value::DateTime(local.assume_offset(offset))
         }
         TemporalValueKind::Duration => {
             let months = i64::from_le_bytes(read_array(bytes, 0));
@@ -196,9 +212,13 @@ pub fn decode_payload(kind: TemporalValueKind, bytes: &[u8]) -> TemporalResult<V
             if nanos >= 1_000_000_000 {
                 return Err(corrupt(kind, "nanoseconds are out of range"));
             }
-            let time = chrono::TimeDelta::new(seconds, nanos)
-                .ok_or_else(|| corrupt(kind, "time part is out of range"))?;
-            Value::duration(Duration::new(months, days, time))
+            let time =
+                super::delta_from_nanos(i128::from(seconds) * 1_000_000_000 + i128::from(nanos))
+                    .ok_or_else(|| corrupt(kind, "time part is out of range"))?;
+            Value::duration(
+                Duration::new(months, days, time)
+                    .ok_or_else(|| corrupt(kind, "time part is out of range"))?,
+            )
         }
     })
 }
@@ -211,9 +231,9 @@ mod tests {
     fn samples() -> Vec<Value> {
         vec![
             Value::Date(parse_date("2026-10-30").unwrap()),
-            Value::Date(NaiveDate::MIN),
-            Value::Date(NaiveDate::MAX),
-            Value::LocalTime(NaiveTime::from_hms_nano_opt(23, 59, 59, 999_999_999).unwrap()),
+            Value::Date(Date::MIN),
+            Value::Date(Date::MAX),
+            Value::LocalTime(time_from_hms_nano(23, 59, 59, 999_999_999).unwrap()),
             Value::LocalDateTime(parse_local_datetime("1970-01-01T00:00:00.000000001").unwrap()),
             Value::DateTime(parse_datetime("2026-10-30T12:00:00+02:00").unwrap()),
             Value::DateTime(parse_datetime("2026-10-30T12:00:00-00:30:15").unwrap()),
@@ -256,6 +276,30 @@ mod tests {
     }
 
     #[test]
+    fn native_host_offsets_round_trip_at_calendar_edges() {
+        use super::super::UtcOffset;
+        use std::hash::{Hash, Hasher};
+        for (local, seconds) in [
+            (PlainDateTime::MIN, 25 * 3_600),
+            (PlainDateTime::MAX, -25 * 3_600),
+        ] {
+            let value = Value::DateTime(
+                local.assume_offset(UtcOffset::from_whole_seconds(seconds).unwrap()),
+            );
+            let bytes = payload(&value).unwrap();
+            assert_eq!(
+                decode_payload(TemporalValueKind::DateTime, &bytes).unwrap(),
+                value
+            );
+            let mut hash = std::collections::hash_map::DefaultHasher::new();
+            value.hash(&mut hash);
+            let _ = hash.finish();
+        }
+        assert!(Duration::new(0, 0, super::super::SignedDuration::MAX).is_none());
+        assert!(Duration::new(0, 0, super::super::SignedDuration::MIN).is_none());
+    }
+
+    #[test]
     fn corrupt_payloads_fail_closed() {
         let kinds = TemporalValueKind::ALL;
         for kind in kinds {
@@ -272,7 +316,7 @@ mod tests {
             parse_datetime("2026-10-30T12:00:00Z").unwrap(),
         ))
         .unwrap();
-        datetime[12..].copy_from_slice(&86_400i32.to_le_bytes());
+        datetime[12..].copy_from_slice(&(26 * 3_600i32).to_le_bytes());
         assert!(decode_payload(TemporalValueKind::DateTime, &datetime).is_err());
         let mut duration = vec![0u8; 28];
         duration[24..].copy_from_slice(&1_000_000_000u32.to_le_bytes());

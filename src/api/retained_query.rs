@@ -148,15 +148,44 @@ fn retained_result_work_bytes(capacity: usize, view_metadata: usize) -> Result<u
         .ok_or(RetainedQueryError::SizeOverflow)
 }
 
-/// One admission binding per database, shared by all snapshots/cursors. Late
-/// ordinary-governor replacement cannot multiply retained-result allowances.
+/// One admission binding per database ownership scope, shared by its snapshots
+/// and cursors. Late ordinary-governor replacement cannot multiply allowances.
 #[derive(Debug, Default)]
 pub(super) struct RetainedRuntime {
     configured: Mutex<Option<RuntimeGovernor>>,
+    fixed_governor: Option<RuntimeGovernor>,
     bound: OnceLock<RuntimeGovernor>,
 }
+
+/// One stable admission and retained-result binding for an embedded owner,
+/// including databases adopted by later administrative callbacks.
+#[derive(Debug)]
+pub(crate) struct EmbeddedRuntimeBinding {
+    governor: RuntimeGovernor,
+    pub(super) retained: Arc<RetainedRuntime>,
+}
+
+impl EmbeddedRuntimeBinding {
+    pub(crate) fn new(governor: RuntimeGovernor) -> Self {
+        let retained = Arc::new(RetainedRuntime {
+            fixed_governor: Some(governor.clone()),
+            ..RetainedRuntime::default()
+        });
+        Self { governor, retained }
+    }
+
+    pub(crate) fn governor(&self) -> &RuntimeGovernor {
+        &self.governor
+    }
+}
+
 impl RetainedRuntime {
     pub(super) fn configure(&self, governor: RuntimeGovernor) {
+        // A removed database can still share an owner's retained binding.
+        // Reconfiguring that database must not redirect the owner's first read.
+        if self.fixed_governor.is_some() {
+            return;
+        }
         *self
             .configured
             .lock()
@@ -174,13 +203,17 @@ impl RetainedRuntime {
             .configured
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let candidate = configured.clone().unwrap_or_else(|| {
-            RuntimeGovernor::new(
-                RuntimeGovernorConfig::shared_host(),
-                RuntimeResourceSnapshot::detect(),
-                IoConcurrencyBudget::new(2, 1),
-            )
-        });
+        let candidate = self
+            .fixed_governor
+            .clone()
+            .or_else(|| configured.clone())
+            .unwrap_or_else(|| {
+                RuntimeGovernor::new(
+                    RuntimeGovernorConfig::shared_host(),
+                    RuntimeResourceSnapshot::detect(),
+                    IoConcurrencyBudget::new(2, 1),
+                )
+            });
         // The control owner and first batch each require a handle. Reject an
         // unusable configuration before binding so the host can correct it.
         if candidate.retained_result_snapshot().handle_limit < minimum_handles {

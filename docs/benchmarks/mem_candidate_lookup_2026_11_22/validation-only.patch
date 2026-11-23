@@ -1,0 +1,11 @@
+--- a/crates/optimizer-graph/src/graph/logical_rewrite/constant_list_lookup.rs
++++ b/crates/optimizer-graph/src/graph/logical_rewrite/constant_list_lookup.rs
+@@ -218,7 +218,7 @@
+                     let E::ListIndex { index, .. } = &mut expression else {
+                         unreachable!()
+                     };
+-                    *index = Box::new(E::Literal(Value::Int(-1)));
++                    **index = E::Literal(Value::Int(-1));
+                 }
+                 9 => {
+                     values[0] = Value::Map(BTreeMap::from([(

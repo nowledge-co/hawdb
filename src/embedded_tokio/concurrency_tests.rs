@@ -105,6 +105,57 @@ fn read(engine: &HawDBTokioEmbedded, sql: bool, id: i64) -> Value {
 }
 
 #[test]
+fn sql_autocommit_clock_advances_without_a_write_on_tokio_workers() {
+    let fixture = Fixture::new();
+    let engine = &fixture.engine;
+    let query = || {
+        engine
+            .runtime()
+            .block_on(engine.query_sql_request(OwnedSqlQueryRequest::new(
+                "SELECT CURRENT_TIMESTAMP AS t, now() AS n",
+            )))
+            .unwrap()
+            .unwrap()
+    };
+    let first = query();
+    assert_eq!(first.rows[0]["t"], first.rows[0]["n"]);
+    thread::sleep(Duration::from_millis(20));
+    let second = query();
+    assert_eq!(second.rows[0]["t"], second.rows[0]["n"]);
+    assert_ne!(first.rows[0]["t"], second.rows[0]["t"]);
+    fixture.close();
+}
+
+#[test]
+fn replacement_keeps_tokio_and_inner_admission_on_one_governor() {
+    let fixture = Fixture::new();
+    let engine = &fixture.engine;
+    engine.with_embedded_mut(|embedded| *embedded = HawDBEmbedded::open_in_memory());
+    let governor = engine.runtime().governor();
+    let permit = governor
+        .try_admit(
+            RuntimeWorkRequest::new(RuntimeWorkPriority::Foreground, RuntimeWorkKind::Control)
+                .with_cpu_slots(governor.snapshot().limits.effective_cpu_slots.get()),
+        )
+        .unwrap();
+    let result = engine.with_embedded_mut(|embedded| {
+        embedded.query_sql_request_admitted(crate::SqlQueryRequest::new("SELECT 1"))
+    });
+    assert!(
+        matches!(result, Err(crate::EmbeddedQueryError::Admission(ref error))
+        if error.code == hawdb_qos::RuntimeAdmissionCode::CpuSaturated),
+        "{result:?}"
+    );
+    drop(permit);
+    engine
+        .runtime()
+        .block_on(engine.query_sql_request(OwnedSqlQueryRequest::new("SELECT 1")))
+        .unwrap()
+        .unwrap();
+    fixture.close();
+}
+
+#[test]
 fn ordinary_sql_and_cypher_writers_overlap_with_reads_and_refund_admission() {
     for sql in [false, true] {
         let fixture = Fixture::new();
@@ -142,6 +193,56 @@ fn ordinary_sql_and_cypher_writers_overlap_with_reads_and_refund_admission() {
         drop(concurrent);
         fixture.close();
     }
+}
+
+#[test]
+fn new_sql_cypher_and_stream_reads_bypass_the_held_commit_owner() {
+    let fixture = Fixture::new();
+    let engine = &fixture.engine;
+    assert_eq!(read(engine, false, 1), Value::Int(10));
+    let concurrent = engine.embedded.concurrent(&engine.concurrent).unwrap();
+    let (held, acquired) = mpsc::channel();
+    let (release, resume) = mpsc::channel();
+    let writer = thread::spawn(move || {
+        concurrent.with_autocommit_exclusive(|database| {
+            database.query_sql("UPDATE counters SET counter = 99 WHERE id = 1")?;
+            held.send(()).unwrap();
+            resume.recv().unwrap();
+            database.query_sql("SELECT counter FROM counters WHERE id = 1")
+        })
+    });
+    acquired.recv_timeout(Duration::from_secs(10)).unwrap();
+    let reader = engine.clone();
+    let (done, completed) = mpsc::channel();
+    let reads = thread::spawn(move || {
+        let sql = read(&reader, true, 1);
+        let graph = read(&reader, false, 1);
+        let rows = reader
+            .runtime()
+            .block_on(async {
+                let mut stream = reader
+                    .query_stream(
+                        "MATCH (n:Counter) RETURN n.id",
+                        RuntimeTaskContext::default(),
+                    )
+                    .await
+                    .unwrap();
+                let mut rows = 0;
+                while let Some(batch) = stream.next_batch().await.unwrap() {
+                    rows += batch.len();
+                }
+                rows
+            })
+            .unwrap();
+        done.send((sql, graph, rows)).unwrap();
+    });
+    let progress = completed.recv_timeout(Duration::from_secs(10));
+    release.send(()).unwrap();
+    writer.join().unwrap().unwrap();
+    reads.join().unwrap();
+    assert_eq!(progress.unwrap(), (Value::Int(10), Value::Int(10), 2));
+    assert_eq!(read(engine, true, 1), Value::Int(99));
+    fixture.close();
 }
 
 #[test]

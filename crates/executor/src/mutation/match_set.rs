@@ -11,7 +11,7 @@
 //! partial effect.
 
 use super::node_set_value;
-use crate::binding::{map_memory_bytes, map_payload_bytes, value_memory_bytes, Binding};
+use crate::binding::{map_memory_bytes, value_memory_bytes, Binding};
 use crate::expression::evaluate_projection_expression;
 use crate::memory::DEFAULT_EXECUTION_BATCH_ROWS;
 use crate::pipeline::runtime_checkpoint;
@@ -20,12 +20,13 @@ use crate::Row;
 use crate::{QueryMemoryAccount, QueryMemoryClass, QueryMemoryLease, QueryMemoryLedger};
 use hawdb_core::{Catalog, HawDBError, Result, RuntimeTaskContext, Value};
 use hawdb_plan_cypher::{
-    GraphEntityKind, MatchSet, MatchSetReturn, MatchSetValue, PhysicalPlan, ProjectionExpression,
-    SortDirection, SortKey,
+    GraphEntityKind, MatchSet, MatchSetRelationship, MatchSetReturn, MatchSetValue, PhysicalPlan,
+    ProjectionExpression, SortDirection, SortKey,
 };
 use hawdb_storage::mutation::evaluate::evaluate_node_set_value;
 use hawdb_storage::mutation::{
-    EntityPropertyUpdate, GraphMutation, MutationEntity, MutationLimits, NodeSetAssignment,
+    EntityPropertyUpdate, GraphMutation, MatchedRelationshipCreate, MatchedRelationshipMerge,
+    MutationEntity, MutationLimits, NodeSetAssignment, PropertyFilter,
 };
 use hawdb_storage::{NodeId, NodeRecord, RelId, RelRecord};
 use std::collections::{BTreeMap, BTreeSet};
@@ -41,8 +42,8 @@ pub enum MatchSetRecord {
 /// The mutation to commit and the RETURN rows of a [`MatchSet`].
 #[derive(Debug)]
 pub struct MatchSetOutcome {
-    /// `None` when no row targets an entity.
-    pub mutation: Option<GraphMutation>,
+    /// The mutations to commit together, in order; empty when no row writes.
+    pub mutations: Vec<GraphMutation>,
     /// The projected rows; empty without RETURN.
     pub rows: Vec<Row>,
 }
@@ -232,32 +233,42 @@ pub fn resolve_match_set(
         }
     }
 
+    let mut mutations = Vec::new();
+    if let Some(relationship) = &plan.relationship {
+        for (index, row) in rows.iter_mut().enumerate() {
+            checkpoint(index, task_context)?;
+            if let Some(mutation) =
+                relationship_mutation(relationship, row, plan, &records, catalog, charge)?
+            {
+                mutations.push(mutation);
+            }
+        }
+    }
+
     let mut output = Vec::new();
     if let Some(returns) = &plan.returns {
         output = project_returns(
             returns,
             &mut rows,
-            plan,
-            &records,
-            catalog,
+            ReturnContext {
+                plan,
+                records: &records,
+                catalog,
+                limits,
+                output_limits,
+            },
             charge,
             task_context,
         )?;
-        if output.len() > limits.max_result_rows.get() {
-            return Err(HawDBError::Execution(format!(
-                "mutation would exceed max_mutation_result_rows {}",
-                limits.max_result_rows
-            )));
-        }
-        let payload_bytes = output.iter().fold(0usize, |total, row| {
-            total.saturating_add(map_payload_bytes(row))
-        });
-        output_limits.validate(output.len(), payload_bytes)?;
-        if payload_bytes > limits.max_result_payload_bytes.get() {
-            return Err(HawDBError::Execution(format!(
-                "mutation result payload would exceed max_mutation_result_payload_bytes {}",
-                limits.max_result_payload_bytes
-            )));
+        let mut payload_bytes = 0;
+        for (admitted, row) in output.iter().enumerate() {
+            payload_bytes = super::returns::admit_return_row(
+                admitted,
+                payload_bytes,
+                row,
+                limits,
+                output_limits,
+            )?;
         }
     }
 
@@ -275,23 +286,106 @@ pub fn resolve_match_set(
             assignments,
         });
     }
+    if !updates.is_empty() {
+        mutations.insert(0, GraphMutation::SetEntityProperties(updates));
+    }
     Ok(MatchSetOutcome {
-        mutation: (!updates.is_empty()).then_some(GraphMutation::SetEntityProperties(updates)),
+        mutations,
         rows: output,
     })
 }
 
-/// Projects every updated row, then applies DISTINCT, ORDER BY, SKIP and
-/// LIMIT to the returned rows. The SET already applied to every row.
-fn project_returns(
-    returns: &MatchSetReturn,
-    rows: &mut [InputRow],
+/// The relationship CREATE or MERGE of one row between its two nodes, with
+/// property values evaluated over the row. A row whose endpoint is NULL (an
+/// unmatched OPTIONAL MATCH) writes nothing.
+fn relationship_mutation(
+    relationship: &MatchSetRelationship,
+    row: &mut InputRow,
     plan: &MatchSet<PhysicalPlan>,
     records: &BTreeMap<MutationEntity, Loaded>,
     catalog: &Catalog,
     charge: &mut QueryMemoryLease,
+) -> Result<Option<GraphMutation>> {
+    let endpoint = |variable: &str| {
+        row.entities
+            .iter()
+            .find(|(position, _)| plan.bindings[*position].variable == variable)
+            .and_then(|(_, entity)| *entity)
+    };
+    let (Some(MutationEntity::Node(source)), Some(MutationEntity::Node(target))) = (
+        endpoint(&relationship.source),
+        endpoint(&relationship.target),
+    ) else {
+        return Ok(None);
+    };
+    attach(&mut row.binding, &row.entities, plan, records);
+    let evaluate = |items: &[(String, ProjectionExpression)]| {
+        items
+            .iter()
+            .map(|(property, expression)| {
+                evaluate_projection_expression(expression, catalog, &row.binding)
+                    .map(|value| (property.clone(), value))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()
+    };
+    let values = evaluate(&relationship.properties)
+        .and_then(|properties| Ok((properties, evaluate(&relationship.on_create)?)));
+    row.binding.nodes.clear();
+    row.binding.relationships.clear();
+    let (properties, on_create) = values?;
+    charge.grow(map_memory_bytes(&properties).saturating_add(map_memory_bytes(&on_create)))?;
+    let filter = |id: NodeId| {
+        Some(PropertyFilter::IdEq {
+            value: Value::Int(id.0 as i64),
+        })
+    };
+    Ok(Some(if relationship.merge {
+        GraphMutation::MergeRelationshipsBetweenMatches(MatchedRelationshipMerge {
+            source_label: String::new(),
+            source_filter: filter(source),
+            rel_type: relationship.rel_type.clone(),
+            rel_match_properties: properties,
+            on_create_properties: on_create,
+            on_match_assignments: Vec::new(),
+            target_label: String::new(),
+            target_filter: filter(target),
+        })
+    } else {
+        GraphMutation::CreateRelationshipsBetweenMatches(MatchedRelationshipCreate {
+            source_label: String::new(),
+            source_filter: filter(source),
+            rel_type: relationship.rel_type.clone(),
+            rel_properties: properties,
+            target_label: String::new(),
+            target_filter: filter(target),
+        })
+    }))
+}
+
+/// Projects every updated row, then applies DISTINCT, ORDER BY, SKIP and
+/// LIMIT to the returned rows. The SET already applied to every row.
+struct ReturnContext<'a> {
+    plan: &'a MatchSet<PhysicalPlan>,
+    records: &'a BTreeMap<MutationEntity, Loaded>,
+    catalog: &'a Catalog,
+    limits: MutationLimits,
+    output_limits: OutputLimits,
+}
+
+fn project_returns(
+    returns: &MatchSetReturn,
+    rows: &mut [InputRow],
+    context: ReturnContext<'_>,
+    charge: &mut QueryMemoryLease,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<Vec<Row>> {
+    let ReturnContext {
+        plan,
+        records,
+        catalog,
+        limits,
+        output_limits,
+    } = context;
     let keys = returns
         .order_by
         .iter()
@@ -320,6 +414,8 @@ fn project_returns(
         .flatten();
     let mut projected = Vec::<(Row, Vec<Value>)>::new();
     let mut distinct = BTreeSet::<Vec<Value>>::new();
+    let mut returned_rows = 0usize;
+    let mut returned_bytes = 0usize;
     for (index, row) in rows.iter_mut().enumerate() {
         if needed.is_some_and(|needed| projected.len() >= needed) {
             break;
@@ -338,6 +434,39 @@ fn project_returns(
             if !distinct.insert(key) {
                 continue;
             }
+        }
+        // Refuse an over-limit result as soon as it is certain, instead of
+        // after projecting every row (#1803). Only rows in the final window
+        // count: DISTINCT still evaluates every input row, and ORDER BY must
+        // choose its window before payload and host-output admission.
+        if keys.is_empty() {
+            // Unsorted rows are returned in their post-DISTINCT input order.
+            let position = projected.len();
+            let selected = position >= returns.offset
+                && returns
+                    .limit
+                    .is_none_or(|limit| position - returns.offset < limit);
+            if selected {
+                returned_bytes = super::returns::admit_return_row(
+                    returned_rows,
+                    returned_bytes,
+                    &values,
+                    limits,
+                    output_limits,
+                )?;
+                returned_rows += 1;
+            }
+        } else if returns
+            .limit
+            .is_none_or(|limit| limit > limits.max_result_rows.get())
+            && projected.len().saturating_sub(returns.offset) >= limits.max_result_rows.get()
+        {
+            // Sorting cannot shrink the result below LIMIT or the rows left.
+            return Err(super::returns::result_rows_exceeded(
+                limits.max_result_rows.get(),
+                1,
+                limits,
+            ));
         }
         projected.push((values, sort_values));
     }

@@ -1,0 +1,23 @@
+# Copyright 2026 Nowledge
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "hawdb-node"
+version = "0.37.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+# A host binding, not a production dependency of the embedded Rust library.
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+hawdb-ffi = { path = "../ffi" }
+napi = { version = "3.16.2", default-features = false, features = ["napi8", "dyn-symbols"] }
+napi-derive = "3.7.1"
+
+[build-dependencies]
+napi-build = "2.6.0"

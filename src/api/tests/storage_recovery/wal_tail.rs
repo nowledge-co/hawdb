@@ -828,6 +828,116 @@ fn default_recovery_retains_acknowledged_commits_at_every_append_byte_cut() {
     eprintln!("default WAL recovery verified every append byte cut: {encoded}");
 }
 
+const DATA_MODIFYING_CTE_CUT_CHILD: &str =
+    "api::tests::storage_recovery::wal_tail::data_modifying_cte_cut_child";
+const DATA_MODIFYING_CTE_SQL: &str = "WITH changed AS (\
+    UPDATE left_items SET value = value + 1 WHERE id = 1 RETURNING id\
+), removed AS (\
+    DELETE FROM right_items WHERE id = 1 RETURNING id\
+) SELECT id FROM changed UNION ALL SELECT id FROM removed ORDER BY id";
+
+fn seed_data_modifying_cte_database(path: &Path) {
+    let mut db = Database::open_with_config(path, storage_crash_test_config()).unwrap();
+    db.query_sql("CREATE TABLE left_items (id BIGINT PRIMARY KEY, value BIGINT NOT NULL)")
+        .unwrap();
+    db.query_sql("CREATE TABLE right_items (id BIGINT PRIMARY KEY)")
+        .unwrap();
+    db.query_sql("INSERT INTO left_items (id, value) VALUES (1, 0)")
+        .unwrap();
+    db.query_sql("INSERT INTO right_items (id) VALUES (1)")
+        .unwrap();
+    db.checkpoint().unwrap();
+}
+
+fn assert_data_modifying_cte_not_published(db: &mut Database) {
+    let left = db
+        .query_sql("SELECT value FROM left_items WHERE id = 1")
+        .unwrap();
+    assert_eq!(left.rows[0]["value"], Value::Int(0));
+    assert_eq!(
+        db.query_sql("SELECT id FROM right_items WHERE id = 1")
+            .unwrap()
+            .rows
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn data_modifying_cte_cut_child() {
+    let Some(path) = std::env::var_os("HAWDB_TEST_DATA_MODIFYING_CTE_WAL_CUT_PATH") else {
+        return;
+    };
+    let mut db = Database::open(path).unwrap();
+    db.query_sql(DATA_MODIFYING_CTE_SQL).unwrap();
+    panic!("data-modifying CTE append cut did not terminate the process");
+}
+
+#[test]
+fn data_modifying_cte_is_one_recoverable_wal_record_at_append_cuts() {
+    let calibration = unique_test_dir("data_modifying_cte_wal_cut_calibration");
+    seed_data_modifying_cte_database(&calibration);
+    let mut calibration_db = Database::open(&calibration).unwrap();
+    let before = fs::metadata(active_wal_path(&calibration)).unwrap().len();
+    calibration_db.query_sql(DATA_MODIFYING_CTE_SQL).unwrap();
+    let encoded = fs::metadata(active_wal_path(&calibration)).unwrap().len() - before;
+    drop(calibration_db);
+    fs::remove_dir_all(calibration).unwrap();
+    assert!(encoded > 15);
+
+    let cuts = [1, encoded / 2, encoded - 1]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    for cut in cuts {
+        let path = unique_test_dir("data_modifying_cte_wal_cut");
+        seed_data_modifying_cte_database(&path);
+        let prefix = fs::read(active_wal_path(&path)).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", DATA_MODIFYING_CTE_CUT_CHILD, "--nocapture"])
+            .env("HAWDB_TEST_DATA_MODIFYING_CTE_WAL_CUT_PATH", &path)
+            .env("HAWDB_TEST_PROCESS_CRASH_POINT", "during_wal_append")
+            .env("HAWDB_TEST_WAL_APPEND_CUT", cut.to_string())
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(86),
+            "cut {cut}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            fs::metadata(active_wal_path(&path)).unwrap().len(),
+            prefix.len() as u64 + cut
+        );
+
+        let mut reopened = Database::open_with_config(&path, automatic_config()).unwrap();
+        assert_data_modifying_cte_not_published(&mut reopened);
+        assert!(
+            reopened
+                .storage_recovery_report()
+                .unwrap()
+                .torn_tail_repaired
+        );
+        assert_eq!(fs::read(active_wal_path(&path)).unwrap(), prefix);
+        let output = reopened.query_sql(DATA_MODIFYING_CTE_SQL).unwrap();
+        assert_eq!(output.rows.len(), 2);
+        assert_eq!(
+            reopened
+                .query_sql("SELECT value FROM left_items WHERE id = 1")
+                .unwrap()
+                .rows[0]["value"],
+            Value::Int(1)
+        );
+        assert!(reopened
+            .query_sql("SELECT id FROM right_items WHERE id = 1")
+            .unwrap()
+            .rows
+            .is_empty());
+        drop(reopened);
+        fs::remove_dir_all(path).unwrap();
+    }
+}
+
 #[cfg(feature = "test-support")]
 #[test]
 fn recovery_995_branch_hole_preserves_complete_schema_sql_graph_transactions() {

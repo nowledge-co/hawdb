@@ -65,7 +65,11 @@ fn check(documents: &[SearchDocument], base: u64) {
         },
     ] {
         let text = legacy_text(documents, kind);
-        let compressed = zstd::stream::encode_all(text.as_bytes(), 3).unwrap();
+        // The legacy writer streamed without pledging the input size. Since
+        // zstd 0.14.4, encode_all records a size in short frames.
+        let mut encoder = zstd::stream::write::Encoder::new(Vec::new(), 3).unwrap();
+        std::io::copy(&mut text.as_bytes(), &mut encoder).unwrap();
+        let compressed = encoder.finish().unwrap();
         let mut expected = format!(
             "HAWDB_COMPRESSED_V1\ncodec\tzstd\nuncompressed_checksum\t{}\ncompressed_checksum\t{}\nuncompressed_len\t{}\ncompressed_len\t{}\n\n",
             crate::checksum_bytes(text.as_bytes()), crate::checksum_bytes(&compressed), text.len(), compressed.len(),

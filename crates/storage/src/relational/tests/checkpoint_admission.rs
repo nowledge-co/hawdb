@@ -50,7 +50,9 @@ fn controlled_materialized_view_recovery_matches_wal_and_releases_admission() {
                     index: RelationalIndexSchema {
                         name: "by_payload".into(),
                         columns: vec!["payload".into()],
+                        included_columns: Vec::new(),
                         unique: false,
+                        predicate: None,
                     },
                 }],
             },
@@ -96,7 +98,9 @@ fn controlled_materialized_view_recovery_matches_wal_and_releases_admission() {
             index: RelationalIndexSchema {
                 name: "stats_payload".into(),
                 columns: vec!["payload".into()],
+                included_columns: Vec::new(),
                 unique: false,
+                predicate: None,
             },
         },
         RelationalWrite::Insert {
@@ -302,7 +306,9 @@ fn owned_relational_wal_decode_preserves_all_write_variants_and_access_captures(
             index: RelationalIndexSchema {
                 name: "by_id".into(),
                 columns: vec!["id".into()],
+                included_columns: Vec::new(),
                 unique: false,
+                predicate: None,
             },
         },
         RelationalWrite::Insert {
@@ -603,7 +609,7 @@ fn controlled_metadata_clone_cancellation_keeps_source_and_refunds_inventory() {
     ));
     let work = CheckpointWorkContext::new(task).with_scheduler(scheduler.clone());
     let result = source.clone_metadata_with_work_context(&work);
-    assert!(matches!(result, Err(RelationalError::Admission(_))));
+    assert!(matches!(result, Err(RelationalError::Stopped(_))));
     probe.assert_released(&scheduler);
     assert!(source.table_schema("documents").is_some());
     drop(work);
@@ -896,7 +902,7 @@ fn controlled_row_page_copy_cancellation_keeps_directory_and_retries() {
     let work = probe.context(scheduler.clone());
     assert!(matches!(
         target.prepare_checkpoint_copy_for_key(&key, &work),
-        Err(RelationalError::Admission(_))
+        Err(RelationalError::Stopped(_))
     ));
     probe.assert_released(&scheduler);
     assert!(target.pages().shares_storage_with(source.pages()));
@@ -1052,7 +1058,7 @@ fn controlled_row_insert_cancellation_keeps_source_and_retries() {
             upsert_row("id-2", "owner", "body"),
             Some(&context)
         ),
-        Err(RelationalError::Admission(_))
+        Err(RelationalError::Stopped(_))
     ));
     probe.assert_released(&scheduler);
     assert!(target.pages().shares_storage_with(source.pages()));
@@ -1520,6 +1526,7 @@ fn controlled_update_match_denies_wide_key_before_copy_and_retries() {
             memory: Default::default(),
         };
         let observer = crate::test_allocator::AllocationObservation::start();
+        let mut outcome_hydration = RelationalHydrationBudget::default();
         let result = apply_update(
             &mut target,
             "documents",
@@ -1532,11 +1539,13 @@ fn controlled_update_match_denies_wide_key_before_copy_and_retries() {
                 checkpoint_allocations: Some(&context),
                 replay_access_tracker: None,
                 primary_key_lookup: true,
+                capture_mutation_outcome: false,
+                outcome_hydration: &mut outcome_hydration,
             },
         );
         let wide_allocations = observer.finish();
         if succeeds {
-            assert_eq!(result.unwrap(), 1);
+            assert_eq!(result.unwrap().0, 1);
             assert_eq!(
                 target.row("documents", &key).unwrap().values()[2],
                 RelationalValue::Text("new".into())
@@ -2467,12 +2476,16 @@ fn controlled_index_definitions_match_all_roles_and_decimal_names() {
         schema.indexes.push(RelationalIndexSchema {
             name: "secondary".into(),
             columns: schema.primary_key.clone(),
+            included_columns: Vec::new(),
             unique: false,
+            predicate: None,
         });
         schema.indexes.push(RelationalIndexSchema {
             name: "declared_unique".into(),
             columns: schema.primary_key.clone(),
+            included_columns: Vec::new(),
             unique: true,
+            predicate: None,
         });
         assert_eq!(
             required_index_definitions_with_allocations(&schema, Some(&context)).unwrap(),
@@ -2832,7 +2845,9 @@ fn controlled_posting_cancellation_preserves_shared_snapshot_and_retries() {
     let key = RelationalKey(vec![RelationalValue::BigInt(1)]);
     assert!(matches!(
         target.insert_with_allocations(key.clone(), Some(&context)),
-        Err(RelationalError::Admission(_))
+        Err(RelationalError::Stopped(
+            hawdb_core::RuntimeCancellationReason::Cancelled
+        ))
     ));
     probe.assert_released(&scheduler);
     assert!(target.pages.shares_storage_with(&source.pages));
@@ -2993,7 +3008,9 @@ fn controlled_index_page_cancellation_keeps_original_directory_and_retries() {
     let added = RelationalKey(vec![RelationalValue::BigInt(1)]);
     assert!(matches!(
         target.insert_posting_with_allocations(added.clone(), added.clone(), Some(&context)),
-        Err(RelationalError::Admission(_))
+        Err(RelationalError::Stopped(
+            hawdb_core::RuntimeCancellationReason::Cancelled
+        ))
     ));
     probe.assert_released(&scheduler);
     assert!(target.pages.shares_storage_with(&source.pages));
@@ -3181,7 +3198,9 @@ fn controlled_materialized_dml_denies_wide_directory_copy_without_source_mutatio
     schema.indexes.push(RelationalIndexSchema {
         name: "i".repeat(128 * 1024),
         columns: vec!["owner".into()],
+        included_columns: Vec::new(),
         unique: false,
+        predicate: None,
     });
     let limits = RelationalMutationLimits::default();
     let overflow = RelationalOverflowConfig::default();
@@ -3301,7 +3320,9 @@ fn controlled_schema_copy_preserves_nested_metadata_and_releases_after_last_clon
     schema.indexes.push(RelationalIndexSchema {
         name: "by_owner".into(),
         columns: vec!["owner".into()],
+        included_columns: Vec::new(),
         unique: false,
+        predicate: None,
     });
     let source = RelationalSchemaData::from(schema);
     for (ceiling, succeeds) in [(4096, false), (16 * 1024 * 1024, true)] {
@@ -3360,7 +3381,9 @@ fn controlled_schema_edit_admits_index_vector_growth_and_keeps_source_unchanged(
     let added = RelationalIndexSchema {
         name: "by_payload".into(),
         columns: vec!["payload".into()],
+        included_columns: Vec::new(),
         unique: false,
+        predicate: None,
     };
     let actual = source
         .checkpoint_edit(&CheckpointWorkContext::default(), |schema, context| {
@@ -3444,7 +3467,9 @@ fn controlled_index_rebuild_denies_wide_name_before_copy_and_retains_output_inve
     schema.indexes.push(RelationalIndexSchema {
         name: name.clone(),
         columns: vec!["owner".into()],
+        included_columns: Vec::new(),
         unique: false,
+        predicate: None,
     });
     let limits = RelationalMutationLimits::default();
     let overflow = RelationalOverflowConfig::default();
@@ -3556,7 +3581,9 @@ fn controlled_index_rebuild_cancellation_preserves_segment_and_retries() {
     };
     assert!(matches!(
         rebuild_indexes_with_allocations(&mut target, "documents", &context),
-        Err(RelationalError::Admission(_))
+        Err(RelationalError::Stopped(
+            hawdb_core::RuntimeCancellationReason::Cancelled
+        ))
     ));
     probe.assert_released(&scheduler);
     assert!(Arc::ptr_eq(&target.segments["documents"], &original));
@@ -3919,7 +3946,9 @@ fn controlled_materialized_schema_recovery_matches_all_capture_combinations_and_
             index: RelationalIndexSchema {
                 name: "label_index".into(),
                 columns: vec!["label".into()],
+                included_columns: Vec::new(),
                 unique: false,
+                predicate: None,
             },
         },
     ]);
@@ -4178,7 +4207,9 @@ fn controlled_conflict_probe_admits_selected_unique_definition_before_wide_copy(
     schema.indexes.push(RelationalIndexSchema {
         name: "i".repeat(128 * 1024),
         columns: vec!["owner".into()],
+        included_columns: Vec::new(),
         unique: true,
+        predicate: None,
     });
     let state = RelationalState::default()
         .stage_transaction(

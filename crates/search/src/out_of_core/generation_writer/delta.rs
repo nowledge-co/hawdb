@@ -63,9 +63,13 @@ impl SearchOutOfCoreGenerationUpdate {
         if let Some(limit) = delta.max_operations
             && operation_count > limit
         {
-            return Err(HawDBError::Storage(format!(
-                "incremental projection update operation count {operation_count} exceeded configured limit {limit}"
-            )));
+            // A per-batch budget refusal, not storage damage (#1924).
+            return Err(HawDBError::SearchProjectionBatchBudgetExceeded {
+                budget: hawdb_core::SearchProjectionBatchBudget::ProjectionDelta,
+                commit_epoch: None,
+                required_operations: operation_count,
+                limit,
+            });
         }
         if operation_count > options.max_delta_operations.get() {
             return Err(HawDBError::Storage(format!(

@@ -256,6 +256,22 @@ pub struct MatchSetReturn {
     pub limit: Option<usize>,
 }
 
+/// A relationship that a [`MatchSet`] creates, or merges, between the two
+/// bound nodes of every input row (#1790).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatchSetRelationship {
+    /// `MERGE` reuses a relationship of this type between the two nodes whose
+    /// properties include `properties`; `CREATE` always creates one.
+    pub merge: bool,
+    pub source: String,
+    pub target: String,
+    pub rel_type: String,
+    /// The pattern's property map, evaluated for each row.
+    pub properties: Vec<(String, ProjectionExpression)>,
+    /// `ON CREATE SET` values of a `MERGE`, evaluated for each row.
+    pub on_create: Vec<(String, ProjectionExpression)>,
+}
+
 /// `MATCH ... SET ... [RETURN ...]` whose SET items are general expressions.
 ///
 /// `input` is a complete read plan with one row per SET input row and one
@@ -268,6 +284,8 @@ pub struct MatchSet<P> {
     pub input: P,
     pub bindings: Vec<MatchSetBinding>,
     pub assignments: Vec<MatchSetAssignment>,
+    /// A relationship written for each row instead of SET items.
+    pub relationship: Option<MatchSetRelationship>,
     pub returns: Option<MatchSetReturn>,
 }
 
@@ -277,6 +295,7 @@ impl<P> MatchSet<P> {
             input: lower(self.input),
             bindings: self.bindings,
             assignments: self.assignments,
+            relationship: self.relationship,
             returns: self.returns,
         }
     }
@@ -433,6 +452,8 @@ pub enum LogicalPlan {
         rel_type: String,
         rel_match_properties: BTreeMap<String, Value>,
         on_create_properties: BTreeMap<String, Value>,
+        /// `ON MATCH SET` items for a relationship the MERGE finds.
+        on_match_assignments: Vec<SetAssignment>,
     },
     MergeRelationshipFromMatchedRelationship {
         source_label: String,
@@ -756,6 +777,21 @@ pub enum SetNodePropertiesReturnMode {
 pub struct MutationReturn {
     pub bindings: Vec<MutationReturnBinding>,
     pub mode: SetNodePropertiesReturnMode,
+    /// Which state the returned entities are read from.
+    pub state: MutationReturnState,
+    /// `SKIP` and `LIMIT` over the returned rows; the mutation itself applies
+    /// to every matched row.
+    pub offset: usize,
+    pub limit: Option<usize>,
+}
+
+/// `Written` entities are read after the mutation (CREATE, MERGE, SET);
+/// `Deleted` entities are read as they were before the statement deleted
+/// them, as Kùzu returns the values of deleted nodes and relationships.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MutationReturnState {
+    Written,
+    Deleted,
 }
 
 /// One returned variable and the summary-row column holding its id.
@@ -771,6 +807,10 @@ pub struct MutationReturnBinding {
 pub enum MutationReturnEntity {
     Node,
     Relationship,
+    /// The source node of the relationship whose id is in the column.
+    RelationshipSource,
+    /// The target node of the relationship whose id is in the column.
+    RelationshipTarget,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1003,6 +1043,16 @@ hawdb_core::impl_retained_heap_for_struct!(MatchSetReturn {
     limit
 });
 
+// Retained query ownership: MatchSetRelationship.
+hawdb_core::impl_retained_heap_for_struct!(MatchSetRelationship {
+    merge,
+    source,
+    target,
+    rel_type,
+    properties,
+    on_create
+});
+
 // Retained query ownership: MatchSet.
 impl<P: hawdb_core::RetainedHeapBytes> hawdb_core::RetainedHeapBytes for MatchSet<P> {
     fn retained_heap_bytes(&self) -> Option<usize> {
@@ -1010,12 +1060,14 @@ impl<P: hawdb_core::RetainedHeapBytes> hawdb_core::RetainedHeapBytes for MatchSe
             input,
             bindings,
             assignments,
+            relationship,
             returns,
         } = self;
         hawdb_core::checked_retained_heap_sum([
             hawdb_core::RetainedHeapBytes::retained_heap_bytes(input),
             hawdb_core::RetainedHeapBytes::retained_heap_bytes(bindings),
             hawdb_core::RetainedHeapBytes::retained_heap_bytes(assignments),
+            hawdb_core::RetainedHeapBytes::retained_heap_bytes(relationship),
             hawdb_core::RetainedHeapBytes::retained_heap_bytes(returns),
         ])
     }

@@ -12,20 +12,27 @@ use hawdb_cypher::{AggregateExpression, ProjectionClause, ReturnExpressionKind};
 
 pub(super) fn bind(
     mutation: LogicalPlan,
+    state: MutationReturnState,
     bindings: Vec<MutationReturnBinding>,
     projection: &ProjectionClause,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<LogicalPlan> {
-    if projection.distinct
-        || projection.predicate.is_some()
-        || !projection.order_by.is_empty()
-        || projection.offset.is_some()
-        || projection.limit.is_some()
-    {
+    if projection.distinct || projection.predicate.is_some() || !projection.order_by.is_empty() {
         return Err(unsupported(
-            "mutation RETURN does not support result modifiers",
+            "mutation RETURN supports SKIP and LIMIT but not DISTINCT, WHERE or ORDER BY",
         ));
     }
+    let offset = projection
+        .offset
+        .as_ref()
+        .map(|value| bind_pagination_value(value, parameters, "offset"))
+        .transpose()?
+        .unwrap_or(0);
+    let limit = projection
+        .limit
+        .as_ref()
+        .map(|value| bind_pagination_value(value, parameters, "limit"))
+        .transpose()?;
     let scope = bindings
         .iter()
         .map(|binding| binding.variable.clone())
@@ -81,6 +88,12 @@ pub(super) fn bind(
     };
     Ok(LogicalPlan::MutationReturn {
         mutation: Box::new(mutation),
-        returns: MutationReturn { bindings, mode },
+        returns: MutationReturn {
+            bindings,
+            mode,
+            state,
+            offset,
+            limit,
+        },
     })
 }

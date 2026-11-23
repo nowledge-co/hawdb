@@ -104,6 +104,18 @@ fn fixture_with_seal_pause() -> (
     mpsc::Sender<()>,
     HandoffPauseForTest,
 ) {
+    fixture_with_seal_pause_and_governor(None)
+}
+
+fn fixture_with_seal_pause_and_governor(
+    governor: Option<RuntimeGovernor>,
+) -> (
+    Fixture,
+    Database,
+    Arc<Control>,
+    mpsc::Sender<()>,
+    HandoffPauseForTest,
+) {
     let fixture = Fixture::new();
     let mut db = Database::open_with_config(
         &fixture.0,
@@ -113,6 +125,9 @@ fn fixture_with_seal_pause() -> (
         },
     )
     .unwrap();
+    if let Some(governor) = governor {
+        db.set_runtime_governor(governor);
+    }
     let suspension = db.runtime.suspend_automatic_checkpoint().unwrap().unwrap();
     db.query_sql("CREATE TABLE records (id BIGINT PRIMARY KEY, body TEXT)")
         .unwrap();
@@ -419,4 +434,34 @@ fn plain_sql_only_reads_adopt_the_ready_physical_generation() {
             .len(),
         1
     );
+}
+
+#[test]
+fn shared_embedded_reads_adopt_ready_checkpoints_without_a_new_write() {
+    let mut embedded = crate::HawDBEmbedded::open_in_memory();
+    let (_fixture, db, control, resume, handoff) =
+        fixture_with_seal_pause_and_governor(Some(embedded.runtime_governor().clone()));
+    *embedded.database_mut() = db;
+    let engine = crate::HawDBConcurrentEmbedded::new(embedded);
+    let old = engine.begin_read_transaction().unwrap();
+    let before = old.published_read_view();
+    resume.send(()).unwrap();
+    wait_for_handoff_pause(&control, &handoff);
+    assert!(control.has_pending_handoff());
+    let output = engine
+        .query_sql_request_admitted(crate::SqlQueryRequest::new("SELECT body FROM records"))
+        .unwrap();
+    assert_eq!(output.rows[0]["body"], Value::String("complete".into()));
+    assert!(!control.has_pending_handoff());
+    let after = engine
+        .begin_read_transaction()
+        .unwrap()
+        .published_read_view();
+    assert_eq!(after.visible_commit_epoch(), before.visible_commit_epoch());
+    assert_ne!(after.physical_generation(), before.physical_generation());
+    assert_eq!(old.published_read_view(), before);
+    drop(handoff);
+    wait_control(&control, |state| {
+        state.phase == Phase::Idle && state.retired.is_none()
+    });
 }

@@ -286,7 +286,9 @@ impl HashedWriter {
 
     pub(super) fn write_record(&mut self, record: &serde_json::Value) -> Result<()> {
         let mut line = serde_json::to_vec(record).map_err(|error| {
-            HawDBError::Storage(format!("logical dump: encode record: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!("logical dump: encode record: {error}"))
+            })
         })?;
         if line.len() as u64 >= MAX_RECORD_BYTES {
             return Err(HawDBError::Storage(format!(
@@ -303,7 +305,9 @@ impl HashedWriter {
 
     pub(super) fn write_document(&mut self, document: &impl serde::Serialize) -> Result<()> {
         let mut bytes = serde_json::to_vec_pretty(document).map_err(|error| {
-            HawDBError::Storage(format!("logical dump: encode {}: {error}", self.relative))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!("logical dump: encode {}: {error}", self.relative))
+            })
         })?;
         bytes.push(b'\n');
         self.write_bytes(&bytes)

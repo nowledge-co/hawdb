@@ -118,17 +118,21 @@ pub(crate) fn execute_match_set<S: ExecutionStore>(
         task_context,
     )?;
     runtime_checkpoint(task_context)?;
-    let committed = match outcome.mutation {
-        Some(mutation) => {
-            hawdb_executor::store::GraphExecutionWrite::commit_mutations_with_limits(
-                store,
-                catalog,
-                vec![mutation],
-                limits,
-            )?
-            .rows
-        }
-        None => Vec::new(),
+    let committed = if outcome.mutations.is_empty() {
+        Vec::new()
+    } else {
+        let staging_limits = if set.returns.is_some() {
+            hawdb_executor::mutation::mutation_return_staging_limits(limits)
+        } else {
+            limits
+        };
+        hawdb_executor::store::GraphExecutionWrite::commit_mutations_with_limits(
+            store,
+            catalog,
+            outcome.mutations,
+            staging_limits,
+        )?
+        .rows
     };
     Ok(if set.returns.is_some() {
         outcome.rows

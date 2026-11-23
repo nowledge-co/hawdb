@@ -26,6 +26,7 @@ use std::collections::BTreeMap;
 
 mod extended;
 mod generator;
+pub(crate) mod plan_guidance;
 pub(crate) mod stateful;
 
 pub(crate) fn extended_coverage(cases: &[JsonValue]) -> JsonValue {

@@ -32,7 +32,7 @@ use super::{
     RelationalValue, Result, SqlColumnRef, SqlNullOrder, SqlOrderDirection, SqlPredicate, Value,
 };
 use hawdb_optimizer::RelationalAccessCostContext;
-use hawdb_storage::relational::RelationalScalarType;
+use hawdb_storage::relational::{RelationalPredicate, RelationalScalarType};
 
 pub(super) struct RelationalBaseAccessPlanning<'a, R> {
     pub(super) cost_context: RelationalAccessCostContext,
@@ -62,7 +62,8 @@ pub(super) fn projection_access_planning(
     table: &str,
 ) -> RelationalProjectionAccessPlanning {
     RelationalProjectionAccessPlanning {
-        force_full_scan: row_read_mode.is_projection_table(table),
+        force_full_scan: row_read_mode.is_projection_table(table)
+            || row_read_mode.is_memory_overlay_table(table),
         row_count_override: row_read_mode.projection_estimated_rows(table),
     }
 }
@@ -186,6 +187,16 @@ pub(super) fn choose_base_access(
             }
         }
         for index in &schema.indexes {
+            if !partial_index_predicate_is_implied(
+                index.predicate.as_ref(),
+                predicate,
+                parameters,
+                schema,
+                table,
+                qualifier,
+            ) {
+                continue;
+            }
             if let Some(candidate) = index_access_candidate(
                 &planning,
                 index.name.clone(),
@@ -276,9 +287,6 @@ pub(super) fn index_access_candidate(
     let prefix_len = prefix.len();
     let key = RelationalKey(prefix);
     let bounds = range::bind_range(planning, columns, &key)?;
-    if prefix_len == 0 && bounds.is_none() {
-        return Ok(None);
-    }
     if !index_prefix_covers_matches(
         schema,
         columns,
@@ -312,15 +320,27 @@ pub(super) fn index_access_candidate(
     });
     let equality_covered =
         predicate_is_covered_by_equalities(planning.predicate, &access_columns, table, qualifier);
+    let has_included_columns = schema
+        .indexes
+        .iter()
+        .find(|index| index.name == name)
+        .is_some_and(|index| !index.included_columns.is_empty());
     let exclusive_bound = if equality_covered {
         None
-    } else if order_prefix_len == order_by.len()
+    } else if !has_included_columns
+        && order_prefix_len == order_by.len()
         && prefix_len.saturating_add(order_by.len()) == columns.len()
     {
         bind_canonical_keyset_bound(planning, &key, &access_columns, range_column)?
     } else {
         None
     };
+    // An empty equality prefix is legal only when a real first-column range or
+    // a complete row-constructor cursor supplies the traversal bound. Never
+    // turn a NULL or incompatible cursor into an unbounded empty-prefix scan.
+    if prefix_len == 0 && bounds.is_none() && exclusive_bound.is_none() {
+        return Ok(None);
+    }
     if !equality_covered && !range_covered && exclusive_bound.is_none() {
         order_prefix_len = 0;
         direction = RelationalIndexScanDirection::Forward;
@@ -363,7 +383,10 @@ pub(super) fn index_access_candidate(
         match state.index_prefix_cardinality_at_most(table, &name, &key, *cardinality_limit) {
             Some(rows) => rows,
             None if !state.materialized_index_postings_resident() => {
-                let exact_count = if !unique && prefix_len == columns.len() {
+                // A covering key can span many leaves with distinct payloads.
+                // Use prefix statistics rather than walking those leaves to plan a read.
+                let exact_count = if !unique && !has_included_columns && prefix_len == columns.len()
+                {
                     planning
                         .index_runtime
                         .map(|runtime| runtime.exact_posting_count(table, &name, &key))
@@ -492,7 +515,7 @@ pub(super) fn bind_canonical_keyset_bound(
         parameters,
         ..
     } = planning;
-    let Some((first, second)) = canonical_keyset_values_with_range(
+    let Some(values) = canonical_keyset_values_with_range(
         *predicate,
         access_columns,
         order_by,
@@ -503,7 +526,7 @@ pub(super) fn bind_canonical_keyset_bound(
         return Ok(None);
     };
     let mut bound = prefix.0.clone();
-    for (value, item) in [(first, &order_by[0]), (second, &order_by[1])] {
+    for (value, item) in values.into_iter().zip(order_by.iter()) {
         let Some(position) = schema.column_position(&item.expression.require_column()?.name) else {
             return Ok(None);
         };
@@ -599,6 +622,9 @@ pub(super) fn choose_join_access(
             }
         }
         for index in &schema.indexes {
+            if index.predicate.is_some() {
+                continue;
+            }
             if let Some(candidate) = join_index_access_candidate(
                 index.name.clone(),
                 &index.columns,
@@ -629,6 +655,63 @@ pub(super) fn choose_join_access(
         .position(|candidate| candidate.descriptor == selected)
         .expect("selected relational join access path came from the candidate set");
     Ok(candidates.swap_remove(position))
+}
+
+fn partial_index_predicate_is_implied(
+    index_predicate: Option<&RelationalPredicate>,
+    query_predicate: Option<&SqlPredicate>,
+    parameters: &[Value],
+    schema: &RelationalTableSchema,
+    table: &str,
+    qualifier: &str,
+) -> bool {
+    let Some(index_predicate) = index_predicate else {
+        return true;
+    };
+    let Some(query_predicate) = query_predicate else {
+        return false;
+    };
+    let mut query_terms = Vec::new();
+    collect_sql_conjuncts(query_predicate, &mut query_terms);
+    let compiled = query_terms
+        .into_iter()
+        .filter_map(|term| {
+            crate::statement::compile_mutation_predicate(
+                term,
+                parameters,
+                schema,
+                Some(qualifier),
+                table,
+            )
+            .ok()
+        })
+        .collect::<Vec<_>>();
+    let mut required = Vec::new();
+    collect_relational_conjuncts(index_predicate, &mut required);
+    required
+        .into_iter()
+        .all(|term| compiled.iter().any(|candidate| candidate == term))
+}
+
+fn collect_sql_conjuncts<'a>(predicate: &'a SqlPredicate, output: &mut Vec<&'a SqlPredicate>) {
+    if let hawdb_sql::ExprKind::And(left, right) = &predicate.kind {
+        collect_sql_conjuncts(left, output);
+        collect_sql_conjuncts(right, output);
+    } else {
+        output.push(predicate);
+    }
+}
+
+fn collect_relational_conjuncts<'a>(
+    predicate: &'a RelationalPredicate,
+    output: &mut Vec<&'a RelationalPredicate>,
+) {
+    if let RelationalPredicate::And(left, right) = predicate {
+        collect_relational_conjuncts(left, output);
+        collect_relational_conjuncts(right, output);
+    } else {
+        output.push(predicate);
+    }
 }
 
 pub(super) fn complete_join_columns(
@@ -843,7 +926,7 @@ pub(super) fn visit_base_entries<'a>(
             index_runtime.visit_range_entries(state, table, name, scan, |index_key, key| {
                 let row = match covered_columns {
                     Some(index_columns) => row_runtime
-                        .read_index_covered(table, index_columns, index_key, key)?,
+                        .read_index_covered(table, name, index_columns, index_key, key)?,
                     None => row_runtime.read_point(table, key)?,
                 };
                 match row {
@@ -855,5 +938,102 @@ pub(super) fn visit_base_entries<'a>(
             })
         }
         RelationalBaseAccess::FullScan => row_runtime.visit_all(table, visit),
+    }
+}
+
+#[cfg(test)]
+mod partial_index_tests {
+    use super::*;
+    use hawdb_storage::relational::{
+        RelationalColumnSchema, RelationalComparisonOp, RelationalScalarType,
+    };
+
+    fn schema() -> RelationalTableSchema {
+        RelationalTableSchema {
+            name: "items".into(),
+            columns: vec![
+                RelationalColumnSchema {
+                    name: "tenant_id".into(),
+                    scalar_type: RelationalScalarType::BigInt,
+                    nullable: false,
+                    default: None,
+                },
+                RelationalColumnSchema {
+                    name: "active".into(),
+                    scalar_type: RelationalScalarType::Boolean,
+                    nullable: false,
+                    default: None,
+                },
+                RelationalColumnSchema {
+                    name: "deleted_at".into(),
+                    scalar_type: RelationalScalarType::BigInt,
+                    nullable: true,
+                    default: None,
+                },
+            ],
+            primary_key: vec!["tenant_id".into()],
+            unique_constraints: Vec::new(),
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+            materialized_view: None,
+        }
+    }
+
+    fn selection(sql: &str) -> SqlPredicate {
+        let statement = hawdb_sql::parse_postgres_sql(sql).expect("query syntax");
+        let hawdb_sql::SqlStatement::Select(select) = statement else {
+            panic!("expected SELECT");
+        };
+        select.selection.expect("WHERE predicate")
+    }
+
+    #[test]
+    fn planner_requires_a_conservative_partial_index_implication_proof() {
+        let predicate = RelationalPredicate::And(
+            Box::new(RelationalPredicate::Compare {
+                column: "active".into(),
+                op: RelationalComparisonOp::Eq,
+                value: RelationalValue::Boolean(true),
+            }),
+            Box::new(RelationalPredicate::IsNull {
+                column: "deleted_at".into(),
+                negated: false,
+            }),
+        );
+        let schema = schema();
+        let matching = selection(
+            "SELECT tenant_id FROM items AS i WHERE i.tenant_id = 7 AND i.active = TRUE AND i.deleted_at IS NULL",
+        );
+        assert!(partial_index_predicate_is_implied(
+            Some(&predicate),
+            Some(&matching),
+            &[],
+            &schema,
+            "items",
+            "i",
+        ));
+
+        let missing =
+            selection("SELECT tenant_id FROM items AS i WHERE i.tenant_id = 7 AND i.active = TRUE");
+        assert!(!partial_index_predicate_is_implied(
+            Some(&predicate),
+            Some(&missing),
+            &[],
+            &schema,
+            "items",
+            "i",
+        ));
+
+        let merely_related = selection(
+            "SELECT tenant_id FROM items AS i WHERE i.tenant_id = 7 AND i.active = TRUE AND i.deleted_at <= 10",
+        );
+        assert!(!partial_index_predicate_is_implied(
+            Some(&predicate),
+            Some(&merely_related),
+            &[],
+            &schema,
+            "items",
+            "i",
+        ));
     }
 }

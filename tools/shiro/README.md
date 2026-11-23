@@ -264,6 +264,24 @@ The companion executables are `shiro-storage`, `shiro-append`, and `shiro-parser
 are manual/local only. Neither tool belongs in CI or scheduled workflows; the
 normal CI smoke dependency graph excludes the local fuzz executables.
 
+### Guided SQL access plans
+
+`shiro qpg --seed 7 --cases 12` runs a SQLancer-inspired query plan guidance
+experiment. Both schedules run the same seeded SQL and parameters with the
+same query budget. The fixed schedule rotates fixtures every eight queries.
+The guided schedule mutates schema or data after two consecutive executions
+without a new physical access pattern. Fixtures cover an unindexed scan,
+secondary and covering indexes, and skewed nullable keys.
+
+Novelty uses only operators observed in a completed execution and their
+covering and row-fetch flags. Each result is checked against the independent
+fixture model before its plan contributes to the inventory. Reports include
+the selected fixtures, statements, typed parameters, and exact failing setup.
+Replay by rerunning the same seed and budget. The experiment measures physical
+access patterns on this query family. See [SQLancer Query Plan Guidance](https://github.com/sqlancer/sqlancer/blob/main/docs/QueryPlanGuidance.md).
+
+### Capability models and replay
+
 The `capabilities` oracle rotates five bounded generated models through every
 ordinary query campaign. `capability_coverage` counts executed and successfully
 verified families; a generated family name alone is not a passing observation.
@@ -278,6 +296,12 @@ phase-specific failure signatures.
   `regexp_replace`/`LOWER` grouping, and scalar-expression regex matching against a small host
   reference. Literal/parameter patterns, invalid regexes, non-string patterns, and non-string
   evaluated left operands are checked with phase- and class-specific refusals.
+  The same replay family also generates typed SQL text and binary inputs for
+  `OCTET_LENGTH`, nested `COALESCE`, and filtered `COUNT`, `SUM`, `MIN`, and
+  `MAX`. Its Cypher function model checks `json_string`, `json_value`,
+  `label`, and `labels` using generated Unicode strings, integers, booleans,
+  missing fields, NULL and nonscalar JSON values. Each check records typed
+  expected and actual results, including empty input.
 - Cypher mutations: distinct/aliased/missing bindings in multi-binding `SET`,
   assignment ordering, Unicode whitespace `trim` and `CASE` isolation.
 - Temporal: typed date min/max `CASE SET`, NULL preservation, parameter rebinding
@@ -285,6 +309,11 @@ phase-specific failure signatures.
   this generator.
 - Keyless SQL: duplicate-preserving bag state, implicit/default inserts, index
   backfill, aliased updates/deletes, indexed ranges, rollback and pinned reads.
+  The same replay also checks Differential Query Execution (DQE) over a
+  separate table with stable row IDs. SELECT, UPDATE RETURNING and DELETE
+  RETURNING start with identical rows. Each mutating trial rolls back after
+  verifying its effects. A lexicographic SQL NULL model checks the selected
+  IDs across indexed and unindexed fixtures.
 
 Decimal and keyless cases rotate memory, file Shadow and file DemandPaged index
 profiles. WAL reopen and checkpoint reopen compare to independent pre-close model
@@ -293,6 +322,13 @@ kill or power-loss qualification. Failed file fixtures are retained at the path 
 the trace. The bounded model is complementary to DQP/TLP and is not a general SQL
 or Cypher interpreter; SQL CASE, arbitrary temporal arithmetic, list nesting and
 mutation expressions remain outside its generated domain.
+
+The keyless replay also runs a CODDTest membership model on a pinned in-memory
+snapshot. It materializes an uncorrelated subquery once and compares the
+original `IN` and `NOT IN` to a folded parameter list or a constant for an
+empty list. A separate three-valued membership model checks both branches.
+The replay preserves duplicate and NULL RHS values, and tests multiple
+parameter bindings including an empty RHS.
 
 Capability replay uses its own `shiro-capabilities-v1` JSON format. Extract a
 case's `capabilities.case` object from a campaign report, or generate one:
@@ -311,6 +347,13 @@ and then tries zero values, rebuilding a fresh fixture and retaining only the
 same failure signature. Passing cases cannot be shrunk. A reproduced mismatch
 returns exit 1; malformed/unsupported replay returns exit 2. Legacy campaign
 seed/index replay remains available; v5 progress cannot resume as v6 coverage.
+
+Keyless capability cases also check SQL compound queries with independent
+Rust models. The set-operation model counts nullable keys for UNION,
+INTERSECT and EXCEPT, including their ALL forms. Recursive UNION uses a
+visited set to verify reachability through cycles. Bounded recursive UNION
+ALL keeps every walk through duplicate edges and compares its depth and
+endpoint as a bag. Exact statements and parameters are retained for replay.
 
 The parser byte campaign uses a corpus derived from the Cypher, relational SQL, and SQL/PGQ test
 suites. It keeps the non-ASCII keyword-probe and excessive-nesting regressions as exact seeds, then

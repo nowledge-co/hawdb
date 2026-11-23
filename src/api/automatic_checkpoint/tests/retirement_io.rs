@@ -71,29 +71,30 @@ fn occupied_physical_wave_parks_cleanup_and_release_finishes_without_a_host_call
         .unwrap();
     // Leave only a real in-flight I/O charge, not a competing CPU/task slot.
     drop(permit);
-    {
+    let previous_deferrals = {
         let mut state = control.lock_frontend().unwrap();
         control.adopt(&mut state, &mut store).unwrap();
-    }
-    loop {
+        state.retirement_deferrals
+    };
+    let parked = loop {
         let state = control.lock().unwrap();
-        if state.retired.is_some() && state.report.deferred_attempts > 0 {
-            break;
+        if state.retired.is_some() && state.retirement_deferrals != previous_deferrals {
+            // Sample while the owner is parked, before it can retry admission.
+            assert!(
+                store
+                    .storage_pressure_snapshot(None)
+                    .generation_reclamation_retry_required
+            );
+            break governor.snapshot();
         }
         assert!(Instant::now() < deadline, "cleanup did not yield for I/O");
         drop(state);
         std::thread::sleep(Duration::from_millis(5));
-    }
-    let parked = governor.snapshot();
+    };
     assert_eq!(parked.active_cpu_slots, 0);
     assert_eq!(parked.active_background_tasks, 0);
     assert_eq!(parked.active_background_io_slots, 1);
     assert_eq!(parked.admitted_memory_bytes, memory);
-    assert!(
-        store
-            .storage_pressure_snapshot(None)
-            .generation_reclamation_retry_required
-    );
     drop(wave);
     loop {
         let state = control.lock().unwrap();

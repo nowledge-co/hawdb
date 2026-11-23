@@ -36,7 +36,7 @@ fn fixed<T>(work: &CheckpointWorkContext, operation: impl FnOnce() -> T) -> Resu
 
 fn text(value: &str, work: &CheckpointWorkContext) -> Result<String> {
     clone_string_with_work_context(value, work)
-        .map_err(|error| RelationalRowPagePublicationError::Admission(error.to_string()))
+        .map_err(RelationalRowPagePublicationError::from_relational)
 }
 
 fn same_text(left: &str, right: &str, work: &CheckpointWorkContext) -> Result<bool> {
@@ -265,7 +265,7 @@ fn clone_default(
         }
         Some(Literal(RelationalValue::Vector(value))) => Some(Literal(RelationalValue::Vector(
             crate::background::decode_vector(clone_bytes(value.encoded(), work)?, Some(work))
-                .map_err(|error| RelationalRowPagePublicationError::Admission(error.to_string()))?,
+                .map_err(RelationalRowPagePublicationError::from_admission)?,
         ))),
         _ => return fixed(work, || value.clone()),
     };
@@ -304,25 +304,36 @@ pub(in crate::relational::row_page::publication) fn clone_schema(
             on_update: foreign.on_update,
         })
     })?;
-    let indexes = clone_list(&schema.indexes, work, |index, work| {
-        let name = text(&index.name, work)?;
-        let columns = clone_names(&index.columns, work)?;
-        fixed(work, || RelationalIndexSchema {
-            name,
-            columns,
-            unique: index.unique,
-        })
-    })?;
     let context = crate::background::CheckpointDecodeContext {
         work: work.clone(),
         memory: Default::default(),
     };
+    let indexes = clone_list(&schema.indexes, work, |index, work| {
+        let name = text(&index.name, work)?;
+        let columns = clone_names(&index.columns, work)?;
+        let included_columns = clone_names(&index.included_columns, work)?;
+        let predicate = index
+            .predicate
+            .as_ref()
+            .map(|predicate| {
+                crate::relational::materialized_view::clone_predicate(predicate, &context)
+            })
+            .transpose()
+            .map_err(RelationalRowPagePublicationError::from_relational)?;
+        fixed(work, || RelationalIndexSchema {
+            name,
+            columns,
+            included_columns,
+            unique: index.unique,
+            predicate,
+        })
+    })?;
     let materialized_view = schema
         .materialized_view
         .as_deref()
         .map(|view| crate::relational::materialized_view::clone_definition(view, &context))
         .transpose()
-        .map_err(|error| RelationalRowPagePublicationError::Admission(error.to_string()))?;
+        .map_err(RelationalRowPagePublicationError::from_relational)?;
     fixed(work, || RelationalTableSchema {
         materialized_view,
         name,

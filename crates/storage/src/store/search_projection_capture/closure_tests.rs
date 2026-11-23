@@ -549,8 +549,9 @@ fn checkpoint_capture_observes_cancellation_within_one_work_group() {
         }
         assert!(matches!(
             budget.work(),
-            Err(CaptureError::Storage(HawDBError::Storage(message)))
-                if message == "checkpoint build stopped: cancelled"
+            Err(CaptureError::Storage(HawDBError::RuntimeTaskStopped(
+                hawdb_core::RuntimeCancellationReason::Cancelled
+            )))
         ));
         assert_eq!(probe.completed.load(Ordering::SeqCst), 1);
         probe.assert_released(&scheduler);
@@ -568,6 +569,8 @@ fn canonical_preimage_refusals_do_not_poison_the_store() {
             HawDBError::Storage(_)
                 | HawDBError::FileDescriptors(_)
                 | HawDBError::ResourceBudgetExceeded(_)
+                // A refusal wrapping a cancellation is the typed task stop.
+                | HawDBError::RuntimeTaskStopped(_)
         ));
         store.poison_on_storage_error::<()>(&Err(error));
         store.ensure_usable().unwrap();

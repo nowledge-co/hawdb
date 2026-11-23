@@ -49,7 +49,11 @@ type DB struct {
 // projection that must be rebuilt from the graph,
 // "search_projection_rebuild_refused" for a rebuild that installed nothing, or
 // "search_projection_epoch_advance_refused" for a metadata-only epoch advance
-// that published nothing);
+// that published nothing, "search_projection_prefix_behind_source" for a
+// bounded catch-up prefix that ends before the source head, or
+// "search_projection_batch_budget_exceeded" for a catch-up batch larger than
+// its per-batch limit; neither catch-up refusal published anything or is a
+// storage failure);
 // "invalid_argument" marks a caller-side contract violation and "panic" a
 // contained Rust panic.
 type Error struct {

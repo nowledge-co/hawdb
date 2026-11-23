@@ -27,7 +27,9 @@ static LAST_UNIX_NANOS: Mutex<Option<u128>> = Mutex::new(None);
 pub fn generate_uuidv7() -> Result<Uuid> {
     generate_uuidv7_with(next_system_unix_nanos, |bytes| {
         getrandom::fill(bytes).map_err(|error| {
-            HawDBError::Execution(format!("uuidv7 random source unavailable: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Execution(format!("uuidv7 random source unavailable: {error}"))
+            })
         })
     })
 }
@@ -36,7 +38,9 @@ fn next_system_unix_nanos() -> Result<u128> {
     let observed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| {
-            HawDBError::Execution(format!("uuidv7 clock is before Unix epoch: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Execution(format!("uuidv7 clock is before Unix epoch: {error}"))
+            })
         })?
         .as_nanos();
     if observed > MAX_UNIX_NANOS {

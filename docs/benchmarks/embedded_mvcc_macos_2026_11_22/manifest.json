@@ -1,0 +1,80 @@
+{
+  "base_revision": "ff5c98903fdff3804865a3153a0ed1948293cda7",
+  "source_description": "Isolated PR source based on main. The measured revision and source hashes identify the executable sources. Runtime source is unchanged by the test-fixture follow-up; test source hashes record the measured revision.",
+  "source_sha256": {
+    ".cargo/config.toml": "06c7ca26d39223bd90a6412acd8609c380ce2d1650a72b70c90171656ca89819",
+    "Cargo.lock": "fcdb20a735f8c2d9ac36040896bd2362a6406c1f8fd978cf972fdead2f508728",
+    "Cargo.toml": "670e10cc40ad4f3f4252ad4d1d6a7c9380ded1fd16d1fec9343d42ed420789fd",
+    "bindings/ffi/src/concurrency_tests.rs": "ff730360fb31c93bd1fa674c86832b9e463bdde030ebe8e0f1f1efdffb61923a",
+    "bindings/ffi/src/dump.rs": "c95aace5bc6af99b2bfc89635441c3d7f85f8f00fcbf922c9a372794e2feb074",
+    "bindings/ffi/src/lib.rs": "3b68f630c1de2e32ab46e49a839153b4bb7cf8161bd48519ab297f81f4d93277",
+    "bindings/ffi/src/maintenance.rs": "216f227f64e6f689e502dff150870b41d639fd268c2c585e979e8f7c05f520db",
+    "bindings/ffi/src/open_options_tests.rs": "80a18a32bb7f0d567862dfb731f7534239e1ecff86b6ae90e89b69cdedcd61e8",
+    "bindings/ffi/src/retained.rs": "ea73217cb8628664ea097e05ae506612092e8059607e642b6279477de103a77c",
+    "bindings/ffi/src/retained/node.rs": "cc8740065344841f0bd189aa673c1a9527dcf5c67a5c19abec0fa3107fa010c2",
+    "bindings/ffi/src/retained/node/tests.rs": "9682410140501fc260eb8cc79b3954893d763511493292734868d9db2b88a1c9",
+    "bindings/ffi/src/retained/tests.rs": "5e9b95f4c3d422a86284a8756c5f29012cb74334a2e06e45c23c5812fcc9968b",
+    "bindings/ffi/src/transaction.rs": "de2931443a78ac5a6b59c00148ee3dc35e4a9da14265c7b590ac0f8e5fd1f148",
+    "examples/embedded_mvcc_bench.rs": "db9e22447a6510c3e7be8065fcceb791b80e2e5f9883088671f1f657af1c9939",
+    "rust-toolchain.toml": "f715f440167e20fd8ea9afa0498c3d1ab80174cfcb8cbc895f106a34d907a1e1",
+    "src/api/automatic_checkpoint/tests/read_handoff.rs": "2394a8aa77d7de723e4704c4c28841abc4a9350a96fab9a260fdacec37802594",
+    "src/api/concurrent/publication.rs": "b2d19c144f2078e3b71346d452b29ac22c9c11a67df670423e467ce6d1206e10",
+    "src/api/mod.rs": "615fe95fc81d3ca705cb834fe5e76ab5e7469ceb75c1fd4d134625f41ced04b2",
+    "src/api/query_runtime.rs": "7f06559a6dea5720a002b5fee244a66ce0e22b0034676eeb8a4a61521335cc3f",
+    "src/api/retained_query/node.rs": "c586d84b214b9d790dfc7b023f7e348d7a21d3e69e8e829b416f3b047c830e9a",
+    "src/api/sql_runtime.rs": "d4ad376b837c2aa3fbe8a2a51e08db6821dab7cc9936c3bb056660efe82ad82e",
+    "src/embedded.rs": "0fc04bd7f373a010d40f27e062afbd086952fc3e326abde927baec949d1c85f2",
+    "src/embedded_concurrent.rs": "e96e374065ff8d3c9f857635422018a60cb864e58b0b62a5d035be0766ccf785",
+    "src/embedded_concurrent/owner.rs": "c171933caae2d8764e83b9d954ef0c3f15c30e795d62d4a8211c61956ff69780",
+    "src/embedded_concurrent/tests.rs": "c567db88d8276fdde2e12cb0a23b5cc1a554a94a586fa460efb4bb00d65a89ca",
+    "src/embedded_tokio.rs": "573942ee62c52ce87aa171a5c4108950eeb50d60186b48fae1bf4d305fbdddae",
+    "src/embedded_tokio/concurrency_tests.rs": "ddffefbb0ee10c1edb3b5dff0e77491e5dbdea179b46a901f85fe4a8c7a6ce04",
+    "src/embedded_tokio/owner.rs": null,
+    "src/lib.rs": "91aa0141188a233d1d23a581e04b81f31aabd2b19b4db8274a034ee5102a991a"
+  },
+  "binary_sha256": "120161f035d9859c38a6533ec89641cad9235b4400239af07436b13575c210c9",
+  "rustc": "1.99.1 (58cf8f9c3 2026-10-13)",
+  "host": "aarch64-apple-darwin",
+  "os": "macOS 27.0.1 (26A434)",
+  "hardware_model": "Mac17,7",
+  "logical_cpus": 18,
+  "physical_memory_bytes": 38654705664,
+  "profile": "repository dev, opt-level=1, debug assertions and overflow checks enabled, codegen-units=256",
+  "build_seconds": 144,
+  "build_command": "cargo build --locked --example embedded_mvcc_bench -j 2",
+  "features": "default",
+  "measurement_commands": [
+    "/usr/bin/time -l target/debug/examples/embedded_mvcc_bench 5 1000 32",
+    "/usr/bin/time -l target/debug/examples/embedded_mvcc_bench 5 100 4096"
+  ],
+  "samples": 80,
+  "effective_cpu_slots": [
+    8
+  ],
+  "memory_budget_bytes": [
+    1073741824
+  ],
+  "whole_process_resources": {
+    "32": {
+      "real_seconds": 3.4,
+      "user_seconds": 4.91,
+      "sys_seconds": 0.46,
+      "maximum_resident_set_size": 25821184,
+      "swaps": 0,
+      "block_input_operations": 0,
+      "block_output_operations": 0,
+      "peak_memory_footprint": 8618536
+    },
+    "4096": {
+      "real_seconds": 15.18,
+      "user_seconds": 21.14,
+      "sys_seconds": 0.27,
+      "maximum_resident_set_size": 59916288,
+      "swaps": 0,
+      "block_input_operations": 0,
+      "block_output_operations": 0,
+      "peak_memory_footprint": 31539752
+    }
+  },
+  "measured_revision": "d8a2317df17a6ef2ede589215bb141b0a8c0ac77"
+}

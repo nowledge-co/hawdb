@@ -1,0 +1,17 @@
+package(default_visibility = ["//visibility:public"])
+
+# Native builds and runtime checks are owned by Node Bindings CI through Cargo.
+filegroup(
+    name = "hawdb_node_sources",
+    srcs = glob([
+        "Cargo.lock",
+        "*.json",
+        "*.md",
+        "*.rs",
+        "*.toml",
+        "scripts/**",
+        "src/**",
+        "tests/**",
+        "examples/**",
+    ]),
+)

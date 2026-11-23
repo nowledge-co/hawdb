@@ -252,8 +252,11 @@ pub(super) fn read_text(
         }
         reader.read_exact(chunk)?;
     }
-    String::from_utf8(bytes)
-        .map_err(|error| HawDBError::Storage(format!("invalid lexical spill utf-8: {error}")))
+    String::from_utf8(bytes).map_err(|error| {
+        HawDBError::or_stop(&error, || {
+            HawDBError::Storage(format!("invalid lexical spill utf-8: {error}"))
+        })
+    })
 }
 
 impl AsRef<Path> for RemoveOnDrop {

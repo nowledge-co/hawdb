@@ -28,42 +28,97 @@ pub trait RelationalConstraintIndex {
     ) -> Result<(), RelationalError>;
 }
 
-type ConstraintOverlayPostings<'a> = BTreeMap<&'a RelationalKey, RelationalIndexChangeKind>;
-type ConstraintIndexOverlay<'a> = BTreeMap<&'a RelationalKey, ConstraintOverlayPostings<'a>>;
-type ConstraintTableOverlay<'a> = BTreeMap<&'a str, ConstraintIndexOverlay<'a>>;
+type ConstraintOverlayPostings = BTreeMap<RelationalKey, RelationalIndexChangeKind>;
+type ConstraintIndexOverlay = BTreeMap<RelationalKey, ConstraintOverlayPostings>;
+type ConstraintTableOverlay = BTreeMap<String, ConstraintIndexOverlay>;
 
-struct TransactionConstraintOverlay<'a> {
-    postings: BTreeMap<&'a str, ConstraintTableOverlay<'a>>,
-    deleted_keys: BTreeMap<&'a str, BTreeMap<&'a str, BTreeSet<&'a RelationalKey>>>,
+struct TransactionConstraintOverlay {
+    postings: BTreeMap<String, ConstraintTableOverlay>,
+    deleted_keys: BTreeMap<String, BTreeMap<String, BTreeSet<RelationalKey>>>,
 }
 
-impl<'a> TransactionConstraintOverlay<'a> {
-    fn new(changes: &'a [RelationalIndexChange]) -> Result<Self, RelationalError> {
-        let mut postings = BTreeMap::<_, ConstraintTableOverlay<'a>>::new();
-        let mut deleted_keys = BTreeMap::<_, BTreeMap<_, BTreeSet<_>>>::new();
+impl TransactionConstraintOverlay {
+    fn new(
+        state: &RelationalState,
+        changes: &[RelationalIndexChange],
+    ) -> Result<Self, RelationalError> {
+        let mut postings = BTreeMap::<_, ConstraintTableOverlay>::new();
         for change in changes {
-            if postings
-                .entry(change.table.as_str())
-                .or_default()
-                .entry(change.index.as_str())
-                .or_default()
-                .entry(&change.index_key)
-                .or_default()
-                .insert(&change.primary_key, change.kind)
-                .is_some()
+            let schema = state.table_schema(&change.table).ok_or_else(|| {
+                RelationalError::Corruption(format!(
+                    "authoritative index change references unknown table {}",
+                    change.table
+                ))
+            })?;
+            let definition = schema
+                .required_index_definitions()
+                .into_iter()
+                .find(|definition| definition.name == change.index)
+                .ok_or_else(|| {
+                    RelationalError::Corruption(format!(
+                        "authoritative index change references unknown index {}.{}",
+                        change.table, change.index
+                    ))
+                })?;
+            if change.index_key.0.len()
+                != definition
+                    .columns
+                    .len()
+                    .saturating_add(definition.included_columns.len())
             {
                 return Err(RelationalError::Corruption(format!(
-                    "authoritative transaction overlay contains duplicate changes for {}.{}",
+                    "authoritative index change {}.{} has an invalid physical key width",
                     change.table, change.index
                 )));
             }
-            if change.kind == RelationalIndexChangeKind::Delete {
-                deleted_keys
-                    .entry(change.table.as_str())
-                    .or_default()
-                    .entry(change.index.as_str())
-                    .or_default()
-                    .insert(&change.index_key);
+            let logical_key =
+                RelationalKey(change.index_key.0[..definition.columns.len()].to_vec());
+            let logical_postings = postings
+                .entry(change.table.clone())
+                .or_default()
+                .entry(change.index.clone())
+                .or_default()
+                .entry(logical_key.clone())
+                .or_default();
+            match logical_postings.entry(change.primary_key.clone()) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(change.kind);
+                }
+                std::collections::btree_map::Entry::Occupied(entry)
+                    if !definition.included_columns.is_empty()
+                        && *entry.get() == RelationalIndexChangeKind::Delete
+                        && change.kind == RelationalIndexChangeKind::Insert =>
+                {
+                    // A payload-only update replaces the physical covering
+                    // key, but leaves the logical posting visible. Constraint
+                    // validation operates on logical keys, so the captured
+                    // delete/insert pair has no net effect here.
+                    entry.remove();
+                }
+                std::collections::btree_map::Entry::Occupied(_) => {
+                    return Err(RelationalError::Corruption(format!(
+                        "authoritative transaction overlay contains duplicate changes for {}.{}",
+                        change.table, change.index
+                    )));
+                }
+            }
+        }
+        let mut deleted_keys = BTreeMap::<_, BTreeMap<_, BTreeSet<_>>>::new();
+        for (table, indexes) in &postings {
+            for (index, keys) in indexes {
+                for (key, primary_keys) in keys {
+                    if primary_keys
+                        .values()
+                        .any(|kind| *kind == RelationalIndexChangeKind::Delete)
+                    {
+                        deleted_keys
+                            .entry(table.clone())
+                            .or_default()
+                            .entry(index.clone())
+                            .or_default()
+                            .insert(key.clone());
+                    }
+                }
             }
         }
         Ok(Self {
@@ -77,11 +132,11 @@ impl<'a> TransactionConstraintOverlay<'a> {
         table: &str,
         index: &str,
         key: &RelationalKey,
-    ) -> Option<&ConstraintOverlayPostings<'a>> {
+    ) -> Option<&ConstraintOverlayPostings> {
         self.postings.get(table)?.get(index)?.get(key)
     }
 
-    fn deleted_keys(&self, table: &str, index: &str) -> Option<&BTreeSet<&'a RelationalKey>> {
+    fn deleted_keys(&self, table: &str, index: &str) -> Option<&BTreeSet<RelationalKey>> {
         self.deleted_keys.get(table)?.get(index)
     }
 }
@@ -169,9 +224,9 @@ pub(super) fn validate_authoritative_constraints(
     changes: &[RelationalIndexChange],
     constraint_index: &dyn RelationalConstraintIndex,
 ) -> Result<(), RelationalError> {
-    let transaction_overlay = TransactionConstraintOverlay::new(changes)?;
+    let transaction_overlay = TransactionConstraintOverlay::new(next, changes)?;
     for (table, indexes) in &transaction_overlay.postings {
-        let schema = next.schemas.get(*table).ok_or_else(|| {
+        let schema = next.schemas.get(table).ok_or_else(|| {
             RelationalError::Corruption(format!(
                 "authoritative index change references unknown table {table}"
             ))
@@ -218,7 +273,7 @@ pub(super) fn validate_authoritative_constraints(
 fn validate_authoritative_foreign_keys(
     next: &RelationalState,
     changed_keys: &BTreeMap<String, BTreeSet<RelationalKey>>,
-    transaction_overlay: &TransactionConstraintOverlay<'_>,
+    transaction_overlay: &TransactionConstraintOverlay,
     constraint_index: &dyn RelationalConstraintIndex,
 ) -> Result<(), RelationalError> {
     for schema in next.table_schemas() {
@@ -338,7 +393,7 @@ fn bounded_authoritative_postings_after_changes(
     table: &str,
     index: &str,
     key: &RelationalKey,
-    transaction_overlay: &TransactionConstraintOverlay<'_>,
+    transaction_overlay: &TransactionConstraintOverlay,
     max_results: usize,
 ) -> Result<BTreeSet<RelationalKey>, RelationalError> {
     debug_assert!(max_results > 0);

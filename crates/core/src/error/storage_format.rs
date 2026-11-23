@@ -39,6 +39,9 @@ pub const LOGICAL_DUMP_FORMAT: &str = "logical dump";
 /// The search projection selector manifest
 /// (`docs/SEARCH_PROJECTION_MANIFEST_VERSION.md`).
 pub const SEARCH_PROJECTION_MANIFEST_FORMAT: &str = "search projection manifest";
+/// The graph/relational WAL file header (`SKWALB<NN>`), refused before any
+/// WAL record is read or any torn-tail repair is considered.
+pub const WAL_FILE_FORMAT: &str = "WAL file";
 
 /// An intact storage envelope requires a different reader capability.
 /// Refusal does not authorize repair, truncation, or database recreation.
@@ -130,6 +133,7 @@ mod tests {
             APPEND_WAL_FORMAT,
             LOGICAL_DUMP_FORMAT,
             SEARCH_PROJECTION_MANIFEST_FORMAT,
+            WAL_FILE_FORMAT,
         ];
         let unique = names.iter().collect::<std::collections::BTreeSet<_>>();
         assert_eq!(unique.len(), names.len());

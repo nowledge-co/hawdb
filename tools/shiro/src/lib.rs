@@ -66,6 +66,7 @@ pub use parser_oracle::{
     run_parser_fuzz_case, ParserFuzzCase, ParserFuzzObservation, PARSER_FUZZ_PROTOCOL,
 };
 pub use row_page_oracle::{run_row_page_compaction_case, ROW_PAGE_COMPACTION_PROTOCOL};
+pub use sql_oracle::plan_guidance::query_plan_guidance_cli;
 pub use sql_oracle::{
     SqlCaseReport, SqlExecutionObservation, SqlFailureReport, SqlJoinGeneratorProfile,
     SqlJoinRewriteCase, SqlJoinRewriteEvidence, SqlJoinRewriteFailureReport, SqlMutation,
@@ -441,7 +442,9 @@ impl ReplayBundle {
             graph_predicate_rewrite: case.graph_predicate_rewrite.clone(),
             metamorphic: case.metamorphic.clone(),
             index_enabled: case.index_enabled,
-            statement_clock: optimizer_qualification::qualification_clock().to_rfc3339(),
+            statement_clock: hawdb::temporal::format_datetime(
+                optimizer_qualification::qualification_clock(),
+            ),
         }
     }
 
@@ -2170,6 +2173,11 @@ fn error_class(error: &HawDBError) -> &'static str {
             ..
         }
         | HawDBError::ReadBudgetExceeded(_)
+        | HawDBError::WalRecordLimitExceeded(_)
+        | HawDBError::RuntimeAdmissionRefused(_)
+        | HawDBError::RuntimeIoWaveReservationExceeded { .. }
+        | HawDBError::RuntimeTaskStopped(_)
+        | HawDBError::ReadOnly { .. }
         | HawDBError::ResourceBudgetExceeded(_)
         | HawDBError::GraphExpansionCandidateLimitExceeded { .. }
         | HawDBError::GraphExpansionPayloadLimitExceeded { .. }
@@ -2178,7 +2186,11 @@ fn error_class(error: &HawDBError) -> &'static str {
         | HawDBError::TransactionReadDependencyRefused { .. }
         | HawDBError::BranchCommandUnsupported { .. }
         | HawDBError::SearchProjectionRebuildRefused { .. }
-        | HawDBError::SearchProjectionEpochAdvanceRefused { .. } => "execution",
+        | HawDBError::SearchProjectionOwnershipMarkerCorrupt { .. }
+        | HawDBError::SearchProjectionOwnershipMismatch { .. }
+        | HawDBError::SearchProjectionEpochAdvanceRefused { .. }
+        | HawDBError::SearchProjectionPrefixBehindSource { .. }
+        | HawDBError::SearchProjectionBatchBudgetExceeded { .. } => "execution",
         HawDBError::Storage(_)
         | HawDBError::Constraint {
             surface: RelationalErrorSurface::Storage,

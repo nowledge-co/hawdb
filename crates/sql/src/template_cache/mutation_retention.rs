@@ -34,11 +34,13 @@ pub(super) fn heap_charge(key: &String, template: &PreparedPostgresStatement) ->
             optional(&update.alias, string),
             vector(&update.assignments, assignment),
             optional(&update.selection, expression),
+            vector(&update.returning, column),
         ]),
         SqlStatement::Delete(delete) => sum([
             table(&delete.table),
             optional(&delete.alias, string),
             optional(&delete.selection, expression),
+            vector(&delete.returning, column),
         ]),
         _ => return None,
     };
@@ -135,6 +137,9 @@ fn expression(expr: &Expr) -> Option<usize> {
         | ExprKind::Or(left, right)
         | ExprKind::Compare { left, right, .. } => {
             sum([boxed_expression(left), boxed_expression(right)])
+        }
+        ExprKind::RowCompare { left, right, .. } => {
+            sum([vector(left, expression), vector(right, expression)])
         }
         ExprKind::Negate(item)
         | ExprKind::Not(item)

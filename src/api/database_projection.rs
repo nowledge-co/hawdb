@@ -38,7 +38,7 @@ impl Database {
                 hawdb_storage::projection_generation::ProjectionGenerationError::Corruption(
                     message,
                 ) => HawDBError::StorageIntegrity(message),
-                error => HawDBError::Execution(error.to_string()),
+                error => HawDBError::from_execution_error(error),
             })
     }
 
@@ -424,6 +424,12 @@ impl Database {
         Ok(verification)
     }
 
+    /// Selects whole changefeed commits after `source_commit_epoch`, up to
+    /// `max_operations`. A batch ending before the head is a prefix that
+    /// bounded catch-up refuses ([`HawDBError::SearchProjectionPrefixBehindSource`]).
+    /// A first commit that alone exceeds the limit is refused with the typed
+    /// [`HawDBError::SearchProjectionBatchBudgetExceeded`], which is not a
+    /// storage failure.
     pub fn build_search_projection_change_batch_after(
         &self,
         source_commit_epoch: u64,
@@ -511,10 +517,12 @@ impl Database {
                 && next_operation_count > limit
             {
                 if complete_through_commit_epoch == source_commit_epoch {
-                    return Err(HawDBError::Storage(format!(
-                        "search projection change at commit epoch {} requires {next_operation_count} operations, exceeding configured per-batch limit {limit}",
-                        change.commit_epoch
-                    )));
+                    return Err(HawDBError::SearchProjectionBatchBudgetExceeded {
+                        budget: hawdb_core::SearchProjectionBatchBudget::ChangeBatch,
+                        commit_epoch: Some(change.commit_epoch),
+                        required_operations: next_operation_count,
+                        limit,
+                    });
                 }
                 truncated_by_budget = true;
                 break;
@@ -570,6 +578,10 @@ impl Database {
         )
     }
 
+    /// [`Self::build_search_projection_change_batch_after`] from the index's
+    /// applied watermark. With `Some(cap)` this is the read-only probe for
+    /// bounded catch-up: a batch whose complete-through epoch is the current
+    /// commit epoch covers the whole pending interval (#1924).
     pub fn build_search_projection_change_batch_from_freshness(
         &self,
         search_index: &SearchIndex,
@@ -592,10 +604,21 @@ impl Database {
         &self,
         request: &SearchProjectionGraphDeltaRequest,
     ) -> Result<SearchProjectionDelta> {
+        self.build_search_projection_graph_delta_excluding(request, &BTreeSet::new())
+    }
+
+    /// Like [`Self::build_search_projection_graph_delta`], deriving no rows
+    /// for `externally_owned` kinds (#1814). Deletes are unaffected.
+    pub(crate) fn build_search_projection_graph_delta_excluding(
+        &self,
+        request: &SearchProjectionGraphDeltaRequest,
+        externally_owned: &BTreeSet<SearchProjectionKind>,
+    ) -> Result<SearchProjectionDelta> {
         let result = search_projection_graph_delta_for(
             &self.runtime.get()?.catalog,
             &self.runtime.get()?.store,
             request,
+            externally_owned,
         );
         self.runtime.get()?.store.poison_on_storage_error(&result);
         result
@@ -614,7 +637,10 @@ impl Database {
         search_index: &mut SearchIndex,
         request: SearchProjectionGraphDeltaRequest,
     ) -> Result<SearchProjectionDeltaReport> {
-        let delta = self.build_search_projection_graph_delta(&request)?;
+        let delta = self.build_search_projection_graph_delta_excluding(
+            &request,
+            search_index.externally_owned_kinds(),
+        )?;
         search_index.apply_projection_delta(delta)
     }
 
@@ -624,7 +650,11 @@ impl Database {
         batch: SearchProjectionChangeBatch,
         relational: SearchProjectionRelationalDelta,
     ) -> Result<SearchProjectionDeltaReport> {
-        let delta = self.build_search_projection_change_delta(batch, relational)?;
+        let delta = self.build_search_projection_change_delta_excluding(
+            batch,
+            relational,
+            search_index.externally_owned_kinds(),
+        )?;
         search_index.apply_projection_delta(delta)
     }
 
@@ -635,6 +665,18 @@ impl Database {
         &self,
         batch: SearchProjectionChangeBatch,
         relational: SearchProjectionRelationalDelta,
+    ) -> Result<SearchProjectionDelta> {
+        self.build_search_projection_change_delta_excluding(batch, relational, &BTreeSet::new())
+    }
+
+    /// Like [`Self::build_search_projection_change_delta`], deriving no graph
+    /// rows for `externally_owned` kinds (#1814). Host-hydrated rows and all
+    /// deletes are kept.
+    pub(crate) fn build_search_projection_change_delta_excluding(
+        &self,
+        batch: SearchProjectionChangeBatch,
+        relational: SearchProjectionRelationalDelta,
+        externally_owned: &BTreeSet<SearchProjectionKind>,
     ) -> Result<SearchProjectionDelta> {
         let expected_primary_key_count = batch
             .relational_primary_key_changes()
@@ -655,7 +697,8 @@ impl Database {
         }
         let complete_through_commit_epoch = batch.complete_through_commit_epoch();
         let max_operations = batch.graph_delta().max_operations;
-        let mut graph = self.build_search_projection_graph_delta(batch.graph_delta())?;
+        let mut graph = self
+            .build_search_projection_graph_delta_excluding(batch.graph_delta(), externally_owned)?;
         let SearchProjectionDelta {
             upserts,
             deletes,

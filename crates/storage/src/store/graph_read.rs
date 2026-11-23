@@ -4882,9 +4882,7 @@ impl GraphStore {
             None => executor.execute_control(reader, &schedule, &mut consume),
         }
         .map_err(|error| match error {
-            SegmentReadExecutionError::Stopped(reason) => {
-                HawDBError::Execution(format!("runtime task stopped: {reason}"))
-            }
+            SegmentReadExecutionError::Stopped(reason) => HawDBError::RuntimeTaskStopped(reason),
             error => HawDBError::StorageIntegrity(error.to_string()),
         })?;
         Ok(SourceScanCandidateVisit::Rows {

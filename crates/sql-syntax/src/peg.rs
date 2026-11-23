@@ -765,8 +765,19 @@ pub fn sql_grammar(
     crate::parser::frontend::grammar::build_with_rules(extra, &[root], true)
 }
 
-pub fn sql_expression(tree: &ParseTree, tokens: &[Token], node: NodeId) -> crate::ExpressionSyntax {
-    crate::parser::expression::Fold { tree, tokens }.expression(node)
+pub fn sql_expression(
+    input: &str,
+    tree: &ParseTree,
+    tokens: &[Token],
+    node: NodeId,
+) -> crate::ExpressionSyntax {
+    let query = |node| crate::parser::frontend::query_from_tree(input, tokens, tree, node);
+    crate::parser::expression::Fold {
+        tree,
+        tokens,
+        query: Some(&query),
+    }
+    .expression(node)
 }
 
 pub fn sql_select(

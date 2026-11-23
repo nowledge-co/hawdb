@@ -285,7 +285,7 @@ pub(super) fn collect_node_dependencies(
     };
     dependencies
         .record(key)
-        .map_err(|error| HawDBError::Execution(error.to_string()))
+        .map_err(HawDBError::from_execution_error)
 }
 
 // Bounds may move through local filters, but never through projections,
@@ -388,7 +388,7 @@ fn collect_scalar_read_keys(
             {
                 dependencies
                     .record(key)
-                    .map_err(|error| HawDBError::Execution(error.to_string()))?;
+                    .map_err(HawDBError::from_execution_error)?;
             } else {
                 // The writer uses the same representability bound, retaining
                 // its label-domain summary for unsupported/oversized values.
@@ -406,7 +406,7 @@ fn record_node_domain(label: &str, dependencies: &mut GraphReadDependencies) -> 
         .record(VersionKey::ReadNodeDomain(
             (!label.is_empty()).then(|| label.into()),
         ))
-        .map_err(|error| HawDBError::Execution(error.to_string()))
+        .map_err(HawDBError::from_execution_error)
 }
 
 fn predicate_reads_relationships(predicate: &crate::planner::Predicate) -> bool {
@@ -588,7 +588,7 @@ impl Database {
             );
         }
         read.config.max_read_result_rows = restrictive_query_limit(
-            read.config.max_read_result_rows,
+            read.config.read_result_row_limit(),
             Some(limits.statement_rows.get()),
         );
         read.config.max_read_result_payload_bytes = restrictive_query_limit(
@@ -808,11 +808,10 @@ mod tests {
             (Some(4), Some(2), 8, (Some(4), Some(2))),
             (Some(4), Some(0), 8, (Some(4), Some(8))),
             // Unset, the intermediate ceiling follows the result ceiling
-            // exactly. Known bug, not intended: a host `Some(0)` result
-            // ceiling ignores `statement_rows` (#1685); this row pins the
-            // current behaviour until that is fixed.
-            (Some(0), None, 8, (None, None)),
-            (Some(0), Some(1_000), 8, (None, Some(8))),
+            // exactly. A host `Some(0)` result ceiling means unlimited, the
+            // same as `None`, so `statement_rows` bounds it (#1685).
+            (Some(0), None, 8, (Some(8), Some(8))),
+            (Some(0), Some(1_000), 8, (Some(8), Some(8))),
         ] {
             let db = Database::new_with_config(DatabaseConfig {
                 max_read_result_rows: result,

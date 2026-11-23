@@ -51,6 +51,8 @@ impl ExecutionObserver for RelationalBlockingObserver {
 pub(super) struct ProjectedBatchSource<
     'a,
     'pipeline,
+    'filter_ref,
+    'filter_inner,
     R: crate::index_runtime::RelationalIndexStoreReader,
 > {
     pub(super) select: &'a SelectStatement,
@@ -68,11 +70,14 @@ pub(super) struct ProjectedBatchSource<
     pub(super) batch_memory: NonZeroUsize,
     pub(super) memory_ledger: &'pipeline QueryMemoryLedger,
     pub(super) add_order_keys: bool,
+    pub(super) subquery_filter: Option<&'filter_ref super::RelationalSubqueryFilter<'filter_inner>>,
 }
 
 pub(super) struct DistinctAggregateValueBatchSource<
     'a,
     'pipeline,
+    'filter_ref,
+    'filter_inner,
     R: crate::index_runtime::RelationalIndexStoreReader,
 > {
     pub(super) select: &'a SelectStatement,
@@ -91,10 +96,11 @@ pub(super) struct DistinctAggregateValueBatchSource<
     pub(super) batch_rows: usize,
     pub(super) batch_memory: NonZeroUsize,
     pub(super) memory_ledger: &'pipeline QueryMemoryLedger,
+    pub(super) subquery_filter: Option<&'filter_ref super::RelationalSubqueryFilter<'filter_inner>>,
 }
 
 impl<R: crate::index_runtime::RelationalIndexStoreReader> BindingBatchSource<()>
-    for DistinctAggregateValueBatchSource<'_, '_, R>
+    for DistinctAggregateValueBatchSource<'_, '_, '_, '_, R>
 {
     fn execute(
         &mut self,
@@ -122,6 +128,7 @@ impl<R: crate::index_runtime::RelationalIndexStoreReader> BindingBatchSource<()>
             self.pipeline,
             self.index_runtime,
             self.row_runtime,
+            self.subquery_filter,
             &mut |row| {
                 if !aggregate_filter_matches(self.filter, &row, self.parameters)? {
                     return Ok(true);
@@ -153,7 +160,7 @@ impl<R: crate::index_runtime::RelationalIndexStoreReader> BindingBatchSource<()>
 }
 
 impl<R: crate::index_runtime::RelationalIndexStoreReader> BindingBatchSource<()>
-    for ProjectedBatchSource<'_, '_, R>
+    for ProjectedBatchSource<'_, '_, '_, '_, R>
 {
     fn execute(
         &mut self,
@@ -186,6 +193,7 @@ impl<R: crate::index_runtime::RelationalIndexStoreReader> BindingBatchSource<()>
             self.pipeline,
             self.index_runtime,
             self.row_runtime,
+            self.subquery_filter,
             &mut |row| {
                 let _copies = super::projection_memory::admit_ordinary(
                     self.select,
@@ -340,6 +348,7 @@ pub(super) fn execute_blocking_projection<'a>(
     limits: RelationalQueryLimits,
     memory: &hawdb_executor::ExecutionMemoryConfig,
     memory_ledger: &QueryMemoryLedger,
+    subquery_filter: Option<&super::RelationalSubqueryFilter<'_>>,
 ) -> Result<StreamingProjectionOutput> {
     let offset = usize::try_from(bind_bound(select.offset, parameters, "OFFSET")?.unwrap_or(0))
         .map_err(|_| HawDBError::Semantic("SQL OFFSET is too large".to_string()))?;
@@ -386,6 +395,7 @@ pub(super) fn execute_blocking_projection<'a>(
             batch_memory: memory.batch_payload_bytes,
             memory_ledger,
             add_order_keys: false,
+            subquery_filter,
         };
         let mut distinct = DistinctBatchSource {
             input: &mut projected,
@@ -480,6 +490,7 @@ pub(super) fn execute_blocking_projection<'a>(
             batch_memory: memory.batch_payload_bytes,
             memory_ledger,
             add_order_keys: true,
+            subquery_filter,
         };
         execute_relational_order(
             &input_plan,
@@ -538,6 +549,7 @@ pub(super) fn execute_blocking_projection<'a>(
             pipeline,
             index_runtime,
             row_runtime,
+            subquery_filter,
             &mut |row| {
                 let _copies = super::projection_memory::admit_sort_input(
                     select,
@@ -704,8 +716,8 @@ pub(super) fn relational_sort_value(value: &RelationalValue) -> Result<Value> {
         RelationalValue::Bytea(value) => Ok(Value::Binary(value.clone())),
         RelationalValue::Uuid(value) => Ok(Value::Uuid(*value)),
         RelationalValue::Vector(value) => Ok(Value::Vector(value.clone())),
-        RelationalValue::Timestamp(value) => hawdb_core::sql_timestamp::local_value(*value),
-        RelationalValue::TimestampTz(value) => hawdb_core::sql_timestamp::zoned_value(*value),
+        RelationalValue::Timestamp(value) => hawdb_core::sql_timestamp::local_value(value.get()),
+        RelationalValue::TimestampTz(value) => hawdb_core::sql_timestamp::zoned_value(value.get()),
         RelationalValue::Overflow(_) => Err(HawDBError::Execution(
             "ORDER BY requires overflow hydration before qualification".to_string(),
         )),

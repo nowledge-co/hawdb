@@ -19,10 +19,11 @@ use hawdb_qos::{RuntimeRetainedMemory, RuntimeWorkKind, RuntimeWorkRequest};
 use std::sync::Arc;
 
 /// Parameter-neutral SQL templates contain no schema bindings or source pins.
+#[derive(Debug, Clone)]
 pub(crate) struct RuntimeSqlPlanningSnapshot {
-    identity: DatabaseInstanceIdentity,
+    pub(crate) identity: DatabaseInstanceIdentity,
     cache: Arc<RelationalPlanTemplateCache>,
-    config: DatabaseConfig,
+    pub(crate) config: DatabaseConfig,
 }
 
 pub(crate) struct PreparedRuntimeSql {
@@ -56,7 +57,6 @@ impl PreparedRuntimeSql {
     pub(crate) fn uses_snapshot(&self) -> bool {
         super::concurrent::sql_statement_uses_snapshot(self.statement.statement())
     }
-    #[cfg(feature = "tokio-runtime")]
     pub(crate) fn uses_catalog(&self) -> bool {
         matches!(
             self.statement.statement(),
@@ -81,7 +81,15 @@ impl PreparedRuntimeSql {
         self,
         database: &Database,
     ) -> Result<(PreparedRelationalSql, Option<RuntimeRetainedMemory>)> {
-        if self.identity != database.runtime.instance_identity() || self.config != database.config {
+        self.into_statement_for(&database.runtime.instance_identity(), &database.config)
+    }
+
+    pub(crate) fn into_statement_for(
+        self,
+        identity: &DatabaseInstanceIdentity,
+        config: &DatabaseConfig,
+    ) -> Result<(PreparedRelationalSql, Option<RuntimeRetainedMemory>)> {
+        if &self.identity != identity || &self.config != config {
             return Err(HawDBError::Execution(
                 "SQL execution context changed during admission; retry the query".into(),
             ));

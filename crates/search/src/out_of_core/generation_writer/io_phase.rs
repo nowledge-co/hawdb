@@ -124,7 +124,7 @@ impl Scope {
     pub(super) fn acquire(task: &RuntimeTaskContext, memory: &BuildMemory) -> Result<Self> {
         let permit = task
             .acquire_io_wave(NonZeroUsize::MIN)
-            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+            .map_err(HawDBError::from_execution_error)?;
         let Some(permit) = permit else {
             if memory.host_admission.is_some() {
                 return Err(HawDBError::Execution(

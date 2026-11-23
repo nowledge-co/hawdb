@@ -17,6 +17,7 @@ pub(super) enum Scalar {
     Binary(Box<Self>, NumericBinaryOp, Box<Self>),
     Negate(Box<Self>),
     Cast(Box<Self>, NumericType),
+    OctetLength(Box<Self>),
 }
 
 impl Scalar {
@@ -45,6 +46,10 @@ impl Scalar {
                 numeric::common_numeric_type(left.kind()?, right.kind()?)
             }
             Self::Negate(value) => numeric::common_numeric_type(value.kind()?, None),
+            Self::OctetLength(value) => {
+                crate::query_value::validate_octet_length_type(value.kind()?)?;
+                Ok(Some(LogicalType::Int64))
+            }
             Self::Cast(value, target) => {
                 if value
                     .kind()?
@@ -95,6 +100,9 @@ impl Scalar {
         let value = match self {
             Self::Value(value) => return Ok(value.as_ref()),
             Self::Column(index, _) => return resolve(*index),
+            Self::OctetLength(value) => {
+                return crate::query_value::octet_length(value.evaluate(resolve)?)
+            }
             Self::Binary(left, op, right) => numeric::evaluate_numeric(
                 core_value_ref(left.evaluate(resolve)?)?,
                 *op,
@@ -152,6 +160,15 @@ impl Binder<'_> {
             ExprKind::Negate(value) => Scalar::Negate(Box::new(self.bind(value, depth + 1)?)),
             ExprKind::Cast { expression, target } => {
                 Scalar::Cast(Box::new(self.bind(expression, depth + 1)?), *target)
+            }
+            ExprKind::Function {
+                name,
+                arguments,
+                distinct: false,
+                filter: None,
+            } if name == "octet_length" => {
+                let argument = crate::query_value::octet_length_argument(arguments)?;
+                Scalar::OctetLength(Box::new(self.bind(argument, depth + 1)?))
             }
             _ => {
                 return Err(HawDBError::Semantic(

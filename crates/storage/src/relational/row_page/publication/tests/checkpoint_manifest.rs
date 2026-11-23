@@ -135,7 +135,9 @@ pub(super) fn schema() -> RelationalTableSchema {
         schema.indexes.push(RelationalIndexSchema {
             name: format!("index-{ordinal:04}"),
             columns: vec!["id".into()],
+            included_columns: Vec::new(),
             unique: ordinal % 2 == 0,
+            predicate: None,
         });
     }
     schema

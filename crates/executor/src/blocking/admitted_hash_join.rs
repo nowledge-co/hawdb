@@ -346,11 +346,13 @@ impl<'a> AdmittedHashJoin<'a> {
             .account
             .reserve(self.spill_io_buffer_bytes.get())
             .map_err(|error| {
-                HawDBError::Execution(format!(
-                    "{} cannot admit a {}-byte spill writer buffer: {error}",
-                    self.operator,
-                    self.spill_io_buffer_bytes.get(),
-                ))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!(
+                        "{} cannot admit a {}-byte spill writer buffer: {error}",
+                        self.operator,
+                        self.spill_io_buffer_bytes.get(),
+                    ))
+                })
             })?;
         let metadata = self.account.reserve(
             self.memory
@@ -383,11 +385,13 @@ impl<'a> AdmittedHashJoin<'a> {
             .account
             .reserve(self.spill_io_buffer_bytes.get())
             .map_err(|error| {
-                HawDBError::Execution(format!(
-                    "{} cannot admit a {}-byte spill reader buffer: {error}",
-                    self.operator,
-                    self.spill_io_buffer_bytes.get(),
-                ))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!(
+                        "{} cannot admit a {}-byte spill reader buffer: {error}",
+                        self.operator,
+                        self.spill_io_buffer_bytes.get(),
+                    ))
+                })
             })?;
         Ok(JoinReader {
             side: run.side,
@@ -444,10 +448,12 @@ impl<'a> AdmittedHashJoin<'a> {
                 &mut self.tracker,
             )
             .map_err(|error| {
-                HawDBError::Execution(format!(
-                    "{} cannot admit a hash table entry: {error}",
-                    self.operator,
-                ))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!(
+                        "{} cannot admit a hash table entry: {error}",
+                        self.operator,
+                    ))
+                })
             })
     }
 

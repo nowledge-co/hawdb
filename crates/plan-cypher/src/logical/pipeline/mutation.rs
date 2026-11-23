@@ -60,7 +60,10 @@ pub(super) fn bind_unwind_mutation_pipeline(
         unreachable!("UNWIND binding requires an UNWIND first clause")
     };
     let rows = bind_unwind_rows(source, parameters)?;
-    let operation = bind_row_mutation("UNWIND", variable, tail, parameters)?;
+    let operation = match bind_row_mutation("UNWIND", variable, tail, parameters) {
+        Ok(operation) => operation,
+        Err(error) => return relationship_from_rows(query, parameters, error),
+    };
     Ok(LogicalPlan::UnwindMutation {
         rows,
         variable: variable.clone(),
@@ -359,6 +362,31 @@ pub(super) fn bind_mutation_pipeline(
     query: &QueryPipeline,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<LogicalPlan> {
+    bind_atomic_mutation_pipeline(query, parameters)
+        .or_else(|error| relationship_from_rows(query, parameters, error))
+}
+
+/// A relationship CREATE or MERGE the two-endpoint commands refuse is bound
+/// over the rows of its read clauses when its shape allows; otherwise the
+/// commands' own refusal stands.
+pub(super) fn relationship_from_rows(
+    query: &QueryPipeline,
+    parameters: &BTreeMap<String, Value>,
+    error: HawDBError,
+) -> Result<LogicalPlan> {
+    if !matches!(error, HawDBError::Semantic(_)) {
+        return Err(error);
+    }
+    match match_set::bind_relationship_pipeline(&query.clauses, parameters) {
+        Some(Ok(plan)) => Ok(plan),
+        _ => Err(error),
+    }
+}
+
+fn bind_atomic_mutation_pipeline(
+    query: &QueryPipeline,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<LogicalPlan> {
     if let Some(plan) = match_set::bind_pipeline(&query.clauses, parameters) {
         return plan;
     }
@@ -367,13 +395,9 @@ pub(super) fn bind_mutation_pipeline(
         .iter()
         .any(|clause| matches!(clause.kind, ClauseKind::Unwind { .. }));
     let has_relationship_merge = query.clauses.iter().any(|clause| matches!(&clause.kind, ClauseKind::Merge { pattern, .. } if !pattern.steps.is_empty()));
-    if has_relationship_merge
-        && (has_unwind
-            || matches!(
-                query.clauses.last().map(|clause| &clause.kind),
-                Some(ClauseKind::Return(_))
-            ))
-    {
+    // Without UNWIND, relationship MERGE ... RETURN uses the atomic MERGE
+    // command below and projects the merged relationship and endpoints.
+    if has_relationship_merge && has_unwind {
         return relationship_batch::bind(query, parameters);
     }
     if has_unwind {
@@ -415,9 +439,13 @@ pub(super) fn bind_mutation_pipeline(
             require_unbound_path(pattern)?;
             let plan = relationship::bind_create(&input, pattern, parameters)?;
             match projection {
-                Some(projection) => {
-                    returns::bind(plan, created_bindings(pattern), projection, parameters)
-                }
+                Some(projection) => returns::bind(
+                    plan,
+                    MutationReturnState::Written,
+                    created_bindings(pattern),
+                    projection,
+                    parameters,
+                ),
                 None => Ok(plan),
             }
         }
@@ -427,8 +455,18 @@ pub(super) fn bind_mutation_pipeline(
             on_match,
         } => {
             require_unbound_path(pattern)?;
+            let (tail, projection) = match tail.split_last() {
+                Some((
+                    Clause {
+                        kind: ClauseKind::Return(projection),
+                        ..
+                    },
+                    preceding,
+                )) => (preceding, Some(projection)),
+                _ => (tail, None),
+            };
             let post_sets = set_tail(tail)?;
-            if input.patterns.is_empty() && pattern.steps.is_empty() {
+            let plan = if input.patterns.is_empty() && pattern.steps.is_empty() {
                 let node = &pattern.first;
                 require_node_label(node)?;
                 let variable = (!node.anonymous).then_some(node.variable.as_str());
@@ -438,20 +476,33 @@ pub(super) fn bind_mutation_pipeline(
                     bind_on_match_set_assignments(variable, on_match, parameters)?;
                 let post_merge_assignments =
                     bind_post_merge_set_assignments(variable, &post_sets, parameters)?;
-                return Ok(LogicalPlan::MergeNode {
+                LogicalPlan::MergeNode {
                     label: node.label.clone(),
                     match_properties: bind_properties(&node.properties, parameters)?,
                     on_create_properties,
                     on_match_assignments,
                     post_merge_assignments,
-                });
+                }
+            } else {
+                if !post_sets.is_empty() {
+                    return Err(unsupported(
+                        "relationship MERGE does not support a following SET; use ON CREATE SET or ON MATCH SET",
+                    ));
+                }
+                relationship::bind_merge(&input, pattern, on_create, on_match, parameters)?
+            };
+            match projection {
+                // MERGE summary rows use the CREATE columns: `node_id`, or
+                // `source_node_id`, `rel_id` and `target_node_id`.
+                Some(projection) => returns::bind(
+                    plan,
+                    MutationReturnState::Written,
+                    created_bindings(pattern),
+                    projection,
+                    parameters,
+                ),
+                None => Ok(plan),
             }
-            if !on_match.is_empty() || !post_sets.is_empty() {
-                return Err(unsupported(
-                    "relationship MERGE supports only ON CREATE assignments",
-                ));
-            }
-            relationship::bind_merge(&input, pattern, on_create, parameters)
         }
         ClauseKind::Set(sets) => {
             let (tail, projection) = match tail.split_last() {
@@ -481,21 +532,49 @@ pub(super) fn bind_mutation_pipeline(
                 let prefix = &query.clauses[..query.clauses.len() - clauses.len()];
                 return match_set::bind(prefix, &assignments, projection, parameters);
             }
-            node::bind_set(
+            let prefix = &query.clauses[..query.clauses.len() - clauses.len()];
+            let plan = match node::bind_set(
                 &input,
                 &assignments,
                 projection.map(|projection| projection.items.as_slice()),
                 parameters,
-            )
+            ) {
+                Ok(plan) => plan,
+                // Only single-node SET commands return rows; a relationship
+                // SET with RETURN is evaluated over the rows.
+                Err(error) if projection.is_some() => {
+                    return match_set::bind(prefix, &assignments, projection, parameters)
+                        .map_err(|_| error);
+                }
+                Err(error) => return Err(error),
+            };
+            // The relationship SET commands filter by stored properties only;
+            // an OR over parameters or another expression needs the rows
+            // (#1792).
+            if relationship_filters_need_rows(&plan) {
+                return match_set::bind(prefix, &assignments, projection, parameters);
+            }
+            Ok(plan)
         }
         ClauseKind::Delete { detach, variables } => {
-            if !tail.is_empty() {
-                return Err(unsupported("DELETE has unsupported following clauses"));
-            }
+            let projection = mutation_return(tail, "DELETE")?;
             let [variable] = variables.as_slice() else {
                 return Err(unsupported("atomic DELETE requires one target variable"));
             };
-            node::bind_delete(&input, variable, *detach, parameters)
+            let plan = node::bind_delete(&input, variable, *detach, parameters)?;
+            match projection {
+                Some(projection) => {
+                    let bindings = deleted_bindings(&plan)?;
+                    returns::bind(
+                        plan,
+                        MutationReturnState::Deleted,
+                        bindings,
+                        projection,
+                        parameters,
+                    )
+                }
+                None => Ok(plan),
+            }
         }
         _ => Err(unsupported(
             "clause cannot feed the atomic mutation command",
@@ -550,6 +629,65 @@ fn created_bindings(pattern: &MatchPattern) -> Vec<MutationReturnBinding> {
         .chain(relationship)
         .chain(node(&step.target, "target_node_id"))
         .collect()
+}
+
+/// The variables a DELETE can return, read as they were before the delete:
+/// the deleted node, or the deleted relationship and its endpoints.
+fn deleted_bindings(plan: &LogicalPlan) -> Result<Vec<MutationReturnBinding>> {
+    let binding = |variable: &str, entity, column: &str| MutationReturnBinding {
+        variable: variable.to_string(),
+        entity,
+        column: column.to_string(),
+    };
+    match plan {
+        LogicalPlan::DeleteNode { variable, .. } => Ok(vec![binding(
+            variable,
+            MutationReturnEntity::Node,
+            "node_id",
+        )]),
+        LogicalPlan::DeleteRelationship {
+            source_variable,
+            rel_variable,
+            target_variable,
+            ..
+        } => Ok(vec![
+            binding(
+                source_variable,
+                MutationReturnEntity::RelationshipSource,
+                "rel_id",
+            ),
+            binding(rel_variable, MutationReturnEntity::Relationship, "rel_id"),
+            binding(
+                target_variable,
+                MutationReturnEntity::RelationshipTarget,
+                "rel_id",
+            ),
+        ]),
+        // Storage reports each deleted target node once, while a MATCH row
+        // exists per source and relationship; refuse rather than miscount.
+        _ => Err(unsupported(
+            "DELETE RETURN supports node DELETE and relationship-variable DELETE",
+        )),
+    }
+}
+
+fn relationship_filters_need_rows(plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::SetRelationshipProperty {
+            predicate,
+            rel_predicate,
+            ..
+        }
+        | LogicalPlan::SetRelationshipProperties {
+            predicate,
+            rel_predicate,
+            ..
+        } => predicate
+            .iter()
+            .chain(rel_predicate)
+            .any(|predicate| !predicate.is_property_filter()),
+        _ => false,
+    }
 }
 
 fn set_tail(clauses: &[Clause]) -> Result<Vec<SetProperty>> {

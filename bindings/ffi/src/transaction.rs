@@ -32,17 +32,6 @@ pub(crate) fn ensure_open(database: &HawDBEmbedded) -> Result<(), FfiError> {
     }
 }
 
-pub(crate) fn ensure_none(database: &HawDBEmbedded) -> Result<(), FfiError> {
-    if database.transaction_active() {
-        Err(FfiError::transaction_open(
-            "hawdb: a transaction is open on this database; run statements with \
-             hawdb_transaction_query or hawdb_transaction_query_sql, then commit or roll back",
-        ))
-    } else {
-        Ok(())
-    }
-}
-
 /// Run `action` against a live handle with the shared panic and error
 /// conventions; on success `result_out` (when given) receives its JSON.
 unsafe fn with_database(
@@ -60,7 +49,7 @@ unsafe fn with_database(
         return false;
     }
     let database = unsafe { &*db };
-    let result = catch_unwind(AssertUnwindSafe(|| action(&mut *database.lock()?)));
+    let result = catch_unwind(AssertUnwindSafe(|| database.with_embedded_mut(action)));
     match result {
         Ok(Ok(output)) => {
             if let Some(output) = output {

@@ -138,7 +138,9 @@ impl<'a> GenerationIo<'a> {
             _memory: memory,
         };
         output.bytes.try_reserve_exact(length).map_err(|error| {
-            HawDBError::Execution(format!("search generation file allocation failed: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Execution(format!("search generation file allocation failed: {error}"))
+            })
         })?;
         if output.bytes.capacity() > length {
             return Err(HawDBError::Execution(

@@ -116,11 +116,15 @@ pub(crate) fn value(sink: &mut impl Sink, item: &RelationalValue) -> Result<(), 
         }
         RelationalValue::Timestamp(value) => {
             sink.raw(&[10])?;
-            sink.raw(&value.to_le_bytes())
+            let encoded = hawdb_core::sql_timestamp::encode_micros(value.get())
+                .map_err(|error| RelationalError::Schema(error.to_string()))?;
+            sink.raw(encoded.as_bytes())
         }
         RelationalValue::TimestampTz(value) => {
             sink.raw(&[11])?;
-            sink.raw(&value.to_le_bytes())
+            let encoded = hawdb_core::sql_timestamp::encode_micros(value.get())
+                .map_err(|error| RelationalError::Schema(error.to_string()))?;
+            sink.raw(encoded.as_bytes())
         }
         RelationalValue::DoublePrecision(value) => {
             sink.raw(&[3])?;
@@ -169,6 +173,14 @@ fn action(value: RelationalReferentialAction) -> u8 {
 }
 
 pub(crate) fn schema(sink: &mut impl Sink, schema: Schema<'_>) -> Result<(), RelationalError> {
+    schema_for_layout(sink, schema, super::IndexSchemaLayout::Combined)
+}
+
+pub(super) fn schema_for_layout(
+    sink: &mut impl Sink,
+    schema: Schema<'_>,
+    layout: super::IndexSchemaLayout,
+) -> Result<(), RelationalError> {
     bytes(sink, schema.name.as_bytes())?;
     count(sink, schema.columns.len(), "table columns")?;
     for column in schema.columns {
@@ -225,7 +237,24 @@ pub(crate) fn schema(sink: &mut impl Sink, schema: Schema<'_>) -> Result<(), Rel
     for index in schema.indexes {
         bytes(sink, index.name.as_bytes())?;
         strings(sink, &index.columns)?;
+        if layout.has_includes() {
+            strings(sink, &index.included_columns)?;
+        } else if !index.included_columns.is_empty() {
+            return Err(RelationalError::Schema(
+                "legacy relational schema cannot encode INCLUDE columns".into(),
+            ));
+        }
         sink.raw(&[u8::from(index.unique)])?;
+        if layout.has_predicates() {
+            sink.raw(&[u8::from(index.predicate.is_some())])?;
+            if let Some(index_predicate) = &index.predicate {
+                predicate(sink, index_predicate)?;
+            }
+        } else if index.predicate.is_some() {
+            return Err(RelationalError::Schema(
+                "legacy relational schema cannot encode a partial index".into(),
+            ));
+        }
     }
     materialized_view(sink, schema.materialized_view)
 }
@@ -315,6 +344,32 @@ pub(super) fn predicate(
             sink.raw(&[6])?;
             super::numeric::encode(sink, expression)?;
             sink.raw(&[u8::from(*negated)])?;
+        }
+        RelationalPredicate::RowCompare { fields, op } => {
+            sink.raw(&[7, comparison_tag(*op)])?;
+            count(sink, fields.len(), "row comparison fields")?;
+            let ordered = !matches!(
+                op,
+                RelationalComparisonOp::Eq | RelationalComparisonOp::NotEq
+            );
+            for field in fields {
+                predicate(sink, &field.equality)?;
+                if ordered {
+                    predicate(
+                        sink,
+                        field.ordering.as_ref().ok_or_else(|| {
+                            RelationalError::Durability(
+                                "ordered row comparison field is missing its ordering predicate"
+                                    .into(),
+                            )
+                        })?,
+                    )?;
+                } else if field.ordering.is_some() {
+                    return Err(RelationalError::Durability(
+                        "equality row comparison field has an ordering predicate".into(),
+                    ));
+                }
+            }
         }
         RelationalPredicate::And(left, right) | RelationalPredicate::Or(left, right) => {
             sink.raw(&[u8::from(matches!(input, RelationalPredicate::Or(..)))])?;

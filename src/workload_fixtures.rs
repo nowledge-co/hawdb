@@ -701,6 +701,11 @@ fn error_class(error: &crate::HawDBError) -> String {
         }
         | crate::HawDBError::BranchEvidenceBudgetExceeded { .. }
         | crate::HawDBError::ReadBudgetExceeded(_)
+        | crate::HawDBError::WalRecordLimitExceeded(_)
+        | crate::HawDBError::RuntimeAdmissionRefused(_)
+        | crate::HawDBError::RuntimeIoWaveReservationExceeded { .. }
+        | crate::HawDBError::RuntimeTaskStopped(_)
+        | crate::HawDBError::ReadOnly { .. }
         | crate::HawDBError::ResourceBudgetExceeded(_)
         | crate::HawDBError::GraphExpansionCandidateLimitExceeded { .. }
         | crate::HawDBError::GraphExpansionPayloadLimitExceeded { .. }
@@ -709,7 +714,11 @@ fn error_class(error: &crate::HawDBError) -> String {
         | crate::HawDBError::TransactionReadDependencyRefused { .. }
         | crate::HawDBError::BranchCommandUnsupported { .. }
         | crate::HawDBError::SearchProjectionRebuildRefused { .. }
-        | crate::HawDBError::SearchProjectionEpochAdvanceRefused { .. } => "execution",
+        | crate::HawDBError::SearchProjectionOwnershipMarkerCorrupt { .. }
+        | crate::HawDBError::SearchProjectionOwnershipMismatch { .. }
+        | crate::HawDBError::SearchProjectionEpochAdvanceRefused { .. }
+        | crate::HawDBError::SearchProjectionPrefixBehindSource { .. }
+        | crate::HawDBError::SearchProjectionBatchBudgetExceeded { .. } => "execution",
         crate::HawDBError::Storage(_)
         | crate::HawDBError::Constraint {
             surface: RelationalErrorSurface::Storage,

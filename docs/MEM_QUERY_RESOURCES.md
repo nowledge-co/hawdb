@@ -17,15 +17,48 @@ cargo bench --locked --no-default-features --bench mem_query_resources --no-run
 <benchmark-executable> 100 8192 16384 20 0 ranking
 <benchmark-executable> 100 8192 16384 20 0 expand
 <benchmark-executable> 100 8192 16384 20 0 mem-ranking
+<benchmark-executable> 512 512 64 30 0 current-mem-ranking
 ```
 
 Arguments are candidate count, rows per Space, body bytes, repeats, background
 writer (0/1), and workload. The fixture has two equally sized Spaces. Ranking
 changes an input score between samples while preserving its parameter shape.
 Expansion retains a source record while producing one result per neighbor.
-`mem-ranking` adds Mem's actual scoped-read predicates, canonical usage columns,
+`mem-ranking` retains Mem's historical CASE-based scoped-read predicates, canonical usage columns,
 floating point inputs and nullable confidence. It excludes the unchanged host
 scorer's decay/authority callback.
+
+`current-mem-ranking` uses the fixed-text list-comprehension query from
+[`hawdb_search_scoring.rs` at Mem `bc7a7b8`](https://github.com/nowledge-co/mem/blob/bc7a7b8eea681633bab0cb3324c1128cdcea0061/nmem-rs/crates/nmem-server/src/hawdb_search_scoring.rs).
+It associates each canonical Memory header with one bounded candidate map using
+`[candidate IN $candidates WHERE candidate.id = m.id][0]`. The fixture checks
+candidate ordering, all five ranking inputs, nullable confidence and a changed
+score on every timed query. Candidate sizes remain 20, 100 and 512. This isolates
+the graph query; it excludes host scoring, vector/text retrieval and final body
+hydration. Use the same source, fixture and build profile on both sides of a
+comparison; do not compare these results directly with the historical CASE data.
+
+The optimizer can lower a direct first-element lookup in a constant map list
+to CASE when every element is a map or NULL, the selected map keys are strings
+or NULL/missing, and the predicate is equality with a row property or column.
+The source must contain 8 through 1024 elements, at least 8 string keys, and at
+most 64 KiB of combined string-key bytes. The list must have no projection and
+the selected index must be zero. Dynamic lists, other key types, later indices,
+potentially failing elements and larger inputs retain general list evaluation.
+The rule preserves source order so duplicate keys select the first map.
+
+`transformation:constant_list_lookup_to_case` identifies the logical rewrite.
+The existing `simple_case_dispatch_tables` and `simple_case_dispatch_lookups`
+report the executor's admitted per-query sorted lookup table. Its allocation is
+optional: a small working-memory budget retains generic CASE evaluation. The
+map values remain borrowed from the bound plan until normal output admission.
+For R rows and C candidates, admitted dispatch replaces R*C comparisons with
+one C*log(C) table preparation and R*log(C) lookups. This does not change Space
+filtering, result multiplicity, snapshot selection or durability.
+
+The [2026-11-22 current-query comparison](benchmarks/mem_candidate_lookup_2026_11_22/README.md)
+records the final runtime source, alternating release runs, separate allocation
+observations and all measured tradeoffs.
 
 Build a separate executable with `--features qualification` to collect Rust
 allocation requests and query preparation counters. Instrumented timings must

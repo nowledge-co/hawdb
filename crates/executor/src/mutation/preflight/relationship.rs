@@ -44,10 +44,18 @@ fn push_row(
     limits: MutationLimits,
     output: OutputLimits,
 ) -> Result<()> {
-    let next = bytes.saturating_add(map_payload_bytes(&row));
-    if rows.len() >= limits.max_result_rows.get() || next > limits.max_result_payload_bytes.get() {
-        return Err(HawDBError::Execution(
-            "relationship MERGE RETURN exceeds mutation result limits".into(),
+    let row_bytes = map_payload_bytes(&row);
+    let next = bytes.saturating_add(row_bytes);
+    if rows.len() >= limits.max_result_rows.get() {
+        return Err(super::super::returns::result_rows_exceeded(
+            rows.len(),
+            1,
+            limits,
+        ));
+    }
+    if next > limits.max_result_payload_bytes.get() {
+        return Err(super::super::returns::result_payload_exceeded(
+            *bytes, row_bytes, limits,
         ));
     }
     output.validate(rows.len() + 1, next)?;

@@ -18,6 +18,8 @@ use hawdb_core::Value;
 use hawdb_plan_cypher::{LogicalPlan, Predicate, Projection, ProjectionExpression};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod constant_list_lookup;
+
 const MAX_FIXED_POINT_PASSES: usize = 16;
 
 pub(super) struct LogicalRewriteOutput {
@@ -330,10 +332,15 @@ fn is_empty_limit(plan: &LogicalPlan) -> bool {
 }
 
 fn rewrite_project(
-    items: Vec<Projection>,
+    mut items: Vec<Projection>,
     input: LogicalPlan,
     events: &mut Vec<RuleEvent>,
 ) -> LogicalPlan {
+    for item in &mut items {
+        if constant_list_lookup::rewrite(&mut item.expression) {
+            record(events, "constant_list_lookup_to_case");
+        }
+    }
     match input {
         LogicalPlan::Project {
             items: inner_items,

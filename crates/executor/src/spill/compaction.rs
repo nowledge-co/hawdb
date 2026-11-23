@@ -119,9 +119,7 @@ pub(crate) fn compact_runs_with_memory(
             let results: Vec<Result<SpillRun>> = match task_context {
                 Some(context) => executor
                     .map_ordered_with_context(&wave, context, execute)
-                    .map_err(|reason| {
-                        HawDBError::Execution(format!("runtime task stopped: {reason}"))
-                    })?,
+                    .map_err(HawDBError::RuntimeTaskStopped)?,
                 None => executor.map_ordered(&wave, execute),
             };
             offset += wave.len();

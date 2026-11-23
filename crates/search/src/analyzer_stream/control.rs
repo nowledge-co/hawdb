@@ -145,7 +145,9 @@ impl<'a> Dedup<'a> {
             _memory: memory,
         };
         candidate.terms.try_reserve(capacity).map_err(|error| {
-            HawDBError::Execution(format!("reserve search identifier deduplication: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Execution(format!("reserve search identifier deduplication: {error}"))
+            })
         })?;
         if table_bytes::<(Text<'_>, ())>(candidate.terms.capacity())? > bytes {
             return Err(HawDBError::Execution(

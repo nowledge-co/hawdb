@@ -161,7 +161,7 @@ fn ranking_window_refusal_preserves_existing_ranks_and_refunds() {
     task.cancellation().cancel();
     assert!(matches!(
         Ranks::new(&BTreeMap::new(), context),
-        Err(HawDBError::Execution(_))
+        Err(HawDBError::RuntimeTaskStopped(_))
     ));
     assert_eq!(ledger.snapshot().used_bytes, 0);
 }

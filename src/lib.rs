@@ -30,6 +30,7 @@ pub mod compat;
 mod compatibility_facades;
 mod compiled_capabilities;
 pub mod embedded;
+pub mod embedded_concurrent;
 pub mod embedded_store;
 #[cfg(feature = "tokio-runtime")]
 pub mod embedded_tokio;
@@ -286,6 +287,7 @@ pub use embedded::{
     EmbeddedDeploymentProfile, EmbeddedQueryError, EmbeddedRuntimeResources, HawDBEmbedded,
     HawDBEmbeddedOpenOptions,
 };
+pub use embedded_concurrent::HawDBConcurrentEmbedded;
 pub use embedded_store::{
     bounded_read_evidence_json, bounded_read_evidence_json_with_route_readiness,
     bounded_read_evidence_json_with_routes, graph_config, graph_config_with_search_mode,
@@ -295,6 +297,7 @@ pub use embedded_store::{
     source_mutation_dual_write_readiness, source_mutation_family_requirements,
     BackgroundMaintenanceReport, BoundedSearchCandidateOutput, CutoverControls,
     CutoverControlsReport, DefinedSearchProjectionConsumer, EmbeddedGraph,
+    EmbeddedOptimizerCardinalityEstimate, EmbeddedOptimizerCardinalityEstimateScope,
     EmbeddedProductionStatus, EmbeddedQueryExecutionPath, EmbeddedQueryOutput, EmbeddedQueryReport,
     EmbeddedQueryReportOptions, EmbeddedReadOptions, EmbeddedReadOutput, EmbeddedReadReport,
     EmbeddedReadSnapshot, EmbeddedReadSnapshotBudget, EmbeddedReadSnapshotReport,
@@ -313,14 +316,15 @@ pub use embedded_store::{
     SearchCandidateFieldSummary, SearchCandidateFilterPushdownEvidence, SearchCandidateOutput,
     SearchCandidateReadinessOptions, SearchCandidateReadinessReport, SearchCandidateReport,
     SearchCandidateRequest, SearchCandidateShadowAccumulator, SearchCandidateShadowEvidence,
-    SearchHydrationOutput, SearchProjection, SearchProjectionDocumentLookup,
-    SearchProjectionOpenMode, SearchProjectionRebuildOptions, SearchProjectionRebuildPhase,
-    SearchProjectionRebuildProgress, SearchProjectionRebuildReport, SearchProjectionRebuildSource,
-    SearchProjectionRebuildVerification, SearchProjectionRole, SlowQueryReport,
-    SlowQueryReportRecord, SourceMutationDualWriteEvidence, SourceMutationDualWriteReadinessReport,
-    SourceMutationFamilyRequirement, StorageLifecycleActionKind, StorageLifecycleDecision,
-    WorkControl, BOUNDED_READ_EVIDENCE_PROTOCOL, CUTOVER_CONTROLS_PROTOCOL,
-    GRAPH_READ_ROUTE_CATALOG_VERSION, LIBRARY_READINESS_PROTOCOL,
+    SearchHydrationOutput, SearchProjection, SearchProjectionChangeBatchProbe,
+    SearchProjectionDocumentLookup, SearchProjectionOpenMode, SearchProjectionRebuildOptions,
+    SearchProjectionRebuildPhase, SearchProjectionRebuildProgress, SearchProjectionRebuildReport,
+    SearchProjectionRebuildSource, SearchProjectionRebuildVerification, SearchProjectionRole,
+    SlowQueryReport, SlowQueryReportRecord, SourceMutationDualWriteEvidence,
+    SourceMutationDualWriteReadinessReport, SourceMutationFamilyRequirement,
+    StorageLifecycleActionKind, StorageLifecycleDecision, WorkControl,
+    BOUNDED_READ_EVIDENCE_PROTOCOL, CUTOVER_CONTROLS_PROTOCOL, GRAPH_READ_ROUTE_CATALOG_VERSION,
+    LIBRARY_READINESS_PROTOCOL, MAX_SEARCH_PROJECTION_MARKER_REASON_BYTES,
     NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL, OPEN_REPORT_PROTOCOL, OPERATIONS_READINESS_PROTOCOL,
     PRODUCTION_STATUS_PROTOCOL, QUERY_REPORT_PROTOCOL, READINESS_DASHBOARD_PROTOCOL,
     READ_REPORT_PROTOCOL, READ_SNAPSHOT_REPORT_PROTOCOL, REQUIRED_BOUNDED_READ_ROUTES,
@@ -344,11 +348,13 @@ pub use embedded_tokio::{
 pub use error::{
     FileDescriptorError, HawDBError, ReadBudgetError, ReadBudgetResource, RelationalErrorKind,
     RelationalErrorSurface, ResourceBudgetError, ResourceBudgetKind, ResourceBudgetScope, Result,
-    SearchProjectionEpochAdvanceRefusal, SearchProjectionRebuildRefusal, StorageFormatError,
-    TransactionRetryError, TransactionRetryReason, APPEND_WAL_FORMAT, LOGICAL_DUMP_FORMAT,
+    RuntimeAdmissionRefusal, SearchProjectionBatchBudget, SearchProjectionEpochAdvanceRefusal,
+    SearchProjectionRebuildRefusal, StorageFormatError, TransactionRetryError,
+    TransactionRetryReason, WalRecordLimit, WalRecordLimitError, APPEND_WAL_FORMAT,
+    GRAPH_CHANGE_COMMIT_EPOCH_CONFLICT_KEY, LOGICAL_DUMP_FORMAT,
     RELATIONAL_CHECKPOINT_LAYOUT_FORMAT, RELATIONAL_DURABLE_CODEC_FORMAT,
     RELATIONAL_ROW_PAGE_FORMAT, RELATIONAL_SCHEMA_FORMAT, SEARCH_PROJECTION_MANIFEST_FORMAT,
-    STORAGE_MANIFEST_FORMAT,
+    STORAGE_MANIFEST_FORMAT, WAL_FILE_FORMAT,
 };
 pub use executor::{
     ProjectedRowRef, QueryRow, QueryRowRef, QueryRows, QuerySchema, ReadExecutionProfile, Row,
@@ -555,6 +561,7 @@ pub use schema::{
     PropertyDescriptor, PropertyId, PropertySchema, PropertyType, SchemaObjectState,
     TableDescriptor, TableId, TableKind,
 };
+pub use search::projection_ownership::ExternallyOwnedRowsToken;
 #[cfg(feature = "vector-search")]
 pub use search::rabitq_projection::{
     RaBitQBitWidth, RaBitQCandidate, RaBitQCandidateOutput, RaBitQCandidateProjection,

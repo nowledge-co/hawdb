@@ -316,6 +316,7 @@ fn bag_rows(values: &[(i64, i64)]) -> Vec<Row> {
 }
 
 pub(super) fn keyless(case: &Case, run: &mut Run) -> Result<()> {
+    super::coddtest::check(case, run)?;
     let mut fixture = Fixture::new(case, run)?;
     let mut db = fixture.open()?;
     run.sql(
@@ -345,6 +346,7 @@ pub(super) fn keyless(case: &Case, run: &mut Run) -> Result<()> {
         &[],
     )?;
     const READ: &str = "SELECT bucket, score, note FROM events";
+    super::compound::check(case, run)?;
     let before = bag_rows(&model);
     let actual = run.sql(&mut db, "initial_bag", READ, &[])?;
     run.equal("initial_bag", &actual, &before, false)?;
@@ -408,7 +410,7 @@ pub(super) fn keyless(case: &Case, run: &mut Run) -> Result<()> {
     db = fixture.recover(db, run, READ, &expected)?;
     drop(db);
     fixture.passed = true;
-    Ok(())
+    super::dqe::check(case, run)
 }
 
 #[cfg(test)]

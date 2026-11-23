@@ -729,11 +729,7 @@ fn concurrent_writers_never_slip_past_an_advance() {
                 match handle.query_with_report(&statement) {
                     Ok(_) => break,
                     Err(HawDBError::TransactionRetryRequired(_)) => continue,
-                    Err(HawDBError::Execution(message))
-                        if message.contains("runtime admission") =>
-                    {
-                        continue
-                    }
+                    Err(HawDBError::RuntimeAdmissionRefused(_)) => continue,
                     Err(error) => panic!("{statement}: {error}"),
                 }
             };
@@ -752,7 +748,7 @@ fn concurrent_writers_never_slip_past_an_advance() {
     };
     // Runtime admission may turn either side away while the other holds
     // its I/O slot; that refusal does no work and is simply retried.
-    let admission = |error: &HawDBError| matches!(error, HawDBError::Execution(message) if message.contains("runtime admission"));
+    let admission = |error: &HawDBError| matches!(error, HawDBError::RuntimeAdmissionRefused(_));
     let mut advanced = 0usize;
     let mut refused = 0usize;
     while !writer.is_finished() {

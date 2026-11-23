@@ -103,7 +103,9 @@ pub(super) fn prepare(
         .segments
         .try_reserve_exact(manifest.segments.len())
         .map_err(|error| {
-            HawDBError::Execution(format!("cannot grow partitioned content manifest: {error}"))
+            HawDBError::or_stop(&error, || {
+                HawDBError::Execution(format!("cannot grow partitioned content manifest: {error}"))
+            })
         })?;
     if active.segments.capacity() > count {
         return Err(HawDBError::Execution(
@@ -199,9 +201,11 @@ pub(super) fn prepare(
                 .mutation_runs
                 .try_reserve_exact(1)
                 .map_err(|error| {
-                    HawDBError::Execution(format!(
-                        "cannot grow partitioned mutation manifest: {error}"
-                    ))
+                    HawDBError::or_stop(&error, || {
+                        HawDBError::Execution(format!(
+                            "cannot grow partitioned mutation manifest: {error}"
+                        ))
+                    })
                 })?;
             if manifest.mutation_runs.capacity() > capacity {
                 return Err(HawDBError::Execution(

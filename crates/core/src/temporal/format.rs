@@ -15,9 +15,11 @@
 //! ISO 8601 rendering of temporal values, as used by `Display`, string
 //! conversion and the tagged JSON bindings.
 
+use super::types::*;
+
 use std::fmt::{Formatter, Write};
 
-use chrono::{DateTime, Datelike, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
+use crate::temporal::{Date, OffsetDateTime, PlainDateTime, Time, UtcOffset};
 
 use super::Duration;
 
@@ -31,9 +33,9 @@ fn write_year(out: &mut impl Write, year: i32) -> std::fmt::Result {
     }
 }
 
-pub(super) fn write_date(out: &mut impl Write, date: NaiveDate) -> std::fmt::Result {
+pub(super) fn write_date(out: &mut impl Write, date: Date) -> std::fmt::Result {
     write_year(out, date.year())?;
-    write!(out, "-{:02}-{:02}", date.month(), date.day())
+    write!(out, "-{:02}-{:02}", (date.month() as u32), date.day())
 }
 
 /// Writes `.fff`, `.ffffff` or `.fffffffff`, whichever is the shortest exact
@@ -50,7 +52,7 @@ fn write_fraction(out: &mut impl Write, nanos: u32) -> std::fmt::Result {
     }
 }
 
-pub(super) fn write_time(out: &mut impl Write, time: NaiveTime) -> std::fmt::Result {
+pub(super) fn write_time(out: &mut impl Write, time: Time) -> std::fmt::Result {
     write!(
         out,
         "{:02}:{:02}:{:02}",
@@ -61,8 +63,8 @@ pub(super) fn write_time(out: &mut impl Write, time: NaiveTime) -> std::fmt::Res
     write_fraction(out, time.nanosecond())
 }
 
-pub(super) fn write_offset(out: &mut impl Write, offset: FixedOffset) -> std::fmt::Result {
-    let seconds = offset.local_minus_utc();
+pub(super) fn write_offset(out: &mut impl Write, offset: UtcOffset) -> std::fmt::Result {
+    let seconds = offset.whole_seconds();
     if seconds == 0 {
         return out.write_char('Z');
     }
@@ -75,7 +77,7 @@ pub(super) fn write_offset(out: &mut impl Write, offset: FixedOffset) -> std::fm
     Ok(())
 }
 
-pub(super) fn offset_string(offset: FixedOffset) -> String {
+pub(super) fn offset_string(offset: UtcOffset) -> String {
     let mut out = String::new();
     write_offset(&mut out, offset).expect("writing to a string succeeds");
     if out == "Z" {
@@ -85,19 +87,19 @@ pub(super) fn offset_string(offset: FixedOffset) -> String {
     }
 }
 
-pub fn format_date(date: NaiveDate) -> String {
+pub fn format_date(date: Date) -> String {
     let mut out = String::new();
     write_date(&mut out, date).expect("writing to a string succeeds");
     out
 }
 
-pub fn format_local_time(time: NaiveTime) -> String {
+pub fn format_local_time(time: Time) -> String {
     let mut out = String::new();
     write_time(&mut out, time).expect("writing to a string succeeds");
     out
 }
 
-pub fn format_local_datetime(value: NaiveDateTime) -> String {
+pub fn format_local_datetime(value: PlainDateTime) -> String {
     let mut out = String::new();
     write_date(&mut out, value.date()).expect("writing to a string succeeds");
     out.push('T');
@@ -105,9 +107,9 @@ pub fn format_local_datetime(value: NaiveDateTime) -> String {
     out
 }
 
-pub fn format_datetime(value: DateTime<FixedOffset>) -> String {
-    let mut out = format_local_datetime(value.naive_local());
-    write_offset(&mut out, *value.offset()).expect("writing to a string succeeds");
+pub fn format_datetime(value: OffsetDateTime) -> String {
+    let mut out = format_local_datetime(local_datetime(value));
+    write_offset(&mut out, value.offset()).expect("writing to a string succeeds");
     out
 }
 

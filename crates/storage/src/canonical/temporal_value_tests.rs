@@ -21,7 +21,7 @@ use hawdb_core::temporal;
 fn samples() -> Vec<Value> {
     vec![
         Value::Date(temporal::parse_date("2026-10-30").unwrap()),
-        Value::Date(temporal::NaiveDate::MAX),
+        Value::Date(temporal::Date::MAX),
         Value::LocalTime(temporal::parse_local_time("00:00:00.000000001").unwrap()),
         Value::LocalDateTime(temporal::parse_local_datetime("-0001-12-31T23:59:59").unwrap()),
         Value::DateTime(temporal::parse_datetime("2026-10-30T12:00:00+02:00").unwrap()),
@@ -111,7 +111,8 @@ fn temporal_canonical_payloads_fail_closed() {
         temporal::parse_datetime("2026-10-30T12:00:00Z").unwrap(),
     ))
     .unwrap();
-    zoned[13..].copy_from_slice(&90_000i32.to_le_bytes());
+    // Native time offsets stop before 26 hours.
+    zoned[13..].copy_from_slice(&(26 * 3_600i32).to_le_bytes());
     corrupt.push(zoned);
     let mut duration = vec![15u8];
     duration.extend_from_slice(&[0; 24]);

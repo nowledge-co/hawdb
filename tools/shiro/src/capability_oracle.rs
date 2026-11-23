@@ -5,14 +5,20 @@
 //! Inputs, rather than generated SQL, are reduced: every candidate is rebuilt in
 //! a fresh database and must reproduce the same phase and failure class.
 
+mod coddtest;
 mod cypher;
+mod functions;
 mod relational;
+
+mod dqe;
 
 use crate::{compare_rows, error_class, row_json, typed_value_json, ResultSemantics};
 use hawdb::executor::Row;
 use hawdb::{Database, QueryOutput, Value};
 use serde_json::{json, Value as Json};
 use std::collections::{BTreeMap, BTreeSet};
+
+mod compound;
 
 pub const PROTOCOL: &str = "shiro-capabilities-v1";
 pub const FAMILIES: &[&str] = &[
@@ -290,7 +296,7 @@ fn run(case: &Case) -> (Run, Option<Failure>) {
     let mut run = Run::default();
     let result = match case.family {
         0 => relational::decimal(case, &mut run),
-        1 => cypher::pipeline(case, &mut run),
+        1 => cypher::pipeline(case, &mut run).and_then(|()| functions::check(case, &mut run)),
         2 => cypher::binding_set(case, &mut run),
         3 => cypher::temporal(case, &mut run),
         4 => relational::keyless(case, &mut run),

@@ -34,7 +34,7 @@ use hawdb_storage::{
         RelationalRowPageSnapshotPointsReport, RelationalRowPageSnapshotRangeReport,
         RelationalRowPageSnapshotReadError, RelationalRowPageSnapshotReadLimits,
         RelationalRowPageSnapshotReader, RelationalRowPageSnapshotRowSource, RelationalState,
-        RelationalValueRef,
+        RelationalValue, RelationalValueRef,
     },
 };
 use std::cell::{Cell, RefCell};
@@ -71,6 +71,14 @@ pub struct RelationalRowExecutionEvidence {
     pub posting_blocks_skipped: usize,
     pub overlay_entries: usize,
     pub overlay_resident_bytes: usize,
+    /// Recursive-term evaluations completed by bounded recursive unions.
+    pub recursive_iterations: usize,
+    /// Largest statement-scoped working table exposed to a recursive term.
+    pub recursive_working_rows_peak: usize,
+    /// Rows retained by recursive unions before the outer query tail.
+    pub recursive_rows_emitted: usize,
+    /// Cumulative recursive seed/term work admitted by the hard work ceiling.
+    pub recursive_work: usize,
     pub projection_generation: Option<String>,
     pub projection_source_watermark: Option<u64>,
     pub projection_version: Option<u64>,
@@ -197,6 +205,12 @@ pub enum RelationalRowReadMode<
         reader: &'a ProjectionGenerationReader,
         tables: &'a BTreeSet<String>,
     },
+    /// Statement-scoped relations resident only in the supplied state. All
+    /// other tables continue through `base`, including its pinned snapshot.
+    MemoryOverlay {
+        base: &'a RelationalRowReadMode<'a, R>,
+        tables: &'a BTreeSet<String>,
+    },
 }
 
 impl<R: RelationalRowStoreReader> Copy for RelationalRowReadMode<'_, R> {}
@@ -208,17 +222,32 @@ impl<R: RelationalRowStoreReader> Clone for RelationalRowReadMode<'_, R> {
 }
 
 impl<'a, R: RelationalRowStoreReader> RelationalRowReadMode<'a, R> {
+    pub fn is_memory_overlay_table(self, table: &str) -> bool {
+        match self {
+            Self::MemoryOverlay { base, tables } => {
+                tables.contains(table) || base.is_memory_overlay_table(table)
+            }
+            _ => false,
+        }
+    }
+
     pub fn is_projection_table(self, table: &str) -> bool {
-        matches!(
-            self,
-            Self::ProjectionGeneration { tables, .. } if tables.contains(table)
-        )
+        match self {
+            Self::ProjectionGeneration { tables, .. } => tables.contains(table),
+            Self::MemoryOverlay { base, tables } => {
+                !tables.contains(table) && base.is_projection_table(table)
+            }
+            _ => false,
+        }
     }
 
     pub fn projection_estimated_rows(self, table: &str) -> Option<usize> {
         match self {
             Self::ProjectionGeneration { reader, tables, .. } if tables.contains(table) => {
                 Some(usize::try_from(reader.manifest().member_count).unwrap_or(usize::MAX))
+            }
+            Self::MemoryOverlay { base, tables } if !tables.contains(table) => {
+                base.projection_estimated_rows(table)
             }
             _ => None,
         }
@@ -245,6 +274,7 @@ impl<'a, R: RelationalRowStoreReader> RelationalRowReadMode<'a, R> {
             Self::Transaction { store, rows } => {
                 Some(store.open_relational_transaction_row_snapshot_reader(rows)?)
             }
+            Self::MemoryOverlay { base, .. } => return base.open_snapshot_reader(),
         })
     }
 
@@ -257,13 +287,38 @@ impl<'a, R: RelationalRowStoreReader> RelationalRowReadMode<'a, R> {
         hydration: RelationalHydrationBudget,
         task: &'a RuntimeTaskContext,
     ) -> Result<RelationalRowRuntime<'a>> {
-        let projection = match self {
-            Self::ProjectionGeneration { reader, tables, .. } => Some((reader, tables)),
-            _ => None,
-        };
-        Ok(RelationalRowRuntime::new(
-            state, snapshot, projection, fields, limits, hydration, task,
+        let projection = self.projection_generation();
+        let mut memory_tables = BTreeSet::new();
+        self.collect_memory_overlay_tables(&mut memory_tables);
+        Ok(RelationalRowRuntime::new_with_sources(
+            state,
+            RelationalRowRuntimeSources {
+                snapshot,
+                projection,
+                memory_tables,
+            },
+            fields,
+            limits,
+            hydration,
+            task,
         ))
+    }
+
+    fn projection_generation(
+        self,
+    ) -> Option<(&'a ProjectionGenerationReader, &'a BTreeSet<String>)> {
+        match self {
+            Self::ProjectionGeneration { reader, tables, .. } => Some((reader, tables)),
+            Self::MemoryOverlay { base, .. } => base.projection_generation(),
+            _ => None,
+        }
+    }
+
+    fn collect_memory_overlay_tables(self, output: &mut BTreeSet<String>) {
+        if let Self::MemoryOverlay { base, tables } = self {
+            base.collect_memory_overlay_tables(output);
+            output.extend(tables.iter().cloned());
+        }
     }
 }
 
@@ -277,11 +332,18 @@ pub struct RelationalRowRuntime<'a> {
     projection_pages: Cell<usize>,
     task: &'a RuntimeTaskContext,
     projection: Option<ProjectionRelationalRuntime<'a>>,
+    memory_tables: BTreeSet<String>,
 }
 
 struct ProjectionRelationalRuntime<'a> {
     reader: &'a ProjectionGenerationReader,
     tables: &'a BTreeSet<String>,
+}
+
+struct RelationalRowRuntimeSources<'a> {
+    snapshot: Option<RelationalRowPageSnapshotReader>,
+    projection: Option<(&'a ProjectionGenerationReader, &'a BTreeSet<String>)>,
+    memory_tables: BTreeSet<String>,
 }
 
 impl<'a> RelationalRowRuntime<'a> {
@@ -294,10 +356,33 @@ impl<'a> RelationalRowRuntime<'a> {
         hydration: RelationalHydrationBudget,
         task: &'a RuntimeTaskContext,
     ) -> Self {
-        let projection = projection
+        Self::new_with_sources(
+            state,
+            RelationalRowRuntimeSources {
+                snapshot,
+                projection,
+                memory_tables: BTreeSet::new(),
+            },
+            fields,
+            limits,
+            hydration,
+            task,
+        )
+    }
+
+    fn new_with_sources(
+        state: &'a RelationalState,
+        sources: RelationalRowRuntimeSources<'a>,
+        fields: RelationalFieldPlan,
+        limits: RelationalRowPageSnapshotReadLimits,
+        hydration: RelationalHydrationBudget,
+        task: &'a RuntimeTaskContext,
+    ) -> Self {
+        let projection = sources
+            .projection
             .filter(|(_, tables)| fields.uses_any_table(tables))
             .map(|(reader, tables)| ProjectionRelationalRuntime { reader, tables });
-        let backend = snapshot;
+        let backend = sources.snapshot;
         let runtime_path = match (&backend, &projection) {
             (_, Some(_)) => "projection_generation",
             (None, None) => "canonical_memory",
@@ -340,7 +425,12 @@ impl<'a> RelationalRowRuntime<'a> {
             projection_pages: Cell::new(0),
             task,
             projection,
+            memory_tables: sources.memory_tables,
         }
+    }
+
+    fn uses_memory_table(&self, table: &str) -> bool {
+        self.backend.is_none() || self.memory_tables.contains(table)
     }
 
     pub fn hydration(&self) -> RelationalHydrationBudget {
@@ -445,6 +535,18 @@ impl<'a> RelationalRowRuntime<'a> {
         self.read_point_with_fields(table, key, fields, fields)
     }
 
+    /// SQL projection may need only a field's NULL marker or byte length.
+    /// Explicit output reads above retain their full-hydration contract.
+    pub(crate) fn read_output_point_for_projection(
+        &self,
+        table: &str,
+        key: &RelationalKey,
+    ) -> Result<Option<RelationalReadRow>> {
+        let fields = self.fields.output_fields(table)?;
+        let hydration_fields = self.fields.output_hydration_fields(table)?;
+        self.read_point_with_fields(table, key, fields, hydration_fields)
+    }
+
     /// Reads each distinct key once while retaining the caller-owned mapping
     /// from duplicate input keys to their output rows.
     pub fn read_points(
@@ -463,6 +565,7 @@ impl<'a> RelationalRowRuntime<'a> {
     pub fn read_index_covered(
         &self,
         table: &str,
+        index_name: &str,
         index_columns: &[String],
         index_key: &RelationalKey,
         primary_key: &RelationalKey,
@@ -471,17 +574,31 @@ impl<'a> RelationalRowRuntime<'a> {
             .state
             .table_schema(table)
             .ok_or_else(|| HawDBError::Semantic(format!("unknown relational table {table}")))?;
-        if !self
-            .fields
-            .index_covers_table(table, schema, index_columns)?
-        {
+        let included_columns = schema
+            .indexes
+            .iter()
+            .find(|index| index.name == index_name && index.columns == index_columns)
+            .map_or(&[][..], |index| index.included_columns.as_slice());
+        if !self.fields.index_covers_table_with_included(
+            table,
+            schema,
+            index_columns,
+            included_columns,
+        )? {
             return Ok(None);
         }
-        if index_key.0.len() != index_columns.len() {
+        let expected_values = index_columns
+            .len()
+            .checked_add(included_columns.len())
+            .ok_or_else(|| {
+                HawDBError::StorageIntegrity(format!(
+                    "relational index {index_name} coverage width overflows on table {table}"
+                ))
+            })?;
+        if index_key.0.len() != expected_values {
             return Err(HawDBError::StorageIntegrity(format!(
-                "relational index key for table {table} has {} values but its descriptor has {} columns",
+                "relational index key for table {table} has {} values but its descriptor has {expected_values} key and INCLUDE columns",
                 index_key.0.len(),
-                index_columns.len()
             )));
         }
         if primary_key.0.len() != schema.primary_key.len().max(1) {
@@ -502,6 +619,43 @@ impl<'a> RelationalRowRuntime<'a> {
                 ))
             })?;
             values.insert(ordinal, value.clone());
+        }
+        for (column, payload) in included_columns
+            .iter()
+            .zip(&index_key.0[index_columns.len()..])
+        {
+            let RelationalValue::Bytea(payload) = payload else {
+                return Err(HawDBError::StorageIntegrity(format!(
+                    "relational index {index_name} on table {table} has a non-payload INCLUDE value"
+                )));
+            };
+            let value = hawdb_storage::relational::decode_relational_index_included_value(
+                payload,
+                payload.len().max(1),
+            )
+            .map_err(|error| {
+                HawDBError::StorageIntegrity(format!(
+                    "relational index {index_name} on table {table} has a corrupt INCLUDE payload: {error}"
+                ))
+            })?;
+            let ordinal = schema.column_position(column).ok_or_else(|| {
+                HawDBError::StorageIntegrity(format!(
+                    "relational index coverage references unknown INCLUDE column {column} on table {table}"
+                ))
+            })?;
+            let declared = &schema.columns[ordinal];
+            if matches!(value, RelationalValue::Null) {
+                if !declared.nullable {
+                    return Err(HawDBError::StorageIntegrity(format!(
+                        "relational index {index_name} has NULL for NOT NULL INCLUDE column {column}"
+                    )));
+                }
+            } else if !declared.scalar_type.accepts(value.as_ref()) {
+                return Err(HawDBError::StorageIntegrity(format!(
+                    "relational index {index_name} has an invalid INCLUDE value type for column {column}"
+                )));
+            }
+            values.insert(ordinal, value);
         }
         for (column, value) in schema.primary_key.iter().zip(&primary_key.0) {
             let ordinal = schema.column_position(column).ok_or_else(|| {
@@ -569,7 +723,7 @@ impl<'a> RelationalRowRuntime<'a> {
             return self.read_projection_point(table, key, fields, hydration_fields);
         }
         match &self.backend {
-            None => {
+            _ if self.uses_memory_table(table) => {
                 let Some((key, row)) = self.state.row_entry(table, key) else {
                     return Ok(None);
                 };
@@ -612,6 +766,7 @@ impl<'a> RelationalRowRuntime<'a> {
                 self.record_point(&report)?;
                 Ok(row.map(|row| RelationalReadRow { row: Arc::new(row) }))
             }
+            None => unreachable!("memory row mode handled before snapshot dispatch"),
         }
     }
 
@@ -639,12 +794,12 @@ impl<'a> RelationalRowRuntime<'a> {
             return Ok(rows);
         }
         match &self.backend {
-            None => {
+            _ if self.uses_memory_table(table) => {
                 let mut rows = BTreeMap::new();
                 for key in keys {
-                    self.task.checkpoint().map_err(|reason| {
-                        HawDBError::Execution(format!("runtime task stopped: {reason}"))
-                    })?;
+                    self.task
+                        .checkpoint()
+                        .map_err(HawDBError::RuntimeTaskStopped)?;
                     let Some((key, row)) = self.state.row_entry(table, &key) else {
                         continue;
                     };
@@ -699,6 +854,7 @@ impl<'a> RelationalRowRuntime<'a> {
                     .map(|(key, row)| (key, RelationalReadRow { row: Arc::new(row) }))
                     .collect())
             }
+            None => unreachable!("memory row mode handled before snapshot dispatch"),
         }
     }
 
@@ -751,15 +907,15 @@ impl<'a> RelationalRowRuntime<'a> {
             });
         }
         match &self.backend {
-            None => {
+            _ if self.uses_memory_table(table) => {
                 let rows: Box<dyn Iterator<Item = _>> = match range {
                     None => Box::new(self.state.rows(table)),
                     Some(range) => Box::new(self.state.rows_in_range(table, range)),
                 };
                 for (key, row) in rows {
-                    self.task.checkpoint().map_err(|reason| {
-                        HawDBError::Execution(format!("runtime task stopped: {reason}"))
-                    })?;
+                    self.task
+                        .checkpoint()
+                        .map_err(HawDBError::RuntimeTaskStopped)?;
                     self.admit_memory_row()?;
                     if !visit(self.project_memory_row(
                         table,
@@ -826,6 +982,7 @@ impl<'a> RelationalRowRuntime<'a> {
                     None => Ok(!report.demand.stopped_early),
                 }
             }
+            None => unreachable!("memory row mode handled before snapshot dispatch"),
         }
     }
 
@@ -846,11 +1003,11 @@ impl<'a> RelationalRowRuntime<'a> {
             });
         }
         match &self.backend {
-            None => {
+            _ if self.uses_memory_table(table) => {
                 for (key, row) in self.state.rows(table) {
-                    self.task.checkpoint().map_err(|reason| {
-                        HawDBError::Execution(format!("runtime task stopped: {reason}"))
-                    })?;
+                    self.task
+                        .checkpoint()
+                        .map_err(HawDBError::RuntimeTaskStopped)?;
                     self.admit_memory_row()?;
                     let projected =
                         self.project_memory_row(table, key, row, fields, hydration_fields)?;
@@ -913,6 +1070,7 @@ impl<'a> RelationalRowRuntime<'a> {
                     None => Ok(!report.demand.stopped_early),
                 }
             }
+            None => unreachable!("memory row mode handled before snapshot dispatch"),
         }
     }
 
@@ -1005,9 +1163,9 @@ impl<'a> RelationalRowRuntime<'a> {
             )
         })?;
         loop {
-            self.task.checkpoint().map_err(|reason| {
-                HawDBError::Execution(format!("runtime task stopped: {reason}"))
-            })?;
+            self.task
+                .checkpoint()
+                .map_err(HawDBError::RuntimeTaskStopped)?;
             let page = projection
                 .reader
                 .read_page(cursor.as_ref(), self.projection_page_limits()?)
@@ -1487,6 +1645,7 @@ fn map_state_to_demand_error(error: RelationalError) -> RelationalRowPageDemandR
             RelationalRowPageDemandReadError::FileDescriptors(error)
         }
         RelationalError::Admission(message) => RelationalRowPageDemandReadError::Admission(message),
+        RelationalError::Stopped(reason) => RelationalRowPageDemandReadError::Stopped(reason),
         RelationalError::Durability(message) => {
             RelationalRowPageDemandReadError::Durability(message)
         }
@@ -1503,6 +1662,7 @@ fn map_state_error(error: RelationalError) -> HawDBError {
         RelationalError::UnsupportedFormat(error) => HawDBError::UnsupportedStorageFormat(error),
         RelationalError::FileDescriptors(error) => HawDBError::FileDescriptors(error),
         RelationalError::Admission(message) => HawDBError::Execution(message),
+        RelationalError::Stopped(reason) => HawDBError::RuntimeTaskStopped(reason),
         RelationalError::Durability(message)
         | RelationalError::Schema(message)
         | RelationalError::Constraint(message)
@@ -1520,7 +1680,7 @@ pub(crate) fn map_snapshot_error(error: RelationalRowPageSnapshotReadError) -> H
         }
         RelationalRowPageSnapshotReadError::Admission(message) => HawDBError::Execution(message),
         RelationalRowPageSnapshotReadError::Stopped(reason) => {
-            HawDBError::Execution(format!("runtime task stopped: {reason}"))
+            HawDBError::RuntimeTaskStopped(reason)
         }
         RelationalRowPageSnapshotReadError::Corrupt(message)
         | RelationalRowPageSnapshotReadError::Durability(message)

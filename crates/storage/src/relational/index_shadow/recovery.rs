@@ -383,7 +383,7 @@ impl RelationalIndexRecoveryManifest {
             .ok_or_else(|| admission("decoded recovery page metadata size overflow"))?;
         memory
             .reserve(page_bytes, work)
-            .map_err(|error| admission(error.to_string()))?;
+            .map_err(super::checkpoint::work_error)?;
         let mut pages = Vec::with_capacity(page_count);
         let mut offset = 0usize;
         for _ in 0..page_count {
@@ -490,7 +490,7 @@ fn decode_delta_page_descriptor_with_work(
         .ok_or_else(|| admission("decoded recovery selector metadata size overflow"))?;
     memory
         .reserve(selector_bytes, work)
-        .map_err(|error| admission(error.to_string()))?;
+        .map_err(super::checkpoint::work_error)?;
     let mut selectors = Vec::with_capacity(selector_count);
     for _ in 0..selector_count {
         let (table, next) = decode_bytes(
@@ -529,7 +529,7 @@ fn decode_delta_page_descriptor_with_work(
         ] {
             memory
                 .reserve(bytes, work)
-                .map_err(|error| admission(error.to_string()))?;
+                .map_err(super::checkpoint::work_error)?;
         }
         selectors.push(DeltaPageSelector {
             table: decode_utf8(table, "recovery delta selector table")?,
@@ -670,8 +670,7 @@ impl RelationalIndexRecoveryBuilder {
         capture: RelationalIndexChangeCapture,
         work: &crate::background::CheckpointWorkContext,
     ) -> Result<(), RelationalIndexShadowError> {
-        work.checkpoint()
-            .map_err(|error| RelationalIndexShadowError::Admission(error.to_string()))?;
+        work.checkpoint().map_err(super::checkpoint::work_error)?;
         if epoch <= self.base_commit_epoch {
             return Err(RelationalIndexShadowError::Corrupt(format!(
                 "recovery delta epoch {epoch} is not after base epoch {}",
@@ -685,8 +684,7 @@ impl RelationalIndexRecoveryBuilder {
             return Err(RelationalIndexShadowError::Admission(reason));
         };
         for change in changes {
-            work.checkpoint()
-                .map_err(|error| RelationalIndexShadowError::Admission(error.to_string()))?;
+            work.checkpoint().map_err(super::checkpoint::work_error)?;
             let (key, value, entry_bytes) = encode_change(change, epoch)?;
             let key_exists = self.dirty.contains_key(&key);
             let existing_bytes = if key_exists { entry_bytes } else { 0 };
@@ -772,7 +770,7 @@ impl RelationalIndexRecoveryBuilder {
             memory
                 .reserve(bytes, work)
                 .map(|_| ())
-                .map_err(|error| admission(error.to_string()))
+                .map_err(super::checkpoint::work_error)
         };
         let bytes_for = |count: usize, size: usize| {
             count
@@ -983,7 +981,7 @@ impl RelationalIndexRecoveryBuilder {
             let mut next_memory = crate::background::CheckpointAllocationOwner::default();
             next_memory
                 .reserve(bytes, work)
-                .map_err(|error| admission(error.to_string()))?;
+                .map_err(super::checkpoint::work_error)?;
             let mut replacement = Vec::new();
             replacement.try_reserve_exact(capacity).map_err(|error| {
                 let failure =
@@ -1006,7 +1004,7 @@ impl RelationalIndexRecoveryBuilder {
         let mut selectors = delta_page_selectors_with_work(&self.dirty, work)?;
         self._selectors_memory
             .append(&mut selectors.memory, work)
-            .map_err(|error| admission(error.to_string()))?;
+            .map_err(super::checkpoint::work_error)?;
         let (encoded_len, digest) = write_delta_page(
             &tmp_path,
             DeltaPageWrite {
@@ -1071,7 +1069,7 @@ fn delta_page_selectors_with_work(
     let mut memory = crate::background::CheckpointAllocationOwner::default();
     memory
         .reserve(bytes, work)
-        .map_err(|error| admission(error.to_string()))?;
+        .map_err(super::checkpoint::work_error)?;
     let mut values = Vec::with_capacity(count);
     let mut keys = entries.keys().peekable();
     while let Some(first) = keys.next() {
@@ -1090,7 +1088,7 @@ fn delta_page_selectors_with_work(
         ] {
             memory
                 .reserve(bytes, work)
-                .map_err(|error| admission(error.to_string()))?;
+                .map_err(super::checkpoint::work_error)?;
         }
         values.push(DeltaPageSelector {
             table: first.table.clone(),
@@ -1437,9 +1435,7 @@ impl RelationalIndexRecoveryReader {
         let base = base.into();
         let mut memory = crate::background::CheckpointAllocationOwner::default();
         let mut encoded_memory = crate::background::CheckpointAllocationOwner::default();
-        let _wave = work
-            .io_wave()
-            .map_err(|error| admission(error.to_string()))?;
+        let _wave = work.io_wave().map_err(super::checkpoint::work_error)?;
         let bytes = fs::metadata(manifest_path)
             .map_err(|error| {
                 RelationalIndexShadowError::from_io("read recovery manifest metadata", error)
@@ -1452,7 +1448,7 @@ impl RelationalIndexRecoveryReader {
         }
         encoded_memory
             .reserve(capacity, work)
-            .map_err(|error| admission(error.to_string()))?;
+            .map_err(super::checkpoint::work_error)?;
         let mut encoded = vec![0; capacity];
         let mut file = File::open(manifest_path).map_err(|error| {
             RelationalIndexShadowError::from_io("open recovery manifest", error)
@@ -1481,7 +1477,7 @@ impl RelationalIndexRecoveryReader {
                 std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>(),
                 work,
             )
-            .map_err(|error| admission(error.to_string()))?;
+            .map_err(super::checkpoint::work_error)?;
         if manifest.base_generation != base.manifest().generation
             || manifest.base_commit_epoch != base.manifest().source_commit_epoch
             || manifest.recovered_commit_epoch != expected_recovery.commit_epoch

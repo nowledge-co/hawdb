@@ -352,8 +352,19 @@ impl PhysicalPlan {
                         )
                     },
                 );
+                let relationship = set.relationship.as_ref().map_or_else(String::new, |write| {
+                    format!(
+                        " {}=({})-[:{}]->({}) properties={} on_create={}",
+                        if write.merge { "merge" } else { "create" },
+                        write.source,
+                        write.rel_type,
+                        write.target,
+                        write.properties.len(),
+                        write.on_create.len()
+                    )
+                });
                 format!(
-                    "{pad}MatchSetExec bindings=[{bindings}] assignments=[{assignments}] returns={returns}"
+                    "{pad}MatchSetExec bindings=[{bindings}] assignments=[{assignments}]{relationship} returns={returns}"
                 )
             }
             PhysicalPlan::MutationReturn { returns, .. } => {
@@ -363,8 +374,18 @@ impl PhysicalPlan {
                     .map(|binding| format!("{}<-{}", binding.variable, binding.column))
                     .collect::<Vec<_>>()
                     .join(",");
+                let limit = returns
+                    .limit
+                    .map(|limit| format!(" limit={limit}"))
+                    .unwrap_or_default();
+                let offset = if returns.offset > 0 {
+                    format!(" offset={}", returns.offset)
+                } else {
+                    String::new()
+                };
                 format!(
-                    "{pad}MutationReturn bindings=[{bindings}] returns={}",
+                    "{pad}MutationReturn state={:?} bindings=[{bindings}] returns={}{offset}{limit}",
+                    returns.state,
                     set_return_mode_summary(&returns.mode)
                 )
             }

@@ -94,13 +94,92 @@ pub(crate) fn build_with_rules(
         ("Statement", c(vec![r("CreatePropertyGraph"), r("Select")])),
         (
             "RelationalStatement",
-            c(vec![r("RelationalSelect"), r("RelationalExplain")]),
+            c(vec![r("RelationalQuery"), r("RelationalExplain")]),
         ),
         (
             "RelationalExplain",
-            s(vec![k("EXPLAIN"), o(r("Analyze")), r("RelationalSelect")]),
+            s(vec![k("EXPLAIN"), o(r("Analyze")), r("RelationalQuery")]),
         ),
         ("Analyze", k("ANALYZE")),
+        (
+            "RelationalQuery",
+            s(vec![
+                o(r("RelationalWith")),
+                r("RelationalUnionExcept"),
+                o(r("Order")),
+                o(c(vec![
+                    s(vec![r("RelationalLimit"), o(r("RelationalOffset"))]),
+                    s(vec![r("RelationalOffset"), o(r("RelationalLimit"))]),
+                ])),
+                o(r("RelationalLocking")),
+            ]),
+        ),
+        (
+            "RelationalWith",
+            s(vec![
+                k("WITH"),
+                o(r("RelationalRecursive")),
+                list("RelationalCte"),
+            ]),
+        ),
+        ("RelationalRecursive", k("RECURSIVE")),
+        (
+            "RelationalCte",
+            s(vec![
+                r("Identifier"),
+                o(r("Identifiers")),
+                k("AS"),
+                t(T::LeftParen),
+                r("RelationalQuery"),
+                t(T::RightParen),
+            ]),
+        ),
+        (
+            "RelationalUnionExcept",
+            s(vec![
+                r("RelationalIntersect"),
+                many(s(vec![
+                    c(vec![r("SetUnion"), r("SetExcept")]),
+                    o(r("SetQuantifier")),
+                    r("RelationalIntersect"),
+                ])),
+            ]),
+        ),
+        (
+            "RelationalIntersect",
+            s(vec![
+                r("RelationalQueryPrimary"),
+                many(s(vec![
+                    r("SetIntersect"),
+                    o(r("SetQuantifier")),
+                    r("RelationalQueryPrimary"),
+                ])),
+            ]),
+        ),
+        ("SetUnion", k("UNION")),
+        ("SetIntersect", k("INTERSECT")),
+        ("SetExcept", k("EXCEPT")),
+        ("SetQuantifier", c(vec![k("ALL"), k("DISTINCT")])),
+        (
+            "RelationalQueryPrimary",
+            c(vec![
+                r("RelationalSelectCore"),
+                r("RelationalValues"),
+                s(vec![
+                    t(T::LeftParen),
+                    r("RelationalQuery"),
+                    t(T::RightParen),
+                ]),
+            ]),
+        ),
+        (
+            "RelationalValues",
+            s(vec![k("VALUES"), list("RelationalValueRow")]),
+        ),
+        (
+            "RelationalValueRow",
+            s(vec![t(T::LeftParen), list("Or"), t(T::RightParen)]),
+        ),
         (
             "Select",
             s(vec![
@@ -119,7 +198,7 @@ pub(crate) fn build_with_rules(
             ]),
         ),
         (
-            "RelationalSelect",
+            "RelationalSelectCore",
             s(vec![
                 k("SELECT"),
                 o(r("Quantifier")),
@@ -128,12 +207,6 @@ pub(crate) fn build_with_rules(
                 o(r("Where")),
                 o(r("Group")),
                 o(r("Having")),
-                o(r("Order")),
-                o(c(vec![
-                    s(vec![r("RelationalLimit"), o(r("RelationalOffset"))]),
-                    s(vec![r("RelationalOffset"), o(r("RelationalLimit"))]),
-                ])),
-                o(r("RelationalLocking")),
             ]),
         ),
         ("Quantifier", c(vec![r("Distinct"), k("ALL")])),
@@ -172,7 +245,18 @@ pub(crate) fn build_with_rules(
         (
             "ProjectionBoundary",
             keywords(&[
-                "FROM", "WHERE", "GROUP", "HAVING", "ORDER", "LIMIT", "OFFSET", "FOR", "FETCH",
+                "FROM",
+                "WHERE",
+                "GROUP",
+                "HAVING",
+                "ORDER",
+                "LIMIT",
+                "OFFSET",
+                "FOR",
+                "FETCH",
+                "UNION",
+                "EXCEPT",
+                "INTERSECT",
             ]),
         ),
         (
@@ -192,7 +276,19 @@ pub(crate) fn build_with_rules(
             s(vec![r("RelationalFromItem"), many(r("RelationalJoin"))]),
         ),
         ("FromItem", c(vec![r("GraphTable"), r("Relation")])),
-        ("RelationalFromItem", r("RelationalRelation")),
+        (
+            "RelationalFromItem",
+            c(vec![r("RelationalDerived"), r("RelationalRelation")]),
+        ),
+        (
+            "RelationalDerived",
+            s(vec![
+                t(T::LeftParen),
+                r("RelationalQuery"),
+                t(T::RightParen),
+                c(vec![r("RelationalAsAlias"), r("Alias")]),
+            ]),
+        ),
         (
             "Relation",
             s(vec![

@@ -1085,7 +1085,7 @@ fn algorithm_checkpoint(task_context: Option<&RuntimeTaskContext>) -> Result<()>
     match task_context {
         Some(task_context) => task_context
             .checkpoint()
-            .map_err(|reason| HawDBError::Execution(format!("runtime task stopped: {reason}"))),
+            .map_err(HawDBError::RuntimeTaskStopped),
         None => Ok(()),
     }
 }
@@ -1100,7 +1100,7 @@ fn algorithm_checkpoint_periodically(
     {
         task_context
             .checkpoint()
-            .map_err(|reason| HawDBError::Execution(format!("runtime task stopped: {reason}")))?;
+            .map_err(HawDBError::RuntimeTaskStopped)?;
     }
     Ok(())
 }

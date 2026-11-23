@@ -121,7 +121,7 @@ fn exact_overflow_compaction_rewrites_reachable_closure_without_hydration() {
             &cancelled_task,
         )
         .unwrap_err();
-    assert!(cancelled.to_string().contains("compaction stopped"));
+    assert!(cancelled.to_string().contains("runtime task stopped"));
     assert_eq!(store.durable.as_ref().unwrap().checkpoint_epoch, 1);
 
     let pinned = store.snapshot();

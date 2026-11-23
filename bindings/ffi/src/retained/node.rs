@@ -5,7 +5,9 @@
 //! traversed through admitted index paths, without materializing foreign maps.
 
 use super::*;
-use hawdb::{RetainedNodeCursor, RetainedNodeField, RetainedNodeLabels, RetainedNodeView, Value};
+use hawdb::{
+    RetainedNodeField, RetainedNodeLabels, RetainedNodeSnapshotCursor, RetainedNodeView, Value,
+};
 
 pub const HAWDB_RETAINED_NODE: u32 = 1;
 pub const HAWDB_RETAINED_NULL: u32 = 2;
@@ -39,7 +41,7 @@ pub struct HawdbRetainedNodeV1 {
 }
 
 pub(super) struct NodeCursorState {
-    pub cursor: RetainedNodeCursor,
+    pub cursor: RetainedNodeSnapshotCursor,
     pub terminal_code: u32,
 }
 pub(super) struct NodeValue {
@@ -281,10 +283,11 @@ pub unsafe extern "C" fn hawdb_retained_node_query(
                 + 512;
             options.minimum_shared_handles = NonZeroUsize::new(3).expect("nonzero minimum");
             let id = next_id()?;
+            let _autocommit = (&*db)
+                .autocommit()
+                .map_err(|_| HAWDB_RETAINED_EXECUTION_ERROR)?;
             let cursor = (&*db)
                 .inner
-                .lock()
-                .map_err(|_| HAWDB_RETAINED_PANIC)?
                 .query_with_params_retained_node(text, &params, options)
                 .map_err(|e| error_code(&e))?;
             let out = HawdbRetainedCursorV1 {

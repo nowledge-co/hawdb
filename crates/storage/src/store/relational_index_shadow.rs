@@ -108,6 +108,7 @@ fn qualification_probe_error(
             HawDBError::UnsupportedStorageFormat(error)
         }
         RelationalIndexShadowError::FileDescriptors(error) => HawDBError::FileDescriptors(error),
+        RelationalIndexShadowError::Stopped(reason) => HawDBError::RuntimeTaskStopped(reason),
         RelationalIndexShadowError::Corrupt(_) => HawDBError::StorageIntegrity(context),
         RelationalIndexShadowError::Admission(_)
         | RelationalIndexShadowError::Durability(_)
@@ -203,11 +204,21 @@ fn hash_relational_value(hasher: &mut IntegrityHasher, value: &RelationalValue) 
         }
         RelationalValue::Timestamp(value) => {
             hasher.update(&[10]);
-            hasher.update(&value.to_le_bytes());
+            if let Ok(encoded) = hawdb_core::sql_timestamp::encode_micros(value.get()) {
+                hasher.update(encoded.as_bytes());
+            } else {
+                // Invalid inputs remain distinguishable; publication validates the domain.
+                hasher.update(&value.get().to_le_bytes());
+            }
         }
         RelationalValue::TimestampTz(value) => {
             hasher.update(&[11]);
-            hasher.update(&value.to_le_bytes());
+            if let Ok(encoded) = hawdb_core::sql_timestamp::encode_micros(value.get()) {
+                hasher.update(encoded.as_bytes());
+            } else {
+                // Invalid inputs remain distinguishable; publication validates the domain.
+                hasher.update(&value.get().to_le_bytes());
+            }
         }
         RelationalValue::Overflow(reference) => {
             hasher.update(&[6, relational_scalar_type_tag(reference.scalar_type)]);
@@ -524,7 +535,11 @@ impl GraphStore {
         })?;
         let report = builder
             .seal_private_with_recovery_source(self.commit_epoch, recovery_source, work)
-            .map_err(|error| HawDBError::Storage(format!("private index recovery: {error}")))?;
+            .map_err(|error| {
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Storage(format!("private index recovery: {error}"))
+                })
+            })?;
         let root = self
             .durable
             .as_ref()
@@ -542,12 +557,20 @@ impl GraphStore {
                 Some(&immutable),
                 Some(work),
             )
-            .map_err(|error| HawDBError::Storage(format!("pin private index recovery: {error}")))?;
+            .map_err(|error| {
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Storage(format!("pin private index recovery: {error}"))
+                })
+            })?;
         let selector = crate::relational::PreparedRelationalRecoverySelector::prepare(
             &immutable,
             root.join(crate::relational::RELATIONAL_INDEX_RECOVERY_MANIFEST_FILE),
         )
-        .map_err(|error| HawDBError::Storage(format!("prepare private index selector: {error}")))?
+        .map_err(|error| {
+            HawDBError::or_stop(&error, || {
+                HawDBError::Storage(format!("prepare private index selector: {error}"))
+            })
+        })?
         .with_generation_alias(
             immutable.clone(),
             root.join(
@@ -640,12 +663,17 @@ impl GraphStore {
     /// mutation. Relational index contents do not change, but their immutable
     /// read view must advance to the same global commit epoch so a later
     /// snapshot cannot combine graph state with a stale relational identity.
+    /// It advances the graph change epoch only if the commit's WAL record
+    /// changes the graph, exactly as replay of that record does.
     pub(super) fn finish_non_relational_commit(&mut self) {
         let next_commit_epoch = self.commit_epoch + 1;
         let index_publication =
             self.stage_relational_index_live_publication(next_commit_epoch, None);
         let row_publication = self.stage_relational_row_live_publication(next_commit_epoch, None);
         self.commit_epoch = next_commit_epoch;
+        if std::mem::take(&mut self.pending_commit_changes_graph) {
+            self.graph_change_commit_epoch = next_commit_epoch;
+        }
         self.version_index.apply_database_barrier(next_commit_epoch);
         self.publish_relational_index_live_view(index_publication);
         self.publish_relational_row_live_view(row_publication);
@@ -1114,7 +1142,10 @@ impl GraphStore {
         for (ordinal, probe) in probes.into_iter().enumerate() {
             let mut candidate = Vec::new();
             let read = match probe.kind {
-                RelationalIndexQualificationProbeKind::Exact => view.visit_exact_postings(
+                // Exact is exact in the declared logical key space. Covering
+                // indexes append INCLUDE payload to the physical leaf key, so
+                // the complete logical key is a physical prefix.
+                RelationalIndexQualificationProbeKind::Exact => view.visit_prefix_postings(
                     &probe.table,
                     &probe.index,
                     &probe.key,
@@ -1469,9 +1500,7 @@ impl GraphStore {
                         expected_epoch,
                         error.to_string(),
                     );
-                    return Err(hawdb_storage::relational::RelationalError::Admission(
-                        error.to_string(),
-                    ));
+                    return Err(hawdb_storage::relational::RelationalError::from_work(error));
                 }
             }
         }
@@ -1636,11 +1665,12 @@ mod tests {
     use hawdb_storage::{
         config::{DurabilityPolicy, WalReplayConfig},
         relational::{
-            encode_relational_checkpoint, RelationalColumnSchema, RelationalConflictAction,
-            RelationalForeignKeySchema, RelationalIndexSchema, RelationalInsertMode, RelationalKey,
-            RelationalReferentialAction, RelationalRow, RelationalScalarType, RelationalState,
-            RelationalTableSchema, RelationalTransaction, RelationalUpsertAssignment,
-            RelationalUpsertValue, RelationalValue, RelationalWrite,
+            encode_relational_checkpoint, RelationalColumnSchema, RelationalComparisonOp,
+            RelationalConflictAction, RelationalForeignKeySchema, RelationalIndexSchema,
+            RelationalInsertMode, RelationalKey, RelationalPredicate, RelationalReferentialAction,
+            RelationalRow, RelationalScalarType, RelationalState, RelationalTableSchema,
+            RelationalTransaction, RelationalUpsertAssignment, RelationalUpsertValue,
+            RelationalValue, RelationalWrite,
         },
     };
     use std::num::NonZeroUsize;
@@ -1716,7 +1746,9 @@ mod tests {
                                 indexes: vec![RelationalIndexSchema {
                                     name: "documents_owner_idx".to_string(),
                                     columns: vec!["owner".to_string()],
+                                    included_columns: Vec::new(),
                                     unique: false,
+                                    predicate: None,
                                 }],
                             }),
                             RelationalWrite::Insert {
@@ -2372,7 +2404,9 @@ mod tests {
                                     index: RelationalIndexSchema {
                                         name: "new_schema_index".into(),
                                         columns: vec!["id".into()],
+                                        included_columns: Vec::new(),
                                         unique: false,
+                                        predicate: None,
                                     },
                                 }],
                             },
@@ -2783,7 +2817,7 @@ mod tests {
             let carol = RelationalKey(vec![RelationalValue::Text("carol".to_string())]);
             let mut pinned_rows = Vec::new();
             pinned
-                .visit_exact_postings(
+                .visit_prefix_postings(
                     "accounts",
                     "accounts_handle_idx",
                     &carol,
@@ -2797,7 +2831,7 @@ mod tests {
             assert!(pinned_rows.is_empty());
             let mut current_rows = Vec::new();
             current_index_view(&store)
-                .visit_exact_postings(
+                .visit_prefix_postings(
                     "accounts",
                     "accounts_handle_idx",
                     &carol,
@@ -2838,6 +2872,102 @@ mod tests {
             }));
         }
         std::fs::remove_dir_all(path).expect("remove constraint qualification fixture");
+    }
+
+    #[test]
+    fn partial_unique_qualification_skips_excluded_rows_and_unsupported_upsert_use() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "hawdb-partial-constraint-qualification-{}-{nonce}",
+            std::process::id()
+        ));
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            DurabilityPolicy::default(),
+            WalReplayConfig {
+                relational_index_mode: RelationalIndexMode::Shadow,
+                ..WalReplayConfig::default()
+            },
+        )
+        .unwrap();
+        store
+            .commit_relational_transaction(
+                &mut catalog,
+                RelationalTransaction {
+                    writes: vec![
+                        RelationalWrite::CreateTable(RelationalTableSchema {
+                            materialized_view: None,
+                            name: "items".into(),
+                            columns: vec![
+                                constraint_text_column("id", false),
+                                constraint_text_column("handle", false),
+                                RelationalColumnSchema {
+                                    name: "active".into(),
+                                    scalar_type: RelationalScalarType::Boolean,
+                                    nullable: false,
+                                    default: None,
+                                },
+                            ],
+                            primary_key: vec!["id".into()],
+                            unique_constraints: Vec::new(),
+                            foreign_keys: Vec::new(),
+                            indexes: vec![RelationalIndexSchema {
+                                included_columns: Vec::new(),
+                                name: "active_handle_idx".into(),
+                                columns: vec!["handle".into()],
+                                unique: true,
+                                predicate: Some(RelationalPredicate::Compare {
+                                    column: "active".into(),
+                                    op: RelationalComparisonOp::Eq,
+                                    value: RelationalValue::Boolean(true),
+                                }),
+                            }],
+                        }),
+                        RelationalWrite::Insert {
+                            table: "items".into(),
+                            rows: vec![RelationalRow::new(vec![
+                                RelationalValue::Text("item-1".into()),
+                                RelationalValue::Text("excluded".into()),
+                                RelationalValue::Boolean(false),
+                            ])],
+                            mode: RelationalInsertMode::Error,
+                        },
+                    ],
+                },
+            )
+            .unwrap();
+        store.checkpoint(&catalog).unwrap();
+
+        let report = store
+            .qualify_relational_constraint_read_view(
+                RelationalIndexViewQualificationOptions::default(),
+            )
+            .unwrap();
+        assert!(report.ready, "{report:?}");
+        let probes = report
+            .probes
+            .iter()
+            .filter(|probe| probe.index == "active_handle_idx")
+            .collect::<Vec<_>>();
+        assert!(!probes.is_empty());
+        assert!(probes.iter().all(|probe| {
+            probe.candidate_rows == 0
+                && probe.oracle_rows == 0
+                && probe
+                    .uses
+                    .contains(&RelationalConstraintQualificationUse::UniqueEnforcement)
+                && !probe
+                    .uses
+                    .contains(&RelationalConstraintQualificationUse::UpsertConflict)
+        }));
+
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]
@@ -2952,7 +3082,9 @@ mod tests {
                             index: RelationalIndexSchema {
                                 name: "documents_id_idx".to_string(),
                                 columns: vec!["id".to_string()],
+                                included_columns: Vec::new(),
                                 unique: false,
+                                predicate: None,
                             },
                         }],
                     },
@@ -3545,12 +3677,16 @@ mod tests {
                         RelationalIndexSchema {
                             name: "documents_owner_idx".to_string(),
                             columns: vec!["owner".to_string()],
+                            included_columns: Vec::new(),
                             unique: false,
+                            predicate: None,
                         },
                         RelationalIndexSchema {
                             name: "documents_owner_id_idx".to_string(),
                             columns: vec!["owner".to_string(), "id".to_string()],
+                            included_columns: Vec::new(),
                             unique: false,
+                            predicate: None,
                         },
                     ],
                 }),
@@ -4001,7 +4137,9 @@ mod tests {
                     indexes: vec![RelationalIndexSchema {
                         name: "accounts_handle_idx".to_string(),
                         columns: vec!["handle".to_string()],
+                        included_columns: vec!["tenant".to_string()],
                         unique: true,
+                        predicate: None,
                     }],
                 }),
                 RelationalWrite::CreateTable(RelationalTableSchema {

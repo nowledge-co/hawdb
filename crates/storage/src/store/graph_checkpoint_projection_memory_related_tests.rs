@@ -222,7 +222,7 @@ fn checkpoint_units_projection_producer_related_every_actual_cpu_unit_cancels_an
                 .unwrap_err();
         assert_eq!(
             error.to_string(),
-            "storage error: checkpoint build stopped: cancelled",
+            "execution error: runtime task stopped: cancelled",
             "cut={cut}"
         );
         assert_eq!(cancelled.completed.load(Ordering::SeqCst), cut);

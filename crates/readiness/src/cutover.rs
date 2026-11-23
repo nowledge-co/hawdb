@@ -236,6 +236,7 @@ mod tests {
             EmbeddedRuntimeStatus {
                 protocol: "test".to_string(),
                 graph_commit_epoch: 0,
+                graph_change_commit_epoch: 0,
                 changefeed: SearchProjectionChangefeedStatus {
                     graph_commit_epoch: 0,
                     resume_floor_commit_epoch: 0,
@@ -249,6 +250,8 @@ mod tests {
                 },
                 projection_freshness: None,
                 file_descriptors: None,
+                externally_owned_search_kinds: Vec::new(),
+                externally_owned_rows_required: None,
             },
             None,
         );

@@ -53,6 +53,7 @@ pub(super) fn execute_aggregate_select<'a>(
     access_path: RelationalAccessPathDescriptor,
     join_access_paths: Vec<RelationalAccessPathDescriptor>,
     join_planning: &RelationalJoinPlanningOutcome,
+    subquery_filter: Option<&super::RelationalSubqueryFilter<'_>>,
 ) -> Result<RelationalQueryOutput> {
     if let Some((column, output_name, filter)) = single_count_distinct_column(select) {
         return execute_single_count_distinct(
@@ -77,6 +78,7 @@ pub(super) fn execute_aggregate_select<'a>(
             access_path,
             join_access_paths,
             join_planning,
+            subquery_filter,
         );
     }
     if !select.group_by.is_empty() {
@@ -99,6 +101,7 @@ pub(super) fn execute_aggregate_select<'a>(
             access_path,
             join_access_paths,
             join_planning,
+            subquery_filter,
         );
     }
     if !select.order_by.is_empty() || select.distinct {
@@ -138,6 +141,7 @@ pub(super) fn execute_aggregate_select<'a>(
             pipeline,
             index_runtime,
             row_runtime,
+            subquery_filter,
             &mut |row| {
                 aggregate_input_rows = aggregate_input_rows.saturating_add(1);
                 aggregate.push(|column| resolve_column(&row, column))?;
@@ -225,6 +229,7 @@ pub(super) fn execute_aggregate_select<'a>(
         pipeline,
         index_runtime,
         row_runtime,
+        subquery_filter,
         &mut |row| {
             aggregate_input_rows = aggregate_input_rows.saturating_add(1);
             let key = if select.group_by.is_empty() {
@@ -362,6 +367,7 @@ pub(super) fn execute_single_count_distinct<'a>(
     access_path: RelationalAccessPathDescriptor,
     join_access_paths: Vec<RelationalAccessPathDescriptor>,
     join_planning: &RelationalJoinPlanningOutcome,
+    subquery_filter: Option<&super::RelationalSubqueryFilter<'_>>,
 ) -> Result<RelationalQueryOutput> {
     let input_plan = ();
     let catalog = Catalog::default();
@@ -384,6 +390,7 @@ pub(super) fn execute_single_count_distinct<'a>(
         batch_rows: execution_memory.batch_rows.get(),
         batch_memory: execution_memory.batch_payload_bytes,
         memory_ledger,
+        subquery_filter,
     };
     let mut count = 0usize;
     stream_distinct_batches(
@@ -464,6 +471,7 @@ pub(super) fn execute_grouped_aggregate<'a>(
     access_path: RelationalAccessPathDescriptor,
     join_access_paths: Vec<RelationalAccessPathDescriptor>,
     join_planning: &RelationalJoinPlanningOutcome,
+    subquery_filter: Option<&super::RelationalSubqueryFilter<'_>>,
 ) -> Result<RelationalQueryOutput> {
     if !select.order_by.is_empty() || select.distinct {
         return Err(HawDBError::Semantic(
@@ -514,6 +522,7 @@ pub(super) fn execute_grouped_aggregate<'a>(
         pipeline,
         index_runtime,
         row_runtime,
+        subquery_filter,
         &mut |row| {
             let sort_keys = select
                 .group_by

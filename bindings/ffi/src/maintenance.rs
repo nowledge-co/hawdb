@@ -95,13 +95,6 @@ unsafe fn live<'a>(db: *mut HawdbDatabase) -> Result<&'a HawdbDatabase, FfiError
     Ok(unsafe { &*db })
 }
 
-fn lock(database: &HawdbDatabase) -> Result<std::sync::MutexGuard<'_, HawDBEmbedded>, FfiError> {
-    database
-        .inner
-        .lock()
-        .map_err(|_| FfiError::invalid("hawdb: database mutex poisoned"))
-}
-
 /// Write a consistent, self-verifying backup of an open database to
 /// `dest_path`, a directory that must not exist yet (its parent must).
 ///
@@ -139,13 +132,14 @@ pub unsafe extern "C" fn hawdb_backup(
                 },
                 "dest_path",
             )?;
-            let mut inner = lock(database)?;
-            ensure_no_transaction(&inner)?;
-            inner
-                .database_mut()
-                .backup_to(Path::new(destination))
-                .map(|report| backup_report_json(&report))
-                .map_err(|error| FfiError::open(&error))
+            database.with_embedded_mut(|inner| {
+                ensure_no_transaction(inner)?;
+                inner
+                    .database_mut()
+                    .backup_to(Path::new(destination))
+                    .map(|report| backup_report_json(&report))
+                    .map_err(|error| FfiError::open(&error))
+            })
         })
     }
 }
@@ -223,13 +217,14 @@ pub unsafe extern "C" fn hawdb_scrub(
 ) -> bool {
     unsafe {
         report_call(report_out, err_out, || {
-            let mut inner = lock(live(db)?)?;
-            ensure_no_transaction(&inner)?;
-            inner
-                .database_mut()
-                .scrub_storage()
-                .map(|report| scrub_report_json(&report))
-                .map_err(|error| FfiError::open(&error))
+            live(db)?.with_embedded_mut(|inner| {
+                ensure_no_transaction(inner)?;
+                inner
+                    .database_mut()
+                    .scrub_storage()
+                    .map(|report| scrub_report_json(&report))
+                    .map_err(|error| FfiError::open(&error))
+            })
         })
     }
 }

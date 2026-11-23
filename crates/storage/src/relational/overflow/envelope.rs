@@ -159,11 +159,9 @@ pub(in crate::relational) fn decode_overflow_envelope_with_allocations(
                 Some(context) => {
                     let mut decoded = context
                         .vector_capacity(payload.len())
-                        .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                        .map_err(RelationalError::from_admission)?;
                     for chunk in payload.chunks(DECODE_CHUNK_BYTES) {
-                        let unit = context
-                            .start_unit()
-                            .map_err(|error| RelationalError::Admission(error.to_string()))?;
+                        let unit = context.start_unit().map_err(RelationalError::from_work)?;
                         decoded.extend_from_slice(chunk);
                         unit.finish();
                     }
@@ -189,7 +187,7 @@ pub(in crate::relational) fn decode_overflow_envelope_with_allocations(
         Some(context) => {
             context
                 .integrity(&decoded)
-                .map_err(|error| RelationalError::Admission(error.to_string()))?
+                .map_err(RelationalError::from_work)?
                 .crc32c
         }
         None => crc32c(&decoded),
@@ -230,7 +228,7 @@ fn decode_header(
     let digest = match allocations {
         Some(context) => context
             .integrity(encoded)
-            .map_err(|error| RelationalError::Admission(error.to_string()))?,
+            .map_err(RelationalError::from_work)?,
         None => integrity_digest(encoded),
     };
     if digest.sha256 != reference.digest {
@@ -308,7 +306,7 @@ fn decode_zstd(
     let mut decoded = match allocations {
         Some(context) => context
             .vector_capacity(uncompressed_bytes)
-            .map_err(|error| RelationalError::Admission(error.to_string()))?,
+            .map_err(RelationalError::from_admission)?,
         None => Vec::with_capacity(uncompressed_bytes.min(INITIAL_DECODE_CAPACITY_BYTES)),
     };
     // The payload already implements BufRead; avoid an additional buffered copy.
@@ -329,9 +327,7 @@ fn decode_zstd(
     let mut chunk = [0_u8; DECODE_CHUNK_BYTES];
     loop {
         if let Some(context) = allocations {
-            context
-                .checkpoint()
-                .map_err(|error| RelationalError::Admission(error.to_string()))?;
+            context.checkpoint().map_err(RelationalError::from_work)?;
         }
         runtime_checkpoint(task_context)?;
         let read = decoder.read(&mut chunk).map_err(|error| {

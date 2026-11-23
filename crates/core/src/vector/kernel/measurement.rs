@@ -4,9 +4,12 @@
 //! Manual release measurement against the original ordered scalar algorithms.
 
 use super::{scalar, Input, Kernel, Mode};
+use crate::time::Instant;
 use crate::vector::{PreparedVectorQuery, VectorDistance};
 use std::hint::black_box;
-use std::time::Instant;
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use wasm_bindgen_test::{console_log as println, wasm_bindgen_test as test};
 
 fn original_distance(metric: VectorDistance, left: &[f32], right: &[f32]) -> f64 {
     let (mut dot, mut left_norm, mut right_norm, mut squared) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
@@ -158,6 +161,83 @@ fn exact_distance_measurement() {
                 let nanos = start.elapsed().as_nanos();
                 assert_eq!(checksum, expected);
                 println!("DISTANCE_RESULT {{\"scope\":\"positive\",\"dimension\":{dimension},\"rows\":128,\"iterations\":{iterations},\"arm\":{},\"repetition\":{repetition},\"elapsed_ns\":{nanos},\"checksum\":{checksum},\"kernel\":\"{}\"}}", arm, if arm == 2 { crate::vector::distance_kernel_name(VectorDistance::Cosine, dimension) } else { "scalar" });
+            }
+        }
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[test]
+#[ignore = "manual release WASM scalar/SIMD comparison; not a CI performance gate"]
+fn wasm_kernel_measurement() {
+    if cfg!(debug_assertions) {
+        panic!("use the repository-wide release profile");
+    }
+    for dimension in [3usize, 16, 32, 384, 768, 1536, 8193] {
+        let query = fixture(999, dimension);
+        let rows = (0..128)
+            .map(|row| fixture(row, dimension))
+            .collect::<Vec<_>>();
+        let encoded = rows
+            .iter()
+            .map(|row| {
+                let mut bytes = vec![0];
+                bytes.extend(row.iter().flat_map(|v| v.to_le_bytes()));
+                bytes
+            })
+            .collect::<Vec<_>>();
+        let iterations = if dimension < 64 { 128 } else { 16 };
+        for (name, mode) in [
+            ("cosine", Mode::Cosine),
+            ("prepared", Mode::PreparedCosine),
+            ("l2", Mode::Euclidean),
+            ("norm", Mode::Norm),
+        ] {
+            for bytes in [false, true] {
+                let run = |arm: usize| {
+                    let kernel = if arm == 0 {
+                        Kernel(scalar, "scalar")
+                    } else {
+                        Kernel::for_mode(mode, dimension)
+                    };
+                    let mut checksum = 0u64;
+                    for _ in 0..iterations {
+                        for (row, encoded) in rows.iter().zip(&encoded) {
+                            let right = if bytes {
+                                Input::Encoded(&encoded[1..])
+                            } else {
+                                Input::Slice(row)
+                            };
+                            let sums = kernel
+                                .calculate(
+                                    Input::Slice(black_box(&query)),
+                                    black_box(right),
+                                    black_box(mode),
+                                    || Ok(()),
+                                )
+                                .unwrap();
+                            for value in [sums.dot, sums.left, sums.right, sums.squared] {
+                                checksum = checksum.wrapping_add(black_box(value.to_bits()));
+                            }
+                        }
+                    }
+                    checksum
+                };
+                let expected = run(0);
+                for _ in 0..3 {
+                    assert_eq!(run(0), expected);
+                    assert_eq!(run(1), expected);
+                }
+                for repetition in 0..11 {
+                    for offset in 0..2 {
+                        let arm = (repetition + offset) % 2;
+                        let start = Instant::now();
+                        let checksum = run(arm);
+                        let nanos = start.elapsed().as_nanos();
+                        assert_eq!(checksum, expected);
+                        println!("WASM_KERNEL_RESULT {{\"dimension\":{dimension},\"rows\":128,\"iterations\":{iterations},\"mode\":\"{name}\",\"encoded\":{bytes},\"arm\":{arm},\"repetition\":{repetition},\"elapsed_ns\":{nanos},\"checksum\":{checksum}}}");
+                    }
+                }
             }
         }
     }

@@ -95,9 +95,11 @@ pub(crate) fn decode_binary_wal_record_with_work_context(
             Ok(BinaryWalRecordDecode::Corrupt(reason))
         }
         Err(CheckpointOperationError::Operation(error)) => Err(error),
-        Err(CheckpointOperationError::Work(error)) => Err(HawDBError::Execution(format!(
-            "checkpoint WAL decoding stopped: {error}"
-        ))),
+        // A stop during WAL decoding is the typed task stop; other work
+        // refusals keep their execution text.
+        Err(CheckpointOperationError::Work(error)) => Err(HawDBError::or_stop(&error, || {
+            HawDBError::Execution(format!("checkpoint WAL decoding refused: {error}"))
+        })),
     }
 }
 

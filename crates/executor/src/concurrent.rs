@@ -562,7 +562,7 @@ fn runtime_checkpoint(context: Option<&RuntimeTaskContext>) -> HawDBResult<()> {
 }
 
 fn runtime_stopped_error(reason: RuntimeCancellationReason) -> HawDBError {
-    HawDBError::Execution(format!("runtime task stopped: {reason}"))
+    HawDBError::RuntimeTaskStopped(reason)
 }
 
 fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {

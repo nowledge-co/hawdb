@@ -127,11 +127,23 @@ pub(super) fn value<S: Output>(output: &mut S, value: &RelationalValue) -> Resul
             }
             RelationalValue::Timestamp(value) => {
                 output.raw(&[10])?;
-                output.raw(&((*value as u64) ^ (1_u64 << 63)).to_be_bytes())
+                let (narrow, excess) = hawdb_core::sql_timestamp::split_micros(value.get())
+                    .map_err(|error| OrderedRelationalKeyError::Corrupt(error.to_string()))?;
+                output.raw(&((narrow as u64) ^ (1_u64 << 63)).to_be_bytes())?;
+                if let Some(excess) = excess {
+                    output.raw(&excess.to_be_bytes())?;
+                }
+                Ok(())
             }
             RelationalValue::TimestampTz(value) => {
                 output.raw(&[11])?;
-                output.raw(&((*value as u64) ^ (1_u64 << 63)).to_be_bytes())
+                let (narrow, excess) = hawdb_core::sql_timestamp::split_micros(value.get())
+                    .map_err(|error| OrderedRelationalKeyError::Corrupt(error.to_string()))?;
+                output.raw(&((narrow as u64) ^ (1_u64 << 63)).to_be_bytes())?;
+                if let Some(excess) = excess {
+                    output.raw(&excess.to_be_bytes())?;
+                }
+                Ok(())
             }
             RelationalValue::Vector(_) => Err(OrderedRelationalKeyError::UnsupportedVector.into()),
             RelationalValue::Overflow(_) => {
@@ -286,9 +298,7 @@ impl<'a> CheckpointKeyEncoding<'a> {
         let bytes = allocations
             .vector_capacity(self.encoded_len)
             .map_err(|error| {
-                CheckpointKeyEncodeError::Key(super::super::RelationalError::Admission(
-                    error.to_string(),
-                ))
+                CheckpointKeyEncodeError::Key(super::super::RelationalError::from_admission(error))
             })?;
         let mut output = InventoryOutput { bytes, allocations };
         for chunk in self.prefix.chunks(64 * 1024) {

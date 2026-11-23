@@ -75,10 +75,15 @@ parser has equivalent positive and negative corpus coverage. Parser selection
 MUST be explicit by statement family; retrying another parser after a syntax or
 semantic failure is forbidden.
 
-The first owned `SELECT` slice recognizes `GRAPH_TABLE` and qualified relations
+The first owned `SELECT` slice recognized `GRAPH_TABLE` and qualified relations
 as `FROM` items, bounded scalar expressions, `INNER`, `LEFT`, and `CROSS` joins,
 projection, filtering, grouping, ordering, limits, offsets, and locking clauses.
-It deliberately rejects subqueries, right/full/natural joins, join `USING`,
+The executable relational path now also recognizes statement-scoped `VALUES`,
+derived tables, and `EXISTS`/`NOT EXISTS` plus scalar or row `IN (subquery)` in
+`WHERE`. Subqueries in projection, JOIN conditions, grouping, HAVING, ordering,
+limits, and standalone VALUES expressions remain rejected. Correlated execution
+is a visibly reported, work-budgeted nested-loop fallback; it is not an optimizer
+claim of a decorrelated semi/anti join. The frontend still rejects right/full/natural joins, join `USING`,
 `DISTINCT ON`, and other unqualified shapes. The default relational SELECT and EXPLAIN SELECT paths now use the PEG
 relational entry and lower into the existing relational IR, including constants,
 vector search, aggregate FILTER and LIKE/ILIKE. Supported DDL/DML and
@@ -228,13 +233,29 @@ are not SQL values. `information_schema.columns` reports `timestamp without
 time zone` / `timestamp with time zone`, the `timestamp` / `timestamptz` UDT
 names and `datetime_precision`.
 
+The finite timestamp range follows [PostgreSQL 18.0 timestamp.h](https://github.com/postgres/postgres/blob/3d6a828938a5fa0444275d3d2f67b64ec3199eb7/src/include/datatype/timestamp.h) exactly: its internal
+`MIN_TIMESTAMP = -211813488000000000` and exclusive
+`END_TIMESTAMP = 9223371331200000000` microseconds since 2000-01-01.
+The ISO endpoints are `4714-11-24 00:00:00 BC` and
+`294276-12-31 23:59:59.999999`. Input accepts `BC` / `AD`; output uses
+positive era years and a `BC` suffix, with no leading plus on extended years.
+Astronomical signed years remain accepted as an input extension (year 0 is 1 BC).
+`24:00:00` advances to the following midnight.
+
+HawDB owns this domain independently of `time`'s calendar range. The Rust scalar
+arithmetic uses `i128` Unix microseconds. Relational values hold `TimestampMicros`,
+a 16-byte carrier aligned to 8 bytes; `new` / `From` preserve raw bits and
+`get()` returns i128. Publication still validates the finite domain. This
+keeps native i128 alignment from increasing every relational value. Existing finite i64 payloads retain their
+8 little-endian bytes. The previously invalid `i64::MAX` marker introduces an
+additional u64 excess for the final part of the PostgreSQL range. Row pages,
+WAL, checkpoints, spills and ordered keys validate the same domain; ordered
+keys encode the excess big-endian after the original sortable prefix.
+Earlier readers reject the extension marker. Old development values outside
+the PostgreSQL finite range are now rejected. Infinity remains unsupported.
+
 Deviations from PostgreSQL:
 
-- The range is chrono's: proleptic Gregorian dates from -262143-01-01 through
-  +262142-12-31 23:59:59.999999. PostgreSQL accepts 4713 BC through 294276 AD.
-  Years follow ISO 8601 astronomical numbering (year 0 is 1 BC, earlier years
-  are negative). Years outside 0000–9999 carry an explicit sign on input and
-  output; the `BC` suffix is not accepted.
 - An offset in `TIMESTAMP` text is rejected, where PostgreSQL silently ignores it.
 - `TIMESTAMP(7)` and higher are rejected, where PostgreSQL warns and uses 6.
 - Special values (`infinity`, `-infinity`, `epoch`, `now`, `today`, …), named

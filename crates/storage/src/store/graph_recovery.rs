@@ -418,6 +418,12 @@ impl GraphStore {
         if let Some(commit_epoch) = decoded.commit_epoch {
             self.commit_epoch = commit_epoch;
         }
+        // The checkpoint does not record the graph change epoch (no format
+        // change). Its commit epoch is a conservative upper bound of the last
+        // graph change of the surviving history; WAL replay then advances it
+        // exactly. It may advance once across a reopen. Commits lost by a
+        // crash under SyncOnCheckpoint are not part of that history.
+        self.graph_change_commit_epoch = self.commit_epoch;
         if let Some(start_epoch) = decoded.search_projection_change_log_start_epoch {
             self.search_projection_change_log_start_epoch = start_epoch;
         }
@@ -1009,6 +1015,7 @@ impl GraphStore {
             WalOp::Batch(operations) => operations.as_slice(),
             operation => std::slice::from_ref(operation),
         };
+        let changes_graph = operation.changes_graph();
         if let Some(work) = work {
             work.checkpoint().map_err(HawDBError::from_storage_error)?;
         }
@@ -1106,6 +1113,9 @@ impl GraphStore {
             }
         }
         self.commit_epoch = epoch;
+        if changes_graph {
+            self.graph_change_commit_epoch = epoch;
+        }
         self.advance_relational_row_recovery_epoch(epoch);
         Ok(())
     }

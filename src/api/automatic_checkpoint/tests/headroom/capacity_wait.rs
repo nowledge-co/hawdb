@@ -241,7 +241,7 @@ fn assert_cleanup_fences_capacity_growth(phase: Phase) {
 }
 
 #[test]
-fn only_completed_checkpoint_or_builder_progress_renews_capacity_deadline() {
+fn checkpoint_or_builder_progress_does_not_renew_total_capacity_deadline() {
     for checkpoint_progress in [false, true] {
         let control = cleanup_control(Phase::Preparing, capacity_boundary(16 * 1024));
         let now = Instant::now();
@@ -278,18 +278,10 @@ fn only_completed_checkpoint_or_builder_progress_renews_capacity_deadline() {
             entered.recv_timeout(Duration::from_secs(15)).unwrap(),
             Phase::Preparing
         );
-        // The original deadline has elapsed, but real progress established a
-        // fresh bounded wait. Notifications alone are covered above.
+        // The builder can report progress without freeing serving capacity.
+        // Neither that progress nor a checkpoint counter update renews the
+        // caller's total wait while the capacity predicate remains critical.
         control.set_frontend_time(now + PREPARATION_CAPACITY_WAIT_LIMIT);
-        assert_eq!(
-            entered.recv_timeout(Duration::from_secs(15)).unwrap(),
-            Phase::Preparing
-        );
-        assert!(matches!(
-            completion.try_recv(),
-            Err(mpsc::TryRecvError::Empty)
-        ));
-        control.set_frontend_time(progress_at + PREPARATION_CAPACITY_WAIT_LIMIT);
         let result = completion.recv_timeout(Duration::from_secs(15)).unwrap();
         caller.join().unwrap();
         assert!(matches!(

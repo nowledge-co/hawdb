@@ -97,19 +97,19 @@ impl DirtyEntries {
         };
         let mut entries = allocations
             .vector_capacity(capacity)
-            .map_err(|error| RelationalRowDeltaError::Admission(error.to_string()))?;
+            .map_err(RelationalRowDeltaError::from_admission)?;
         allocations
             .reserve(std::mem::size_of::<Backing>() + 2 * std::mem::size_of::<usize>())
-            .map_err(|error| RelationalRowDeltaError::Admission(error.to_string()))?;
+            .map_err(RelationalRowDeltaError::from_admission)?;
         for entry in self.as_slice() {
             let unit = work
                 .start_unit()
-                .map_err(|error| RelationalRowDeltaError::Admission(error.to_string()))?;
+                .map_err(RelationalRowDeltaError::from_work)?;
             entries.push(entry.clone());
             unit.finish();
         }
         work.checkpoint()
-            .map_err(|error| RelationalRowDeltaError::Admission(error.to_string()))?;
+            .map_err(RelationalRowDeltaError::from_work)?;
         let replacement = Arc::new(Backing {
             entries,
             _memory: allocations.memory.into_inner(),
@@ -158,7 +158,7 @@ impl DirtyEntries {
                                 entries.swap(moved, moved + 1);
                             }
                             entries.pop();
-                            return Err(RelationalRowDeltaError::Admission(error.to_string()));
+                            return Err(RelationalRowDeltaError::from_work(error));
                         }
                     };
                     entries.swap(next, next + 1);

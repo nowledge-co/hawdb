@@ -147,9 +147,11 @@ impl<'a> SegmentArtifactBuilder<'a> {
         documents
             .try_reserve_exact(SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS)
             .map_err(|error| {
-                HawDBError::Execution(format!(
-                    "search segment document allocation failed: {error}"
-                ))
+                HawDBError::or_stop(&error, || {
+                    HawDBError::Execution(format!(
+                        "search segment document allocation failed: {error}"
+                    ))
+                })
             })?;
         if documents.capacity() > SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS {
             return Err(HawDBError::Execution(

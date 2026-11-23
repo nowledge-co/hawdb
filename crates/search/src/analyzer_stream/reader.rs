@@ -83,7 +83,9 @@ impl IdentifierBuffer {
                 self.bytes
                     .try_reserve_exact(capacity - self.bytes.len())
                     .map_err(|error| {
-                        HawDBError::Execution(format!("reserve streamed identifier: {error}"))
+                        HawDBError::or_stop(&error, || {
+                            HawDBError::Execution(format!("reserve streamed identifier: {error}"))
+                        })
                     })?;
             }
         }

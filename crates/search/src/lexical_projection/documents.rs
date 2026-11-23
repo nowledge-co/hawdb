@@ -16,7 +16,9 @@ use super::{
     decode_block_header, BlockDescriptor, BlockKind, HawDBError, LexicalProjectionReader, Result,
     SliceCursor,
 };
+use crate::SearchProjectionKind;
 use hawdb_core::RuntimeTaskContext;
+use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DocumentIdProbe {
@@ -107,6 +109,72 @@ impl<'a> DocumentLookup<'a> {
 }
 
 impl LexicalProjectionReader {
+    /// Exact encoded capacity of the largest document mapping block. ID-page
+    /// iteration holds only one such block and borrows decoded IDs from it.
+    pub(crate) fn document_id_page_memory_bytes(&self) -> Result<usize> {
+        let largest = self
+            .manifest
+            .blocks
+            .iter()
+            .filter(|block| block.kind == BlockKind::Documents)
+            .map(|block| block.length)
+            .max()
+            .unwrap_or(0);
+        usize::try_from(largest)
+            .map_err(|_| HawDBError::Execution("document ID page exceeds address space".into()))
+    }
+
+    /// Visits ordered document IDs after an exclusive cursor by decoding only
+    /// document mapping blocks. Returning `false` stops before later IDs.
+    pub(crate) fn visit_document_ids_with_task(
+        &self,
+        kinds: &BTreeSet<SearchProjectionKind>,
+        after: Option<&str>,
+        task: &RuntimeTaskContext,
+        visitor: &mut dyn FnMut(&str) -> Result<bool>,
+    ) -> Result<()> {
+        super::query_context::checkpoint(task)?;
+        for block in self
+            .manifest
+            .blocks
+            .iter()
+            .filter(|block| block.kind == BlockKind::Documents)
+        {
+            super::query_context::checkpoint(task)?;
+            if after.is_some_and(|after| block.max_key.as_str() <= after) {
+                continue;
+            }
+            if !crate::projection_id_page::kind_range_intersects(
+                &block.min_key,
+                &block.max_key,
+                kinds,
+            ) {
+                continue;
+            }
+            let bytes = self.read_block_with_task(block, Some(task))?;
+            validate_document_block(&bytes, self.manifest.generation, block)?;
+            let mut cursor = SliceCursor::new(&bytes);
+            let count = decode_block_header(
+                &mut cursor,
+                self.manifest.generation,
+                block,
+                BlockKind::Documents,
+            )?;
+            for _ in 0..count {
+                super::query_context::checkpoint(task)?;
+                let id = cursor.borrowed_string(1024 * 1024)?;
+                let _length = cursor.u32()?;
+                if after.is_some_and(|after| id <= after) {
+                    continue;
+                }
+                if !visitor(id)? {
+                    return Ok(());
+                }
+            }
+        }
+        super::query_context::checkpoint(task)
+    }
+
     /// Conservative capacity for one mapping block and transient decoded IDs.
     /// Probes run sequentially, so a caller can retain this admission across them.
     pub(crate) fn document_id_probe_memory_bytes(&self) -> Result<usize> {

@@ -516,11 +516,14 @@ pub unsafe extern "C" fn hawdb_retained_query(
             // Control, first batch and independently readable column each need a handle.
             options.minimum_shared_handles = NonZeroUsize::new(3).expect("nonzero handle minimum");
             let id = next_id()?;
+            let _autocommit = (&*db)
+                .autocommit()
+                .map_err(|_| HAWDB_RETAINED_EXECUTION_ERROR)?;
             let cursor = (&*db)
                 .inner
-                .lock()
-                .map_err(|_| HAWDB_RETAINED_PANIC)?
-                .query_with_params_retained(text, &params, options)
+                .begin_read_transaction()
+                .map_err(|error| error_code(&RetainedQueryError::Execution(error)))?
+                .into_retained_query(text, &params, options)
                 .map_err(|error| error_code(&error))?;
             let descriptor = HawdbRetainedCursorV1 {
                 abi_version: HAWDB_RETAINED_ABI_V1,

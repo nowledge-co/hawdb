@@ -16,9 +16,9 @@ use super::{NodeProjectionAccess, PhysicalPlan, PlanChildren};
 use crate::{
     AggregateFunction, AggregateTarget, Aggregation, BatchMutationOperation, BatchMutationValue,
     ComparisonOp, GraphAlgorithmKind, GraphGroupKeys, MutationReturnBinding, MutationReturnEntity,
-    PathFunction, Predicate, Projection, ProjectionExpression, RelationshipCountFilter,
-    RelationshipCountLeg, RelationshipOnCreateValue, SetAssignment, SetNodePropertiesReturnMode,
-    SetValue, SortDirection, SortItem, SortKey,
+    MutationReturnState, PathFunction, Predicate, Projection, ProjectionExpression,
+    RelationshipCountFilter, RelationshipCountLeg, RelationshipOnCreateValue, SetAssignment,
+    SetNodePropertiesReturnMode, SetValue, SortDirection, SortItem, SortKey,
 };
 use hawdb_core::Value;
 use hawdb_cypher::RelationshipDirection;
@@ -467,6 +467,7 @@ impl PhysicalPlan {
                 rel_type,
                 rel_match_properties,
                 on_create_properties,
+                on_match_assignments,
             } => {
                 output.push_str("MergeMatchedRelationship(");
                 write_identifier(output, source_label);
@@ -478,6 +479,10 @@ impl PhysicalPlan {
                 write_properties(output, rel_match_properties);
                 output.push(',');
                 write_properties(output, on_create_properties);
+                if !on_match_assignments.is_empty() {
+                    output.push_str(",on_match=");
+                    write_set_assignments(output, on_match_assignments);
+                }
                 output.push_str("]->(");
                 write_identifier(output, target_label);
                 output.push(',');
@@ -702,7 +707,38 @@ impl PhysicalPlan {
                         }
                     }
                 }
-                output.push_str("],returns=");
+                output.push(']');
+                if let Some(relationship) = &set.relationship {
+                    output.push_str(if relationship.merge {
+                        ",merge("
+                    } else {
+                        ",create("
+                    });
+                    write_identifier(output, &relationship.source);
+                    output.push(':');
+                    write_identifier(output, &relationship.rel_type);
+                    output.push(':');
+                    write_identifier(output, &relationship.target);
+                    for (name, items) in [
+                        ("properties", &relationship.properties),
+                        ("on_create", &relationship.on_create),
+                    ] {
+                        output.push(',');
+                        output.push_str(name);
+                        output.push_str("={");
+                        for (index, (property, expression)) in items.iter().enumerate() {
+                            if index > 0 {
+                                output.push(',');
+                            }
+                            write_identifier(output, property);
+                            output.push('=');
+                            projection::write_projection_expression(output, expression);
+                        }
+                        output.push('}');
+                    }
+                    output.push(')');
+                }
+                output.push_str(",returns=");
                 match &set.returns {
                     Some(returns) => {
                         write_projection_list(output, &returns.items);
@@ -726,10 +762,17 @@ impl PhysicalPlan {
                 output.push(')');
             }
             PhysicalPlan::MutationReturn { mutation, returns } => {
-                output.push_str("MutationReturn(");
+                output.push_str(match returns.state {
+                    MutationReturnState::Written => "MutationReturn(written,",
+                    MutationReturnState::Deleted => "MutationReturn(deleted,",
+                });
                 write_mutation_return_bindings(output, &returns.bindings);
                 output.push_str(",returns=");
                 write_set_return_mode(output, &returns.mode);
+                output.push_str(&format!(
+                    ",offset={},limit={:?}",
+                    returns.offset, returns.limit
+                ));
                 output.push_str(",mutation=");
                 mutation.write_instance_fingerprint(output);
                 output.push(')');

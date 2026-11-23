@@ -175,7 +175,7 @@ fn keyset_recognition_preserves_direction_and_boolean_permutations() {
                                 "memories",
                                 "m"
                             ),
-                            Some((&SqlValue::Parameter(1), &SqlValue::Parameter(2)))
+                            Some(vec![&SqlValue::Parameter(1), &SqlValue::Parameter(2)])
                         );
                     }
                 }
@@ -213,8 +213,75 @@ fn keyset_value_identity_ignores_each_occurrences_source_span() {
             "memories",
             "m"
         ),
-        Some((&SqlValue::Parameter(1), &SqlValue::Parameter(2)))
+        Some(vec![&SqlValue::Parameter(1), &SqlValue::Parameter(2)])
     );
+}
+
+#[test]
+fn row_keyset_recognition_accepts_arbitrary_length_uniform_order() {
+    let ordering = ["created", "bucket", "id"]
+        .into_iter()
+        .map(|name| SqlOrderItem {
+            expression: Expr::column(column(Some("m"), name)),
+            direction: SqlOrderDirection::Asc,
+            nulls: SqlNullOrder::DialectDefault,
+        })
+        .collect::<Vec<_>>();
+    let row = Expr::unspanned(ExprKind::RowCompare {
+        left: ["created", "bucket", "id"]
+            .into_iter()
+            .map(|name| Expr::column(column(Some("m"), name)))
+            .collect(),
+        op: SqlComparisonOp::Gt,
+        right: (1..=3)
+            .map(|position| Expr::value(SqlValue::Parameter(position)))
+            .collect(),
+    });
+    let predicate = and(compare("owner", SqlComparisonOp::Eq, 4), row.clone());
+    assert_eq!(
+        canonical_keyset_values(
+            Some(&predicate),
+            &access_columns(),
+            &ordering,
+            "memories",
+            "m"
+        ),
+        Some(vec![
+            &SqlValue::Parameter(1),
+            &SqlValue::Parameter(2),
+            &SqlValue::Parameter(3),
+        ])
+    );
+
+    let mut mixed = ordering.clone();
+    mixed[1].direction = SqlOrderDirection::Desc;
+    for (predicate, order_by) in [
+        (row.clone(), ordering.clone()),
+        (
+            and(compare("owner", SqlComparisonOp::Eq, 4), row.clone()),
+            mixed,
+        ),
+        (
+            and(
+                compare("owner", SqlComparisonOp::Eq, 4),
+                Expr::unspanned(ExprKind::RowCompare {
+                    left: vec![Expr::column(column(Some("m"), "created"))],
+                    op: SqlComparisonOp::Gte,
+                    right: vec![Expr::value(SqlValue::Parameter(1))],
+                }),
+            ),
+            ordering.clone(),
+        ),
+    ] {
+        assert!(canonical_keyset_values(
+            Some(&predicate),
+            &access_columns(),
+            &order_by,
+            "memories",
+            "m"
+        )
+        .is_none());
+    }
 }
 
 #[test]

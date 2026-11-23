@@ -486,7 +486,7 @@ impl ConsumerProjection {
             .reserve(hawdb_storage::consumer_allocation::CONSUMER_REOPEN_MEMORY_BOUND as usize)?;
         let io = controlled
             .acquire_io_wave(std::num::NonZeroUsize::MIN)
-            .map_err(|error| HawDBError::Execution(error.to_string()))?
+            .map_err(HawDBError::from_execution_error)?
             .ok_or_else(|| invalid("Consumer recovery requires I/O admission"))?;
         let target = request.capture_registered_target(&parent, locator, &controlled)?;
         let logical = SearchProjectionPublishLease::acquire_captured(target, &memory, &controlled)?;
@@ -882,7 +882,7 @@ fn resident_admission(
         .ok_or_else(|| invalid("Consumer compatibility snapshot exceeds retained byte bound"))?;
     permit
         .reserve_retained_memory(bound)
-        .map_err(|error| HawDBError::Execution(error.to_string()))
+        .map_err(HawDBError::from_execution_error)
 }
 
 fn remove_producer(

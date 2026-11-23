@@ -104,8 +104,9 @@ impl GraphStore {
         mut tables: Option<Vec<String>>,
     ) -> std::result::Result<ProjectionFullSourceCursor, ProjectionFeedError> {
         self.ensure_usable().map_err(ProjectionFeedError::Source)?;
-        task.checkpoint()
-            .map_err(|e| ProjectionFeedError::Source(HawDBError::Execution(e.to_string())))?;
+        task.checkpoint().map_err(|reason| {
+            ProjectionFeedError::Source(HawDBError::RuntimeTaskStopped(reason))
+        })?;
         let mut bytes = std::mem::size_of::<ProjectionFullSourceCursor>()
             .saturating_add(std::mem::size_of::<GraphStore>())
             .saturating_add(limits.key_bytes.get().saturating_mul(2))
@@ -134,8 +135,8 @@ impl GraphStore {
         };
         let mut captured_tables = Vec::new();
         for name in names {
-            task.checkpoint().map_err(|error| {
-                ProjectionFeedError::Source(HawDBError::Execution(error.to_string()))
+            task.checkpoint().map_err(|reason| {
+                ProjectionFeedError::Source(HawDBError::RuntimeTaskStopped(reason))
             })?;
             let Some(schema) = self.relational_state.table_schema(name) else {
                 continue;
@@ -260,9 +261,9 @@ impl ProjectionFullSourceCursor {
         self.source
             .ensure_usable()
             .map_err(ProjectionFeedError::Source)?;
-        self.task
-            .checkpoint()
-            .map_err(|e| ProjectionFeedError::Source(HawDBError::Execution(e.to_string())))?;
+        self.task.checkpoint().map_err(|reason| {
+            ProjectionFeedError::Source(HawDBError::RuntimeTaskStopped(reason))
+        })?;
         Ok(self.used)
     }
 
@@ -364,8 +365,8 @@ impl ProjectionFullSourceCursor {
                 | RelationalRowPageSnapshotReadError::MissingTable(_) => {
                     HawDBError::StorageIntegrity(e.to_string())
                 }
-                RelationalRowPageSnapshotReadError::Stopped(_) => {
-                    HawDBError::Execution(e.to_string())
+                RelationalRowPageSnapshotReadError::Stopped(reason) => {
+                    HawDBError::RuntimeTaskStopped(reason)
                 }
                 RelationalRowPageSnapshotReadError::FileDescriptors(e) => {
                     HawDBError::FileDescriptors(e)
@@ -423,9 +424,9 @@ impl ProjectionFullSourceCursor {
             self.source
                 .ensure_usable()
                 .map_err(ProjectionFeedError::Source)?;
-            self.task
-                .checkpoint()
-                .map_err(|e| ProjectionFeedError::Source(HawDBError::Execution(e.to_string())))?;
+            self.task.checkpoint().map_err(|reason| {
+                ProjectionFeedError::Source(HawDBError::RuntimeTaskStopped(reason))
+            })?;
             if !self.label_nodes_complete {
                 if !self.advance_labels(step, &mut used, visitor)? {
                     break;
@@ -495,8 +496,8 @@ impl ProjectionFullSourceCursor {
                 self.source
                     .ensure_usable()
                     .map_err(ProjectionFeedError::Source)?;
-                self.task.checkpoint().map_err(|e| {
-                    ProjectionFeedError::Source(HawDBError::Execution(e.to_string()))
+                self.task.checkpoint().map_err(|reason| {
+                    ProjectionFeedError::Source(HawDBError::RuntimeTaskStopped(reason))
                 })?;
                 self.ended = true;
                 break;
@@ -574,8 +575,8 @@ impl ProjectionFullSourceCursor {
             self.source
                 .ensure_usable()
                 .map_err(ProjectionFeedError::Source)?;
-            self.task.checkpoint().map_err(|error| {
-                ProjectionFeedError::Source(HawDBError::Execution(error.to_string()))
+            self.task.checkpoint().map_err(|reason| {
+                ProjectionFeedError::Source(HawDBError::RuntimeTaskStopped(reason))
             })?;
             let labels = node.labels.len();
             let work = self.label_membership_work(labels);

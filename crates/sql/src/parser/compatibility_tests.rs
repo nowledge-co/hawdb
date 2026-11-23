@@ -15,6 +15,36 @@
 use super::*;
 
 #[test]
+fn row_constructor_comparisons_preserve_fields_and_reject_arity_mismatches() {
+    for sql in [
+        "SELECT id FROM t WHERE (tenant, created, id) > ($1, $2, $3)",
+        "SELECT id FROM t WHERE ROW(tenant, created, id) <= ROW($1, $2, $3)",
+        "SELECT id FROM t WHERE ((tenant, created, id)) > ((($1, $2, $3)))",
+    ] {
+        let SqlStatement::Select(select) = parse_postgres_sql(sql).unwrap() else {
+            panic!("expected SELECT")
+        };
+        let ExprKind::RowCompare { left, op, right } = select.selection.unwrap().kind else {
+            panic!("expected row comparison")
+        };
+        assert_eq!(left.len(), 3, "{sql}");
+        assert_eq!(right.len(), 3, "{sql}");
+        assert!(matches!(op, SqlComparisonOp::Gt | SqlComparisonOp::Lte));
+    }
+    for sql in [
+        "SELECT id FROM t WHERE (tenant, id) > ($1)",
+        "SELECT id FROM t WHERE ROW(tenant) = ROW($1, $2)",
+        "SELECT id FROM t WHERE (tenant, id) = $1",
+    ] {
+        let error = parse_postgres_sql(sql).unwrap_err();
+        assert!(
+            error.to_string().contains("row comparison"),
+            "{sql}: {error}"
+        );
+    }
+}
+
+#[test]
 fn unlogged_tables_are_rejected_without_weakening_durability() {
     let error = parse_postgres_sql("CREATE UNLOGGED TABLE t (id BIGINT)").unwrap_err();
     assert!(matches!(error, HawDBError::Semantic(_)));
@@ -100,6 +130,63 @@ fn unsupported_alias_mutation_and_ordering_syntax_is_never_executed() {
             parse_postgres_sql(sql).is_ok(),
             "supported ordering rejected: {sql}"
         );
+    }
+}
+
+#[test]
+fn create_index_preserves_where_and_rejects_other_tail_clauses() {
+    let statement = parse_postgres_sql(
+        "CREATE UNIQUE INDEX active_items_idx ON items (tenant_id, id) WHERE deleted_at IS NULL",
+    )
+    .expect("PostgreSQL partial-index syntax");
+    let SqlStatement::CreateIndex(index) = statement else {
+        panic!("expected CREATE INDEX");
+    };
+    assert!(index.unique);
+    assert!(index.predicate.is_some());
+
+    for sql in [
+        "CREATE INDEX items_idx ON items (id) WHERE id > 0 INCLUDE (payload)",
+        "CREATE INDEX items_idx ON items USING btree (id)",
+        "CREATE INDEX items_idx ON items (id) WITH (fillfactor = 70)",
+    ] {
+        assert!(
+            parse_postgres_sql(sql).is_err(),
+            "unsupported clause: {sql}"
+        );
+    }
+}
+
+#[test]
+fn create_index_include_preserves_payload_columns_and_rejects_other_tails() {
+    let SqlStatement::CreateIndex(index) = parse_postgres_sql(
+        r#"CREATE UNIQUE INDEX events_tenant ON events (tenant, sequence) INCLUDE ("Payload", checksum) WHERE tenant IS NOT NULL"#,
+    )
+    .unwrap()
+    else {
+        panic!("expected CREATE INDEX")
+    };
+    assert!(index.unique);
+    assert!(index.predicate.is_some());
+    assert_eq!(
+        index
+            .columns
+            .iter()
+            .map(|column| column.column.name.as_str())
+            .collect::<Vec<_>>(),
+        ["tenant", "sequence"]
+    );
+    assert_eq!(index.included_columns, ["Payload", "checksum"]);
+
+    for sql in [
+        "CREATE INDEX ix ON events (tenant) INCLUDE (payload) INCLUDE (checksum)",
+        "CREATE INDEX ix ON events (tenant) INCLUDE (events.payload)",
+        "CREATE INDEX ix ON events (tenant) WHERE tenant IS NOT NULL WHERE tenant IS NULL",
+        "CREATE INDEX ix ON events USING btree (tenant)",
+        "CREATE INDEX CONCURRENTLY ix ON events (tenant)",
+    ] {
+        assert!(parse_postgres_sql(sql).is_err(), "{sql}");
+        assert!(crate::prepare_postgres_sql(sql).is_err(), "{sql}");
     }
 }
 

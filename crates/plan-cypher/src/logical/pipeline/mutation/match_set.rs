@@ -11,7 +11,8 @@
 
 use super::*;
 use crate::logical::{
-    MatchSet, MatchSetAssignment, MatchSetBinding, MatchSetReturn, MatchSetValue,
+    MatchSet, MatchSetAssignment, MatchSetBinding, MatchSetRelationship, MatchSetReturn,
+    MatchSetValue,
 };
 use hawdb_cypher::{ProjectionClause, QueryPipelineKind};
 
@@ -131,66 +132,13 @@ pub(super) fn bind(
     if sets.is_empty() {
         return Err(unsupported("SET requires at least one assignment"));
     }
-    // Bind the read clauses as the read input will be bound, with pattern
-    // properties that read row values lowered to predicates.
-    let pipeline = AstNode::synthetic(QueryPipelineKind {
-        clauses: prefix.to_vec(),
-    });
-    let lowered;
-    let pipeline = if pattern_properties::needs_lowering(&pipeline) {
-        lowered = pattern_properties::lower(&pipeline)?;
-        &lowered
-    } else {
-        &pipeline
-    };
-    let (_, scope) =
-        bind_read_clauses_scoped(&pipeline.clauses, None, Scope::default(), parameters)?;
-    // Anonymous pattern nodes cannot be named by a SET item or RETURN.
-    let anonymous = prefix
-        .iter()
-        .filter_map(|clause| match &clause.kind {
-            ClauseKind::Match { patterns, .. } => Some(patterns),
-            _ => None,
-        })
-        .flatten()
-        .flat_map(|pattern| {
-            std::iter::once(&pattern.first).chain(pattern.steps.iter().map(|step| &step.target))
-        })
-        .filter(|node| node.anonymous)
-        .map(|node| node.variable.as_str())
-        .collect::<BTreeSet<_>>();
-    let mut graph = BTreeSet::new();
-    let mut values = BTreeSet::new();
-    let mut bindings = Vec::new();
-    let mut items = Vec::new();
-    for (variable, binding) in &scope.0 {
-        let (expression, entity) = match binding {
-            BindingType::Graph { kind, .. } => {
-                if anonymous.contains(variable.as_str()) {
-                    continue;
-                }
-                graph.insert(variable.clone());
-                (ScalarExpressionKind::Id(variable.clone()), Some(*kind))
-            }
-            BindingType::Scalar | BindingType::Unwound | BindingType::Path => {
-                values.insert(variable.clone());
-                (ScalarExpressionKind::Variable(variable.clone()), None)
-            }
-            BindingType::UnmaterializedPath => continue,
-        };
-        let column = binding_column(variable);
-        items.push(AstNode::synthetic(ReturnItemKind {
-            expression: AstNode::synthetic(ReturnExpressionKind::Value(AstNode::synthetic(
-                expression,
-            ))),
-            alias: Some(column.clone()),
-        }));
-        bindings.push(MatchSetBinding {
-            variable: variable.clone(),
-            column,
-            entity,
-        });
-    }
+    let RowInput {
+        input,
+        bindings,
+        graph,
+        values,
+        ..
+    } = bind_rows(prefix, parameters)?;
     let mut assignments = Vec::with_capacity(sets.len());
     for set in sets {
         if !graph.contains(&set.variable) {
@@ -233,6 +181,274 @@ pub(super) fn bind(
     let returns = returns
         .map(|projection| bind_return(&graph, &values, projection, parameters))
         .transpose()?;
+    Ok(LogicalPlan::MatchSet(Box::new(MatchSet {
+        input,
+        bindings,
+        assignments,
+        relationship: None,
+        returns,
+    })))
+}
+
+/// Binds `<read clauses> CREATE|MERGE (a)-[:R {...}]->(b) [RETURN ...]`
+/// between two bound nodes, for the read clauses the two-endpoint commands
+/// cannot take: `IN` lists, pattern predicates, `UNWIND` rows, `WITH`, or the
+/// same node at both ends (#1790). Returns `None` for every other shape.
+pub(super) fn bind_relationship_pipeline(
+    clauses: &[Clause],
+    parameters: &BTreeMap<String, Value>,
+) -> Option<Result<LogicalPlan>> {
+    let start = clauses.iter().position(|clause| {
+        matches!(
+            clause.kind,
+            ClauseKind::Create(_) | ClauseKind::Merge { .. }
+        )
+    })?;
+    let (prefix, tail) = clauses.split_at(start);
+    if prefix.is_empty()
+        || !prefix.iter().all(|clause| {
+            matches!(
+                clause.kind,
+                ClauseKind::Match { .. }
+                    | ClauseKind::With(_)
+                    | ClauseKind::Unwind { .. }
+                    | ClauseKind::UnwindExpression { .. }
+            )
+        })
+    {
+        return None;
+    }
+    let (write, returns) = match tail {
+        [write] => (write, None),
+        [write, Clause {
+            kind: ClauseKind::Return(projection),
+            ..
+        }] => (write, Some(projection)),
+        _ => return None,
+    };
+    let (pattern, merge, on_create) = match &write.kind {
+        ClauseKind::Create(patterns) => match patterns.as_slice() {
+            [pattern] => (pattern, false, &[][..]),
+            _ => return None,
+        },
+        ClauseKind::Merge {
+            pattern,
+            on_create,
+            on_match,
+        } => {
+            if !on_match.is_empty() {
+                return None;
+            }
+            (pattern, true, on_create.as_slice())
+        }
+        _ => return None,
+    };
+    // Only a relationship between two bound, otherwise unconstrained nodes.
+    let [step] = pattern.steps.as_slice() else {
+        return None;
+    };
+    let relationship = &step.relationship;
+    let bound =
+        |node: &NodePattern| !node.anonymous && node.label.is_empty() && node.properties.is_empty();
+    if pattern.variable.is_some()
+        || !bound(&pattern.first)
+        || !bound(&step.target)
+        || relationship.rel_type.is_empty()
+        || !relationship.rel_type_disjunction.is_empty()
+        || relationship.min_hops != 1
+        || relationship.max_hops != 1
+        || relationship.search != PathSearch::All
+    {
+        return None;
+    }
+    let (source, target) = match relationship.direction {
+        RelationshipDirection::Outgoing => (&pattern.first.variable, &step.target.variable),
+        RelationshipDirection::Incoming => (&step.target.variable, &pattern.first.variable),
+        RelationshipDirection::Undirected => return None,
+    };
+    Some(bind_relationship(
+        prefix,
+        RelationshipWrite {
+            merge,
+            source,
+            target,
+            pattern: relationship,
+            on_create,
+        },
+        returns,
+        parameters,
+    ))
+}
+
+struct RelationshipWrite<'a> {
+    merge: bool,
+    source: &'a str,
+    target: &'a str,
+    pattern: &'a hawdb_cypher::RelationshipPattern,
+    on_create: &'a [SetProperty],
+}
+
+fn bind_relationship(
+    prefix: &[Clause],
+    write: RelationshipWrite<'_>,
+    returns: Option<&ProjectionClause>,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<LogicalPlan> {
+    let RowInput {
+        input,
+        bindings,
+        graph,
+        values,
+        nodes,
+    } = bind_rows(prefix, parameters)?;
+    for endpoint in [write.source, write.target] {
+        if !nodes.contains(endpoint) {
+            return Err(HawDBError::Semantic(format!(
+                "relationship endpoint '{endpoint}' must be a node bound by an earlier clause"
+            )));
+        }
+    }
+    if let Some(variable) = &write.pattern.variable
+        && (graph.contains(variable) || values.contains(variable))
+    {
+        return Err(HawDBError::Semantic(format!(
+            "relationship variable '{variable}' is already bound"
+        )));
+    }
+    let plan_value = |value: &ValueExpression| {
+        plan_scalar_expression_with_columns(
+            &graph,
+            &values,
+            &row_value_expression(value.clone())?,
+            parameters,
+        )
+    };
+    let properties = write
+        .pattern
+        .properties
+        .iter()
+        .map(|(property, value)| Ok((property.clone(), plan_value(value)?)))
+        .collect::<Result<Vec<_>>>()?;
+    let mut on_create = Vec::with_capacity(write.on_create.len());
+    for set in write.on_create {
+        if write.pattern.variable.as_deref() != Some(set.variable.as_str()) {
+            return Err(HawDBError::Semantic(format!(
+                "ON CREATE SET variable '{}' is not the merged relationship",
+                set.variable
+            )));
+        }
+        // The new relationship is not readable yet: values come from the row.
+        let expression = match &set.value {
+            SetValueExpression::Value(value) => row_value_expression(value.clone())?,
+            value => fixed_form_expression(value).ok_or_else(|| {
+                unsupported("ON CREATE SET of a row-evaluated MERGE cannot read the relationship")
+            })?,
+        };
+        on_create.push((
+            set.property.clone(),
+            plan_scalar_expression_with_columns(&graph, &values, &expression, parameters)?,
+        ));
+    }
+    // The created relationship is not in RETURN's scope; matched variables
+    // are.
+    let returns = returns
+        .map(|projection| bind_return(&graph, &values, projection, parameters))
+        .transpose()?;
+    Ok(LogicalPlan::MatchSet(Box::new(MatchSet {
+        input,
+        bindings,
+        assignments: Vec::new(),
+        relationship: Some(MatchSetRelationship {
+            merge: write.merge,
+            source: write.source.to_string(),
+            target: write.target.to_string(),
+            rel_type: write.pattern.rel_type.clone(),
+            properties,
+            on_create,
+        }),
+        returns,
+    })))
+}
+
+/// The read input of a row-evaluated mutation and the variables it binds.
+struct RowInput {
+    input: LogicalPlan,
+    bindings: Vec<MatchSetBinding>,
+    /// Named nodes and relationships, read by id for each row.
+    graph: BTreeSet<String>,
+    /// Scalar variables, read as values.
+    values: BTreeSet<String>,
+    nodes: BTreeSet<String>,
+}
+
+/// Plans the clauses before the mutation as a read returning one column per
+/// variable in scope: the id of each named node or relationship and the value
+/// of each scalar.
+fn bind_rows(prefix: &[Clause], parameters: &BTreeMap<String, Value>) -> Result<RowInput> {
+    // Bind the read clauses as the read input will be bound, with pattern
+    // properties that read row values lowered to predicates.
+    let pipeline = AstNode::synthetic(QueryPipelineKind {
+        clauses: prefix.to_vec(),
+    });
+    let lowered;
+    let pipeline = if pattern_properties::needs_lowering(&pipeline) {
+        lowered = pattern_properties::lower(&pipeline)?;
+        &lowered
+    } else {
+        &pipeline
+    };
+    let (_, scope) =
+        bind_read_clauses_scoped(&pipeline.clauses, None, Scope::default(), parameters)?;
+    // Anonymous pattern nodes cannot be named by a SET item or RETURN.
+    let anonymous = prefix
+        .iter()
+        .filter_map(|clause| match &clause.kind {
+            ClauseKind::Match { patterns, .. } => Some(patterns),
+            _ => None,
+        })
+        .flatten()
+        .flat_map(|pattern| {
+            std::iter::once(&pattern.first).chain(pattern.steps.iter().map(|step| &step.target))
+        })
+        .filter(|node| node.anonymous)
+        .map(|node| node.variable.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut graph = BTreeSet::new();
+    let mut nodes = BTreeSet::new();
+    let mut values = BTreeSet::new();
+    let mut bindings = Vec::new();
+    let mut items = Vec::new();
+    for (variable, binding) in &scope.0 {
+        let (expression, entity) = match binding {
+            BindingType::Graph { kind, .. } => {
+                if anonymous.contains(variable.as_str()) {
+                    continue;
+                }
+                graph.insert(variable.clone());
+                if *kind == GraphEntityKind::Node {
+                    nodes.insert(variable.clone());
+                }
+                (ScalarExpressionKind::Id(variable.clone()), Some(*kind))
+            }
+            BindingType::Scalar | BindingType::Unwound | BindingType::Path => {
+                values.insert(variable.clone());
+                (ScalarExpressionKind::Variable(variable.clone()), None)
+            }
+            BindingType::UnmaterializedPath => continue,
+        };
+        let column = binding_column(variable);
+        items.push(AstNode::synthetic(ReturnItemKind {
+            expression: AstNode::synthetic(ReturnExpressionKind::Value(AstNode::synthetic(
+                expression,
+            ))),
+            alias: Some(column.clone()),
+        }));
+        bindings.push(MatchSetBinding {
+            variable: variable.clone(),
+            column,
+            entity,
+        });
+    }
     let mut clauses = prefix.to_vec();
     clauses.push(AstNode::synthetic(ClauseKind::Return(ProjectionClause {
         distinct: false,
@@ -246,12 +462,13 @@ pub(super) fn bind(
         &AstNode::synthetic(QueryPipelineKind { clauses }),
         parameters,
     )?;
-    Ok(LogicalPlan::MatchSet(Box::new(MatchSet {
+    Ok(RowInput {
         input,
         bindings,
-        assignments,
-        returns,
-    })))
+        graph,
+        values,
+        nodes,
+    })
 }
 
 /// Plans the RETURN of the updated rows. `ORDER BY` reads a returned column

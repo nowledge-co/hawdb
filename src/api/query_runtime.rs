@@ -31,7 +31,7 @@ pub(crate) struct PreparedRuntimeQuery {
     scoring_key: Option<super::query_request::ScoringPlanCacheKey>,
 }
 
-#[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
+#[cfg(test)]
 pub(crate) struct RuntimePlanningSnapshot {
     branch_id: Option<hawdb_core::Uuid>,
     catalog: Catalog,
@@ -53,7 +53,7 @@ struct RuntimePlanningContext<'a> {
     system_variables: &'a QuerySystemVariables,
 }
 
-#[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
+#[cfg(test)]
 impl RuntimePlanningSnapshot {
     pub(crate) fn accepts_prepared(&self, prepared: &PreparedRuntimeQuery) -> bool {
         prepared.is_compatible(
@@ -358,7 +358,7 @@ impl Database {
         Ok(())
     }
 
-    #[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn runtime_planning_snapshot(&self) -> Result<RuntimePlanningSnapshot> {
         let runtime = self.runtime.get()?;
         Ok({
@@ -1062,6 +1062,8 @@ impl Database {
                 QueryOutput { rows },
                 QueryExecutionTrace {
                     statement,
+                    optimizer_cardinality_estimate_scope: capture_trace
+                        .then_some(optimized.cardinality_estimate_scope),
                     optimizer_trace: capture_trace.then_some(optimized.trace),
                     plan_cache_lookup: Some(optimized.plan_cache_lookup),
                     execution_profile,
@@ -1174,7 +1176,7 @@ pub(super) fn query_runtime_checkpoint(
     match task_context {
         Some(task_context) => task_context
             .checkpoint()
-            .map_err(|reason| HawDBError::Execution(format!("runtime task stopped: {reason}"))),
+            .map_err(HawDBError::RuntimeTaskStopped),
         None => Ok(()),
     }
 }

@@ -234,6 +234,8 @@ pub enum PhysicalPlan {
         rel_type: String,
         rel_match_properties: BTreeMap<String, Value>,
         on_create_properties: BTreeMap<String, Value>,
+        /// `ON MATCH SET` items for a relationship the MERGE finds.
+        on_match_assignments: Vec<SetAssignment>,
     },
     MergeRelationshipFromMatchedRelationship {
         source_label: String,

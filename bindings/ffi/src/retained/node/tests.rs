@@ -1,9 +1,9 @@
 // Copyright 2026 Nowledge
 // SPDX-License-Identifier: Apache-2.0
 
-use super::super::tests::{constrained_governor, release, request, size, state};
+use super::super::tests::{constrained_embedded, release, request, size, state};
 use super::*;
-use hawdb::{HawDBEmbedded, RuntimeGovernor};
+use hawdb::RuntimeGovernor;
 use std::collections::BTreeMap;
 
 const QUERY: &str = "MATCH (n:Item) WHERE n.id = $id RETURN n";
@@ -11,15 +11,16 @@ fn fixture(handles: usize) -> (*mut HawdbDatabase, RuntimeGovernor) {
     let (db, governor) = indexed_fixture(handles);
     unsafe { &*db }
         .inner
-        .lock()
-        .unwrap()
-        .database_mut()
-        .query("CREATE CONSTRAINT ON :Item(id) ASSERT UNIQUE")
+        .with_embedded_mut(|embedded| {
+            embedded
+                .database_mut()
+                .query("CREATE CONSTRAINT ON :Item(id) ASSERT UNIQUE")
+        })
         .unwrap();
     (db, governor)
 }
 fn indexed_fixture(handles: usize) -> (*mut HawdbDatabase, RuntimeGovernor) {
-    let mut db = HawDBEmbedded::open_in_memory();
+    let mut db = constrained_embedded(hawdb::DatabaseConfig::default(), handles);
     db.query_admitted("CREATE NODE TABLE Item").unwrap();
     db.query_admitted("CREATE PROPERTY ON NODE TABLE Item(id) TYPE INT")
         .unwrap();
@@ -42,14 +43,8 @@ fn indexed_fixture(handles: usize) -> (*mut HawdbDatabase, RuntimeGovernor) {
             )
             .unwrap();
     }
-    let governor = constrained_governor(handles);
-    db.database_mut().set_runtime_governor(governor.clone());
-    (
-        Box::into_raw(Box::new(HawdbDatabase {
-            inner: Mutex::new(db),
-        })),
-        governor,
-    )
+    let governor = db.runtime_governor().clone();
+    (Box::into_raw(Box::new(HawdbDatabase::new(db))), governor)
 }
 fn cursor(db: *mut HawdbDatabase, id: u64) -> HawdbRetainedCursorV1 {
     let params = format!("{{\"id\":{id}}}");
@@ -143,9 +138,9 @@ fn original_node_buffers_survive_write_and_all_parent_releases() {
     unsafe {
         (&*db)
             .inner
-            .lock()
-            .unwrap()
-            .query_admitted("MATCH (n:Item) WHERE n.id = 1 SET n.payload = 'new'")
+            .query_request_admitted(hawdb::QueryRequest::new(
+                "MATCH (n:Item) WHERE n.id = 1 SET n.payload = 'new'",
+            ))
             .unwrap();
     }
     assert_eq!(bytes(text), "old\0\u{4e16}".as_bytes());
@@ -398,12 +393,12 @@ fn shared_vector_retained_bytes_survive_database_release() {
     let vector = hawdb::Vector::new(&[1.0, -0.0]).unwrap();
     unsafe { &*db }
         .inner
-        .lock()
-        .unwrap()
-        .database_mut()
-        .query_with_params(
-            "MATCH (n:Item) WHERE n.id = 1 SET n.embedding = $embedding",
-            &BTreeMap::from([("embedding".into(), Value::Vector(vector.clone()))]),
+        .query_request_admitted(
+            hawdb::QueryRequest::new("MATCH (n:Item) WHERE n.id = 1 SET n.embedding = $embedding")
+                .with_params(&BTreeMap::from([(
+                    "embedding".into(),
+                    Value::Vector(vector.clone()),
+                )])),
         )
         .unwrap();
     let cursor = cursor(db, 1);

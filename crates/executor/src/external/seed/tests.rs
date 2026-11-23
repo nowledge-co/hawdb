@@ -425,7 +425,7 @@ fn preflight_zero_limit_and_cancellation_keep_error_precedence() {
             cancel_before: true,
             ..Case::default()
         }),
-        "external read task stopped: cancelled",
+        "runtime task stopped: cancelled",
         0,
         0,
     );
@@ -435,7 +435,7 @@ fn preflight_zero_limit_and_cancellation_keep_error_precedence() {
             response: Ok(output(4)),
             ..Case::default()
         }),
-        "external read task stopped: cancelled",
+        "runtime task stopped: cancelled",
         1,
         0,
     );

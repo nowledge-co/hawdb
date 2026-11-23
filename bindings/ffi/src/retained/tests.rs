@@ -150,7 +150,10 @@ pub(super) fn size<T>() -> u32 {
     std::mem::size_of::<T>() as u32
 }
 fn fixture(config: DatabaseConfig) -> *mut HawdbDatabase {
-    let mut embedded = HawDBEmbedded::open_in_memory_with_config(config);
+    fixture_from_embedded(HawDBEmbedded::open_in_memory_with_config(config))
+}
+
+fn fixture_from_embedded(mut embedded: HawDBEmbedded) -> *mut HawdbDatabase {
     embedded.query_admitted("CREATE NODE TABLE Item").unwrap();
     embedded
         .query_admitted("CREATE PROPERTY ON NODE TABLE Item(score) TYPE INT")
@@ -160,9 +163,7 @@ fn fixture(config: DatabaseConfig) -> *mut HawdbDatabase {
             .query_admitted(&format!("CREATE (:Item {{score: {score}}})"))
             .unwrap();
     }
-    Box::into_raw(Box::new(HawdbDatabase {
-        inner: Mutex::new(embedded),
-    }))
+    Box::into_raw(Box::new(HawdbDatabase::new(embedded)))
 }
 pub(super) fn request(query: &str, params: &str) -> HawdbRetainedQueryV1 {
     HawdbRetainedQueryV1 {
@@ -258,7 +259,7 @@ fn selected_scores(column: HawdbRetainedColumnV1) -> Vec<i64> {
 #[test]
 fn independent_column_lifetime_identity_and_exact_final_release() {
     let db = fixture(DatabaseConfig::default());
-    let governor = unsafe { (&*db).inner.lock().unwrap().runtime_governor().clone() };
+    let governor = unsafe { (&*db).inner.runtime_governor().clone() };
     let cursor = cursor(db, QUERY, r#"{"min":2}"#);
     let first = batch(cursor);
     let scores = column(first, 0);
@@ -639,9 +640,7 @@ fn nullable_float_bits_and_node_identity_are_exposed_without_casting() {
             )
             .unwrap();
     }
-    let db = Box::into_raw(Box::new(HawdbDatabase {
-        inner: Mutex::new(embedded),
-    }));
+    let db = Box::into_raw(Box::new(HawdbDatabase::new(embedded)));
     // Input JSON accepts finite numbers; -1e300 includes all non-null fixture values.
     let mut request = request(QUERY, r#"{"min":-1e300}"#);
     request.batch_rows = 9;
@@ -687,39 +686,30 @@ fn nullable_float_bits_and_node_identity_are_exposed_without_casting() {
     release(identity.owner_namespace, identity.owner_id);
 }
 
-pub(super) fn constrained_governor(handles: usize) -> hawdb::RuntimeGovernor {
-    hawdb::RuntimeGovernor::new(
-        hawdb::RuntimeGovernorConfig {
+pub(super) fn constrained_embedded(config: DatabaseConfig, handles: usize) -> HawDBEmbedded {
+    let mut embedded = HawDBEmbedded::open_in_memory_with_runtime_governor_config(
+        config,
+        Some(hawdb::RuntimeGovernorConfig {
             retained_result_handle_limit: NonZeroUsize::new(handles).unwrap(),
-            memory_budget_bytes: Some(64 * 1024 * 1024),
+            // The same owner also funds ordinary schema and mutation queries.
+            // Leave retained-result byte and handle limits unchanged.
+            memory_budget_bytes: Some(256 * 1024 * 1024),
             ..hawdb::RuntimeGovernorConfig::shared_host()
-        },
-        hawdb::RuntimeResourceSnapshot::from_parts(
-            hawdb::RuntimeResourceBudget::from_limits(NonZeroUsize::new(4).unwrap(), None, None),
-            hawdb::RuntimeMemorySnapshot::from_limits(
-                Some(1 << 30),
-                Some(1 << 30),
-                None,
-                None,
-                None,
-            ),
-        ),
-        hawdb::IoConcurrencyBudget::new(2, 1),
-    )
+        }),
+    );
+    embedded.update_runtime_resources(hawdb::RuntimeResourceSnapshot::from_parts(
+        hawdb::RuntimeResourceBudget::from_limits(NonZeroUsize::new(4).unwrap(), None, None),
+        hawdb::RuntimeMemorySnapshot::from_limits(Some(1 << 30), Some(1 << 30), None, None, None),
+    ));
+    embedded.runtime_governor().pin_resources();
+    embedded
 }
 
 #[test]
 fn handles_are_shared_across_cursors_and_borrowing_needs_no_additional_owner() {
-    let db = fixture(DatabaseConfig::default());
-    let governor = constrained_governor(5);
-    unsafe {
-        (&*db)
-            .inner
-            .lock()
-            .unwrap()
-            .database_mut()
-            .set_runtime_governor(governor.clone());
-    }
+    let embedded = constrained_embedded(DatabaseConfig::default(), 5);
+    let governor = embedded.runtime_governor().clone();
+    let db = fixture_from_embedded(embedded);
     let first_cursor = cursor(db, QUERY, r#"{"min":2}"#);
     let second_cursor = cursor(db, QUERY, r#"{"min":2}"#);
     let first = batch(first_cursor);
@@ -792,16 +782,8 @@ fn handles_are_shared_across_cursors_and_borrowing_needs_no_additional_owner() {
 }
 
 #[test]
-fn inadequate_protocol_handle_limit_refuses_before_binding_and_can_be_corrected() {
-    let db = fixture(DatabaseConfig::default());
-    unsafe {
-        (&*db)
-            .inner
-            .lock()
-            .unwrap()
-            .database_mut()
-            .set_runtime_governor(constrained_governor(2));
-    }
+fn inadequate_protocol_handle_limit_refuses_before_binding_and_can_reopen_owner() {
+    let db = fixture_from_embedded(constrained_embedded(DatabaseConfig::default(), 2));
     let request = request(QUERY, r#"{"min":2}"#);
     let mut out = HawdbRetainedCursorV1::default();
     assert_eq!(
@@ -820,19 +802,16 @@ fn inadequate_protocol_handle_limit_refuses_before_binding_and_can_be_corrected(
     assert!(unsafe {
         (&*db)
             .inner
-            .lock()
-            .unwrap()
-            .database()
-            .retained_result_snapshot()
-            .is_none()
+            .with_embedded_mut(|embedded| embedded.database().retained_result_snapshot().is_none())
     });
     unsafe {
-        (&*db)
-            .inner
-            .lock()
-            .unwrap()
-            .database_mut()
-            .set_runtime_governor(constrained_governor(3));
+        // The owner governor is stable. Correct the invalid setup by adopting
+        // the same database into a newly configured owner before any delivery.
+        let mut replacement = constrained_embedded(DatabaseConfig::default(), 3);
+        *replacement.database_mut() = (&*db).inner.with_embedded_mut(|embedded| {
+            std::mem::replace(embedded.database_mut(), hawdb::Database::new())
+        });
+        (*db).inner = hawdb::HawDBConcurrentEmbedded::new(replacement);
     }
     let cursor = cursor(db, QUERY, r#"{"min":2}"#);
     let first = batch(cursor);

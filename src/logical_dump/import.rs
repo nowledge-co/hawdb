@@ -26,8 +26,8 @@ use super::export::{quote_identifier, SYSTEM_SCHEMA_REGISTRY_TABLE};
 use super::files::{read_metadata, resolve_entry_path, verify_bytes, RecordReader, Stage};
 use super::model::{
     Column, ColumnDefault, FileEntry, FileKind, GraphConstraintKind, GraphIndexKind, GraphProperty,
-    GraphPropertyDefault, GraphSchema, GraphTableKind, Manifest, ReferentialAction, Schema,
-    SchemaState, Table, FORMAT_NAME, MANIFEST_FILE,
+    GraphPropertyDefault, GraphSchema, GraphTableKind, IndexComparison, IndexPredicate, Manifest,
+    ReferentialAction, Schema, SchemaState, Table, FORMAT_NAME, MANIFEST_FILE,
 };
 use super::value::{self, malformed};
 use super::{
@@ -214,6 +214,64 @@ fn validate_search_indexes(schema: &Schema, tables: &BTreeSet<&str>) -> Result<(
     Ok(())
 }
 
+fn validate_table_indexes(schema: &Schema) -> Result<()> {
+    fn validate(predicate: &IndexPredicate, columns: &BTreeSet<&str>) -> Result<()> {
+        match predicate {
+            IndexPredicate::And { left, right } | IndexPredicate::Or { left, right } => {
+                validate(left, columns)?;
+                validate(right, columns)
+            }
+            IndexPredicate::Not { predicate } => validate(predicate, columns),
+            IndexPredicate::Compare { column, .. } | IndexPredicate::IsNull { column, .. } => {
+                if columns.contains(column.as_str()) {
+                    Ok(())
+                } else {
+                    Err(malformed(format!(
+                        "partial-index predicate references unknown column {column}"
+                    )))
+                }
+            }
+        }
+    }
+
+    for table in &schema.tables {
+        let columns = table
+            .columns
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<BTreeSet<_>>();
+        let mut names = BTreeSet::new();
+        for index in &table.indexes {
+            if index.name.is_empty() || !names.insert(index.name.as_str()) {
+                return Err(malformed(format!(
+                    "table {} has an empty or duplicate index name {}",
+                    table.name, index.name
+                )));
+            }
+            if index.columns.is_empty() {
+                return Err(malformed(format!(
+                    "index {} on table {} has no key columns",
+                    index.name, table.name
+                )));
+            }
+            let mut used = BTreeSet::new();
+            for column in index.columns.iter().chain(&index.included_columns) {
+                if !columns.contains(column.as_str()) || !used.insert(column.as_str()) {
+                    return Err(malformed(format!(
+                        "index {} on table {} references unknown or duplicate column {}",
+                        index.name, table.name, column
+                    )));
+                }
+            }
+            if let Some(predicate) = &index.predicate {
+                validate(predicate, &columns)?;
+                index_predicate_sql(predicate)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Every analyzer must be one this build implements; an unknown one is
 /// refused before anything is written rather than when its index is created.
 fn refuse_unknown_analyzers(schema: &Schema) -> Result<()> {
@@ -249,6 +307,7 @@ impl<'a> Plan<'a> {
             return Err(malformed("schema.json lists a table twice"));
         }
         validate_search_indexes(schema, &names)?;
+        validate_table_indexes(schema)?;
         validate_graph_property_defaults(&schema.graph)?;
         let mut paths = BTreeSet::from([manifest.schema.path.as_str()]);
         let mut plan = Self {
@@ -375,14 +434,12 @@ fn default_sql(column: &Column) -> Result<Option<String>> {
             Value::Decimal(item) => item.to_string(),
             Value::String(item) => sql_string(&item),
             Value::Uuid(item) => sql_string(&item.to_string()),
-            Value::LocalDateTime(_) | Value::DateTime(_) => {
-                let text = match value::decode(literal)? {
-                    Value::LocalDateTime(item) => item.to_string(),
-                    Value::DateTime(item) => item.to_string(),
-                    _ => unreachable!("matched timestamp default"),
-                };
-                sql_string(&text)
-            }
+            Value::LocalDateTime(item) => sql_string(&hawdb_core::sql_timestamp::format_timestamp(
+                hawdb_core::sql_timestamp::from_naive(item)?,
+            )?),
+            Value::DateTime(item) => sql_string(&hawdb_core::sql_timestamp::format_timestamptz(
+                hawdb_core::sql_timestamp::from_datetime(item)?,
+            )?),
             other => {
                 return Err(malformed(format!(
                     "column {} has a {other:?} default that format 1 cannot render",
@@ -390,6 +447,70 @@ fn default_sql(column: &Column) -> Result<Option<String>> {
                 )))
             }
         }),
+    })
+}
+
+fn index_predicate_sql(predicate: &IndexPredicate) -> Result<String> {
+    Ok(match predicate {
+        IndexPredicate::And { left, right } => format!(
+            "({} AND {})",
+            index_predicate_sql(left)?,
+            index_predicate_sql(right)?
+        ),
+        IndexPredicate::Or { left, right } => format!(
+            "({} OR {})",
+            index_predicate_sql(left)?,
+            index_predicate_sql(right)?
+        ),
+        IndexPredicate::Not { predicate } => {
+            format!("(NOT {})", index_predicate_sql(predicate)?)
+        }
+        IndexPredicate::Compare {
+            column,
+            operator,
+            value: literal,
+        } => format!(
+            "{} {} {}",
+            quote_identifier(column),
+            match operator {
+                IndexComparison::Eq => "=",
+                IndexComparison::NotEq => "<>",
+                IndexComparison::Lt => "<",
+                IndexComparison::Lte => "<=",
+                IndexComparison::Gt => ">",
+                IndexComparison::Gte => ">=",
+            },
+            literal_sql(&value::decode(literal)?, "partial-index predicate")?
+        ),
+        IndexPredicate::IsNull { column, negated } => format!(
+            "{} IS {}NULL",
+            quote_identifier(column),
+            if *negated { "NOT " } else { "" }
+        ),
+    })
+}
+
+fn literal_sql(value: &Value, context: &str) -> Result<String> {
+    Ok(match value {
+        Value::Null => "NULL".to_string(),
+        Value::Bool(true) => "TRUE".to_string(),
+        Value::Bool(false) => "FALSE".to_string(),
+        Value::Int(item) => item.to_string(),
+        Value::Float(item) if item.is_finite() => format!("{item:?}"),
+        Value::Decimal(item) => item.to_string(),
+        Value::String(item) => sql_string(item),
+        Value::Uuid(item) => sql_string(&item.to_string()),
+        Value::LocalDateTime(item) => sql_string(&hawdb_core::sql_timestamp::format_timestamp(
+            hawdb_core::sql_timestamp::from_naive(*item)?,
+        )?),
+        Value::DateTime(item) => sql_string(&hawdb_core::sql_timestamp::format_timestamptz(
+            hawdb_core::sql_timestamp::from_datetime(*item)?,
+        )?),
+        other => {
+            return Err(malformed(format!(
+                "{context} has a {other:?} literal that format 1 cannot render"
+            )))
+        }
     })
 }
 
@@ -697,12 +818,25 @@ impl Target {
                 continue;
             }
             for index in &table.indexes {
+                let include = if index.included_columns.is_empty() {
+                    String::new()
+                } else {
+                    format!(" INCLUDE ({})", column_list(&index.included_columns))
+                };
                 let sql = format!(
-                    "CREATE {}INDEX {} ON {} ({})",
+                    "CREATE {}INDEX {} ON {} ({}){}{}",
                     if index.unique { "UNIQUE " } else { "" },
                     quote_identifier(&index.name),
                     quote_identifier(&table.name),
-                    column_list(&index.columns)
+                    column_list(&index.columns),
+                    include,
+                    index
+                        .predicate
+                        .as_ref()
+                        .map(|predicate| index_predicate_sql(predicate)
+                            .map(|predicate| format!(" WHERE {predicate}")))
+                        .transpose()?
+                        .unwrap_or_default()
                 );
                 self.sql(&sql, &[])?;
             }

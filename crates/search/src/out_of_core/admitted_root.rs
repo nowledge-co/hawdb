@@ -335,9 +335,7 @@ pub(super) fn open(context: OpenContext<'_, '_>) -> Result<OpenedRoot> {
                     ));
                 }
             } else {
-                let _io = admission
-                    .io()
-                    .map_err(|error| HawDBError::Execution(error.to_string()))?;
+                let _io = admission.io().map_err(HawDBError::from_execution_error)?;
                 let canonical = OwnedPath::canonicalize(&root, admission.memory, admission.task)?;
                 if !canonical.starts_with(project.root()) {
                     return Err(HawDBError::StorageIntegrity(
@@ -360,9 +358,7 @@ pub(super) fn open(context: OpenContext<'_, '_>) -> Result<OpenedRoot> {
     };
     let mut owned_publication = match (admission, publication.is_none()) {
         (Some(admission), true) => {
-            let _io = admission
-                .io()
-                .map_err(|e| HawDBError::Execution(e.to_string()))?;
+            let _io = admission.io().map_err(HawDBError::from_execution_error)?;
             Some(SearchProjectionPublishLease::acquire_for_capture(
                 &root,
                 admission.memory,
@@ -375,9 +371,7 @@ pub(super) fn open(context: OpenContext<'_, '_>) -> Result<OpenedRoot> {
     let capture = match (admission, publication) {
         (Some(admission), Some(publication)) => {
             {
-                let _io = admission
-                    .io()
-                    .map_err(|e| HawDBError::Execution(e.to_string()))?;
+                let _io = admission.io().map_err(HawDBError::from_execution_error)?;
                 if stationary.is_none() {
                     publication.require_source_root(&root, &project_files.io_context())?;
                 }
@@ -461,6 +455,7 @@ pub(super) fn open(context: OpenContext<'_, '_>) -> Result<OpenedRoot> {
         stationary_immutable: stationary.is_some(),
         _native_custody: native_custody,
         reader: SearchOutOfCoreReader {
+            reader_id: super::next_out_of_core_reader_id(),
             root,
             _project_files: project_files,
             config,

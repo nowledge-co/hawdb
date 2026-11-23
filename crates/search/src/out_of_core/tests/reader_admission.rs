@@ -211,7 +211,7 @@ fn cancelled_layout_decode_preserves_execution_error_before_invalid_storage() {
     task.cancellation().cancel();
     let error =
         SearchOutOfCoreLayoutBody::decode_with_context(b"invalid", Some(&task)).unwrap_err();
-    assert!(matches!(error, HawDBError::Execution(_)));
+    assert!(matches!(error, HawDBError::RuntimeTaskStopped(_)));
     assert!(matches!(
         SearchOutOfCoreLayoutBody::decode(b"invalid"),
         Err(HawDBError::Storage(_))

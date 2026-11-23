@@ -21,8 +21,6 @@ fn relationship_merge_batch_preserves_scope_and_refuses_unrepresented_clauses() 
     ));
     for query in [
         format!("{prefix} RETURN r.weight"),
-        format!("{prefix} RETURN DISTINCT m.id"),
-        format!("{prefix} RETURN m.id LIMIT 1"),
         format!("{prefix} ON MATCH SET r.weight = 2 RETURN m.id"),
         format!("{prefix} SET s.used = true RETURN m.id"),
         "MATCH (s:Skill), (m:Memory) MERGE (s)-[s:EVIDENCE]->(m) RETURN m.id".into(),
@@ -30,9 +28,19 @@ fn relationship_merge_batch_preserves_scope_and_refuses_unrepresented_clauses() 
         "MATCH (s:Skill) WHERE s.id = key UNWIND $ids AS key MATCH (m:Memory {id: key}) MERGE (s)-[:EVIDENCE]->(m) RETURN m.id".into(),
         "MATCH (s:Skill) WHERE m.id = 1 UNWIND $ids AS key MATCH (m:Memory {id: key}) MERGE (s)-[:EVIDENCE]->(m) RETURN m.id".into(),
         "MATCH (s:Skill) UNWIND $ids AS s MATCH (m:Memory) MERGE (s)-[:EVIDENCE]->(m) RETURN m.id".into(),
+    ] { assert!(plan_pipeline_query(&query, &parameters).is_err(), "{query}"); }
+    // The batch command declines these; they are bound over the read rows (#1790).
+    for query in [
+        format!("{prefix} RETURN DISTINCT m.id"),
+        format!("{prefix} RETURN m.id LIMIT 1"),
         "MATCH (s:Skill) UNWIND $ids AS key UNWIND $ids AS other MATCH (m:Memory) MERGE (s)-[:EVIDENCE]->(m) RETURN m.id".into(),
         "MATCH (s:Skill) OPTIONAL MATCH (m:Memory) MERGE (s)-[:EVIDENCE]->(m) RETURN m.id".into(),
-    ] { assert!(plan_pipeline_query(&query, &parameters).is_err(), "{query}"); }
+    ] {
+        assert!(
+            matches!(plan_pipeline_query(&query, &parameters).unwrap(), LogicalPlan::MatchSet(_)),
+            "{query}"
+        );
+    }
 }
 
 #[test]
@@ -42,7 +50,6 @@ fn atomic_mutations_reject_conditions_the_storage_command_cannot_represent() {
         "MERGE (n {id: 1})",
         "CREATE p = (n:Node {id: 1})",
         "MERGE p = (n:Node {id: 1})",
-        "MATCH (a:Node), (b:Node), (unused:Node) CREATE (a)-[:LINK]->(b)",
         "MATCH (a:Node), (b:Node) CREATE (a)-[:LINK* ALL SHORTEST 1..1]->(b)",
         "UNWIND row.id AS value CREATE (n:Node)",
         "MATCH (row:Node) UNWIND row.ids AS value CREATE (n:Node {id: value})",
@@ -1159,7 +1166,7 @@ fn nested_aggregate_arguments_are_rejected() {
 fn relationship_merge_batch_keeps_unrelated_mutation_errors_specific() {
     for (query, expected) in [
         (
-            "MERGE (n:A {id: 1}) RETURN n",
+            "MERGE (n:A {id: 1}) WITH n RETURN n",
             "mutation has unsupported following clauses",
         ),
         (
@@ -1614,7 +1621,6 @@ fn create_return_binds_created_variables_to_summary_columns() {
     for query in [
         "CREATE (o:Item) RETURN x",
         "CREATE (o:Item) RETURN o ORDER BY o.id",
-        "CREATE (o:Item) RETURN o SKIP 1",
         "CREATE (o:Item) RETURN o, count(*)",
         "CREATE (o:Item) WITH o RETURN o",
         "CREATE (o:Item) SET o.id = 1 RETURN o",
@@ -1624,4 +1630,214 @@ fn create_return_binds_created_variables_to_summary_columns() {
             "{query}"
         );
     }
+}
+
+#[test]
+fn delete_return_binds_deleted_entities_from_the_pre_statement_state() {
+    let plan = |query: &str| plan_pipeline_query(query, &BTreeMap::new());
+    let LogicalPlan::MutationReturn { mutation, returns } =
+        plan("MATCH (e:Entity {id: 1}) WHERE NOT (e)-[:R]-() DETACH DELETE e RETURN count(*)")
+            .unwrap()
+    else {
+        panic!("expected a mutation RETURN");
+    };
+    assert!(matches!(
+        *mutation,
+        LogicalPlan::DeleteNode { detach: true, .. }
+    ));
+    assert_eq!(returns.state, MutationReturnState::Deleted);
+    assert_eq!(
+        returns.mode,
+        SetNodePropertiesReturnMode::Count {
+            name: "count(*)".into()
+        }
+    );
+    assert_eq!(
+        returns
+            .bindings
+            .iter()
+            .map(|binding| (
+                binding.variable.as_str(),
+                binding.entity,
+                binding.column.as_str()
+            ))
+            .collect::<Vec<_>>(),
+        [("e", MutationReturnEntity::Node, "node_id")]
+    );
+    let LogicalPlan::MutationReturn { mutation, returns } =
+        plan("MATCH (a:A)-[r:R]->(b:B) DELETE r RETURN a.id, r, b.id").unwrap()
+    else {
+        panic!("expected a mutation RETURN");
+    };
+    assert!(matches!(*mutation, LogicalPlan::DeleteRelationship { .. }));
+    assert_eq!(
+        returns
+            .bindings
+            .iter()
+            .map(|binding| (binding.variable.as_str(), binding.entity))
+            .collect::<Vec<_>>(),
+        [
+            ("a", MutationReturnEntity::RelationshipSource),
+            ("r", MutationReturnEntity::Relationship),
+            ("b", MutationReturnEntity::RelationshipTarget),
+        ]
+    );
+    for query in [
+        "MATCH (e:Entity) DELETE e RETURN e ORDER BY e.id",
+        "MATCH (e:Entity) DELETE e RETURN DISTINCT e.id",
+        "MATCH (e:Entity) DELETE e RETURN x",
+        "MATCH (e:Entity) DELETE e SET e.id = 1",
+        "MATCH (t:Thread)-[:CONTAINS]->(m:Message) DETACH DELETE m RETURN count(*)",
+    ] {
+        assert!(plan(query).is_err(), "{query}");
+    }
+}
+
+#[test]
+fn merge_return_and_relationship_on_match_bind_to_the_merge_command() {
+    let plan = |query: &str| plan_pipeline_query(query, &BTreeMap::new());
+    let LogicalPlan::MutationReturn { mutation, returns } =
+        plan("MERGE (l:Label {id: 1}) ON CREATE SET l.n = 'c' ON MATCH SET l.n = 'm' SET l.t = 2 RETURN l.n").unwrap()
+    else {
+        panic!("expected a mutation RETURN");
+    };
+    let LogicalPlan::MergeNode {
+        on_match_assignments,
+        post_merge_assignments,
+        ..
+    } = *mutation
+    else {
+        panic!("expected a node MERGE");
+    };
+    assert_eq!(on_match_assignments.len(), 1);
+    assert_eq!(post_merge_assignments.len(), 1);
+    assert_eq!(returns.state, MutationReturnState::Written);
+    assert_eq!(returns.bindings[0].column, "node_id");
+
+    let LogicalPlan::MutationReturn { mutation, returns } = plan(
+        "MATCH (a:A {id: 1}), (b:B {id: 2}) MERGE (a)-[r:R {k: 1}]->(b) ON CREATE SET r.c = 1 ON MATCH SET r.c = r.c + 1 RETURN r.c SKIP 1 LIMIT 2",
+    )
+    .unwrap()
+    else {
+        panic!("expected a mutation RETURN");
+    };
+    let LogicalPlan::MergeMatchedRelationship {
+        on_create_properties,
+        on_match_assignments,
+        ..
+    } = *mutation
+    else {
+        panic!("expected a matched relationship MERGE");
+    };
+    assert_eq!(on_create_properties.len(), 1);
+    assert_eq!(
+        on_match_assignments,
+        vec![SetAssignment {
+            property: "c".into(),
+            value: SetValue::AddInt {
+                property: "c".into(),
+                amount: 1
+            },
+        }]
+    );
+    assert_eq!((returns.offset, returns.limit), (1, Some(2)));
+    assert_eq!(
+        returns
+            .bindings
+            .iter()
+            .map(|binding| binding.column.as_str())
+            .collect::<Vec<_>>(),
+        ["source_node_id", "rel_id", "target_node_id"]
+    );
+    // Without RETURN, ON MATCH SET reaches the same command.
+    let LogicalPlan::MergeMatchedRelationship {
+        on_match_assignments,
+        ..
+    } = plan("MATCH (a:A), (b:B) MERGE (a)-[r:R]->(b) ON MATCH SET r.seen = true").unwrap()
+    else {
+        panic!("expected a matched relationship MERGE");
+    };
+    assert_eq!(on_match_assignments.len(), 1);
+    for query in [
+        "MATCH (a:A), (b:B) MERGE (a)-[:R]->(b) ON MATCH SET a.seen = true",
+        "MATCH (a:A), (b:B) MERGE (a)-[r:R]->(b) ON MATCH SET a.seen = true",
+        "MATCH (a:A), (b:B) MERGE (a)-[r:R]->(b) ON MATCH SET r.w = r.w + 1.5",
+        "MATCH (a:A), (b:B) MERGE (a)-[a:R]->(b) RETURN a",
+        "MERGE (a:A {id: 1})-[r:R]->(b:B {id: 2}) ON MATCH SET r.seen = true",
+        "MATCH (a:A)-[o:OLD]->(b:B) MERGE (a)-[r:NEW]->(b) ON MATCH SET r.seen = true",
+        "MATCH (a:A), (b:B) MERGE (a)-[r:R]->(b) SET r.w = 1",
+        "MERGE (n:A {id: 1}) RETURN n ORDER BY n.id",
+        "UNWIND [1] AS x MATCH (a:A), (b:B {id: x}) MERGE (a)-[r:R]->(b) ON MATCH SET r.w = 1 RETURN b",
+    ] {
+        assert!(plan(query).is_err(), "{query}");
+    }
+}
+
+#[test]
+fn relationship_writes_the_endpoint_commands_decline_bind_over_read_rows() {
+    let parameters = BTreeMap::from([
+        ("ids".to_string(), Value::List(vec![Value::Int(1)])),
+        ("id".to_string(), Value::Int(1)),
+    ]);
+    let plan = |query: &str| plan_pipeline_query(query, &parameters);
+    for (query, merge) in [
+        (
+            "MATCH (s:S {id: $id}), (m:M) WHERE m.id IN $ids MERGE (s)-[r:R]->(m) ON CREATE SET r.w = 1.0",
+            true,
+        ),
+        (
+            "MATCH (s:S {id: $id}) UNWIND $ids AS x MATCH (m:M {id: x}) CREATE (s)-[:R {k: x}]->(m) RETURN m.id",
+            false,
+        ),
+        (
+            "MATCH (t:T {id: $id}), (m:M {id: $id}) WHERE NOT EXISTS { MATCH (t)-[:R]->(m) } CREATE (t)-[:R]->(m)",
+            false,
+        ),
+        ("MATCH (a:M {id: $id}) CREATE (a)-[:R]->(a)", false),
+        ("MATCH (a:M {id: $id}), (b:M) CREATE (a)<-[:R]-(b)", false),
+    ] {
+        let LogicalPlan::MatchSet(set) = plan(query).unwrap() else {
+            panic!("expected row evaluation: {query}");
+        };
+        let relationship = set.relationship.as_ref().unwrap();
+        assert_eq!(relationship.merge, merge, "{query}");
+        assert!(set.assignments.is_empty());
+        if query.contains("<-[:R]-") {
+            assert_eq!((relationship.source.as_str(), relationship.target.as_str()), ("b", "a"));
+        }
+    }
+    // The two-endpoint commands keep the shapes they plan.
+    assert!(matches!(
+        plan("MATCH (a:M {id: $id}), (b:M {id: 2}) CREATE (a)-[:R]->(b)").unwrap(),
+        LogicalPlan::CreateMatchedRelationship { .. }
+    ));
+    for query in [
+        "MATCH (a:M) WHERE a.id IN $ids CREATE (a)-[:R]->(:M {id: 3})",
+        "MATCH (a:M) WHERE a.id IN $ids MERGE (a)-[r:R]->(a) ON MATCH SET r.n = 1",
+        "MATCH (a:M) WHERE a.id IN $ids CREATE (a)-[r:R]->(a) RETURN r",
+        "MATCH (a:M) WHERE a.id IN $ids CREATE (a)-[:R]-(a)",
+    ] {
+        assert!(plan(query).is_err(), "{query}");
+    }
+}
+
+#[test]
+fn relationship_set_filters_storage_cannot_evaluate_bind_over_rows() {
+    let parameters = BTreeMap::from([
+        ("old".to_string(), Value::Null),
+        ("id".to_string(), Value::String("a".into())),
+    ]);
+    let plan = |query: &str| plan_pipeline_query(query, &parameters).unwrap();
+    for query in [
+        "MATCH (:E {id: $id})-[r:R]->(:E {id: 'b'}) WHERE r.s = $old OR (r.s IS NULL AND $old IS NULL) SET r.s = 'd'",
+        "MATCH (a:E {id: $id})-[r:R]->(b:E) WHERE r.s = 'x' AND ((r.t IS NULL AND $old IS NULL) OR r.t = $old) SET r.s = 'd', r.n = 1",
+        // Only single-node SET commands return rows.
+        "MATCH (a:E {id: $id})-[r:R]->(b:E) SET r.s = 'd' RETURN r.s",
+    ] {
+        assert!(matches!(plan(query), LogicalPlan::MatchSet(_)), "{query}");
+    }
+    assert!(matches!(
+        plan("MATCH (:E {id: $id})-[r:R]->(:E {id: 'b'}) WHERE r.s = 'x' OR r.s IS NULL SET r.s = 'd'"),
+        LogicalPlan::SetRelationshipProperty { .. }
+    ));
 }

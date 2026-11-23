@@ -21,6 +21,27 @@ The demo journal and benchmark directory must not already exist. They contain
 synthetic data only. Runs remain manual; this experiment is not registered in
 CI, scheduled jobs, the production workspace, or library dependencies.
 
+## Compile-time storage selection
+
+The versioned and hybrid layouts use the ordered byte store in
+[`src/storage.rs`](src/storage.rs). MySQL's shared server and engine boundary
+motivates the separation, and LevelDB's bytewise ordering and forward seek
+semantics provide the closer model for this interface.
+[MySQL storage engine architecture](https://dev.mysql.com/doc/refman/8.4/en/pluggable-storage-overview.html)
+and [LevelDB iterator](https://github.com/google/leveldb/blob/main/include/leveldb/iterator.h).
+
+Implement `Storage` and its cursor, then select the type in Rust with
+`Store::<MyStorage>::open_with_storage(path, Layout::Hybrid)`. Calls are
+statically dispatched. The CLI uses Bf-Tree for these layouts by default, and
+the COW reference layout uses its own immutable map snapshots.
+
+The journal is authoritative. A storage implementation creates a fresh index
+generation on open and checkpoint reconstruction. Snapshots can retain an
+older generation, so fresh instances must have independent state. The MVCC
+adapter owns snapshot visibility, synchronization, recovery, and the
+journal's layout identity. An alternative implementation can reopen the same
+journal with the same MVCC layout.
+
 ## Transaction and recovery contract
 
 A transaction captures one visible epoch. Private point reads overlay its write
@@ -201,7 +222,10 @@ Scan visibility checks borrow the native iterator's buffer. Only visible output
 keys/values, or Hybrid keys needing a historical point seek, become owned rows.
 The physical resume key uses a bounded stack buffer; each scan reuses one owned
 row batch. Discarded newer/duplicate versions no longer allocate and copy their
-payloads. Hybrid history lookups still occur after releasing the native guard.
+payloads. Hybrid appends visible heads directly until a head needs history. It
+then defers that head and the remaining result rows in the window so historical
+seeks take place after releasing the native guard. The next Hybrid window seeks
+past the previous physical head using its encoded successor.
 
 Every native batch returns at most 32 records, including records discarded by
 the adapter. Native deleted slots may be skipped internally and are not counted
