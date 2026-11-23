@@ -45,9 +45,11 @@ impl QosAdmission {
     /// (the limit itself for a per-work limit). A tenant budget refusal has
     /// `available` 0 because the remaining tenant budget belongs to the
     /// caller's hint, not to the policy. `retryable` is true for a deferral
-    /// that clears once running background work finishes, and false for a
-    /// rejection and for a request larger than the refusing limit itself (any
-    /// per-work limit refusal), which can never be admitted unchanged.
+    /// whose unchanged request fits every configured per-work, total and
+    /// class limit at idle, so it clears once running background work
+    /// finishes. It is false for a rejection, for any per-work limit refusal,
+    /// and for a request larger than any configured limit, which can never be
+    /// admitted unchanged.
     pub fn refusal_error(
         &self,
         policy: &LocalQosPolicy,
@@ -84,16 +86,23 @@ impl QosAdmission {
             }
             QosAdmissionCode::BackgroundDisabled | QosAdmissionCode::TenantBudgetExceeded => None,
         };
-        // A request larger than the limit itself cannot fit even once all
-        // running work ends; only a deferral that can fit is worth retrying.
-        // A tenant budget deferral is reported as retryable because the policy
-        // does not own the tenant budget and cannot tell whether it will
-        // recover. No caller supplies a tenant budget hint today, so this
-        // path is unreachable outside tests; revisit `retryable` if one does.
-        let fits = match code {
-            QosAdmissionCode::PerWorkLimitExceeded => false,
-            _ => limit.is_none_or(|limit| request.estimated_operations <= limit),
-        };
+        // `retryable` asks whether the unchanged request could ever be
+        // admitted, so it is checked against every configured per-work,
+        // total and class limit at idle, not only the limit that refused
+        // this attempt: a temporary total shortage must not hide a class
+        // limit the request can never fit (and vice versa). A per-work limit
+        // refusal can never succeed unchanged.
+        // A tenant budget deferral is reported as retryable when the request
+        // fits every policy limit, because the policy does not own the tenant
+        // budget and cannot tell whether it will recover. No caller supplies
+        // a tenant budget hint today, so that path is unreachable outside
+        // tests; revisit `retryable` if one does.
+        let within =
+            |limit: Option<usize>| limit.is_none_or(|limit| request.estimated_operations <= limit);
+        let fits = code != QosAdmissionCode::PerWorkLimitExceeded
+            && within(policy.max_background_operations)
+            && within(policy.max_total_background_operations)
+            && within(policy.max_background_operations_by_class[class]);
         Some(HawDBError::RuntimeAdmissionRefused(
             RuntimeAdmissionRefusal {
                 code: runtime_code.as_str(),
@@ -201,7 +210,7 @@ mod tests {
         let mut by_class = [None; WORK_CLASS_COUNT];
         by_class[WorkClass::Import.as_index()] = Some(16);
         let policy = LocalQosPolicy {
-            max_background_operations: Some(10),
+            max_background_operations: Some(12),
             max_total_background_operations: Some(20),
             max_background_operations_by_class: by_class,
             background_enabled: true,
@@ -214,7 +223,7 @@ mod tests {
         };
         let request = WorkRequest::background(WorkClass::Import, 12);
         for (code, available, retryable) in [
-            (QosAdmissionCode::PerWorkLimitExceeded, 10, false),
+            (QosAdmissionCode::PerWorkLimitExceeded, 12, false),
             (QosAdmissionCode::TotalBackgroundLimitExceeded, 1, true),
             (QosAdmissionCode::ClassBackgroundLimitExceeded, 1, true),
             (QosAdmissionCode::TenantBudgetExceeded, 0, true),
@@ -248,7 +257,7 @@ mod tests {
         }
         // The real policy reports an oversized request as non-retryable.
         let error = policy
-            .admit_or_refuse(&LocalQosState::default(), &request)
+            .admit_or_refuse(&LocalQosState::default(), &oversized)
             .unwrap_err();
         assert!(!refusal(error).retryable);
     }
@@ -300,6 +309,50 @@ mod tests {
             .try_start_or_refuse(WorkRequest::background(WorkClass::Projection, 2))
             .unwrap()
             .finish();
+        assert_eq!(scheduler.state(), LocalQosState::default());
+    }
+
+    #[test]
+    fn retryable_requires_fitting_every_limit_at_idle() {
+        // A temporary total shortage must not hide a class limit the request
+        // can never fit (#1935 review).
+        let mut by_class = [None; WORK_CLASS_COUNT];
+        by_class[WorkClass::Projection.as_index()] = Some(2);
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+            max_background_operations: None,
+            max_total_background_operations: Some(10),
+            max_background_operations_by_class: by_class,
+            background_enabled: true,
+        });
+        let held = scheduler
+            .try_start_or_refuse(WorkRequest::background(WorkClass::Import, 8))
+            .unwrap();
+        let busy = refusal(
+            scheduler
+                .try_start_or_refuse(WorkRequest::background(WorkClass::Projection, 3))
+                .unwrap_err(),
+        );
+        assert_eq!(busy.requested, 3);
+        assert!(!busy.retryable, "{busy:?}");
+        held.finish();
+        let idle = refusal(
+            scheduler
+                .try_start_or_refuse(WorkRequest::background(WorkClass::Projection, 3))
+                .unwrap_err(),
+        );
+        assert_eq!(idle.requested, 3);
+        assert!(!idle.retryable, "{idle:?}");
+        // A request that fits every limit stays retryable while busy.
+        let held = scheduler
+            .try_start_or_refuse(WorkRequest::background(WorkClass::Import, 9))
+            .unwrap();
+        let fits = refusal(
+            scheduler
+                .try_start_or_refuse(WorkRequest::background(WorkClass::Projection, 2))
+                .unwrap_err(),
+        );
+        assert!(fits.retryable, "{fits:?}");
+        held.finish();
         assert_eq!(scheduler.state(), LocalQosState::default());
     }
 }
